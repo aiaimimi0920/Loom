@@ -115,7 +115,10 @@ mod tests {
         std::env::set_var("APPDATA", r"C:\Users\demo\AppData\Roaming");
         assert_eq!(
             default_configuration_root(),
-            PathBuf::from(r"C:\Users\demo\AppData\Roaming\Loom\configuration\apps")
+            PathBuf::from(r"C:\Users\demo\AppData\Roaming")
+                .join("Loom")
+                .join("configuration")
+                .join("apps")
         );
         match previous {
             Some(value) => std::env::set_var("APPDATA", value),
