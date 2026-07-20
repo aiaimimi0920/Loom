@@ -515,6 +515,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "packaged OCR validation requires the bundled Windows ONNX Runtime"
+    )]
     fn real_engine_detects_text_from_packaged_fixture_image() {
         let resources = workspace_ocr_resources();
         let model_set = OcrModelSet::from_dir(&resources).expect("packaged OCR models");

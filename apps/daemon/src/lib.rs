@@ -8386,6 +8386,10 @@ mod tests {
         dir
     }
 
+    fn canonical_test_path(path: impl AsRef<Path>) -> PathBuf {
+        fs::canonicalize(path).expect("canonicalize test path")
+    }
+
     fn start_daemon_with_store(
         path: &Path,
         brain_planner: BrainPlannerConfig,
@@ -9509,8 +9513,8 @@ def run(args):
             &serde_json::json!({ "path": python_path }).to_string(),
         );
         assert_eq!(
-            source["path"].as_str().expect("source path"),
-            python_path.to_string_lossy()
+            canonical_test_path(source["path"].as_str().expect("source path")),
+            canonical_test_path(&python_path)
         );
         assert!(source["content"]
             .as_str()
@@ -9525,10 +9529,12 @@ def run(args):
         assert_eq!(nearby["found"], true);
         assert_eq!(nearby["artJson"]["label"], "Source Fixture");
         assert_eq!(
-            nearby["artJsonPath"]
-                .as_str()
-                .expect("nearby art json path"),
-            art_json_path.to_string_lossy()
+            canonical_test_path(
+                nearby["artJsonPath"]
+                    .as_str()
+                    .expect("nearby art json path")
+            ),
+            canonical_test_path(&art_json_path)
         );
 
         let art_json = http_json_post(
@@ -11583,6 +11589,10 @@ nodes:
     }
 
     #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "packaged OCR validation requires the bundled Windows ONNX Runtime"
+    )]
     fn daemon_hook_bridge_ocr_image_real_provider_returns_success() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_fixture = std::env::var("LOOM_OCR_FIXTURE_TEXT").ok();
