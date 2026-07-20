@@ -1843,9 +1843,41 @@ mod tests {
     }
 
     fn read_http_request(stream: &mut TcpStream) -> String {
-        let mut buffer = [0_u8; 8192];
-        let read = stream.read(&mut buffer).expect("read fixture request");
-        String::from_utf8_lossy(&buffer[..read]).to_string()
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let read = stream
+                .read(&mut buffer)
+                .expect("read fixture request headers");
+            if read == 0 {
+                return String::from_utf8_lossy(&request).to_string();
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+
+        let content_length = String::from_utf8_lossy(&request[..header_end])
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or_default();
+        let expected_length = header_end + content_length;
+
+        while request.len() < expected_length {
+            let read = stream.read(&mut buffer).expect("read fixture request body");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+
+        String::from_utf8_lossy(&request).to_string()
     }
 
     fn write_http_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
