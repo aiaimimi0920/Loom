@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/daemon",
+    "apps/cli",
+    "crates/loom_core",
+    "crates/loom_durable",
+    "crates/loom_agent",
+    "crates/loom_workflow",
+    "crates/loom_memory",
+    "crates/loom_sandbox",
+    "crates/loom_gateway",
+    "crates/loom_hooks",
+    "crates/loom_configuration",
+    "crates/loom_mcp",
+    "crates/loom_workflow_store",
+    "crates/loom_tool_registry",
+    "crates/loom_hook_bridge",
+    "crates/loom_native_image",
+    "crates/loom_workflow_runtime",
+    "crates/loom_shared_image",
+    "crates/loom_image_io",
+    "crates/loom_ocr",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Loom contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aiaimimi0920/Loom"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+num_cpus = "1.17"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic", "download-binaries", "copy-dylibs"] }
+paddle-ocr-rs = { version = "=0.6.0", default-features = false }
+rayon = "1.10"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "1.0"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+tungstenite = "0.24"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Memory"] }
+zerocopy = "=0.8.50"
+
+loom_core = { path = "crates/loom_core" }
+loom_durable = { path = "crates/loom_durable" }
+loom_agent = { path = "crates/loom_agent" }
+loom_workflow = { path = "crates/loom_workflow" }
+loom_memory = { path = "crates/loom_memory" }
+loom_sandbox = { path = "crates/loom_sandbox" }
+loom_gateway = { path = "crates/loom_gateway" }
+loom_hooks = { path = "crates/loom_hooks" }
+loom_configuration = { path = "crates/loom_configuration" }
+loom_mcp = { path = "crates/loom_mcp" }
+loom_workflow_store = { path = "crates/loom_workflow_store" }
+loom_tool_registry = { path = "crates/loom_tool_registry" }
+loom_hook_bridge = { path = "crates/loom_hook_bridge" }
+loom_native_image = { path = "crates/loom_native_image" }
+loom_workflow_runtime = { path = "crates/loom_workflow_runtime" }
+loom_shared_image = { path = "crates/loom_shared_image" }
+loom_image_io = { path = "crates/loom_image_io" }
+loom_ocr = { path = "crates/loom_ocr" }

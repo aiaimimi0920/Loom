@@ -1,0 +1,23 @@
+id: sample.three_node
+entry_node: start
+nodes:
+  start:
+    id: start
+    action:
+      type: agent
+      actor_id: planner
+  draft:
+    id: draft
+    action:
+      type: agent
+      actor_id: writer
+  review:
+    id: review
+    action:
+      type: agent
+      actor_id: reviewer
+edges:
+  - from: start
+    to: draft
+  - from: draft
+    to: review

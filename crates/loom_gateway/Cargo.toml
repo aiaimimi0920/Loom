@@ -1,0 +1,15 @@
+[package]
+name = "loom_gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom client contracts for the external Neuro Gateway"
+
+[dependencies]
+loom_core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

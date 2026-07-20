@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.dll binary
+*.exe binary
+*.ico binary
+*.onnx binary
+*.png binary
+*.zip binary
+
+# Preserve the vendored CPython license text exactly as distributed.
+resources/python-embed/LICENSE.txt whitespace=-blank-at-eol,-blank-at-eof

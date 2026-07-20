@@ -1,0 +1,13 @@
+name: ArtLoom Mixed Failure DAG
+description: Selected ArtLoom-style mixed success/failure fixture for Loom conversion.
+nodes:
+  - id: root
+    uses: planner
+  - id: success_sibling
+    uses: writer
+    needs:
+      - root
+  - id: failing_child
+    uses: failing-art
+    needs:
+      - root

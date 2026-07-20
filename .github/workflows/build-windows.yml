@@ -1,0 +1,62 @@
+name: Build Windows
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify Windows candidate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+
+      - name: Resolve CI version
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $shortSha = $env:GITHUB_SHA.Substring(0, 8)
+          "LOOM_VERSION=ci-$env:GITHUB_RUN_NUMBER-$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build standalone Loom release
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
+            -VersionId $env:LOOM_VERSION `
+            -OutputRoot .\release\Loom
+
+      - name: Verify standalone Loom release
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release.ps1 `
+            -PackageDir ".\release\Loom\$env:LOOM_VERSION"
+
+      - name: Upload Windows candidate
+        uses: actions/upload-artifact@v6
+        with:
+          name: loom-windows-x64-${{ github.sha }}
+          path: release/Loom/${{ env.LOOM_VERSION }}
+          if-no-files-found: error

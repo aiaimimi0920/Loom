@@ -1,0 +1,23 @@
+name: ArtLoom Success DAG
+description: Selected ArtLoom-style workflow fixture for Loom conversion.
+nodes:
+  - id: root
+    uses: planner
+    meta:
+      label: Planner
+  - id: draft
+    uses: writer
+    needs:
+      - root
+    with:
+      input: ${{ nodes.root.outputs.output }}
+    meta:
+      label: Writer
+  - id: review
+    uses: reviewer
+    needs:
+      - draft
+    with:
+      input: ${{ nodes.draft.outputs.output }}
+    meta:
+      label: Reviewer

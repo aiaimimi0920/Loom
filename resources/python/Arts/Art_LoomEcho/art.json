@@ -1,0 +1,27 @@
+{
+  "art_id": "loom_echo",
+  "label": "Loom Echo",
+  "description": "Packaged Python Art fixture used to prove Loom can catalog and execute installed Python Arts.",
+  "version": "1.0.0",
+  "execution": {
+    "engine": "python",
+    "entry": "main.py"
+  },
+  "signature": {
+    "inputs": [
+      {
+        "id": "text",
+        "label": "Text",
+        "type": "String"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "text",
+        "label": "Text",
+        "type": "String"
+      }
+    ]
+  },
+  "variables": []
+}

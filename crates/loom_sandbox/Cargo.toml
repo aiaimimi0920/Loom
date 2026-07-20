@@ -1,0 +1,13 @@
+[package]
+name = "loom_sandbox"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom safe execution contracts"
+
+[dependencies]
+loom_core.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "loom_memory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom memory and retrieval contracts"
+
+[dependencies]
+loom_core.workspace = true
+serde.workspace = true

@@ -1,0 +1,43 @@
+[package]
+name = "loom-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Headless Loom daemon runtime"
+
+[[bin]]
+name = "loom-daemon"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+loom_agent.workspace = true
+loom_configuration.workspace = true
+loom_core.workspace = true
+loom_durable.workspace = true
+loom_gateway.workspace = true
+loom_hook_bridge.workspace = true
+loom_hooks.workspace = true
+loom_image_io.workspace = true
+loom_memory.workspace = true
+loom_mcp.workspace = true
+loom_native_image.workspace = true
+loom_ocr.workspace = true
+loom_sandbox.workspace = true
+loom_shared_image.workspace = true
+loom_tool_registry.workspace = true
+loom_workflow.workspace = true
+loom_workflow_runtime.workspace = true
+loom_workflow_store.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tungstenite.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+image.workspace = true

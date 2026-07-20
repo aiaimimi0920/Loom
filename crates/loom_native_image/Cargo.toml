@@ -1,0 +1,13 @@
+[package]
+name = "loom_native_image"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true

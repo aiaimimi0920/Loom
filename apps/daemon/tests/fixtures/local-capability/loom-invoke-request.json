@@ -1,0 +1,11 @@
+{
+  "requestId": "loom-request-1",
+  "caller": "hook",
+  "capability": "brain.plan",
+  "input": {
+    "goal": "release smoke",
+    "constraints": [
+      "Hook Talk Loom"
+    ]
+  }
+}

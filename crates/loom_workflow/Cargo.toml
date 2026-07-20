@@ -1,0 +1,18 @@
+[package]
+name = "loom_workflow"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom workflow graph and executor"
+
+[dependencies]
+loom_hooks.workspace = true
+loom_core.workspace = true
+loom_durable.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

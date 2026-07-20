@@ -1,0 +1,16 @@
+[package]
+name = "loom_tool_registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom user tool and Art registry contracts"
+
+[dependencies]
+base64.workspace = true
+loom_mcp.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

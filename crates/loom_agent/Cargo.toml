@@ -1,0 +1,14 @@
+[package]
+name = "loom_agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom agent definitions and resolution"
+
+[dependencies]
+loom_core.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true

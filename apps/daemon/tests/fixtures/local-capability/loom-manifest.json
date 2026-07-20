@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "appId": "loom",
+  "displayName": "Loom",
+  "version": "0.1.0",
+  "pid": 12345,
+  "transport": {
+    "type": "http",
+    "baseUrl": "http://127.0.0.1:8765",
+    "auth": "none"
+  },
+  "capabilities": [
+    "brain.plan",
+    "tea.ticket.decompose.v1",
+    "tea.ticket.execute.v1",
+    "tea.ticket.review.v1"
+  ],
+  "startedAt": 1780861361
+}

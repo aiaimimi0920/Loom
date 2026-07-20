@@ -1,0 +1,18 @@
+[package]
+name = "loom_ocr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ArtLoom-compatible OCR engine and model discovery for Loom"
+
+[dependencies]
+image.workspace = true
+num_cpus.workspace = true
+ort.workspace = true
+paddle-ocr-rs.workspace = true
+rayon.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true

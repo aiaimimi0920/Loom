@@ -1,0 +1,15 @@
+[package]
+name = "loom_hooks"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom hook event contracts"
+
+[dependencies]
+loom_core.workspace = true
+loom_sandbox.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

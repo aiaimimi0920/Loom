@@ -1,0 +1,22 @@
+[package]
+name = "loom-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loom command-line client"
+
+[[bin]]
+name = "loom"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+loom_agent.workspace = true
+loom_core.workspace = true
+loom_durable.workspace = true
+loom_workflow.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
