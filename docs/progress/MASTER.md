@@ -260,6 +260,11 @@ Ongoing maintenance:
 - Parent integration baseline:
   `86105d555a01ad31b00e1328a011eb0f12828c18`, with `.gitmodules` pointing to the
   public repository and `Loom` stored as mode `160000`.
+- Final review pin:
+  `724a26f5b2821c951f411bab60de4facb948aa0e` points the parent gitlink to
+  `3ebc74f5b713892e0418182cc60f88f6d9bed12b`; an isolated parent clone
+  initialized Loom from `https://github.com/aiaimimi0920/Loom.git` and remained
+  clean after verification.
 - Formal candidate:
   `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260721-standalone-161b8aa`.
   The verifier accepted all 31 checksum entries, and unified, SQLite

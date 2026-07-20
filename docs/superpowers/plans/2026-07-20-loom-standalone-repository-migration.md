@@ -24,8 +24,11 @@ The formal package is
 and its ZIP SHA-256 is
 `962addde00416858138101722399f394ede011ae8a388d846fef58a5171b4ab4`.
 Hosted CI, Build Windows, and Docker succeeded for `a3b081c`; no release tag was
-created. Task 8 Step 5 remains open until the final parent gitlink pin and
-independent clean-clone review are complete.
+created. The independent final review then verified parent commit
+`724a26f5b2821c951f411bab60de4facb948aa0e`, a mode `160000` gitlink to
+`3ebc74f5b713892e0418182cc60f88f6d9bed12b`, and the clean clone
+`C:\Users\Public\nas_home\AI\GameEditor\Neuro\_temp\Neuro-loom-submodule-verification-724a26f`.
+Task 8 Step 5 is complete.
 
 ---
 
@@ -400,7 +403,7 @@ names. Report external runner limitations separately from local correctness.
 Record standalone URL, baseline commit, parent gitlink commit, backup path,
 release path, Actions, evidence, and remaining pre-existing Clippy debt.
 
-- [ ] **Step 5: Request final review**
+- [x] **Step 5: Request final review**
 
 Review standalone and parent commits independently, then run final status checks
 showing that Loom submodule and parent Loom integration paths are clean.
