@@ -8,6 +8,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
+. $layoutPath
 
 function Assert-True {
     param(
@@ -125,14 +127,7 @@ function Assert-ZipPayload {
     $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
     Assert-True -Condition (Test-Path -LiteralPath $zipPath -PathType Leaf) -Message "Payload ZIP is missing."
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-    try {
-        $actualEntries = @($archive.Entries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } | ForEach-Object { $_.FullName.Replace("/", "\") } | Sort-Object)
-    }
-    finally {
-        $archive.Dispose()
-    }
+    $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath)
     $expected = @($ExpectedPayloadPaths | Sort-Object)
     Assert-Equal -Expected ($expected -join "`n") -Actual ($actualEntries -join "`n") -Message "Payload ZIP contents do not match executable/support files."
 }
@@ -153,29 +148,49 @@ function Assert-CliZipPayload {
     $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
     Assert-True -Condition (Test-Path -LiteralPath $zipPath -PathType Leaf) -Message "CLI ZIP is missing."
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-    try {
-        $actualEntries = @($archive.Entries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } | ForEach-Object { $_.FullName.Replace("/", "\") } | Sort-Object)
-    }
-    finally {
-        $archive.Dispose()
-    }
-    Assert-Equal -Expected "loom.exe" -Actual ($actualEntries -join "`n") -Message "CLI ZIP must contain only loom.exe."
+    $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath)
+    Assert-Equal -Expected "loom.exe" -Actual ($actualEntries -join "`n") -Message "Loom CLI ZIP must contain exactly one loom.exe entry."
 
     $cliProperty = $Manifest.PSObject.Properties["cliArtifact"]
     Assert-True -Condition ($null -ne $cliProperty -and $null -ne $cliProperty.Value) -Message "Manifest is missing cliArtifact."
     Assert-Equal -Expected "loom.exe" -Actual ([string]$cliProperty.Value.entryName) -Message "CLI entry name mismatch."
     Assert-Equal -Expected ([string]$zipRecord[0].name) -Actual ([string]$cliProperty.Value.zipName) -Message "CLI artifact ZIP name mismatch."
     Assert-Equal -Expected ([string]$zipRecord[0].path) -Actual ([string]$cliProperty.Value.path) -Message "CLI artifact ZIP path mismatch."
+    Assert-Equal -Expected ([int64]$zipRecord[0].bytes) -Actual ([int64]$cliProperty.Value.bytes) -Message "CLI artifact ZIP byte count mismatch."
+    Assert-Equal -Expected ([string]$zipRecord[0].sha256) -Actual ([string]$cliProperty.Value.sha256) -Message "CLI artifact ZIP SHA-256 mismatch."
+}
+
+function Assert-ZipChecksumSidecar {
+    param(
+        [string]$PackagePath,
+        [object]$ZipRecord,
+        [object]$SidecarRecord
+    )
+
+    $zipName = [string]$ZipRecord.name
+    $zipRelativePath = ([string]$ZipRecord.path).Replace("/", "\")
+    $sidecarRelativePath = ([string]$SidecarRecord.path).Replace("/", "\")
+    Assert-Equal -Expected "$zipName.sha256" -Actual ([string]$SidecarRecord.name) -Message "ZIP checksum sidecar metadata mismatch for $zipName."
+    Assert-Equal -Expected "$zipRelativePath.sha256" -Actual $sidecarRelativePath -Message "ZIP checksum sidecar metadata mismatch for $zipName."
+
+    $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath $zipRelativePath
+    $sidecarPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath $sidecarRelativePath
+    $actualZipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expectedContent = "$actualZipHash  $zipName`r`n"
+    $actualContent = [System.IO.File]::ReadAllText($sidecarPath, [System.Text.Encoding]::ASCII)
+    if (-not [string]::Equals($actualContent, $expectedContent, [System.StringComparison]::Ordinal)) {
+        throw "ZIP checksum sidecar content mismatch for $zipName."
+    }
+    Assert-Equal -Expected ([string]$ZipRecord.sha256) -Actual $actualZipHash -Message "ZIP artifact SHA-256 mismatch for $zipName."
 }
 
 $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
 Assert-True -Condition (Test-Path -LiteralPath $packageFullPath -PathType Container) -Message "Package directory is missing: $packageFullPath"
+$layout = Get-LoomReleaseLayout -PackageDir $packageFullPath
 
 $manifestPath = Join-Path $packageFullPath "manifest.json"
 Assert-True -Condition (Test-Path -LiteralPath $manifestPath -PathType Leaf) -Message "Missing manifest.json."
-$manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
+$manifest = $layout.manifest
 Assert-Equal -Expected 1 -Actual ([int]$manifest.schemaVersion) -Message "Manifest schema version mismatch."
 Assert-Equal -Expected "Loom" -Actual ([string]$manifest.app) -Message "Manifest app mismatch."
 Assert-Equal -Expected "Loom" -Actual ([string]$manifest.sourceProject) -Message "Manifest source project mismatch."
@@ -210,6 +225,22 @@ $artifactRecords = @(Get-ManifestRecord -Manifest $manifest -Name "artifacts")
 foreach ($artifact in $artifactRecords) {
     [void](Assert-FileRecord -PackagePath $packageFullPath -Record $artifact)
 }
+$desktopZipRecord = @($artifactRecords | Where-Object { [string]$_.kind -eq "desktop-zip" })
+Assert-Equal -Expected 1 -Actual $desktopZipRecord.Count -Message "Manifest must contain exactly one desktop payload ZIP."
+$cliZipRecord = @($artifactRecords | Where-Object { [string]$_.kind -eq "cli-zip" })
+Assert-Equal -Expected 1 -Actual $cliZipRecord.Count -Message "Manifest must contain exactly one CLI ZIP."
+$desktopSidecarRecord = @($artifactRecords | Where-Object { [string]$_.kind -eq "zip-sha256" })
+Assert-Equal -Expected 1 -Actual $desktopSidecarRecord.Count -Message "Manifest must contain exactly one desktop ZIP checksum sidecar."
+$cliSidecarRecord = @($artifactRecords | Where-Object { [string]$_.kind -eq "cli-zip-sha256" })
+Assert-Equal -Expected 1 -Actual $cliSidecarRecord.Count -Message "Manifest must contain exactly one CLI ZIP checksum sidecar."
+$expectedDesktopZipName = "Loom-$($manifest.versionId)-windows-x64.zip"
+$expectedCliZipName = "Loom-CLI-$($manifest.versionId)-windows-x64.zip"
+Assert-Equal -Expected $expectedDesktopZipName -Actual ([string]$desktopZipRecord[0].name) -Message "Desktop ZIP name does not match the manifest version."
+Assert-Equal -Expected $expectedCliZipName -Actual ([string]$cliZipRecord[0].name) -Message "CLI ZIP name does not match the manifest version."
+Assert-Equal -Expected "packages\$expectedDesktopZipName" -Actual ([string]$desktopZipRecord[0].path) -Message "Desktop ZIP path does not match its name."
+Assert-Equal -Expected "packages\$expectedCliZipName" -Actual ([string]$cliZipRecord[0].path) -Message "CLI ZIP path does not match its name."
+Assert-ZipChecksumSidecar -PackagePath $packageFullPath -ZipRecord $desktopZipRecord[0] -SidecarRecord $desktopSidecarRecord[0]
+Assert-ZipChecksumSidecar -PackagePath $packageFullPath -ZipRecord $cliZipRecord[0] -SidecarRecord $cliSidecarRecord[0]
 
 $checksumEntries = Get-ChecksumEntries -PackagePath $packageFullPath
 Assert-Checksums -PackagePath $packageFullPath -Entries $checksumEntries

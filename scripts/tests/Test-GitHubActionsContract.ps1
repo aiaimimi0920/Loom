@@ -61,6 +61,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'cargo fmt --manifest-path .\apps\desktop\src-tauri\Cargo.toml -- --check',
     '.\scripts\tests\Test-StandaloneLayout.ps1',
     '.\scripts\tests\Test-StandaloneReleaseContract.ps1',
+    '.\scripts\tests\Test-ReleaseIntegrityTamper.ps1',
     '.\scripts\tests\Test-GitHubActionsContract.ps1'
 )
 

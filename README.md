@@ -428,6 +428,13 @@ The desktop ZIP contains `Loom.exe` and the runtime tree. The CLI ZIP contains
 only `loom.exe`, allowing command-line use without adding a second executable
 to the desktop package root.
 
+`verify-release.ps1` validates the complete candidate boundary: the desktop
+root must contain exactly `Loom.exe`, the CLI artifact metadata must agree with
+its ZIP record and bytes/hash, each ZIP must contain its exact payload, both
+`.sha256` sidecars must contain the matching lowercase hash and filename, and
+`checksums.sha256` must cover every other package file. The focused negative
+coverage for these rules is `scripts/tests/Test-ReleaseIntegrityTamper.ps1`.
+
 ## Validation
 
 ```powershell

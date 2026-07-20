@@ -42,6 +42,9 @@ Pop-Location
 
 cargo check --locked --manifest-path .\apps\desktop\src-tauri\Cargo.toml
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneLayout.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneReleaseContract.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-GitHubActionsContract.ps1
 docker build -t loom:local .
 ```
 
@@ -67,6 +70,11 @@ candidate root; release automation publishes it as a separate
 `Loom-CLI-<versionId>-windows-x64.zip` containing only `loom.exe`. Both the
 desktop and CLI ZIPs must have matching `.sha256` sidecars and pass
 `scripts\verify-release.ps1`.
+
+Verification also rejects stale or extra root executables, mismatched CLI
+manifest/artifact metadata, ZIP payload drift, malformed sidecar content, and
+any file omitted from `checksums.sha256`. Keep the synthetic tamper contract
+green when changing release layout or packaging scripts.
 
 Docker follows a different, intentional server boundary. It remains
 daemon-first and keeps the CLI inside the image for operator scripts; it does

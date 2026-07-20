@@ -74,6 +74,8 @@ separate projects.
 - [x] Phase 41: Bounded daemon concurrency (7/7 tasks) [details](./phase-41-bounded-daemon-concurrency.md)
 - [x] Phase 42: Single-entry Windows release packaging (6/6 tasks)
   [details](../superpowers/plans/2026-07-21-loom-single-entry-release.md)
+- [x] Phase 43: Release integrity hardening (5/5 tasks)
+  [details](../superpowers/plans/2026-07-21-loom-release-integrity-hardening.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -140,8 +142,19 @@ OCR, embedded-Python, and Python Art resources live below `runtime/`. The CLI
 is published separately as `Loom-CLI-<versionId>-windows-x64.zip` containing
 only `loom.exe`. The release verifier, desktop/persistence/Gateway/concurrency
 smokes, checksums, and Actions release asset contract all cover this layout.
-A final clean candidate must be generated from the committed Phase 42 SHA
-before it replaces the historical Phase 41 candidate as the formal package.
+The formal candidate is `release/Loom/20260721-single-entry-3d378db`, built from
+standalone SHA `3d378db3a33fd3b5b819eda9dd17d10e6f5c977d`; it contains 32
+checksum-covered files and passed the full release smoke matrix. Hosted CI,
+Build Windows, and Docker runs for that SHA completed successfully. Neuro pins
+that candidate through parent gitlink commit
+`b1116ef70a437a84615b6343986c6afb9082d20c`.
+
+Phase 43 hardens the same release boundary against internally consistent
+tampering. The shared layout helper and verifier reject extra root executables,
+CLI ZIP payload drift, CLI metadata mismatches, malformed ZIP sidecars, and
+non-empty extraction destinations. A synthetic tamper contract exercises each
+negative case before generated output is created; signing, installers, tags,
+and runtime behavior remain out of scope.
 
 The standalone repository is published at
 `https://github.com/aiaimimi0920/Loom`. Runtime and package validation closed on
@@ -252,20 +265,19 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Generate the final clean Phase 42 candidate under the mandated
-   `Neuro\release\Loom` boundary from the committed standalone SHA, then run
-   the verifier with the full smoke matrix. Keep
-   `20260721-standalone-161b8aa` and all earlier candidates as immutable
-   historical evidence.
-2. Treat later test/documentation-only commits separately from runtime package
+1. Finish Phase 43 source validation, generate a clean candidate under the
+   mandated `Neuro\release\Loom` boundary, and run the hardened verifier with
+   the full smoke matrix.
+2. Push the standalone hardening commit to `feat/single-entry-release`, then
+   require hosted CI, Build Windows, and Docker success for its exact SHA
+   before advancing the parent gitlink.
+3. Treat later test/documentation-only commits separately from runtime package
    provenance. Regenerate a candidate after any production source, resource,
    dependency, or release-tooling change.
-3. If further ArtLoom gaps are reported, classify them as user-visible UI,
+4. If further ArtLoom gaps are reported, classify them as user-visible UI,
    protocol/runtime, packaging, or intentionally replaced before making changes.
-4. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
+5. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
    internal Tauri source target, while the packaged user entry is `Loom.exe`.
-5. Start the next numbered phase only after defining its scope, evidence, and
-   release boundary; keep historical candidates immutable.
 
 ## Standalone repository closure
 

@@ -9,6 +9,7 @@ $buildPath = Join-Path $repoRoot "scripts\build-release.ps1"
 $verifyPath = Join-Path $repoRoot "scripts\verify-release.ps1"
 $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
+$tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
 
 function Assert-True {
     param(
@@ -106,6 +107,12 @@ Assert-ScriptContract `
         'runtime\loom-daemon.exe',
         'cliArtifact',
         'Loom-CLI-',
+        'Get-LoomReleaseLayout',
+        'Assert-ZipChecksumSidecar',
+        'ZIP checksum sidecar content mismatch',
+        'CLI artifact ZIP byte count mismatch',
+        'Desktop ZIP name does not match the manifest version.',
+        'CLI ZIP name does not match the manifest version.',
         'checksums.sha256',
         'manifest.json',
         '[switch]$RunSmoke'
@@ -116,12 +123,34 @@ Assert-ScriptContract `
     -Path $layoutPath `
     -RequiredText @(
         'function Get-LoomReleaseLayout',
+        'function Get-LoomArchiveFileEntries',
+        'function Assert-LoomDesktopRootExecutableBoundary',
         'Loom.exe',
         '$runtimeRoot = Join-Path $packageFullPath "runtime"',
         '$daemonExe = Join-Path $runtimeRoot "loom-daemon.exe"',
         'Loom-CLI-',
+        'Loom CLI artifact metadata mismatch.',
+        'Loom CLI ZIP must contain exactly one loom.exe entry.',
+        'Loom CLI extraction destination must be empty:',
+        'Invalid Loom archive entry:',
         'manifest.json',
         'Expand-Archive'
+    ) `
+    -ForbiddenText $commonForbidden
+
+Assert-ScriptContract `
+    -Path $tamperPath `
+    -RequiredText @(
+        'function New-IntegrityFixture',
+        'function New-TraversalZip',
+        'ExtraRootExecutable',
+        'ExtraCliEntry',
+        'CliMetadataMismatch',
+        'Traversal archive unexpectedly passed shared entry validation.',
+        'ArtifactNamingMismatch',
+        'desktop-wrong',
+        'cli-wrong',
+        'Loom release integrity tamper contract passed.'
     ) `
     -ForbiddenText $commonForbidden
 
