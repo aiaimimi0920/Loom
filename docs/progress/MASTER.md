@@ -72,6 +72,8 @@ separate projects.
 - [x] Phase 39: Gateway-backed brain planning (7/7 tasks) [details](./phase-39-gateway-brain-plan.md)
 - [x] Phase 40: Durable run and event persistence (7/7 tasks) [details](./phase-40-run-event-persistence.md)
 - [x] Phase 41: Bounded daemon concurrency (7/7 tasks) [details](./phase-41-bounded-daemon-concurrency.md)
+- [x] Phase 42: Single-entry Windows release packaging (6/6 tasks)
+  [details](../superpowers/plans/2026-07-21-loom-single-entry-release.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -131,6 +133,16 @@ workspace, desktop, Tauri, contract, package, and formal release validation has
 passed. The current candidate is
 `release/Loom/20260721-standalone-161b8aa`.
 
+Phase 42 changes the Windows desktop distribution boundary without changing
+the daemon API or process model. The packaged desktop candidate now exposes
+only `Loom.exe` at its root; `runtime/loom-daemon.exe` and all daemon-owned
+OCR, embedded-Python, and Python Art resources live below `runtime/`. The CLI
+is published separately as `Loom-CLI-<versionId>-windows-x64.zip` containing
+only `loom.exe`. The release verifier, desktop/persistence/Gateway/concurrency
+smokes, checksums, and Actions release asset contract all cover this layout.
+A final clean candidate must be generated from the committed Phase 42 SHA
+before it replaces the historical Phase 41 candidate as the formal package.
+
 The standalone repository is published at
 `https://github.com/aiaimimi0920/Loom`. Runtime and package validation closed on
 `161b8aaa2dd8f31016eb1910850ac7fbf5bc65b0`; the current main-branch runtime-test
@@ -174,6 +186,11 @@ Latest completed phases:
   with no-run semantics, and graceful worker drain. The formal candidate passed
   source, desktop, package, persistence, Gateway, unified, and concurrency
   validation.
+- Phase 42 is complete at the implementation level. It gives the Windows
+  desktop package one visible `Loom.exe`, moves the daemon and support tree to
+  `runtime\`, publishes the CLI as an independently checked ZIP, and updates
+  the operator documentation and GitHub release asset contract. Final package
+  provenance is taken from the clean commit recorded in `manifest.json`.
 - Standalone publication is complete. The independent repository has portable
   Windows/Linux tests, self-contained release tooling, four active GitHub
   Actions workflows, Docker validation, dual licensing, provenance, and a
@@ -192,18 +209,25 @@ Completed Phase 8 tasks:
 
 Last completed phase:
 
+- Phase 42 adds the single-entry Windows release boundary without changing
+  daemon HTTP semantics or merging processes. It separates `Loom.exe`,
+  `runtime\loom-daemon.exe`, and the CLI ZIP, with release verifier and smoke
+  coverage for both artifacts.
+
+Previous completed phase:
+
 - Phase 41 added bounded daemon request execution without automatic replay or
   forced cancellation, preserved serialized compatibility routes, and closed
   with formal release, unified local, persistence, Gateway, desktop, and
   concurrency evidence.
 
-Previous completed phase:
+Earlier completed phase:
 
 - Phase 40 added durable capability run/event evidence without adding a worker
   queue or replay semantics, and closed with formal release, unified local,
   packaged persistence, Gateway, and desktop sibling-daemon evidence.
 
-Earlier completed phase:
+Earlier foundation phase:
 
 - Phase 39 connected `brain.plan` to the real Gateway only when explicitly
   configured, retained deterministic local planning by default, made Gateway
@@ -213,8 +237,8 @@ Earlier completed phase:
 
 Repository status:
 
-- Standalone publication is complete and Phase 41 remains the current verified
-  runtime baseline. Neuro owns the scoped `release/Loom` destination through an
+- Standalone publication is complete and Phase 42 is the current release
+  packaging baseline. Neuro owns the scoped `release/Loom` destination through an
   explicit release output parameter and tracks Loom through `.gitmodules` plus
   a mode `160000` gitlink. The initial parent integration commit is
   `86105d555a01ad31b00e1328a011eb0f12828c18`; parent pins are advanced only
@@ -228,20 +252,20 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Use `release/Loom/20260721-standalone-161b8aa` as the current Loom formal
-   candidate. Its source tree is clean at `161b8aa`, it contains 31 checksum
-   entries, and its package ZIP SHA-256 is
-   `962addde00416858138101722399f394ede011ae8a388d846fef58a5171b4ab4`.
-   The previous Phase 41, persistence, and Gateway candidates remain immutable
+1. Generate the final clean Phase 42 candidate under the mandated
+   `Neuro\release\Loom` boundary from the committed standalone SHA, then run
+   the verifier with the full smoke matrix. Keep
+   `20260721-standalone-161b8aa` and all earlier candidates as immutable
    historical evidence.
 2. Treat later test/documentation-only commits separately from runtime package
    provenance. Regenerate a candidate after any production source, resource,
    dependency, or release-tooling change.
 3. If further ArtLoom gaps are reported, classify them as user-visible UI,
    protocol/runtime, packaging, or intentionally replaced before making changes.
-4. Preserve product naming as `Loom`, including `loom-desktop.exe`.
+4. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
+   internal Tauri source target, while the packaged user entry is `Loom.exe`.
 5. Start the next numbered phase only after defining its scope, evidence, and
-   release boundary; keep the current Phase 41 candidate immutable.
+   release boundary; keep historical candidates immutable.
 
 ## Standalone repository closure
 

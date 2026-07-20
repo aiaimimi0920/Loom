@@ -8,6 +8,7 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $buildPath = Join-Path $repoRoot "scripts\build-release.ps1"
 $verifyPath = Join-Path $repoRoot "scripts\verify-release.ps1"
 $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
+$layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 
 function Assert-True {
     param(
@@ -68,7 +69,8 @@ $commonForbidden = @(
     'Join-Path $repoRoot "Tea"',
     'Join-Path $repoRoot "Platform"',
     'Join-Path $repoRoot "Gateway"',
-    'Join-Path $repoRoot "Talk"'
+    'Join-Path $repoRoot "Talk"',
+    'Split-Path -Parent $loomDaemonExe'
 )
 
 Assert-ScriptContract `
@@ -77,30 +79,49 @@ Assert-ScriptContract `
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
         '[string]$OutputRoot = ".\release\Loom"',
         '[switch]$DryRun',
-        'loom.exe',
-        'loom-daemon.exe',
-        'loom-desktop.exe',
-        'resources\ocr',
-        'bin\python-embed',
+        'New-ExeSpec -Name "Loom.exe"',
+        '-DestinationRelativePath "runtime\loom-daemon.exe"',
+        'Loom-CLI-',
+        'cliArtifact',
+        'runtime\resources\ocr',
+        'runtime\bin\python-embed',
         'sourcePaths = @(".")',
         'checksums.sha256',
         'manifest.json',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'
     ) `
-    -ForbiddenText $commonForbidden
+    -ForbiddenText @(
+        $commonForbidden
+        'New-ExeSpec -Name "loom.exe"'
+        'New-ExeSpec -Name "loom-desktop.exe"'
+    )
 
 Assert-ScriptContract `
     -Path $verifyPath `
     -RequiredText @(
         '[Parameter(Mandatory = $true)][string]$PackageDir',
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
-        'loom.exe',
-        'loom-daemon.exe',
-        'loom-desktop.exe',
+        'Loom.exe',
+        'runtime\loom-daemon.exe',
+        'cliArtifact',
+        'Loom-CLI-',
         'checksums.sha256',
         'manifest.json',
         '[switch]$RunSmoke'
+    ) `
+    -ForbiddenText $commonForbidden
+
+Assert-ScriptContract `
+    -Path $layoutPath `
+    -RequiredText @(
+        'function Get-LoomReleaseLayout',
+        'Loom.exe',
+        '$runtimeRoot = Join-Path $packageFullPath "runtime"',
+        '$daemonExe = Join-Path $runtimeRoot "loom-daemon.exe"',
+        'Loom-CLI-',
+        'manifest.json',
+        'Expand-Archive'
     ) `
     -ForbiddenText $commonForbidden
 
@@ -109,12 +130,13 @@ Assert-ScriptContract `
     -RequiredText @(
         '[Parameter(Mandatory = $true)][string]$PackageDir',
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
+        'LoomReleaseLayout.ps1',
+        'Get-LoomReleaseLayout',
         'Invoke-LoomGatewayBrainPlanSmoke.ps1',
         'Invoke-LoomRunPersistenceSmoke.ps1',
         'Invoke-LoomDaemonConcurrencySmoke.ps1',
-        'loom-desktop.exe',
-        'resources\ocr',
-        'bin\python-embed',
+        'runtime\resources\ocr',
+        'runtime\bin\python-embed',
         '/v1/mcp/servers',
         '/v1/workflows',
         '/v1/hook-bridge/status',
@@ -131,7 +153,11 @@ $defaultPlan = ($defaultOutput -join [Environment]::NewLine) | ConvertFrom-Json
 $expectedDefaultRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "release\Loom"))
 Assert-Equal -Expected $expectedDefaultRoot -Actual ([string]$defaultPlan.outputRoot) -Message "Default release output must stay under the standalone repository."
 Assert-Equal -Expected (Join-Path $expectedDefaultRoot $versionId) -Actual ([string]$defaultPlan.destination) -Message "Default candidate destination mismatch."
-Assert-Equal -Expected "loom.exe,loom-daemon.exe,loom-desktop.exe" -Actual (@($defaultPlan.exes | ForEach-Object { [string]$_.name }) -join ",") -Message "Dry-run must catalog only Loom executables."
+Assert-Equal -Expected "Loom.exe,loom-daemon.exe" -Actual (@($defaultPlan.exes | ForEach-Object { [string]$_.name }) -join ",") -Message "Dry-run must catalog the desktop entry and internal daemon only."
+Assert-Equal -Expected "Loom.exe,runtime\loom-daemon.exe" -Actual (@($defaultPlan.exes | ForEach-Object { [string]$_.destinationRelativePath }) -join ",") -Message "Dry-run executable paths must expose one root entry and one runtime sidecar."
+Assert-Equal -Expected "loom.exe" -Actual ([string]$defaultPlan.cliArtifact.entryName) -Message "Dry-run must catalog the separate CLI entry."
+Assert-True -Condition ([string]$defaultPlan.cliArtifact.zipNamePattern -eq "Loom-CLI-{versionId}-windows-x64.zip") -Message "Dry-run CLI ZIP naming contract mismatch."
+Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { -not ([string]$_.destinationRelativePath).StartsWith("runtime\") }).Count -eq 0) -Message "All daemon-owned support files must live under runtime."
 Assert-Equal -Expected "." -Actual (@($defaultPlan.sourcePaths) -join ",") -Message "Manifest source paths must be standalone-relative."
 
 $explicitRoot = [System.IO.Path]::GetFullPath((Join-Path $env:TEMP "loom-parent-release-contract"))

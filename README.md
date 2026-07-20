@@ -24,10 +24,12 @@ own account, quota, entitlement, and public web surfaces. Hook continues to own
 foreground capture/integration behavior.
 
 Loom now also ships a desktop workbench under `apps/desktop`. The visible user
-entry is `loom-desktop.exe`; it connects to the local Loom service on loopback
-and, in packaged releases, can start the sibling `loom-daemon.exe` automatically
-when the service is not already running. The old ArtLoom/ArtHook names remain
-only where they are compatibility protocol names.
+entry in a packaged desktop release is `Loom.exe`; it connects to the local
+Loom service on loopback and can start `runtime\loom-daemon.exe` automatically
+when the service is not already running. The CLI is published separately in a
+`Loom-CLI-*.zip` artifact so users do not need to choose between three
+executables in the desktop package. The old ArtLoom/ArtHook names remain only
+where they are compatibility protocol names.
 
 ## Workspace
 
@@ -64,23 +66,25 @@ cargo build --locked -p loom-daemon -p loom-cli
 ## Desktop shell
 
 The desktop shell is the normal UI for end users. In a packaged release, start
-Loom by double-clicking or running:
+Loom by double-clicking or running the single desktop entry:
 
 ```powershell
-.\loom-desktop.exe
+.\Loom.exe
 ```
 
-`loom-desktop.exe` will try to start the sibling `loom-daemon.exe` when the
-local service is offline. If you need to debug the backend manually, run the
-service first and then open the desktop:
+`Loom.exe` will try to start `runtime\loom-daemon.exe` when the local service
+is offline. If you need to debug the backend manually, run the runtime daemon
+first and then open the desktop:
 
 ```powershell
-.\loom-daemon.exe
-.\loom-desktop.exe
+.\runtime\loom-daemon.exe
+.\Loom.exe
 ```
 
-`loom.exe` is the CLI entry for advanced scripting; it is not the normal desktop
-UI entry.
+The CLI entry for advanced scripting is available from the separate
+`Loom-CLI-*.zip` release artifact. It is not copied into the desktop package
+root. The desktop package contains only the user-facing `Loom.exe` plus its
+internal runtime sidecar and support files.
 
 The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
@@ -113,8 +117,9 @@ Pop-Location
 By default the shell reads `http://127.0.0.1:8765`. Override that with
 `LOOM_DAEMON_URL` when testing against another loopback daemon port.
 Set `LOOM_DAEMON_EXECUTABLE` to an explicit `loom-daemon.exe` path when the
-daemon is not beside the desktop executable. Debug builds also check the
-repository's `target\debug\loom-daemon.exe` after those two locations.
+daemon is not under the packaged `runtime` directory. Debug builds also check
+the repository's `target\debug\loom-daemon.exe` after the explicit override
+and packaged runtime location.
 
 The UI names the ArtHook compatibility route as **截图同步**. Internally the
 daemon still exposes Hook Bridge APIs because old ArtHook/ArtLoom clients expect
@@ -387,6 +392,10 @@ docker build -t loom:local .
 docker run --rm -p 48766:8765 loom:local
 ```
 
+The container remains daemon-first: `loom-daemon` is the container entrypoint
+and `loom` is retained inside the image for operator and health-check scripts.
+The desktop shell is not part of the server image.
+
 ## Release tooling
 
 Standalone release packages default to `.\release\Loom`. The Neuro parent
@@ -400,6 +409,24 @@ release boundary remains available through the explicit `-OutputRoot` option:
   -VersionId parent-release `
   -OutputRoot C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom
 ```
+
+Each candidate contains the desktop payload under one visible entry:
+
+```text
+Loom.exe
+runtime\loom-daemon.exe
+runtime\resources\...
+runtime\bin\...
+runtime\python\...
+packages\Loom-<versionId>-windows-x64.zip
+packages\Loom-<versionId>-windows-x64.zip.sha256
+packages\Loom-CLI-<versionId>-windows-x64.zip
+packages\Loom-CLI-<versionId>-windows-x64.zip.sha256
+```
+
+The desktop ZIP contains `Loom.exe` and the runtime tree. The CLI ZIP contains
+only `loom.exe`, allowing command-line use without adding a second executable
+to the desktop package root.
 
 ## Validation
 

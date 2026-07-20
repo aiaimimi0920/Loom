@@ -505,6 +505,7 @@ function Start-GatewayFixtureJob {
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptRoot "LoomReleaseLayout.ps1")
 $loomRoot = Split-Path -Parent $scriptRoot
 $repoRoot = $loomRoot
 $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
@@ -629,8 +630,8 @@ $summary = [ordered]@{
 try {
     $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
     $summary.packageDir = $packageFullPath
-    $daemonExe = Join-Path $packageFullPath "loom-daemon.exe"
-    Assert-True (Test-Path -LiteralPath $daemonExe -PathType Leaf) "Package is missing loom-daemon.exe: $daemonExe"
+    $layout = Get-LoomReleaseLayout -PackageDir $packageFullPath
+    $daemonExe = $layout.daemonExe
 
     $candidatePaths = @($daemonExe)
     $baselineCandidates = @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)

@@ -98,7 +98,9 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     'softprops/action-gh-release@v3',
     'generate_release_notes: true',
     'fail_on_unmatched_files: true',
-    '.zip.sha256'
+    '.zip.sha256',
+    'Loom-CLI-',
+    'Loom-CLI-${{ env.LOOM_TAG }}-windows-x64.zip'
 )
 
 Assert-Workflow -Name "docker.yml" -RequiredText @(

@@ -60,6 +60,18 @@ checkout can provide its required destination explicitly:
   -OutputRoot C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom
 ```
 
+The Windows desktop candidate has exactly one user-facing executable at its
+root: `Loom.exe`. The daemon and its resources belong under `runtime\`, with
+the daemon at `runtime\loom-daemon.exe`. The CLI is not copied into that
+candidate root; release automation publishes it as a separate
+`Loom-CLI-<versionId>-windows-x64.zip` containing only `loom.exe`. Both the
+desktop and CLI ZIPs must have matching `.sha256` sidecars and pass
+`scripts\verify-release.ps1`.
+
+Docker follows a different, intentional server boundary. It remains
+daemon-first and keeps the CLI inside the image for operator scripts; it does
+not package the desktop shell.
+
 Do not commit generated packages, `target`, `node_modules`, desktop `dist`,
 runtime evidence, credentials, or local environment files.
 

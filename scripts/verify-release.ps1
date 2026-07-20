@@ -120,8 +120,8 @@ function Assert-ZipPayload {
     )
 
     $artifacts = Get-ManifestRecord -Manifest $Manifest -Name "artifacts"
-    $zipRecord = @($artifacts | Where-Object { [string]$_.kind -eq "zip" })
-    Assert-Equal -Expected 1 -Actual $zipRecord.Count -Message "Manifest must contain exactly one payload ZIP."
+    $zipRecord = @($artifacts | Where-Object { [string]$_.kind -eq "desktop-zip" })
+    Assert-Equal -Expected 1 -Actual $zipRecord.Count -Message "Manifest must contain exactly one desktop payload ZIP."
     $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
     Assert-True -Condition (Test-Path -LiteralPath $zipPath -PathType Leaf) -Message "Payload ZIP is missing."
 
@@ -135,6 +135,39 @@ function Assert-ZipPayload {
     }
     $expected = @($ExpectedPayloadPaths | Sort-Object)
     Assert-Equal -Expected ($expected -join "`n") -Actual ($actualEntries -join "`n") -Message "Payload ZIP contents do not match executable/support files."
+}
+
+function Assert-CliZipPayload {
+    param(
+        [string]$PackagePath,
+        [object]$Manifest
+    )
+
+    $artifacts = Get-ManifestRecord -Manifest $Manifest -Name "artifacts"
+    $zipRecord = @($artifacts | Where-Object { [string]$_.kind -eq "cli-zip" })
+    Assert-Equal -Expected 1 -Actual $zipRecord.Count -Message "Manifest must contain exactly one CLI ZIP."
+    Assert-True -Condition ([string]$zipRecord[0].name).StartsWith("Loom-CLI-") -Message "CLI ZIP must use the Loom-CLI- naming contract."
+    $shaRecord = @($artifacts | Where-Object { [string]$_.kind -eq "cli-zip-sha256" })
+    Assert-Equal -Expected 1 -Actual $shaRecord.Count -Message "Manifest must contain exactly one CLI ZIP checksum sidecar."
+    Assert-Equal -Expected "$($zipRecord[0].name).sha256" -Actual ([string]$shaRecord[0].name) -Message "CLI ZIP checksum sidecar name mismatch."
+    $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
+    Assert-True -Condition (Test-Path -LiteralPath $zipPath -PathType Leaf) -Message "CLI ZIP is missing."
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $actualEntries = @($archive.Entries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) } | ForEach-Object { $_.FullName.Replace("/", "\") } | Sort-Object)
+    }
+    finally {
+        $archive.Dispose()
+    }
+    Assert-Equal -Expected "loom.exe" -Actual ($actualEntries -join "`n") -Message "CLI ZIP must contain only loom.exe."
+
+    $cliProperty = $Manifest.PSObject.Properties["cliArtifact"]
+    Assert-True -Condition ($null -ne $cliProperty -and $null -ne $cliProperty.Value) -Message "Manifest is missing cliArtifact."
+    Assert-Equal -Expected "loom.exe" -Actual ([string]$cliProperty.Value.entryName) -Message "CLI entry name mismatch."
+    Assert-Equal -Expected ([string]$zipRecord[0].name) -Actual ([string]$cliProperty.Value.zipName) -Message "CLI artifact ZIP name mismatch."
+    Assert-Equal -Expected ([string]$zipRecord[0].path) -Actual ([string]$cliProperty.Value.path) -Message "CLI artifact ZIP path mismatch."
 }
 
 $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
@@ -152,8 +185,11 @@ Assert-True -Condition (-not ([string]$manifest.repoRoot).Contains("Neuro")) -Me
 Assert-True -Condition (-not ([string]$manifest.destination).Contains(":")) -Message "Manifest destination must not contain an absolute local path."
 
 $exeRecords = @(Get-ManifestRecord -Manifest $manifest -Name "exes")
-$expectedExeNames = @("loom.exe", "loom-daemon.exe", "loom-desktop.exe")
+$expectedExeNames = @("Loom.exe", "loom-daemon.exe")
 Assert-Equal -Expected ($expectedExeNames -join ",") -Actual (@($exeRecords | ForEach-Object { [string]$_.name }) -join ",") -Message "Manifest executable set mismatch."
+$expectedExePaths = @("Loom.exe", "runtime\loom-daemon.exe")
+Assert-Equal -Expected ($expectedExePaths -join ",") -Actual (@($exeRecords | ForEach-Object { [string]$_.path }) -join ",") -Message "Manifest executable layout mismatch."
+Assert-True -Condition (@($exeRecords | Where-Object { [string]$_.path -in @("loom-desktop.exe", "loom-daemon.exe") }).Count -eq 0) -Message "Desktop package must not expose root-level daemon or legacy desktop executables."
 $payloadPaths = @()
 foreach ($record in $exeRecords) {
     $payloadPaths += Assert-FileRecord -PackagePath $packageFullPath -Record $record
@@ -178,6 +214,7 @@ foreach ($artifact in $artifactRecords) {
 $checksumEntries = Get-ChecksumEntries -PackagePath $packageFullPath
 Assert-Checksums -PackagePath $packageFullPath -Entries $checksumEntries
 Assert-ZipPayload -PackagePath $packageFullPath -Manifest $manifest -ExpectedPayloadPaths $payloadPaths
+Assert-CliZipPayload -PackagePath $packageFullPath -Manifest $manifest
 
 $smokeStatus = "not-run"
 if ($RunSmoke) {

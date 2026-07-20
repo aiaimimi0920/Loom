@@ -171,7 +171,9 @@ cargo test --locked -p loom_gateway
 cargo test --locked -p loom-daemon
 ```
 
-The packaged planner smoke requires only `loom.exe` and `loom-daemon.exe`:
+The packaged planner smoke resolves the CLI from the separate CLI ZIP and the
+daemon from `runtime\loom-daemon.exe`; it does not depend on a root-level CLI
+inside the desktop package:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -180,8 +182,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 It starts an isolated loopback mock Gateway, verifies the chat-completions
-request and bearer header, exercises the packaged daemon and CLI, checks the
-stored run/events, and writes redacted UTF-8 evidence below
+request and bearer header, exercises the packaged daemon and CLI artifact,
+checks the stored run/events, and writes redacted UTF-8 evidence below
 `target\runtime-smoke` by default.
 
 The packaged restart smoke verifies that local planning evidence survives two

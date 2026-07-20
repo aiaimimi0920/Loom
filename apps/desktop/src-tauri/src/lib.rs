@@ -128,7 +128,7 @@ fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
     }
 
     let current_exe =
-        std::env::current_exe().map_err(|error| format!("无法定位 loom-desktop.exe：{error}"))?;
+        std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
     let explicit_daemon_path = std::env::var(LOOM_DAEMON_EXECUTABLE_ENV)
         .ok()
         .and_then(|value| configured_daemon_executable(&value));
@@ -144,7 +144,7 @@ fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
             .collect::<Vec<_>>()
             .join("; ");
         format!(
-            "未找到 loom-daemon.exe，请检查 LOOM_DAEMON_EXECUTABLE、桌面程序同目录或开发构建路径：{searched}"
+            "未找到 loom-daemon.exe，请检查 LOOM_DAEMON_EXECUTABLE、桌面程序 runtime 目录或开发构建路径：{searched}"
         )
     })?;
     let (host, port) = parse_loopback_http_url(&base_url)?;
@@ -260,6 +260,7 @@ fn daemon_sidecar_path_for_exe(current_exe: &Path) -> PathBuf {
     current_exe
         .parent()
         .unwrap_or_else(|| Path::new("."))
+        .join("runtime")
         .join("loom-daemon.exe")
 }
 
@@ -497,20 +498,20 @@ mod tests {
     }
 
     #[test]
-    fn daemon_sidecar_path_uses_sibling_loom_daemon_exe() {
-        let desktop_exe = std::path::Path::new(r"C:\apps\Loom\loom-desktop.exe");
+    fn daemon_sidecar_path_uses_packaged_runtime_directory() {
+        let desktop_exe = std::path::Path::new(r"C:\apps\Loom\Loom.exe");
 
         let daemon_path = daemon_sidecar_path_for_exe(desktop_exe);
 
         assert_eq!(
             daemon_path,
-            std::path::PathBuf::from(r"C:\apps\Loom\loom-daemon.exe")
+            std::path::PathBuf::from(r"C:\apps\Loom\runtime\loom-daemon.exe")
         );
     }
 
     #[test]
-    fn daemon_candidates_prefer_explicit_override_then_sibling_then_development_target() {
-        let desktop_exe = std::path::Path::new(r"C:\apps\Loom\loom-desktop.exe");
+    fn daemon_candidates_prefer_explicit_override_then_runtime_then_development_target() {
+        let desktop_exe = std::path::Path::new(r"C:\apps\Loom\Loom.exe");
         let repo_root = std::path::Path::new(r"C:\src\Loom");
 
         let candidates = daemon_executable_candidates(
@@ -523,7 +524,7 @@ mod tests {
             candidates,
             vec![
                 std::path::PathBuf::from(r"D:\loom\custom-daemon.exe"),
-                std::path::PathBuf::from(r"C:\apps\Loom\loom-daemon.exe"),
+                std::path::PathBuf::from(r"C:\apps\Loom\runtime\loom-daemon.exe"),
                 std::path::PathBuf::from(r"C:\src\Loom\target\debug\loom-daemon.exe"),
             ]
         );

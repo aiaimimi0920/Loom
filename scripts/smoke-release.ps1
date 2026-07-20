@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+. (Join-Path $PSScriptRoot "LoomReleaseLayout.ps1")
 $PackageDir = [System.IO.Path]::GetFullPath($PackageDir)
 if (-not (Test-Path -LiteralPath $PackageDir -PathType Container)) {
     throw "Loom package directory is missing: $PackageDir"
@@ -964,7 +965,7 @@ function Test-LoomHookBridgeRealOcrImage {
         [string]$PackageDir
     )
 
-    $fixturePath = Join-Path $PackageDir "resources\ocr\fixtures\test_1.png"
+    $fixturePath = Join-Path $PackageDir "runtime\resources\ocr\fixtures\test_1.png"
     Assert-PathExists $fixturePath
     $imageBytes = [System.IO.File]::ReadAllBytes($fixturePath)
     $imageData = "data:image/png;base64,$([Convert]::ToBase64String($imageBytes))"
@@ -1026,7 +1027,7 @@ function Test-LoomReleaseRealOcr {
         [string]$TempRoot
     )
 
-    $ocrDir = Join-Path $PackageDir "resources\ocr"
+    $ocrDir = Join-Path $PackageDir "runtime\resources\ocr"
     Assert-PathExists (Join-Path $ocrDir "ch_PP-OCRv4_det_infer.onnx")
     Assert-PathExists (Join-Path $ocrDir "ch_ppocr_mobile_v2.0_cls_infer.onnx")
     Assert-PathExists (Join-Path $ocrDir "ch_PP-OCRv4_rec_infer.onnx")
@@ -1139,8 +1140,8 @@ function Test-LoomPackagedPythonScriptTool {
         [string]$TempRoot
     )
 
-    $packagedPython = Join-Path $PackageDir "bin\python-embed\python.exe"
-    $packagedLauncher = Join-Path $PackageDir "python\Launcher.py"
+    $packagedPython = Join-Path $PackageDir "runtime\bin\python-embed\python.exe"
+    $packagedLauncher = Join-Path $PackageDir "runtime\python\Launcher.py"
     Assert-PathExists $packagedPython
     Assert-PathExists $packagedLauncher
 
@@ -1202,9 +1203,9 @@ function Test-LoomPythonArtCatalog {
         [string]$PackageDir
     )
 
-    $packagedPython = Join-Path $PackageDir "bin\python-embed\python.exe"
-    $packagedArtJson = Join-Path $PackageDir "python\Arts\Art_LoomEcho\art.json"
-    $packagedArtMain = Join-Path $PackageDir "python\Arts\Art_LoomEcho\main.py"
+    $packagedPython = Join-Path $PackageDir "runtime\bin\python-embed\python.exe"
+    $packagedArtJson = Join-Path $PackageDir "runtime\python\Arts\Art_LoomEcho\art.json"
+    $packagedArtMain = Join-Path $PackageDir "runtime\python\Arts\Art_LoomEcho\main.py"
     Assert-PathExists $packagedPython
     Assert-PathExists $packagedArtJson
     Assert-PathExists $packagedArtMain
@@ -2959,34 +2960,9 @@ function Start-LoomMcpRegistryFixtureJob {
 }
 
 function Test-LoomRelease {
-    $loomExe = Get-ReleaseExePath -App "Loom" -ExeName "loom.exe"
-    $loomDaemonExe = Get-ReleaseExePath -App "Loom" -ExeName "loom-daemon.exe"
-    $loomDesktopExe = Get-ReleaseExePath -App "Loom" -ExeName "loom-desktop.exe"
-    Assert-PathExists $loomExe
-    Assert-PathExists $loomDaemonExe
-    Assert-PathExists $loomDesktopExe
-
-    $helpRun = Invoke-ProcessCapture -FilePath $loomExe -ArgumentList @("--help") -TimeoutSeconds 30
-    $helpText = [string]$helpRun.output
-    if ($helpRun.exitCode -ne 0) {
-        throw "loom.exe --help failed with exit code $($helpRun.exitCode) output=$(Redact-SmokeFailureText -Text $helpText)"
-    }
-    Assert-Contains "Usage: loom" $helpText "Loom help output mismatch."
-
-    $versionRun = Invoke-ProcessCapture -FilePath $loomExe -ArgumentList @("--version") -TimeoutSeconds 30
-    $versionText = [string]$versionRun.output
-    if ($versionRun.exitCode -ne 0) {
-        throw "loom.exe --version failed with exit code $($versionRun.exitCode) output=$(Redact-SmokeFailureText -Text $versionText)"
-    }
-    Assert-Contains "loom " $versionText "Loom version output mismatch."
-
-    $daemonVersionRun = Invoke-ProcessCapture -FilePath $loomDaemonExe -ArgumentList @("--version") -TimeoutSeconds 30
-    $daemonVersionText = [string]$daemonVersionRun.output
-    if ($daemonVersionRun.exitCode -ne 0) {
-        throw "loom-daemon.exe --version failed with exit code $($daemonVersionRun.exitCode) output=$(Redact-SmokeFailureText -Text $daemonVersionText)"
-    }
-    Assert-Contains "loom-daemon " $daemonVersionText "Loom daemon version output mismatch."
-
+    $loomExe = $null
+    $loomDaemonExe = $null
+    $loomDesktopExe = $null
     $process = $null
     $tokenProcess = $null
     $cloudJob = $null
@@ -2995,6 +2971,36 @@ function Test-LoomRelease {
     $realOcrImage = $null
     $tempRoot = New-SmokeTempRoot -Prefix "loom-release-smoke"
     try {
+        $cliExtractRoot = Join-Path $tempRoot "cli"
+        $layout = Get-LoomReleaseLayout -PackageDir $PackageDir -CliExtractRoot $cliExtractRoot
+        $loomExe = $layout.cliExe
+        $loomDaemonExe = $layout.daemonExe
+        $loomDesktopExe = $layout.desktopExe
+        Assert-PathExists $loomExe
+        Assert-PathExists $loomDaemonExe
+        Assert-PathExists $loomDesktopExe
+
+        $helpRun = Invoke-ProcessCapture -FilePath $loomExe -ArgumentList @("--help") -TimeoutSeconds 30
+        $helpText = [string]$helpRun.output
+        if ($helpRun.exitCode -ne 0) {
+            throw "loom CLI --help failed with exit code $($helpRun.exitCode) output=$(Redact-SmokeFailureText -Text $helpText)"
+        }
+        Assert-Contains "Usage: loom" $helpText "Loom CLI help output mismatch."
+
+        $versionRun = Invoke-ProcessCapture -FilePath $loomExe -ArgumentList @("--version") -TimeoutSeconds 30
+        $versionText = [string]$versionRun.output
+        if ($versionRun.exitCode -ne 0) {
+            throw "loom CLI --version failed with exit code $($versionRun.exitCode) output=$(Redact-SmokeFailureText -Text $versionText)"
+        }
+        Assert-Contains "loom " $versionText "Loom CLI version output mismatch."
+
+        $daemonVersionRun = Invoke-ProcessCapture -FilePath $loomDaemonExe -ArgumentList @("--version") -TimeoutSeconds 30
+        $daemonVersionText = [string]$daemonVersionRun.output
+        if ($daemonVersionRun.exitCode -ne 0) {
+            throw "loom-daemon.exe --version failed with exit code $($daemonVersionRun.exitCode) output=$(Redact-SmokeFailureText -Text $daemonVersionText)"
+        }
+        Assert-Contains "loom-daemon " $daemonVersionText "Loom daemon version output mismatch."
+
         $port = Get-FreePort
         $manifestDir = Join-Path $tempRoot "capabilities"
         New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
@@ -3356,11 +3362,11 @@ if ($arguments.mode -eq "shader") {
 
         $pythonToolExecution = Test-LoomPackagedPythonScriptTool `
             -BaseUrl $baseUrl `
-            -PackageDir (Split-Path -Parent $loomDaemonExe) `
+            -PackageDir $PackageDir `
             -TempRoot $tempRoot
         $pythonArtCatalog = Test-LoomPythonArtCatalog `
             -BaseUrl $baseUrl `
-            -PackageDir (Split-Path -Parent $loomDaemonExe)
+            -PackageDir $PackageDir
         $artLoomRegistryCompat = Test-LoomArtLoomRegistryCompat -BaseUrl $baseUrl
         $artLoomNativeProcessArt = Test-LoomArtLoomNativeProcessArtCompat -BaseUrl $baseUrl
         $artLoomSystemCompat = Test-LoomArtLoomSystemCompat -BaseUrl $baseUrl
@@ -3588,7 +3594,7 @@ nodes:
 
         $realOcrImage = Test-LoomReleaseRealOcr `
             -LoomDaemonExe $loomDaemonExe `
-            -PackageDir (Split-Path -Parent $loomDaemonExe) `
+            -PackageDir $PackageDir `
             -TempRoot $tempRoot
 
         $tokenPort = Get-FreePort
@@ -3696,7 +3702,8 @@ nodes:
 
         return [ordered]@{
             app = "Loom"
-            exes = @($loomExe, $loomDaemonExe, $loomDesktopExe)
+            exes = @($loomDesktopExe, $loomDaemonExe)
+            cliExe = $loomExe
             desktopExe = $loomDesktopExe
             version = $versionText.Trim()
             daemonVersion = $daemonVersionText.Trim()

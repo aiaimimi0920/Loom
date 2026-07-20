@@ -234,6 +234,7 @@ function Get-JsonFile {
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptRoot "LoomReleaseLayout.ps1")
 $repoRoot = Split-Path -Parent $scriptRoot
 $packageFullPath = (Resolve-Path -LiteralPath $PackageDir).Path
 $defaultEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\gateway"
@@ -252,10 +253,9 @@ $evidenceRunDir = Join-Path $evidenceRootFullPath $runId
 $tempRoot = Join-Path $env:TEMP "loom-gateway-brain-plan-smoke-$PID-$runId"
 New-Item -ItemType Directory -Force -Path $evidenceRunDir, $tempRoot | Out-Null
 
-$loomExe = Join-Path $packageFullPath "loom.exe"
-$daemonExe = Join-Path $packageFullPath "loom-daemon.exe"
-Assert-True (Test-Path -LiteralPath $loomExe -PathType Leaf) "Package is missing loom.exe: $loomExe"
-Assert-True (Test-Path -LiteralPath $daemonExe -PathType Leaf) "Package is missing loom-daemon.exe: $daemonExe"
+$layout = Get-LoomReleaseLayout -PackageDir $packageFullPath -CliExtractRoot (Join-Path $evidenceRunDir "cli")
+$loomExe = $layout.cliExe
+$daemonExe = $layout.daemonExe
 
 $gatewayPort = Get-FreeTcpPort
 do {

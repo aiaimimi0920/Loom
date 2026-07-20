@@ -36,6 +36,34 @@ daemon, CLI, and desktop remain application shells.
 - `loom-daemon`: headless runtime host with local health/status APIs.
 - `loom`: CLI client with `status`, `agents list`, `workflows list`, and
   `run <workflow-id>`.
+- `apps/desktop`: Tauri desktop shell published as the single user-facing
+  `Loom.exe` entry in Windows desktop packages.
+
+### Windows package boundary
+
+The desktop shell and daemon remain separate processes, but the release layout
+keeps the daemon and its owned support files under one internal runtime tree:
+
+```text
+Loom.exe
+runtime/
+  loom-daemon.exe
+  resources/ocr/*
+  bin/python-embed/*
+  python/*
+```
+
+`Loom.exe` resolves its daemon in this order: an explicit
+`LOOM_DAEMON_EXECUTABLE`, `runtime/loom-daemon.exe` beside the packaged shell,
+then the development `target/debug/loom-daemon.exe` fallback. The daemon's
+executable-relative resource discovery therefore remains unchanged in the
+packaged layout.
+
+The CLI is intentionally a separate release artifact named
+`Loom-CLI-<versionId>-windows-x64.zip`. That ZIP contains only `loom.exe`; it
+is not placed beside `Loom.exe` in the desktop package. This separates the
+normal desktop entry from scripting and headless operator tooling without
+merging the application processes.
 
 ## Durable runtime model
 

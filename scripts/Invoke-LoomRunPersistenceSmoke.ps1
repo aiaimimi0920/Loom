@@ -289,7 +289,7 @@ function Wait-ForSiblingDaemon {
         }
         Start-Sleep -Milliseconds 250
     }
-    throw "Timed out waiting for desktop sibling loom-daemon.exe"
+    throw "Timed out waiting for the desktop runtime loom-daemon.exe sidecar"
 }
 
 function Invoke-JsonGet {
@@ -387,6 +387,7 @@ function New-DesktopEnvironment {
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptRoot "LoomReleaseLayout.ps1")
 $loomRoot = Split-Path -Parent $scriptRoot
 $repoRoot = $loomRoot
 $packageFullPath = $PackageDir
@@ -456,17 +457,13 @@ $startedAt = (Get-Date).ToString("o")
 
 try {
     $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
-    $loomExe = Join-Path $packageFullPath "loom.exe"
-    $daemonExe = Join-Path $packageFullPath "loom-daemon.exe"
-    $desktopExe = Join-Path $packageFullPath "loom-desktop.exe"
-    $manifestPath = Join-Path $packageFullPath "manifest.json"
-    Assert-True (Test-Path -LiteralPath $loomExe -PathType Leaf) "Package is missing loom.exe: $loomExe"
-    Assert-True (Test-Path -LiteralPath $daemonExe -PathType Leaf) "Package is missing loom-daemon.exe: $daemonExe"
-    $desktopExists = Test-Path -LiteralPath $desktopExe -PathType Leaf
-    $desktopSkipped = -not $desktopExists
-    if (-not $desktopExists -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-        throw "Formal Loom package is missing loom-desktop.exe: $desktopExe"
-    }
+    $layout = Get-LoomReleaseLayout -PackageDir $packageFullPath -CliExtractRoot (Join-Path $evidenceRunDir "cli")
+    $loomExe = $layout.cliExe
+    $daemonExe = $layout.daemonExe
+    $desktopExe = $layout.desktopExe
+    $manifestPath = $layout.manifestPath
+    $desktopExists = $true
+    $desktopSkipped = $false
 
     $candidatePaths = @($daemonExe)
     if ($desktopExists) {
@@ -606,7 +603,7 @@ try {
         $desktopPersistedRun = Invoke-JsonGet -Uri "$desktopBaseUrl/v1/runs/$runId"
         Assert-Equal "succeeded" ([string]$desktopPersistedRun.status) "Desktop sibling did not reuse persisted run evidence."
         $desktopAliveDuringAssertions = Test-ExactProcessAlive -ProcessId $desktopPid -ExpectedExecutablePath $desktopExe
-        Assert-True $desktopAliveDuringAssertions "loom-desktop.exe exited during assertions."
+        Assert-True $desktopAliveDuringAssertions "Loom.exe exited during assertions."
         Write-JsonEvidence -Path (Join-Path $evidenceRunDir "desktop-status.json") -Value $desktopStatus
         Write-JsonEvidence -Path (Join-Path $evidenceRunDir "desktop-persisted-run.json") -Value $desktopPersistedRun
         Write-JsonEvidence -Path (Join-Path $evidenceRunDir "processes-desktop.json") -Value @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)

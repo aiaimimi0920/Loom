@@ -128,13 +128,18 @@ function New-CommandSpec {
 function New-ExeSpec {
     param(
         [string]$Name,
-        [string]$Source
+        [string]$Source,
+        [string]$DestinationRelativePath = ""
     )
+
+    if ([string]::IsNullOrWhiteSpace($DestinationRelativePath)) {
+        $DestinationRelativePath = $Name
+    }
 
     return [ordered]@{
         name = $Name
         source = [System.IO.Path]::GetFullPath($Source)
-        destinationRelativePath = $Name
+        destinationRelativePath = $DestinationRelativePath
     }
 }
 
@@ -156,34 +161,40 @@ function Get-LoomCatalog {
     $pythonRoot = Join-Path $repoRoot "resources\python"
 
     $exes = @(
-        New-ExeSpec -Name "loom.exe" -Source (Join-Path $repoRoot "target\release\loom.exe")
-        New-ExeSpec -Name "loom-daemon.exe" -Source (Join-Path $repoRoot "target\release\loom-daemon.exe")
-        New-ExeSpec -Name "loom-desktop.exe" -Source (Join-Path $repoRoot "apps\desktop\src-tauri\target\release\loom-desktop.exe")
+        New-ExeSpec -Name "Loom.exe" -Source (Join-Path $repoRoot "apps\desktop\src-tauri\target\release\loom-desktop.exe")
+        New-ExeSpec -Name "loom-daemon.exe" -Source (Join-Path $repoRoot "target\release\loom-daemon.exe") -DestinationRelativePath "runtime\loom-daemon.exe"
     )
 
     $support = @(
-        New-SupportSpec -Source (Join-Path $ocrRoot "README.txt") -DestinationRelativePath "resources\ocr\README.txt"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_det_infer.onnx") -DestinationRelativePath "resources\ocr\ch_PP-OCRv4_det_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_ppocr_mobile_v2.0_cls_infer.onnx") -DestinationRelativePath "resources\ocr\ch_ppocr_mobile_v2.0_cls_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_rec_infer.onnx") -DestinationRelativePath "resources\ocr\ch_PP-OCRv4_rec_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv5_rec_mobile_infer.onnx") -DestinationRelativePath "resources\ocr\ch_PP-OCRv5_rec_mobile_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "fixtures\test_1.png") -DestinationRelativePath "resources\ocr\fixtures\test_1.png"
-        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime.dll") -DestinationRelativePath "resources\ocr\onnxruntime.dll"
-        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime_providers_shared.dll") -DestinationRelativePath "resources\ocr\onnxruntime_providers_shared.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python.exe") -DestinationRelativePath "bin\python-embed\python.exe"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "pythonw.exe") -DestinationRelativePath "bin\python-embed\pythonw.exe"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python3.dll") -DestinationRelativePath "bin\python-embed\python3.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312.dll") -DestinationRelativePath "bin\python-embed\python312.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312.zip") -DestinationRelativePath "bin\python-embed\python312.zip"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312._pth") -DestinationRelativePath "bin\python-embed\python312._pth"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "LICENSE.txt") -DestinationRelativePath "bin\python-embed\LICENSE.txt"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "vcruntime140.dll") -DestinationRelativePath "bin\python-embed\vcruntime140.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "vcruntime140_1.dll") -DestinationRelativePath "bin\python-embed\vcruntime140_1.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "site-packages\.loom-keep") -DestinationRelativePath "bin\python-embed\site-packages\.loom-keep"
-        New-SupportSpec -Source (Join-Path $pythonRoot "Launcher.py") -DestinationRelativePath "python\Launcher.py"
-        New-SupportSpec -Source (Join-Path $pythonRoot "Arts\Art_LoomEcho\art.json") -DestinationRelativePath "python\Arts\Art_LoomEcho\art.json"
-        New-SupportSpec -Source (Join-Path $pythonRoot "Arts\Art_LoomEcho\main.py") -DestinationRelativePath "python\Arts\Art_LoomEcho\main.py"
+        New-SupportSpec -Source (Join-Path $ocrRoot "README.txt") -DestinationRelativePath "runtime\resources\ocr\README.txt"
+        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_det_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv4_det_infer.onnx"
+        New-SupportSpec -Source (Join-Path $ocrRoot "ch_ppocr_mobile_v2.0_cls_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_ppocr_mobile_v2.0_cls_infer.onnx"
+        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_rec_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv4_rec_infer.onnx"
+        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv5_rec_mobile_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv5_rec_mobile_infer.onnx"
+        New-SupportSpec -Source (Join-Path $ocrRoot "fixtures\test_1.png") -DestinationRelativePath "runtime\resources\ocr\fixtures\test_1.png"
+        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime.dll"
+        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime_providers_shared.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime_providers_shared.dll"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python.exe") -DestinationRelativePath "runtime\bin\python-embed\python.exe"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "pythonw.exe") -DestinationRelativePath "runtime\bin\python-embed\pythonw.exe"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python3.dll") -DestinationRelativePath "runtime\bin\python-embed\python3.dll"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312.dll") -DestinationRelativePath "runtime\bin\python-embed\python312.dll"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312.zip") -DestinationRelativePath "runtime\bin\python-embed\python312.zip"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312._pth") -DestinationRelativePath "runtime\bin\python-embed\python312._pth"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "LICENSE.txt") -DestinationRelativePath "runtime\bin\python-embed\LICENSE.txt"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "vcruntime140.dll") -DestinationRelativePath "runtime\bin\python-embed\vcruntime140.dll"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "vcruntime140_1.dll") -DestinationRelativePath "runtime\bin\python-embed\vcruntime140_1.dll"
+        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "site-packages\.loom-keep") -DestinationRelativePath "runtime\bin\python-embed\site-packages\.loom-keep"
+        New-SupportSpec -Source (Join-Path $pythonRoot "Launcher.py") -DestinationRelativePath "runtime\python\Launcher.py"
+        New-SupportSpec -Source (Join-Path $pythonRoot "Arts\Art_LoomEcho\art.json") -DestinationRelativePath "runtime\python\Arts\Art_LoomEcho\art.json"
+        New-SupportSpec -Source (Join-Path $pythonRoot "Arts\Art_LoomEcho\main.py") -DestinationRelativePath "runtime\python\Arts\Art_LoomEcho\main.py"
     )
+
+    $cliArtifact = [ordered]@{
+        name = "loom-cli"
+        source = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "target\release\loom.exe"))
+        entryName = "loom.exe"
+        zipNamePattern = "Loom-CLI-{versionId}-windows-x64.zip"
+    }
 
     return [ordered]@{
         app = "Loom"
@@ -191,6 +202,7 @@ function Get-LoomCatalog {
         sourcePaths = @(".")
         exes = $exes
         supportFiles = $support
+        cliArtifact = $cliArtifact
         commands = @(
             New-CommandSpec -Executable "cargo" `
                 -Arguments @("build", "--locked", "--release", "-p", "loom-daemon", "-p", "loom-cli") `
@@ -250,6 +262,12 @@ function New-Plan {
                 destinationRelativePath = $_.destinationRelativePath
             }
         })
+        cliArtifact = [ordered]@{
+            name = $Catalog.cliArtifact.name
+            entryName = $Catalog.cliArtifact.entryName
+            source = $Catalog.cliArtifact.source
+            zipNamePattern = $Catalog.cliArtifact.zipNamePattern
+        }
         zip = (-not $NoZip)
     }
 }
@@ -405,7 +423,8 @@ function New-PayloadZip {
         Write-Ascii -Path $zipShaPath -Value "$zipHash  $zipName`r`n"
         return @(
             [ordered]@{
-                kind = "zip"
+                kind = "desktop-zip"
+                role = "desktop"
                 name = $zipName
                 path = "packages\$zipName"
                 bytes = [int64](Get-Item -LiteralPath $zipPath).Length
@@ -413,6 +432,54 @@ function New-PayloadZip {
             }
             [ordered]@{
                 kind = "zip-sha256"
+                name = "$zipName.sha256"
+                path = "packages\$zipName.sha256"
+                bytes = [int64](Get-Item -LiteralPath $zipShaPath).Length
+                sha256 = (Get-FileHash -LiteralPath $zipShaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        )
+    }
+    finally {
+        if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force
+        }
+    }
+}
+
+function New-CliZip {
+    param(
+        [string]$Destination,
+        [string]$ResolvedVersionId,
+        [object]$CliArtifact
+    )
+
+    $packageDir = Join-Path $Destination "packages"
+    New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+    $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-cli-package-" + [Guid]::NewGuid().ToString("N"))
+    try {
+        New-Item -ItemType Directory -Path $stage -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $CliArtifact.source -PathType Leaf)) {
+            throw "Required Loom CLI build input is missing: $($CliArtifact.source)"
+        }
+        Copy-Item -LiteralPath $CliArtifact.source -Destination (Join-Path $stage $CliArtifact.entryName) -Force
+        $zipName = "Loom-CLI-$ResolvedVersionId-$targetName.zip"
+        $zipPath = Join-Path $packageDir $zipName
+        Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -CompressionLevel Optimal
+        $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $zipShaPath = "$zipPath.sha256"
+        Write-Ascii -Path $zipShaPath -Value "$zipHash  $zipName`r`n"
+        return @(
+            [ordered]@{
+                kind = "cli-zip"
+                role = "cli"
+                name = $zipName
+                path = "packages\$zipName"
+                bytes = [int64](Get-Item -LiteralPath $zipPath).Length
+                sha256 = $zipHash
+            }
+            [ordered]@{
+                kind = "cli-zip-sha256"
+                role = "cli"
                 name = "$zipName.sha256"
                 path = "packages\$zipName.sha256"
                 bytes = [int64](Get-Item -LiteralPath $zipShaPath).Length
@@ -506,8 +573,20 @@ $buildInfo = [ordered]@{
 
 $payloadRecords = @($exeRecords + $supportRecords)
 $artifactRecords = @()
+$cliArtifactManifest = $null
 if (-not $NoZip) {
-    $artifactRecords = @(New-PayloadZip -Destination $destination -ResolvedVersionId $resolvedVersionId -PayloadRecords $payloadRecords)
+    $desktopArtifactRecords = @(New-PayloadZip -Destination $destination -ResolvedVersionId $resolvedVersionId -PayloadRecords $payloadRecords)
+    $cliArtifactRecords = @(New-CliZip -Destination $destination -ResolvedVersionId $resolvedVersionId -CliArtifact $catalog.cliArtifact)
+    $artifactRecords = @($desktopArtifactRecords + $cliArtifactRecords)
+    $cliZipRecord = @($cliArtifactRecords | Where-Object { [string]$_.kind -eq "cli-zip" })[0]
+    $cliArtifactManifest = [ordered]@{
+        name = $catalog.cliArtifact.name
+        entryName = $catalog.cliArtifact.entryName
+        zipName = $cliZipRecord.name
+        path = $cliZipRecord.path
+        bytes = $cliZipRecord.bytes
+        sha256 = $cliZipRecord.sha256
+    }
 }
 
 $manifest = [ordered]@{
@@ -527,6 +606,7 @@ $manifest = [ordered]@{
     commands = $commandRecords
     exes = $exeRecords
     supportFiles = $supportRecords
+    cliArtifact = $cliArtifactManifest
     buildInfo = $buildInfo
     artifacts = $artifactRecords
     checksums = "checksums.sha256"
@@ -550,6 +630,7 @@ $result = [ordered]@{
     zip = (-not $NoZip)
     exes = $exeRecords
     supportFiles = $supportRecords
+    cliArtifact = $cliArtifactManifest
     artifacts = $artifactRecords
 }
 Write-Output ($result | ConvertTo-Json -Depth 20)
