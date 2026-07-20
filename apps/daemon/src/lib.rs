@@ -8985,6 +8985,11 @@ mod tests {
 
     #[test]
     fn serialized_routes_do_not_overlap_while_probes_remain_available() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("serialized-routes");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+
         let observer = SerializedRouteObserver::new();
         let mut daemon =
             LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(3, 4))
@@ -9020,6 +9025,8 @@ mod tests {
         assert!(first_response.starts_with("HTTP/1.1 200 OK"));
         assert!(second_response.starts_with("HTTP/1.1 200 OK"));
         assert_eq!(observer.max_active(), 1);
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup serialized routes root");
     }
 
     #[test]
@@ -10796,6 +10803,11 @@ nodes:
 
     #[test]
     fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("hook-bridge-fanout");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+
         let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
@@ -10844,6 +10856,8 @@ nodes:
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup Hook Bridge fanout root");
     }
 
     #[test]
