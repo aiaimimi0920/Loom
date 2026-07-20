@@ -72,6 +72,8 @@ separate projects.
 - [x] Phase 39: Gateway-backed brain planning (7/7 tasks) [details](./phase-39-gateway-brain-plan.md)
 - [x] Phase 40: Durable run and event persistence (7/7 tasks) [details](./phase-40-run-event-persistence.md)
 - [x] Phase 41: Bounded daemon concurrency (7/7 tasks) [details](./phase-41-bounded-daemon-concurrency.md)
+- [x] Standalone repository publication and Neuro submodule integration
+  [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
 ## Current status
 
@@ -127,7 +129,15 @@ legacy control-plane routes retain a serialized boundary, and queue overload is
 reported as a retryable HTTP 503 without creating run evidence. Full Rust,
 workspace, desktop, Tauri, contract, package, and formal release validation has
 passed. The current candidate is
-`release/Loom/20260720-163055-8e27b864`.
+`release/Loom/20260721-standalone-161b8aa`.
+
+The standalone repository is published at
+`https://github.com/aiaimimi0920/Loom`. Runtime and package validation closed on
+`161b8aaa2dd8f31016eb1910850ac7fbf5bc65b0`; the current main-branch runtime-test
+head is `a3b081c869cae4a8b8115759276acb5ce6985acc`. Commits after `161b8aa` only
+harden filesystem and segmented-TCP test fixtures, so the verified release was
+not rebuilt. Neuro consumes Loom through a mode `160000` Git submodule instead
+of a duplicated source tree.
 
 Phase 39 is complete. It has a real OpenAI-compatible Gateway transport,
 opt-in Gateway-backed `brain.plan`, strict model output validation, safe
@@ -164,6 +174,11 @@ Latest completed phases:
   with no-run semantics, and graceful worker drain. The formal candidate passed
   source, desktop, package, persistence, Gateway, unified, and concurrency
   validation.
+- Standalone publication is complete. The independent repository has portable
+  Windows/Linux tests, self-contained release tooling, four active GitHub
+  Actions workflows, Docker validation, dual licensing, provenance, and a
+  public submodule URL. The final `a3b081c` runtime-test head passed hosted CI,
+  Build Windows, and Docker workflows.
 
 Completed Phase 8 tasks:
 
@@ -196,11 +211,14 @@ Earlier completed phase:
   formal release, unified local, packaged Gateway, and desktop auto-start
   evidence.
 
-Active phase:
+Repository status:
 
-- Standalone repository migration is in progress. Phase 41 remains the current
-  verified runtime baseline, and the Neuro parent continues to own the scoped
-  `release/Loom` destination through an explicit release output parameter.
+- Standalone publication is complete and Phase 41 remains the current verified
+  runtime baseline. Neuro owns the scoped `release/Loom` destination through an
+  explicit release output parameter and tracks Loom through `.gitmodules` plus
+  a mode `160000` gitlink. The initial parent integration commit is
+  `86105d555a01ad31b00e1328a011eb0f12828c18`; parent pins are advanced only
+  after the corresponding standalone Actions runs succeed.
 
 Ongoing maintenance:
 
@@ -210,25 +228,61 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Use `release/Loom/20260720-163055-8e27b864` as the current Loom formal
-   candidate. The previous Phase 41 candidate
-   `release/Loom/20260719-222242-ab9a52d3` remains an immutable historical
-   predecessor; the Phase 40 candidate remains historical persistence evidence,
-   the Phase 39 candidate remains historical Gateway evidence, and future
-   candidates must be regenerated after the scoped provenance work is committed
-   and verified.
-   Phase 38 package evidence is a completed migration baseline,
-   not the current release candidate; the 20260718 candidate is also a
-   pre-Gateway baseline.
-2. If further ArtLoom gaps are reported, classify them as user-visible UI,
+1. Use `release/Loom/20260721-standalone-161b8aa` as the current Loom formal
+   candidate. Its source tree is clean at `161b8aa`, it contains 31 checksum
+   entries, and its package ZIP SHA-256 is
+   `962addde00416858138101722399f394ede011ae8a388d846fef58a5171b4ab4`.
+   The previous Phase 41, persistence, and Gateway candidates remain immutable
+   historical evidence.
+2. Treat later test/documentation-only commits separately from runtime package
+   provenance. Regenerate a candidate after any production source, resource,
+   dependency, or release-tooling change.
+3. If further ArtLoom gaps are reported, classify them as user-visible UI,
    protocol/runtime, packaging, or intentionally replaced before making changes.
-3. Preserve product naming as `Loom`, including `loom-desktop.exe`.
-4. Start the next numbered phase only after defining its scope, evidence, and
+4. Preserve product naming as `Loom`, including `loom-desktop.exe`.
+5. Start the next numbered phase only after defining its scope, evidence, and
    release boundary; keep the current Phase 41 candidate immutable.
+
+## Standalone repository closure
+
+- Public repository: `https://github.com/aiaimimi0920/Loom`.
+- Standalone commit chain: `4749f11` initial publication, `a65443a` portable
+  hosted-runner paths, `9a2c69f` portable APPDATA assertion, `161b8aa` isolated
+  filesystem-backed daemon contracts, and `a3b081c` complete segmented HTTP
+  fixture reads.
+- Verified user-requested backup:
+  `C:\Users\Public\nas_home\AI\GameEditor\_temp\Loom-standalone-backup-20260720-195938-be4bbb7b`.
+  `backup-location-verification.json` records `verified=true`, 134/134 manifest
+  files, 58,725,037 manifest bytes, 212 copied-tree files, and no failures.
+- Preserved parent working copy:
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\_temp\Loom-parent-pre-submodule-20260721-0115-4749f11`
+  with 18,070 files retained.
+- Parent integration baseline:
+  `86105d555a01ad31b00e1328a011eb0f12828c18`, with `.gitmodules` pointing to the
+  public repository and `Loom` stored as mode `160000`.
+- Formal candidate:
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260721-standalone-161b8aa`.
+  The verifier accepted all 31 checksum entries, and unified, SQLite
+  persistence, Gateway, and bounded-concurrency smokes passed with no candidate
+  process left running.
+- Local validation: Windows `loom_tool_registry` 18/18 and daemon 110/110;
+  Linux read-only-source workspace tests passed, with 109 daemon tests passing
+  and one expected Windows-only OCR runtime test ignored.
+- Hosted validation for `a3b081c`: [CI](https://github.com/aiaimimi0920/Loom/actions/runs/29766615127),
+  [Build Windows](https://github.com/aiaimimi0920/Loom/actions/runs/29766615320),
+  and [Docker](https://github.com/aiaimimi0920/Loom/actions/runs/29766615150)
+  all completed successfully.
+- Runtime evidence remains under the isolated clean clone at
+  `target/runtime-smoke/runs/20260721-020039-Loom-47172-4e435cca876c406681d11e2d2bd5f891`,
+  `target/runtime-smoke/persistence`, `target/runtime-smoke/gateway`, and
+  `target/runtime-smoke/daemon-concurrency`.
+- Clippy is not a migration completion gate in the current Actions contract;
+  existing lint cleanup remains ordinary maintenance and is not hidden by this
+  repository extraction.
 
 ## Notes
 
-- Loom is an independent Rust workspace being extracted into
+- Loom is an independent Rust workspace published at
   `https://github.com/aiaimimi0920/Loom` and consumed by Neuro as a pinned
   submodule.
 - Phase 7 validation was refreshed on 2026-06-04 with fmt, workspace check,
