@@ -588,6 +588,10 @@ const getJson = async <T>(baseUrl: string, path: string): Promise<T> => {
   return await readJson<T>(baseUrl, path);
 };
 
+export async function getLoomDaemonJson<T>(baseUrl: string, path: string): Promise<T> {
+  return await getJson<T>(baseUrl, path);
+}
+
 const postJson = async <T>(baseUrl: string, path: string, body: unknown): Promise<T> => {
   try {
     return await postJsonViaTauri<T>(baseUrl, path, body);
