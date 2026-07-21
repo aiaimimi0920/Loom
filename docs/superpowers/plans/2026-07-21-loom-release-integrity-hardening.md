@@ -17,7 +17,7 @@
 - Modify: `.github/workflows/ci.yml`
 - Modify: `scripts/tests/Test-GitHubActionsContract.ps1`
 
-- [ ] **Step 1: Create fixture helpers**
+- [x] **Step 1: Create fixture helpers**
 
 Implement helpers that write UTF-8 without BOM, ASCII sidecars, file records,
 ZIPs, manifest JSON, and `checksums.sha256`. The fixture must contain:
@@ -38,7 +38,7 @@ The manifest must use the real schema fields consumed by
 `scripts/verify-release.ps1`, with two command provenance records and no
 support files.
 
-- [ ] **Step 2: Add explicit pass/fail invocation helpers**
+- [x] **Step 2: Add explicit pass/fail invocation helpers**
 
 Add:
 
@@ -60,7 +60,7 @@ function Invoke-VerifierFailure {
 }
 ```
 
-- [ ] **Step 3: Add five behavioral cases**
+- [x] **Step 3: Add five behavioral cases**
 
 Generate independent fixtures for:
 
@@ -75,7 +75,7 @@ Generate independent fixtures for:
 Also dot-source `LoomReleaseLayout.ps1` and assert that the malformed CLI ZIP
 fails before extraction.
 
-- [ ] **Step 4: Run the tamper contract and confirm RED**
+- [x] **Step 4: Run the tamper contract and confirm RED**
 
 Run:
 
@@ -87,7 +87,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 Expected: FAIL because at least the extra-root executable, sidecar-content, and
 shared-layout CLI payload cases are not rejected by the current implementation.
 
-- [ ] **Step 5: Wire the contract into Windows CI**
+- [x] **Step 5: Wire the contract into Windows CI**
 
 Add the tamper contract to the pre-generated-output validation block in
 `.github/workflows/ci.yml`. Add matching static assertions to
@@ -100,13 +100,13 @@ Add the tamper contract to the pre-generated-output validation block in
 - Test: `scripts/tests/Test-ReleaseIntegrityTamper.ps1`
 - Test: `scripts/tests/Test-StandaloneReleaseContract.ps1`
 
-- [ ] **Step 1: Add archive entry enumeration**
+- [x] **Step 1: Add archive entry enumeration**
 
 Add `Get-LoomArchiveFileEntries` using
 `System.IO.Compression.ZipFile::OpenRead`. Return normalized archive file
 names and reject directory-only or traversal entries.
 
-- [ ] **Step 2: Add desktop-root executable validation**
+- [x] **Step 2: Add desktop-root executable validation**
 
 Add `Assert-LoomDesktopRootExecutableBoundary`. Enumerate only files directly
 under the package root with extension `.exe` and require one case-sensitive
@@ -116,7 +116,7 @@ name, `Loom.exe`. Throw:
 Loom desktop package root must contain exactly one executable named Loom.exe.
 ```
 
-- [ ] **Step 3: Validate CLI artifact relationships**
+- [x] **Step 3: Validate CLI artifact relationships**
 
 In `Get-LoomReleaseLayout` require:
 
@@ -134,13 +134,13 @@ Loom CLI artifact metadata mismatch.
 Loom CLI ZIP must contain exactly one loom.exe entry.
 ```
 
-- [ ] **Step 4: Protect extraction destinations**
+- [x] **Step 4: Protect extraction destinations**
 
 When `CliExtractRoot` is supplied, reject an existing non-empty directory
 before `Expand-Archive`. After extraction, require exactly one file named
 `loom.exe`.
 
-- [ ] **Step 5: Run focused contracts to GREEN**
+- [x] **Step 5: Run focused contracts to GREEN**
 
 Run:
 
@@ -159,13 +159,13 @@ Task 3.
 - Test: `scripts/tests/Test-ReleaseIntegrityTamper.ps1`
 - Test: `scripts/tests/Test-StandaloneReleaseContract.ps1`
 
-- [ ] **Step 1: Dot-source the shared layout module**
+- [x] **Step 1: Dot-source the shared layout module**
 
 Load `scripts/LoomReleaseLayout.ps1` near verifier startup and call
 `Get-LoomReleaseLayout -PackageDir $packageFullPath` before payload
 verification.
 
-- [ ] **Step 2: Add ZIP artifact lookup and naming checks**
+- [x] **Step 2: Add ZIP artifact lookup and naming checks**
 
 Require exactly one `desktop-zip`, one `zip-sha256`, one `cli-zip`, and one
 `cli-zip-sha256`. Require names and paths derived from
@@ -176,7 +176,7 @@ packages/Loom-<versionId>-windows-x64.zip
 packages/Loom-CLI-<versionId>-windows-x64.zip
 ```
 
-- [ ] **Step 3: Parse checksum sidecars**
+- [x] **Step 3: Parse checksum sidecars**
 
 Add `Assert-ZipChecksumSidecar` that:
 
@@ -193,12 +193,12 @@ Use the stable failure message:
 ZIP checksum sidecar content mismatch for <zip name>.
 ```
 
-- [ ] **Step 4: Strengthen CLI manifest checks**
+- [x] **Step 4: Strengthen CLI manifest checks**
 
 Extend `Assert-CliZipPayload` to compare `bytes` and `sha256` in addition
 to name/path and reuse `Get-LoomArchiveFileEntries`.
 
-- [ ] **Step 5: Run all release contracts to GREEN**
+- [x] **Step 5: Run all release contracts to GREEN**
 
 Run:
 
@@ -217,12 +217,12 @@ Expected: all pass, including the valid fixture and every tamper case.
 - Modify: `CONTRIBUTING.md`
 - Modify: `docs/progress/MASTER.md`
 
-- [ ] **Step 1: Document integrity validation**
+- [x] **Step 1: Document integrity validation**
 
 State that release verification checks exact root executables, ZIP payloads,
 manifest/artifact metadata, sidecar content, and all-file checksums.
 
-- [ ] **Step 2: Record Phase 42 final evidence**
+- [x] **Step 2: Record Phase 42 final evidence**
 
 Replace stale future wording with:
 
@@ -234,7 +234,7 @@ Hosted CI/Build Windows/Docker: success
 Parent gitlink commit: b1116ef70a437a84615b6343986c6afb9082d20c
 ```
 
-- [ ] **Step 3: Add Phase 43 status**
+- [x] **Step 3: Add Phase 43 status**
 
 Describe the hardening scope and keep main merge, tag, signing, installer, and
 runtime cancellation as explicit non-goals.
@@ -245,7 +245,7 @@ runtime cancellation as explicit non-goals.
 - Generated only under:
   `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom`
 
-- [ ] **Step 1: Run source validation**
+- [x] **Step 1: Run source validation**
 
 Run:
 
@@ -260,12 +260,12 @@ npm --prefix apps\desktop run build
 cargo check --locked --manifest-path apps\desktop\src-tauri\Cargo.toml
 ```
 
-- [ ] **Step 2: Run all PowerShell contracts**
+- [x] **Step 2: Run all PowerShell contracts**
 
 Run the standalone layout, standalone release, integrity tamper, Actions,
 persistence, and concurrency contract scripts.
 
-- [ ] **Step 3: Re-verify the Phase 42 candidate**
+- [x] **Step 3: Re-verify the Phase 42 candidate**
 
 Run the hardened verifier against:
 
@@ -276,7 +276,7 @@ C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260721-single-entry-
 Expected: PASS, proving backward readability for the current single-entry
 candidate.
 
-- [ ] **Step 4: Commit implementation and build a new clean candidate**
+- [x] **Step 4: Commit implementation and build a new clean candidate**
 
 Commit the Phase 43 source. Use a new version id:
 
@@ -287,16 +287,15 @@ Commit the Phase 43 source. Use a new version id:
 Build under the mandated release root and run
 `verify-release.ps1 -RunSmoke`.
 
-- [ ] **Step 5: Push and validate hosted workflows**
+- [x] **Step 5: Push and validate hosted workflows**
 
 Push `feat/single-entry-release`. Dispatch CI and Build Windows for the exact
 SHA; let Docker run when its path filters match, otherwise dispatch Docker
 manually. Require successful conclusions for all three workflows.
 
-- [ ] **Step 6: Advance only the parent Loom gitlink**
+- [x] **Step 6: Advance only the parent Loom gitlink**
 
 Create one local Neuro commit containing only mode `160000` path `Loom`.
 Do not push Neuro. Create a fresh isolated parent clone under
 `C:\Users\Public\nas_home\AI\GameEditor\_temp`, initialize the public
 Loom submodule, and verify the exact SHA and a clean clone.
-

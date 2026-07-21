@@ -154,7 +154,13 @@ tampering. The shared layout helper and verifier reject extra root executables,
 CLI ZIP payload drift, CLI metadata mismatches, malformed ZIP sidecars, and
 non-empty extraction destinations. A synthetic tamper contract exercises each
 negative case before generated output is created; signing, installers, tags,
-and runtime behavior remain out of scope.
+and runtime behavior remain out of scope. The final Phase 43 source is
+`f99e8100d081ce9678c9ca8a5e4581369f53fa62`; candidate
+`release/Loom/20260721-release-integrity-f99e810` has `gitDirty=false`, 32
+checksum-covered files, and passed the hardened verifier with full smoke. Hosted
+CI, Build Windows, and Docker succeeded for that exact SHA as runs
+`29794484830`, `29794485728`, and `29794486654`. Parent gitlink commit
+`835d4ad15ec341157598d8cc9533d2af6040e432` pins the same standalone SHA.
 
 The standalone repository is published at
 `https://github.com/aiaimimi0920/Loom`. Runtime and package validation closed on
@@ -250,8 +256,8 @@ Earlier foundation phase:
 
 Repository status:
 
-- Standalone publication is complete and Phase 42 is the current release
-  packaging baseline. Neuro owns the scoped `release/Loom` destination through an
+- Standalone publication is complete and Phase 43 is the current release
+  integrity baseline. Neuro owns the scoped `release/Loom` destination through an
   explicit release output parameter and tracks Loom through `.gitmodules` plus
   a mode `160000` gitlink. The initial parent integration commit is
   `86105d555a01ad31b00e1328a011eb0f12828c18`; parent pins are advanced only
@@ -265,18 +271,14 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Finish Phase 43 source validation, generate a clean candidate under the
-   mandated `Neuro\release\Loom` boundary, and run the hardened verifier with
-   the full smoke matrix.
-2. Push the standalone hardening commit to `feat/single-entry-release`, then
-   require hosted CI, Build Windows, and Docker success for its exact SHA
-   before advancing the parent gitlink.
-3. Treat later test/documentation-only commits separately from runtime package
+1. Keep `20260721-release-integrity-f99e810` and its checksum evidence immutable;
+   later documentation-only commits do not change that package provenance.
+2. Treat later test/documentation-only commits separately from runtime package
    provenance. Regenerate a candidate after any production source, resource,
    dependency, or release-tooling change.
-4. If further ArtLoom gaps are reported, classify them as user-visible UI,
+3. If further ArtLoom gaps are reported, classify them as user-visible UI,
    protocol/runtime, packaging, or intentionally replaced before making changes.
-5. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
+4. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
    internal Tauri source target, while the packaged user entry is `Loom.exe`.
 
 ## Standalone repository closure
