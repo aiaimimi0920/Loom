@@ -150,6 +150,8 @@ pub fn daemon_help_text() -> &'static str {
         "  DELETE /v1/workflows/{workflowId}\n",
         "  GET  /v1/hook-bridge/status\n",
         "  GET  /v1/hook-bridge/session\n",
+        "  GET  /v1/hook-bridge/canvas\n",
+        "  GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview\n",
         "  POST /v1/hook-bridge/start\n",
         "  POST /v1/hook-bridge/stop\n",
         "  GET  /v1/artloom-compat/settings\n",
@@ -769,6 +771,10 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), route_path) {
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
+        ("GET", "/v1/hook-bridge/canvas") => RequestConcurrencyClass::Concurrent,
+        ("GET", path) if hook_canvas_preview_node_id("GET", path).is_some() => {
+            RequestConcurrencyClass::Concurrent
+        }
         ("GET", path) if run_path_id(path).is_some() || run_events_path_id(path).is_some() => {
             RequestConcurrencyClass::Concurrent
         }
@@ -804,19 +810,49 @@ fn is_reserved_probe(request: &ParsedHttpRequest) -> bool {
     request.method == "GET" && matches!(route_path, "/health" | "/status")
 }
 
-fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> (u16, String) {
+enum RouteResponse {
+    Text {
+        status: u16,
+        body: String,
+    },
+    Binary {
+        status: u16,
+        content_type: &'static str,
+        body: Vec<u8>,
+    },
+}
+
+fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteResponse {
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(node_id) = hook_canvas_preview_node_id(&request.method, &request.path) {
+            if let Some(token) = runtime.auth_token.as_deref() {
+                if !request.has_bearer(token) {
+                    return structured_error(
+                        401,
+                        json!({
+                            "code": "unauthorized",
+                            "message": "missing or invalid Loom bearer token",
+                        }),
+                    )
+                    .map(|(status, body)| RouteResponse::Text { status, body });
+                }
+            }
+            return hook_canvas_preview_response(&node_id);
+        }
         route_with_runtime(runtime, request)
+            .map(|(status, body)| RouteResponse::Text { status, body })
     }));
     match response {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => {
             eprintln!("loom request routing failed: {error:#}");
-            request_worker_failed_response()
+            let (status, body) = request_worker_failed_response();
+            RouteResponse::Text { status, body }
         }
         Err(_) => {
             eprintln!("loom request worker panicked");
-            request_worker_failed_response()
+            let (status, body) = request_worker_failed_response();
+            RouteResponse::Text { status, body }
         }
     }
 }
@@ -827,9 +863,22 @@ fn write_response_safely(mut stream: TcpStream, status: u16, body: &str) {
     }
 }
 
+fn write_route_response_safely(mut stream: TcpStream, response: RouteResponse) {
+    let result = match response {
+        RouteResponse::Text { status, body } => write_response(&mut stream, status, &body),
+        RouteResponse::Binary {
+            status,
+            content_type,
+            body,
+        } => write_binary_response(&mut stream, status, content_type, &body),
+    };
+    if let Err(error) = result {
+        eprintln!("loom response write failed: {error:#}");
+    }
+}
+
 fn handle_parsed_request(stream: TcpStream, request: ParsedHttpRequest, runtime: &DaemonRuntime) {
-    let (status, body) = route_request(runtime, &request);
-    write_response_safely(stream, status, &body);
+    write_route_response_safely(stream, route_request(runtime, &request));
 }
 
 fn handle_request_job(job: RequestJob, runtime: &DaemonRuntime) {
@@ -853,7 +902,7 @@ fn handle_request_job(job: RequestJob, runtime: &DaemonRuntime) {
             response
         }
     };
-    write_response_safely(stream, response.0, &response.1);
+    write_route_response_safely(stream, response);
 }
 
 fn record_shutdown_observed(runtime: &DaemonRuntime) {
@@ -1881,6 +1930,7 @@ fn route(
         ),
         ("GET", "/v1/hook-bridge/status") => hook_bridge_status(hook_bridge),
         ("GET", "/v1/hook-bridge/session") => hook_bridge_session(hook_bridge),
+        ("GET", "/v1/hook-bridge/canvas") => hook_canvas_snapshot(),
         ("POST", "/v1/hook-bridge/start") => start_hook_bridge(
             &request.body,
             hook_bridge,
@@ -5698,6 +5748,174 @@ fn hook_bridge_session(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, St
     ))
 }
 
+fn hook_canvas_snapshot() -> Result<(u16, String)> {
+    match hook_canvas::HookCanvasDocument::read(&arthook_session_path()) {
+        Ok(document) => Ok((200, serde_json::to_string(&document.snapshot)?)),
+        Err(error) => {
+            eprintln!("loom Hook canvas snapshot failed: {error:#}");
+            structured_error(
+                500,
+                json!({
+                    "code": "hook_canvas_error",
+                    "message": "Hook canvas snapshot is temporarily unavailable",
+                }),
+            )
+        }
+    }
+}
+
+fn hook_canvas_preview_node_id(method: &str, path: &str) -> Option<String> {
+    if method != "GET" {
+        return None;
+    }
+    let path = path.split('?').next().unwrap_or(path);
+    let encoded_id = path_id_with_suffix(path, "/v1/hook-bridge/canvas/nodes/", "/preview")?;
+    Some(percent_decode(encoded_id))
+}
+
+fn hook_canvas_preview_response(node_id: &str) -> Result<RouteResponse> {
+    let document = match hook_canvas::HookCanvasDocument::read(&arthook_session_path()) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("loom Hook canvas preview snapshot failed: {error:#}");
+            return structured_error(
+                500,
+                json!({
+                    "code": "hook_canvas_error",
+                    "message": "Hook canvas preview is temporarily unavailable",
+                }),
+            )
+            .map(|(status, body)| RouteResponse::Text { status, body });
+        }
+    };
+    let Some(path) = document.preview_path(node_id) else {
+        return structured_error(
+            404,
+            json!({
+                "code": "preview_not_found",
+                "message": "Hook canvas preview was not found",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    let Some(preview_root) = document.preview_root() else {
+        return structured_error(
+            404,
+            json!({
+                "code": "preview_not_found",
+                "message": "Hook canvas preview was not found",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    let Ok(canonical_root) = fs::canonicalize(preview_root) else {
+        return structured_error(
+            404,
+            json!({
+                "code": "preview_not_found",
+                "message": "Hook canvas preview was not found",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    let Ok(canonical_path) = fs::canonicalize(path) else {
+        return structured_error(
+            404,
+            json!({
+                "code": "preview_not_found",
+                "message": "Hook canvas preview was not found",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    if !canonical_path.is_file() || !canonical_path.starts_with(&canonical_root) {
+        return structured_error(
+            404,
+            json!({
+                "code": "preview_not_found",
+                "message": "Hook canvas preview was not found",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    }
+    let metadata = match fs::metadata(&canonical_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return structured_error(
+                404,
+                json!({
+                    "code": "preview_not_found",
+                    "message": "Hook canvas preview was not found",
+                }),
+            )
+            .map(|(status, body)| RouteResponse::Text { status, body });
+        }
+        Err(error) => return Err(error).context("read Hook canvas preview metadata"),
+    };
+    if metadata.len() > hook_canvas::MAX_PREVIEW_BYTES {
+        return structured_error(
+            413,
+            json!({
+                "code": "preview_too_large",
+                "message": "Hook canvas preview exceeds the size limit",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    }
+    let body = match fs::read(&canonical_path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return structured_error(
+                404,
+                json!({
+                    "code": "preview_not_found",
+                    "message": "Hook canvas preview was not found",
+                }),
+            )
+            .map(|(status, body)| RouteResponse::Text { status, body });
+        }
+        Err(error) => return Err(error).context("read Hook canvas preview bytes"),
+    };
+    if body.len() as u64 > hook_canvas::MAX_PREVIEW_BYTES {
+        return structured_error(
+            413,
+            json!({
+                "code": "preview_too_large",
+                "message": "Hook canvas preview exceeds the size limit",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    }
+    let Some(content_type) = hook_canvas_preview_content_type(&body) else {
+        return structured_error(
+            415,
+            json!({
+                "code": "unsupported_preview_type",
+                "message": "Hook canvas preview is not a supported image",
+            }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    Ok(RouteResponse::Binary {
+        status: 200,
+        content_type,
+        body,
+    })
+}
+
+fn hook_canvas_preview_content_type(body: &[u8]) -> Option<&'static str> {
+    if body.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return Some("image/png");
+    }
+    if body.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("image/jpeg");
+    }
+    if body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
 fn read_arthook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
     let session_path = arthook_session_path();
     if !session_path.exists() {
@@ -8105,18 +8323,7 @@ fn module_statuses() -> Vec<ModuleStatus> {
 }
 
 fn write_response(stream: &mut impl Write, status: u16, body: &str) -> Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        409 => "Conflict",
-        503 => "Service Unavailable",
-        502 => "Bad Gateway",
-        413 => "Payload Too Large",
-        500 => "Internal Server Error",
-        _ => "Internal Server Error",
-    };
+    let reason = response_reason(status);
     let content_type = if body.trim_start().starts_with("<!doctype html") {
         "text/html; charset=utf-8"
     } else {
@@ -8128,6 +8335,38 @@ fn write_response(stream: &mut impl Write, status: u16, body: &str) -> Result<()
         body.len()
     )
     .context("write daemon response")
+}
+
+fn write_binary_response(
+    stream: &mut impl Write,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
+    let reason = response_reason(status);
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .context("write daemon binary response")?;
+    stream.write_all(body).context("write daemon binary body")
+}
+
+fn response_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        409 => "Conflict",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Internal Server Error",
+    }
 }
 
 #[cfg(test)]
@@ -9051,6 +9290,8 @@ mod tests {
             ("GET", "/health", None),
             ("GET", "/status", None),
             ("GET", "/v1/capabilities", None),
+            ("GET", "/v1/hook-bridge/canvas", None),
+            ("GET", "/v1/hook-bridge/canvas/nodes/capture/preview", None),
             ("GET", "/v1/runs/run-1", None),
             ("GET", "/v1/runs/run-1/events", None),
             ("POST", "/v1/invoke", Some("brain.plan")),
@@ -10223,6 +10464,237 @@ nodes:
         server.join().expect("server thread");
         restore_env("APPDATA", previous_appdata);
         fs::remove_dir_all(appdata_root).expect("cleanup appdata root");
+    }
+
+    #[test]
+    fn daemon_exposes_hook_canvas_snapshot_contract() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let appdata = unique_temp_dir("hook-canvas-appdata");
+        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let images = session_dir.join("images");
+        fs::create_dir_all(&images).expect("create session images");
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{"stickers":[{"id":"capture node","type":"sticker","src":"images/capture.png","x":20,"y":30,"w":320,"h":180}],"links":[]}"#,
+        )
+        .expect("write Hook session");
+        fs::write(images.join("capture.png"), test_png_bytes()).expect("write preview");
+        let previous = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
+
+        let canvas = http_json_get(address.port(), "/v1/hook-bridge/canvas");
+        assert_eq!(canvas["available"], true);
+        assert_eq!(canvas["nodes"][0]["id"], "capture node");
+        assert_eq!(canvas["nodes"][0]["kind"], "screenshot");
+        assert_eq!(
+            canvas["nodes"][0]["previewUrl"],
+            "/v1/hook-bridge/canvas/nodes/capture%20node/preview"
+        );
+        assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas"));
+        assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview"));
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("join");
+        restore_env("APPDATA", previous);
+        fs::remove_dir_all(appdata).expect("cleanup");
+    }
+
+    #[test]
+    fn daemon_serves_only_registered_hook_canvas_preview_images() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let appdata = unique_temp_dir("hook-canvas-preview-appdata");
+        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let images = session_dir.join("images");
+        fs::create_dir_all(&images).expect("create session images");
+        let png = test_png_bytes();
+        fs::write(images.join("capture.png"), &png).expect("write registered preview");
+        fs::write(appdata.join("outside.png"), &png).expect("write outside preview");
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{
+              "stickers": [
+                {"id":"capture node","type":"sticker","src":"images/capture.png","x":20,"y":30,"w":320,"h":180},
+                {"id":"escape","type":"sticker","src":"../outside.png","x":400,"y":30,"w":320,"h":180}
+              ],
+              "links": []
+            }"#,
+        )
+        .expect("write Hook session");
+        let previous = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
+
+        let registered = http_get_bytes(
+            address.port(),
+            "/v1/hook-bridge/canvas/nodes/capture%20node/preview",
+            "",
+        );
+        let (registered_headers, registered_body) = split_http_bytes(&registered);
+        assert!(registered_headers.starts_with("HTTP/1.1 200 OK"));
+        assert!(registered_headers.contains("Content-Type: image/png"));
+        assert_eq!(registered_body, png.as_slice());
+
+        for node_id in ["unknown", "escape"] {
+            let response = http_get_bytes(
+                address.port(),
+                &format!("/v1/hook-bridge/canvas/nodes/{node_id}/preview"),
+                "",
+            );
+            let (headers, body) = split_http_bytes(&response);
+            assert!(headers.starts_with("HTTP/1.1 404 Not Found"));
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(body).expect("preview error json")
+                    ["error"]["code"],
+                "preview_not_found"
+            );
+        }
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("join");
+        restore_env("APPDATA", previous);
+        fs::remove_dir_all(appdata).expect("cleanup");
+    }
+
+    #[test]
+    fn daemon_validates_hook_canvas_preview_type_and_size() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let appdata = unique_temp_dir("hook-canvas-preview-validation");
+        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let images = session_dir.join("images");
+        fs::create_dir_all(&images).expect("create session images");
+        fs::write(images.join("unsupported.bin"), b"not-an-image").expect("write unsupported");
+        let oversized_path = images.join("oversized.png");
+        fs::File::create(&oversized_path)
+            .expect("create oversized")
+            .set_len(hook_canvas::MAX_PREVIEW_BYTES + 1)
+            .expect("size oversized");
+        fs::write(images.join("pixel.jpg"), [0xff, 0xd8, 0xff, 0xe0]).expect("write jpeg");
+        fs::write(images.join("pixel.webp"), b"RIFF\x04\x00\x00\x00WEBP").expect("write webp");
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{
+              "stickers": [
+                {"id":"unsupported","type":"sticker","src":"images/unsupported.bin"},
+                {"id":"oversized","type":"sticker","src":"images/oversized.png"},
+                {"id":"jpeg","type":"sticker","src":"images/pixel.jpg"},
+                {"id":"webp","type":"sticker","src":"images/pixel.webp"}
+              ],
+              "links": []
+            }"#,
+        )
+        .expect("write Hook session");
+        let previous = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
+
+        let unsupported = http_get_bytes(
+            address.port(),
+            "/v1/hook-bridge/canvas/nodes/unsupported/preview",
+            "",
+        );
+        assert!(split_http_bytes(&unsupported)
+            .0
+            .starts_with("HTTP/1.1 415 Unsupported Media Type"));
+
+        let oversized = http_get_bytes(
+            address.port(),
+            "/v1/hook-bridge/canvas/nodes/oversized/preview",
+            "",
+        );
+        assert!(split_http_bytes(&oversized)
+            .0
+            .starts_with("HTTP/1.1 413 Payload Too Large"));
+
+        for (node_id, expected_type) in [("jpeg", "image/jpeg"), ("webp", "image/webp")] {
+            let response = http_get_bytes(
+                address.port(),
+                &format!("/v1/hook-bridge/canvas/nodes/{node_id}/preview"),
+                "",
+            );
+            let (headers, _) = split_http_bytes(&response);
+            assert!(headers.starts_with("HTTP/1.1 200 OK"));
+            assert!(headers.contains(&format!("Content-Type: {expected_type}")));
+        }
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("join");
+        restore_env("APPDATA", previous);
+        fs::remove_dir_all(appdata).expect("cleanup");
+    }
+
+    #[test]
+    fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let appdata = unique_temp_dir("hook-canvas-auth-appdata");
+        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let images = session_dir.join("images");
+        fs::create_dir_all(&images).expect("create session images");
+        fs::write(images.join("capture.png"), test_png_bytes()).expect("write preview");
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{"stickers":[{"id":"capture","type":"sticker","src":"images/capture.png"}],"links":[]}"#,
+        )
+        .expect("write Hook session");
+        let previous = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+
+        let daemon =
+            LoomDaemon::bind(DaemonConfig::localhost(0).with_bearer_token("canvas-secret"))
+                .expect("bind daemon");
+        let address = daemon.local_addr().expect("address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
+
+        let unauthorized = http_get_bytes(
+            address.port(),
+            "/v1/hook-bridge/canvas/nodes/capture/preview",
+            "",
+        );
+        assert!(split_http_bytes(&unauthorized)
+            .0
+            .starts_with("HTTP/1.1 401 Unauthorized"));
+        let authorized = http_get_bytes(
+            address.port(),
+            "/v1/hook-bridge/canvas/nodes/capture/preview",
+            "Authorization: Bearer canvas-secret\r\n",
+        );
+        assert!(split_http_bytes(&authorized)
+            .0
+            .starts_with("HTTP/1.1 200 OK"));
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("join");
+
+        fs::write(session_dir.join("session.json"), "{not-json").expect("corrupt session");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind malformed daemon");
+        let address = daemon.local_addr().expect("malformed address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server =
+            thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve malformed"));
+        let response = http_request(address.port(), "GET", "/v1/hook-bridge/canvas", None);
+        assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
+        assert_eq!(
+            response_json_body(&response)["error"]["code"],
+            "hook_canvas_error"
+        );
+
+        shutdown_tx.send(()).expect("shutdown malformed");
+        server.join().expect("join malformed");
+        restore_env("APPDATA", previous);
+        fs::remove_dir_all(appdata).expect("cleanup");
     }
 
     #[test]
@@ -12504,13 +12976,17 @@ nodes:
     }
 
     fn test_png_base64() -> String {
+        format!("data:image/png;base64,{}", BASE64.encode(test_png_bytes()))
+    }
+
+    fn test_png_bytes() -> Vec<u8> {
         let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(1, 1, vec![10, 20, 30, 255])
             .expect("test png image");
         let mut png = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(image)
             .write_to(&mut png, ImageFormat::Png)
             .expect("encode test png");
-        format!("data:image/png;base64,{}", BASE64.encode(png.into_inner()))
+        png.into_inner()
     }
 
     fn packaged_ocr_fixture_base64() -> String {
@@ -14095,6 +14571,31 @@ PY
 
     fn http_get(port: u16, path: &str) -> String {
         http_request(port, "GET", path, None)
+    }
+
+    fn http_get_bytes(port: u16, path: &str, extra_headers: &str) -> Vec<u8> {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra_headers}Connection: close\r\n\r\n"
+        )
+        .expect("write request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).expect("read response");
+        response
+    }
+
+    fn split_http_bytes(response: &[u8]) -> (&str, &[u8]) {
+        let separator = b"\r\n\r\n";
+        let index = response
+            .windows(separator.len())
+            .position(|window| window == separator)
+            .expect("HTTP header separator");
+        let headers = std::str::from_utf8(&response[..index]).expect("HTTP headers are UTF-8");
+        (headers, &response[index + separator.len()..])
     }
 
     fn http_post(port: u16, path: &str, body: &str) -> String {
