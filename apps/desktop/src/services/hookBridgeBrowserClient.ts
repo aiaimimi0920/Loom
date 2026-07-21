@@ -13,6 +13,7 @@ type HookBridgeSocketLike = {
 type HookBridgeWebSocketFactory = (url: string) => HookBridgeSocketLike;
 
 interface HookBridgeBrowserClientOptions {
+  url?: string;
   websocketFactory?: HookBridgeWebSocketFactory;
   reconnectDelayMs?: number;
   scheduleReconnect?: (callback: () => void, delayMs: number) => number;
@@ -36,6 +37,7 @@ const socketIsClosed = (socket: HookBridgeSocketLike | null) =>
 export function createHookBridgeBrowserClient(
   options: HookBridgeBrowserClientOptions = {},
 ): HookBridgeBrowserClient {
+  const hookBridgeUrl = options.url ?? DEFAULT_HOOK_BRIDGE_URL;
   const websocketFactory =
     options.websocketFactory ??
     ((url: string) => new WebSocket(url) as unknown as HookBridgeSocketLike);
@@ -98,7 +100,7 @@ export function createHookBridgeBrowserClient(
       return;
     }
 
-    const nextSocket = websocketFactory(DEFAULT_HOOK_BRIDGE_URL);
+    const nextSocket = websocketFactory(hookBridgeUrl);
     socket = nextSocket;
 
     nextSocket.onopen = () => {

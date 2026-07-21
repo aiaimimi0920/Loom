@@ -5,6 +5,7 @@ const LEGACY_HOOK_LIVE_WORKFLOW_ID = "arthook-live";
 
 export interface HookBridgeWorkflowSyncOptions {
   client?: HookBridgeBrowserClient;
+  websocketUrl?: string;
   refresh: () => Promise<unknown> | unknown;
   invalidateHookCanvas: () => void;
   openHookWorkflow: () => void;
@@ -29,7 +30,7 @@ function workflowIdFromPayload(payload: unknown): unknown {
 export function startHookBridgeWorkflowSync(
   options: HookBridgeWorkflowSyncOptions,
 ): HookBridgeWorkflowSyncHandle {
-  const client = options.client ?? createHookBridgeBrowserClient();
+  const client = options.client ?? createHookBridgeBrowserClient({ url: options.websocketUrl });
   const debounceMs = Math.max(0, options.debounceMs ?? 50);
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingOpen = false;

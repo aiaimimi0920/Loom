@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_LOOM_DAEMON_URL: &str = "http://127.0.0.1:8765";
+const DEFAULT_HOOK_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
 const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +14,7 @@ const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
 pub struct DesktopRuntimeConfig {
     pub loom_daemon_url: String,
     pub settings_url: String,
+    pub hook_bridge_url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +73,7 @@ fn resolve_loom_daemon_url() -> DesktopRuntimeConfig {
     DesktopRuntimeConfig {
         loom_daemon_url,
         settings_url,
+        hook_bridge_url: configured_hook_bridge_url(),
     }
 }
 
@@ -205,6 +208,22 @@ fn delete_loom_daemon_json(base_url: String, path: String) -> Result<Value, Stri
 
 fn configured_loom_daemon_url() -> String {
     std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
+}
+
+fn configured_hook_bridge_url() -> String {
+    if let Ok(url) = std::env::var("LOOM_HOOK_BRIDGE_URL") {
+        if !url.trim().is_empty() {
+            return url.trim().to_owned();
+        }
+    }
+    if let Ok(port) = std::env::var("LOOM_HOOK_BRIDGE_PORT") {
+        if let Ok(port) = port.trim().parse::<u16>() {
+            if port > 0 {
+                return format!("ws://127.0.0.1:{port}");
+            }
+        }
+    }
+    DEFAULT_HOOK_BRIDGE_URL.to_owned()
 }
 
 fn resolve_command_base_url(base_url: String) -> String {
@@ -495,14 +514,48 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn default_runtime_config_points_at_loopback_loom_daemon() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_daemon_url = std::env::var("LOOM_DAEMON_URL").ok();
+        let previous_bridge_url = std::env::var("LOOM_HOOK_BRIDGE_URL").ok();
+        let previous_bridge_port = std::env::var("LOOM_HOOK_BRIDGE_PORT").ok();
         std::env::remove_var("LOOM_DAEMON_URL");
+        std::env::remove_var("LOOM_HOOK_BRIDGE_URL");
+        std::env::remove_var("LOOM_HOOK_BRIDGE_PORT");
 
         let config = resolve_loom_daemon_url();
 
         assert_eq!(config.loom_daemon_url, DEFAULT_LOOM_DAEMON_URL);
         assert_eq!(config.settings_url, "http://127.0.0.1:8765/settings");
+        assert_eq!(config.hook_bridge_url, DEFAULT_HOOK_BRIDGE_URL);
+        restore_env("LOOM_DAEMON_URL", previous_daemon_url);
+        restore_env("LOOM_HOOK_BRIDGE_URL", previous_bridge_url);
+        restore_env("LOOM_HOOK_BRIDGE_PORT", previous_bridge_port);
+    }
+
+    #[test]
+    fn runtime_config_accepts_an_isolated_hook_bridge_port() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_bridge_url = std::env::var("LOOM_HOOK_BRIDGE_URL").ok();
+        let previous_bridge_port = std::env::var("LOOM_HOOK_BRIDGE_PORT").ok();
+        std::env::remove_var("LOOM_HOOK_BRIDGE_URL");
+        std::env::set_var("LOOM_HOOK_BRIDGE_PORT", "43127");
+
+        let config = resolve_loom_daemon_url();
+
+        assert_eq!(config.hook_bridge_url, "ws://127.0.0.1:43127");
+        restore_env("LOOM_HOOK_BRIDGE_URL", previous_bridge_url);
+        restore_env("LOOM_HOOK_BRIDGE_PORT", previous_bridge_port);
+    }
+
+    fn restore_env(name: &str, value: Option<String>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 
     #[test]

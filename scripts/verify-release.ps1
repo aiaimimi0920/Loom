@@ -262,6 +262,7 @@ Assert-ZipPayload -PackagePath $packageFullPath -Manifest $manifest -ExpectedPay
 Assert-CliZipPayload -PackagePath $packageFullPath -Manifest $manifest
 
 $smokeStatus = "not-run"
+$hookCanvasSmokeStatus = "not-run"
 if ($RunSmoke) {
     $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $smokePath -PathType Leaf) -Message "Missing standalone smoke script: $smokePath"
@@ -271,6 +272,18 @@ if ($RunSmoke) {
         throw "Standalone release smoke failed: $($smokeOutput -join [Environment]::NewLine)"
     }
     $smokeStatus = "passed"
+
+    $hookCanvasSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $hookCanvasSmokePath -PathType Leaf) -Message "Missing Hook canvas UI smoke script: $hookCanvasSmokePath"
+    $hookCanvasEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\hook-canvas"
+    $hookCanvasSmokeOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+        -File $hookCanvasSmokePath `
+        -PackageDir $packageFullPath `
+        -EvidenceRoot $hookCanvasEvidenceRoot 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Hook canvas UI smoke failed: $($hookCanvasSmokeOutput -join [Environment]::NewLine)"
+    }
+    $hookCanvasSmokeStatus = "passed"
 }
 
 $result = [ordered]@{
@@ -281,5 +294,6 @@ $result = [ordered]@{
     manifest = $manifestPath
     filesChecked = @($checksumEntries.Keys).Count
     smoke = $smokeStatus
+    hookCanvasSmoke = $hookCanvasSmokeStatus
 }
 Write-Output ($result | ConvertTo-Json -Depth 10)

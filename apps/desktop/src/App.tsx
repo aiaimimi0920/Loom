@@ -119,6 +119,7 @@ type SectionId =
 interface RuntimeConfig {
   loomDaemonUrl: string;
   settingsUrl: string;
+  hookBridgeUrl?: string;
 }
 
 interface WorkflowOpenRequest {
@@ -165,6 +166,8 @@ const fallbackSnapshot: LoomSnapshot = {
   },
   error: "尚未加载状态快照",
 };
+
+const DEFAULT_HOOK_BRIDGE_URL = "ws://127.0.0.1:19820";
 
 const formatTime = (value: string) => {
   const date = new Date(value);
@@ -4190,6 +4193,7 @@ export default function App() {
   const [hookCanvasLoading, setHookCanvasLoading] = useState(false);
   const [hookCanvasError, setHookCanvasError] = useState<string | null>(null);
   const [hookCanvasRefreshVersion, setHookCanvasRefreshVersion] = useState(0);
+  const [hookBridgeUrl, setHookBridgeUrl] = useState(DEFAULT_HOOK_BRIDGE_URL);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -4198,6 +4202,7 @@ export default function App() {
       try {
         const runtimeConfig = await invoke<RuntimeConfig>("resolve_loom_daemon_url");
         baseUrl = runtimeConfig.loomDaemonUrl || DEFAULT_LOOM_DAEMON_URL;
+        setHookBridgeUrl(runtimeConfig.hookBridgeUrl || DEFAULT_HOOK_BRIDGE_URL);
       } catch {
         baseUrl = DEFAULT_LOOM_DAEMON_URL;
       }
@@ -4269,6 +4274,7 @@ export default function App() {
     }
     const sync = startHookBridgeWorkflowSync({
       refresh,
+      websocketUrl: hookBridgeUrl,
       invalidateHookCanvas: () => {
         setHookCanvasRefreshVersion((version) => version + 1);
       },
@@ -4280,7 +4286,7 @@ export default function App() {
     return () => {
       sync.dispose();
     };
-  }, [refresh]);
+  }, [hookBridgeUrl, refresh]);
 
   const openWorkflowInStudio = (workflowId: string) => {
     setWorkflowOpenRequest({ workflowId });
@@ -4295,7 +4301,8 @@ export default function App() {
     setBridgeBusy(true);
     setBridgeError(null);
     try {
-      await startHookBridge(snapshot.baseUrl);
+      const bridgePort = Number.parseInt(new URL(hookBridgeUrl).port || "19820", 10);
+      await startHookBridge(snapshot.baseUrl, Number.isFinite(bridgePort) ? bridgePort : 19820);
       await refresh();
     } catch (error) {
       setBridgeError(error instanceof Error ? error.message : "无法启动截图同步");

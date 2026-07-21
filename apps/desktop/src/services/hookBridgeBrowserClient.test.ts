@@ -70,6 +70,23 @@ test("subscribes to requested hook bridge channels when the socket opens", () =>
   client.dispose();
 });
 
+test("uses an isolated Hook Bridge URL when one is configured", () => {
+  const sockets: FakeWebSocket[] = [];
+  const client = createHookBridgeBrowserClient({
+    url: "ws://127.0.0.1:43127",
+    websocketFactory: (url) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+  });
+
+  client.subscribe("art_hook/instantiate", () => {});
+
+  assert.equal(sockets[0].url, "ws://127.0.0.1:43127");
+  client.dispose();
+});
+
 test("dispatches hook bridge payloads to matching desktop listeners", () => {
   const sockets: FakeWebSocket[] = [];
   const client = createHookBridgeBrowserClient({

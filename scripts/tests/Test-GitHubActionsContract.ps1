@@ -62,6 +62,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     '.\scripts\tests\Test-StandaloneLayout.ps1',
     '.\scripts\tests\Test-StandaloneReleaseContract.ps1',
     '.\scripts\tests\Test-ReleaseIntegrityTamper.ps1',
+    '.\scripts\tests\Test-HookCanvasUiContract.ps1',
     '.\scripts\tests\Test-GitHubActionsContract.ps1'
 )
 

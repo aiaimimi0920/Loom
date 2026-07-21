@@ -25,6 +25,8 @@ $appPath = Join-Path $repoRoot "apps\desktop\src\App.tsx"
 $thumbnailPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasThumbnail.tsx"
 $viewPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasView.tsx"
 $nodePath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasNode.tsx"
+$smokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
+$inspectorPath = Join-Path $repoRoot "scripts\Inspect-LoomWebView.mjs"
 
 Assert-PathExists $thumbnailPath
 Assert-PathExists $viewPath
@@ -46,5 +48,13 @@ Assert-Contains '保存工作流' $app "Normal save action must not require YAML
 Assert-Contains '打开工作流' $app "Normal load action must not require YAML wording."
 Assert-NotContains 'eyebrow: "YAML 存储"' $app "Navigation must not advertise YAML to normal users."
 Assert-NotContains '>加载 YAML<' $app "Saved workflow action must use visual language."
+
+Assert-PathExists $smokePath
+Assert-PathExists $inspectorPath
+$smoke = Get-Content -Raw -Encoding UTF8 $smokePath
+Assert-Contains 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS' $smoke "Smoke must use an isolated CDP port."
+Assert-Contains 'LOOM_CONTROL_PLANE_ROOT' $smoke "Smoke must isolate Loom data."
+Assert-Contains 'APPDATA' $smoke "Smoke must isolate the Hook session."
+Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exact process paths."
 
 Write-Host "Hook canvas UI contract passed."
