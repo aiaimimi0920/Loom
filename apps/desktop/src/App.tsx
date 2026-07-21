@@ -79,6 +79,11 @@ import {
 } from "./services/pythonArtSource";
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import {
+  keepNewestHookCanvasSnapshot,
+  readHookCanvasSnapshot,
+  type HookCanvasSnapshot,
+} from "./services/hookCanvas";
+import {
   addWorkflowGraphNode,
   autoTemplateResponse,
   deleteWorkflowGraphNode,
@@ -4114,6 +4119,10 @@ export default function App() {
   const [localServiceMessage, setLocalServiceMessage] = useState<StudioMessage | null>(null);
   const [autoStartAttempted, setAutoStartAttempted] = useState(false);
   const [workflowOpenRequest, setWorkflowOpenRequest] = useState<string | null>(null);
+  const [hookCanvas, setHookCanvas] = useState<HookCanvasSnapshot | null>(null);
+  const [hookCanvasLoading, setHookCanvasLoading] = useState(false);
+  const [hookCanvasError, setHookCanvasError] = useState<string | null>(null);
+  const [hookCanvasRefreshVersion, setHookCanvasRefreshVersion] = useState(0);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -4130,6 +4139,19 @@ export default function App() {
       setLoading(false);
     }
   }, []);
+
+  const refreshHookCanvas = useCallback(async (baseUrl = snapshot.baseUrl) => {
+    setHookCanvasLoading(true);
+    try {
+      const next = await readHookCanvasSnapshot(baseUrl);
+      setHookCanvas((previous) => keepNewestHookCanvasSnapshot(previous, next));
+      setHookCanvasError(null);
+    } catch (error) {
+      setHookCanvasError(error instanceof Error ? error.message : "无法读取 Hook 画布。");
+    } finally {
+      setHookCanvasLoading(false);
+    }
+  }, [snapshot.baseUrl]);
 
   const startLocalService = async (silent = false) => {
     setLocalServiceBusy(true);
@@ -4158,6 +4180,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    void refreshHookCanvas();
+  }, [hookCanvasRefreshVersion, refreshHookCanvas]);
+
+  useEffect(() => {
     if (
       autoStartAttempted ||
       loading ||
@@ -4176,6 +4202,9 @@ export default function App() {
     }
     const sync = startHookBridgeWorkflowSync({
       refresh,
+      invalidateHookCanvas: () => {
+        setHookCanvasRefreshVersion((version) => version + 1);
+      },
       openHookWorkflow: () => {
         openHookLiveWorkflow(setWorkflowOpenRequest, setActiveSection);
       },

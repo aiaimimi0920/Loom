@@ -20,18 +20,14 @@ class FakeHookBridgeClient {
       const current = this.handlers.get(channel);
       if (!current) return;
       current.delete(handler);
-      if (current.size === 0) {
-        this.handlers.delete(channel);
-      }
+      if (current.size === 0) this.handlers.delete(channel);
     };
   }
 
   emit(channel: string, payload: unknown) {
     const bucket = this.handlers.get(channel);
     if (!bucket) return;
-    for (const handler of bucket) {
-      handler(payload);
-    }
+    for (const handler of bucket) handler(payload);
   }
 
   dispose() {
@@ -40,19 +36,35 @@ class FakeHookBridgeClient {
   }
 }
 
-async function flushMicrotasks() {
+async function waitForDebounce() {
+  await new Promise((resolve) => setTimeout(resolve, 10));
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function createSync(
+  client: FakeHookBridgeClient,
+  events: string[],
+) {
+  return startHookBridgeWorkflowSync({
+    client,
+    refresh: async () => {
+      events.push("refresh");
+    },
+    invalidateHookCanvas: () => {
+      events.push("invalidate");
+    },
+    openHookWorkflow: () => {
+      events.push("open");
+    },
+    debounceMs: 1,
+  });
 }
 
 test("subscribes to instantiate, workflow_updated, and arts_updated channels", () => {
   const client = new FakeHookBridgeClient();
 
-  const handle = startHookBridgeWorkflowSync({
-    client,
-    refresh: () => undefined,
-    openHookWorkflow: () => undefined,
-  });
+  const handle = createSync(client, []);
 
   assert.deepEqual(Array.from(client.handlers.keys()).sort(), [
     "art_hook/instantiate",
@@ -64,56 +76,67 @@ test("subscribes to instantiate, workflow_updated, and arts_updated channels", (
   assert.equal(client.disposed, true);
 });
 
-test("refreshes and opens hook workflow for instantiate and matching workflow updates", async () => {
+test("instantiate refreshes, invalidates, and opens the Hook workflow", async () => {
   const client = new FakeHookBridgeClient();
   const events: string[] = [];
-
-  const handle = startHookBridgeWorkflowSync({
-    client,
-    refresh: async () => {
-      events.push("refresh");
-    },
-    openHookWorkflow: () => {
-      events.push("open");
-    },
-  });
+  const handle = createSync(client, events);
 
   client.emit("art_hook/instantiate", { workflow_id: HOOK_LIVE_WORKFLOW_ID });
-  await flushMicrotasks();
-  client.emit("art_loom/workflow_updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
-  await flushMicrotasks();
-  client.emit("art_loom/workflow_updated", { workflowId: "other-workflow" });
-  await flushMicrotasks();
-  client.emit("art_loom/workflow_updated", {});
-  await flushMicrotasks();
-  client.emit("art_loom/arts_updated", {});
-  await flushMicrotasks();
+  await waitForDebounce();
 
-  assert.deepEqual(events, [
-    "refresh",
-    "open",
-    "refresh",
-    "open",
-    "refresh",
-    "open",
-    "refresh",
-    "open",
-  ]);
-
+  assert.deepEqual(events, ["refresh", "invalidate", "open"]);
   handle.dispose();
 });
 
-test("dispose unsubscribes handlers from the client", () => {
+test("workflow and Art updates refresh without forced navigation", async () => {
   const client = new FakeHookBridgeClient();
+  const events: string[] = [];
+  const handle = createSync(client, events);
 
-  const handle = startHookBridgeWorkflowSync({
-    client,
-    refresh: () => undefined,
-    openHookWorkflow: () => undefined,
-  });
+  client.emit("art_loom/workflow_updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
+  await waitForDebounce();
+  client.emit("art_loom/arts_updated", {});
+  await waitForDebounce();
 
+  assert.deepEqual(events, ["refresh", "invalidate", "refresh", "invalidate"]);
   handle.dispose();
+});
 
-  assert.equal(client.handlers.size, 0);
+test("events inside one debounce window produce one refresh and invalidation", async () => {
+  const client = new FakeHookBridgeClient();
+  const events: string[] = [];
+  const handle = createSync(client, events);
+
+  client.emit("art_loom/arts_updated", {});
+  client.emit("art_loom/workflow_updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
+  client.emit("art_hook/instantiate", { workflow_id: HOOK_LIVE_WORKFLOW_ID });
+  await waitForDebounce();
+
+  assert.deepEqual(events, ["refresh", "invalidate", "open"]);
+  handle.dispose();
+});
+
+test("unrelated workflow updates do nothing", async () => {
+  const client = new FakeHookBridgeClient();
+  const events: string[] = [];
+  const handle = createSync(client, events);
+
+  client.emit("art_loom/workflow_updated", { workflowId: "other-workflow" });
+  await waitForDebounce();
+
+  assert.deepEqual(events, []);
+  handle.dispose();
+});
+
+test("dispose cancels pending debounce work", async () => {
+  const client = new FakeHookBridgeClient();
+  const events: string[] = [];
+  const handle = createSync(client, events);
+
+  client.emit("art_loom/arts_updated", {});
+  handle.dispose();
+  await waitForDebounce();
+
+  assert.deepEqual(events, []);
   assert.equal(client.disposed, true);
 });
