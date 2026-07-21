@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod brain_plan;
+mod hook_canvas;
 mod request_executor;
 
 use brain_plan::{
