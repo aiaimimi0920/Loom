@@ -113,6 +113,8 @@ Assert-ScriptContract `
         'CLI artifact ZIP byte count mismatch',
         'Desktop ZIP name does not match the manifest version.',
         'CLI ZIP name does not match the manifest version.',
+        '[System.StringComparison]::Ordinal',
+        '$expectedLine = "$actualZipHash  $zipName"',
         'checksums.sha256',
         'manifest.json',
         '[switch]$RunSmoke'
@@ -125,6 +127,7 @@ Assert-ScriptContract `
         'function Get-LoomReleaseLayout',
         'function Get-LoomArchiveFileEntries',
         'function Assert-LoomDesktopRootExecutableBoundary',
+        'function Test-LoomArtifactKind',
         'Loom.exe',
         '$runtimeRoot = Join-Path $packageFullPath "runtime"',
         '$daemonExe = Join-Path $runtimeRoot "loom-daemon.exe"',
@@ -133,6 +136,8 @@ Assert-ScriptContract `
         'Loom CLI ZIP must contain exactly one loom.exe entry.',
         'Loom CLI extraction destination must be empty:',
         'Invalid Loom archive entry:',
+        '$entry.Name.Length -eq 0',
+        '[System.StringComparison]::Ordinal',
         'manifest.json',
         'Expand-Archive'
     ) `
@@ -143,10 +148,17 @@ Assert-ScriptContract `
     -RequiredText @(
         'function New-IntegrityFixture',
         'function New-TraversalZip',
+        'function New-WhitespaceEntryZip',
         'ExtraRootExecutable',
         'ExtraCliEntry',
         'CliMetadataMismatch',
+        'CliEntryCaseMismatch',
+        'CliKindCaseMismatch',
+        'ForwardSlashPaths',
+        'no-newline',
+        'extra-line',
         'Traversal archive unexpectedly passed shared entry validation.',
+        'Non-empty CLI extraction destination unexpectedly passed validation.',
         'ArtifactNamingMismatch',
         'desktop-wrong',
         'cli-wrong',

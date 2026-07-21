@@ -65,6 +65,18 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     '.\scripts\tests\Test-GitHubActionsContract.ps1'
 )
 
+$ciPath = Join-Path $workflowRoot "ci.yml"
+$ciRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $ciPath
+$validationStep = '      - name: Validate standalone layout before generated output'
+$tamperCommand = '          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1'
+$dependencyStep = '      - name: Install desktop dependencies'
+$validationIndex = $ciRaw.IndexOf($validationStep, [System.StringComparison]::Ordinal)
+$tamperIndex = $ciRaw.IndexOf($tamperCommand, [System.StringComparison]::Ordinal)
+$dependencyIndex = $ciRaw.IndexOf($dependencyStep, [System.StringComparison]::Ordinal)
+Assert-True -Condition ($validationIndex -ge 0 -and $tamperIndex -gt $validationIndex -and $dependencyIndex -gt $tamperIndex) -Message "Integrity tamper contract must run in the pre-generated-output validation step."
+$validationBlock = $ciRaw.Substring($validationIndex, $dependencyIndex - $validationIndex)
+Assert-True -Condition $validationBlock.Contains('        shell: powershell') -Message "Integrity tamper contract validation step must use PowerShell."
+
 Assert-Workflow -Name "build-windows.yml" -RequiredText @(
     'name: Build Windows',
     'branches:',
