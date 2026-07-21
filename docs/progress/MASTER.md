@@ -160,7 +160,10 @@ and runtime behavior remain out of scope. The final Phase 43 source is
 checksum-covered files, and passed the hardened verifier with full smoke. Hosted
 CI, Build Windows, and Docker succeeded for that exact SHA as runs
 `29794484830`, `29794485728`, and `29794486654`. Parent gitlink commit
-`835d4ad15ec341157598d8cc9533d2af6040e432` pins the same standalone SHA.
+`835d4ad15ec341157598d8cc9533d2af6040e432` pins the release-source SHA;
+later closure commit `962fd814874c7de52e7b0f6336f7714059790c55` advances the gitlink to
+docs-only revision `52fd6eb4cbb14887d19e719cdfc31744038e4da9` without changing package
+provenance.
 
 The standalone repository is published at
 `https://github.com/aiaimimi0920/Loom`. Runtime and package validation closed on
