@@ -128,6 +128,18 @@ those method names and port behavior. Hook-generated live workflow data is
 stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Hook
 实时工作流`.
 
+For the normal user path, open **截图同步** to inspect the real Hook canvas:
+node placement, image previews, and links are rendered directly in the Loom
+workbench. Click **打开可视化工作流** or a node to enter the full visual
+workflow canvas. YAML, cURL, raw JSON, protocol methods, session paths, IPC,
+and shared-memory diagnostics remain available only inside the collapsed
+**高级技术信息** disclosure.
+
+When running an isolated desktop smoke, set `LOOM_HOOK_BRIDGE_PORT` (or
+`LOOM_HOOK_BRIDGE_URL`) alongside `LOOM_DAEMON_URL`; the desktop passes that
+bridge address to its Hook event client so the smoke does not reuse a user's
+port 19820 instance.
+
 Start the daemon on an isolated local port:
 
 ```powershell

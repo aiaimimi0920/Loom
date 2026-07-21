@@ -76,6 +76,8 @@ separate projects.
   [details](../superpowers/plans/2026-07-21-loom-single-entry-release.md)
 - [x] Phase 43: Release integrity hardening (5/5 tasks)
   [details](../superpowers/plans/2026-07-21-loom-release-integrity-hardening.md)
+- [x] Phase 44: Hook canvas thumbnail and visual workflow (8/8 tasks)
+  [details](./phase-44-hook-canvas-thumbnail.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -148,6 +150,15 @@ checksum-covered files and passed the full release smoke matrix. Hosted CI,
 Build Windows, and Docker runs for that SHA completed successfully. Neuro pins
 that candidate through parent gitlink commit
 `b1116ef70a437a84615b6343986c6afb9082d20c`.
+
+Phase 44 adds the user-facing Hook canvas thumbnail and full visual workflow.
+The daemon normalizes real Hook session geometry and links, serves safe
+node-owned image previews, and keeps the last good snapshot during transient
+offline or storage failures. Desktop Hook Bridge events debounce canvas
+refreshes without forced navigation, while instantiate events open the visual
+Hook workflow. YAML and compatibility diagnostics remain available in a
+collapsed advanced disclosure. The phase also adds isolated WebView2/CDP
+release smoke evidence and a configurable Hook Bridge port for isolated runs.
 
 Phase 43 hardens the same release boundary against internally consistent
 tampering. The shared layout helper and verifier reject extra root executables,
@@ -274,14 +285,17 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Keep `20260721-release-integrity-f99e810` and its checksum evidence immutable;
+1. Keep the Phase 44 candidate and its checksum/evidence immutable after final
+   verification; regenerate it after any production source or release-tooling
+   change.
+2. Keep `20260721-release-integrity-f99e810` and its checksum evidence immutable;
    later documentation-only commits do not change that package provenance.
-2. Treat later test/documentation-only commits separately from runtime package
+3. Treat later test/documentation-only commits separately from runtime package
    provenance. Regenerate a candidate after any production source, resource,
    dependency, or release-tooling change.
-3. If further ArtLoom gaps are reported, classify them as user-visible UI,
+4. If further ArtLoom gaps are reported, classify them as user-visible UI,
    protocol/runtime, packaging, or intentionally replaced before making changes.
-4. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
+5. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
    internal Tauri source target, while the packaged user entry is `Loom.exe`.
 
 ## Standalone repository closure
