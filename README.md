@@ -95,6 +95,7 @@ Install and verify the desktop frontend:
 ```powershell
 Push-Location .\apps\desktop
 npm ci
+npm test
 npm run typecheck
 npm run build
 Pop-Location

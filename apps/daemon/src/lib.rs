@@ -9708,6 +9708,52 @@ def main(args):
     }
 
     #[test]
+    fn daemon_recovers_trailing_tool_registry_data_before_listing_tools() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("control-plane-trailing-tools");
+        let tools_root = root.join("tools");
+        fs::create_dir_all(&tools_root).expect("create tool registry root");
+        fs::write(
+            tools_root.join("tools.json"),
+            r#"[
+              {
+                "id": "recovered-tool",
+                "name": "Recovered Tool",
+                "description": "Recover a valid tool array with trailing delimiters",
+                "enabled": true,
+                "execution": {
+                  "type": "cli_wrapper",
+                  "command": "echo",
+                  "args": ["ok"]
+                }
+              }
+            ]  }
+              }
+            ]"#,
+        )
+        .expect("write corrupted tool registry");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let response = http_get(address.port(), "/v1/tools");
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response={response}"
+        );
+        let body = response_json_body(&response);
+        assert_eq!(body["tools"][0]["id"], "recovered-tool");
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup recovered registry root");
+    }
+
+    #[test]
     fn daemon_reads_and_writes_tool_and_workflow_contracts() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();

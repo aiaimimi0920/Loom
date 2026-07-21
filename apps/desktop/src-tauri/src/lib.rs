@@ -51,6 +51,18 @@ pub struct LoomSnapshot {
     pub error: Option<String>,
 }
 
+struct DaemonSnapshot {
+    health: Value,
+    status: Value,
+    capabilities: Vec<Value>,
+    mcp_servers: Vec<Value>,
+    tools: Vec<Value>,
+    python_arts: Vec<Value>,
+    workflows: Vec<Value>,
+    hook_bridge: Option<Value>,
+    degraded_errors: Vec<String>,
+}
+
 #[tauri::command]
 fn resolve_loom_daemon_url() -> DesktopRuntimeConfig {
     let loom_daemon_url = configured_loom_daemon_url();
@@ -73,29 +85,20 @@ fn read_loom_snapshot(base_url: Option<String>) -> LoomSnapshot {
     let checked_at = chrono::Utc::now().to_rfc3339();
 
     match read_daemon_snapshot(&resolved_base_url) {
-        Ok((
-            health,
-            status,
-            capabilities,
-            mcp_servers,
-            tools,
-            python_arts,
-            workflows,
-            hook_bridge,
-        )) => LoomSnapshot {
+        Ok(snapshot) => LoomSnapshot {
             base_url: resolved_base_url,
             connection_state: "online".to_string(),
             checked_at,
-            health: Some(health),
-            status: Some(status),
-            capabilities,
-            mcp_servers,
-            tools,
-            python_arts,
-            workflows,
-            hook_bridge: Some(hook_bridge),
+            health: Some(snapshot.health),
+            status: Some(snapshot.status),
+            capabilities: snapshot.capabilities,
+            mcp_servers: snapshot.mcp_servers,
+            tools: snapshot.tools,
+            python_arts: snapshot.python_arts,
+            workflows: snapshot.workflows,
+            hook_bridge: snapshot.hook_bridge,
             settings,
-            error: None,
+            error: degraded_snapshot_error(&snapshot.degraded_errors),
         },
         Err(error) => LoomSnapshot {
             base_url: resolved_base_url,
@@ -279,56 +282,46 @@ fn development_repo_root() -> Option<PathBuf> {
     None
 }
 
-fn read_daemon_snapshot(
-    base_url: &str,
-) -> Result<
-    (
-        Value,
-        Value,
-        Vec<Value>,
-        Vec<Value>,
-        Vec<Value>,
-        Vec<Value>,
-        Vec<Value>,
-        Value,
-    ),
-    String,
-> {
+fn read_daemon_snapshot(base_url: &str) -> Result<DaemonSnapshot, String> {
     let health = http_get_json(base_url, "/health")?;
     let status = http_get_json(base_url, "/status")?;
-    let capabilities = http_get_json(base_url, "/v1/capabilities")?;
-    let capabilities = capabilities
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mcp_servers = http_get_json(base_url, "/v1/mcp/servers")?;
-    let mcp_servers = mcp_servers
-        .get("servers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let tools = http_get_json(base_url, "/v1/tools")?;
-    let tools = tools
-        .get("tools")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let python_arts = http_get_json(base_url, "/v1/python-arts")?;
-    let python_arts = python_arts
-        .get("arts")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let workflows = http_get_json(base_url, "/v1/workflows")?;
-    let workflows = workflows
-        .get("workflows")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let hook_bridge = http_get_json(base_url, "/v1/hook-bridge/status")?;
+    let mut degraded_errors = Vec::new();
+    let capabilities = read_optional_daemon_array(
+        base_url,
+        "/v1/capabilities",
+        "capabilities",
+        &mut degraded_errors,
+    );
+    let mcp_servers = read_optional_daemon_array(
+        base_url,
+        "/v1/mcp/servers",
+        "servers",
+        &mut degraded_errors,
+    );
+    let tools =
+        read_optional_daemon_array(base_url, "/v1/tools", "tools", &mut degraded_errors);
+    let python_arts = read_optional_daemon_array(
+        base_url,
+        "/v1/python-arts",
+        "arts",
+        &mut degraded_errors,
+    );
+    let workflows = read_optional_daemon_array(
+        base_url,
+        "/v1/workflows",
+        "workflows",
+        &mut degraded_errors,
+    );
+    let hook_bridge =
+        read_optional_daemon_json(base_url, "/v1/hook-bridge/status", &mut degraded_errors);
 
-    Ok((
+    if !degraded_errors.is_empty() {
+        http_get_json(base_url, "/health").map_err(|error| {
+            format!("Loom 本地服务在读取模块状态期间离线：{error}")
+        })?;
+    }
+
+    Ok(DaemonSnapshot {
         health,
         status,
         capabilities,
@@ -337,7 +330,51 @@ fn read_daemon_snapshot(
         python_arts,
         workflows,
         hook_bridge,
-    ))
+        degraded_errors,
+    })
+}
+
+fn read_optional_daemon_array(
+    base_url: &str,
+    path: &str,
+    key: &str,
+    degraded_errors: &mut Vec<String>,
+) -> Vec<Value> {
+    let Some(response) = read_optional_daemon_json(base_url, path, degraded_errors) else {
+        return Vec::new();
+    };
+    let Some(values) = response.get(key).and_then(Value::as_array) else {
+        degraded_errors.push(format!(
+            "{path} 返回的模块数据无效：`{key}` 必须是数组"
+        ));
+        return Vec::new();
+    };
+    values.clone()
+}
+
+fn read_optional_daemon_json(
+    base_url: &str,
+    path: &str,
+    degraded_errors: &mut Vec<String>,
+) -> Option<Value> {
+    match http_get_json(base_url, path) {
+        Ok(response) => Some(response),
+        Err(error) => {
+            degraded_errors.push(error);
+            None
+        }
+    }
+}
+
+fn degraded_snapshot_error(errors: &[String]) -> Option<String> {
+    if errors.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Loom 本地服务在线，但部分模块暂不可用：{}",
+            errors.join("；")
+        ))
+    }
 }
 
 fn http_get_json(base_url: &str, path: &str) -> Result<Value, String> {
@@ -452,6 +489,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn default_runtime_config_points_at_loopback_loom_daemon() {
@@ -476,6 +518,138 @@ mod tests {
         assert!(snapshot.workflows.is_empty());
         assert!(snapshot.hook_bridge.is_none());
         assert!(snapshot.error.is_some());
+    }
+
+    #[test]
+    fn optional_daemon_module_failure_keeps_snapshot_online() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind snapshot fixture");
+        let address = listener.local_addr().expect("read snapshot fixture address");
+        listener
+            .set_nonblocking(true)
+            .expect("set snapshot fixture nonblocking");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                if shutdown_rx.try_recv().is_ok() {
+                    break;
+                }
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("accept snapshot request: {error}"),
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 512];
+                loop {
+                    let bytes = stream.read(&mut buffer).expect("read snapshot request");
+                    if bytes == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..bytes]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).expect("snapshot request is utf8");
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .expect("snapshot request path");
+                let (status, body) = match path {
+                    "/health" => (200, r#"{"status":"ok"}"#),
+                    "/status" => (200, r#"{"status":"ready"}"#),
+                    "/v1/capabilities" => (200, r#"{"capabilities":[]}"#),
+                    "/v1/mcp/servers" => (200, r#"{"servers":[]}"#),
+                    "/v1/tools" => (500, r#"{"error":{"code":"tool_registry_error"}}"#),
+                    "/v1/python-arts" => (200, r#"{"arts":[]}"#),
+                    "/v1/workflows" => (200, r#"{"workflows":[]}"#),
+                    "/v1/hook-bridge/status" => (200, r#"{"running":false}"#),
+                    other => panic!("unexpected snapshot path: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write snapshot response");
+            }
+        });
+
+        let snapshot = read_loom_snapshot(Some(format!("http://127.0.0.1:{}", address.port())));
+        shutdown_tx.send(()).expect("stop snapshot fixture");
+        server.join().expect("join snapshot fixture");
+
+        assert_eq!(snapshot.connection_state, "online");
+        assert_eq!(snapshot.health, Some(serde_json::json!({"status": "ok"})));
+        assert_eq!(snapshot.status, Some(serde_json::json!({"status": "ready"})));
+        assert!(snapshot.tools.is_empty());
+        assert!(snapshot.error.as_deref().is_some_and(|error| error.contains("/v1/tools")));
+    }
+
+    #[test]
+    fn daemon_that_disappears_after_core_probes_is_offline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind disappearing fixture");
+        let address = listener
+            .local_addr()
+            .expect("read disappearing fixture address");
+        let server = thread::spawn(move || {
+            for body in [r#"{"status":"ok"}"#, r#"{"status":"ready"}"#] {
+                let (mut stream, _) = listener.accept().expect("accept core probe");
+                let mut request = [0_u8; 512];
+                let _ = stream.read(&mut request).expect("read core probe");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write core probe response");
+            }
+        });
+
+        let snapshot = read_loom_snapshot(Some(format!("http://127.0.0.1:{}", address.port())));
+        server.join().expect("join disappearing fixture");
+
+        assert_eq!(snapshot.connection_state, "offline");
+        assert!(snapshot.error.is_some());
+    }
+
+    #[test]
+    fn malformed_optional_module_contract_is_reported_as_degraded() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind malformed fixture");
+        let address = listener.local_addr().expect("read malformed fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept malformed request");
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request).expect("read malformed request");
+            let body = "{}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write malformed response");
+        });
+
+        let mut degraded_errors = Vec::new();
+        let values = read_optional_daemon_array(
+            &format!("http://127.0.0.1:{}", address.port()),
+            "/v1/tools",
+            "tools",
+            &mut degraded_errors,
+        );
+        server.join().expect("join malformed fixture");
+
+        assert!(values.is_empty());
+        assert!(degraded_errors
+            .iter()
+            .any(|error| error.contains("/v1/tools") && error.contains("tools")));
     }
 
     #[test]

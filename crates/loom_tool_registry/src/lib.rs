@@ -1,11 +1,13 @@
 //! User-managed tool and Art registry contracts for Loom.
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -17,6 +19,7 @@ use thiserror::Error;
 const TOOLS_FILE: &str = "tools.json";
 const SCRIPT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOUD_API_TIMEOUT: Duration = Duration::from_secs(30);
+static REGISTRY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum ToolRegistryError {
@@ -338,14 +341,122 @@ impl ToolRegistry {
         }
 
         let content = fs::read_to_string(path)?;
-        serde_json::from_str(&content).map_err(ToolRegistryError::from)
+        match serde_json::from_str(&content) {
+            Ok(tools) => Ok(tools),
+            Err(error) => {
+                let Some(tools) = recover_tools_with_trailing_delimiters(&content) else {
+                    return Err(ToolRegistryError::Json(error));
+                };
+                self.write_corruption_backup(&content)?;
+                self.write_tools(&tools)?;
+                Ok(tools)
+            }
+        }
     }
 
     fn write_tools(&self, tools: &[ToolDefinition]) -> ToolRegistryResult<()> {
         let content = serde_json::to_string_pretty(tools)?;
-        fs::write(self.tools_path(), content)?;
+        let (temporary_path, mut temporary_file) = self.create_transient_file("tmp")?;
+        if let Err(error) = temporary_file
+            .write_all(content.as_bytes())
+            .and_then(|()| temporary_file.sync_all())
+        {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(ToolRegistryError::Io(error));
+        }
+        drop(temporary_file);
+
+        if let Err(error) = replace_registry_file(&temporary_path, &self.tools_path()) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(ToolRegistryError::Io(error));
+        }
         Ok(())
     }
+
+    fn write_corruption_backup(&self, content: &str) -> ToolRegistryResult<PathBuf> {
+        let (backup_path, mut backup_file) = self.create_transient_file("corrupt")?;
+        if let Err(error) = backup_file
+            .write_all(content.as_bytes())
+            .and_then(|()| backup_file.sync_all())
+        {
+            let _ = fs::remove_file(&backup_path);
+            return Err(ToolRegistryError::Io(error));
+        }
+        Ok(backup_path)
+    }
+
+    fn create_transient_file(&self, marker: &str) -> ToolRegistryResult<(PathBuf, File)> {
+        for _ in 0..100 {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let sequence = REGISTRY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = self.root.join(format!(
+                "{TOOLS_FILE}.{marker}-{}-{timestamp}-{sequence}",
+                std::process::id()
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok((path, file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(ToolRegistryError::Io(error)),
+            }
+        }
+
+        Err(ToolRegistryError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique tool registry temporary file",
+        )))
+    }
+}
+
+fn recover_tools_with_trailing_delimiters(content: &str) -> Option<Vec<ToolDefinition>> {
+    let mut stream = serde_json::Deserializer::from_str(content).into_iter::<Vec<ToolDefinition>>();
+    let tools = stream.next()?.ok()?;
+    let trailing = content.get(stream.byte_offset()..)?;
+    if trailing.trim().is_empty()
+        || !trailing
+            .chars()
+            .all(|character| character.is_whitespace() || matches!(character, '}' | ']'))
+    {
+        return None;
+    }
+    Some(tools)
+}
+
+#[cfg(not(windows))]
+fn replace_registry_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_registry_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn sort_tools(tools: &mut [ToolDefinition]) {
@@ -1374,6 +1485,93 @@ mod tests {
         assert!(!registry.delete_tool("brave-search").expect("delete absent"));
 
         fs::remove_dir_all(root).expect("cleanup temp tool registry root");
+    }
+
+    #[test]
+    fn registry_recovers_trailing_json_and_quarantines_original() {
+        let root = temp_root("trailing-json");
+        fs::create_dir_all(&root).expect("create registry root");
+        let tool = ToolDefinition::new(
+            "recovered-tool",
+            "Recovered Tool",
+            "Tool from a recoverable registry",
+            ToolExecution::CliWrapper {
+                command: "echo".to_owned(),
+                args: vec!["ok".to_owned()],
+            },
+        );
+        let valid = serde_json::to_string_pretty(&vec![tool.clone()]).expect("serialize tool");
+        let corrupted = format!("{valid}\n  }}  }}\n]");
+        fs::write(root.join("tools.json"), &corrupted).expect("write corrupted registry");
+
+        let registry = ToolRegistry::new(&root);
+        assert_eq!(registry.list_tools().expect("recover tools"), vec![tool]);
+
+        let canonical =
+            fs::read_to_string(root.join("tools.json")).expect("read repaired registry");
+        let parsed: Vec<ToolDefinition> =
+            serde_json::from_str(&canonical).expect("repaired registry is valid JSON");
+        assert_eq!(parsed.len(), 1);
+
+        let backups = fs::read_dir(&root)
+            .expect("read registry directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("tools.json.corrupt-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read_to_string(backups[0].path()).expect("read corruption backup"),
+            corrupted
+        );
+
+        fs::remove_dir_all(root).expect("cleanup recovered registry root");
+    }
+
+    #[test]
+    fn registry_does_not_recover_comma_only_trailing_json() {
+        let root = temp_root("trailing-commas");
+        fs::create_dir_all(&root).expect("create registry root");
+        let tool = ToolDefinition::new(
+            "preserved-tool",
+            "Preserved Tool",
+            "Tool in an unrecoverable registry",
+            ToolExecution::CliWrapper {
+                command: "echo".to_owned(),
+                args: vec!["ok".to_owned()],
+            },
+        );
+        let valid = serde_json::to_string_pretty(&vec![tool]).expect("serialize tool");
+        let corrupted = format!("{valid}\n,,,");
+        let registry_path = root.join("tools.json");
+        fs::write(&registry_path, &corrupted).expect("write comma-corrupted registry");
+
+        let registry = ToolRegistry::new(&root);
+        assert!(matches!(
+            registry.list_tools(),
+            Err(ToolRegistryError::Json(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(&registry_path).expect("read unchanged registry"),
+            corrupted
+        );
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("read registry directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("tools.json.corrupt-"))
+                .count(),
+            0
+        );
+
+        fs::remove_dir_all(root).expect("cleanup comma-corrupted registry root");
     }
 
     #[test]

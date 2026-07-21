@@ -510,6 +510,49 @@ const errorMessage = (error: unknown): string => {
   return "无法连接 Loom 本地服务";
 };
 
+interface OptionalSnapshotValue<T> {
+  value: T;
+  error: string | null;
+}
+
+const readOptionalSnapshotArray = async <T>(
+  baseUrl: string,
+  path: string,
+  key: string,
+): Promise<OptionalSnapshotValue<T[]>> => {
+  try {
+    const response = await readJson<Record<string, unknown>>(baseUrl, path);
+    const value = response[key];
+    if (!Array.isArray(value)) {
+      return {
+        value: [],
+        error: `Loom 本地服务模块 ${path} 响应字段 ${key} 必须是数组`,
+      };
+    }
+    return { value: value as T[], error: null };
+  } catch (error) {
+    return { value: [], error: errorMessage(error) };
+  }
+};
+
+const readOptionalSnapshotObject = async <T extends object>(
+  baseUrl: string,
+  path: string,
+): Promise<OptionalSnapshotValue<T | null>> => {
+  try {
+    const response = await readJson<unknown>(baseUrl, path);
+    if (typeof response !== "object" || response === null || Array.isArray(response)) {
+      return {
+        value: null,
+        error: `Loom 本地服务模块 ${path} 响应必须是对象`,
+      };
+    }
+    return { value: response as T, error: null };
+  } catch (error) {
+    return { value: null, error: errorMessage(error) };
+  }
+};
+
 const readSnapshotViaTauri = async (baseUrl: string): Promise<LoomSnapshot> => {
   return await invoke<LoomSnapshot>("read_loom_snapshot", { baseUrl });
 };
@@ -1179,34 +1222,13 @@ export async function readLoomSnapshot(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promi
     // local frontend checks still show the daemon state when CORS allows it.
   }
 
+  let health: LoomHealthResponse;
+  let status: LoomStatusResponse;
   try {
-    const [health, status, capabilities, mcpServers, tools, pythonArts, workflows, hookBridge] =
-      await Promise.all([
-        readJson<LoomHealthResponse>(normalizedBaseUrl, "/health"),
-        readJson<LoomStatusResponse>(normalizedBaseUrl, "/status"),
-        readJson<LoomCapabilitiesResponse>(normalizedBaseUrl, "/v1/capabilities"),
-        readJson<LoomMcpServersResponse>(normalizedBaseUrl, "/v1/mcp/servers"),
-        readJson<LoomToolsResponse>(normalizedBaseUrl, "/v1/tools"),
-        readJson<LoomPythonArtsResponse>(normalizedBaseUrl, "/v1/python-arts"),
-        readJson<LoomWorkflowsResponse>(normalizedBaseUrl, "/v1/workflows"),
-        readJson<LoomHookBridgeStatus>(normalizedBaseUrl, "/v1/hook-bridge/status"),
-      ]);
-
-    return {
-      baseUrl: normalizedBaseUrl,
-      connectionState: "online",
-      checkedAt,
-      health,
-      status,
-      capabilities: Array.isArray(capabilities.capabilities) ? capabilities.capabilities : [],
-      mcpServers: Array.isArray(mcpServers.servers) ? mcpServers.servers : [],
-      tools: Array.isArray(tools.tools) ? tools.tools : [],
-      pythonArts: Array.isArray(pythonArts.arts) ? pythonArts.arts : [],
-      workflows: Array.isArray(workflows.workflows) ? workflows.workflows : [],
-      hookBridge,
-      settings,
-      error: null,
-    };
+    [health, status] = await Promise.all([
+      readJson<LoomHealthResponse>(normalizedBaseUrl, "/health"),
+      readJson<LoomStatusResponse>(normalizedBaseUrl, "/status"),
+    ]);
   } catch (error) {
     return {
       baseUrl: normalizedBaseUrl,
@@ -1224,4 +1246,61 @@ export async function readLoomSnapshot(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promi
       error: errorMessage(error),
     };
   }
+
+  const [capabilities, mcpServers, tools, pythonArts, workflows, hookBridge] = await Promise.all([
+    readOptionalSnapshotArray<LoomCapability>(normalizedBaseUrl, "/v1/capabilities", "capabilities"),
+    readOptionalSnapshotArray<LoomMcpServer>(normalizedBaseUrl, "/v1/mcp/servers", "servers"),
+    readOptionalSnapshotArray<LoomToolDefinition>(normalizedBaseUrl, "/v1/tools", "tools"),
+    readOptionalSnapshotArray<LoomPythonArt>(normalizedBaseUrl, "/v1/python-arts", "arts"),
+    readOptionalSnapshotArray<LoomWorkflowMetadata>(normalizedBaseUrl, "/v1/workflows", "workflows"),
+    readOptionalSnapshotObject<LoomHookBridgeStatus>(normalizedBaseUrl, "/v1/hook-bridge/status"),
+  ]);
+  const degradedErrors = [
+    capabilities.error,
+    mcpServers.error,
+    tools.error,
+    pythonArts.error,
+    workflows.error,
+    hookBridge.error,
+  ].filter((error): error is string => error !== null);
+
+  if (degradedErrors.length > 0) {
+    try {
+      await readJson<LoomHealthResponse>(normalizedBaseUrl, "/health");
+    } catch (error) {
+      return {
+        baseUrl: normalizedBaseUrl,
+        connectionState: "offline",
+        checkedAt,
+        health: null,
+        status: null,
+        capabilities: [],
+        mcpServers: [],
+        tools: [],
+        pythonArts: [],
+        workflows: [],
+        hookBridge: null,
+        settings,
+        error: `Loom 本地服务在读取模块状态期间离线：${errorMessage(error)}`,
+      };
+    }
+  }
+
+  return {
+    baseUrl: normalizedBaseUrl,
+    connectionState: "online",
+    checkedAt,
+    health,
+    status,
+    capabilities: capabilities.value,
+    mcpServers: mcpServers.value,
+    tools: tools.value,
+    pythonArts: pythonArts.value,
+    workflows: workflows.value,
+    hookBridge: hookBridge.value,
+    settings,
+    error: degradedErrors.length > 0
+      ? `Loom 本地服务在线，但部分模块暂不可用：${degradedErrors.join("；")}`
+      : null,
+  };
 }

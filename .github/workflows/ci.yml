@@ -61,6 +61,10 @@ jobs:
         working-directory: apps/desktop
         run: npm run typecheck
 
+      - name: Test desktop frontend services
+        working-directory: apps/desktop
+        run: npm test
+
       - name: Build desktop frontend
         working-directory: apps/desktop
         run: npm run build
