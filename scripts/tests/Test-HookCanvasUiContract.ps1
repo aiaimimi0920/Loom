@@ -41,5 +41,10 @@ Assert-Contains 'data-testid="hook-canvas-thumbnail"' $thumbnail "Screenshot Syn
 Assert-Contains 'data-testid="hook-canvas-node"' $node "Hook canvas nodes need stable smoke targets."
 Assert-Contains 'data-testid="hook-canvas-view"' $view "Hook workflow must render a full visual canvas."
 Assert-Contains '打开可视化工作流' $thumbnail "Thumbnail must expose the visual workflow entry."
+Assert-Contains 'data-testid="advanced-technical-information"' $app "Technical workflow formats must be in an explicit disclosure."
+Assert-Contains '保存工作流' $app "Normal save action must not require YAML wording."
+Assert-Contains '打开工作流' $app "Normal load action must not require YAML wording."
+Assert-NotContains 'eyebrow: "YAML 存储"' $app "Navigation must not advertise YAML to normal users."
+Assert-NotContains '>加载 YAML<' $app "Saved workflow action must use visual language."
 
 Write-Host "Hook canvas UI contract passed."

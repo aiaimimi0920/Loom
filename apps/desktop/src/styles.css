@@ -1408,6 +1408,43 @@ code {
   overflow-wrap: anywhere;
 }
 
+.advanced-technical-information {
+  min-width: 0;
+  border-top: 1px solid rgba(17, 22, 20, 0.12);
+  padding-top: 12px;
+}
+
+.advanced-technical-information--studio {
+  grid-column: 1 / -1;
+}
+
+.advanced-technical-information > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: rgba(17, 22, 20, 0.68);
+  font-size: 0.82rem;
+  font-weight: 900;
+  list-style-position: inside;
+}
+
+.advanced-technical-information > summary:hover,
+.advanced-technical-information > summary:focus-visible {
+  color: #111614;
+}
+
+.advanced-technical-information__body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.advanced-technical-information__body > .hook-sync-card,
+.advanced-technical-information__body > .stat-row,
+.advanced-technical-information__body > .method-grid {
+  grid-column: 1 / -1;
+}
+
 .legacy-settings {
   align-items: start;
 }
@@ -1500,6 +1537,10 @@ code {
   }
 
   .hook-canvas-workspace__body {
+    grid-template-columns: 1fr;
+  }
+
+  .advanced-technical-information__body {
     grid-template-columns: 1fr;
   }
 

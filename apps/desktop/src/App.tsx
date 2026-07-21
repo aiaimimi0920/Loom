@@ -136,7 +136,7 @@ const navigationItems: NavigationItem[] = [
   { id: "overview", label: "总览", eyebrow: "本地工作台" },
   { id: "mcp", label: "MCP", eyebrow: "服务工具" },
   { id: "registry", label: "Art 注册表", eyebrow: "工具中心" },
-  { id: "workflow-manager", label: "工作流管理", eyebrow: "YAML 存储" },
+  { id: "workflow-manager", label: "工作流管理", eyebrow: "可视化流程" },
   { id: "hook-bridge", label: "截图同步", eyebrow: "Hook 同步" },
   { id: "workflows", label: "工作流工作台", eyebrow: "节点编排" },
   { id: "agents", label: "智能体", eyebrow: "本地大脑" },
@@ -648,7 +648,7 @@ function WorkflowStudioPanel({
         kind: "info",
         text: isHookLiveWorkflow(bundle)
           ? "已加载 Hook 实时工作流。"
-          : `已加载工作流 ${bundle.id} 的 YAML。`,
+          : `已加载工作流 ${bundle.id}。`,
       });
     } catch (error) {
       setMessage(isHookLiveWorkflow({ id: targetWorkflowId })
@@ -759,16 +759,13 @@ function WorkflowStudioPanel({
         <h2>工作流工作台</h2>
         <div className="studio-actions">
           <button className="signal-button" type="button" onClick={saveWorkflow} disabled={busy}>
-            {busy ? "保存中" : "保存工作流 YAML"}
+            {busy ? "保存中" : "保存工作流"}
           </button>
           <button className="ghost-button" type="button" onClick={runInterfaceInference}>
             推断工作流接口
           </button>
           <button className="ghost-button" type="button" onClick={wrapWorkflowAsTool} disabled={busy}>
             封装为 Loom 工具
-          </button>
-          <button className="ghost-button" type="button" onClick={() => openExternal(`${snapshot.baseUrl}/v1/workflows`)}>
-            查看工作流 JSON
           </button>
         </div>
         {message ? <p className={message.kind === "error" ? "error-text" : "success-text"}>{message.text}</p> : null}
@@ -784,7 +781,9 @@ function WorkflowStudioPanel({
       ) : null}
 
       <div className="studio-grid">
-        <article className="glass-card studio-card studio-card--wide">
+        <details className="advanced-technical-information advanced-technical-information--studio">
+          <summary>高级技术信息 · YAML 源定义</summary>
+          <article className="glass-card studio-card studio-card--wide">
           <div className="control-card__head">
             <div>
               <p className="card-kicker">YAML 编辑</p>
@@ -823,7 +822,8 @@ function WorkflowStudioPanel({
             <span>PUT /v1/workflows/{workflowId.trim() || "workflow-id"}</span>
             <span>生成工具 ID: {generatedToolId}</span>
           </div>
-        </article>
+          </article>
+        </details>
 
         <article className="glass-card studio-card workflow-graph-card">
           <div className="control-card__head">
@@ -972,6 +972,9 @@ function WorkflowStudioPanel({
           </div>
         </article>
 
+        <details className="advanced-technical-information advanced-technical-information--studio">
+          <summary>高级技术信息 · 导入与绑定</summary>
+          <div className="advanced-technical-information__body">
         <article className="glass-card studio-card">
           <div className="control-card__head">
             <div>
@@ -1054,6 +1057,8 @@ function WorkflowStudioPanel({
             </div>
           )}
         </article>
+          </div>
+        </details>
 
         <article className="glass-card studio-card studio-card--wide">
           <div className="control-card__head">
@@ -1078,7 +1083,7 @@ function WorkflowStudioPanel({
                     onClick={() => loadSavedWorkflow(workflow)}
                     disabled={busy}
                   >
-                    {isHookLiveWorkflow(workflow) ? "打开 Hook 工作流" : "加载 YAML"}
+                    {isHookLiveWorkflow(workflow) ? "打开 Hook 工作流" : "打开工作流"}
                   </button>
                   <button
                     className="ghost-button"
@@ -3331,21 +3336,16 @@ function RegistryPanel({
 
 function WorkflowManagerPanel({
   workflows,
-  baseUrl,
   onOpenWorkflow,
 }: {
   workflows: LoomWorkflowMetadata[];
-  baseUrl: string;
   onOpenWorkflow: (workflowId: string) => void;
 }) {
   return (
     <section className="content-grid">
       <div className="main-board">
         <p className="section-kicker">工作流管理</p>
-        <h2>YAML 工作流存储</h2>
-        <button className="ghost-button" type="button" onClick={() => openExternal(`${baseUrl}/v1/workflows`)}>
-          查看工作流 JSON
-        </button>
+        <h2>可视化工作流管理</h2>
       </div>
       <div className="card-grid">
         {workflows.length ? workflows.map((workflow) => (
@@ -3557,14 +3557,12 @@ function HookBridgePanel({
             广播同步
           </button>
         </div>
-        <div className="method-grid">
-          <span className="method-chip">art_hook/instantiate</span>
-          <span className="method-chip">art_loom/update_workflow_node</span>
-          <span className="method-chip">art_loom/workflow_updated</span>
-        </div>
         {syncMessage ? <p className="success-text">{syncMessage}</p> : null}
       </div>
       {error ? <p className="error-text">{error}</p> : null}
+      <details className="advanced-technical-information" data-testid="advanced-technical-information">
+        <summary>高级技术信息</summary>
+        <div className="advanced-technical-information__body">
       <div className="hook-sync-card">
         <div className="control-card__head">
           <div>
@@ -3682,10 +3680,14 @@ function HookBridgePanel({
       </div>
       <div className="method-grid">
         <span className="method-chip">兼容协议诊断</span>
+        <span className="method-chip">art_hook/instantiate</span>
+        <span className="method-chip">art_loom/workflow_updated</span>
         {methods.length ? methods.map((method) => (
           <span className="method-chip" key={method}>{method}</span>
         )) : <span className="method-chip">未加载方法目录</span>}
       </div>
+        </div>
+      </details>
     </section>
   );
 }
@@ -4389,7 +4391,6 @@ export default function App() {
           {activeSection === "workflow-manager" && (
             <WorkflowManagerPanel
               workflows={snapshot.workflows}
-              baseUrl={snapshot.baseUrl}
               onOpenWorkflow={openWorkflowInStudio}
             />
           )}
