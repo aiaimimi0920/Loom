@@ -37,7 +37,7 @@ function Get-LoomArchiveFileEntries {
             ) {
                 throw "Invalid Loom archive entry: $relativePath"
             }
-            if ([string]::IsNullOrWhiteSpace($entry.Name)) {
+            if ($entry.Name.Length -eq 0) {
                 continue
             }
             $entries += $relativePath
@@ -65,6 +65,18 @@ function Assert-LoomDesktopRootExecutableBoundary {
     if (-not $isExactEntry) {
         throw "Loom desktop package root must contain exactly one executable named Loom.exe."
     }
+}
+
+function Test-LoomArtifactKind {
+    param(
+        [object]$Artifact,
+        [Parameter(Mandatory = $true)][string]$Kind
+    )
+
+    return (
+        $null -ne $Artifact -and
+        [string]::Equals([string]$Artifact.kind, $Kind, [System.StringComparison]::Ordinal)
+    )
 }
 
 function Get-LoomReleaseLayout {
@@ -100,11 +112,11 @@ function Get-LoomReleaseLayout {
         throw "Loom package manifest is missing cliArtifact."
     }
     $cliEntryName = [string]$cliArtifact.Value.entryName
-    if ($cliEntryName -ne "loom.exe") {
+    if (-not [string]::Equals($cliEntryName, "loom.exe", [System.StringComparison]::Ordinal)) {
         throw "Loom CLI artifact entry must be loom.exe. Actual: $cliEntryName"
     }
     $cliZipName = [string]$cliArtifact.Value.zipName
-    if (-not $cliZipName.StartsWith("Loom-CLI-")) {
+    if (-not $cliZipName.StartsWith("Loom-CLI-", [System.StringComparison]::Ordinal)) {
         throw "Loom CLI artifact must use the Loom-CLI- naming contract. Actual: $cliZipName"
     }
 
@@ -112,7 +124,7 @@ function Get-LoomReleaseLayout {
     if ($null -eq $artifactProperty -or $null -eq $artifactProperty.Value) {
         throw "Loom CLI artifact metadata mismatch."
     }
-    $cliZipRecords = @($artifactProperty.Value | Where-Object { [string]$_.kind -eq "cli-zip" })
+    $cliZipRecords = @($artifactProperty.Value | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "cli-zip" })
     if ($cliZipRecords.Count -ne 1) {
         throw "Loom CLI artifact metadata mismatch."
     }

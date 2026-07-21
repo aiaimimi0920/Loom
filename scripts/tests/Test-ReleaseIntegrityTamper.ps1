@@ -96,6 +96,35 @@ function New-TraversalZip {
     }
 }
 
+function New-WhitespaceEntryZip {
+    param([string]$ZipPath)
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $stream = [System.IO.File]::Open($ZipPath, [System.IO.FileMode]::Create)
+    $archive = [System.IO.Compression.ZipArchive]::new(
+        $stream,
+        [System.IO.Compression.ZipArchiveMode]::Create,
+        $false
+    )
+    try {
+        foreach ($entryName in @("loom.exe", " ")) {
+            $entry = $archive.CreateEntry($entryName)
+            $writer = [System.IO.StreamWriter]::new($entry.Open())
+            try {
+                $writer.Write("fixture")
+            }
+            finally {
+                $writer.Dispose()
+            }
+        }
+    }
+    finally {
+        $archive.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Write-PackageChecksums {
     param([string]$PackageDir)
     $lines = @()
@@ -114,8 +143,11 @@ function New-IntegrityFixture {
         [switch]$ExtraRootExecutable,
         [switch]$ExtraCliEntry,
         [switch]$CliMetadataMismatch,
+        [switch]$CliEntryCaseMismatch,
+        [switch]$CliKindCaseMismatch,
         [switch]$ArtifactNamingMismatch,
-        [ValidateSet("valid", "desktop-wrong", "cli-wrong")]
+        [switch]$ForwardSlashPaths,
+        [ValidateSet("valid", "desktop-wrong", "cli-wrong", "no-newline", "extra-line")]
         [string]$SidecarMode = "valid"
     )
 
@@ -153,13 +185,23 @@ function New-IntegrityFixture {
     $cliSidecarLine = "$cliZipHash  $cliZipName"
     if ($SidecarMode -eq "desktop-wrong") { $desktopSidecarLine = ("0" * 64) + "  " + $desktopZipName }
     if ($SidecarMode -eq "cli-wrong") { $cliSidecarLine = ("0" * 64) + "  " + $cliZipName }
-    Write-Ascii -Path "$desktopZipPath.sha256" -Value ($desktopSidecarLine + [Environment]::NewLine)
-    Write-Ascii -Path "$cliZipPath.sha256" -Value ($cliSidecarLine + [Environment]::NewLine)
+    $sidecarSuffix = if ($SidecarMode -eq "no-newline") {
+        ""
+    }
+    elseif ($SidecarMode -eq "extra-line") {
+        "`r`nunexpected`r`n"
+    }
+    else {
+        [Environment]::NewLine
+    }
+    Write-Ascii -Path "$desktopZipPath.sha256" -Value ($desktopSidecarLine + $sidecarSuffix)
+    Write-Ascii -Path "$cliZipPath.sha256" -Value ($cliSidecarLine + $sidecarSuffix)
 
     $desktopRecord = Get-Record -PackageDir $packageDir -Kind "desktop-zip" -RelativePath $desktopZipRelative
     $desktopSidecarRecord = Get-Record -PackageDir $packageDir -Kind "zip-sha256" -RelativePath "$desktopZipRelative.sha256"
     $cliRecord = Get-Record -PackageDir $packageDir -Kind "cli-zip" -RelativePath $cliZipRelative
     $cliSidecarRecord = Get-Record -PackageDir $packageDir -Kind "cli-zip-sha256" -RelativePath "$cliZipRelative.sha256"
+    if ($CliKindCaseMismatch) { $cliRecord.kind = "CLI-ZIP" }
 
     $cliArtifact = [ordered]@{
         name = "loom-cli"
@@ -173,6 +215,7 @@ function New-IntegrityFixture {
         $cliArtifact.bytes = [int64]$cliArtifact.bytes + 1
         $cliArtifact.sha256 = "a" * 64
     }
+    if ($CliEntryCaseMismatch) { $cliArtifact.entryName = "LOOM.EXE" }
 
     $manifest = [ordered]@{
         schemaVersion = 1
@@ -203,6 +246,13 @@ function New-IntegrityFixture {
         checksums = "checksums.sha256"
         sourceGitDirty = $false
         sourcePaths = @(".")
+    }
+
+    if ($ForwardSlashPaths) {
+        foreach ($record in @($manifest.exes + $manifest.artifacts + @($manifest.buildInfo))) {
+            $record.path = ([string]$record.path).Replace("\", "/")
+        }
+        $manifest.cliArtifact.path = ([string]$manifest.cliArtifact.path).Replace("\", "/")
     }
 
     Write-Utf8NoBom -Path (Join-Path $packageDir "manifest.json") -Value (($manifest | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
@@ -255,6 +305,12 @@ try {
     $valid = New-IntegrityFixture -Name "valid"
     Invoke-VerifierSuccess -PackageDir $valid
 
+    $noNewline = New-IntegrityFixture -Name "sidecar-no-newline" -SidecarMode no-newline
+    Invoke-VerifierSuccess -PackageDir $noNewline
+
+    $forwardSlash = New-IntegrityFixture -Name "forward-slash-paths" -ForwardSlashPaths
+    Invoke-VerifierSuccess -PackageDir $forwardSlash
+
     $extraRoot = New-IntegrityFixture -Name "extra-root" -ExtraRootExecutable
     Invoke-VerifierFailure -PackageDir $extraRoot -ExpectedMessage "Loom desktop package root must contain exactly one executable named Loom.exe."
 
@@ -284,8 +340,46 @@ try {
     }
     Assert-True ($traversalError.Contains("Invalid Loom archive entry: ..\escape\")) "Shared layout helper did not reject directory traversal: $traversalError"
 
+    $whitespaceZip = Join-Path $tempRoot "whitespace-entry.zip"
+    New-WhitespaceEntryZip -ZipPath $whitespaceZip
+    $whitespaceError = $null
+    try {
+        [void](Get-LoomArchiveFileEntries -ZipPath $whitespaceZip)
+        throw "Whitespace-named archive entry unexpectedly passed validation."
+    }
+    catch {
+        $whitespaceError = $_.Exception.Message
+    }
+    Assert-True ($whitespaceError.Contains("Invalid Loom archive entry:")) "Whitespace-named ZIP file was discarded instead of rejected: $whitespaceError"
+
+    $validExtractRoot = Join-Path $tempRoot "valid-extraction"
+    $validLayout = Get-LoomReleaseLayout -PackageDir $valid -CliExtractRoot $validExtractRoot
+    $extractedFiles = @(Get-ChildItem -LiteralPath $validExtractRoot -Recurse -File)
+    Assert-Equal 1 $extractedFiles.Count "Valid CLI extraction must produce exactly one file."
+    Assert-True ([string]::Equals($extractedFiles[0].Name, "loom.exe", [System.StringComparison]::Ordinal)) "Valid CLI extraction produced an unexpected file name."
+    Assert-True (Test-Path -LiteralPath $validLayout.cliExe -PathType Leaf) "Valid CLI extraction did not return the loom.exe path."
+
+    $staleExtractRoot = Join-Path $tempRoot "stale-extraction"
+    New-Item -ItemType Directory -Path $staleExtractRoot -Force | Out-Null
+    Write-FixtureFile -PackageDir $staleExtractRoot -RelativePath "stale.txt" -Content "stale"
+    $staleExtractionError = $null
+    try {
+        [void](Get-LoomReleaseLayout -PackageDir $valid -CliExtractRoot $staleExtractRoot)
+        throw "Non-empty CLI extraction destination unexpectedly passed validation."
+    }
+    catch {
+        $staleExtractionError = $_.Exception.Message
+    }
+    Assert-True ($staleExtractionError.Contains("Loom CLI extraction destination must be empty:")) "Non-empty CLI extraction destination was not rejected: $staleExtractionError"
+
     $metadata = New-IntegrityFixture -Name "metadata-mismatch" -CliMetadataMismatch
     Invoke-VerifierFailure -PackageDir $metadata -ExpectedMessage "Loom CLI artifact metadata mismatch."
+
+    $entryCase = New-IntegrityFixture -Name "entry-case-mismatch" -CliEntryCaseMismatch
+    Invoke-VerifierFailure -PackageDir $entryCase -ExpectedMessage "Loom CLI artifact entry must be loom.exe."
+
+    $kindCase = New-IntegrityFixture -Name "kind-case-mismatch" -CliKindCaseMismatch
+    Invoke-VerifierFailure -PackageDir $kindCase -ExpectedMessage "Loom CLI artifact metadata mismatch."
 
     $artifactNaming = New-IntegrityFixture -Name "artifact-naming" -ArtifactNamingMismatch
     Invoke-VerifierFailure -PackageDir $artifactNaming -ExpectedMessage "Desktop ZIP name does not match the manifest version."
@@ -295,6 +389,9 @@ try {
 
     $cliSidecar = New-IntegrityFixture -Name "cli-sidecar" -SidecarMode cli-wrong
     Invoke-VerifierFailure -PackageDir $cliSidecar -ExpectedMessage "ZIP checksum sidecar content mismatch for Loom-CLI-integrity-fixture-windows-x64.zip."
+
+    $extraSidecarLine = New-IntegrityFixture -Name "sidecar-extra-line" -SidecarMode extra-line
+    Invoke-VerifierFailure -PackageDir $extraSidecarLine -ExpectedMessage "ZIP checksum sidecar content mismatch for Loom-integrity-fixture-windows-x64.zip."
 
     Write-Output "Loom release integrity tamper contract passed."
 }
