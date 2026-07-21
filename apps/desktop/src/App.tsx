@@ -83,6 +83,8 @@ import {
   readHookCanvasSnapshot,
   type HookCanvasSnapshot,
 } from "./services/hookCanvas";
+import { HookCanvasThumbnail } from "./components/hook/HookCanvasThumbnail";
+import { HookCanvasView } from "./components/hook/HookCanvasView";
 import {
   addWorkflowGraphNode,
   autoTemplateResponse,
@@ -117,6 +119,11 @@ type SectionId =
 interface RuntimeConfig {
   loomDaemonUrl: string;
   settingsUrl: string;
+}
+
+interface WorkflowOpenRequest {
+  workflowId: string;
+  selectedNodeId?: string;
 }
 
 interface NavigationItem {
@@ -354,12 +361,13 @@ const openExternal = (url: string) => {
 };
 
 const openHookLiveWorkflow = (
-  setWorkflowOpenRequest: Dispatch<SetStateAction<string | null>>,
+  setWorkflowOpenRequest: Dispatch<SetStateAction<WorkflowOpenRequest | null>>,
   setActiveSection: Dispatch<SetStateAction<SectionId>>,
+  selectedNodeId?: string,
 ) => {
   setWorkflowOpenRequest(null);
   window.setTimeout(() => {
-    setWorkflowOpenRequest(HOOK_LIVE_WORKFLOW_ID);
+    setWorkflowOpenRequest({ workflowId: HOOK_LIVE_WORKFLOW_ID, selectedNodeId });
     setActiveSection("workflows");
   }, 0);
 };
@@ -473,12 +481,14 @@ function OverviewPanel({
 function WorkflowStudioPanel({
   snapshot,
   refresh,
+  hookCanvas,
   workflowOpenRequest,
   onWorkflowOpenRequestHandled,
 }: {
   snapshot: LoomSnapshot;
   refresh: () => Promise<void>;
-  workflowOpenRequest: string | null;
+  hookCanvas: HookCanvasSnapshot | null;
+  workflowOpenRequest: WorkflowOpenRequest | null;
   onWorkflowOpenRequestHandled: () => void;
 }) {
   const [workflowId, setWorkflowId] = useState("studio-sample-flow");
@@ -492,6 +502,7 @@ function WorkflowStudioPanel({
   const [message, setMessage] = useState<StudioMessage | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<string | null>(null);
   const [nodeDraft, setNodeDraft] = useState<GraphNodeDraft>(() => createNodeDraft(null));
 
   const workflowGraph = useMemo(() => parseWorkflowYamlLite(workflowYaml), [workflowYaml]);
@@ -514,6 +525,17 @@ function WorkflowStudioPanel({
   useEffect(() => {
     setNodeDraft(createNodeDraft(selectedGraphNode));
   }, [selectedGraphNode]);
+
+  useEffect(() => {
+    if (!hookCanvas) {
+      if (selectedCanvasNodeId !== null) setSelectedCanvasNodeId(null);
+      return;
+    }
+    const retained = hookCanvas.nodes.some((node) => node.id === selectedCanvasNodeId)
+      ? selectedCanvasNodeId
+      : null;
+    if (retained !== selectedCanvasNodeId) setSelectedCanvasNodeId(retained);
+  }, [hookCanvas, selectedCanvasNodeId]);
 
   const runSmartImport = () => {
     const parsedCurl = parseCurlCommand(curlCommand);
@@ -609,8 +631,13 @@ function WorkflowStudioPanel({
     }
   };
 
-  const loadWorkflowById = async (targetWorkflowId: string) => {
+  const loadWorkflowById = async (targetWorkflowId: string, requestedNodeId?: string) => {
     setBusy(true);
+    setWorkflowId(targetWorkflowId);
+    if (isHookLiveWorkflow({ id: targetWorkflowId })) {
+      setWorkflowName("Hook 实时工作流");
+      setSelectedCanvasNodeId(requestedNodeId ?? null);
+    }
     try {
       const bundle = await getWorkflowBundle(snapshot.baseUrl, targetWorkflowId);
       setWorkflowId(bundle.id);
@@ -624,12 +651,12 @@ function WorkflowStudioPanel({
           : `已加载工作流 ${bundle.id} 的 YAML。`,
       });
     } catch (error) {
-      setMessage({
-        kind: "error",
-        text: isHookLiveWorkflow({ id: targetWorkflowId })
-          ? "还没有 Hook 实时工作流，请先从 Hook 生成或保存一次工作流。"
-          : error instanceof Error ? error.message : "无法加载工作流 YAML。",
-      });
+      setMessage(isHookLiveWorkflow({ id: targetWorkflowId })
+        ? { kind: "info", text: "Hook 画布已打开；工作流定义尚未持久化。" }
+        : {
+            kind: "error",
+            text: error instanceof Error ? error.message : "无法加载工作流。",
+          });
     } finally {
       setBusy(false);
     }
@@ -637,7 +664,10 @@ function WorkflowStudioPanel({
 
   useEffect(() => {
     if (!workflowOpenRequest) return;
-    void loadWorkflowById(workflowOpenRequest).finally(onWorkflowOpenRequestHandled);
+    void loadWorkflowById(
+      workflowOpenRequest.workflowId,
+      workflowOpenRequest.selectedNodeId,
+    ).finally(onWorkflowOpenRequestHandled);
   }, [workflowOpenRequest, onWorkflowOpenRequestHandled]);
 
   const loadSavedWorkflow = async (workflow: LoomWorkflowMetadata) => {
@@ -715,6 +745,13 @@ function WorkflowStudioPanel({
     setMessage({ kind: "info", text: `已添加 Art 节点 ${addedNode?.id ?? "new"}，工具：${tool.name || tool.id}。` });
   };
 
+  const selectCanvasNode = (nodeId: string) => {
+    setSelectedCanvasNodeId(nodeId);
+    if (workflowGraph.nodes.some((node) => node.id === nodeId)) {
+      setSelectedNodeId(nodeId);
+    }
+  };
+
   return (
     <section className="content-grid workflow-studio">
       <div className="main-board studio-hero">
@@ -736,6 +773,15 @@ function WorkflowStudioPanel({
         </div>
         {message ? <p className={message.kind === "error" ? "error-text" : "success-text"}>{message.text}</p> : null}
       </div>
+
+      {isHookLiveWorkflow({ id: workflowId }) && hookCanvas ? (
+        <HookCanvasView
+          snapshot={hookCanvas}
+          baseUrl={snapshot.baseUrl}
+          selectedNodeId={selectedCanvasNodeId}
+          onSelectNode={selectCanvasNode}
+        />
+      ) : null}
 
       <div className="studio-grid">
         <article className="glass-card studio-card studio-card--wide">
@@ -3335,6 +3381,11 @@ function HookBridgePanel({
   busy,
   error,
   baseUrl,
+  hookCanvas,
+  hookCanvasLoading,
+  hookCanvasError,
+  hookConnected,
+  onRefreshHookCanvas,
   onStart,
   onStop,
   onOpenHookWorkflow,
@@ -3343,9 +3394,14 @@ function HookBridgePanel({
   busy: boolean;
   error: string | null;
   baseUrl: string;
+  hookCanvas: HookCanvasSnapshot | null;
+  hookCanvasLoading: boolean;
+  hookCanvasError: string | null;
+  hookConnected: boolean;
+  onRefreshHookCanvas: () => void;
   onStart: () => void;
   onStop: () => void;
-  onOpenHookWorkflow: () => void;
+  onOpenHookWorkflow: (nodeId?: string) => void;
 }) {
   const methods = status?.methods ?? [];
   const running = status?.running === true;
@@ -3471,6 +3527,15 @@ function HookBridgePanel({
           <h3>截图同步到工作流</h3>
           <span className="mini-chip">同步桌面 Hook</span>
         </div>
+        <HookCanvasThumbnail
+          snapshot={hookCanvas}
+          baseUrl={baseUrl}
+          loading={hookCanvasLoading}
+          error={hookCanvasError}
+          hookConnected={hookConnected}
+          onRefresh={onRefreshHookCanvas}
+          onOpen={onOpenHookWorkflow}
+        />
         <div className="flow-strip">
           <span>Hook 截图</span>
           <span>→</span>
@@ -3485,7 +3550,7 @@ function HookBridgePanel({
           <button className="ghost-button" type="button" onClick={refreshHookWorkflow} disabled={busy}>
             生成/刷新工作流
           </button>
-          <button className="ghost-button" type="button" onClick={onOpenHookWorkflow}>
+          <button className="ghost-button" type="button" onClick={() => onOpenHookWorkflow()}>
             打开 Hook 工作流
           </button>
           <button className="ghost-button" type="button" onClick={broadcastHookSync}>
@@ -4118,7 +4183,7 @@ export default function App() {
   const [localServiceBusy, setLocalServiceBusy] = useState(false);
   const [localServiceMessage, setLocalServiceMessage] = useState<StudioMessage | null>(null);
   const [autoStartAttempted, setAutoStartAttempted] = useState(false);
-  const [workflowOpenRequest, setWorkflowOpenRequest] = useState<string | null>(null);
+  const [workflowOpenRequest, setWorkflowOpenRequest] = useState<WorkflowOpenRequest | null>(null);
   const [hookCanvas, setHookCanvas] = useState<HookCanvasSnapshot | null>(null);
   const [hookCanvasLoading, setHookCanvasLoading] = useState(false);
   const [hookCanvasError, setHookCanvasError] = useState<string | null>(null);
@@ -4216,9 +4281,13 @@ export default function App() {
   }, [refresh]);
 
   const openWorkflowInStudio = (workflowId: string) => {
-    setWorkflowOpenRequest(workflowId);
+    setWorkflowOpenRequest({ workflowId });
     setActiveSection("workflows");
   };
+
+  const handleWorkflowOpenRequestHandled = useCallback(() => {
+    setWorkflowOpenRequest(null);
+  }, []);
 
   const handleBridgeStart = async () => {
     setBridgeBusy(true);
@@ -4268,6 +4337,7 @@ export default function App() {
               className={activeSection === item.id ? "rail-item rail-item--active" : "rail-item"}
               type="button"
               key={item.id}
+              data-testid={item.id === "hook-bridge" ? "nav-hook-bridge" : undefined}
               onClick={() => setActiveSection(item.id)}
             >
               <span>{item.label}</span>
@@ -4325,21 +4395,31 @@ export default function App() {
           )}
           {activeSection === "hook-bridge" && (
             <HookBridgePanel
-            status={snapshot.hookBridge}
-            busy={bridgeBusy}
-            error={bridgeError}
-            baseUrl={snapshot.baseUrl}
-            onStart={handleBridgeStart}
-            onStop={handleBridgeStop}
-            onOpenHookWorkflow={() => openHookLiveWorkflow(setWorkflowOpenRequest, setActiveSection)}
-          />
+              status={snapshot.hookBridge}
+              busy={bridgeBusy}
+              error={bridgeError}
+              baseUrl={snapshot.baseUrl}
+              hookCanvas={hookCanvas}
+              hookCanvasLoading={hookCanvasLoading}
+              hookCanvasError={hookCanvasError}
+              hookConnected={snapshot.hookBridge?.running === true}
+              onRefreshHookCanvas={() => void refreshHookCanvas()}
+              onStart={handleBridgeStart}
+              onStop={handleBridgeStop}
+              onOpenHookWorkflow={(nodeId) => openHookLiveWorkflow(
+                setWorkflowOpenRequest,
+                setActiveSection,
+                nodeId,
+              )}
+            />
           )}
           {activeSection === "workflows" && (
             <WorkflowStudioPanel
               snapshot={snapshot}
               refresh={refresh}
+              hookCanvas={hookCanvas}
               workflowOpenRequest={workflowOpenRequest}
-              onWorkflowOpenRequestHandled={() => setWorkflowOpenRequest(null)}
+              onWorkflowOpenRequestHandled={handleWorkflowOpenRequestHandled}
             />
           )}
           {activeSection === "agents" && <AgentsPanel capabilities={snapshot.capabilities} />}
