@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 
 function Assert-True {
     param(
@@ -28,20 +29,6 @@ function Assert-Equal {
 
     if ($Expected -ne $Actual) {
         throw "$Message Expected=[$Expected] Actual=[$Actual]"
-    }
-}
-
-function Get-FreeTcpPort {
-    $listener = [System.Net.Sockets.TcpListener]::new(
-        [System.Net.IPAddress]::Parse("127.0.0.1"),
-        0
-    )
-    $listener.Start()
-    try {
-        return [int]$listener.LocalEndpoint.Port
-    }
-    finally {
-        $listener.Stop()
     }
 }
 
@@ -257,9 +244,9 @@ $layout = Get-LoomReleaseLayout -PackageDir $packageFullPath -CliExtractRoot (Jo
 $loomExe = $layout.cliExe
 $daemonExe = $layout.daemonExe
 
-$gatewayPort = Get-FreeTcpPort
+$gatewayPort = Get-LoomSmokePort
 do {
-    $daemonPort = Get-FreeTcpPort
+    $daemonPort = Get-LoomSmokePort
 } while ($daemonPort -eq $gatewayPort)
 $gatewayBaseUrl = "http://127.0.0.1:$gatewayPort"
 $daemonBaseUrl = "http://127.0.0.1:$daemonPort"

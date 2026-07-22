@@ -8,6 +8,12 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $buildPath = Join-Path $repoRoot "scripts\build-release.ps1"
 $verifyPath = Join-Path $repoRoot "scripts\verify-release.ps1"
 $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
+$smokePortHelperPath = Join-Path $repoRoot "scripts\LoomSmokePorts.ps1"
+$focusedSmokePaths = @(
+    (Join-Path $repoRoot "scripts\Invoke-LoomGatewayBrainPlanSmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomRunPersistenceSmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomDaemonConcurrencySmoke.ps1")
+)
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
 
@@ -178,9 +184,8 @@ Assert-ScriptContract `
         'Invoke-LoomDaemonConcurrencySmoke.ps1',
         'runtime\resources\ocr',
         'runtime\bin\python-embed',
-        '$SmokePortMinimum = 30000',
-        '$SmokePortMaximum = 45000',
-        '$listener.ExclusiveAddressUse = $true',
+        'LoomSmokePorts.ps1',
+        'Get-LoomSmokePort',
         '/v1/mcp/servers',
         '/v1/workflows',
         '/v1/hook-bridge/status',
@@ -189,6 +194,36 @@ Assert-ScriptContract `
         '$EvidenceRoot'
     ) `
     -ForbiddenText $commonForbidden
+
+Assert-True -Condition (Test-Path -LiteralPath $smokePortHelperPath -PathType Leaf) -Message "Missing shared smoke port allocator: $smokePortHelperPath"
+$smokePortHelperRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $smokePortHelperPath
+foreach ($needle in @(
+    '$script:SmokePortMinimum = 30000',
+    '$script:SmokePortMaximum = 45000',
+    '$script:AllocatedSmokePorts = [System.Collections.Generic.HashSet[int]]::new()',
+    'for ($attempt = 0; $attempt -lt 64; $attempt++)',
+    'Get-Random -Minimum $script:SmokePortMinimum -Maximum ($script:SmokePortMaximum + 1)',
+    '$listener.ExclusiveAddressUse = $true',
+    '$script:AllocatedSmokePorts.Add([int]$port)'
+)) {
+    Assert-True -Condition $smokePortHelperRaw.Contains($needle) -Message "Missing shared smoke port allocator contract text: $needle"
+}
+Assert-True `
+    -Condition (-not [regex]::IsMatch($smokePortHelperRaw, 'TcpListener\]::new\([\s\S]*?,\s*0\s*\)', [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) `
+    -Message "Shared smoke port allocator must not request a Windows dynamic client port with TcpListener port 0."
+
+. $smokePortHelperPath
+$allocatedSmokePorts = @(for ($index = 0; $index -lt 64; $index++) { Get-LoomSmokePort })
+Assert-Equal -Expected 64 -Actual @($allocatedSmokePorts | Select-Object -Unique).Count -Message "Shared smoke port allocator returned a duplicate port."
+Assert-True -Condition (@($allocatedSmokePorts | Where-Object { $_ -lt 30000 -or $_ -gt 45000 }).Count -eq 0) -Message "Shared smoke port allocator returned a port outside 30000-45000."
+
+foreach ($focusedSmokePath in @($smokePath) + $focusedSmokePaths) {
+    $focusedSmokeRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $focusedSmokePath
+    Assert-True -Condition $focusedSmokeRaw.Contains('LoomSmokePorts.ps1') -Message "Smoke must import the shared port allocator: $focusedSmokePath"
+    Assert-True -Condition $focusedSmokeRaw.Contains('Get-LoomSmokePort') -Message "Smoke must use the shared port allocator: $focusedSmokePath"
+    Assert-True -Condition (-not $focusedSmokeRaw.Contains('function Get-FreePort')) -Message "Smoke must not retain a local release port allocator: $focusedSmokePath"
+    Assert-True -Condition (-not $focusedSmokeRaw.Contains('function Get-FreeTcpPort')) -Message "Smoke must not retain a local TCP port allocator: $focusedSmokePath"
+}
 
 $versionId = "standalone-contract"
 $defaultOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $buildPath -VersionId $versionId -NoZip -DryRun 2>&1

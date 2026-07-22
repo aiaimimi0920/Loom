@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 
 function Assert-True {
     param(
@@ -28,20 +29,6 @@ function Assert-Equal {
 
     if ($Expected -ne $Actual) {
         throw "$Message Expected=[$Expected] Actual=[$Actual]"
-    }
-}
-
-function Get-FreeTcpPort {
-    $listener = [System.Net.Sockets.TcpListener]::new(
-        [System.Net.IPAddress]::Parse("127.0.0.1"),
-        0
-    )
-    $listener.Start()
-    try {
-        return [int]$listener.LocalEndpoint.Port
-    }
-    finally {
-        $listener.Stop()
     }
 }
 
@@ -475,12 +462,12 @@ try {
     }
     Write-JsonEvidence -Path (Join-Path $evidenceRunDir "processes-baseline.json") -Value $baselineCandidates
 
-    $firstPort = Get-FreeTcpPort
+    $firstPort = Get-LoomSmokePort
     do {
-        $secondPort = Get-FreeTcpPort
+        $secondPort = Get-LoomSmokePort
     } while ($secondPort -eq $firstPort)
     do {
-        $desktopPort = Get-FreeTcpPort
+        $desktopPort = Get-LoomSmokePort
     } while ($desktopPort -eq $firstPort -or $desktopPort -eq $secondPort)
 
     $firstBaseUrl = "http://127.0.0.1:$firstPort"

@@ -6,11 +6,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$SmokePortMinimum = 30000
-$SmokePortMaximum = 45000
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 . (Join-Path $PSScriptRoot "LoomReleaseLayout.ps1")
+. (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 $PackageDir = [System.IO.Path]::GetFullPath($PackageDir)
 if (-not (Test-Path -LiteralPath $PackageDir -PathType Container)) {
     throw "Loom package directory is missing: $PackageDir"
@@ -76,26 +75,6 @@ function Get-ReleaseExePath {
     )
 
     return [System.IO.Path]::GetFullPath((Join-Path $PackageDir $ExeName))
-}
-
-function Get-FreePort {
-    for ($attempt = 0; $attempt -lt 64; $attempt++) {
-        $port = Get-Random -Minimum $SmokePortMinimum -Maximum ($SmokePortMaximum + 1)
-        $listener = [System.Net.Sockets.TcpListener]::new(
-            [System.Net.IPAddress]::Parse("127.0.0.1"),
-            $port
-        )
-        $listener.ExclusiveAddressUse = $true
-        try {
-            $listener.Start()
-            return [int]$port
-        }
-        catch { }
-        finally {
-            $listener.Stop()
-        }
-    }
-    throw "Unable to allocate an isolated Loom release smoke port between $SmokePortMinimum and $SmokePortMaximum."
 }
 
 function New-SmokeTempRoot {
@@ -1047,7 +1026,7 @@ function Test-LoomReleaseRealOcr {
     Assert-PathExists (Join-Path $ocrDir "onnxruntime_providers_shared.dll")
 
     $realOcrProcess = $null
-    $port = Get-FreePort
+    $port = Get-LoomSmokePort
     $manifestDir = Join-Path $TempRoot "real-ocr-capabilities"
     New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
     $stdout = Join-Path $TempRoot "loom-daemon-real-ocr.stdout.log"
@@ -3013,7 +2992,7 @@ function Test-LoomRelease {
         }
         Assert-Contains "loom-daemon " $daemonVersionText "Loom daemon version output mismatch."
 
-        $port = Get-FreePort
+        $port = Get-LoomSmokePort
         $manifestDir = Join-Path $tempRoot "capabilities"
         New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
         $stdout = Join-Path $tempRoot "loom-daemon.stdout.log"
@@ -3027,11 +3006,11 @@ function Test-LoomRelease {
         $oldMcpRegistryEndpoint = [Environment]::GetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", "Process")
         $oldTranslateEndpoint = [Environment]::GetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", "Process")
         $mcpRegistryFixtureDir = Join-Path $tempRoot "mcp-registry-fixture"
-        $mcpRegistryPort = Get-FreePort
+        $mcpRegistryPort = Get-LoomSmokePort
         $mcpRegistryJob = Start-LoomMcpRegistryFixtureJob -Port $mcpRegistryPort -OutputDir $mcpRegistryFixtureDir
         Wait-ForPath -Path (Join-Path $mcpRegistryFixtureDir "ready.txt") -TimeoutSeconds 20
         $translateFixtureDir = Join-Path $tempRoot "translate-fixture"
-        $translatePort = Get-FreePort
+        $translatePort = Get-LoomSmokePort
         $translateJob = Start-LoomTranslateFixtureJob -Port $translatePort -OutputDir $translateFixtureDir
         Wait-ForPath -Path (Join-Path $translateFixtureDir "ready.txt") -TimeoutSeconds 20
         [Environment]::SetEnvironmentVariable("LOOM_DAEMON_HOST", "127.0.0.1", "Process")
@@ -3275,7 +3254,7 @@ if ($arguments.mode -eq "shader") {
         [System.IO.File]::WriteAllText($fixtureScriptArt, $fixtureScriptSource, [System.Text.UTF8Encoding]::new($false))
 
         $cloudFixtureDir = Join-Path $tempRoot "cloud-api-fixture"
-        $cloudPort = Get-FreePort
+        $cloudPort = Get-LoomSmokePort
         $cloudJob = Start-LoomCloudApiFixtureJob -Port $cloudPort -OutputDir $cloudFixtureDir -MaxRequests 4
         Wait-ForPath -Path (Join-Path $cloudFixtureDir "ready.txt") -TimeoutSeconds 20
 
@@ -3609,7 +3588,7 @@ nodes:
             -PackageDir $PackageDir `
             -TempRoot $tempRoot
 
-        $tokenPort = Get-FreePort
+        $tokenPort = Get-LoomSmokePort
         $tokenValue = "release-smoke-token-$PID"
         $tokenManifestDir = Join-Path $tempRoot "tokenized-capabilities"
         New-Item -ItemType Directory -Force -Path $tokenManifestDir | Out-Null
