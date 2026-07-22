@@ -6,6 +6,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$SmokePortMinimum = 30000
+$SmokePortMaximum = 45000
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 . (Join-Path $PSScriptRoot "LoomReleaseLayout.ps1")
@@ -77,13 +79,23 @@ function Get-ReleaseExePath {
 }
 
 function Get-FreePort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), 0)
-    $listener.Start()
-    try {
-        return $listener.LocalEndpoint.Port
-    } finally {
-        $listener.Stop()
+    for ($attempt = 0; $attempt -lt 64; $attempt++) {
+        $port = Get-Random -Minimum $SmokePortMinimum -Maximum ($SmokePortMaximum + 1)
+        $listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Parse("127.0.0.1"),
+            $port
+        )
+        $listener.ExclusiveAddressUse = $true
+        try {
+            $listener.Start()
+            return [int]$port
+        }
+        catch { }
+        finally {
+            $listener.Stop()
+        }
     }
+    throw "Unable to allocate an isolated Loom release smoke port between $SmokePortMinimum and $SmokePortMaximum."
 }
 
 function New-SmokeTempRoot {
