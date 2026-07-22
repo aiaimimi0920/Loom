@@ -59,6 +59,8 @@ Assert-Contains 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS' $smoke "Smoke must use a
 Assert-Contains 'LOOM_CONTROL_PLANE_ROOT' $smoke "Smoke must isolate Loom data."
 Assert-Contains 'APPDATA' $smoke "Smoke must isolate the Hook session."
 Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exact process paths."
+Assert-Contains 'SmokePortMinimum = 30000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."
+Assert-Contains 'SmokePortMaximum = 45000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."
 Assert-Contains 'Wait-ForHookCanvasUi' $smoke "Smoke must wait on Hook canvas DOM conditions."
 Assert-NotContains 'Start-Sleep -Seconds 2' $smoke "Smoke must not use a fixed Hook canvas refresh delay."
 Assert-Contains 'min-nodes' $inspector "Inspector must wait for the expected Hook canvas node count."
