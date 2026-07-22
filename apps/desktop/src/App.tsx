@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -59,6 +59,7 @@ import {
   testMcpConnection,
   updateArtLoomCompatArtDefaults,
   updateArtLoomCompatShortcut,
+  waitForLoomOnline,
 } from "./services/loomApi";
 import {
   MCP_MARKET_CATEGORIES,
@@ -78,6 +79,7 @@ import {
   type PythonArtPort,
 } from "./services/pythonArtSource";
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
+import { createLatestRequestGate } from "./services/latestRequest";
 import {
   getHookCanvasRefreshTrigger,
   keepNewestHookCanvasSnapshot,
@@ -4181,6 +4183,8 @@ function AboutPanel() {
 }
 
 export default function App() {
+  const snapshotRequestGate = useRef(createLatestRequestGate());
+  const hookCanvasRequestGate = useRef(createLatestRequestGate());
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [snapshot, setSnapshot] = useState<LoomSnapshot>(fallbackSnapshot);
   const [loading, setLoading] = useState(false);
@@ -4201,33 +4205,53 @@ export default function App() {
     refreshVersion: hookCanvasRefreshVersion,
   });
 
-  const refresh = useCallback(async () => {
+  const refreshSnapshot = useCallback(async (): Promise<LoomSnapshot> => {
+    const requestToken = snapshotRequestGate.current.begin();
     setLoading(true);
     try {
       let baseUrl = DEFAULT_LOOM_DAEMON_URL;
+      let nextHookBridgeUrl = DEFAULT_HOOK_BRIDGE_URL;
       try {
         const runtimeConfig = await invoke<RuntimeConfig>("resolve_loom_daemon_url");
         baseUrl = runtimeConfig.loomDaemonUrl || DEFAULT_LOOM_DAEMON_URL;
-        setHookBridgeUrl(runtimeConfig.hookBridgeUrl || DEFAULT_HOOK_BRIDGE_URL);
+        nextHookBridgeUrl = runtimeConfig.hookBridgeUrl || DEFAULT_HOOK_BRIDGE_URL;
       } catch {
         baseUrl = DEFAULT_LOOM_DAEMON_URL;
       }
-      setSnapshot(await readLoomSnapshot(baseUrl));
+      const next = await readLoomSnapshot(baseUrl);
+      if (snapshotRequestGate.current.isCurrent(requestToken)) {
+        setHookBridgeUrl(nextHookBridgeUrl);
+        setSnapshot(next);
+      }
+      return next;
     } finally {
-      setLoading(false);
+      if (snapshotRequestGate.current.isCurrent(requestToken)) {
+        setLoading(false);
+      }
     }
   }, []);
 
+  const refresh = useCallback(async (): Promise<void> => {
+    await refreshSnapshot();
+  }, [refreshSnapshot]);
+
   const refreshHookCanvas = useCallback(async (baseUrl = snapshot.baseUrl) => {
+    const requestToken = hookCanvasRequestGate.current.begin();
     setHookCanvasLoading(true);
     try {
       const next = await readHookCanvasSnapshot(baseUrl);
-      setHookCanvas((previous) => keepNewestHookCanvasSnapshot(previous, next));
-      setHookCanvasError(null);
+      if (hookCanvasRequestGate.current.isCurrent(requestToken)) {
+        setHookCanvas((previous) => keepNewestHookCanvasSnapshot(previous, next));
+        setHookCanvasError(null);
+      }
     } catch (error) {
-      setHookCanvasError(error instanceof Error ? error.message : "无法读取 Hook 画布。");
+      if (hookCanvasRequestGate.current.isCurrent(requestToken)) {
+        setHookCanvasError(error instanceof Error ? error.message : "无法读取 Hook 画布。");
+      }
     } finally {
-      setHookCanvasLoading(false);
+      if (hookCanvasRequestGate.current.isCurrent(requestToken)) {
+        setHookCanvasLoading(false);
+      }
     }
   }, [snapshot.baseUrl]);
 
@@ -4239,8 +4263,15 @@ export default function App() {
       if (!silent || result.started) {
         setLocalServiceMessage({ kind: "info", text: result.message || "已启动 Loom 本地服务。" });
       }
-      await new Promise((resolve) => window.setTimeout(resolve, result.started ? 900 : 100));
-      await refresh();
+      const nextSnapshot = result.started
+        ? await waitForLoomOnline(refreshSnapshot)
+        : await refreshSnapshot();
+      if (!silent && nextSnapshot.connectionState !== "online") {
+        setLocalServiceMessage({
+          kind: "error",
+          text: nextSnapshot.error || "Loom 本地服务启动后仍未就绪，请稍后重试。",
+        });
+      }
     } catch (error) {
       if (!silent) {
         setLocalServiceMessage({
@@ -4259,6 +4290,7 @@ export default function App() {
 
   useEffect(() => {
     if (hookCanvasRefreshTrigger === null) {
+      hookCanvasRequestGate.current.invalidate();
       return;
     }
     void refreshHookCanvas(snapshot.baseUrl);

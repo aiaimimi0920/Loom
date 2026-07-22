@@ -216,12 +216,55 @@ function Write-HookFixture {
 }
 
 function Invoke-Inspector {
-    param([string]$InspectorPath, [int]$DebugPort, [string]$OutputPath, [string]$ScreenshotPath)
-    $output = @(& node $InspectorPath --debug-port $DebugPort --output $OutputPath --screenshot $ScreenshotPath 2>&1)
+    param(
+        [string]$InspectorPath,
+        [int]$DebugPort,
+        [string]$OutputPath,
+        [string]$ScreenshotPath,
+        [int]$MinimumNodes = 1
+    )
+    $output = @(& node $InspectorPath --debug-port $DebugPort --output $OutputPath --screenshot $ScreenshotPath --min-nodes $MinimumNodes 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw "WebView inspector failed: $($output -join [Environment]::NewLine)"
     }
     return Get-Content -Raw -Encoding UTF8 -LiteralPath $OutputPath | ConvertFrom-Json
+}
+
+function Wait-ForHookCanvasUi {
+    param(
+        [string]$InspectorPath,
+        [int]$DebugPort,
+        [string]$OutputPath,
+        [string]$ScreenshotPath,
+        [int]$MinimumNodes,
+        [AllowNull()][string]$PreviousRevision,
+        [int]$TimeoutSeconds = 45
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastError = $null
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $snapshot = Invoke-Inspector `
+                -InspectorPath $InspectorPath `
+                -DebugPort $DebugPort `
+                -OutputPath $OutputPath `
+                -ScreenshotPath $ScreenshotPath `
+                -MinimumNodes $MinimumNodes
+            $revisionChanged = [string]::IsNullOrWhiteSpace($PreviousRevision) -or `
+                ([string]$snapshot.revision -ne $PreviousRevision)
+            if (@($snapshot.thumbnailNodeCount).Count -gt 0 -and `
+                [int]$snapshot.thumbnailNodeCount -ge $MinimumNodes -and `
+                $revisionChanged) {
+                return $snapshot
+            }
+            $lastError = "Observed nodes=$($snapshot.thumbnailNodeCount), revision=$($snapshot.revision)."
+        }
+        catch {
+            $lastError = $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Timed out waiting for Hook canvas UI nodes=$MinimumNodes with a new revision. $lastError"
 }
 
 $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
@@ -307,11 +350,13 @@ try {
     Write-JsonFile -Path (Join-Path $runDir "canvas-initial.json") -Value $canvas
 
     $inspectorPath = Join-Path $repoRoot "scripts\Inspect-LoomWebView.mjs"
-    $initialUi = Invoke-Inspector `
+    $initialUi = Wait-ForHookCanvasUi `
         -InspectorPath $inspectorPath `
         -DebugPort $cdpPort `
         -OutputPath (Join-Path $runDir "ui-initial.json") `
-        -ScreenshotPath (Join-Path $runDir "ui-initial.png")
+        -ScreenshotPath (Join-Path $runDir "ui-initial.png") `
+        -MinimumNodes 3 `
+        -PreviousRevision $null
     Assert-Equal $true ([bool]$initialUi.thumbnailVisible) "Hook canvas thumbnail is not visible."
     Assert-Equal 3 ([int]$initialUi.thumbnailNodeCount) "Hook thumbnail node count mismatch."
     Assert-Equal 1 ([int]$initialUi.thumbnailEdgeCount) "Hook thumbnail edge count mismatch."
@@ -328,13 +373,14 @@ try {
     }
     Assert-Equal "success" ([string]$instantiate.type) "Hook instantiate broadcast failed."
     Write-JsonFile -Path (Join-Path $runDir "instantiate.json") -Value $instantiate
-    Start-Sleep -Seconds 2
 
-    $updatedUi = Invoke-Inspector `
+    $updatedUi = Wait-ForHookCanvasUi `
         -InspectorPath $inspectorPath `
         -DebugPort $cdpPort `
         -OutputPath (Join-Path $runDir "ui-updated.json") `
-        -ScreenshotPath (Join-Path $runDir "ui-updated.png")
+        -ScreenshotPath (Join-Path $runDir "ui-updated.png") `
+        -MinimumNodes 4 `
+        -PreviousRevision ([string]$initialUi.revision)
     Assert-Equal 4 ([int]$updatedUi.thumbnailNodeCount) "Hook canvas did not refresh to the updated node count."
     Assert-True ([string]$updatedUi.revision -ne [string]$initialUi.revision) "Hook canvas revision did not change after the bridge update."
     Write-JsonFile -Path (Join-Path $runDir "processes-during.json") -Value @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)

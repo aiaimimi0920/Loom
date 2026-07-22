@@ -4,7 +4,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::thread;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -13,6 +14,8 @@ use thiserror::Error;
 pub(crate) const MIN_NODE_SIZE: f64 = 24.0;
 pub(crate) const DEFAULT_NODE_SIZE: f64 = 96.0;
 pub(crate) const MAX_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
+const SESSION_READ_ATTEMPTS: usize = 3;
+const SESSION_READ_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,12 +89,9 @@ pub(crate) enum HookCanvasError {
 
 impl HookCanvasDocument {
     pub(crate) fn read(session_path: &Path) -> Result<Self, HookCanvasError> {
-        let bytes = match fs::read(session_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::missing()),
-            Err(error) => return Err(HookCanvasError::Read(error)),
+        let Some((bytes, root)) = read_session_value(session_path)? else {
+            return Ok(Self::missing());
         };
-        let root: Value = serde_json::from_slice(&bytes)?;
         let session_dir = session_path.parent().unwrap_or_else(|| Path::new("."));
         let preview_root = canonical_image_root(session_dir);
         let mut warnings = Vec::new();
@@ -239,18 +239,65 @@ impl HookCanvasDocument {
     }
 }
 
+fn read_session_value(session_path: &Path) -> Result<Option<(Vec<u8>, Value)>, HookCanvasError> {
+    read_session_value_with(
+        || fs::read(session_path),
+        || thread::sleep(SESSION_READ_RETRY_DELAY),
+    )
+}
+
+fn read_session_value_with<Read, Wait>(
+    mut read: Read,
+    mut wait: Wait,
+) -> Result<Option<(Vec<u8>, Value)>, HookCanvasError>
+where
+    Read: FnMut() -> std::io::Result<Vec<u8>>,
+    Wait: FnMut(),
+{
+    let mut last_json_error = None;
+
+    for attempt in 0..SESSION_READ_ATTEMPTS {
+        let bytes = match read() {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound && attempt == 0 => return Ok(None),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                if attempt + 1 < SESSION_READ_ATTEMPTS {
+                    wait();
+                }
+                continue;
+            }
+            Err(error) => return Err(HookCanvasError::Read(error)),
+        };
+
+        match serde_json::from_slice(&bytes) {
+            Ok(root) => return Ok(Some((bytes, root))),
+            Err(error) => {
+                last_json_error = Some(error);
+                if attempt + 1 < SESSION_READ_ATTEMPTS {
+                    wait();
+                }
+            }
+        }
+    }
+
+    match last_json_error {
+        Some(error) => Err(HookCanvasError::Json(error)),
+        None => Ok(None),
+    }
+}
+
 fn canvas_nodes(root: &Value) -> &[Value] {
-    ["stickers", "nodes", "units"]
-        .iter()
-        .find_map(|key| root.get(key).and_then(Value::as_array))
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+    first_non_empty_array(root, &["stickers", "nodes", "units"])
 }
 
 fn canvas_edges(root: &Value) -> &[Value] {
-    ["links", "edges"]
-        .iter()
-        .find_map(|key| root.get(key).and_then(Value::as_array))
+    first_non_empty_array(root, &["links", "edges"])
+}
+
+fn first_non_empty_array<'a>(root: &'a Value, keys: &[&str]) -> &'a [Value] {
+    keys.iter()
+        .filter_map(|key| root.get(key).and_then(Value::as_array))
+        .find(|values| !values.is_empty())
         .map(Vec::as_slice)
         .unwrap_or(&[])
 }
@@ -439,6 +486,7 @@ fn encode_path_segment(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -696,6 +744,52 @@ mod tests {
             document.snapshot.edges[0].target_port_id.as_deref(),
             Some("in")
         );
+    }
+
+    #[test]
+    fn empty_primary_arrays_do_not_hide_non_empty_compatibility_arrays() {
+        let root = test_root("compat-array-fallback");
+        let session = write_session(
+            &root,
+            r#"{
+              "stickers": [],
+              "nodes": [
+                {"id":"source","type":"sticker","x":10,"y":20},
+                {"id":"target","type":"art","x":120,"y":20}
+              ],
+              "links": [],
+              "edges": [
+                {"id":"source-target","source":"source","target":"target"}
+              ]
+            }"#,
+        );
+
+        let document = HookCanvasDocument::read(&session).expect("normalize compatibility arrays");
+
+        assert_eq!(document.snapshot.nodes.len(), 2);
+        assert_eq!(document.snapshot.edges.len(), 1);
+        assert_eq!(document.snapshot.edges[0].source_node_id, "source");
+        assert_eq!(document.snapshot.edges[0].target_node_id, "target");
+    }
+
+    #[test]
+    fn retries_a_transient_partial_session_write() {
+        let mut reads = VecDeque::from([
+            b"{\"stickers\":[".to_vec(),
+            br#"{"stickers":[{"id":"ready","type":"sticker"}],"links":[]}"#.to_vec(),
+        ]);
+        let mut waits = 0;
+
+        let (_, root) = read_session_value_with(
+            || Ok(reads.pop_front().expect("session read fixture")),
+            || waits += 1,
+        )
+        .expect("retry partial Hook session")
+        .expect("session remains available");
+
+        assert_eq!(waits, 1);
+        assert_eq!(canvas_nodes(&root).len(), 1);
+        assert_eq!(canvas_nodes(&root)[0]["id"], "ready");
     }
 
     #[test]

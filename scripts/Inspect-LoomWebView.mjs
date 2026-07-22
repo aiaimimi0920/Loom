@@ -12,7 +12,7 @@ function parseArgs(argv) {
     index += 1;
   }
   if (!values["debug-port"] || !values.output || !values.screenshot) {
-    throw new Error("Usage: node Inspect-LoomWebView.mjs --debug-port <port> --output <json> --screenshot <png>");
+    throw new Error("Usage: node Inspect-LoomWebView.mjs --debug-port <port> --output <json> --screenshot <png> [--min-nodes <count>]");
   }
   return values;
 }
@@ -92,6 +92,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const debugPort = Number.parseInt(args["debug-port"], 10);
   if (!Number.isInteger(debugPort) || debugPort <= 0) throw new Error("Invalid CDP debug port");
+  const minimumNodes = Number.parseInt(args["min-nodes"] ?? "1", 10);
+  if (!Number.isInteger(minimumNodes) || minimumNodes < 0) throw new Error("Invalid minimum node count");
 
   const targets = await readJson(`http://127.0.0.1:${debugPort}/json/list`);
   const target = targets.find((item) => String(item.url || "").includes("tauri.localhost"));
@@ -105,7 +107,12 @@ async function main() {
     await client.command("Page.enable");
     await client.evaluate("document.readyState === 'loading' ? new Promise(resolve => window.addEventListener('load', resolve, { once: true })) : true");
     await client.evaluate("document.querySelector('[data-testid=\"nav-hook-bridge\"]')?.click(); true");
-    await waitFor(client, "Boolean(document.querySelector('[data-testid=\"hook-canvas-thumbnail\"]'))");
+    await waitFor(client, `(() => {
+      const thumbnail = document.querySelector('[data-testid="hook-canvas-thumbnail"]');
+      const revision = thumbnail?.getAttribute('data-revision') ?? 'empty';
+      const nodeCount = thumbnail?.querySelectorAll('[data-testid="hook-canvas-node"]').length ?? 0;
+      return Boolean(thumbnail) && revision !== 'empty' && nodeCount >= ${minimumNodes};
+    })()`);
 
     const beforeOpen = await client.evaluate(`(() => {
       const thumbnail = document.querySelector('[data-testid="hook-canvas-thumbnail"]');

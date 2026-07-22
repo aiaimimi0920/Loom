@@ -52,9 +52,14 @@ Assert-NotContains '>加载 YAML<' $app "Saved workflow action must use visual l
 Assert-PathExists $smokePath
 Assert-PathExists $inspectorPath
 $smoke = Get-Content -Raw -Encoding UTF8 $smokePath
+$inspector = Get-Content -Raw -Encoding UTF8 $inspectorPath
 Assert-Contains 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS' $smoke "Smoke must use an isolated CDP port."
 Assert-Contains 'LOOM_CONTROL_PLANE_ROOT' $smoke "Smoke must isolate Loom data."
 Assert-Contains 'APPDATA' $smoke "Smoke must isolate the Hook session."
 Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exact process paths."
+Assert-Contains 'Wait-ForHookCanvasUi' $smoke "Smoke must wait on Hook canvas DOM conditions."
+Assert-NotContains 'Start-Sleep -Seconds 2' $smoke "Smoke must not use a fixed Hook canvas refresh delay."
+Assert-Contains 'min-nodes' $inspector "Inspector must wait for the expected Hook canvas node count."
+Assert-Contains 'data-revision' $inspector "Inspector must wait for a non-empty Hook canvas revision."
 
 Write-Host "Hook canvas UI contract passed."

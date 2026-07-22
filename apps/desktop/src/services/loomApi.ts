@@ -478,6 +478,38 @@ export interface LoomSnapshot {
   error: string | null;
 }
 
+export interface LoomOnlineWaitOptions {
+  timeoutMs?: number;
+  intervalMs?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+  now?: () => number;
+}
+
+export async function waitForLoomOnline(
+  readSnapshot: () => Promise<LoomSnapshot>,
+  options: LoomOnlineWaitOptions = {},
+): Promise<LoomSnapshot> {
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(0, options.timeoutMs ?? 0)
+    : 15_000;
+  const intervalMs = Number.isFinite(options.intervalMs)
+    ? Math.max(1, options.intervalMs ?? 1)
+    : 250;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, delayMs);
+  }));
+  const deadline = now() + timeoutMs;
+  let snapshot = await readSnapshot();
+
+  while (snapshot.connectionState !== "online" && now() < deadline) {
+    await sleep(Math.min(intervalMs, Math.max(1, deadline - now())));
+    snapshot = await readSnapshot();
+  }
+
+  return snapshot;
+}
+
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
 const buildSettingsLinks = (baseUrl: string): LoomSettingsLinks => {

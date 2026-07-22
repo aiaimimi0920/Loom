@@ -1,7 +1,57 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readLoomSnapshot } from "./loomApi.ts";
+import {
+  readLoomSnapshot,
+  waitForLoomOnline,
+  type ConnectionState,
+  type LoomSnapshot,
+} from "./loomApi.ts";
+
+function readinessSnapshot(connectionState: ConnectionState): LoomSnapshot {
+  return {
+    baseUrl: "http://127.0.0.1:18768",
+    connectionState,
+    checkedAt: new Date().toISOString(),
+    health: connectionState === "online" ? { status: "ok" } : null,
+    status: connectionState === "online" ? { status: "ready" } : null,
+    capabilities: [],
+    mcpServers: [],
+    tools: [],
+    pythonArts: [],
+    workflows: [],
+    hookBridge: null,
+    settings: {
+      root: "http://127.0.0.1:18768/settings",
+      tea: "http://127.0.0.1:18768/settings/tea",
+      hook: "http://127.0.0.1:18768/settings/hook",
+      talk: "http://127.0.0.1:18768/settings/talk",
+    },
+    error: connectionState === "online" ? null : "offline",
+  };
+}
+
+test("waits through transient offline snapshots until the daemon is online", async () => {
+  const states: ConnectionState[] = ["offline", "offline", "online"];
+  const sleeps: number[] = [];
+  let elapsed = 0;
+
+  const snapshot = await waitForLoomOnline(
+    async () => readinessSnapshot(states.shift() ?? "online"),
+    {
+      timeoutMs: 1_000,
+      intervalMs: 100,
+      sleep: async (delayMs) => {
+        sleeps.push(delayMs);
+        elapsed += delayMs;
+      },
+      now: () => elapsed,
+    },
+  );
+
+  assert.equal(snapshot.connectionState, "online");
+  assert.deepEqual(sleeps, [100, 100]);
+});
 
 test("browser fallback keeps the daemon online when an optional module fails", async (context) => {
   const originalFetch = globalThis.fetch;
