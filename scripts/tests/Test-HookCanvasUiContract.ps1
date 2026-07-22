@@ -48,6 +48,8 @@ Assert-Contains '保存工作流' $app "Normal save action must not require YAML
 Assert-Contains '打开工作流' $app "Normal load action must not require YAML wording."
 Assert-NotContains 'eyebrow: "YAML 存储"' $app "Navigation must not advertise YAML to normal users."
 Assert-NotContains '>加载 YAML<' $app "Saved workflow action must use visual language."
+Assert-Contains 'const nextSnapshot = await waitForLoomOnline(refreshSnapshot);' $app "Daemon start must always poll the complete snapshot until online."
+Assert-NotContains '? await waitForLoomOnline' $app "Daemon readiness polling must not depend on whether a new process was spawned."
 
 Assert-PathExists $smokePath
 Assert-PathExists $inspectorPath

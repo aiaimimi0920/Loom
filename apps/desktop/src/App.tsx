@@ -4205,8 +4205,15 @@ export default function App() {
     refreshVersion: hookCanvasRefreshVersion,
   });
 
-  const refreshSnapshot = useCallback(async (): Promise<LoomSnapshot> => {
+  const refreshSnapshot = useCallback(async (abortSignal?: AbortSignal): Promise<LoomSnapshot> => {
     const requestToken = snapshotRequestGate.current.begin();
+    const abortRequest = () => {
+      if (snapshotRequestGate.current.isCurrent(requestToken)) {
+        snapshotRequestGate.current.invalidate();
+        setLoading(false);
+      }
+    };
+    abortSignal?.addEventListener("abort", abortRequest, { once: true });
     setLoading(true);
     try {
       let baseUrl = DEFAULT_LOOM_DAEMON_URL;
@@ -4219,12 +4226,13 @@ export default function App() {
         baseUrl = DEFAULT_LOOM_DAEMON_URL;
       }
       const next = await readLoomSnapshot(baseUrl);
-      if (snapshotRequestGate.current.isCurrent(requestToken)) {
+      if (!abortSignal?.aborted && snapshotRequestGate.current.isCurrent(requestToken)) {
         setHookBridgeUrl(nextHookBridgeUrl);
         setSnapshot(next);
       }
       return next;
     } finally {
+      abortSignal?.removeEventListener("abort", abortRequest);
       if (snapshotRequestGate.current.isCurrent(requestToken)) {
         setLoading(false);
       }
@@ -4263,13 +4271,11 @@ export default function App() {
       if (!silent || result.started) {
         setLocalServiceMessage({ kind: "info", text: result.message || "已启动 Loom 本地服务。" });
       }
-      const nextSnapshot = result.started
-        ? await waitForLoomOnline(refreshSnapshot)
-        : await refreshSnapshot();
-      if (!silent && nextSnapshot.connectionState !== "online") {
+      const nextSnapshot = await waitForLoomOnline(refreshSnapshot);
+      if (!silent && nextSnapshot?.connectionState !== "online") {
         setLocalServiceMessage({
           kind: "error",
-          text: nextSnapshot.error || "Loom 本地服务启动后仍未就绪，请稍后重试。",
+          text: nextSnapshot?.error || "Loom 本地服务启动后仍未就绪，请稍后重试。",
         });
       }
     } catch (error) {

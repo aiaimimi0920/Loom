@@ -481,33 +481,85 @@ export interface LoomSnapshot {
 export interface LoomOnlineWaitOptions {
   timeoutMs?: number;
   intervalMs?: number;
+  attemptTimeoutMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
   now?: () => number;
+  onAttemptTimeout?: () => void;
+}
+
+type TimedReadResult<T> =
+  | { timedOut: false; value: T }
+  | { timedOut: true };
+
+async function readBeforeTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+): Promise<TimedReadResult<T>> {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+  const timeout = new Promise<TimedReadResult<T>>((resolve) => {
+    timeoutId = globalThis.setTimeout(() => {
+      controller.abort();
+      onTimeout?.();
+      resolve({ timedOut: true });
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      operation(controller.signal).then((value) => ({ timedOut: false, value }) as const),
+      timeout,
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  }
 }
 
 export async function waitForLoomOnline(
-  readSnapshot: () => Promise<LoomSnapshot>,
+  readSnapshot: (signal: AbortSignal) => Promise<LoomSnapshot>,
   options: LoomOnlineWaitOptions = {},
-): Promise<LoomSnapshot> {
+): Promise<LoomSnapshot | null> {
   const timeoutMs = Number.isFinite(options.timeoutMs)
     ? Math.max(0, options.timeoutMs ?? 0)
     : 15_000;
   const intervalMs = Number.isFinite(options.intervalMs)
     ? Math.max(1, options.intervalMs ?? 1)
     : 250;
+  const attemptTimeoutMs = Number.isFinite(options.attemptTimeoutMs)
+    ? Math.max(1, options.attemptTimeoutMs ?? 1)
+    : 3_000;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => {
     globalThis.setTimeout(resolve, delayMs);
   }));
   const deadline = now() + timeoutMs;
-  let snapshot = await readSnapshot();
+  let lastSnapshot: LoomSnapshot | null = null;
 
-  while (snapshot.connectionState !== "online" && now() < deadline) {
-    await sleep(Math.min(intervalMs, Math.max(1, deadline - now())));
-    snapshot = await readSnapshot();
+  while (now() < deadline) {
+    const remainingMs = Math.max(1, deadline - now());
+    const result = await readBeforeTimeout(
+      readSnapshot,
+      Math.min(attemptTimeoutMs, remainingMs),
+      options.onAttemptTimeout,
+    );
+    if (!result.timedOut) {
+      lastSnapshot = result.value;
+      if (lastSnapshot.connectionState === "online") {
+        return lastSnapshot;
+      }
+    }
+
+    const remainingAfterRead = deadline - now();
+    if (remainingAfterRead <= 0) {
+      break;
+    }
+    await sleep(Math.min(intervalMs, remainingAfterRead));
   }
 
-  return snapshot;
+  return lastSnapshot;
 }
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");

@@ -49,8 +49,52 @@ test("waits through transient offline snapshots until the daemon is online", asy
     },
   );
 
+  assert.ok(snapshot);
   assert.equal(snapshot.connectionState, "online");
   assert.deepEqual(sleeps, [100, 100]);
+});
+
+test("readiness timeout bounds a stalled snapshot attempt", async () => {
+  const startedAt = Date.now();
+  let attemptTimeouts = 0;
+
+  const snapshot = await waitForLoomOnline(
+    async () => await new Promise<LoomSnapshot>((resolve) => {
+      setTimeout(() => resolve(readinessSnapshot("offline")), 200);
+    }),
+    {
+      timeoutMs: 10,
+      attemptTimeoutMs: 5,
+      intervalMs: 1,
+      onAttemptTimeout: () => {
+        attemptTimeouts += 1;
+      },
+    },
+  );
+
+  assert.equal(snapshot, null);
+  assert.ok(Date.now() - startedAt < 150);
+  assert.ok(attemptTimeouts >= 1);
+});
+
+test("readiness timeout aborts only the stalled attempt", async () => {
+  let aborted = false;
+
+  await waitForLoomOnline(
+    async (signal) => await new Promise<LoomSnapshot>((resolve) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+      }, { once: true });
+      setTimeout(() => resolve(readinessSnapshot("offline")), 200);
+    }),
+    {
+      timeoutMs: 10,
+      attemptTimeoutMs: 5,
+      intervalMs: 1,
+    },
+  );
+
+  assert.equal(aborted, true);
 });
 
 test("browser fallback keeps the daemon online when an optional module fails", async (context) => {
