@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   edgeEndpoints,
   fitHookCanvas,
+  getHookCanvasRefreshTrigger,
   keepNewestHookCanvasSnapshot,
   retainHookCanvasSelection,
   resolveHookCanvasPreviewUrl,
@@ -34,6 +35,32 @@ const snapshot: HookCanvasSnapshot = {
   edges: [],
   warnings: [],
 };
+
+test("auto refresh waits for the daemon and retries when its online trigger changes", () => {
+  assert.equal(
+    getHookCanvasRefreshTrigger({
+      connectionState: "offline",
+      baseUrl: "http://127.0.0.1:8765",
+      refreshVersion: 0,
+    }),
+    null,
+  );
+
+  const onlineTrigger = getHookCanvasRefreshTrigger({
+    connectionState: "online",
+    baseUrl: "http://127.0.0.1:8765",
+    refreshVersion: 0,
+  });
+  assert.ok(onlineTrigger);
+  assert.notEqual(
+    onlineTrigger,
+    getHookCanvasRefreshTrigger({
+      connectionState: "online",
+      baseUrl: "http://127.0.0.1:8765",
+      refreshVersion: 1,
+    }),
+  );
+});
 
 test("fits Hook nodes into a stable virtual viewport", () => {
   const layout = fitHookCanvas(snapshot, {

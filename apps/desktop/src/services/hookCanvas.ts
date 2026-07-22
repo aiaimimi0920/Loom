@@ -1,4 +1,4 @@
-import { getLoomDaemonJson } from "./loomApi.ts";
+import { getLoomDaemonJson, type ConnectionState } from "./loomApi.ts";
 
 export type HookCanvasNodeKind = "screenshot" | "art" | "unknown";
 export type HookCanvasNodeStatus = "ready" | "processing" | "error" | "unknown";
@@ -72,6 +72,21 @@ export interface HookCanvasPoint {
 export interface HookCanvasEdgeEndpoints {
   source: HookCanvasPoint;
   target: HookCanvasPoint;
+}
+
+export interface HookCanvasRefreshTriggerInput {
+  connectionState: ConnectionState;
+  baseUrl: string;
+  refreshVersion: number;
+}
+
+export function getHookCanvasRefreshTrigger(
+  input: HookCanvasRefreshTriggerInput,
+): string | null {
+  if (input.connectionState !== "online") {
+    return null;
+  }
+  return JSON.stringify([input.baseUrl, input.refreshVersion]);
 }
 
 export async function readHookCanvasSnapshot(baseUrl: string): Promise<HookCanvasSnapshot> {

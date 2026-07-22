@@ -98,6 +98,7 @@ async function main() {
   if (!target?.webSocketDebuggerUrl) throw new Error("Could not find the Loom WebView2 target");
 
   const client = new CdpClient(target.webSocketDebuggerUrl);
+  let diagnostic = null;
   try {
     await client.open();
     await client.command("Runtime.enable");
@@ -121,8 +122,28 @@ async function main() {
         visibleText: document.body.innerText.slice(0, 1200),
       };
     })()`);
+    const clickResult = await client.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="hook-canvas-thumbnail"] .hook-canvas-thumbnail__actions .signal-button');
+      if (!button) return { found: false };
+      button.click();
+      return { found: true, disabled: Boolean(button.disabled), text: button.textContent?.trim() ?? '' };
+    })()`);
+    const tauriProbe = await client.evaluate(`(async () => {
+      try {
+        const baseUrl = document.querySelector('.daemon-chip')?.textContent?.trim() ?? '';
+        const value = await window.__TAURI_INTERNALS__?.invoke?.('get_loom_daemon_json', {
+          baseUrl,
+          path: '/v1/hook-bridge/canvas',
+        });
+        return { ok: true, value };
+      } catch (error) {
+        return { ok: false, error: String(error), stack: error?.stack ?? null };
+      }
+    })()`);
+    diagnostic = { beforeOpen, clickResult, tauriProbe };
+    await fs.mkdir(path.dirname(args.output), { recursive: true });
+    await fs.writeFile(args.output, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
 
-    await client.evaluate("document.querySelector('[data-testid=\"hook-canvas-thumbnail\"] .hook-canvas-thumbnail__actions .signal-button')?.click(); true");
     await waitFor(client, "Boolean(document.querySelector('[data-testid=\"hook-canvas-view\"]'))");
     const afterOpen = await client.evaluate(`(() => ({
       fullCanvasVisible: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
@@ -135,11 +156,25 @@ async function main() {
       ...afterOpen,
       selectedNodeCount: afterOpen.selectedNodeCount ?? 0,
     };
-    await fs.mkdir(path.dirname(args.output), { recursive: true });
     await fs.mkdir(path.dirname(args.screenshot), { recursive: true });
     await fs.writeFile(args.output, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     await fs.writeFile(args.screenshot, Buffer.from(screenshot.data, "base64"));
     process.stdout.write(`${JSON.stringify(result)}\n`);
+  } catch (error) {
+    if (diagnostic) {
+      try {
+        diagnostic.afterFailure = await client.evaluate(`(() => ({
+          bodyText: document.body.innerText.slice(0, 1600),
+          activeHookView: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
+          activeSection: document.querySelector('.workspace-header h1')?.textContent?.trim() ?? null,
+          workflowRequestText: document.querySelector('.workflow-studio')?.innerText?.slice(0, 500) ?? null,
+        }))()`);
+        await fs.writeFile(args.output, `${JSON.stringify({ ...diagnostic, error: String(error) }, null, 2)}\n`, "utf8");
+      } catch {
+        // Preserve the original CDP failure when the target has already closed.
+      }
+    }
+    throw error;
   } finally {
     client.close();
   }

@@ -79,6 +79,7 @@ import {
 } from "./services/pythonArtSource";
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import {
+  getHookCanvasRefreshTrigger,
   keepNewestHookCanvasSnapshot,
   readHookCanvasSnapshot,
   type HookCanvasSnapshot,
@@ -4194,6 +4195,11 @@ export default function App() {
   const [hookCanvasError, setHookCanvasError] = useState<string | null>(null);
   const [hookCanvasRefreshVersion, setHookCanvasRefreshVersion] = useState(0);
   const [hookBridgeUrl, setHookBridgeUrl] = useState(DEFAULT_HOOK_BRIDGE_URL);
+  const hookCanvasRefreshTrigger = getHookCanvasRefreshTrigger({
+    connectionState: snapshot.connectionState,
+    baseUrl: snapshot.baseUrl,
+    refreshVersion: hookCanvasRefreshVersion,
+  });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -4252,8 +4258,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void refreshHookCanvas();
-  }, [hookCanvasRefreshVersion, refreshHookCanvas]);
+    if (hookCanvasRefreshTrigger === null) {
+      return;
+    }
+    void refreshHookCanvas(snapshot.baseUrl);
+  }, [hookCanvasRefreshTrigger, refreshHookCanvas, snapshot.baseUrl]);
 
   useEffect(() => {
     if (
