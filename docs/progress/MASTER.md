@@ -159,6 +159,16 @@ refreshes without forced navigation, while instantiate events open the visual
 Hook workflow. YAML and compatibility diagnostics remain available in a
 collapsed advanced disclosure. The phase also adds isolated WebView2/CDP
 release smoke evidence and a configurable Hook Bridge port for isolated runs.
+The startup race discovered during the first packaged smoke is fixed: canvas
+reads wait for an online daemon and retry after daemon recovery or a canvas
+invalidation revision. The final candidate is
+`release/Loom/20260722-hook-canvas-e8eb505`, built from source SHA
+`e8eb505ec41164ef5ce2a677dc88505ffea3f1ec`, with `gitDirty=false`, 32
+checksum-covered files, and full release verification reporting
+`smoke=passed` and `hookCanvasSmoke=passed`. Direct evidence is recorded in
+`Loom/target/runtime-smoke/hook-canvas-5edb52b3f463463884ad7a5e3d4013ea`;
+the verifier's formal Hook smoke is in
+`Loom/target/runtime-smoke/hook-canvas/hook-canvas-094d74c3505943f5aac22b2fb3e89b4d`.
 
 Phase 43 hardens the same release boundary against internally consistent
 tampering. The shared layout helper and verifier reject extra root executables,

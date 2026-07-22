@@ -33,6 +33,10 @@ instead of making YAML or protocol text the primary representation.
   release verifier integration, and Windows CI contract coverage.
 - Added an isolated Hook Bridge URL configuration so packaged smoke can use a
   dynamic bridge port without touching a user's existing port 19820 instance.
+- Fixed the desktop startup race where the first canvas read could run before
+  the daemon became ready. Automatic reads now wait for an online daemon and
+  retry when the online base URL or Hook canvas invalidation revision changes;
+  manual refresh remains available while the last valid snapshot is retained.
 
 ## User Path
 
@@ -60,6 +64,29 @@ snapshots, and a summary below the supplied evidence root. It uses isolated
 `APPDATA`, `LOCALAPPDATA`, control-plane, configuration, WebView2, daemon, and
 Hook Bridge ports, and only stops candidate PIDs after validating their exact
 executable paths.
+
+The final candidate for this phase was built from source commit
+`e8eb505ec41164ef5ce2a677dc88505ffea3f1ec`:
+
+```text
+C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260722-hook-canvas-e8eb505
+```
+
+Its manifest reports `gitDirty=false`, one root `Loom.exe`,
+`runtime\loom-daemon.exe`, and 32 checksum-covered files. The release
+verifier completed with `smoke=passed` and `hookCanvasSmoke=passed`.
+
+Representative evidence:
+
+- Direct packaged Hook canvas smoke:
+  `target/runtime-smoke/hook-canvas-5edb52b3f463463884ad7a5e3d4013ea`
+- Formal verifier Hook canvas smoke:
+  `target/runtime-smoke/hook-canvas/hook-canvas-094d74c3505943f5aac22b2fb3e89b4d`
+
+The direct smoke observed three initial nodes and one edge, then four nodes
+after an `art_hook/instantiate` update. YAML was not visible by default, the
+advanced disclosure remained closed, the full visual canvas opened, and
+`unexpectedProcessesAfterCleanup=0`.
 
 ## Boundaries
 
