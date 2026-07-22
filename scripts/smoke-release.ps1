@@ -485,7 +485,8 @@ function Test-LoomHookLiveWorkflowPersistence {
         $workflows = Invoke-JsonGet -Uri "$BaseUrl/v1/workflows"
         $hookLive = @($workflows.workflows | Where-Object { [string]$_.id -eq "hook-live" })
         Assert-Equal 1 $hookLive.Count "Loom workflow list must include canonical Hook live workflow."
-        Assert-Equal "Hook 实时工作流" ([string]$hookLive[0].name) "Loom Hook live workflow list label mismatch."
+        $hookLiveWorkflowLabel = "Hook " + (-join @([char]0x5B9E, [char]0x65F6, [char]0x5DE5, [char]0x4F5C, [char]0x6D41))
+        Assert-Equal $hookLiveWorkflowLabel ([string]$hookLive[0].name) "Loom Hook live workflow list label mismatch."
 
         $loaded = Invoke-JsonGet -Uri "$BaseUrl/v1/workflows/hook-live"
         Assert-Equal "hook-live" ([string]$loaded.workflow.id) "Loom Hook live workflow load id mismatch."

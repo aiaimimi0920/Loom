@@ -67,6 +67,14 @@ function Assert-ScriptContract {
     }
 }
 
+$powerShellScripts = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "scripts") -Recurse -File -Filter "*.ps1")
+foreach ($powerShellScript in $powerShellScripts) {
+    $powerShellSource = [System.IO.File]::ReadAllText($powerShellScript.FullName, [System.Text.UTF8Encoding]::new($false, $true))
+    Assert-True `
+        -Condition (-not [regex]::IsMatch($powerShellSource, '[^\u0000-\u007F]')) `
+        -Message "Windows PowerShell 5.1 script source must be ASCII-safe: $($powerShellScript.FullName)"
+}
+
 $commonForbidden = @(
     '[string[]]$Apps',
     'scripts\build-release-exes.ps1',
