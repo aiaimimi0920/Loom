@@ -92,6 +92,7 @@ Assert-Workflow -Name "build-windows.yml" -RequiredText @(
     'Swatinem/rust-cache@v2',
     '.\scripts\build-release.ps1',
     '.\scripts\verify-release.ps1',
+    '-RunSmoke',
     'actions/upload-artifact@v6',
     'if-no-files-found: error'
 )

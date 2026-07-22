@@ -52,7 +52,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release.ps1 `
-            -PackageDir ".\release\Loom\$env:LOOM_VERSION"
+            -PackageDir ".\release\Loom\$env:LOOM_VERSION" `
+            -RunSmoke
 
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v6
