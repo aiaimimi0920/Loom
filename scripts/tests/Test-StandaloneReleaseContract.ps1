@@ -191,6 +191,8 @@ Assert-ScriptContract `
         '/v1/hook-bridge/status',
         'function Initialize-SmokeEvidenceRun',
         'function Write-SmokeJsonEvidence',
+        'function Assert-SameExistingPath',
+        'Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.filePath)',
         '$EvidenceRoot'
     ) `
     -ForbiddenText $commonForbidden

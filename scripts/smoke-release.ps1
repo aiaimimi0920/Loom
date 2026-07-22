@@ -47,6 +47,20 @@ function Assert-Contains {
     }
 }
 
+function Assert-SameExistingPath {
+    param(
+        [string]$Expected,
+        [string]$Actual,
+        [string]$Message
+    )
+
+    $expectedPath = (Get-Item -LiteralPath $Expected -Force).FullName
+    $actualPath = (Get-Item -LiteralPath $Actual -Force).FullName
+    if (-not $expectedPath.Equals($actualPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Message Expected=[$expectedPath] Actual=[$actualPath]"
+    }
+}
+
 function Assert-PathExists {
     param([string]$Path)
 
@@ -1689,7 +1703,7 @@ def main(args):
     }
     Assert-Equal "read_python_file" ([string]$read.compatCommand) "Loom read_python_file compat command mismatch."
     Assert-Contains 'args.get("text"' ([string]$read.content) "Loom read_python_file did not return fixture code."
-    Assert-Equal $sourcePath ([string]$read.filePath) "Loom read_python_file filePath mismatch."
+    Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.filePath) -Message "Loom read_python_file filePath mismatch."
 
     $nearby = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/check-art-json-nearby" -Body @{
         pythonPath = $sourcePath
