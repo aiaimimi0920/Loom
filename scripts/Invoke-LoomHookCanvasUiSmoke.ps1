@@ -52,6 +52,68 @@ function Read-BoundedTaskText {
     }
 }
 
+function Get-HookCanvasFailureDiagnostic {
+    param(
+        [AllowNull()][object]$DesktopPid,
+        [int]$CdpPort,
+        [string]$DesktopStderrPath
+    )
+
+    $sections = [System.Collections.Generic.List[string]]::new()
+    try {
+        $processes = @(Get-CimInstance Win32_Process -OperationTimeoutSec 2 -ErrorAction Stop)
+        $relatedIds = @()
+        if ($null -ne $DesktopPid) { $relatedIds += [int]$DesktopPid }
+        $added = $true
+        while ($added) {
+            $added = $false
+            foreach ($candidate in $processes) {
+                if ($relatedIds -contains [int]$candidate.ProcessId) { continue }
+                if ($relatedIds -contains [int]$candidate.ParentProcessId) {
+                    $relatedIds += [int]$candidate.ProcessId
+                    $added = $true
+                }
+            }
+        }
+        $processTree = @($processes | Where-Object { $relatedIds -contains [int]$_.ProcessId } | ForEach-Object {
+            [ordered]@{
+                processId = [int]$_.ProcessId
+                parentProcessId = [int]$_.ParentProcessId
+                name = [string]$_.Name
+                commandLine = [string]$_.CommandLine
+            }
+        })
+        $processTreeText = Limit-SmokeText -Text ($processTree | ConvertTo-Json -Depth 5 -Compress) -MaxLength 1800
+        $sections.Add("Desktop process tree: " + $processTreeText)
+    }
+    catch {
+        $sections.Add("Desktop process tree unavailable: $($_.Exception.Message)")
+    }
+
+    try {
+        $listeners = @([System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | Where-Object { [int]$_.Port -eq $CdpPort } | ForEach-Object {
+            [ordered]@{
+                localAddress = [string]$_.Address
+                localPort = [int]$_.Port
+            }
+        })
+        $listenerText = Limit-SmokeText -Text ($listeners | ConvertTo-Json -Depth 4 -Compress) -MaxLength 500
+        $sections.Add("CDP listeners: " + $listenerText)
+    }
+    catch {
+        $sections.Add("CDP listeners unavailable: $($_.Exception.Message)")
+    }
+
+    $desktopStderr = ""
+    if (Test-Path -LiteralPath $DesktopStderrPath -PathType Leaf) {
+        try { $desktopStderr = (Get-Content -Raw -Encoding UTF8 -LiteralPath $DesktopStderrPath).Trim() }
+        catch { $desktopStderr = "could not read desktop stderr: $($_.Exception.Message)" }
+    }
+    $desktopStderrText = if ([string]::IsNullOrWhiteSpace($desktopStderr)) { "<empty>" } else { Limit-SmokeText -Text $desktopStderr -MaxLength 900 }
+    $sections.Add("Desktop stderr: " + $desktopStderrText)
+    return Limit-SmokeText -Text ($sections -join [Environment]::NewLine) -MaxLength 3500
+}
+
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Content)
     $parent = Split-Path -Parent $Path
@@ -506,7 +568,9 @@ try {
     Write-JsonFile -Path (Join-Path $runDir "processes-during.json") -Value @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)
 }
 catch {
-    $failure = Limit-SmokeText -Text $_.Exception.ToString() -MaxLength 8000
+    $runtimeDiagnostic = Get-HookCanvasFailureDiagnostic -DesktopPid $desktopPid -CdpPort $cdpPort -DesktopStderrPath $stderrPath
+    $primaryFailure = Limit-SmokeText -Text $_.Exception.ToString() -MaxLength 4000
+    $failure = Limit-SmokeText -Text (("Runtime diagnostic: " + $runtimeDiagnostic), ("Primary failure: " + $primaryFailure) -join [Environment]::NewLine) -MaxLength 8000
 }
 finally {
     if ($null -ne $daemonPid) {

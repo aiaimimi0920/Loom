@@ -78,6 +78,19 @@ Assert-Contains 'SmokePortMaximum = 45000' $smoke "Smoke listeners must stay bel
 Assert-Contains 'Wait-ForHookCanvasUi' $smoke "Smoke must wait on Hook canvas DOM conditions."
 Assert-Contains '[int]$TimeoutSeconds = 90' $smoke "Hosted WebView2 startup needs a bounded 90-second Hook canvas wait budget."
 Assert-Contains 'Inspector diagnostic:' $smoke "Hook canvas timeouts must include the latest Inspector diagnostic."
+Assert-Contains 'Get-CimInstance Win32_Process' $smoke "Hook canvas failures must report the desktop WebView2 process tree."
+Assert-Contains '-OperationTimeoutSec 2' $smoke "Hook canvas process diagnostics must have a bounded CIM operation timeout."
+Assert-Contains 'GetActiveTcpListeners()' $smoke "Hook canvas failures must use a direct TCP listener snapshot."
+Assert-NotContains 'Get-NetTCPConnection' $smoke "Hook canvas failure diagnostics must not block on the NetTCP CIM provider."
+Assert-Contains 'Desktop stderr:' $smoke "Hook canvas failures must include desktop stderr."
+Assert-Contains '-MaxLength 1800' $smoke "Hook canvas process-tree diagnostics must have a reserved section budget."
+Assert-Contains '-MaxLength 500' $smoke "Hook canvas listener diagnostics must have a reserved section budget."
+Assert-Contains '-MaxLength 900' $smoke "Hook canvas desktop stderr must have a reserved section budget."
+Assert-Contains 'Runtime diagnostic:' $smoke "Hook canvas failures must label the reserved runtime diagnostic budget."
+Assert-Contains 'Primary failure:' $smoke "Hook canvas failures must label the bounded primary exception."
+$runtimeDiagnosticIndex = $smoke.IndexOf('"Runtime diagnostic: "')
+$primaryFailureIndex = $smoke.IndexOf('"Primary failure: "')
+Assert-True ($runtimeDiagnosticIndex -ge 0 -and $primaryFailureIndex -gt $runtimeDiagnosticIndex) "Runtime diagnostics must precede the primary exception so truncation cannot remove them."
 Assert-Contains 'function Limit-SmokeText' $smoke "Hook canvas smoke output must have a bounded diagnostic size."
 Assert-Contains '[Math]::Min(20' $smoke "Each Inspector invocation must be capped at 20 seconds within the remaining budget."
 Assert-Contains '-TimeoutSeconds $inspectorTimeoutSeconds' $smoke "Inspector child-process timeout must use the remaining Hook canvas budget."
@@ -127,6 +140,7 @@ Assert-True (@($parseErrors).Count -eq 0) "Hook canvas smoke must parse before r
 . (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Limit-SmokeText")
 . (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Write-Utf8NoBom")
 . (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Read-BoundedTaskText")
+. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Get-HookCanvasFailureDiagnostic")
 . (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Invoke-Inspector")
 
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-inspector-contract-" + [Guid]::NewGuid().ToString("N"))
@@ -135,6 +149,15 @@ try {
     $exitFixturePath = Join-Path $fixtureRoot "exit-fixture.mjs"
     $hangFixturePath = Join-Path $fixtureRoot "hang-fixture.mjs"
     $fixtureEncoding = New-Object System.Text.UTF8Encoding($false)
+    $diagnosticStderrPath = Join-Path $fixtureRoot "desktop.stderr.log"
+    [System.IO.File]::WriteAllText($diagnosticStderrPath, "fixture desktop stderr", $fixtureEncoding)
+    $diagnosticWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $runtimeDiagnostic = Get-HookCanvasFailureDiagnostic -DesktopPid $PID -CdpPort 1 -DesktopStderrPath $diagnosticStderrPath
+    $diagnosticWatch.Stop()
+    Assert-True ($diagnosticWatch.Elapsed.TotalSeconds -lt 5) "Hook canvas runtime diagnostic exceeded its bounded collection allowance."
+    Assert-Contains 'Desktop process tree:' $runtimeDiagnostic "Runtime diagnostic must include the desktop process tree."
+    Assert-Contains 'CDP listeners:' $runtimeDiagnostic "Runtime diagnostic must include the CDP listener snapshot."
+    Assert-Contains 'fixture desktop stderr' $runtimeDiagnostic "Runtime diagnostic must include desktop stderr."
     [System.IO.File]::WriteAllText($exitFixturePath, @'
 import fs from "node:fs";
 const args = process.argv.slice(2);
@@ -158,7 +181,7 @@ setInterval(() => {}, 1000);
     $exitScreenshotPath = Join-Path $fixtureRoot "exit.png"
     $exitFailure = $null
     try {
-        Invoke-Inspector -InspectorPath $exitFixturePath -DebugPort 1 -OutputPath $exitOutputPath -ScreenshotPath $exitScreenshotPath -TimeoutSeconds 3 | Out-Null
+        Invoke-Inspector -InspectorPath $exitFixturePath -DebugPort 1 -OutputPath $exitOutputPath -ScreenshotPath $exitScreenshotPath -TimeoutSeconds 10 | Out-Null
     }
     catch {
         $exitFailure = $_.Exception.Message
