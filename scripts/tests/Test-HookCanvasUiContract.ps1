@@ -34,17 +34,20 @@ $appPath = Join-Path $repoRoot "apps\desktop\src\App.tsx"
 $thumbnailPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasThumbnail.tsx"
 $viewPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasView.tsx"
 $nodePath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasNode.tsx"
+$desktopRustPath = Join-Path $repoRoot "apps\desktop\src-tauri\src\lib.rs"
 $smokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
 $inspectorPath = Join-Path $repoRoot "scripts\Inspect-LoomWebView.mjs"
 
 Assert-PathExists $thumbnailPath
 Assert-PathExists $viewPath
 Assert-PathExists $nodePath
+Assert-PathExists $desktopRustPath
 
 $app = Get-Content -Raw -Encoding UTF8 $appPath
 $thumbnail = Get-Content -Raw -Encoding UTF8 $thumbnailPath
 $view = Get-Content -Raw -Encoding UTF8 $viewPath
 $node = Get-Content -Raw -Encoding UTF8 $nodePath
+$desktopRust = Get-Content -Raw -Encoding UTF8 $desktopRustPath
 $visualWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x53EF, 0x89C6, 0x5316, 0x5DE5, 0x4F5C, 0x6D41)
 $saveWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x4FDD, 0x5B58, 0x5DE5, 0x4F5C, 0x6D41)
 $openWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x5DE5, 0x4F5C, 0x6D41)
@@ -69,7 +72,12 @@ Assert-PathExists $smokePath
 Assert-PathExists $inspectorPath
 $smoke = Get-Content -Raw -Encoding UTF8 $smokePath
 $inspector = Get-Content -Raw -Encoding UTF8 $inspectorPath
-Assert-Contains 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS' $smoke "Smoke must use an isolated CDP port."
+Assert-Contains 'LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT' $smoke "Smoke must pass an isolated CDP port through Loom runtime configuration."
+Assert-NotContains 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS' $smoke "Smoke must not rely on the WebView2 environment variable ignored by hosted runners."
+Assert-Contains 'LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV' $desktopRust "Desktop must define the scoped WebView2 debugging port variable."
+Assert-Contains 'configured_webview2_browser_args' $desktopRust "Desktop must validate and construct WebView2 browser arguments."
+Assert-Contains 'context.config_mut().app.windows' $desktopRust "Desktop must inject browser arguments before Tauri creates its configured windows."
+Assert-Contains 'additional_browser_args' $desktopRust "Desktop must pass explicit browser arguments through Tauri/Wry."
 Assert-Contains 'LOOM_CONTROL_PLANE_ROOT' $smoke "Smoke must isolate Loom data."
 Assert-Contains 'APPDATA' $smoke "Smoke must isolate the Hook session."
 Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exact process paths."

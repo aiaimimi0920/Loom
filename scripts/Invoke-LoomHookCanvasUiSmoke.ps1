@@ -498,7 +498,7 @@ try {
         APPDATA = $appDataRoot
         LOCALAPPDATA = $localAppDataRoot
         WEBVIEW2_USER_DATA_FOLDER = $webViewRoot
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$cdpPort"
+        LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT = [string]$cdpPort
     }
     $desktopProcess = Start-IsolatedProcess `
         -FilePath $desktopExe `

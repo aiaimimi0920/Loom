@@ -8,6 +8,10 @@ use std::time::Duration;
 const DEFAULT_LOOM_DAEMON_URL: &str = "http://127.0.0.1:8765";
 const DEFAULT_HOOK_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
 const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
+#[cfg(target_os = "windows")]
+const LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV: &str = "LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT";
+#[cfg(target_os = "windows")]
+const DEFAULT_WEBVIEW2_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,8 +493,37 @@ fn parse_loopback_http_url(base_url: &str) -> Result<(String, u16), String> {
     Ok((host.trim_matches(&['[', ']'][..]).to_string(), port))
 }
 
+#[cfg(target_os = "windows")]
+fn configured_webview2_browser_args() -> Option<String> {
+    let port = std::env::var(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV)
+        .ok()?
+        .trim()
+        .parse::<u16>()
+        .ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some(format!(
+        "{DEFAULT_WEBVIEW2_BROWSER_ARGS} --remote-debugging-port={port} --remote-debugging-address=127.0.0.1"
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn configure_webview2_browser_args(context: &mut tauri::Context<tauri::Wry>) {
+    let Some(arguments) = configured_webview2_browser_args() else {
+        return;
+    };
+    for window in &mut context.config_mut().app.windows {
+        window.additional_browser_args = Some(arguments.clone());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    configure_webview2_browser_args(&mut context);
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             resolve_loom_daemon_url,
@@ -501,7 +534,7 @@ pub fn run() {
             delete_loom_daemon_json,
             post_loom_daemon_json
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Loom desktop");
 }
 
@@ -549,6 +582,33 @@ mod tests {
         assert_eq!(config.hook_bridge_url, "ws://127.0.0.1:43127");
         restore_env("LOOM_HOOK_BRIDGE_URL", previous_bridge_url);
         restore_env("LOOM_HOOK_BRIDGE_PORT", previous_bridge_port);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn webview2_remote_debugging_port_builds_explicit_browser_arguments() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_port = std::env::var(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV).ok();
+        std::env::set_var(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV, "43129");
+
+        let arguments = configured_webview2_browser_args().expect("browser arguments");
+
+        assert!(arguments.contains("--remote-debugging-port=43129"));
+        assert!(arguments.contains("--remote-debugging-address=127.0.0.1"));
+        assert!(arguments.contains("msSmartScreenProtection"));
+        assert!(arguments.contains("--autoplay-policy=no-user-gesture-required"));
+        restore_env(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV, previous_port);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn webview2_remote_debugging_ignores_invalid_ports() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_port = std::env::var(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV).ok();
+        std::env::set_var(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV, "invalid");
+
+        assert_eq!(configured_webview2_browser_args(), None);
+        restore_env(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV, previous_port);
     }
 
     fn restore_env(name: &str, value: Option<String>) {
