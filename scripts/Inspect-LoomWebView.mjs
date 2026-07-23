@@ -17,16 +17,39 @@ function parseArgs(argv) {
   return values;
 }
 
-async function readJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`CDP endpoint returned HTTP ${response.status}: ${url}`);
-  return await response.json();
+async function readJson(url, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`CDP endpoint returned HTTP ${response.status}: ${url}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function waitForSocketOpen(socket) {
+function waitForSocketOpen(socket, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", () => reject(new Error("WebView CDP WebSocket failed to open")), { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.removeEventListener("open", handleOpen);
+      socket.removeEventListener("error", handleError);
+    };
+    const handleOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("WebView CDP WebSocket failed to open"));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out opening the WebView CDP WebSocket"));
+    }, timeoutMs);
+    socket.addEventListener("open", handleOpen, { once: true });
+    socket.addEventListener("error", handleError, { once: true });
   });
 }
 
@@ -41,6 +64,7 @@ class CdpClient {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
+      clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(message.error.message || "CDP command failed"));
       else pending.resolve(message.result);
     };
@@ -51,21 +75,31 @@ class CdpClient {
     await waitForSocketOpen(this.socket);
   }
 
-  command(method, params = {}) {
+  command(method, params = {}, timeoutMs = 10000) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify({ id, method, params }));
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(new Error(`Timed out waiting for CDP command: ${method}`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.socket.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
-  async evaluate(expression) {
+  async evaluate(expression, timeoutMs = 10000) {
     const result = await this.command("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
       userGesture: true,
-    });
+    }, timeoutMs);
     if (result.exceptionDetails) {
       throw new Error(result.exceptionDetails.text || "Browser evaluation failed");
     }
@@ -73,16 +107,27 @@ class CdpClient {
   }
 
   close() {
-    for (const pending of this.pending.values()) pending.reject(new Error("CDP connection closed"));
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("CDP connection closed"));
+    }
     this.pending.clear();
-    this.socket.close();
+    this.socket.removeEventListener("message", this.messageHandler);
+    if (this.socket.readyState === WebSocket.OPEN) {
+      try {
+        this.socket.close();
+      } catch {
+        // The Inspector result must not be replaced by a close-handshake error.
+      }
+    }
   }
 }
 
 async function waitFor(client, expression, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await client.evaluate(expression)) return;
+    const remainingMs = Math.max(1, deadline - Date.now());
+    if (await client.evaluate(expression, Math.min(10000, remainingMs))) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Timed out waiting for browser condition: ${expression}`);
@@ -95,13 +140,13 @@ async function main() {
   const minimumNodes = Number.parseInt(args["min-nodes"] ?? "1", 10);
   if (!Number.isInteger(minimumNodes) || minimumNodes < 0) throw new Error("Invalid minimum node count");
 
-  const targets = await readJson(`http://127.0.0.1:${debugPort}/json/list`);
-  const target = targets.find((item) => String(item.url || "").includes("tauri.localhost"));
-  if (!target?.webSocketDebuggerUrl) throw new Error("Could not find the Loom WebView2 target");
-
-  const client = new CdpClient(target.webSocketDebuggerUrl);
-  let diagnostic = null;
+  let client = null;
+  let diagnostic = {};
   try {
+    const targets = await readJson(`http://127.0.0.1:${debugPort}/json/list`);
+    const target = targets.find((item) => String(item.url || "").includes("tauri.localhost"));
+    if (!target?.webSocketDebuggerUrl) throw new Error("Could not find the Loom WebView2 target");
+    client = new CdpClient(target.webSocketDebuggerUrl);
     await client.open();
     await client.command("Runtime.enable");
     await client.command("Page.enable");
@@ -166,28 +211,44 @@ async function main() {
     await fs.mkdir(path.dirname(args.screenshot), { recursive: true });
     await fs.writeFile(args.output, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     await fs.writeFile(args.screenshot, Buffer.from(screenshot.data, "base64"));
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    await new Promise((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify(result)}\n`, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
   } catch (error) {
-    if (diagnostic) {
-      try {
-        diagnostic.afterFailure = await client.evaluate(`(() => ({
-          bodyText: document.body.innerText.slice(0, 1600),
-          activeHookView: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
-          activeSection: document.querySelector('.workspace-header h1')?.textContent?.trim() ?? null,
-          workflowRequestText: document.querySelector('.workflow-studio')?.innerText?.slice(0, 500) ?? null,
-        }))()`);
-        await fs.writeFile(args.output, `${JSON.stringify({ ...diagnostic, error: String(error) }, null, 2)}\n`, "utf8");
-      } catch {
-        // Preserve the original CDP failure when the target has already closed.
-      }
+    const failure = { ...diagnostic, error: String(error) };
+    try {
+      await fs.mkdir(path.dirname(args.output), { recursive: true });
+      await fs.writeFile(args.output, `${JSON.stringify(failure, null, 2)}\n`, "utf8");
+    } catch {
+      // Preserve the original CDP failure when the output path is unavailable.
+    }
+    if (client) try {
+      failure.afterFailure = await client.evaluate(`(() => ({
+        bodyText: document.body.innerText.slice(0, 1600),
+        activeHookView: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
+        activeSection: document.querySelector('.workspace-header h1')?.textContent?.trim() ?? null,
+        workflowRequestText: document.querySelector('.workflow-studio')?.innerText?.slice(0, 500) ?? null,
+      }))()`);
+      await fs.writeFile(args.output, `${JSON.stringify(failure, null, 2)}\n`, "utf8");
+    } catch {
+      // Preserve the original CDP failure when the target has already closed.
     }
     throw error;
   } finally {
-    client.close();
+    if (client) client.close();
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error}\n`);
-  process.exitCode = 1;
-});
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    const message = `${error.stack || error}\n`;
+    const fallback = setTimeout(() => process.exit(1), 1000);
+    process.stderr.write(message, () => {
+      clearTimeout(fallback);
+      process.exit(1);
+    });
+  });

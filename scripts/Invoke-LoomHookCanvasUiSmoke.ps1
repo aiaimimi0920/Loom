@@ -22,6 +22,36 @@ function Assert-Equal {
     if ($Expected -ne $Actual) { throw "$Message Expected=[$Expected] Actual=[$Actual]" }
 }
 
+function Limit-SmokeText {
+    param(
+        [AllowNull()][object]$Text,
+        [int]$MaxLength = 4000
+    )
+
+    $value = [string]$Text
+    if ($value.Length -le $MaxLength) { return $value }
+    return $value.Substring(0, $MaxLength) + "..."
+}
+
+function Read-BoundedTaskText {
+    param(
+        [System.Threading.Tasks.Task[string]]$Task,
+        [string]$StreamName,
+        [int]$TimeoutMilliseconds = 2000
+    )
+
+    if ($null -eq $Task) { return "" }
+    try {
+        if (-not $Task.Wait($TimeoutMilliseconds)) {
+            return "[$StreamName drain timed out after $TimeoutMilliseconds milliseconds]"
+        }
+        return $Task.GetAwaiter().GetResult()
+    }
+    catch {
+        return "[$StreamName drain failed: $($_.Exception.Message)]"
+    }
+}
+
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Content)
     $parent = Split-Path -Parent $Path
@@ -233,11 +263,77 @@ function Invoke-Inspector {
         [int]$DebugPort,
         [string]$OutputPath,
         [string]$ScreenshotPath,
-        [int]$MinimumNodes = 1
+        [int]$MinimumNodes = 1,
+        [int]$TimeoutSeconds = 20
     )
-    $output = @(& node $InspectorPath --debug-port $DebugPort --output $OutputPath --screenshot $ScreenshotPath --min-nodes $MinimumNodes 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "WebView inspector failed: $($output -join [Environment]::NewLine)"
+
+    $stdoutPath = "$OutputPath.inspector.stdout.log"
+    $stderrPath = "$OutputPath.inspector.stderr.log"
+    Remove-Item -LiteralPath $OutputPath, $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    $quotedInspectorPath = '"' + $InspectorPath.Replace('"', '\"') + '"'
+    $quotedOutputPath = '"' + $OutputPath.Replace('"', '\"') + '"'
+    $quotedScreenshotPath = '"' + $ScreenshotPath.Replace('"', '\"') + '"'
+    $process = $null
+    $stdoutTask = $null
+    $stderrTask = $null
+    $timedOut = $false
+    $terminationError = $null
+    $terminated = $true
+    try {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command node).Source
+        $startInfo.Arguments = @(
+            $quotedInspectorPath,
+            "--debug-port", [string]$DebugPort,
+            "--output", $quotedOutputPath,
+            "--screenshot", $quotedScreenshotPath,
+            "--min-nodes", [string]$MinimumNodes
+        ) -join " "
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) { throw "Could not start the WebView inspector process." }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $timedOut = $true
+            try { $process.Kill() }
+            catch { $terminationError = "Initial inspector termination failed: $($_.Exception.Message)" }
+            try { $terminated = $process.WaitForExit(2000) }
+            catch { $terminated = $false }
+            if (-not $terminated) {
+                try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+                catch { $terminationError = (($terminationError, "Forced inspector termination failed: $($_.Exception.Message)") -join " ").Trim() }
+                try { $terminated = $process.WaitForExit(2000) }
+                catch { $terminated = $false }
+            }
+            if (-not $terminated -and [string]::IsNullOrWhiteSpace($terminationError)) {
+                $terminationError = "Inspector process did not exit after bounded termination attempts."
+            }
+        }
+        $stdout = Read-BoundedTaskText -Task $stdoutTask -StreamName "stdout"
+        $stderr = Read-BoundedTaskText -Task $stderrTask -StreamName "stderr"
+        $exitCode = $null
+        if ($process.HasExited) { $exitCode = $process.ExitCode }
+        Write-Utf8NoBom -Path $stdoutPath -Content $stdout
+        Write-Utf8NoBom -Path $stderrPath -Content $stderr
+        if ($timedOut) {
+            $terminationSuffix = if ([string]::IsNullOrWhiteSpace($terminationError)) { "" } else { " $terminationError" }
+            throw "WebView inspector timed out after $TimeoutSeconds seconds.$terminationSuffix $(Limit-SmokeText -Text $stderr)"
+        }
+        if ($null -eq $exitCode) {
+            throw "WebView inspector exited without a concrete exit code."
+        }
+        if ($exitCode -ne 0) {
+            $output = Limit-SmokeText -Text (($stdout, $stderr | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine)
+            throw "WebView inspector failed with exit code $exitCode`: $output"
+        }
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
     }
     return Get-Content -Raw -Encoding UTF8 -LiteralPath $OutputPath | ConvertFrom-Json
 }
@@ -250,18 +346,21 @@ function Wait-ForHookCanvasUi {
         [string]$ScreenshotPath,
         [int]$MinimumNodes,
         [AllowNull()][string]$PreviousRevision,
-        [int]$TimeoutSeconds = 45
+        [int]$TimeoutSeconds = 90
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastError = $null
     while ((Get-Date) -lt $deadline) {
         try {
+            $remainingSeconds = [Math]::Max(1, [Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+            $inspectorTimeoutSeconds = [int][Math]::Min(20, $remainingSeconds)
             $snapshot = Invoke-Inspector `
                 -InspectorPath $InspectorPath `
                 -DebugPort $DebugPort `
                 -OutputPath $OutputPath `
                 -ScreenshotPath $ScreenshotPath `
-                -MinimumNodes $MinimumNodes
+                -MinimumNodes $MinimumNodes `
+                -TimeoutSeconds $inspectorTimeoutSeconds
             $revisionChanged = [string]::IsNullOrWhiteSpace($PreviousRevision) -or `
                 ([string]$snapshot.revision -ne $PreviousRevision)
             if (@($snapshot.thumbnailNodeCount).Count -gt 0 -and `
@@ -272,11 +371,20 @@ function Wait-ForHookCanvasUi {
             $lastError = "Observed nodes=$($snapshot.thumbnailNodeCount), revision=$($snapshot.revision)."
         }
         catch {
-            $lastError = $_.Exception.Message
+            $lastError = Limit-SmokeText -Text $_.Exception.Message
         }
         Start-Sleep -Milliseconds 250
     }
-    throw "Timed out waiting for Hook canvas UI nodes=$MinimumNodes with a new revision. $lastError"
+    $diagnostic = "unavailable"
+    if (Test-Path -LiteralPath $OutputPath -PathType Leaf) {
+        try {
+            $diagnostic = Limit-SmokeText -Text ((Get-Content -Raw -Encoding UTF8 -LiteralPath $OutputPath).Trim())
+        }
+        catch {
+            $diagnostic = "could not read ${OutputPath}: $($_.Exception.Message)"
+        }
+    }
+    throw "Timed out waiting for Hook canvas UI nodes=$MinimumNodes with a new revision. $lastError Inspector diagnostic: $diagnostic"
 }
 
 $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
@@ -398,17 +506,17 @@ try {
     Write-JsonFile -Path (Join-Path $runDir "processes-during.json") -Value @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)
 }
 catch {
-    $failure = $_.Exception.ToString()
+    $failure = Limit-SmokeText -Text $_.Exception.ToString() -MaxLength 8000
 }
 finally {
     if ($null -ne $daemonPid) {
         if (-not (Stop-ExactProcessById -ProcessId $daemonPid -ExpectedExecutablePath $daemonExe)) {
-            $failure = ($failure + "`nIsolated daemon cleanup failed.").Trim()
+            $failure = Limit-SmokeText -Text (($failure + "`nIsolated daemon cleanup failed.").Trim()) -MaxLength 8000
         }
     }
     if ($null -ne $desktopPid) {
         if (-not (Stop-ExactProcessById -ProcessId $desktopPid -ExpectedExecutablePath $desktopExe)) {
-            $failure = ($failure + "`nIsolated desktop cleanup failed.").Trim()
+            $failure = Limit-SmokeText -Text (($failure + "`nIsolated desktop cleanup failed.").Trim()) -MaxLength 8000
         }
     }
     Start-Sleep -Milliseconds 500
@@ -416,7 +524,7 @@ finally {
     $unexpected = @($afterCleanup | Where-Object { $baselinePids -notcontains [int]$_.processId })
     Write-JsonFile -Path (Join-Path $runDir "processes-after-cleanup.json") -Value $afterCleanup
     if ($unexpected.Count -gt 0) {
-        $failure = ($failure + "`nUnexpected packaged Loom processes remained: " + (($unexpected | ForEach-Object { $_.processId }) -join ",")).Trim()
+        $failure = Limit-SmokeText -Text (($failure + "`nUnexpected packaged Loom processes remained: " + (($unexpected | ForEach-Object { $_.processId }) -join ",")).Trim()) -MaxLength 8000
     }
     $summary = [ordered]@{
         status = if ([string]::IsNullOrWhiteSpace($failure)) { "passed" } else { "failed" }

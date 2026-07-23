@@ -76,8 +76,118 @@ Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exa
 Assert-Contains 'SmokePortMinimum = 30000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."
 Assert-Contains 'SmokePortMaximum = 45000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."
 Assert-Contains 'Wait-ForHookCanvasUi' $smoke "Smoke must wait on Hook canvas DOM conditions."
+Assert-Contains '[int]$TimeoutSeconds = 90' $smoke "Hosted WebView2 startup needs a bounded 90-second Hook canvas wait budget."
+Assert-Contains 'Inspector diagnostic:' $smoke "Hook canvas timeouts must include the latest Inspector diagnostic."
+Assert-Contains 'function Limit-SmokeText' $smoke "Hook canvas smoke output must have a bounded diagnostic size."
+Assert-Contains '[Math]::Min(20' $smoke "Each Inspector invocation must be capped at 20 seconds within the remaining budget."
+Assert-Contains '-TimeoutSeconds $inspectorTimeoutSeconds' $smoke "Inspector child-process timeout must use the remaining Hook canvas budget."
+Assert-Contains '[System.Diagnostics.ProcessStartInfo]::new()' $smoke "Inspector must use the .NET process API for reliable Windows PowerShell exit codes."
+Assert-Contains 'ReadToEndAsync()' $smoke "Inspector stdout and stderr must be drained asynchronously."
+Assert-Contains '$exitCode = $process.ExitCode' $smoke "Inspector must capture a concrete .NET process exit code."
+Assert-Contains '$process.WaitForExit($TimeoutSeconds * 1000)' $smoke "Hook canvas smoke must wait on the Inspector process with a hard timeout."
+Assert-NotContains '$process.WaitForExit()' $smoke "Inspector cleanup must not contain an unbounded process wait."
+Assert-Contains 'function Read-BoundedTaskText' $smoke "Inspector stream draining must use a bounded task wait."
+Assert-Contains '$Task.Wait($TimeoutMilliseconds)' $smoke "Inspector stream draining must not block indefinitely."
 Assert-NotContains 'Start-Sleep -Seconds 2' $smoke "Smoke must not use a fixed Hook canvas refresh delay."
 Assert-Contains 'min-nodes' $inspector "Inspector must wait for the expected Hook canvas node count."
 Assert-Contains 'data-revision' $inspector "Inspector must wait for a non-empty Hook canvas revision."
+Assert-Contains 'let diagnostic = {};' $inspector "Inspector must capture diagnostics before the initial canvas wait."
+Assert-Contains 'let client = null;' $inspector "Inspector must capture failures before a CDP client exists."
+Assert-Contains 'AbortController' $inspector "Inspector HTTP probes must have a timeout."
+Assert-Contains 'command(method, params = {}, timeoutMs = 10000)' $inspector "Inspector CDP commands must have a timeout."
+Assert-Contains 'setTimeout' $inspector "Inspector WebSocket operations must have a timeout."
+Assert-Contains 'if (client) client.close();' $inspector "Inspector must close a partially initialized CDP client."
+Assert-Contains 'this.socket.readyState === WebSocket.OPEN' $inspector "Inspector socket cleanup must only close an open WebSocket."
+Assert-Contains 'try {' $inspector "Inspector socket cleanup must not replace a completed result with a close error."
+Assert-Contains 'await fs.writeFile(args.output, `${JSON.stringify(failure, null, 2)}\n`, "utf8");' $inspector "Inspector failures must persist diagnostic JSON."
+Assert-Contains 'await new Promise((resolve, reject) => {' $inspector "Inspector must flush successful stdout before exiting."
+Assert-Contains '.then(() => process.exit(0))' $inspector "Inspector CLI must terminate after successful evidence writes."
+Assert-Contains 'process.stderr.write(message, () => {' $inspector "Inspector CLI must flush stderr before failure exit."
+Assert-Contains 'setTimeout(() => process.exit(1), 1000);' $inspector "Inspector CLI failure flush must retain a bounded exit fallback."
+Assert-NotContains 'setTimeout(() => process.exit(1), 50);' $inspector "Inspector CLI must not use a fixed delay as a stderr flush proxy."
+
+function Get-SmokeFunctionDefinition {
+    param(
+        [System.Management.Automation.Language.ScriptBlockAst]$Ast,
+        [string]$Name
+    )
+
+    $definition = $Ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+    }, $true)
+    Assert-True ($null -ne $definition) "Missing smoke function for runtime contract: $Name"
+    return [scriptblock]::Create($definition.Extent.Text)
+}
+
+$tokens = $null
+$parseErrors = $null
+$smokeAst = [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$parseErrors)
+Assert-True (@($parseErrors).Count -eq 0) "Hook canvas smoke must parse before runtime process tests."
+. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Limit-SmokeText")
+. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Write-Utf8NoBom")
+. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Read-BoundedTaskText")
+. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Invoke-Inspector")
+
+$fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-inspector-contract-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null
+try {
+    $exitFixturePath = Join-Path $fixtureRoot "exit-fixture.mjs"
+    $hangFixturePath = Join-Path $fixtureRoot "hang-fixture.mjs"
+    $fixtureEncoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($exitFixturePath, @'
+import fs from "node:fs";
+const args = process.argv.slice(2);
+const value = (name) => args[args.indexOf(name) + 1];
+fs.writeFileSync(value("--output"), `${JSON.stringify({ pid: process.pid })}\n`, "utf8");
+fs.writeSync(1, "fixture stdout\n");
+fs.writeSync(2, "fixture stderr\n");
+process.exit(7);
+'@, $fixtureEncoding)
+    [System.IO.File]::WriteAllText($hangFixturePath, @'
+import fs from "node:fs";
+const args = process.argv.slice(2);
+const value = (name) => args[args.indexOf(name) + 1];
+fs.writeFileSync(value("--output"), `${JSON.stringify({ pid: process.pid })}\n`, "utf8");
+fs.writeSync(1, "hanging stdout\n");
+fs.writeSync(2, "hanging stderr\n");
+setInterval(() => {}, 1000);
+'@, $fixtureEncoding)
+
+    $exitOutputPath = Join-Path $fixtureRoot "exit.json"
+    $exitScreenshotPath = Join-Path $fixtureRoot "exit.png"
+    $exitFailure = $null
+    try {
+        Invoke-Inspector -InspectorPath $exitFixturePath -DebugPort 1 -OutputPath $exitOutputPath -ScreenshotPath $exitScreenshotPath -TimeoutSeconds 3 | Out-Null
+    }
+    catch {
+        $exitFailure = $_.Exception.Message
+    }
+    Assert-True (-not [string]::IsNullOrWhiteSpace($exitFailure)) "Nonzero Inspector fixture unexpectedly succeeded."
+    Assert-Contains 'exit code 7' $exitFailure "Inspector must report the concrete nonzero exit code. Actual=[$exitFailure]"
+    Assert-Contains 'fixture stdout' $exitFailure "Inspector failure must include redirected stdout."
+    Assert-Contains 'fixture stderr' $exitFailure "Inspector failure must include redirected stderr."
+
+    $hangOutputPath = Join-Path $fixtureRoot "hang.json"
+    $hangScreenshotPath = Join-Path $fixtureRoot "hang.png"
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $hangFailure = $null
+    try {
+        Invoke-Inspector -InspectorPath $hangFixturePath -DebugPort 1 -OutputPath $hangOutputPath -ScreenshotPath $hangScreenshotPath -TimeoutSeconds 1 | Out-Null
+    }
+    catch {
+        $hangFailure = $_.Exception.Message
+    }
+    $watch.Stop()
+    Assert-True (-not [string]::IsNullOrWhiteSpace($hangFailure)) "Hanging Inspector fixture unexpectedly succeeded."
+    Assert-Contains 'timed out after 1 seconds' $hangFailure "Hanging Inspector fixture must report its timeout."
+    Assert-True ($watch.Elapsed.TotalSeconds -lt 6) "Inspector timeout path exceeded its bounded cleanup allowance."
+    $hangPid = [int]((Get-Content -Raw -Encoding UTF8 -LiteralPath $hangOutputPath | ConvertFrom-Json).pid)
+    Start-Sleep -Milliseconds 200
+    Assert-True ($null -eq (Get-Process -Id $hangPid -ErrorAction SilentlyContinue)) "Timed-out Inspector process remained alive."
+}
+finally {
+    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "Hook canvas UI contract passed."
