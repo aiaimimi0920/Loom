@@ -67,6 +67,20 @@ function Assert-ScriptContract {
     }
 }
 
+function Get-ScriptFunctionDefinition {
+    param(
+        [System.Management.Automation.Language.ScriptBlockAst]$Ast,
+        [string]$Name
+    )
+
+    $definition = $Ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+    }, $true)
+    Assert-True -Condition ($null -ne $definition) -Message "Missing script function for runtime contract: $Name"
+    return [scriptblock]::Create($definition.Extent.Text)
+}
+
 $powerShellScripts = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "scripts") -Recurse -File -Filter "*.ps1")
 foreach ($powerShellScript in $powerShellScripts) {
     $powerShellSource = [System.IO.File]::ReadAllText($powerShellScript.FullName, [System.Text.UTF8Encoding]::new($false, $true))
@@ -131,9 +145,41 @@ Assert-ScriptContract `
         '$expectedLine = "$actualZipHash  $zipName"',
         'checksums.sha256',
         'manifest.json',
-        '[switch]$RunSmoke'
+        '[switch]$RunSmoke',
+        'function Invoke-CapturedPowerShell',
+        '$previousErrorActionPreference = $ErrorActionPreference',
+        '$ErrorActionPreference = "Continue"'
     ) `
     -ForbiddenText $commonForbidden
+
+$verifyTokens = $null
+$verifyParseErrors = $null
+$verifyAst = [System.Management.Automation.Language.Parser]::ParseFile($verifyPath, [ref]$verifyTokens, [ref]$verifyParseErrors)
+Assert-Equal -Expected 0 -Actual @($verifyParseErrors).Count -Message "Verifier must parse before captured-process tests."
+. (Get-ScriptFunctionDefinition -Ast $verifyAst -Name "Invoke-CapturedPowerShell")
+
+$captureFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-verify-capture-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $captureFixtureRoot | Out-Null
+try {
+    $captureFixturePath = Join-Path $captureFixtureRoot "capture-fixture.ps1"
+    [System.IO.File]::WriteAllText(
+        $captureFixturePath,
+        '[Console]::Out.WriteLine("fixture stdout"); [Console]::Error.WriteLine("fixture stderr"); exit 7',
+        [System.Text.ASCIIEncoding]::new()
+    )
+    $captureResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $captureFixturePath
+    )
+    $captureText = @($captureResult.output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+    Assert-Equal -Expected 7 -Actual ([int]$captureResult.exitCode) -Message "Captured PowerShell helper lost the child exit code."
+    Assert-True -Condition $captureText.Contains("fixture stdout") -Message "Captured PowerShell helper lost child stdout."
+    Assert-True -Condition $captureText.Contains("fixture stderr") -Message "Captured PowerShell helper lost child stderr."
+}
+finally {
+    Remove-Item -LiteralPath $captureFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Assert-ScriptContract `
     -Path $layoutPath `

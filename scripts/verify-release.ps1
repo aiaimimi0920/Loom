@@ -40,6 +40,31 @@ function Assert-Equal {
     }
 }
 
+function Invoke-CapturedPowerShell {
+    param([string[]]$Arguments)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $output = @()
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = @(& powershell.exe @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        $output = @($_.Exception.ToString())
+        $exitCode = 1
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    return [pscustomobject]@{
+        exitCode = $exitCode
+        output = @($output)
+    }
+}
+
 function Resolve-PackageRelativePath {
     param(
         [string]$BasePath,
@@ -267,8 +292,15 @@ if ($RunSmoke) {
     $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $smokePath -PathType Leaf) -Message "Missing standalone smoke script: $smokePath"
     $evidenceRoot = Join-Path $repoRoot "target\runtime-smoke"
-    $smokeOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $smokePath -PackageDir $packageFullPath -EvidenceRoot $evidenceRoot 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $smokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $smokePath,
+        "-PackageDir", $packageFullPath,
+        "-EvidenceRoot", $evidenceRoot
+    )
+    $smokeOutput = @($smokeResult.output)
+    if ([int]$smokeResult.exitCode -ne 0) {
         throw "Standalone release smoke failed: $($smokeOutput -join [Environment]::NewLine)"
     }
     $smokeStatus = "passed"
@@ -276,11 +308,15 @@ if ($RunSmoke) {
     $hookCanvasSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $hookCanvasSmokePath -PathType Leaf) -Message "Missing Hook canvas UI smoke script: $hookCanvasSmokePath"
     $hookCanvasEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\hook-canvas"
-    $hookCanvasSmokeOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File $hookCanvasSmokePath `
-        -PackageDir $packageFullPath `
-        -EvidenceRoot $hookCanvasEvidenceRoot 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $hookCanvasSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $hookCanvasSmokePath,
+        "-PackageDir", $packageFullPath,
+        "-EvidenceRoot", $hookCanvasEvidenceRoot
+    )
+    $hookCanvasSmokeOutput = @($hookCanvasSmokeResult.output)
+    if ([int]$hookCanvasSmokeResult.exitCode -ne 0) {
         throw "Hook canvas UI smoke failed: $($hookCanvasSmokeOutput -join [Environment]::NewLine)"
     }
     $hookCanvasSmokeStatus = "passed"
