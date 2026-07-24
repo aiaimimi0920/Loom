@@ -315,33 +315,19 @@ fn read_daemon_snapshot(base_url: &str) -> Result<DaemonSnapshot, String> {
         "capabilities",
         &mut degraded_errors,
     );
-    let mcp_servers = read_optional_daemon_array(
-        base_url,
-        "/v1/mcp/servers",
-        "servers",
-        &mut degraded_errors,
-    );
-    let tools =
-        read_optional_daemon_array(base_url, "/v1/tools", "tools", &mut degraded_errors);
-    let python_arts = read_optional_daemon_array(
-        base_url,
-        "/v1/python-arts",
-        "arts",
-        &mut degraded_errors,
-    );
-    let workflows = read_optional_daemon_array(
-        base_url,
-        "/v1/workflows",
-        "workflows",
-        &mut degraded_errors,
-    );
+    let mcp_servers =
+        read_optional_daemon_array(base_url, "/v1/mcp/servers", "servers", &mut degraded_errors);
+    let tools = read_optional_daemon_array(base_url, "/v1/tools", "tools", &mut degraded_errors);
+    let python_arts =
+        read_optional_daemon_array(base_url, "/v1/python-arts", "arts", &mut degraded_errors);
+    let workflows =
+        read_optional_daemon_array(base_url, "/v1/workflows", "workflows", &mut degraded_errors);
     let hook_bridge =
         read_optional_daemon_json(base_url, "/v1/hook-bridge/status", &mut degraded_errors);
 
     if !degraded_errors.is_empty() {
-        http_get_json(base_url, "/health").map_err(|error| {
-            format!("Loom 本地服务在读取模块状态期间离线：{error}")
-        })?;
+        http_get_json(base_url, "/health")
+            .map_err(|error| format!("Loom 本地服务在读取模块状态期间离线：{error}"))?;
     }
 
     Ok(DaemonSnapshot {
@@ -367,9 +353,7 @@ fn read_optional_daemon_array(
         return Vec::new();
     };
     let Some(values) = response.get(key).and_then(Value::as_array) else {
-        degraded_errors.push(format!(
-            "{path} 返回的模块数据无效：`{key}` 必须是数组"
-        ));
+        degraded_errors.push(format!("{path} 返回的模块数据无效：`{key}` 必须是数组"));
         return Vec::new();
     };
     values.clone()
@@ -636,61 +620,61 @@ mod tests {
     #[test]
     fn optional_daemon_module_failure_keeps_snapshot_online() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind snapshot fixture");
-        let address = listener.local_addr().expect("read snapshot fixture address");
+        let address = listener
+            .local_addr()
+            .expect("read snapshot fixture address");
         listener
             .set_nonblocking(true)
             .expect("set snapshot fixture nonblocking");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || {
+        let server = thread::spawn(move || loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("accept snapshot request: {error}"),
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 512];
             loop {
-                if shutdown_rx.try_recv().is_ok() {
+                let bytes = stream.read(&mut buffer).expect("read snapshot request");
+                if bytes == 0 {
                     break;
                 }
-                let (mut stream, _) = match listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
-                        continue;
-                    }
-                    Err(error) => panic!("accept snapshot request: {error}"),
-                };
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 512];
-                loop {
-                    let bytes = stream.read(&mut buffer).expect("read snapshot request");
-                    if bytes == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..bytes]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
+                request.extend_from_slice(&buffer[..bytes]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
                 }
-                let request = String::from_utf8(request).expect("snapshot request is utf8");
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .expect("snapshot request path");
-                let (status, body) = match path {
-                    "/health" => (200, r#"{"status":"ok"}"#),
-                    "/status" => (200, r#"{"status":"ready"}"#),
-                    "/v1/capabilities" => (200, r#"{"capabilities":[]}"#),
-                    "/v1/mcp/servers" => (200, r#"{"servers":[]}"#),
-                    "/v1/tools" => (500, r#"{"error":{"code":"tool_registry_error"}}"#),
-                    "/v1/python-arts" => (200, r#"{"arts":[]}"#),
-                    "/v1/workflows" => (200, r#"{"workflows":[]}"#),
-                    "/v1/hook-bridge/status" => (200, r#"{"running":false}"#),
-                    other => panic!("unexpected snapshot path: {other}"),
-                };
-                let response = format!(
+            }
+            let request = String::from_utf8(request).expect("snapshot request is utf8");
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .expect("snapshot request path");
+            let (status, body) = match path {
+                "/health" => (200, r#"{"status":"ok"}"#),
+                "/status" => (200, r#"{"status":"ready"}"#),
+                "/v1/capabilities" => (200, r#"{"capabilities":[]}"#),
+                "/v1/mcp/servers" => (200, r#"{"servers":[]}"#),
+                "/v1/tools" => (500, r#"{"error":{"code":"tool_registry_error"}}"#),
+                "/v1/python-arts" => (200, r#"{"arts":[]}"#),
+                "/v1/workflows" => (200, r#"{"workflows":[]}"#),
+                "/v1/hook-bridge/status" => (200, r#"{"running":false}"#),
+                other => panic!("unexpected snapshot path: {other}"),
+            };
+            let response = format!(
                     "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("write snapshot response");
-            }
+            stream
+                .write_all(response.as_bytes())
+                .expect("write snapshot response");
         });
 
         let snapshot = read_loom_snapshot(Some(format!("http://127.0.0.1:{}", address.port())));
@@ -699,9 +683,15 @@ mod tests {
 
         assert_eq!(snapshot.connection_state, "online");
         assert_eq!(snapshot.health, Some(serde_json::json!({"status": "ok"})));
-        assert_eq!(snapshot.status, Some(serde_json::json!({"status": "ready"})));
+        assert_eq!(
+            snapshot.status,
+            Some(serde_json::json!({"status": "ready"}))
+        );
         assert!(snapshot.tools.is_empty());
-        assert!(snapshot.error.as_deref().is_some_and(|error| error.contains("/v1/tools")));
+        assert!(snapshot
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("/v1/tools")));
     }
 
     #[test]
@@ -735,7 +725,9 @@ mod tests {
     #[test]
     fn malformed_optional_module_contract_is_reported_as_degraded() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind malformed fixture");
-        let address = listener.local_addr().expect("read malformed fixture address");
+        let address = listener
+            .local_addr()
+            .expect("read malformed fixture address");
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept malformed request");
             let mut request = [0_u8; 512];
