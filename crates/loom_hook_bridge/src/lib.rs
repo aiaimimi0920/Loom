@@ -115,6 +115,8 @@ pub enum HookBridgeRequest {
         #[serde(default)]
         params: BTreeMap<String, JsonValue>,
         #[serde(default)]
+        input_images: BTreeMap<String, JsonValue>,
+        #[serde(default)]
         disabled_params: Vec<String>,
     },
 
@@ -890,7 +892,7 @@ pub fn execute_art_node_success_response(
     execution_result: JsonValue,
     processing_time_ms: u128,
 ) -> JsonValue {
-    let output_text = extract_text_content(&execution_result);
+    let output_text = extract_execution_text_content(&execution_result);
     serde_json::json!({
         "type": "success",
         "data": {
@@ -967,9 +969,15 @@ pub fn ocr_image_error_response(message: impl Into<String>) -> JsonValue {
     })
 }
 
-fn extract_text_content(execution_result: &JsonValue) -> Option<String> {
+#[must_use]
+pub fn extract_execution_text_content(execution_result: &JsonValue) -> Option<String> {
     let text = execution_result
         .get("content")
+        .or_else(|| {
+            execution_result
+                .get("result")
+                .and_then(|result| result.get("content"))
+        })
         .and_then(JsonValue::as_array)
         .map(|items| {
             items
@@ -1173,6 +1181,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_art_process_request_with_auxiliary_input_images() {
+        let request = parse_request(
+            r#"{"method":"art/process","params":{"request_id":"req-1","art_id":"custom-image-blend-script","input":{"type":"base64","data":"data:image/png;base64,aaa","width":1,"height":1,"format":"rgba8"},"params":{"mix_ratio":25,"reference":""},"input_images":{"reference":"data:image/png;base64,bbb"},"disabled_params":[]}}"#,
+        )
+        .expect("parse process request");
+
+        assert_eq!(
+            request,
+            HookBridgeRequest::Process {
+                request_id: "req-1".to_owned(),
+                art_id: "custom-image-blend-script".to_owned(),
+                input: serde_json::json!({
+                    "type": "base64",
+                    "data": "data:image/png;base64,aaa",
+                    "width": 1,
+                    "height": 1,
+                    "format": "rgba8"
+                }),
+                params: BTreeMap::from([
+                    ("mix_ratio".to_owned(), serde_json::json!(25)),
+                    ("reference".to_owned(), serde_json::json!("")),
+                ]),
+                input_images: BTreeMap::from([(
+                    "reference".to_owned(),
+                    serde_json::json!("data:image/png;base64,bbb"),
+                )]),
+                disabled_params: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
     fn parses_legacy_read_arthook_session_request() {
         let request =
             parse_request(r#"{"method":"read_arthook_session"}"#).expect("parse session request");
@@ -1227,6 +1267,20 @@ mod tests {
         assert_eq!(response["data"]["node_id"], "node-mcp");
         assert_eq!(response["data"]["output_text"], "first line\nsecond line");
         assert_eq!(response["data"]["processing_time_ms"], 7);
+    }
+
+    #[test]
+    fn extract_execution_text_content_reads_nested_result_content() {
+        let text = extract_execution_text_content(&serde_json::json!({
+            "result": {
+                "content": [
+                    { "type": "text", "text": "nested error" }
+                ]
+            }
+        }))
+        .expect("nested text content");
+
+        assert_eq!(text, "nested error");
     }
 
     #[test]

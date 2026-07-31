@@ -232,6 +232,32 @@ export interface ArtLoomExecuteArtNodeResponse {
   data?: unknown;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export function artLoomExecuteArtNodeErrorMessage(
+  response: ArtLoomExecuteArtNodeResponse | null | undefined,
+): string | null {
+  if (!response || response.type === "success") {
+    return null;
+  }
+  const data = response.data;
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (!isRecord(data)) {
+    return null;
+  }
+  for (const key of ["message", "error", "detail"]) {
+    const candidate = data[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
 export interface ArtLoomShortcutConfig {
   id: string;
   label: string;
@@ -676,6 +702,21 @@ export async function getLoomDaemonJson<T>(baseUrl: string, path: string): Promi
   return await getJson<T>(baseUrl, path);
 }
 
+// Load a Hook canvas preview image. The WebView cannot reliably fetch daemon
+// images through a direct `http://127.0.0.1` `<img src>`, so prefer the native
+// Tauri command that returns a base64 `data:` URL. Fall back to the direct
+// daemon URL only for browser previews where the Tauri command is unavailable.
+export async function loadHookCanvasPreview(baseUrl: string, path: string): Promise<string> {
+  try {
+    return await invoke<string>("read_hook_canvas_preview", { baseUrl, path });
+  } catch {
+    // Browser previews do not expose Tauri commands. Fall back to a direct URL
+    // so local frontend checks can still render the preview when CORS allows it.
+    const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    return new URL(path.replace(/^\//, ""), normalizedBaseUrl).toString();
+  }
+}
+
 const postJson = async <T>(baseUrl: string, path: string, body: unknown): Promise<T> => {
   try {
     return await postJsonViaTauri<T>(baseUrl, path, body);
@@ -800,12 +841,140 @@ export async function executeArtLoomArtNode(
   );
 }
 
+export async function updateArtLoomWorkflowNode(
+  baseUrl: string,
+  request: {
+    workflowId: string;
+    nodeId: string;
+    param: string;
+    value: unknown;
+  },
+): Promise<Record<string, unknown>> {
+  return await postJson<Record<string, unknown>>(
+    baseUrl,
+    "/v1/artloom-compat/ipc/update-workflow-node",
+    request,
+  );
+}
+
 export async function saveWorkflowBundle(
   baseUrl: string,
   workflow: Pick<LoomWorkflowMetadata, "id">,
   data: string,
 ): Promise<void> {
   await putJson(baseUrl, `/v1/workflows/${encodeURIComponent(workflow.id)}`, { data });
+}
+
+export async function saveHookCanvasWorkflow(
+  baseUrl: string,
+  request: {
+    workflowId: string;
+    selectedNodeId: string;
+    workflowName?: string;
+  },
+): Promise<void> {
+  await putJson(
+    baseUrl,
+    `/v1/hook-bridge/canvas/workflows/${encodeURIComponent(request.workflowId)}`,
+    {
+      selectedNodeId: request.selectedNodeId,
+      workflowName: request.workflowName ?? request.workflowId,
+    },
+  );
+}
+
+// One art execution framework's install/readiness status.
+export interface LoomFramework {
+  id: string;
+  name: string;
+  description: string;
+  installed: boolean;
+  ready: boolean;
+  readyDetail: string;
+}
+
+interface LoomFrameworksResponse {
+  frameworks?: LoomFramework[];
+}
+
+interface LoomFrameworkResponse {
+  framework?: LoomFramework;
+}
+
+export async function listFrameworks(baseUrl: string): Promise<LoomFramework[]> {
+  const response = await getJson<LoomFrameworksResponse>(baseUrl, "/v1/frameworks");
+  return Array.isArray(response.frameworks) ? response.frameworks : [];
+}
+
+export async function installFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {
+  const response = await postJson<LoomFrameworkResponse>(
+    baseUrl,
+    `/v1/frameworks/${encodeURIComponent(id)}/install`,
+    {},
+  );
+  return response.framework ?? null;
+}
+
+export async function uninstallFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {
+  const response = await postJson<LoomFrameworkResponse>(
+    baseUrl,
+    `/v1/frameworks/${encodeURIComponent(id)}/uninstall`,
+    {},
+  );
+  return response.framework ?? null;
+}
+
+// A remote art-store catalog entry.
+export interface ArtStoreEntry {
+  id: string;
+  name?: string;
+  description?: string;
+  framework?: string;
+}
+
+interface ArtStoreCatalogResponse {
+  arts?: ArtStoreEntry[];
+}
+
+export async function fetchArtStoreCatalog(
+  baseUrl: string,
+  store?: string,
+): Promise<ArtStoreEntry[]> {
+  const query = store ? `?store=${encodeURIComponent(store)}` : "";
+  const response = await getJson<ArtStoreCatalogResponse>(baseUrl, `/v1/arts/store/catalog${query}`);
+  return Array.isArray(response.arts) ? response.arts : [];
+}
+
+export async function installArtFromStore(
+  baseUrl: string,
+  artId: string,
+  store?: string,
+): Promise<void> {
+  await postJson(baseUrl, "/v1/arts/store/install", { artId, store });
+}
+
+export async function installArtPackage(baseUrl: string, zipBase64: string): Promise<void> {
+  await postJson(baseUrl, "/v1/arts/install", { zipBase64 });
+}
+
+export async function publishArt(baseUrl: string, artId: string, store?: string): Promise<void> {
+  await postJson(baseUrl, "/v1/arts/store/publish", { artId, store });
+}
+
+export async function deleteCanvasWorkflow(baseUrl: string, workflowId: string): Promise<void> {
+  await deleteJson(baseUrl, `/v1/hook-bridge/canvas/workflows/${encodeURIComponent(workflowId)}`);
+}
+
+export async function renameCanvasWorkflow(
+  baseUrl: string,
+  workflowId: string,
+  name: string,
+): Promise<void> {
+  await putJson(
+    baseUrl,
+    `/v1/hook-bridge/canvas/workflows/${encodeURIComponent(workflowId)}/rename`,
+    { name },
+  );
 }
 
 export async function getWorkflowBundle(baseUrl: string, workflowId: string): Promise<LoomWorkflowBundle> {

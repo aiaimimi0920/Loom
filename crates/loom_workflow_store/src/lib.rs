@@ -418,6 +418,28 @@ pub fn graph_json_to_workflow_yaml(
     serde_yaml::to_string(&JsonValue::Object(workflow)).map_err(WorkflowStoreError::from)
 }
 
+/// Collect the art ids referenced by a workflow — every node's `uses` value,
+/// excluding the sticker placeholder. Used to resolve a workflow art's
+/// dependent arts (phase-1 recursive install). Returns unique ids in order.
+pub fn collect_workflow_uses(yaml: &str) -> WorkflowStoreResult<Vec<String>> {
+    let parsed: YamlValue = serde_yaml::from_str(yaml)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut uses = Vec::new();
+    if let Some(nodes) = parsed.get("nodes").and_then(YamlValue::as_sequence) {
+        for node in nodes {
+            if let Some(value) = node.get("uses").and_then(YamlValue::as_str) {
+                if value == STICKER_USES || value == LEGACY_STICKER_USES {
+                    continue;
+                }
+                if seen.insert(value.to_owned()) {
+                    uses.push(value.to_owned());
+                }
+            }
+        }
+    }
+    Ok(uses)
+}
+
 pub fn workflow_yaml_to_graph_json(yaml: &str) -> WorkflowStoreResult<JsonValue> {
     let parsed: YamlValue = serde_yaml::from_str(yaml)?;
     let yaml_nodes = parsed
@@ -711,6 +733,26 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn collect_workflow_uses_dedupes_and_skips_stickers() {
+        let yaml = r#"
+name: wf
+nodes:
+  - id: a
+    uses: __sticker__
+  - id: b
+    uses: resize
+  - id: c
+    uses: ocr
+    needs: [b]
+  - id: d
+    uses: resize
+    needs: [c]
+"#;
+        let uses = super::collect_workflow_uses(yaml).expect("collect uses");
+        assert_eq!(uses, vec!["resize".to_owned(), "ocr".to_owned()]);
+    }
 
     use super::*;
 

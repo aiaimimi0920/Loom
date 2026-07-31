@@ -133,6 +133,39 @@ async function waitFor(client, expression, timeoutMs = 15000) {
   throw new Error(`Timed out waiting for browser condition: ${expression}`);
 }
 
+async function readNodePresentations(client, rootSelector) {
+  return await client.evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(rootSelector)});
+    if (!root) return [];
+    return Array.from(root.querySelectorAll('[data-testid="hook-canvas-node"]')).map((node) => ({
+      nodeId: node.getAttribute('data-node-id') ?? '',
+      text: node.textContent?.trim() ?? '',
+      placeholderText: node.querySelector('.hook-canvas-node__placeholder')?.textContent?.trim() ?? null,
+      placeholderDetailText: node.querySelector('.hook-canvas-node__placeholder-detail')?.textContent?.trim() ?? null,
+      placeholderClassName: node.querySelector('.hook-canvas-node__placeholder')?.className ?? null,
+      className: node.className,
+      hasImage: Boolean(node.querySelector('img')),
+      imageCount: node.querySelectorAll('img').length,
+    }));
+  })()`);
+}
+
+async function readFailedArtExecutionFailureVisible(client, rootSelector) {
+  return await client.evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(rootSelector)});
+    if (!root) return false;
+    const node = root.querySelector('[data-testid="hook-canvas-node"][data-node-id="failed-art"]');
+    if (!node) return false;
+    const placeholder = node.querySelector('.hook-canvas-node__placeholder');
+    const placeholderTitle = node.querySelector('.hook-canvas-node__placeholder-title')?.textContent?.trim() ?? '';
+    return Boolean(placeholder)
+      && placeholderTitle === "执行失败"
+      && placeholder.className.includes('hook-canvas-node__placeholder--error')
+      && node.className.includes('hook-canvas-node--status-error')
+      && !node.querySelector('img');
+  })()`);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const debugPort = Number.parseInt(args["debug-port"], 10);
@@ -159,6 +192,11 @@ async function main() {
       return Boolean(thumbnail) && revision !== 'empty' && nodeCount >= ${minimumNodes};
     })()`);
 
+    const thumbnailNodes = await readNodePresentations(client, '[data-testid="hook-canvas-thumbnail"]');
+    const failedArtThumbnailFailureVisible = await readFailedArtExecutionFailureVisible(
+      client,
+      '[data-testid="hook-canvas-thumbnail"]',
+    );
     const beforeOpen = await client.evaluate(`(() => {
       const thumbnail = document.querySelector('[data-testid="hook-canvas-thumbnail"]');
       const yaml = document.querySelector('.studio-textarea--yaml');
@@ -172,10 +210,14 @@ async function main() {
         advancedOpen: Array.from(document.querySelectorAll('details')).some((item) => item.open),
         offlineTextVisible: document.body.innerText.includes('本地服务离线'),
         visibleText: document.body.innerText.slice(0, 1200),
+        thumbnailNodes: [],
+        failedArtThumbnailFailureVisible: false,
       };
     })()`);
+    beforeOpen.thumbnailNodes = thumbnailNodes;
+    beforeOpen.failedArtThumbnailFailureVisible = failedArtThumbnailFailureVisible;
     const clickResult = await client.evaluate(`(() => {
-      const button = document.querySelector('[data-testid="hook-canvas-thumbnail"] .hook-canvas-thumbnail__actions .signal-button');
+      const button = document.querySelector('[data-testid="hook-canvas-open-workflow"]');
       if (!button) return { found: false };
       button.click();
       return { found: true, disabled: Boolean(button.disabled), text: button.textContent?.trim() ?? '' };
@@ -197,10 +239,19 @@ async function main() {
     await fs.writeFile(args.output, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
 
     await waitFor(client, "Boolean(document.querySelector('[data-testid=\"hook-canvas-view\"]'))");
+    const fullCanvasNodes = await readNodePresentations(client, '[data-testid="hook-canvas-view"]');
+    const failedArtExecutionFailureVisible = await readFailedArtExecutionFailureVisible(
+      client,
+      '[data-testid="hook-canvas-view"]',
+    );
     const afterOpen = await client.evaluate(`(() => ({
       fullCanvasVisible: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
       selectedNodeCount: document.querySelectorAll('[data-testid="hook-canvas-view"] .hook-canvas-node--selected').length,
+      fullCanvasNodes: [],
+      failedArtExecutionFailureVisible: false,
     }))()`);
+    afterOpen.fullCanvasNodes = fullCanvasNodes;
+    afterOpen.failedArtExecutionFailureVisible = failedArtExecutionFailureVisible;
     const screenshot = await client.command("Page.captureScreenshot", { format: "png", fromSurface: true });
 
     const result = {

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ArtHookSessionSnapshot,
   ArtLoomAppPaths,
   ArtLoomCompatArt,
   ArtLoomCompatSettings,
@@ -22,30 +21,26 @@ import {
   buildMcpPackageInstallPlan,
   checkPythonArtJsonNearby,
   checkMcpPackageInstalled,
-  createSharedMemoryBuffer,
   deleteMcpServer,
   deleteToolDefinition,
   deleteWorkflowBundle,
   disableArtLoomCompatArt,
   enableArtLoomCompatArt,
+  artLoomExecuteArtNodeErrorMessage,
+  executeArtLoomArtNode,
   fetchMcpRegistry,
   getArtLoomCompatArt,
   getArtLoomCompatAppPaths,
-  getArtLoomCompatIpcStatus,
   getArtLoomCompatSettings,
   getArtLoomCompatShortcuts,
   getPythonEngineStatus,
-  getSharedMemoryBufferInfo,
   getWorkflowBundle,
   inferPythonArtPorts,
   listArtLoomCompatArts,
-  listSharedMemoryBuffers,
   prefetchPythonArtShader,
-  readArtHookSession,
   readLoomSnapshot,
   readPythonArtJson,
   readPythonArtSource,
-  releaseSharedMemoryBuffer,
   saveArtLoomCompatSettings,
   saveMcpServer,
   saveToolDefinition,
@@ -54,10 +49,17 @@ import {
   setArtLoomCompatMinimizeToTray,
   startHookBridge,
   startLoomDaemon,
-  stopHookBridge,
+  listFrameworks,
+  installFramework,
+  uninstallFramework,
+  fetchArtStoreCatalog,
+  installArtFromStore,
+  type LoomFramework,
+  type ArtStoreEntry,
   syncArtLoomCompatArts,
   testMcpConnection,
   updateArtLoomCompatArtDefaults,
+  updateArtLoomWorkflowNode,
   updateArtLoomCompatShortcut,
   waitForLoomOnline,
 } from "./services/loomApi";
@@ -80,6 +82,14 @@ import {
 } from "./services/pythonArtSource";
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import { createLatestRequestGate } from "./services/latestRequest";
+import {
+  IMAGE_SEARCH_ART_ID,
+  IMAGE_SEARCH_SERVER_ID,
+  buildImageSearchArtDefinition,
+  buildImageSearchExecutionRequest,
+  buildImageSearchServerConfig,
+  canExecuteHookCanvasNodeManually,
+} from "./services/mcpImageSearch";
 import {
   getHookCanvasRefreshTrigger,
   keepNewestHookCanvasSnapshot,
@@ -111,7 +121,7 @@ type SectionId =
   | "overview"
   | "mcp"
   | "registry"
-  | "workflow-manager"
+  | "frameworks"
   | "hook-bridge"
   | "workflows"
   | "agents"
@@ -140,8 +150,8 @@ const navigationItems: NavigationItem[] = [
   { id: "overview", label: "总览", eyebrow: "本地工作台" },
   { id: "mcp", label: "MCP", eyebrow: "服务工具" },
   { id: "registry", label: "Art 注册表", eyebrow: "工具中心" },
-  { id: "workflow-manager", label: "工作流管理", eyebrow: "可视化流程" },
-  { id: "hook-bridge", label: "截图同步", eyebrow: "Hook 同步" },
+  { id: "frameworks", label: "框架", eyebrow: "执行能力" },
+  { id: "hook-bridge", label: "Hook 同步", eyebrow: "" },
   { id: "workflows", label: "工作流工作台", eyebrow: "节点编排" },
   { id: "agents", label: "智能体", eyebrow: "本地大脑" },
   { id: "runs", label: "运行记录", eyebrow: "证据" },
@@ -171,6 +181,12 @@ const fallbackSnapshot: LoomSnapshot = {
 };
 
 const DEFAULT_HOOK_BRIDGE_URL = "ws://127.0.0.1:19820";
+
+// Poll the Hook canvas while online so desktop edits (node moves, new captures,
+// image changes) sync automatically without a manual refresh. The daemon
+// computes a cheap content revision and keepNewestHookCanvasSnapshot dedupes by
+// it, so a poll that finds no change does not re-render the canvas.
+const HOOK_CANVAS_POLL_INTERVAL_MS = 1500;
 
 const formatTime = (value: string) => {
   const date = new Date(value);
@@ -488,12 +504,14 @@ function WorkflowStudioPanel({
   snapshot,
   refresh,
   hookCanvas,
+  refreshHookCanvas,
   workflowOpenRequest,
   onWorkflowOpenRequestHandled,
 }: {
   snapshot: LoomSnapshot;
   refresh: () => Promise<void>;
   hookCanvas: HookCanvasSnapshot | null;
+  refreshHookCanvas: (baseUrl?: string) => Promise<void>;
   workflowOpenRequest: WorkflowOpenRequest | null;
   onWorkflowOpenRequestHandled: () => void;
 }) {
@@ -510,11 +528,25 @@ function WorkflowStudioPanel({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<string | null>(null);
   const [nodeDraft, setNodeDraft] = useState<GraphNodeDraft>(() => createNodeDraft(null));
+  const [canvasExecutionBusy, setCanvasExecutionBusy] = useState(false);
+  const [canvasExecutionMessage, setCanvasExecutionMessage] = useState<StudioMessage | null>(null);
 
   const workflowGraph = useMemo(() => parseWorkflowYamlLite(workflowYaml), [workflowYaml]);
+  const toolById = useMemo(
+    () => new Map(snapshot.tools.map((tool) => [tool.id, tool])),
+    [snapshot.tools],
+  );
   const selectedGraphNode = useMemo(
     () => workflowGraph.nodes.find((node) => node.id === selectedNodeId) ?? workflowGraph.nodes[0] ?? null,
     [workflowGraph.nodes, selectedNodeId],
+  );
+  const selectedCanvasNode = useMemo(
+    () => hookCanvas?.nodes.find((node) => node.id === selectedCanvasNodeId) ?? null,
+    [hookCanvas, selectedCanvasNodeId],
+  );
+  const selectedCanvasTool = useMemo(
+    () => (selectedCanvasNode?.artId ? toolById.get(selectedCanvasNode.artId) : undefined),
+    [selectedCanvasNode, toolById],
   );
   const generatedToolId = workflowToolId(workflowId);
 
@@ -542,6 +574,10 @@ function WorkflowStudioPanel({
       : null;
     if (retained !== selectedCanvasNodeId) setSelectedCanvasNodeId(retained);
   }, [hookCanvas, selectedCanvasNodeId]);
+
+  useEffect(() => {
+    setCanvasExecutionMessage(null);
+  }, [selectedCanvasNodeId]);
 
   const runSmartImport = () => {
     const parsedCurl = parseCurlCommand(curlCommand);
@@ -680,6 +716,51 @@ function WorkflowStudioPanel({
     await loadWorkflowById(workflow.id);
   };
 
+  const executeSelectedCanvasNode = async (selectedIndex?: number) => {
+    if (!selectedCanvasNode || !selectedCanvasTool) {
+      setCanvasExecutionMessage({ kind: "error", text: "请先选择一个可执行的 Hook Art 节点。" });
+      return;
+    }
+    if (!canExecuteHookCanvasNodeManually(selectedCanvasNode, selectedCanvasTool)) {
+      setCanvasExecutionMessage({
+        kind: "error",
+        text: "当前节点依赖上游图像输入，暂不支持在 Loom 桌面中直接手工执行。",
+      });
+      return;
+    }
+
+    setCanvasExecutionBusy(true);
+    try {
+      const request = buildImageSearchExecutionRequest(selectedCanvasNode, selectedIndex);
+      if (typeof selectedIndex === "number") {
+        await updateArtLoomWorkflowNode(snapshot.baseUrl, {
+          workflowId: hookCanvas?.workflowId ?? workflowId,
+          nodeId: selectedCanvasNode.id,
+          param: "result_index",
+          value: Math.floor(selectedIndex),
+        });
+      }
+      const response = await executeArtLoomArtNode(snapshot.baseUrl, request);
+      if (response.type !== "success") {
+        throw new Error(artLoomExecuteArtNodeErrorMessage(response) || "节点执行失败。");
+      }
+      await refreshHookCanvas(snapshot.baseUrl);
+      setCanvasExecutionMessage({
+        kind: "info",
+        text: selectedIndex === undefined
+          ? `已执行节点 ${selectedCanvasNode.label || selectedCanvasNode.id}。`
+          : `已切换到搜索结果 ${selectedIndex + 1} 并重新执行节点。`,
+      });
+    } catch (error) {
+      setCanvasExecutionMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "无法执行选中的 Hook Art 节点。",
+      });
+    } finally {
+      setCanvasExecutionBusy(false);
+    }
+  };
+
   const removeSavedWorkflow = async (workflow: LoomWorkflowMetadata) => {
     setBusy(true);
     try {
@@ -737,7 +818,6 @@ function WorkflowStudioPanel({
   };
 
   const graphEdgeCount = workflowGraph.nodes.reduce((count, node) => count + node.needs.length, 0);
-  const toolById = useMemo(() => new Map(snapshot.tools.map((tool) => [tool.id, tool])), [snapshot.tools]);
 
   const addArtNodeFromTool = (tool: LoomToolDefinition) => {
     const nextGraph = addWorkflowGraphNode(workflowGraph, {
@@ -783,11 +863,22 @@ function WorkflowStudioPanel({
           baseUrl={snapshot.baseUrl}
           selectedNodeId={selectedCanvasNodeId}
           onSelectNode={selectCanvasNode}
+          selectedNodeCanExecute={Boolean(
+            selectedCanvasNode && selectedCanvasTool &&
+              canExecuteHookCanvasNodeManually(selectedCanvasNode, selectedCanvasTool),
+          )}
+          executionBusy={canvasExecutionBusy}
+          executionMessage={canvasExecutionMessage}
+          onExecuteSelectedNode={() => void executeSelectedCanvasNode()}
+          onSelectResultCandidate={(index) => void executeSelectedCanvasNode(index)}
         />
       ) : null}
 
       <div className="studio-grid">
-        <details className="advanced-technical-information advanced-technical-information--studio">
+        <details
+          className="advanced-technical-information advanced-technical-information--studio"
+          data-testid="advanced-technical-information"
+        >
           <summary>高级技术信息 · YAML 源定义</summary>
           <article className="glass-card studio-card studio-card--wide">
           <div className="control-card__head">
@@ -978,7 +1069,10 @@ function WorkflowStudioPanel({
           </div>
         </article>
 
-        <details className="advanced-technical-information advanced-technical-information--studio">
+        <details
+          className="advanced-technical-information advanced-technical-information--studio"
+          data-testid="advanced-technical-information"
+        >
           <summary>高级技术信息 · 导入与绑定</summary>
           <div className="advanced-technical-information__body">
         <article className="glass-card studio-card">
@@ -1946,10 +2040,14 @@ function McpPanel({
   servers,
   baseUrl,
   refresh,
+  openWorkflowStudio,
+  openHookWorkflow,
 }: {
   servers: LoomMcpServer[];
   baseUrl: string;
   refresh: () => Promise<void>;
+  openWorkflowStudio: () => void;
+  openHookWorkflow: () => void;
 }) {
   const [busyServerId, setBusyServerId] = useState<string | null>(null);
   const [busyMarketplaceId, setBusyMarketplaceId] = useState<string | null>(null);
@@ -1971,6 +2069,14 @@ function McpPanel({
   const [packageName, setPackageName] = useState("mcp-server-demo");
   const [packageBusy, setPackageBusy] = useState<"check" | "plan" | null>(null);
   const [packageResult, setPackageResult] = useState<string | null>(null);
+  const [imageSearchApiKey, setImageSearchApiKey] = useState("");
+  const [imageSearchBusy, setImageSearchBusy] = useState(false);
+
+  useEffect(() => {
+    const configured = servers.find((server) => server.id === IMAGE_SEARCH_SERVER_ID);
+    const nextKey = configured?.env?.BRAVE_API_KEY ?? "";
+    setImageSearchApiKey((previous) => (previous || nextKey ? previous || nextKey : ""));
+  }, [servers]);
 
   const removeServer = async (server: LoomMcpServer) => {
     setBusyServerId(server.id);
@@ -2187,6 +2293,50 @@ function McpPanel({
   };
 
   const normalizedSearch = searchText.trim().toLowerCase();
+  const installImageSearchManualFlow = async () => {
+    const braveApiKey = imageSearchApiKey.trim();
+    if (!braveApiKey) {
+      setMcpMessage({ kind: "error", text: "图片搜索手工测试流需要先填写 BRAVE_API_KEY。" });
+      return;
+    }
+
+    const existingServer = servers.find((server) => server.id === IMAGE_SEARCH_SERVER_ID);
+    setImageSearchBusy(true);
+    try {
+      const savedServer = await saveMcpServer(
+        baseUrl,
+        buildImageSearchServerConfig(braveApiKey, existingServer),
+      );
+      const framework = await installFramework(baseUrl, "mcp");
+      await saveToolDefinition(baseUrl, buildImageSearchArtDefinition(savedServer.id));
+      const connection = await testMcpConnection(baseUrl, savedServer);
+      const tools = Array.isArray(connection.tools) ? connection.tools : [];
+      setTestSnapshots((previous) => ({
+        ...previous,
+        [savedServer.id]: {
+          status: connection.success === false ? "error" : "success",
+          toolCount: tools.length,
+          testedAt: new Date().toISOString(),
+          error: connection.success === false ? connection.error || "MCP 测试失败" : undefined,
+        },
+      }));
+      setMcpMessage({
+        kind: connection.success === false ? "error" : "info",
+        text: connection.success === false
+          ? `图片搜索 Art 已保存，但 Brave Search 测试失败：${connection.error || "未知错误"}`
+          : `图片搜索手工测试流已就绪：MCP 框架 ${framework?.ready ? "已就绪" : "已安装"}，服务 ${savedServer.name} 暴露 ${tools.length} 个工具，Art 已保存为 ${IMAGE_SEARCH_ART_ID}。`,
+      });
+      await refresh();
+    } catch (error) {
+      setMcpMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "无法安装图片搜索手工测试流。",
+      });
+    } finally {
+      setImageSearchBusy(false);
+    }
+  };
+
   const filteredServers = servers.filter((server) => {
     const matchesSearch =
       !normalizedSearch ||
@@ -2262,6 +2412,45 @@ function McpPanel({
           <p className={mcpMessage.kind === "error" ? "error-text" : "success-text"}>{mcpMessage.text}</p>
         ) : null}
       </div>
+      <article className="glass-card studio-card manual-mcp-card">
+        <div className="control-card__head">
+          <div>
+            <p className="card-kicker">图片搜索</p>
+            <h3>手工测试流</h3>
+          </div>
+          <span className="mini-chip">Brave Search</span>
+        </div>
+        <p>
+          一键保存 Brave Search MCP 服务、安装 MCP 框架，并注册
+          <code>{IMAGE_SEARCH_ART_ID}</code>
+          ，方便直接在工作流工作台或 Hook 实时工作流里手工执行“图片搜索”节点。
+        </p>
+        <label className="field-label">
+          BRAVE_API_KEY
+          <input
+            className="studio-input"
+            value={imageSearchApiKey}
+            onChange={(event) => setImageSearchApiKey(event.target.value)}
+            placeholder="输入 Brave Search API Key"
+          />
+        </label>
+        <div className="studio-actions">
+          <button
+            className="signal-button"
+            type="button"
+            onClick={installImageSearchManualFlow}
+            disabled={imageSearchBusy}
+          >
+            {imageSearchBusy ? "安装中" : "安装图片搜索测试流"}
+          </button>
+          <button className="ghost-button" type="button" onClick={openWorkflowStudio}>
+            打开工作流工作台
+          </button>
+          <button className="ghost-button" type="button" onClick={openHookWorkflow}>
+            打开 Hook 实时工作流
+          </button>
+        </div>
+      </article>
       <article className="glass-card studio-card manual-mcp-card">
         <div className="control-card__head">
           <div>
@@ -3340,361 +3529,195 @@ function RegistryPanel({
   );
 }
 
-function WorkflowManagerPanel({
-  workflows,
-  onOpenWorkflow,
-}: {
-  workflows: LoomWorkflowMetadata[];
-  onOpenWorkflow: (workflowId: string) => void;
-}) {
+function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
+  const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    void listFrameworks(baseUrl)
+      .then((list) => {
+        setFrameworks(list);
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "无法读取框架列表。"));
+  }, [baseUrl]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const toggle = async (framework: LoomFramework) => {
+    setBusyId(framework.id);
+    try {
+      const updated = framework.installed
+        ? await uninstallFramework(baseUrl, framework.id)
+        : await installFramework(baseUrl, framework.id);
+      if (updated) {
+        setFrameworks((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      } else {
+        load();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败。");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <section className="content-grid">
       <div className="main-board">
-        <p className="section-kicker">工作流管理</p>
-        <h2>可视化工作流管理</h2>
+        <p className="section-kicker">框架</p>
+        <h2>执行框架</h2>
+        <p className="muted-line">
+          框架是 art 的执行能力底座。装了框架，才能安装并运行属于该框架的 art。
+        </p>
+        {error ? <p className="error-text">{error}</p> : null}
       </div>
       <div className="card-grid">
-        {workflows.length ? workflows.map((workflow) => (
-          <article
-            className={isHookLiveWorkflow(workflow) ? "glass-card control-card workflow-live-card" : "glass-card control-card"}
-            key={workflow.id}
-          >
+        {frameworks.map((framework) => (
+          <article className="glass-card control-card" key={framework.id}>
             <div className="control-card__head">
               <div>
-                <p className="card-kicker">{isHookLiveWorkflow(workflow) ? "Hook 实时工作流" : "工作流"}</p>
-                <h3>{workflowDisplayName(workflow)}</h3>
+                <p className="card-kicker">{framework.installed ? "已安装" : "未安装"}</p>
+                <h3>{framework.name}</h3>
               </div>
-              <span className="mini-chip">{workflow.nodeCount ?? 0} 个节点</span>
+              <span className={framework.ready ? "mini-chip mini-chip--ok" : "mini-chip"}>
+                {framework.ready ? "就绪" : framework.installed ? "未就绪" : "未安装"}
+              </span>
             </div>
-            <p className="mono-line">{workflow.id}</p>
-            <p>更新时间：{workflow.updatedAt ? workflow.updatedAt : "未记录"}</p>
-            <button className="ghost-button" type="button" onClick={() => onOpenWorkflow(workflow.id)}>
-              {isHookLiveWorkflow(workflow) ? "打开 Hook 工作流" : "在工作台打开"}
+            <p>{framework.description}</p>
+            <p className="mono-line">{framework.readyDetail}</p>
+            <button
+              className={framework.installed ? "ghost-button" : "signal-button"}
+              type="button"
+              onClick={() => toggle(framework)}
+              disabled={busyId === framework.id}
+            >
+              {busyId === framework.id
+                ? "处理中"
+                : framework.installed
+                  ? "卸载"
+                  : "安装"}
             </button>
           </article>
-        )) : (
+        ))}
+        {frameworks.length === 0 && !error ? (
           <article className="glass-card empty-card">
-            <h3>暂无工作流</h3>
+            <h3>加载中…</h3>
           </article>
-        )}
+        ) : null}
       </div>
+      <ArtStoreCard baseUrl={baseUrl} onInstalled={load} />
     </section>
   );
 }
 
+function ArtStoreCard({ baseUrl, onInstalled }: { baseUrl: string; onInstalled: () => void }) {
+  const [store, setStore] = useState("");
+  const [catalog, setCatalog] = useState<ArtStoreEntry[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const browse = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const arts = await fetchArtStoreCatalog(baseUrl, store || undefined);
+      setCatalog(arts);
+      if (arts.length === 0) setMessage({ ok: true, text: "商店目录为空。" });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "无法访问商店。" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const install = async (artId: string) => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await installArtFromStore(baseUrl, artId, store || undefined);
+      setMessage({ ok: true, text: `已安装 ${artId}（含依赖）。` });
+      onInstalled();
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "安装失败。" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="main-board">
+      <p className="section-kicker">art 商店</p>
+      <h3>从商店安装 art</h3>
+      <p className="muted-line">
+        安装 art 会自动装齐其依赖（第三方 exe、附属 art）。缺框架会提示先装框架。商店地址留空则用
+        LOOM_ART_STORE_URL。
+      </p>
+      <div className="hook-canvas-toolbar__controls" style={{ marginBottom: 12 }}>
+        <input
+          className="hook-canvas-param-expose__value"
+          style={{ flex: "1 1 auto" }}
+          placeholder="商店地址（可留空）"
+          value={store}
+          onChange={(event) => setStore(event.target.value)}
+        />
+        <button className="signal-button" type="button" onClick={browse} disabled={busy}>
+          {busy ? "处理中" : "浏览商店"}
+        </button>
+      </div>
+      {message ? (
+        <p className={message.ok ? "success-text" : "error-text"}>{message.text}</p>
+      ) : null}
+      <div className="card-grid">
+        {catalog.map((art) => (
+          <article className="glass-card control-card" key={art.id}>
+            <div className="control-card__head">
+              <div>
+                <p className="card-kicker">{art.framework ?? "art"}</p>
+                <h3>{art.name ?? art.id}</h3>
+              </div>
+            </div>
+            <p>{art.description ?? ""}</p>
+            <p className="mono-line">{art.id}</p>
+            <button
+              className="signal-button"
+              type="button"
+              onClick={() => install(art.id)}
+              disabled={busy}
+            >
+              安装
+            </button>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function HookBridgePanel({
-  status,
-  busy,
-  error,
   baseUrl,
   hookCanvas,
-  hookCanvasLoading,
   hookCanvasError,
-  hookConnected,
-  onRefreshHookCanvas,
-  onStart,
-  onStop,
-  onOpenHookWorkflow,
+  tools,
+  onOpenWorkflow,
 }: {
-  status: LoomHookBridgeStatus | null;
-  busy: boolean;
-  error: string | null;
   baseUrl: string;
   hookCanvas: HookCanvasSnapshot | null;
-  hookCanvasLoading: boolean;
   hookCanvasError: string | null;
-  hookConnected: boolean;
-  onRefreshHookCanvas: () => void;
-  onStart: () => void;
-  onStop: () => void;
-  onOpenHookWorkflow: (nodeId?: string) => void;
+  tools: LoomToolDefinition[];
+  onOpenWorkflow: (selectedNodeId?: string) => void;
 }) {
-  const methods = status?.methods ?? [];
-  const running = status?.running === true;
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  const [sessionSnapshot, setSessionSnapshot] = useState<ArtHookSessionSnapshot | null>(null);
-  const [sessionBusy, setSessionBusy] = useState(false);
-  const [ipcSnapshot, setIpcSnapshot] = useState<LoomHookBridgeStatus | null>(null);
-  const [sharedBusyAction, setSharedBusyAction] = useState<string | null>(null);
-  const [sharedHandle, setSharedHandle] = useState("");
-  const [sharedBufferCount, setSharedBufferCount] = useState<number | null>(null);
-  const syncDesktopHook = () => {
-    if (!running) onStart();
-    onOpenHookWorkflow();
-    setSyncMessage("已切换到 Hook 实时工作流；等待 Hook 通过 ArtLoom bridge 推送最新内容。");
-  };
-  const refreshHookWorkflow = () => {
-    if (!running) onStart();
-    onOpenHookWorkflow();
-    setSyncMessage("已打开 Hook 实时工作流；后续会跟随 art_hook/instantiate 与 art_loom/workflow_updated 自动刷新。");
-  };
-  const broadcastHookSync = () => {
-    if (!running) onStart();
-    setSyncMessage("Loom 正在监听 Hook bridge 广播；收到 art_hook/instantiate 与 art_loom/workflow_updated 后会自动刷新。");
-  };
-  const loadArtHookSession = async () => {
-    setSessionBusy(true);
-    try {
-      setSessionSnapshot(await readArtHookSession(baseUrl));
-    } catch (loadError) {
-      setSessionSnapshot({
-        method: "read_arthook_session",
-        error: loadError instanceof Error ? loadError.message : "无法读取 ArtHook 会话。",
-        session: { stickers: [], links: [] },
-      });
-    } finally {
-      setSessionBusy(false);
-    }
-  };
-  const loadIpcStatus = async () => {
-    setSharedBusyAction("ipc-status");
-    try {
-      const response = await getArtLoomCompatIpcStatus(baseUrl);
-      setIpcSnapshot(response);
-      setSyncMessage(`get_ipc_status 返回端口 ${response.ipcPort ?? response.port ?? 19820}。`);
-    } catch (loadError) {
-      setSyncMessage(loadError instanceof Error ? loadError.message : "无法读取 get_ipc_status。");
-    } finally {
-      setSharedBusyAction(null);
-    }
-  };
-  const createSharedMemoryProbe = async () => {
-    setSharedBusyAction("shm-create");
-    try {
-      const response = await createSharedMemoryBuffer(baseUrl, { width: 1, height: 1, channels: 4 });
-      const handle = response.handle || response.handle_name || response.buffer?.handle_name || "";
-      setSharedHandle(handle);
-      setSyncMessage(`shm_create_buffer 已创建 ${handle || "共享缓冲区"}。`);
-    } catch (loadError) {
-      setSyncMessage(loadError instanceof Error ? loadError.message : "无法创建共享内存缓冲区。");
-    } finally {
-      setSharedBusyAction(null);
-    }
-  };
-  const listSharedMemoryProbe = async () => {
-    setSharedBusyAction("shm-list");
-    try {
-      const response = await listSharedMemoryBuffers(baseUrl);
-      setSharedBufferCount(response.buffers?.length ?? 0);
-      if (!sharedHandle && response.buffers?.[0]?.handle_name) setSharedHandle(response.buffers[0].handle_name);
-      setSyncMessage(`shm_list_buffers 返回 ${response.buffers?.length ?? 0} 个缓冲区。`);
-    } catch (loadError) {
-      setSyncMessage(loadError instanceof Error ? loadError.message : "无法列出共享内存缓冲区。");
-    } finally {
-      setSharedBusyAction(null);
-    }
-  };
-  const readSharedMemoryProbe = async () => {
-    if (!sharedHandle.trim()) {
-      setSyncMessage("请先创建或输入共享内存 handle，再执行 shm_get_buffer_info。");
-      return;
-    }
-    setSharedBusyAction("shm-info");
-    try {
-      const response = await getSharedMemoryBufferInfo(baseUrl, sharedHandle.trim());
-      setSyncMessage(`shm_get_buffer_info：${response.buffer?.width ?? 0}x${response.buffer?.height ?? 0} rgba8。`);
-    } catch (loadError) {
-      setSyncMessage(loadError instanceof Error ? loadError.message : "无法查看共享内存缓冲区。");
-    } finally {
-      setSharedBusyAction(null);
-    }
-  };
-  const releaseSharedMemoryProbe = async () => {
-    if (!sharedHandle.trim()) {
-      setSyncMessage("请先创建或输入共享内存 handle，再执行 shm_release_buffer。");
-      return;
-    }
-    setSharedBusyAction("shm-release");
-    try {
-      await releaseSharedMemoryBuffer(baseUrl, sharedHandle.trim());
-      setSyncMessage(`shm_release_buffer 已释放 ${sharedHandle.trim()}。`);
-      setSharedHandle("");
-    } catch (loadError) {
-      setSyncMessage(loadError instanceof Error ? loadError.message : "无法释放共享内存缓冲区。");
-    } finally {
-      setSharedBusyAction(null);
-    }
-  };
   return (
-    <section className="main-board">
-      <p className="section-kicker">截图同步</p>
-      <h2>Hook 截图同步</h2>
-      <div className="bridge-actions">
-        <button className="signal-button" type="button" onClick={onStart} disabled={busy || running}>
-          {busy && !running ? "启动中" : "启动截图同步"}
-        </button>
-        <button className="ghost-button" type="button" onClick={onStop} disabled={busy || !running}>
-          {busy && running ? "停止中" : "停止截图同步"}
-        </button>
-      </div>
-      <div className="hook-sync-card">
-        <div>
-          <p className="card-kicker">Hook 截图</p>
-          <h3>截图同步到工作流</h3>
-          <span className="mini-chip">同步桌面 Hook</span>
-        </div>
-        <HookCanvasThumbnail
-          snapshot={hookCanvas}
-          baseUrl={baseUrl}
-          loading={hookCanvasLoading}
-          error={hookCanvasError}
-          hookConnected={hookConnected}
-          onRefresh={onRefreshHookCanvas}
-          onOpen={onOpenHookWorkflow}
-        />
-        <div className="flow-strip">
-          <span>Hook 截图</span>
-          <span>→</span>
-          <span>Loom 工作流</span>
-          <span>→</span>
-          <span>Art 节点</span>
-        </div>
-        <div className="studio-actions">
-          <button className="signal-button" type="button" onClick={syncDesktopHook} disabled={busy}>
-            同步截图上下文
-          </button>
-          <button className="ghost-button" type="button" onClick={refreshHookWorkflow} disabled={busy}>
-            生成/刷新工作流
-          </button>
-          <button className="ghost-button" type="button" onClick={() => onOpenHookWorkflow()}>
-            打开 Hook 工作流
-          </button>
-          <button className="ghost-button" type="button" onClick={broadcastHookSync}>
-            广播同步
-          </button>
-        </div>
-        {syncMessage ? <p className="success-text">{syncMessage}</p> : null}
-      </div>
-      {error ? <p className="error-text">{error}</p> : null}
-      <details className="advanced-technical-information" data-testid="advanced-technical-information">
-        <summary>高级技术信息</summary>
-        <div className="advanced-technical-information__body">
-      <div className="hook-sync-card">
-        <div className="control-card__head">
-          <div>
-            <p className="card-kicker">ArtHook 会话</p>
-            <h3>read_arthook_session</h3>
-          </div>
-          <span className="mini-chip">{sessionSnapshot?.available ? "已找到" : "快照"}</span>
-        </div>
-        <div className="studio-actions">
-          <button className="ghost-button" type="button" onClick={loadArtHookSession} disabled={sessionBusy}>
-            {sessionBusy ? "读取中" : "读取 ArtHook 会话"}
-          </button>
-        </div>
-        {sessionSnapshot ? (
-          <div className="terminal-list">
-            <span>method: {sessionSnapshot.method || sessionSnapshot.compatCommand || "read_arthook_session"}</span>
-            <span>stickers: {sessionSnapshot.session?.stickers?.length ?? 0}</span>
-            <span>links: {sessionSnapshot.session?.links?.length ?? 0}</span>
-            <span>path: {sessionSnapshot.sessionPath || "ArtHook 会话路径不可用"}</span>
-            {sessionSnapshot.error ? <span>error: {sessionSnapshot.error}</span> : null}
-          </div>
-        ) : null}
-      </div>
-      <div className="hook-sync-card">
-        <div className="control-card__head">
-          <div>
-            <p className="card-kicker">IPC 状态兼容</p>
-            <h3>get_ipc_status</h3>
-          </div>
-          <span className="mini-chip">{ipcSnapshot?.protocol || "artloom-compat"}</span>
-        </div>
-        <div className="studio-actions">
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={loadIpcStatus}
-            disabled={Boolean(sharedBusyAction)}
-          >
-            {sharedBusyAction === "ipc-status" ? "读取中" : "get_ipc_status"}
-          </button>
-        </div>
-        {ipcSnapshot ? (
-          <div className="terminal-list">
-            <span>method: {ipcSnapshot.compatCommand || "get_ipc_status"}</span>
-            <span>port: {ipcSnapshot.ipcPort ?? ipcSnapshot.port ?? 19820}</span>
-            <span>running: {ipcSnapshot.running === true ? "true" : "false"}</span>
-            <span>methods: {ipcSnapshot.methods?.length ?? methods.length}</span>
-          </div>
-        ) : null}
-      </div>
-      <div className="hook-sync-card">
-        <div className="control-card__head">
-          <div>
-            <p className="card-kicker">共享内存兼容</p>
-            <h3>shm_create_buffer / shm_list_buffers</h3>
-          </div>
-          <span className="mini-chip">{sharedBufferCount ?? "rgba8"}</span>
-        </div>
-        <label className="field-stack">
-          <span>共享内存 handle</span>
-          <input
-            value={sharedHandle}
-            onChange={(event) => setSharedHandle(event.target.value)}
-            placeholder="Loom_Buffer_..."
-          />
-        </label>
-        <div className="studio-actions">
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={createSharedMemoryProbe}
-            disabled={Boolean(sharedBusyAction)}
-          >
-            {sharedBusyAction === "shm-create" ? "创建中" : "shm_create_buffer"}
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={listSharedMemoryProbe}
-            disabled={Boolean(sharedBusyAction)}
-          >
-            {sharedBusyAction === "shm-list" ? "列出中" : "shm_list_buffers"}
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={readSharedMemoryProbe}
-            disabled={Boolean(sharedBusyAction)}
-          >
-            {sharedBusyAction === "shm-info" ? "读取中" : "shm_get_buffer_info"}
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={releaseSharedMemoryProbe}
-            disabled={Boolean(sharedBusyAction)}
-          >
-            {sharedBusyAction === "shm-release" ? "释放中" : "shm_release_buffer"}
-          </button>
-        </div>
-      </div>
-      <div className="stat-row">
-        <div className="stat-card">
-          <span>端口</span>
-          <strong>{status?.port ?? 19820}</strong>
-        </div>
-        <div className="stat-card">
-          <span>连接数</span>
-          <strong>{status?.connectedClients ?? 0}</strong>
-        </div>
-        <div className="stat-card">
-          <span>状态</span>
-          <strong>{running ? "在线" : "已停止"}</strong>
-        </div>
-      </div>
-      <div className="method-grid">
-        <span className="method-chip">兼容协议诊断</span>
-        <span className="method-chip">art_hook/instantiate</span>
-        <span className="method-chip">art_loom/workflow_updated</span>
-        {methods.length ? methods.map((method) => (
-          <span className="method-chip" key={method}>{method}</span>
-        )) : <span className="method-chip">未加载方法目录</span>}
-      </div>
-        </div>
-      </details>
-    </section>
+    <HookCanvasThumbnail
+      snapshot={hookCanvas}
+      baseUrl={baseUrl}
+      error={hookCanvasError}
+      tools={tools}
+      onOpenWorkflow={onOpenWorkflow}
+    />
   );
 }
 
@@ -4188,8 +4211,6 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [snapshot, setSnapshot] = useState<LoomSnapshot>(fallbackSnapshot);
   const [loading, setLoading] = useState(false);
-  const [bridgeBusy, setBridgeBusy] = useState(false);
-  const [bridgeError, setBridgeError] = useState<string | null>(null);
   const [localServiceBusy, setLocalServiceBusy] = useState(false);
   const [localServiceMessage, setLocalServiceMessage] = useState<StudioMessage | null>(null);
   const [autoStartAttempted, setAutoStartAttempted] = useState(false);
@@ -4302,6 +4323,23 @@ export default function App() {
     void refreshHookCanvas(snapshot.baseUrl);
   }, [hookCanvasRefreshTrigger, refreshHookCanvas, snapshot.baseUrl]);
 
+  // Auto-sync the Hook canvas while online. Hook persists position and image
+  // edits to session.json without always emitting a bridge broadcast, so poll
+  // the snapshot on an interval. The daemon returns a cheap content revision and
+  // keepNewestHookCanvasSnapshot dedupes by revision, so an unchanged canvas
+  // does not cause a re-render or reload previews.
+  useEffect(() => {
+    if (hookCanvasRefreshTrigger === null) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void refreshHookCanvas(snapshot.baseUrl);
+    }, HOOK_CANVAS_POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [hookCanvasRefreshTrigger, refreshHookCanvas, snapshot.baseUrl]);
+
   useEffect(() => {
     if (
       autoStartAttempted ||
@@ -4314,6 +4352,19 @@ export default function App() {
     setAutoStartAttempted(true);
     void startLocalService(true);
   }, [autoStartAttempted, loading, snapshot.connectionState, snapshot.checkedAt]);
+
+  // Ensure the Hook bridge WS server (port 19820) is running once the daemon is
+  // online, so peer apps (Hook) can execute art/workflow nodes through it.
+  // Idempotent: the daemon returns 409 if already running, which we ignore.
+  useEffect(() => {
+    if (snapshot.connectionState !== "online") {
+      return;
+    }
+    void startHookBridge(snapshot.baseUrl).catch(() => {
+      // Already running or transient failure — the workflow-sync client below
+      // will retry connecting regardless.
+    });
+  }, [snapshot.connectionState, snapshot.baseUrl]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof WebSocket === "undefined") {
@@ -4335,41 +4386,9 @@ export default function App() {
     };
   }, [hookBridgeUrl, refresh]);
 
-  const openWorkflowInStudio = (workflowId: string) => {
-    setWorkflowOpenRequest({ workflowId });
-    setActiveSection("workflows");
-  };
-
   const handleWorkflowOpenRequestHandled = useCallback(() => {
     setWorkflowOpenRequest(null);
   }, []);
-
-  const handleBridgeStart = async () => {
-    setBridgeBusy(true);
-    setBridgeError(null);
-    try {
-      const bridgePort = Number.parseInt(new URL(hookBridgeUrl).port || "19820", 10);
-      await startHookBridge(snapshot.baseUrl, Number.isFinite(bridgePort) ? bridgePort : 19820);
-      await refresh();
-    } catch (error) {
-      setBridgeError(error instanceof Error ? error.message : "无法启动截图同步");
-    } finally {
-      setBridgeBusy(false);
-    }
-  };
-
-  const handleBridgeStop = async () => {
-    setBridgeBusy(true);
-    setBridgeError(null);
-    try {
-      await stopHookBridge(snapshot.baseUrl);
-      await refresh();
-    } catch (error) {
-      setBridgeError(error instanceof Error ? error.message : "无法停止截图同步");
-    } finally {
-      setBridgeBusy(false);
-    }
-  };
 
   const activeNavigation = useMemo(
     () => navigationItems.find((item) => item.id === activeSection) ?? navigationItems[0],
@@ -4397,7 +4416,7 @@ export default function App() {
               onClick={() => setActiveSection(item.id)}
             >
               <span>{item.label}</span>
-              <small>{item.eyebrow}</small>
+              {item.eyebrow ? <small>{item.eyebrow}</small> : null}
             </button>
           ))}
         </nav>
@@ -4413,10 +4432,11 @@ export default function App() {
       <section className="workspace-panel">
         <header className="workspace-header">
           <div>
-            <p className="section-kicker">{activeNavigation.eyebrow}</p>
+            {activeNavigation.eyebrow ? (
+              <p className="section-kicker">{activeNavigation.eyebrow}</p>
+            ) : null}
             <h1>{activeNavigation.label}</h1>
           </div>
-          <div className="daemon-chip">{snapshot.baseUrl}</div>
         </header>
 
         <div className="workspace-scroll">
@@ -4430,7 +4450,15 @@ export default function App() {
             />
           )}
           {activeSection === "mcp" && (
-            <McpPanel servers={snapshot.mcpServers} baseUrl={snapshot.baseUrl} refresh={refresh} />
+            <McpPanel
+              servers={snapshot.mcpServers}
+              baseUrl={snapshot.baseUrl}
+              refresh={refresh}
+              openWorkflowStudio={() => setActiveSection("workflows")}
+              openHookWorkflow={() =>
+                openHookLiveWorkflow(setWorkflowOpenRequest, setActiveSection)
+              }
+            />
           )}
           {activeSection === "registry" && (
             <RegistryPanel
@@ -4442,30 +4470,17 @@ export default function App() {
               refresh={refresh}
             />
           )}
-          {activeSection === "workflow-manager" && (
-            <WorkflowManagerPanel
-              workflows={snapshot.workflows}
-              onOpenWorkflow={openWorkflowInStudio}
-            />
+          {activeSection === "frameworks" && (
+            <FrameworksPanel baseUrl={snapshot.baseUrl} />
           )}
           {activeSection === "hook-bridge" && (
             <HookBridgePanel
-              status={snapshot.hookBridge}
-              busy={bridgeBusy}
-              error={bridgeError}
               baseUrl={snapshot.baseUrl}
               hookCanvas={hookCanvas}
-              hookCanvasLoading={hookCanvasLoading}
               hookCanvasError={hookCanvasError}
-              hookConnected={snapshot.hookBridge?.running === true}
-              onRefreshHookCanvas={() => void refreshHookCanvas()}
-              onStart={handleBridgeStart}
-              onStop={handleBridgeStop}
-              onOpenHookWorkflow={(nodeId) => openHookLiveWorkflow(
-                setWorkflowOpenRequest,
-                setActiveSection,
-                nodeId,
-              )}
+              tools={snapshot.tools}
+              onOpenWorkflow={(selectedNodeId) =>
+                openHookLiveWorkflow(setWorkflowOpenRequest, setActiveSection, selectedNodeId)}
             />
           )}
           {activeSection === "workflows" && (
@@ -4473,6 +4488,7 @@ export default function App() {
               snapshot={snapshot}
               refresh={refresh}
               hookCanvas={hookCanvas}
+              refreshHookCanvas={refreshHookCanvas}
               workflowOpenRequest={workflowOpenRequest}
               onWorkflowOpenRequestHandled={handleWorkflowOpenRequestHandled}
             />

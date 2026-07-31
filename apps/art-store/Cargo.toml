@@ -1,0 +1,23 @@
+[package]
+name = "loom-art-store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local Loom art store server (catalog, packages, third-party binaries, publish)"
+
+[[bin]]
+name = "loom-art-store"
+path = "src/main.rs"
+
+[lib]
+name = "loom_art_store"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zip.workspace = true

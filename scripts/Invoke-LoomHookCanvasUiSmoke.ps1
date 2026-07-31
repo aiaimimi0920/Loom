@@ -6,6 +6,20 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function ConvertFrom-UnicodeCodePoints {
+    param([int[]]$CodePoints)
+
+    $characters = foreach ($codePoint in $CodePoints) {
+        [char]$codePoint
+    }
+    return -join $characters
+}
+
+$quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints @(
+    0x989D, 0x5EA6, 0x4E0D, 0x8DB3, 0xFF08, 0x0048, 0x0054, 0x0054, 0x0050,
+    0x0020, 0x0034, 0x0030, 0x0032, 0xFF09
+)
 $SmokePortMinimum = 30000
 $SmokePortMaximum = 45000
 
@@ -299,14 +313,14 @@ function Write-HookFixture {
     New-Item -ItemType Directory -Force -Path $imageDir | Out-Null
     $nodes = @(
         [ordered]@{ id = "capture"; type = "sticker"; src = "images/capture.png"; x = 120; y = 80; w = 360; h = 210 },
-        [ordered]@{ id = "art"; type = "art"; artId = "fixture-art"; src = "images/art.png"; x = 600; y = 190; w = 190; h = 150 },
+        [ordered]@{ id = "failed-art"; type = "art"; artId = "fixture-art"; status = "error"; errorMessage = $quotaExceededErrorMessage; src = "images/failed-art.png"; x = 600; y = 190; w = 190; h = 150 },
         [ordered]@{ id = "missing"; type = "sticker"; src = "images/missing.png"; x = 860; y = 360; w = 150; h = 110 }
     )
     if ($NodeCount -ge 4) {
         $nodes += [ordered]@{ id = "extra"; type = "art"; artId = "fixture-extra"; src = "images/art.png"; x = 1040; y = 120; w = 160; h = 120 }
     }
     $links = @(
-        [ordered]@{ id = "capture-to-art"; fromUnitId = "capture"; fromPortId = "output_image"; toUnitId = "art"; toPortId = "input_image" }
+        [ordered]@{ id = "capture-to-failed-art"; fromUnitId = "capture"; fromPortId = "output_image"; toUnitId = "failed-art"; toPortId = "input_image" }
     )
     $payload = [ordered]@{
         workflowId = "hook-live"
@@ -314,9 +328,11 @@ function Write-HookFixture {
         links = $links
     }
     Write-JsonFile -Path (Join-Path $sessionDir "session.json") -Value $payload
-    $pngBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
-    [System.IO.File]::WriteAllBytes((Join-Path $imageDir "capture.png"), $pngBytes)
-    [System.IO.File]::WriteAllBytes((Join-Path $imageDir "art.png"), $pngBytes)
+    $captureBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    $failedArtBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    [System.IO.File]::WriteAllBytes((Join-Path $imageDir "capture.png"), $captureBytes)
+    [System.IO.File]::WriteAllBytes((Join-Path $imageDir "failed-art.png"), $failedArtBytes)
+    [System.IO.File]::WriteAllBytes((Join-Path $imageDir "art.png"), $captureBytes)
 }
 
 function Invoke-Inspector {
@@ -542,14 +558,20 @@ try {
     Assert-Equal $true ([bool]$initialUi.thumbnailVisible) "Hook canvas thumbnail is not visible."
     Assert-Equal 3 ([int]$initialUi.thumbnailNodeCount) "Hook thumbnail node count mismatch."
     Assert-Equal 1 ([int]$initialUi.thumbnailEdgeCount) "Hook thumbnail edge count mismatch."
+    Assert-Equal $true ([bool]$initialUi.failedArtThumbnailFailureVisible) "Hook thumbnail must show execution failure for failed-art."
     Assert-Equal $false ([bool]$initialUi.yamlVisible) "YAML editor is visible before opening advanced information."
     Assert-Equal $false ([bool]$initialUi.advancedOpen) "Advanced technical information must be collapsed by default."
     Assert-Equal $true ([bool]$initialUi.fullCanvasVisible) "Clicking the thumbnail did not open the full visual canvas."
+    Assert-Equal $true ([bool]$initialUi.failedArtExecutionFailureVisible) "Hook full canvas must show execution failure for failed-art."
+    $initialFailedArtNode = @($initialUi.fullCanvasNodes | Where-Object { [string]$_.nodeId -eq "failed-art" })[0]
+    Assert-True ($null -ne $initialFailedArtNode) "Missing failed-art full canvas node presentation."
+    Assert-Equal $false ([bool]$initialFailedArtNode.hasImage) "failed-art full canvas must not render an image preview."
+    Assert-Equal $quotaExceededErrorMessage ([string]$initialFailedArtNode.placeholderDetailText) "failed-art full canvas must show the Hook failure reason."
 
     Write-HookFixture -AppDataRoot $appDataRoot -NodeCount 4
     $instantiate = Invoke-JsonPost -Uri "$daemonUrl/v1/artloom-compat/ipc/instantiate-workflow" -Body @{
-        nodes = @(@{ id = "capture" }, @{ id = "art" }, @{ id = "missing" }, @{ id = "extra" })
-        edges = @(@{ source = "capture"; target = "art" })
+        nodes = @(@{ id = "capture" }, @{ id = "failed-art" }, @{ id = "missing" }, @{ id = "extra" })
+        edges = @(@{ source = "capture"; target = "failed-art" })
         mode = "reference"
         workflowId = "hook-live"
     }
@@ -565,6 +587,12 @@ try {
         -PreviousRevision ([string]$initialUi.revision)
     Assert-Equal 4 ([int]$updatedUi.thumbnailNodeCount) "Hook canvas did not refresh to the updated node count."
     Assert-True ([string]$updatedUi.revision -ne [string]$initialUi.revision) "Hook canvas revision did not change after the bridge update."
+    Assert-Equal $true ([bool]$updatedUi.failedArtThumbnailFailureVisible) "Updated Hook thumbnail must keep the failed-art execution failure presentation."
+    Assert-Equal $true ([bool]$updatedUi.failedArtExecutionFailureVisible) "Updated Hook full canvas must keep the failed-art execution failure presentation."
+    $updatedFailedArtNode = @($updatedUi.fullCanvasNodes | Where-Object { [string]$_.nodeId -eq "failed-art" })[0]
+    Assert-True ($null -ne $updatedFailedArtNode) "Missing updated failed-art full canvas node presentation."
+    Assert-Equal $false ([bool]$updatedFailedArtNode.hasImage) "Updated failed-art full canvas must not render an image preview."
+    Assert-Equal $quotaExceededErrorMessage ([string]$updatedFailedArtNode.placeholderDetailText) "Updated failed-art full canvas must keep the Hook failure reason."
     Write-JsonFile -Path (Join-Path $runDir "processes-during.json") -Value @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)
 }
 catch {

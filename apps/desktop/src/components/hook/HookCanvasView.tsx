@@ -10,12 +10,21 @@ import { HookCanvasNode } from "./HookCanvasNode.tsx";
 const VIEWPORT_WIDTH = 1200;
 const VIEWPORT_HEIGHT = 700;
 
+interface ExecutionMessage {
+  kind: "info" | "error";
+  text: string;
+}
+
 interface HookCanvasViewProps {
   snapshot: HookCanvasSnapshot;
   baseUrl: string;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
-  onRunWorkflow?: () => void;
+  selectedNodeCanExecute?: boolean;
+  executionBusy?: boolean;
+  executionMessage?: ExecutionMessage | null;
+  onExecuteSelectedNode?: () => void;
+  onSelectResultCandidate?: (index: number) => void;
 }
 
 export function HookCanvasView({
@@ -23,7 +32,11 @@ export function HookCanvasView({
   baseUrl,
   selectedNodeId,
   onSelectNode,
-  onRunWorkflow,
+  selectedNodeCanExecute = false,
+  executionBusy = false,
+  executionMessage = null,
+  onExecuteSelectedNode,
+  onSelectResultCandidate,
 }: HookCanvasViewProps) {
   const layout = useMemo(
     () => fitHookCanvas(snapshot, {
@@ -91,19 +104,76 @@ export function HookCanvasView({
             <h4>{selectedNode?.label ?? "选择一个节点"}</h4>
           </div>
           {selectedNode ? (
-            <dl>
-              <div><dt>类型</dt><dd>{selectedNode.kind}</dd></div>
-              <div><dt>状态</dt><dd>{selectedNode.status}</dd></div>
-              <div><dt>位置</dt><dd>{Math.round(selectedNode.x)}, {Math.round(selectedNode.y)}</dd></div>
-              <div><dt>尺寸</dt><dd>{Math.round(selectedNode.width)} × {Math.round(selectedNode.height)}</dd></div>
-              <div><dt>预览</dt><dd>{selectedNode.previewAvailable ? "可用" : "不可用"}</dd></div>
-            </dl>
+            <>
+              <dl>
+                <div><dt>类型</dt><dd>{selectedNode.kind}</dd></div>
+                <div><dt>状态</dt><dd>{selectedNode.status}</dd></div>
+                <div><dt>位置</dt><dd>{Math.round(selectedNode.x)}, {Math.round(selectedNode.y)}</dd></div>
+                <div><dt>尺寸</dt><dd>{Math.round(selectedNode.width)} × {Math.round(selectedNode.height)}</dd></div>
+                <div><dt>预览</dt><dd>{selectedNode.previewAvailable ? "可用" : "不可用"}</dd></div>
+                {typeof selectedNode.selectedResultIndex === "number" ? (
+                  <div><dt>当前结果</dt><dd>#{selectedNode.selectedResultIndex + 1}</dd></div>
+                ) : null}
+              </dl>
+              {selectedNode.resultCandidates?.length ? (
+                <div className="hook-canvas-result-picker">
+                  <strong>搜索结果</strong>
+                  <div className="hook-canvas-result-picker__grid">
+                    {selectedNode.resultCandidates.map((candidate) => {
+                      const selected = candidate.index === selectedNode.selectedResultIndex;
+                      return (
+                        <button
+                          className={
+                            selected
+                              ? "hook-canvas-result-picker__item hook-canvas-result-picker__item--selected"
+                              : "hook-canvas-result-picker__item"
+                          }
+                          key={`${selectedNode.id}-candidate-${candidate.index}`}
+                          type="button"
+                          disabled={executionBusy || !onSelectResultCandidate}
+                          onClick={() => onSelectResultCandidate?.(candidate.index)}
+                        >
+                          <span className="hook-canvas-result-picker__thumb">
+                            <img
+                              src={candidate.thumbnailUrl || candidate.imageUrl}
+                              alt=""
+                              aria-hidden="true"
+                              loading="lazy"
+                            />
+                          </span>
+                          <span className="hook-canvas-result-picker__meta">
+                            <strong>{candidate.title || `结果 ${candidate.index + 1}`}</strong>
+                            <small>#{candidate.index + 1}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              {selectedNode.status === "error" && selectedNode.errorMessage ? (
+                <div className="hook-canvas-inspector__error">
+                  <strong>失败原因</strong>
+                  <span>{selectedNode.errorMessage}</span>
+                </div>
+              ) : null}
+              {executionMessage ? (
+                <p className={executionMessage.kind === "error" ? "error-text" : "success-text"}>
+                  {executionMessage.text}
+                </p>
+              ) : null}
+            </>
           ) : (
             <p>点击画布中的节点查看状态和几何信息。</p>
           )}
-          {onRunWorkflow ? (
-            <button className="signal-button" type="button" onClick={onRunWorkflow} disabled={!selectedNode}>
-              执行工作流
+          {onExecuteSelectedNode ? (
+            <button
+              className="signal-button"
+              type="button"
+              onClick={onExecuteSelectedNode}
+              disabled={!selectedNode || !selectedNodeCanExecute || executionBusy}
+            >
+              {executionBusy ? "执行中" : "执行当前节点"}
             </button>
           ) : null}
         </aside>

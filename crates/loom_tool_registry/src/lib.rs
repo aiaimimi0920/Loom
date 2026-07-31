@@ -1,8 +1,11 @@
 //! User-managed tool and Art registry contracts for Loom.
 
+pub mod framework;
+pub mod install;
+
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,6 +22,11 @@ use thiserror::Error;
 const TOOLS_FILE: &str = "tools.json";
 const SCRIPT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOUD_API_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_IMAGE_FETCH_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+const MCP_IMAGE_FETCH_ACCEPT: &str =
+    "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+const MCP_IMAGE_FETCH_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 static REGISTRY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
@@ -36,6 +44,8 @@ pub enum ToolRegistryError {
     MissingMcpServer { tool_id: String, server_id: String },
     #[error("MCP execution failed: {0}")]
     Mcp(#[from] loom_mcp::McpError),
+    #[error("CLI tool `{id}` failed: {reason}")]
+    CliWrapperFailed { id: String, reason: String },
     #[error("script `{path}` for tool `{id}` was not found")]
     ScriptNotFound { id: String, path: String },
     #[error("script `{path}` for tool `{id}` failed to spawn: {source}")]
@@ -490,8 +500,16 @@ pub fn execute_tool(
 
             let mut client = loom_mcp::StdioMcpClient::spawn(server)?;
             client.initialize()?;
+            let tool_list = client.list_tools().ok();
+            let normalized_arguments = normalize_mcp_call_arguments(
+                &arguments,
+                tool_list
+                    .as_ref()
+                    .and_then(|tools| find_mcp_tool_input_schema(tools, tool_name)),
+            );
             client
-                .call_tool(tool_name, arguments)
+                .call_tool(tool_name, normalized_arguments.clone())
+                .map(|value| normalize_mcp_result(tool, &normalized_arguments, value))
                 .map_err(ToolRegistryError::from)
         }
         ToolExecution::CloudApi {
@@ -510,6 +528,9 @@ pub fn execute_tool(
             arguments,
         ),
         ToolExecution::Script { path } => execute_script_tool(tool, path, arguments),
+        ToolExecution::CliWrapper { command, args } => {
+            execute_cli_wrapper_tool(tool, command, args, arguments)
+        }
         ToolExecution::PythonArt { art_id, art_path } => {
             execute_python_art_tool(tool, art_id, art_path.as_deref(), arguments)
         }
@@ -517,6 +538,165 @@ pub fn execute_tool(
             id: tool.id.clone(),
             execution_type: execution_type_name(&tool.execution),
         }),
+    }
+}
+
+fn find_mcp_tool_input_schema<'a>(
+    listed_tools: &'a serde_json::Value,
+    tool_name: &str,
+) -> Option<&'a serde_json::Value> {
+    listed_tools
+        .get("tools")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some(tool_name))
+        .and_then(|tool| tool.get("inputSchema").or_else(|| tool.get("input_schema")))
+}
+
+fn normalize_mcp_call_arguments(
+    arguments: &serde_json::Value,
+    input_schema: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(argument_object) = arguments.as_object() else {
+        return arguments.clone();
+    };
+    let property_schemas = input_schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(serde_json::Value::as_object);
+    let mut normalized = serde_json::Map::with_capacity(argument_object.len());
+    for (key, value) in argument_object {
+        let schema = property_schemas.and_then(|properties| properties.get(key));
+        normalized.insert(
+            key.clone(),
+            normalize_mcp_argument_value(key, value, schema),
+        );
+    }
+    serde_json::Value::Object(normalized)
+}
+
+fn normalize_mcp_argument_value(
+    name: &str,
+    value: &serde_json::Value,
+    schema: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(normalized) = normalize_mcp_search_lang_alias(name, value, schema) {
+        return normalized;
+    }
+    if let Some(schema) = schema {
+        if schema_type_matches(schema, "integer") {
+            if let Some(parsed) = value.as_i64() {
+                return serde_json::Value::from(parsed);
+            }
+            if let Some(raw) = value.as_str().map(str::trim) {
+                if let Ok(parsed) = raw.parse::<i64>() {
+                    return serde_json::Value::from(parsed);
+                }
+            }
+        }
+        if schema_type_matches(schema, "number") {
+            if let Some(parsed) = value.as_f64() {
+                return serde_json::Value::from(parsed);
+            }
+            if let Some(raw) = value.as_str().map(str::trim) {
+                if let Ok(parsed) = raw.parse::<f64>() {
+                    return serde_json::Value::from(parsed);
+                }
+            }
+        }
+        if schema_type_matches(schema, "boolean") {
+            if let Some(parsed) = value.as_bool() {
+                return serde_json::Value::from(parsed);
+            }
+            if let Some(raw) = value.as_str().map(str::trim) {
+                if let Some(parsed) = parse_bool_string(raw) {
+                    return serde_json::Value::from(parsed);
+                }
+            }
+        }
+        if let (Some(raw), Some(enum_values)) = (
+            value.as_str(),
+            schema.get("enum").and_then(serde_json::Value::as_array),
+        ) {
+            if let Some(canonical) = enum_values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .find(|candidate| candidate.eq_ignore_ascii_case(raw))
+            {
+                return serde_json::Value::String(canonical.to_owned());
+            }
+        }
+    }
+    value.clone()
+}
+
+fn normalize_mcp_search_lang_alias(
+    name: &str,
+    value: &serde_json::Value,
+    schema: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if !name.eq_ignore_ascii_case("search_lang") {
+        return None;
+    }
+    let raw = value.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(canonical) = schema_enum_canonical_value(schema, raw) {
+        if canonical == raw {
+            return None;
+        }
+        return Some(serde_json::Value::String(canonical));
+    }
+
+    let lowered = raw.to_ascii_lowercase();
+    let mapped = match lowered.as_str() {
+        "zh" | "zh-cn" => "zh-hans".to_owned(),
+        "zh-tw" | "zh-hant" => "zh-hant".to_owned(),
+        _ => lowered,
+    };
+
+    if let Some(canonical) = schema_enum_canonical_value(schema, &mapped) {
+        if canonical == raw {
+            return None;
+        }
+        return Some(serde_json::Value::String(canonical));
+    }
+
+    (mapped != raw).then_some(serde_json::Value::String(mapped))
+}
+
+fn schema_type_matches(schema: &serde_json::Value, expected: &str) -> bool {
+    match schema.get("type") {
+        Some(serde_json::Value::String(actual)) => actual == expected,
+        Some(serde_json::Value::Array(actual)) => actual
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(|candidate| candidate == expected),
+        _ => false,
+    }
+}
+
+fn schema_enum_canonical_value(
+    schema: Option<&serde_json::Value>,
+    expected: &str,
+) -> Option<String> {
+    schema
+        .and_then(|schema| schema.get("enum"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .find(|candidate| candidate.eq_ignore_ascii_case(expected))
+                .map(str::to_owned)
+        })
+}
+
+fn parse_bool_string(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -531,7 +711,7 @@ fn execute_python_art_tool(
             id: tool.id.clone(),
         }
     })?;
-    let plugin_path = resolve_python_art_path(art_id, art_path).ok_or_else(|| {
+    let plugin_path = resolve_python_art_path(&tool.id, art_id, art_path).ok_or_else(|| {
         ToolRegistryError::PythonArtNotFound {
             id: tool.id.clone(),
             art_id: art_id.to_owned(),
@@ -651,6 +831,18 @@ fn normalize_python_art_data(data: serde_json::Value) -> serde_json::Value {
 
 fn resolve_python_launcher_path() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    // A framework runtime installed via the framework registry wins: the
+    // `python_art` runtime bundle may ship the launcher alongside the embedded
+    // interpreter (方向 A: installing the framework provisions the runtime).
+    if let Some(runtime_dir) = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        let base = Path::new(&runtime_dir).join("python_art");
+        candidates.push(base.join("python").join("Launcher.py"));
+        candidates.push(base.join("Launcher.py"));
+    }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -670,11 +862,24 @@ fn resolve_python_launcher_path() -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
-fn resolve_python_art_path(art_id: &str, art_path: Option<&str>) -> Option<PathBuf> {
+fn resolve_python_art_path(tool_id: &str, art_id: &str, art_path: Option<&str>) -> Option<PathBuf> {
     if let Some(art_path) = art_path.map(str::trim).filter(|value| !value.is_empty()) {
         let path = PathBuf::from(art_path);
         if path.is_dir() {
             return Some(path);
+        }
+        if path.is_relative() {
+            let control_plane_root = std::env::var("LOOM_CONTROL_PLANE_ROOT")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())?;
+            let candidate = Path::new(&control_plane_root)
+                .join("arts")
+                .join(tool_id)
+                .join(&path);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
         }
     }
 
@@ -685,6 +890,16 @@ fn resolve_python_art_path(art_id: &str, art_path: Option<&str>) -> Option<PathB
 
 fn python_arts_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    // Arts bundled inside the installed python_art framework runtime win.
+    if let Some(runtime_dir) = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        let base = Path::new(&runtime_dir).join("python_art");
+        dirs.push(base.join("python").join("Arts"));
+        dirs.push(base.join("Arts"));
+    }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -748,8 +963,13 @@ fn execute_cloud_api_tool(
         .trim()
         .to_owned();
     let content_type_lower = content_type.to_ascii_lowercase();
+    // Bypass the system proxy: on Windows reqwest picks up the OS proxy setting
+    // (e.g. a stale 127.0.0.1:7890 from a stopped Clash/V2Ray), which makes every
+    // cloud API call fail with "error sending request". Cloud arts talk directly
+    // to their endpoint, matching Hook's own no_proxy client.
     let client = Client::builder()
         .timeout(CLOUD_API_TIMEOUT)
+        .no_proxy()
         .build()
         .map_err(|source| ToolRegistryError::CloudRequest {
             id: tool.id.clone(),
@@ -963,6 +1183,814 @@ fn normalize_cloud_json_value(value: serde_json::Value) -> serde_json::Value {
     text_content_response(&value.to_string())
 }
 
+#[derive(Clone, Debug)]
+struct McpImageCandidate {
+    image_url: String,
+    title: Option<String>,
+    thumbnail_url: Option<String>,
+    source_page_url: Option<String>,
+    width: Option<u64>,
+    height: Option<u64>,
+}
+
+fn normalize_mcp_result(
+    tool: &ToolDefinition,
+    arguments: &serde_json::Value,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    if mcp_result_already_contains_image(&value) {
+        return value;
+    }
+    if tool_expects_image_output(tool) {
+        if let Some(image) = normalize_mcp_image_result(arguments, &value) {
+            return image;
+        }
+        if let Some(message) = friendly_mcp_image_result_message(&value) {
+            let candidates = collect_mcp_image_candidates(&value);
+            if !candidates.is_empty() {
+                let selected_index =
+                    selected_mcp_image_candidate_index(arguments, candidates.len());
+                let mut response = text_content_response(&message);
+                attach_mcp_image_search_metadata(&mut response, &candidates, selected_index);
+                return response;
+            }
+            return text_content_response(&message);
+        }
+    }
+    value
+}
+
+fn mcp_result_already_contains_image(value: &serde_json::Value) -> bool {
+    value
+        .get("content")
+        .or_else(|| value.get("result").and_then(|result| result.get("content")))
+        .and_then(serde_json::Value::as_array)
+        .map(|content| {
+            content.iter().any(|item| {
+                let item_type = item
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                match item_type {
+                    "image" => item
+                        .get("data")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some(),
+                    "text" => item
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|text| {
+                            let trimmed = text.trim();
+                            trimmed.starts_with("data:image/") || looks_like_base64_payload(trimmed)
+                        })
+                        .unwrap_or(false),
+                    _ => false,
+                }
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn tool_expects_image_output(tool: &ToolDefinition) -> bool {
+    tool.outputs.iter().any(value_declares_image_output)
+        || tool
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("artloomCompat"))
+            .and_then(|compat| compat.get("execution"))
+            .and_then(|execution| execution.get("outputs"))
+            .and_then(serde_json::Value::as_array)
+            .map(|outputs| outputs.iter().any(value_declares_image_output))
+            .unwrap_or(false)
+}
+
+fn value_declares_image_output(value: &serde_json::Value) -> bool {
+    let output_type = value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if output_type == "image" {
+        return true;
+    }
+    let execution_type = value
+        .get("execution_type")
+        .or_else(|| value.get("executionType"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(execution_type.as_str(), "image_buffer" | "image_path")
+}
+
+fn normalize_mcp_image_result(
+    arguments: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let candidates = collect_mcp_image_candidates(value);
+    if candidates.is_empty() {
+        return None;
+    }
+    let requested_index = selected_mcp_image_candidate_index(arguments, candidates.len());
+    let (mut normalized, selected_index) =
+        image_response_from_mcp_candidates(&candidates, requested_index)?;
+    attach_mcp_image_search_metadata(&mut normalized, &candidates, selected_index);
+    Some(normalized)
+}
+
+fn friendly_mcp_image_result_message(value: &serde_json::Value) -> Option<String> {
+    if let Some(message) = mcp_image_search_empty_result_message(value) {
+        return Some(message);
+    }
+    let candidates = collect_mcp_image_candidates(value);
+    if !candidates.is_empty() {
+        return Some("图片搜索已返回候选结果，但图片下载失败，请稍后重试。".to_owned());
+    }
+    None
+}
+
+fn mcp_image_search_empty_result_message(value: &serde_json::Value) -> Option<String> {
+    if let Some(message) =
+        mcp_image_search_empty_result_message_from_payload(value.get("structuredContent"))
+    {
+        return Some(message);
+    }
+    if let Some(message) = mcp_image_search_empty_result_message_from_payload(
+        value
+            .get("result")
+            .and_then(|result| result.get("structuredContent")),
+    ) {
+        return Some(message);
+    }
+    if let Some(content) = value
+        .get("content")
+        .or_else(|| value.get("result").and_then(|result| result.get("content")))
+        .and_then(serde_json::Value::as_array)
+    {
+        for item in content {
+            let Some(text) = item.get("text").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) else {
+                continue;
+            };
+            if let Some(message) = mcp_image_search_empty_result_message_from_payload(Some(&parsed))
+            {
+                return Some(message);
+            }
+        }
+    }
+    None
+}
+
+fn mcp_image_search_empty_result_message_from_payload(
+    payload: Option<&serde_json::Value>,
+) -> Option<String> {
+    let payload = payload?;
+    let items_len = mcp_image_search_items_len(payload);
+    let count = payload
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            payload
+                .get("count")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| raw.parse::<u64>().ok())
+        });
+    let has_no_items = matches!(items_len, Some(0)) || matches!(count, Some(0));
+    if !has_no_items {
+        return None;
+    }
+    let provider_flagged_sensitive = payload
+        .get("might_be_offensive")
+        .or_else(|| payload.get("mightBeOffensive"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if provider_flagged_sensitive {
+        return Some(
+            "图片搜索未返回可用结果：搜索服务将该查询判定为可能敏感，请尝试更换关键词。".to_owned(),
+        );
+    }
+    Some("图片搜索未返回可用结果，请尝试更换关键词。".to_owned())
+}
+
+fn mcp_image_search_items_len(value: &serde_json::Value) -> Option<usize> {
+    match value.get("items") {
+        Some(serde_json::Value::Array(items)) => Some(items.len()),
+        Some(serde_json::Value::String(raw)) => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|parsed| parsed.as_array().map(Vec::len)),
+        _ => None,
+    }
+}
+
+fn image_response_from_mcp_candidates(
+    candidates: &[McpImageCandidate],
+    requested_index: usize,
+) -> Option<(serde_json::Value, usize)> {
+    if candidates.is_empty() {
+        return None;
+    }
+    for candidate_index in std::iter::once(requested_index).chain(
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(index, _)| index)
+            .filter(|index| *index != requested_index),
+    ) {
+        let candidate = candidates.get(candidate_index)?;
+        if let Some(response) = image_response_from_mcp_candidate(candidate) {
+            return Some((response, candidate_index));
+        }
+    }
+    None
+}
+
+fn collect_mcp_image_candidates(value: &serde_json::Value) -> Vec<McpImageCandidate> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(structured_content) = value.get("structuredContent") {
+        collect_mcp_image_candidates_from_value(structured_content, &mut candidates, &mut seen);
+    }
+    if let Some(structured_content) = value
+        .get("result")
+        .and_then(|result| result.get("structuredContent"))
+    {
+        collect_mcp_image_candidates_from_value(structured_content, &mut candidates, &mut seen);
+    }
+    if candidates.is_empty() {
+        if let Some(content) = value
+            .get("content")
+            .or_else(|| value.get("result").and_then(|result| result.get("content")))
+            .and_then(serde_json::Value::as_array)
+        {
+            for item in content {
+                let Some(text) = item.get("text").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) else {
+                    continue;
+                };
+                collect_mcp_image_candidates_from_value(&parsed, &mut candidates, &mut seen);
+            }
+        }
+    }
+    candidates
+}
+
+fn collect_mcp_image_candidates_from_value(
+    value: &serde_json::Value,
+    candidates: &mut Vec<McpImageCandidate>,
+    seen: &mut std::collections::BTreeSet<String>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(candidate) = image_candidate_from_object(map) {
+                if seen.insert(candidate.image_url.clone()) {
+                    candidates.push(candidate);
+                }
+                return;
+            }
+            for child in map.values() {
+                collect_mcp_image_candidates_from_value(child, candidates, seen);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_mcp_image_candidates_from_value(child, candidates, seen);
+            }
+        }
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if (looks_like_image_url(trimmed) || trimmed.starts_with("data:image/"))
+                && seen.insert(trimmed.to_owned())
+            {
+                candidates.push(McpImageCandidate {
+                    image_url: trimmed.to_owned(),
+                    title: None,
+                    thumbnail_url: None,
+                    source_page_url: None,
+                    width: None,
+                    height: None,
+                });
+                return;
+            }
+            if matches!(trimmed.as_bytes().first(), Some(b'{') | Some(b'[')) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    collect_mcp_image_candidates_from_value(&parsed, candidates, seen);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn image_candidate_from_object(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<McpImageCandidate> {
+    let properties = map.get("properties").and_then(serde_json::Value::as_object);
+    let image_url =
+        find_image_url_in_object(map).or_else(|| properties.and_then(find_image_url_in_object))?;
+    let title = first_string(map, &["title", "label", "name"]).or_else(|| {
+        properties.and_then(|object| first_string(object, &["title", "label", "name"]))
+    });
+    let thumbnail_url = first_imageish_string(
+        map,
+        &["thumbnail_url", "thumbnailUrl", "thumbnail", "placeholder"],
+    )
+    .or_else(|| {
+        properties.and_then(|object| {
+            first_imageish_string(
+                object,
+                &["thumbnail_url", "thumbnailUrl", "thumbnail", "placeholder"],
+            )
+        })
+    });
+    let width = first_u64(map, &["width"])
+        .or_else(|| properties.and_then(|object| first_u64(object, &["width"])));
+    let height = first_u64(map, &["height"])
+        .or_else(|| properties.and_then(|object| first_u64(object, &["height"])));
+    let source_page_url = first_string(map, &["source_page_url", "sourcePageUrl"]).or_else(|| {
+        map.get("url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| {
+                *url != image_url && (url.starts_with("http://") || url.starts_with("https://"))
+            })
+            .map(str::to_owned)
+    });
+    Some(McpImageCandidate {
+        image_url,
+        title,
+        thumbnail_url,
+        source_page_url,
+        width,
+        height,
+    })
+}
+
+fn strip_image_url_modifiers(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let query_or_fragment_index = trimmed.find(['?', '#']).unwrap_or(trimmed.len());
+    let (head, tail) = trimmed.split_at(query_or_fragment_index);
+    let lower = head.to_ascii_lowercase();
+    let mut trimmed_end = None;
+    for suffix in [
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif",
+    ] {
+        let mut search_start = 0usize;
+        while let Some(relative_index) = lower[search_start..].find(suffix) {
+            let index = search_start + relative_index;
+            let end = index + suffix.len();
+            let next = head[end..].chars().next();
+            if matches!(next, None | Some('!') | Some('/')) {
+                trimmed_end = Some(end);
+            }
+            search_start = index + 1;
+        }
+    }
+    let Some(end) = trimmed_end else {
+        return None;
+    };
+    let normalized = format!("{}{}", &head[..end], tail).trim().to_owned();
+    if normalized.is_empty() || normalized == trimmed {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn normalize_image_candidate_url(
+    value: &str,
+    allow_remote_without_extension: bool,
+) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("data:image/") || looks_like_image_url(trimmed) {
+        return Some(trimmed.to_owned());
+    }
+    if let Some(stripped) = strip_image_url_modifiers(trimmed) {
+        if looks_like_image_url(&stripped)
+            || (allow_remote_without_extension && looks_like_remote_url(&stripped))
+        {
+            return Some(stripped);
+        }
+    }
+    if allow_remote_without_extension && looks_like_remote_url(trimmed) {
+        return Some(trimmed.to_owned());
+    }
+    None
+}
+
+fn find_image_url_in_object(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    for key in [
+        "image_url",
+        "imageUrl",
+        "thumbnail_url",
+        "thumbnailUrl",
+        "src",
+        "data",
+    ] {
+        if let Some(url) = map
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| normalize_image_candidate_url(value, true))
+        {
+            return Some(url);
+        }
+    }
+    let url = map.get("url").and_then(serde_json::Value::as_str)?;
+    if let Some(normalized) =
+        normalize_image_candidate_url(url, object_looks_like_image_result(map))
+    {
+        return Some(normalized);
+    }
+    None
+}
+
+fn first_imageish_string(
+    map: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    for key in keys {
+        let Some(value) = map.get(*key) else {
+            continue;
+        };
+        let key_implies_image = matches!(
+            *key,
+            "thumbnail_url" | "thumbnailUrl" | "thumbnail" | "placeholder"
+        );
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(url) = normalize_image_candidate_url(text, key_implies_image) {
+                    return Some(url);
+                }
+            }
+            serde_json::Value::Object(object) => {
+                if let Some(url) = first_string(
+                    object,
+                    &[
+                        "src",
+                        "url",
+                        "image_url",
+                        "imageUrl",
+                        "thumbnail_url",
+                        "thumbnailUrl",
+                    ],
+                )
+                .and_then(|candidate| normalize_image_candidate_url(&candidate, key_implies_image))
+                {
+                    return Some(url);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn first_string(map: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| map.get(*key).and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+}
+
+fn first_u64(map: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| map.get(*key).and_then(serde_json::Value::as_u64))
+}
+
+fn selected_mcp_image_candidate_index(
+    arguments: &serde_json::Value,
+    candidate_count: usize,
+) -> usize {
+    if candidate_count == 0 {
+        return 0;
+    }
+    let selected = arguments
+        .as_object()
+        .and_then(|object| {
+            [
+                "result_index",
+                "resultIndex",
+                "selected_index",
+                "selectedIndex",
+                "image_index",
+            ]
+            .iter()
+            .find_map(|key| object.get(*key))
+        })
+        .and_then(value_as_usize)
+        .unwrap_or(0);
+    selected.min(candidate_count.saturating_sub(1))
+}
+
+fn value_as_usize(value: &serde_json::Value) -> Option<usize> {
+    match value {
+        serde_json::Value::Number(number) => number.as_u64().map(|value| value as usize),
+        serde_json::Value::String(text) => text.trim().parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+fn attach_mcp_image_search_metadata(
+    image_result: &mut serde_json::Value,
+    candidates: &[McpImageCandidate],
+    selected_index: usize,
+) {
+    let Some(result_object) = image_result.as_object_mut() else {
+        return;
+    };
+    result_object.insert(
+        "loomMetadata".to_owned(),
+        serde_json::json!({
+            "imageSearch": {
+                "selectedIndex": selected_index,
+                "candidates": candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(index, candidate)| serde_json::json!({
+                        "index": index,
+                        "title": candidate.title,
+                        "imageUrl": candidate.image_url,
+                        "thumbnailUrl": candidate.thumbnail_url,
+                        "sourcePageUrl": candidate.source_page_url,
+                        "width": candidate.width,
+                        "height": candidate.height
+                    }))
+                    .collect::<Vec<_>>()
+            }
+        }),
+    );
+}
+
+fn object_looks_like_image_result(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    map.contains_key("width")
+        || map.contains_key("height")
+        || map.contains_key("thumbnail_url")
+        || map.contains_key("thumbnailUrl")
+        || map
+            .get("mimeType")
+            .or_else(|| map.get("mime_type"))
+            .and_then(serde_json::Value::as_str)
+            .map(|mime| mime.starts_with("image/"))
+            .unwrap_or(false)
+}
+
+fn looks_like_image_url(value: &str) -> bool {
+    if value.starts_with("data:image/") {
+        return true;
+    }
+    if !looks_like_remote_url(value) {
+        return false;
+    }
+    let path = value
+        .split('?')
+        .next()
+        .unwrap_or(value)
+        .split('#')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif",
+    ]
+    .iter()
+    .any(|suffix| path.ends_with(suffix))
+}
+
+fn looks_like_remote_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn download_mcp_image_candidate(url: &str, referer: Option<&str>) -> Option<serde_json::Value> {
+    download_mcp_image_candidate_with_reqwest(url, referer)
+        .or_else(|| download_mcp_image_candidate_with_platform_fallback(url, referer))
+}
+
+fn download_mcp_image_candidate_with_reqwest(
+    url: &str,
+    referer: Option<&str>,
+) -> Option<serde_json::Value> {
+    let client = Client::builder()
+        .user_agent(MCP_IMAGE_FETCH_USER_AGENT)
+        .no_proxy()
+        .timeout(CLOUD_API_TIMEOUT)
+        .build()
+        .ok()?;
+    let mut request = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, MCP_IMAGE_FETCH_ACCEPT)
+        .header(
+            reqwest::header::ACCEPT_LANGUAGE,
+            MCP_IMAGE_FETCH_ACCEPT_LANGUAGE,
+        );
+    if let Some(referer) = referer.filter(|value| looks_like_remote_url(value)) {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request.send().ok()?.error_for_status().ok()?;
+    let header_mime_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.starts_with("image/"))
+        .map(str::to_owned);
+    let bytes = response.bytes().ok()?;
+    let mime_type = header_mime_type
+        .or_else(|| infer_image_mime_type_from_url(url))
+        .or_else(|| infer_image_mime_type_from_bytes(&bytes))?;
+    Some(image_content_response(&BASE64.encode(&bytes), &mime_type))
+}
+
+#[cfg(windows)]
+fn download_mcp_image_candidate_with_platform_fallback(
+    url: &str,
+    referer: Option<&str>,
+) -> Option<serde_json::Value> {
+    let (mime_type, bytes) = download_image_bytes_with_powershell_httpclient(url, referer)?;
+    Some(image_content_response(&BASE64.encode(&bytes), &mime_type))
+}
+
+#[cfg(not(windows))]
+fn download_mcp_image_candidate_with_platform_fallback(
+    _url: &str,
+    _referer: Option<&str>,
+) -> Option<serde_json::Value> {
+    None
+}
+
+#[cfg(windows)]
+fn download_image_bytes_with_powershell_httpclient(
+    url: &str,
+    referer: Option<&str>,
+) -> Option<(String, Vec<u8>)> {
+    let script = r#"
+Add-Type -AssemblyName System.Net.Http
+$handler = New-Object System.Net.Http.HttpClientHandler
+$client = New-Object System.Net.Http.HttpClient($handler)
+$client.Timeout = [TimeSpan]::FromSeconds(30)
+$client.DefaultRequestHeaders.UserAgent.ParseAdd($env:LOOM_FETCH_USER_AGENT)
+$client.DefaultRequestHeaders.Accept.ParseAdd($env:LOOM_FETCH_ACCEPT)
+$client.DefaultRequestHeaders.AcceptLanguage.ParseAdd($env:LOOM_FETCH_ACCEPT_LANGUAGE)
+if ($env:LOOM_FETCH_REFERER) {
+  try {
+    $client.DefaultRequestHeaders.Referrer = [Uri]$env:LOOM_FETCH_REFERER
+  } catch {
+  }
+}
+try {
+  $resp = $client.GetAsync($env:LOOM_FETCH_URL).GetAwaiter().GetResult()
+  if (-not $resp.IsSuccessStatusCode) {
+    exit 22
+  }
+  $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+  $contentType = ''
+  if ($resp.Content.Headers.ContentType) {
+    $contentType = $resp.Content.Headers.ContentType.MediaType
+  }
+  @{ contentType = $contentType; dataBase64 = [Convert]::ToBase64String($bytes) } | ConvertTo-Json -Compress
+} finally {
+  $client.Dispose()
+  $handler.Dispose()
+}
+"#;
+
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .env("LOOM_FETCH_URL", url)
+        .env("LOOM_FETCH_USER_AGENT", MCP_IMAGE_FETCH_USER_AGENT)
+        .env("LOOM_FETCH_ACCEPT", MCP_IMAGE_FETCH_ACCEPT)
+        .env(
+            "LOOM_FETCH_ACCEPT_LANGUAGE",
+            MCP_IMAGE_FETCH_ACCEPT_LANGUAGE,
+        )
+        .env(
+            "LOOM_FETCH_REFERER",
+            referer
+                .filter(|value| looks_like_remote_url(value))
+                .unwrap_or(""),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if stdout.is_empty() {
+        return None;
+    }
+    let response = serde_json::from_str::<serde_json::Value>(&stdout).ok()?;
+    let bytes = response
+        .get("dataBase64")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|base64| BASE64.decode(base64).ok())?;
+    let mime_type = response
+        .get("contentType")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with("image/"))
+        .map(str::to_owned)
+        .or_else(|| infer_image_mime_type_from_url(url))
+        .or_else(|| infer_image_mime_type_from_bytes(&bytes))?;
+    Some((mime_type, bytes))
+}
+
+fn image_response_from_mcp_candidate(candidate: &McpImageCandidate) -> Option<serde_json::Value> {
+    let referer = candidate.source_page_url.as_deref();
+    image_response_from_mcp_candidate_url(&candidate.image_url, referer).or_else(|| {
+        candidate
+            .thumbnail_url
+            .as_deref()
+            .filter(|thumbnail_url| *thumbnail_url != candidate.image_url)
+            .and_then(|thumbnail_url| image_response_from_mcp_candidate_url(thumbnail_url, referer))
+    })
+}
+
+fn image_response_from_mcp_candidate_url(
+    url: &str,
+    referer: Option<&str>,
+) -> Option<serde_json::Value> {
+    if url.starts_with("data:image/") {
+        let mime_type = data_url_mime_type(url).unwrap_or("image/png");
+        return Some(image_content_response(url, mime_type));
+    }
+    for candidate_url in std::iter::once(url.to_owned()).chain(
+        strip_image_url_modifiers(url)
+            .into_iter()
+            .filter(|normalized| normalized != url),
+    ) {
+        if let Some(response) = download_mcp_image_candidate(&candidate_url, referer) {
+            return Some(response);
+        }
+    }
+    None
+}
+
+fn infer_image_mime_type_from_url(url: &str) -> Option<String> {
+    let path = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .split('#')
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    let mime_type = if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else if path.ends_with(".gif") {
+        "image/gif"
+    } else if path.ends_with(".bmp") {
+        "image/bmp"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".avif") {
+        "image/avif"
+    } else {
+        return None;
+    };
+    Some(mime_type.to_owned())
+}
+
+fn infer_image_mime_type_from_bytes(bytes: &[u8]) -> Option<String> {
+    let mime_type = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else {
+        return None;
+    };
+    Some(mime_type.to_owned())
+}
+
+fn data_url_mime_type(data_url: &str) -> Option<&str> {
+    let data_url = data_url.strip_prefix("data:")?;
+    let mime_type = data_url.split(';').next()?.trim();
+    (!mime_type.is_empty()).then_some(mime_type)
+}
+
 fn image_content_response(data: &str, mime_type: &str) -> serde_json::Value {
     let data = if data.starts_with("data:image/") && data.contains(";base64,") {
         data.to_owned()
@@ -1024,6 +2052,139 @@ fn scalar_template_value(value: &serde_json::Value) -> String {
     }
 }
 
+// Substitute one CLI arg token: {{input}}/{input} → input path, {{output}}/
+// {output} → output path, and {{key}}/{key} → param values (bool → arg_true/
+// arg_false or -key/--key flag forms). Mirrors Hook's CliEngine rules.
+fn substitute_cli_token(
+    token: &str,
+    input_path: &str,
+    output_path: &str,
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let mut out = token
+        .replace("{{input}}", input_path)
+        .replace("{{output}}", output_path)
+        .replace("{input}", input_path)
+        .replace("{output}", output_path);
+    for (key, value) in params {
+        let s_val = match value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            other => other.to_string(),
+        };
+        let (flag_single, flag_double) = match value {
+            serde_json::Value::Bool(true) => (format!("-{key}"), format!("--{key}")),
+            serde_json::Value::Bool(false) => (String::new(), String::new()),
+            serde_json::Value::String(s) => (s.clone(), s.clone()),
+            _ => (s_val.clone(), s_val.clone()),
+        };
+        // Double-brace before single-brace so {key} doesn't match inside {{key}}.
+        out = out
+            .replace(&format!("{{{{-{key}}}}}"), &flag_single)
+            .replace(&format!("{{{{--{key}}}}}"), &flag_double)
+            .replace(&format!("{{{{{key}}}}}"), &s_val)
+            .replace(&format!("{{{key}}}"), &s_val);
+    }
+    out
+}
+
+// Execute a cli_wrapper art in the image flow: decode the input image to a temp
+// file, pre-copy it to an output file (so in-place tools like pingo work),
+// substitute the command/args templates, run the process, then read the output
+// file back as a base64 image. Returns the content-array shape the AHRP flow
+// expects. Best-effort: input must be a decodable image container.
+fn execute_cli_wrapper_tool(
+    tool: &ToolDefinition,
+    command: &str,
+    args: &[String],
+    arguments: serde_json::Value,
+) -> ToolRegistryResult<serde_json::Value> {
+    let obj = arguments.as_object().cloned().unwrap_or_default();
+    let input_field = obj
+        .get("input_base64")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| obj.get("input").and_then(serde_json::Value::as_str))
+        .ok_or_else(|| ToolRegistryError::CliWrapperFailed {
+            id: tool.id.clone(),
+            reason: "missing input image".to_owned(),
+        })?;
+    let input_bytes = loom_image_io::decode_data_url_bytes(input_field).map_err(|error| {
+        ToolRegistryError::CliWrapperFailed {
+            id: tool.id.clone(),
+            reason: format!("decode input image: {error}"),
+        }
+    })?;
+
+    // Params = all arguments except the image input keys.
+    let mut params = obj.clone();
+    params.remove("input_base64");
+    params.remove("input");
+
+    let temp_dir = std::env::temp_dir().join("loom_cli");
+    fs::create_dir_all(&temp_dir).map_err(|error| ToolRegistryError::CliWrapperFailed {
+        id: tool.id.clone(),
+        reason: format!("temp dir: {error}"),
+    })?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let input_path = temp_dir.join(format!("{stamp}_in.png"));
+    let output_path = temp_dir.join(format!("{stamp}_out.png"));
+    fs::write(&input_path, &input_bytes).map_err(|error| ToolRegistryError::CliWrapperFailed {
+        id: tool.id.clone(),
+        reason: format!("write input: {error}"),
+    })?;
+    // Pre-fill output with input so in-place tools have a target.
+    let _ = fs::copy(&input_path, &output_path);
+
+    let input_str = input_path.to_string_lossy().to_string();
+    let output_str = output_path.to_string_lossy().to_string();
+    let program = substitute_cli_token(command, &input_str, &output_str, &params);
+    let cli_args: Vec<String> = args
+        .iter()
+        .map(|arg| substitute_cli_token(arg, &input_str, &output_str, &params))
+        .filter(|arg| !arg.is_empty())
+        .collect();
+
+    let mut cmd = Command::new(&program);
+    cmd.args(&cli_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
+        .output()
+        .map_err(|error| ToolRegistryError::CliWrapperFailed {
+            id: tool.id.clone(),
+            reason: format!("spawn `{program}`: {error}"),
+        })?;
+
+    if !output_path.exists() {
+        return Err(ToolRegistryError::CliWrapperFailed {
+            id: tool.id.clone(),
+            reason: format!(
+                "no output produced (exit {:?}): {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
+    let out_bytes =
+        fs::read(&output_path).map_err(|error| ToolRegistryError::CliWrapperFailed {
+            id: tool.id.clone(),
+            reason: format!("read output: {error}"),
+        })?;
+    let data = BASE64.encode(&out_bytes);
+    Ok(serde_json::json!({
+        "content": [ { "type": "image", "data": data, "mimeType": "image/png" } ]
+    }))
+}
+
 fn execute_script_tool(
     tool: &ToolDefinition,
     path: &str,
@@ -1073,8 +2234,15 @@ fn run_script_process(
     path: &str,
     payload: &str,
 ) -> ToolRegistryResult<Output> {
-    let mut command = script_command(path, payload);
-    let mut child = command
+    let ScriptInvocation {
+        mut command,
+        staged_files,
+    } = script_command(path, payload).map_err(|source| ToolRegistryError::ScriptSpawn {
+        id: tool.id.clone(),
+        path: path.to_owned(),
+        source,
+    })?;
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1083,23 +2251,50 @@ fn run_script_process(
             id: tool.id.clone(),
             path: path.to_owned(),
             source,
-        })?;
+        });
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            cleanup_staged_script_files(&staged_files);
+            return Err(error);
+        }
+    };
+    let stdout_reader = spawn_script_output_reader(child.stdout.take());
+    let stderr_reader = spawn_script_output_reader(child.stderr.take());
     let started = Instant::now();
 
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|source| ToolRegistryError::ScriptSpawn {
-                        id: tool.id.clone(),
-                        path: path.to_owned(),
-                        source,
-                    });
+            Ok(Some(status)) => {
+                let stdout =
+                    join_script_output_reader(stdout_reader, &tool.id, path).map_err(|source| {
+                        ToolRegistryError::ScriptSpawn {
+                            id: tool.id.clone(),
+                            path: path.to_owned(),
+                            source,
+                        }
+                    })?;
+                let stderr =
+                    join_script_output_reader(stderr_reader, &tool.id, path).map_err(|source| {
+                        ToolRegistryError::ScriptSpawn {
+                            id: tool.id.clone(),
+                            path: path.to_owned(),
+                            source,
+                        }
+                    })?;
+                cleanup_staged_script_files(&staged_files);
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) if started.elapsed() >= SCRIPT_EXECUTION_TIMEOUT => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                cleanup_staged_script_files(&staged_files);
                 return Err(ToolRegistryError::ScriptTimedOut {
                     id: tool.id.clone(),
                     path: path.to_owned(),
@@ -1108,42 +2303,129 @@ fn run_script_process(
             }
             Ok(None) => thread::sleep(Duration::from_millis(10)),
             Err(source) => {
+                cleanup_staged_script_files(&staged_files);
                 return Err(ToolRegistryError::ScriptSpawn {
                     id: tool.id.clone(),
                     path: path.to_owned(),
                     source,
-                })
+                });
             }
         }
     }
 }
 
-fn script_command(path: &str, payload: &str) -> Command {
+fn spawn_script_output_reader<T>(stream: Option<T>) -> thread::JoinHandle<std::io::Result<Vec<u8>>>
+where
+    T: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let Some(mut stream) = stream else {
+            return Ok(Vec::new());
+        };
+        let mut buffer = Vec::new();
+        stream.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    })
+}
+
+fn join_script_output_reader(
+    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    tool_id: &str,
+    path: &str,
+) -> std::io::Result<Vec<u8>> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(std::io::Error::other(format!(
+            "script output reader panicked for tool `{tool_id}` at `{path}`"
+        ))),
+    }
+}
+
+struct ScriptInvocation {
+    command: Command,
+    staged_files: Vec<PathBuf>,
+}
+
+fn script_command(path: &str, payload: &str) -> std::io::Result<ScriptInvocation> {
     let extension = Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    let mut command = if extension == "ps1" {
+    if extension == "ps1" {
+        let payload_path = write_staged_script_file("payload", "json", payload.as_bytes())?;
+        let wrapper = br#"
+param(
+    [Parameter(Mandatory = $true)][string]$PayloadPath,
+    [Parameter(Mandatory = $true)][string]$ScriptPath
+)
+$ErrorActionPreference = 'Stop'
+$payload = [System.IO.File]::ReadAllText($PayloadPath, [System.Text.UTF8Encoding]::new($false))
+& $ScriptPath $payload
+"#;
+        let wrapper_path = write_staged_script_file("wrapper", "ps1", wrapper)?;
         let mut command = Command::new("powershell.exe");
         command
             .arg("-NoProfile")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-File")
+            .arg(&wrapper_path)
+            .arg(&payload_path)
             .arg(path);
-        command
-    } else if extension == "py" {
+        return Ok(ScriptInvocation {
+            command,
+            staged_files: vec![payload_path, wrapper_path],
+        });
+    }
+
+    if extension == "py" {
+        let payload_path = write_staged_script_file("payload", "json", payload.as_bytes())?;
+        let wrapper = br#"
+import pathlib
+import runpy
+import sys
+
+payload = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+script = sys.argv[2]
+sys.argv = [script, payload]
+runpy.run_path(script, run_name="__main__")
+"#;
+        let wrapper_path = write_staged_script_file("wrapper", "py", wrapper)?;
         let mut command = Command::new(resolve_python_executable());
         configure_python_process(&mut command);
-        command.arg(path);
-        command
-    } else {
-        Command::new(path)
-    };
+        command.arg(&wrapper_path).arg(&payload_path).arg(path);
+        return Ok(ScriptInvocation {
+            command,
+            staged_files: vec![payload_path, wrapper_path],
+        });
+    }
+
+    let mut command = Command::new(path);
     command.arg(payload);
-    command
+    Ok(ScriptInvocation {
+        command,
+        staged_files: Vec::new(),
+    })
+}
+
+fn write_staged_script_file(stem: &str, extension: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = REGISTRY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("loom-script-{stem}-{nonce}-{sequence}.{extension}"));
+    fs::write(&path, bytes)?;
+    Ok(path)
+}
+
+fn cleanup_staged_script_files(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn configure_python_process(command: &mut Command) {
@@ -1152,6 +2434,7 @@ fn configure_python_process(command: &mut Command) {
 
 fn resolve_python_executable() -> PathBuf {
     let loom_python = std::env::var("LOOM_PYTHON").ok();
+    let framework_runtime_root = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR").ok();
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf));
@@ -1159,6 +2442,7 @@ fn resolve_python_executable() -> PathBuf {
 
     resolve_python_executable_from(
         loom_python.as_deref(),
+        framework_runtime_root.as_deref(),
         exe_dir.as_deref(),
         current_dir.as_deref(),
     )
@@ -1166,11 +2450,25 @@ fn resolve_python_executable() -> PathBuf {
 
 fn resolve_python_executable_from(
     loom_python: Option<&str>,
+    framework_runtime_root: Option<&str>,
     exe_dir: Option<&Path>,
     current_dir: Option<&Path>,
 ) -> PathBuf {
     if let Some(override_python) = loom_python.map(str::trim).filter(|value| !value.is_empty()) {
         return PathBuf::from(override_python);
+    }
+
+    if let Some(runtime_root) = framework_runtime_root
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let candidate = Path::new(runtime_root)
+            .join("python_art")
+            .join("python-embed")
+            .join("python.exe");
+        if candidate.is_file() {
+            return candidate;
+        }
     }
 
     let mut candidates = Vec::new();
@@ -1236,6 +2534,21 @@ mod tests {
     use std::fs;
     use std::io::{BufRead, Read, Write};
     use std::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn cli_token_substitutes_paths_params_and_flags() {
+        let mut params = serde_json::Map::new();
+        params.insert("level_num".to_owned(), serde_json::json!(6));
+        params.insert("lossless".to_owned(), serde_json::json!(true));
+        params.insert("off_flag".to_owned(), serde_json::json!(false));
+        let sub = |t: &str| super::substitute_cli_token(t, "IN.png", "OUT.png", &params);
+        assert_eq!(sub("{{input}}"), "IN.png");
+        assert_eq!(sub("{output}"), "OUT.png");
+        assert_eq!(sub("-s{{level_num}}"), "-s6");
+        // {{-key}} bool-true → -key flag; bool-false → empty.
+        assert_eq!(sub("{{-lossless}}"), "-lossless");
+        assert_eq!(sub("{{-off_flag}}"), "");
+    }
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
@@ -1434,8 +2747,9 @@ mod tests {
 
     #[test]
     fn python_script_command_disables_bytecode_writes() {
-        let command = script_command("fixture.py", "{}");
+        let command = script_command("fixture.py", "{}").expect("build python script command");
         let value = command
+            .command
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("PYTHONDONTWRITEBYTECODE"))
             .and_then(|(_, value)| value.map(|value| value.to_string_lossy().to_string()));
@@ -1596,6 +2910,596 @@ mod tests {
 
         assert_eq!(result["content"][0]["type"], "text");
         assert_eq!(result["content"][0]["text"], "hello registry");
+    }
+
+    #[test]
+    fn execute_mcp_image_search_tool_downloads_structured_image_result() {
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search",
+            "Fixture Image Search",
+            "Download the first MCP image-search result",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+        let server = current_test_binary_fixture_config().env(
+            "LOOM_MCP_FIXTURE_IMAGE_URL",
+            image_fixture.url("/fixture.png"),
+        );
+
+        let result = execute_tool(
+            &tool,
+            &[server],
+            serde_json::json!({ "query": "fixture cat", "count": 1 }),
+        )
+        .expect("execute MCP image-search tool");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+    }
+
+    #[test]
+    fn execute_mcp_image_search_tool_honors_result_index_and_preserves_candidates() {
+        let first_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let second_fixture = HttpImageFixture::start("image/png", fixture_alt_image_bytes());
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search-multi",
+            "Fixture Image Search Multi",
+            "Download the selected MCP image-search result",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+        let server = current_test_binary_fixture_config()
+            .env(
+                "LOOM_MCP_FIXTURE_IMAGE_URL",
+                first_fixture.url("/fixture-a.png"),
+            )
+            .env(
+                "LOOM_MCP_FIXTURE_IMAGE_URL_ALT",
+                second_fixture.url("/fixture-b.png"),
+            );
+
+        let result = execute_tool(
+            &tool,
+            &[server],
+            serde_json::json!({ "query": "fixture cat", "count": 2, "result_index": 1 }),
+        )
+        .expect("execute MCP image-search tool with explicit result index");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE_ALT);
+        assert_eq!(result["loomMetadata"]["imageSearch"]["selectedIndex"], 1);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["index"],
+            0
+        );
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][1]["index"],
+            1
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_falls_back_to_another_candidate_when_selected_one_cannot_download(
+    ) {
+        let second_fixture = HttpImageFixture::start("image/png", fixture_alt_image_bytes());
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Broken primary image",
+                        "url": "https://example.invalid/broken",
+                        "properties": {
+                            "url": "http://127.0.0.1:9/broken.jpg",
+                            "width": 1,
+                            "height": 1
+                        }
+                    },
+                    {
+                        "title": "Working fallback image",
+                        "url": "https://example.invalid/fallback",
+                        "properties": {
+                            "url": second_fixture.url("/fixture-b.png"),
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ],
+                "count": 2
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({ "result_index": 0 }), &value)
+            .expect("fallback to another candidate image");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE_ALT);
+        assert_eq!(result["loomMetadata"]["imageSearch"]["selectedIndex"], 1);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["index"],
+            0
+        );
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][1]["index"],
+            1
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_retains_candidate_metadata_when_all_downloads_fail() {
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search-download-failure",
+            "Fixture Image Search Download Failure",
+            "Return a friendly text message but keep the image-search candidates",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Broken primary image",
+                        "url": "https://example.invalid/broken",
+                        "properties": {
+                            "url": "http://127.0.0.1:9/broken.jpg",
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ],
+                "count": 1
+            }
+        });
+
+        let result = normalize_mcp_result(&tool, &serde_json::json!({ "result_index": 0 }), value);
+
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(
+            result["content"][0]["text"],
+            "图片搜索已返回候选结果，但图片下载失败，请稍后重试。"
+        );
+        assert_eq!(result["loomMetadata"]["imageSearch"]["selectedIndex"], 0);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            "http://127.0.0.1:9/broken.jpg"
+        );
+    }
+
+    #[test]
+    fn execute_mcp_image_search_tool_normalizes_legacy_hook_argument_types_and_aliases() {
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search-legacy-hook",
+            "Fixture Image Search Legacy Hook",
+            "Normalize legacy Hook MCP image-search arguments before the MCP call",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+        let server = current_test_binary_fixture_config().env(
+            "LOOM_MCP_FIXTURE_IMAGE_URL",
+            image_fixture.url("/fixture.png"),
+        );
+
+        let result = execute_tool(
+            &tool,
+            &[server],
+            serde_json::json!({
+                "query": "fixture cat",
+                "count": "1",
+                "search_lang": "ZH",
+                "spellcheck": "true"
+            }),
+        )
+        .expect("execute MCP image-search tool with legacy Hook arguments");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+    }
+
+    #[test]
+    fn execute_mcp_image_search_tool_normalizes_legacy_search_lang_without_enum_schema() {
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search-realshape-legacy-hook",
+            "Fixture Image Search Realshape Legacy Hook",
+            "Normalize legacy Hook MCP image-search arguments even when search_lang schema has no enum",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search_realshape".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+        let server = current_test_binary_fixture_config().env(
+            "LOOM_MCP_FIXTURE_IMAGE_URL",
+            image_fixture.url("/fixture.png"),
+        );
+
+        let result = execute_tool(
+            &tool,
+            &[server],
+            serde_json::json!({
+                "query": "fixture cat",
+                "count": "1",
+                "search_lang": "ZH",
+                "spellcheck": "true"
+            }),
+        )
+        .expect("execute MCP image-search tool with Brave-like string-only search_lang schema");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_falls_back_to_nested_thumbnail_when_primary_image_download_fails()
+    {
+        let thumbnail_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let thumbnail_url = thumbnail_fixture.url("/thumb.png");
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Fixture image",
+                        "url": "https://example.invalid/page",
+                        "thumbnail": {
+                            "src": thumbnail_url,
+                            "width": 1,
+                            "height": 1
+                        },
+                        "properties": {
+                            "url": "http://127.0.0.1:9/primary.jpg",
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ]
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({}), &value)
+            .expect("fallback to thumbnail image");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"]
+                .as_array()
+                .expect("candidate metadata")
+                .len(),
+            1
+        );
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["thumbnailUrl"],
+            thumbnail_url
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_accepts_octet_stream_thumbnail_without_extension() {
+        let thumbnail_fixture =
+            HttpImageFixture::start("application/octet-stream", fixture_image_bytes());
+        let thumbnail_url = thumbnail_fixture.url("/thumb");
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Fixture image",
+                        "url": "https://example.invalid/page",
+                        "thumbnail": {
+                            "src": thumbnail_url,
+                            "width": 1,
+                            "height": 1
+                        },
+                        "properties": {
+                            "url": "http://127.0.0.1:9/primary-nope",
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ]
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({}), &value)
+            .expect("fallback to octet-stream thumbnail image");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_parses_stringified_items_payloads() {
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let image_url = image_fixture.url("/image.png");
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": format!(
+                    r#"[{{"title":"Fixture image","url":"https://example.invalid/page","properties":{{"url":"{image_url}","width":1,"height":1}}}}]"#
+                ),
+                "count": 1
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({}), &value)
+            .expect("normalize stringified image-search items");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            image_url
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_downloads_from_hosts_requiring_image_accept_header() {
+        let image_fixture = HeaderAwareHttpImageFixture::start(
+            "image/png",
+            fixture_image_bytes(),
+            "accept: image/",
+        );
+        let image_url = image_fixture.url("/guarded.png");
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Guarded fixture image",
+                        "url": "https://example.invalid/page",
+                        "properties": {
+                            "url": image_url,
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ]
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({}), &value)
+            .expect("normalize guarded image-search candidate");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_strips_broken_cdn_modifiers_from_candidate_urls() {
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let image_url = image_fixture.url("/image.png");
+        let decorated_image_url = format!("{image_url}!/clip/0x300a0a0");
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Modifier fixture image",
+                        "url": "https://example.invalid/page",
+                        "properties": {
+                            "url": decorated_image_url,
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ],
+                "count": 1
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({}), &value)
+            .expect("normalize image-search url with broken modifiers");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            image_url
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_strips_trailing_path_modifiers_after_image_extension() {
+        let image_fixture = ExactPathHttpImageFixture::start(
+            "image/png",
+            fixture_image_bytes(),
+            "/image.png_300.png",
+        );
+        let image_url = image_fixture.url("/image.png_300.png");
+        let decorated_image_url = format!("{image_url}/dpi/0x300a0!");
+        let value = serde_json::json!({
+            "structuredContent": {
+                "type": "object",
+                "items": [
+                    {
+                        "title": "Modifier fixture image",
+                        "url": "https://example.invalid/page",
+                        "properties": {
+                            "url": decorated_image_url,
+                            "width": 1,
+                            "height": 1
+                        }
+                    }
+                ],
+                "count": 1
+            }
+        });
+
+        let result = normalize_mcp_image_result(&serde_json::json!({}), &value)
+            .expect("normalize image-search url with trailing path modifiers");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
+        assert_eq!(
+            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            image_url
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_returns_friendly_message_for_provider_blocked_queries() {
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search-provider-blocked",
+            "Fixture Image Search Provider Blocked",
+            "Return a friendly message when the provider flags the query as sensitive",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+
+        let result = normalize_mcp_result(
+            &tool,
+            &serde_json::json!({ "query": "japanese beauty girl" }),
+            serde_json::json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "{\"type\":\"object\",\"items\":[],\"count\":0,\"might_be_offensive\":true}"
+                    }
+                ],
+                "structuredContent": {
+                    "type": "object",
+                    "items": [],
+                    "count": 0,
+                    "might_be_offensive": true
+                }
+            }),
+        );
+
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(
+            result["content"][0]["text"],
+            "图片搜索未返回可用结果：搜索服务将该查询判定为可能敏感，请尝试更换关键词。"
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_image_search_returns_friendly_message_for_empty_results() {
+        let mut tool = ToolDefinition::new(
+            "fixture-image-search-empty-results",
+            "Fixture Image Search Empty Results",
+            "Return a friendly message when the provider yields no images",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "brave_image_search".to_owned(),
+            },
+        );
+        tool.outputs = vec![serde_json::json!({
+            "name": "output",
+            "label": "output",
+            "type": "image",
+            "execution_type": "image_buffer"
+        })];
+
+        let result = normalize_mcp_result(
+            &tool,
+            &serde_json::json!({ "query": "no results please" }),
+            serde_json::json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "{\"type\":\"object\",\"items\":[],\"count\":0}"
+                    }
+                ],
+                "structuredContent": {
+                    "type": "object",
+                    "items": [],
+                    "count": 0
+                }
+            }),
+        );
+
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(
+            result["content"][0]["text"],
+            "图片搜索未返回可用结果，请尝试更换关键词。"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_httpclient_fallback_sends_browserish_accept_header() {
+        let fixture = HeaderAwareHttpImageFixture::start(
+            "image/png",
+            fixture_image_bytes(),
+            "accept: image/",
+        );
+
+        let (mime_type, bytes) =
+            download_image_bytes_with_powershell_httpclient(&fixture.url("/thumb"), None)
+                .expect("download image bytes via powershell fallback with image accept header");
+
+        assert_eq!(mime_type, "image/png");
+        assert_eq!(bytes, fixture_image_bytes());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_httpclient_fallback_downloads_image_candidate_bytes() {
+        let fixture = HttpImageFixture::start("application/octet-stream", fixture_image_bytes());
+        let (mime_type, bytes) =
+            download_image_bytes_with_powershell_httpclient(&fixture.url("/thumb"), None)
+                .expect("download image bytes via powershell fallback");
+
+        assert_eq!(mime_type, "image/png");
+        assert_eq!(bytes, fixture_image_bytes());
     }
 
     #[test]
@@ -1779,6 +3683,144 @@ mod tests {
     }
 
     #[test]
+    fn execute_script_tool_blends_input_and_reference_images_with_mix_ratio() {
+        let tool = ToolDefinition::new(
+            "fixture-script-blend",
+            "Fixture Script Blend",
+            "Blend two images through script",
+            ToolExecution::Script {
+                path: workspace_image_blend_script().display().to_string(),
+            },
+        );
+        let source = one_pixel_png_data_url([200, 50, 0, 255]);
+        let reference = one_pixel_png_data_url([0, 150, 200, 255]);
+
+        let result = execute_tool(
+            &tool,
+            &[],
+            serde_json::json!({
+                "input": source,
+                "reference": reference,
+                "mix_ratio": 25
+            }),
+        )
+        .expect("execute script blend tool");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            result["content"][0]["data"]
+                .as_str()
+                .expect("script image blend output data"),
+        )
+        .expect("decode blend output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+        assert_eq!(output.data, vec![150, 75, 50, 255]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn execute_script_image_blend_art_accepts_large_payloads_with_valid_images() {
+        let tool = ToolDefinition::new(
+            "fixture-script-blend-large-images",
+            "Fixture Script Blend Large Images",
+            "Blend large valid images through script",
+            ToolExecution::Script {
+                path: workspace_image_blend_script().display().to_string(),
+            },
+        );
+        let source = one_pixel_png_data_url([200, 50, 0, 255]);
+        let reference = one_pixel_png_data_url([0, 150, 200, 255]);
+        let debug_padding = "x".repeat(40_000);
+
+        let result = execute_tool(
+            &tool,
+            &[],
+            serde_json::json!({
+                "input": source,
+                "reference": reference,
+                "mix_ratio": 50,
+                "debug_padding": debug_padding
+            }),
+        )
+        .expect("execute script blend tool with large payload and valid images");
+
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            result["content"][0]["data"]
+                .as_str()
+                .expect("large payload blend output"),
+        )
+        .expect("decode large payload blend output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn execute_script_image_blend_art_handles_4k_images_within_timeout() {
+        let tool = ToolDefinition::new(
+            "fixture-script-blend-4k-images",
+            "Fixture Script Blend 4K Images",
+            "Blend 4K images through script without timing out",
+            ToolExecution::Script {
+                path: workspace_image_blend_script().display().to_string(),
+            },
+        );
+        let source = solid_color_png_data_url(4096, 4096, [200, 50, 0, 255]);
+        let reference = solid_color_png_data_url(4096, 4096, [0, 150, 200, 255]);
+
+        let result = execute_tool(
+            &tool,
+            &[],
+            serde_json::json!({
+                "input": source,
+                "reference": reference,
+                "mix_ratio": 25
+            }),
+        )
+        .expect("execute script blend tool with 4k images");
+
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            result["content"][0]["data"]
+                .as_str()
+                .expect("4k blend output"),
+        )
+        .expect("decode 4k blend output");
+        assert_eq!(output.width, 4096);
+        assert_eq!(output.height, 4096);
+        assert_eq!(&output.data[0..4], &[150, 75, 50, 255]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn execute_script_tool_supports_large_payloads_without_hitting_windows_command_limit() {
+        let root = temp_root("script-large-payload");
+        let script_path = write_script_fixture(&root);
+        let tool = ToolDefinition::new(
+            "fixture-script-large-payload",
+            "Fixture Script Large Payload",
+            "Echo large payload through script",
+            ToolExecution::Script {
+                path: script_path.display().to_string(),
+            },
+        );
+        let large_text = "x".repeat(40_000);
+
+        let result = execute_tool(&tool, &[], serde_json::json!({ "text": large_text }))
+            .expect("execute script-backed tool with large payload");
+
+        let text = result["content"][0]["text"]
+            .as_str()
+            .expect("script large payload response text");
+        assert!(text.starts_with("script saw "));
+        assert_eq!(text.len(), "script saw ".len() + 40_000);
+
+        fs::remove_dir_all(root).expect("cleanup large payload script root");
+    }
+
+    #[test]
     fn execute_script_tool_reports_missing_script() {
         let root = temp_root("script-missing");
         let tool = ToolDefinition::new(
@@ -1810,6 +3852,7 @@ mod tests {
 
         let resolved = resolve_python_executable_from(
             Some(override_python.to_string_lossy().as_ref()),
+            None,
             Some(&root),
             Some(&root),
         );
@@ -1827,11 +3870,79 @@ mod tests {
             .expect("create packaged python parent");
         fs::write(&packaged_python, b"").expect("write packaged python fixture");
 
-        let resolved = resolve_python_executable_from(None, Some(&root), Some(&root));
+        let resolved = resolve_python_executable_from(None, None, Some(&root), Some(&root));
 
         assert_eq!(resolved, packaged_python);
 
         fs::remove_dir_all(root).expect("cleanup packaged python root");
+    }
+
+    #[test]
+    fn resolve_python_executable_prefers_framework_runtime_dir() {
+        // A python_art runtime installed via the framework registry
+        // (<control-plane>/framework-runtimes/) must win over a packaged
+        // python-embed next to the exe/cwd — this is what wires "installing the
+        // framework" to "executing an art with it" (方向 A).
+        let root = temp_root("python-runtime-dir");
+        let runtime_python = root
+            .join("python_art")
+            .join("python-embed")
+            .join("python.exe");
+        fs::create_dir_all(runtime_python.parent().expect("runtime python parent"))
+            .expect("create runtime python parent");
+        fs::write(&runtime_python, b"").expect("write runtime python fixture");
+
+        // A competing packaged python under a separate cwd candidate.
+        let cwd = temp_root("python-runtime-cwd");
+        let packaged_python = cwd.join("bin").join("python-embed").join("python.exe");
+        fs::create_dir_all(packaged_python.parent().expect("packaged python parent"))
+            .expect("create packaged python parent");
+        fs::write(&packaged_python, b"").expect("write packaged python fixture");
+
+        let resolved = resolve_python_executable_from(
+            None,
+            Some(root.to_string_lossy().as_ref()),
+            None,
+            Some(&cwd),
+        );
+
+        assert_eq!(resolved, runtime_python);
+
+        fs::remove_dir_all(root).expect("cleanup runtime dir root");
+        fs::remove_dir_all(cwd).expect("cleanup runtime cwd root");
+    }
+
+    #[test]
+    fn resolve_python_art_path_prefers_installed_art_dir_for_relative_art_path() {
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = temp_root("python-installed-art-root");
+        let plugin_dir = root
+            .join("arts")
+            .join("store-python-tool")
+            .join("python")
+            .join("Arts")
+            .join("StorePythonEcho");
+        fs::create_dir_all(&plugin_dir).expect("create installed python art dir");
+        fs::write(
+            plugin_dir.join("art.json"),
+            r#"{"art_id":"store_python_echo","label":"Store Python Echo"}"#,
+        )
+        .expect("write installed python art json");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+
+        let resolved = resolve_python_art_path(
+            "store-python-tool",
+            "store_python_echo",
+            Some("python/Arts/StorePythonEcho"),
+        );
+
+        assert_eq!(resolved, Some(plugin_dir));
+
+        match previous_root {
+            Some(value) => std::env::set_var("LOOM_CONTROL_PLANE_ROOT", value),
+            None => std::env::remove_var("LOOM_CONTROL_PLANE_ROOT"),
+        }
+        fs::remove_dir_all(root).expect("cleanup installed python art root");
     }
 
     #[test]
@@ -1860,6 +3971,8 @@ mod tests {
     fn run_mcp_fixture_server() {
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
+        let fixture_image_url = std::env::var("LOOM_MCP_FIXTURE_IMAGE_URL").ok();
+        let fixture_image_url_alt = std::env::var("LOOM_MCP_FIXTURE_IMAGE_URL_ALT").ok();
 
         for line in stdin.lock().lines() {
             let line = line.expect("fixture stdin line");
@@ -1884,25 +3997,208 @@ mod tests {
                     }),
                 ),
                 "notifications/initialized" => {}
-                "tools/call" => {
-                    let text = request["params"]["arguments"]["text"]
-                        .as_str()
-                        .unwrap_or_default();
-                    write_fixture_response(
-                        &mut stdout,
-                        serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": request["id"].clone(),
-                            "result": {
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": text
+                "tools/list" => write_fixture_response(
+                    &mut stdout,
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"].clone(),
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "echo",
+                                    "description": "Echo arguments",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "text": { "type": "string" }
+                                        }
                                     }
-                                ]
+                                },
+                                {
+                                    "name": "brave_image_search",
+                                    "description": "Return structured image-search results",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": { "type": "string" },
+                                            "count": { "type": "integer" },
+                                            "search_lang": {
+                                                "type": "string",
+                                                "enum": ["zh-hans", "en"]
+                                            },
+                                            "spellcheck": { "type": "boolean" }
+                                        },
+                                        "required": ["query"]
+                                    }
+                                },
+                                {
+                                    "name": "brave_image_search_realshape",
+                                    "description": "Return structured image-search results with Brave-like string-only search_lang schema",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": { "type": "string" },
+                                            "count": { "type": "integer" },
+                                            "search_lang": { "type": "string" },
+                                            "spellcheck": { "type": "boolean" }
+                                        },
+                                        "required": ["query"]
+                                    }
+                                }
+                            ]
+                        }
+                    }),
+                ),
+                "tools/call" => {
+                    let tool_name = request["params"]["name"].as_str().unwrap_or_default();
+                    match tool_name {
+                        "echo" => {
+                            let text = request["params"]["arguments"]["text"]
+                                .as_str()
+                                .unwrap_or_default();
+                            write_fixture_response(
+                                &mut stdout,
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"].clone(),
+                                    "result": {
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": text
+                                            }
+                                        ]
+                                    }
+                                }),
+                            );
+                        }
+                        "brave_image_search" | "brave_image_search_realshape" => {
+                            let arguments = &request["params"]["arguments"];
+                            if arguments.get("count").is_some()
+                                && !arguments["count"].is_i64()
+                                && !arguments["count"].is_u64()
+                            {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "count must be an integer"
+                                        }
+                                    }),
+                                );
+                                continue;
                             }
-                        }),
-                    );
+                            if arguments.get("spellcheck").is_some()
+                                && !arguments["spellcheck"].is_boolean()
+                            {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "spellcheck must be a boolean"
+                                        }
+                                    }),
+                                );
+                                continue;
+                            }
+                            if let Some(search_lang) = arguments
+                                .get("search_lang")
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                if !matches!(search_lang, "zh-hans" | "en") {
+                                    write_fixture_response(
+                                        &mut stdout,
+                                        serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": request["id"].clone(),
+                                            "error": {
+                                                "code": -32602,
+                                                "message": "search_lang must be one of [\"zh-hans\", \"en\"]"
+                                            }
+                                        }),
+                                    );
+                                    continue;
+                                }
+                            } else if arguments.get("search_lang").is_some() {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "search_lang must be a string"
+                                        }
+                                    }),
+                                );
+                                continue;
+                            }
+                            let query = request["params"]["arguments"]["query"]
+                                .as_str()
+                                .unwrap_or_default();
+                            let image_url = fixture_image_url.clone().unwrap_or_else(|| {
+                                "https://example.invalid/fixture.png".to_owned()
+                            });
+                            let alternate_image_url = fixture_image_url_alt
+                                .clone()
+                                .unwrap_or_else(|| image_url.clone());
+                            write_fixture_response(
+                                &mut stdout,
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"].clone(),
+                                    "result": {
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": format!("fixture brave_image_search results for {query}")
+                                            }
+                                        ],
+                                        "structuredContent": {
+                                            "type": "object",
+                                            "items": [
+                                                {
+                                                    "title": "Fixture image",
+                                                    "url": "https://example.invalid/page",
+                                                    "properties": {
+                                                        "url": image_url,
+                                                        "width": 1,
+                                                        "height": 1
+                                                    }
+                                                },
+                                                {
+                                                    "title": "Fixture image alternate",
+                                                    "url": "https://example.invalid/page-2",
+                                                    "properties": {
+                                                        "url": alternate_image_url,
+                                                        "width": 1,
+                                                        "height": 1
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                }),
+                            );
+                        }
+                        _ => write_fixture_response(
+                            &mut stdout,
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": request["id"].clone(),
+                                "error": {
+                                    "code": -32601,
+                                    "message": format!("unknown tool {tool_name}")
+                                }
+                            }),
+                        ),
+                    }
                 }
                 _ => write_fixture_response(
                     &mut stdout,
@@ -1930,6 +4226,18 @@ mod tests {
     }
 
     const CLOUD_FIXTURE_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const CLOUD_FIXTURE_IMAGE_ALT: &str =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AAoUHv8BpAE8tOS4KAAAAABJRU5ErkJggg==";
+
+    fn fixture_image_bytes() -> Vec<u8> {
+        loom_image_io::decode_data_url_bytes(CLOUD_FIXTURE_IMAGE)
+            .expect("decode fixture image data url")
+    }
+
+    fn fixture_alt_image_bytes() -> Vec<u8> {
+        loom_image_io::decode_data_url_bytes(CLOUD_FIXTURE_IMAGE_ALT)
+            .expect("decode alternate fixture image data url")
+    }
 
     enum CloudFixtureMode {
         Text,
@@ -2032,6 +4340,161 @@ mod tests {
     }
 
     impl Drop for CloudFixture {
+        fn drop(&mut self) {
+            if let Some(worker) = self.worker.take() {
+                let _ = TcpStream::connect(("127.0.0.1", self.port));
+                let _ = worker.join();
+            }
+        }
+    }
+
+    struct HttpImageFixture {
+        port: u16,
+        worker: Option<JoinHandle<()>>,
+    }
+
+    impl HttpImageFixture {
+        fn start(content_type: &'static str, body: Vec<u8>) -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind HTTP image fixture");
+            let port = listener
+                .local_addr()
+                .expect("HTTP image fixture address")
+                .port();
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("accept HTTP image fixture request");
+                let _ = read_http_request(&mut stream);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            });
+            Self {
+                port,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+    }
+
+    impl Drop for HttpImageFixture {
+        fn drop(&mut self) {
+            if let Some(worker) = self.worker.take() {
+                let _ = TcpStream::connect(("127.0.0.1", self.port));
+                let _ = worker.join();
+            }
+        }
+    }
+
+    struct HeaderAwareHttpImageFixture {
+        port: u16,
+        worker: Option<JoinHandle<()>>,
+    }
+
+    impl HeaderAwareHttpImageFixture {
+        fn start(content_type: &'static str, body: Vec<u8>, required_header: &'static str) -> Self {
+            let listener =
+                TcpListener::bind(("127.0.0.1", 0)).expect("bind guarded HTTP image fixture");
+            let port = listener
+                .local_addr()
+                .expect("guarded HTTP image fixture address")
+                .port();
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("accept guarded HTTP image fixture request");
+                let request = read_http_request(&mut stream);
+                if request.to_ascii_lowercase().contains(required_header) {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(&body);
+                    let _ = stream.flush();
+                } else {
+                    write_http_response(
+                        &mut stream,
+                        "403 Forbidden",
+                        "text/plain",
+                        "missing required header",
+                    );
+                }
+            });
+            Self {
+                port,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+    }
+
+    impl Drop for HeaderAwareHttpImageFixture {
+        fn drop(&mut self) {
+            if let Some(worker) = self.worker.take() {
+                let _ = TcpStream::connect(("127.0.0.1", self.port));
+                let _ = worker.join();
+            }
+        }
+    }
+
+    struct ExactPathHttpImageFixture {
+        port: u16,
+        worker: Option<JoinHandle<()>>,
+    }
+
+    impl ExactPathHttpImageFixture {
+        fn start(content_type: &'static str, body: Vec<u8>, expected_path: &'static str) -> Self {
+            let listener =
+                TcpListener::bind(("127.0.0.1", 0)).expect("bind exact-path HTTP image fixture");
+            let port = listener
+                .local_addr()
+                .expect("exact-path HTTP image fixture address")
+                .port();
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("accept exact-path HTTP image fixture request");
+                let request = read_http_request(&mut stream);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or_default();
+                if path == expected_path {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(&body);
+                    let _ = stream.flush();
+                } else {
+                    write_http_response(&mut stream, "404 Not Found", "text/plain", "not found");
+                }
+            });
+            Self {
+                port,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+    }
+
+    impl Drop for ExactPathHttpImageFixture {
         fn drop(&mut self) {
             if let Some(worker) = self.worker.take() {
                 let _ = TcpStream::connect(("127.0.0.1", self.port));
@@ -2161,5 +4624,34 @@ PY
             fs::set_permissions(&script_path, permissions).expect("make shell fixture executable");
             script_path
         }
+    }
+
+    fn workspace_image_blend_script() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let script = candidate
+                    .join("resources")
+                    .join("script-arts")
+                    .join("image-blend")
+                    .join("main.ps1");
+                script.exists().then_some(script)
+            })
+            .expect("locate Loom/resources/script-arts/image-blend/main.ps1")
+    }
+
+    fn one_pixel_png_data_url(rgba: [u8; 4]) -> String {
+        loom_image_io::rgba8_to_png_data_url(1, 1, &rgba).expect("encode one pixel png")
+    }
+
+    fn solid_color_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
+        let pixels = usize::try_from(width)
+            .expect("width usize")
+            .saturating_mul(usize::try_from(height).expect("height usize"));
+        let mut data = Vec::with_capacity(pixels.saturating_mul(4));
+        for _ in 0..pixels {
+            data.extend_from_slice(&rgba);
+        }
+        loom_image_io::rgba8_to_png_data_url(width, height, &data).expect("encode solid color png")
     }
 }

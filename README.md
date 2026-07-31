@@ -38,6 +38,7 @@ where they are compatibility protocol names.
 ├── apps/
 │   ├── daemon/    # loom-daemon
 │   ├── cli/       # loom
+│   ├── art-store/ # loom-art-store
 │   └── desktop/   # Loom Tauri desktop shell
 ├── crates/
 │   ├── loom_core
@@ -159,6 +160,154 @@ In another shell:
 .\target\debug\loom.exe agents list --examples-dir .\examples
 .\target\debug\loom.exe workflows list --examples-dir .\examples
 .\target\debug\loom.exe run sample.three_node --examples-dir .\examples
+```
+
+## Installable frameworks and art packages
+
+Loom treats Art execution kinds as installable frameworks. An Art package
+belongs to exactly one framework, and Loom refuses to install that Art until
+its framework is both installed and ready.
+
+The current framework ids are:
+
+- `cli_wrapper`
+- `cloud_api`
+- `script`
+- `python_art`
+- `mcp`
+- `workflow`
+
+Built-in frameworks (`cli_wrapper`, `cloud_api`, `script`, `workflow`) are
+installed by default. `python_art` requires an explicit runtime installation so
+Loom can provision its own interpreter under the control-plane root instead of
+depending on an ambient machine-wide Python.
+
+Daemon routes:
+
+```http
+GET  /v1/frameworks
+POST /v1/frameworks/{frameworkId}/install
+POST /v1/frameworks/{frameworkId}/uninstall
+GET  /v1/tools/{toolId}/readiness
+POST /v1/arts/install
+GET  /v1/arts/store/catalog
+POST /v1/arts/store/install
+POST /v1/arts/store/publish
+```
+
+`GET /v1/tools/{toolId}/readiness` reports the Art's resolved framework plus
+whether that framework is installed and ready. When an Art install is rejected,
+the daemon returns `framework_not_ready` and tells the operator to install the
+missing framework first.
+
+For local package distribution, Loom also ships a tiny art store server:
+
+```powershell
+.\scripts\run-art-store.ps1
+```
+
+By default it listens on `http://127.0.0.1:8790` and serves:
+
+```http
+GET  /catalog
+GET  /arts/{artId}.zip
+GET  /frameworks/{frameworkId}.zip
+POST /publish
+```
+
+Point the daemon at that store with:
+
+```powershell
+$env:LOOM_ART_STORE_URL = "http://127.0.0.1:8790"
+```
+
+To rebuild and locally install the repo-owned `图片压缩` Art from the official
+portable Pingo package, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Install-LoomImageCompressArt.ps1 `
+  -ForceDownload
+```
+
+That script downloads `https://css-ig.net/bin/pingo-win64.zip`, rebuilds the
+Art ZIP, publishes it into `.loom-art-store-data\arts\`, and by default
+installs it directly into `%APPDATA%\Loom\control-plane\arts\...`. The default
+mode is `local` because binary-backed Art ZIPs can exceed the daemon's direct
+`POST /v1/arts/install` body limit once base64 encoded. If you already have
+`loom-art-store` running, the same script also supports `-InstallMode store`.
+
+To build and install the repo-owned `图片搜索` MCP Art, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Install-LoomImageSearchArt.ps1 `
+  -BraveApiKey $env:BRAVE_API_KEY
+```
+
+That script packages `custom-image-search` as an `mcp` Art, optionally saves a
+`brave-search` MCP server config (`npx -y @brave/brave-search-mcp-server
+--transport stdio`), installs the `mcp` framework, and by default uploads the
+tiny Art ZIP through `POST /v1/arts/install`. Use `-SkipServerConfig` if you
+only want the Art package without touching daemon-side MCP server settings.
+
+To rebuild and locally install the repo-owned `Color Transfer (RBF)` Art on
+the installable `python_art` framework, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Install-LoomColorTransferArt.ps1
+```
+
+That script vendors the existing Color Transfer Python Art source, downloads
+CPython 3.12 Windows wheels for `numpy` and `Pillow`, stages a Loom-local
+`python_art` runtime bundle, publishes both ZIPs into
+`.loom-art-store-data\{arts,frameworks}\`, and by default installs the
+framework/runtime plus Art directly into `%APPDATA%\Loom\control-plane\...`.
+The installed tool keeps the live production id `custom-1770131241684` and
+preserves the Hook-facing shader editing flow while pointing `artPath` at the
+Loom-managed control-plane copy.
+
+To build and locally install the repo-owned `图片混合` Script Art, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Install-LoomImageBlendScriptArt.ps1
+```
+
+That script packages `custom-image-blend-script` as a formal `script` Art,
+bundles the production PowerShell blend script, publishes the zip into
+`.loom-art-store-data\arts\`, and by default installs it directly into
+`%APPDATA%\Loom\control-plane\arts\...`. The Art blends the upstream input image
+and a reference image by `mix_ratio`, keeps the reference image available as a
+true second image input port in Hook, and is intended as a real framework proof
+for Loom's `script` execution line.
+
+When `python_art` is installed from the store, Loom downloads the framework
+runtime zip first, unpacks it under
+`<LOOM_CONTROL_PLANE_ROOT>\framework-runtimes\python_art\`, and then prefers
+that runtime over packaged or PATH Python fallbacks when executing Python Arts.
+
+For a repo-owned all-framework local proof path, run the dedicated fake-store
+Hook smoke:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1 `
+  -Configuration Debug `
+  -EvidenceRoot .\target\framework-art-store-hook-smoke
+```
+
+That smoke starts a temporary local fake cloud API server, a temporary stdio
+MCP server, and a temporary local `loom-art-store` root. The MCP fixture now
+proves the `图片搜索` path specifically by returning structured
+`brave_image_search` results whose first image URL is fetched back into a real
+previewable base64 image. The smoke installs one Art for each framework id,
+instantiates six Hook nodes, executes each node once, and writes a
+machine-readable summary under:
+
+```text
+target\framework-art-store-hook-smoke\<runId>\summary.json
 ```
 
 ## Local capability API
@@ -447,6 +596,18 @@ its ZIP record and bytes/hash, each ZIP must contain its exact payload, both
 `.sha256` sidecars must contain the matching lowercase hash and filename, and
 `checksums.sha256` must cover every other package file. The focused negative
 coverage for these rules is `scripts/tests/Test-ReleaseIntegrityTamper.ps1`.
+
+When you pass `-RunSmoke`, `verify-release.ps1` also runs Loom's formal Windows
+smoke chain in sequence:
+
+1. `scripts\smoke-release.ps1`
+2. `scripts\Invoke-LoomHookCanvasUiSmoke.ps1`
+3. `scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1`
+
+The third step reuses the packaged `runtime\loom-daemon.exe` from the release
+candidate, starts a temporary local fake art store plus fake cloud/MCP
+fixtures, installs one Art for each framework id, instantiates six Hook nodes,
+and executes all six through the release-smoke entrypoint that CI already uses.
 
 ## Validation
 

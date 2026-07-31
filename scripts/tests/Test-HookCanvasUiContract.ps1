@@ -53,10 +53,16 @@ $saveWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x4FDD, 0x5B58, 0x5DE5, 0x4
 $openWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x5DE5, 0x4F5C, 0x6D41)
 $yamlStorageLabel = "YAML " + (ConvertFrom-UnicodeCodePoints @(0x5B58, 0x50A8))
 $loadYamlLabel = ">" + (ConvertFrom-UnicodeCodePoints @(0x52A0, 0x8F7D)) + " YAML<"
+$executionFailureLabel = ConvertFrom-UnicodeCodePoints @(0x6267, 0x884C, 0x5931, 0x8D25)
+$quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints @(
+    0x989D, 0x5EA6, 0x4E0D, 0x8DB3, 0xFF08, 0x0048, 0x0054, 0x0054, 0x0050,
+    0x0020, 0x0034, 0x0030, 0x0032, 0xFF09
+)
 
 Assert-Contains 'data-testid=' $app "Hook navigation needs a stable UI smoke target."
 Assert-Contains 'nav-hook-bridge' $app "Hook navigation needs a stable UI smoke target."
 Assert-Contains 'data-testid="hook-canvas-thumbnail"' $thumbnail "Screenshot Sync must render a real Hook canvas thumbnail."
+Assert-Contains 'data-testid="hook-canvas-open-workflow"' $thumbnail "Thumbnail must expose a stable visual-workflow entry target."
 Assert-Contains 'data-testid="hook-canvas-node"' $node "Hook canvas nodes need stable smoke targets."
 Assert-Contains 'data-testid="hook-canvas-view"' $view "Hook workflow must render a full visual canvas."
 Assert-Contains $visualWorkflowLabel $thumbnail "Thumbnail must expose the visual workflow entry."
@@ -83,6 +89,10 @@ Assert-Contains 'APPDATA' $smoke "Smoke must isolate the Hook session."
 Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exact process paths."
 Assert-Contains 'SmokePortMinimum = 30000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."
 Assert-Contains 'SmokePortMaximum = 45000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."
+Assert-Contains 'id = "failed-art"' $smoke "Hook canvas smoke fixture must include a failed Art node."
+Assert-Contains 'status = "error"' $smoke "Hook canvas smoke fixture must preserve the failed Art node status."
+Assert-Contains '$quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints' $smoke "Hook canvas smoke must define the failed Art error message via ASCII-safe Unicode code points."
+Assert-Contains 'errorMessage = $quotaExceededErrorMessage' $smoke "Hook canvas smoke fixture must preserve the failed Art node error reason."
 Assert-Contains 'Wait-ForHookCanvasUi' $smoke "Smoke must wait on Hook canvas DOM conditions."
 Assert-Contains '[int]$TimeoutSeconds = 90' $smoke "Hosted WebView2 startup needs a bounded 90-second Hook canvas wait budget."
 Assert-Contains 'Inspector diagnostic:' $smoke "Hook canvas timeouts must include the latest Inspector diagnostic."
@@ -110,8 +120,16 @@ Assert-NotContains '$process.WaitForExit()' $smoke "Inspector cleanup must not c
 Assert-Contains 'function Read-BoundedTaskText' $smoke "Inspector stream draining must use a bounded task wait."
 Assert-Contains '$Task.Wait($TimeoutMilliseconds)' $smoke "Inspector stream draining must not block indefinitely."
 Assert-NotContains 'Start-Sleep -Seconds 2' $smoke "Smoke must not use a fixed Hook canvas refresh delay."
+Assert-Contains 'failedArtThumbnailFailureVisible' $smoke "Hook canvas smoke must assert the failed Art thumbnail presentation."
+Assert-Contains 'failedArtExecutionFailureVisible' $smoke "Hook canvas smoke must assert the failed Art full-canvas presentation."
 Assert-Contains 'min-nodes' $inspector "Inspector must wait for the expected Hook canvas node count."
 Assert-Contains 'data-revision' $inspector "Inspector must wait for a non-empty Hook canvas revision."
+Assert-Contains 'hook-canvas-open-workflow' $inspector "Inspector must target the dedicated visual-workflow entry."
+Assert-Contains ('placeholderTitle === "' + $executionFailureLabel + '"') $inspector "Inspector must detect the failed Art execution-failure placeholder."
+Assert-Contains 'fullCanvasNodes' $inspector "Inspector must persist full-canvas node presentation evidence."
+Assert-Contains 'thumbnailNodes' $inspector "Inspector must persist thumbnail node presentation evidence."
+Assert-Contains 'placeholderDetailText' $inspector "Inspector must persist failed-node detail text evidence."
+Assert-Contains "hasImage: Boolean(node.querySelector('img'))" $inspector "Inspector must distinguish image previews from placeholder rendering."
 Assert-Contains 'let diagnostic = {};' $inspector "Inspector must capture diagnostics before the initial canvas wait."
 Assert-Contains 'let client = null;' $inspector "Inspector must capture failures before a CDP client exists."
 Assert-Contains 'AbortController' $inspector "Inspector HTTP probes must have a timeout."

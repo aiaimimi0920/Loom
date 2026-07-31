@@ -78,6 +78,48 @@ separate projects.
   [details](../superpowers/plans/2026-07-21-loom-release-integrity-hardening.md)
 - [x] Phase 44: Hook canvas thumbnail and visual workflow (8/8 tasks)
   [details](./phase-44-hook-canvas-thumbnail.md)
+- [x] Phase 45: Installable frameworks and art store closure (3/3 tasks)
+  [details](./phase-45-installable-frameworks-art-store.md)
+- [x] Phase 46: All-framework fake art-store Hook smoke (5/5 tasks)
+  [details](./phase-46-framework-art-store-hook-smoke.md)
+- [x] Phase 47: Framework/store Hook smoke release and CI integration (5/5 tasks)
+  [details](./phase-47-framework-store-hook-ci-integration.md)
+- [x] Phase 48: Hook canvas smoke regression fix (7/7 tasks)
+  [details](./phase-48-hook-canvas-smoke-regression-fix.md)
+- [x] Phase 49: Hook failed-art preview sync (5/5 tasks)
+  [details](./phase-49-hook-error-preview-sync.md)
+- [x] Phase 50: Hook failed-art preview smoke (6/6 tasks)
+  [details](./phase-50-hook-error-preview-smoke.md)
+- [x] Phase 51: Hook failed-art real-shape fixture hardening (5/5 tasks)
+  [details](./phase-51-hook-error-preview-realshape.md)
+- [x] Phase 52: Hook failed-art browser-view failure sync (6/6 tasks)
+  [details](./phase-52-hook-error-browser-failure-sync.md)
+- [x] Phase 53: Hook live-runtime failure sync (6/6 tasks)
+  [details](./phase-53-hook-live-runtime-failure-sync.md)
+- [x] Phase 54: Hook error-message sync (6/6 tasks)
+  [details](./phase-54-hook-error-message-sync.md)
+- [x] Phase 55: Image-compress Art Pingo packaging (6/6 tasks)
+  [details](./phase-55-image-compress-art-pingo.md)
+- [x] Phase 56: Image-compress compat sync guard (5/5 tasks)
+  [details](./phase-56-image-compress-compat-sync-guard.md)
+- [x] Phase 57: Image-compress runtime preview overlay (5/5 tasks)
+  [details](./phase-57-image-compress-runtime-preview-overlay.md)
+- [x] Phase 58: MCP image-search Art closure (6/6 tasks)
+  [details](./phase-58-mcp-image-search-art.md)
+- [x] Phase 59: MCP image-search manual flow and multi-result UI (6/6 tasks)
+  [details](./phase-59-mcp-image-search-manual-flow.md)
+- [x] Phase 60: MCP image-search selection persistence (5/5 tasks)
+  [details](./phase-60-mcp-image-search-selection-persistence.md)
+- [x] Phase 61: MCP image-search persistence smoke (5/5 tasks)
+  [details](./phase-61-mcp-image-search-persistence-smoke.md)
+- [x] Phase 62: MCP server sync persistence fix (5/5 tasks)
+  [details](./phase-62-mcp-server-sync-persistence-fix.md)
+- [x] Phase 63: MCP Windows npx spawn fix (5/5 tasks)
+  [details](./phase-63-mcp-windows-npx-spawn-fix.md)
+- [x] Phase 64: Python Art Color Transfer installable art (6/6 tasks)
+  [details](./phase-64-color-transfer-python-art.md)
+- [x] Phase 65: Script image-blend Art (4/4 tasks)
+  [details](./phase-65-script-image-blend-art.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -170,6 +212,102 @@ checksum-covered files, and full release verification reporting
 the verifier's formal Hook smoke is in
 `Loom/target/runtime-smoke/hook-canvas/hook-canvas-094d74c3505943f5aac22b2fb3e89b4d`.
 
+Phase 45 closes the installable framework and art-store line. The
+`python_art` framework runtime resolver now matches its framework-runtime-first
+tests, desktop API regression coverage includes `/v1/frameworks` and
+`/v1/arts/store/*`, and the feature is now documented in `README.md`, a
+dedicated task plan, and its own phase record. Parent-scoped candidate
+`release/Loom/20260729-installable-frameworks-art-store` was built from
+`fbd4a50ebc98d985912092116f6fbfa776587531`; release verification checked 32
+files with `smoke=not-run` and `hookCanvasSmoke=not-run`.
+
+Phase 46 closes the remaining end-to-end proof gap for that feature line. The
+daemon now exports its resolved control-plane runtime env, framework readiness
+probes the correct framework-runtime root, install-time path rewriting no
+longer corrupts non-bundled executable names such as `powershell.exe`, and a
+repo-owned smoke now stands up a temporary local fake store plus fake cloud/MCP
+fixtures, installs one Art for each framework id, instantiates Hook nodes, and
+executes all six successfully. Parent-scoped candidate
+`release/Loom/20260729-framework-art-store-hook-smoke` verified 32 files with
+`smoke=not-run` and `hookCanvasSmoke=not-run`; the dedicated local all-framework
+smoke evidence is recorded under
+`target/framework-art-store-hook-smoke/20260729-125906-framework-store-12316-25345787c7834c0dafaefa7658cd1f29`.
+
+Phase 47 integrates that new all-framework smoke into Loom's formal release
+verification path. `verify-release.ps1 -RunSmoke` now invokes the packaged
+daemon-oriented framework/store Hook smoke after the existing standalone and
+Hook canvas smokes, and the standalone release contract now requires the new
+script plus the shared Loom smoke port allocator contract. The package-mode
+framework/store smoke evidence is recorded under
+`target/runtime-smoke/framework-art-store-hook/20260729-131646-framework-store-9960-d7902ac0110442eaba36a7233c6bae38`.
+During validation on July 29, 2026, the pre-existing Hook canvas UI smoke was
+the first failing step in the full chained `verify-release.ps1 -RunSmoke`
+path; the new package-mode framework/store smoke itself passed independently.
+
+Phase 48 closes that regression. The live Hook thumbnail once again exposes a
+dedicated `打开可视化工作流` action with a stable smoke target, the advanced
+technical disclosure again exposes its explicit contract target, and the
+WebView inspector now clicks the dedicated visual-workflow button instead of a
+removed legacy selector. Parent-scoped candidate
+`release/Loom/20260729-hook-canvas-smoke-regression-fix` passed the complete
+release chain with `smoke=passed`, `hookCanvasSmoke=passed`, and
+`frameworkArtStoreHookSmoke=passed`. Direct packaged Hook canvas smoke evidence
+is recorded under
+`target/runtime-smoke/hook-canvas/hook-canvas-41145cc5ad6a47068e9e1fd94620b47c`.
+
+Phase 49 fixes a remaining Hook/Loom visual sync drift for failed Art nodes.
+Daemon preview resolution for non-screenshot nodes now prefers the node's own
+local preview sources (`previewSrc`, `src`, `filePath`) before falling back to
+connected upstream input. That keeps Hook-rendered failed/error preview images
+visible in Loom instead of incorrectly replacing them with the upstream input
+image. Parent-scoped candidate
+`release/Loom/20260729-hook-error-preview-sync` passed the complete release
+chain with `smoke=passed`, `hookCanvasSmoke=passed`, and
+`frameworkArtStoreHookSmoke=passed`.
+
+Phase 50 promotes that regression into a dedicated packaged smoke. The formal
+release chain now includes a Hook failed-Art preview smoke that proves the
+preview bytes for a failed Art node match the node's own local preview image
+and differ from the upstream input image. Parent-scoped candidate
+`release/Loom/20260729-hook-error-preview-smoke` passed the complete release
+chain with `smoke=passed`, `hookCanvasSmoke=passed`,
+`hookErrorPreviewSmoke=passed`, and `frameworkArtStoreHookSmoke=passed`.
+
+Phase 51 hardens that same line against drift from the real Hook session
+shape. The failed-preview smoke fixture and daemon regression coverage now use
+absolute-path `src`, `minified`, `savedRect`, `cropOffset`,
+`params.reference`, and `output -> input` link ports so the formal release
+chain stays closer to the live Hook contract. Parent-scoped candidate
+`release/Loom/20260729-hook-error-preview-realshape` passed the complete
+release chain with `smoke=passed`, `hookCanvasSmoke=passed`,
+`hookErrorPreviewSmoke=passed`, and `frameworkArtStoreHookSmoke=passed`.
+
+Phase 52 closes the remaining browser-view drift. The desktop Hook canvas
+renderer now maps failed Art nodes to an explicit execution-failure
+placeholder, and the packaged WebView smoke now proves both the thumbnail and
+full visual canvas show that failure state without rendering an image for the
+same `failed-art` node. Parent-scoped candidate
+`release/Loom/20260729-hook-error-browser-failure-sync` passed the complete
+release chain with `smoke=passed`, `hookCanvasSmoke=passed`,
+`hookErrorPreviewSmoke=passed`, and `frameworkArtStoreHookSmoke=passed`.
+
+Phase 53 closes the remaining live-runtime gap behind that UI rule. The daemon
+now prefers Hook's live `art_loom/overwrite_workflow` snapshot over stale
+session-file-only state, overlays runtime Art-node failure status for both
+`art_loom/execute_art_node` and best-effort matched `art/process` calls, and
+folds that overlay into the Hook canvas revision so the desktop cannot keep a
+stale ready snapshot after a failure. Parent-scoped candidate
+`release/Loom/20260729-hook-live-runtime-failure-sync` passed the complete
+release chain with `smoke=passed`, `hookCanvasSmoke=passed`,
+`hookErrorPreviewSmoke=passed`, and `frameworkArtStoreHookSmoke=passed`.
+
+Phase 54 closes the final detail gap. Loom's Hook browser view now carries the
+same concrete failed Art-node error reason that Hook shows, by extending daemon
+runtime overlays with `errorMessage` and rendering that detail text directly in
+the failed node plus the inspector panel. Parent-scoped candidate
+`release/Loom/20260729-hook-error-message-sync` passed the same verification
+chain after the new failure-reason UI smoke assertions were added.
+
 Phase 43 hardens the same release boundary against internally consistent
 tampering. The shared layout helper and verifier reject extra root executables,
 CLI ZIP payload drift, CLI metadata mismatches, malformed ZIP sidecars, and
@@ -209,6 +347,55 @@ matrix. Candidate `release/Loom/20260719-082918-923fc5f8` is the Phase 40 formal
 release candidate and historical predecessor to the current Phase 41 candidate.
 
 Latest completed phases:
+
+- Phase 64 is complete. It packages `Color Transfer (RBF)` as a formal
+  installable `python_art` Art, rewrites installed control-plane paths for
+  both Loom and Hook compat metadata, makes Hook prefer Loom's shader-prefetch
+  route plus Loom-installed Art collisions, and closes with standalone release
+  `20260730-color-transfer-python-art-r2` and Hook package
+  `20260730-color-transfer-python-art-r2`.
+- Phase 54 is complete. It synchronizes Hook's concrete failed Art-node error
+  reason into Loom's browser view, extends failed-node rendering and inspector
+  detail text, and closes with parent release
+  `20260729-hook-error-message-sync`.
+- Phase 53 is complete. It syncs Loom's Hook browser view against Hook's real
+  live runtime failure state by consuming the live `overwrite_workflow`
+  snapshot, overlaying runtime Art-node failure status, and closing with
+  parent release `20260729-hook-live-runtime-failure-sync`.
+- Phase 52 is complete. It closes the remaining Hook/Loom browser-view drift
+  for failed Art nodes, extends the packaged Hook canvas UI smoke to assert
+  execution-failure presentation in both thumbnail and full-canvas views, and
+  closes with parent release
+  `20260729-hook-error-browser-failure-sync`.
+- Phase 51 is complete. It hardens failed-Art preview parity against the real
+  Hook session shape and closes with parent release
+  `20260729-hook-error-preview-realshape`.
+- Phase 50 is complete. It adds a dedicated packaged smoke for failed Art node
+  preview parity, wires it into `verify-release.ps1 -RunSmoke`, and closes
+  with parent release `20260729-hook-error-preview-smoke`.
+- Phase 49 is complete. It restores Hook/Loom preview parity for failed Art
+  nodes by making daemon preview resolution prefer the node's own local error
+  preview over connected upstream input, and closes with parent release
+  `20260729-hook-error-preview-sync`.
+- Phase 48 is complete. It restores the Hook sync thumbnail's dedicated visual
+  workflow entry and advanced-disclosure smoke target, updates the WebView2
+  inspector to click the dedicated button, and closes the full formal release
+  smoke chain on parent release
+  `20260729-hook-canvas-smoke-regression-fix`.
+- Phase 47 is complete. It integrates the all-framework fake art-store Hook
+  smoke into `verify-release.ps1 -RunSmoke`, updates the standalone release
+  contract to enforce the new smoke and shared smoke port allocator, and proves
+  the package-mode framework/store smoke against the packaged daemon.
+- Phase 46 is complete. It proves Loom's temporary local fake-store path for
+  all six Art frameworks end-to-end, fixes daemon/runtime-root propagation,
+  fixes `FrameworkRegistry::readiness()` to probe the real framework runtime
+  root, preserves non-bundled CLI command names during install, and generates
+  parent release `20260729-framework-art-store-hook-smoke`.
+- Phase 45 is complete. It records Loom's installable framework plus art-store
+  feature line as a first-class phase, fixes the remaining
+  `python_art` runtime precedence drift in `loom_tool_registry`, adds desktop
+  API regression tests for framework and store routes, and generates parent
+  release `20260729-installable-frameworks-art-store`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local
@@ -661,3 +848,72 @@ Ongoing maintenance:
   evidence is in `Loom/target/runtime-smoke/20260720-163735-7135275c/summary.json`;
   concurrency evidence is in
   `Loom/target/runtime-smoke/daemon-concurrency/20260720-163753-8ef8748a/summary.json`.
+- Phase 55 packaged the existing `图片压缩` node as a formal installable
+  `cli_wrapper` Art backed by the official portable Pingo binary from
+  `https://css-ig.net/bin/pingo-win64.zip`, while preserving the production Art
+  id `custom-1770146354922`. The repo now carries
+  `scripts/Install-LoomImageCompressArt.ps1`, which rebuilds the Art ZIP,
+  publishes it into `.loom-art-store-data\arts\`, and locally installs it into
+  `%APPDATA%\Loom\control-plane\arts\custom-1770146354922`.
+- Phase 55 verified the rewritten tool contract through both Loom runtime
+  surfaces: daemon `POST /v1/artloom-compat/ipc/execute-art-node` and Hook
+  Bridge WebSocket `art/process`. A real sample image
+  `082f3a30-d8b1-4687-bc77-f57ebc5545b5.png` compressed from `399012` bytes to
+  `179622` bytes, saving `219390` bytes (`54.98%`).
+- Phase 55 generated
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260729-image-compress-art-pingo`.
+- Phase 56 closed the restart/runtime regression where Hook-side
+  `sync_user_arts` could overwrite the installed `图片压缩` Pingo art with the old
+  quoted `Downloads\pingo.exe` compat definition. The daemon now treats
+  `loom-local` arts as compat-visible, but only `artloom-compat` arts as
+  sync-owned, and preserves Loom-local installed arts on id collision.
+- Phase 56 added a daemon regression test proving a colliding legacy
+  `sync_user_arts` payload no longer clobbers the installed
+  `custom-1770146354922` tool contract.
+- Phase 56 repaired the live control-plane registry by reinstalling the Pingo
+  art and re-verified both runtime surfaces:
+  `POST /v1/artloom-compat/ipc/execute-art-node` and Hook Bridge
+  `art/process`.
+- Phase 56 generated
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260729-image-compress-compat-sync-guard`.
+- Phase 57 fixed a different `图片压缩` runtime issue: successful image execution
+  could still appear blank because the live Hook workflow snapshot carried a
+  black `previewSrc`, and Loom's Hook canvas mirrored that preview payload even
+  though the runtime had already produced a valid output image.
+- Phase 57 extended the daemon Hook-canvas runtime overlay to carry successful
+  runtime preview images and cache tokens, so `art_loom/execute_art_node`,
+  `art/process`, and native image AHRP executions can override blank Hook
+  preview payloads with the real runtime output.
+- Phase 57 added a daemon regression proving that a successful runtime image
+  output replaces a blank live Art-node preview.
+- Phase 57 generated
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260729-image-compress-runtime-preview-overlay`.
+- Phase 58 closes the next installable-framework line by turning MCP's proof
+  point from generic `echo` text into the real `图片搜索` Art contract. Loom now
+  adapts structured `brave_image_search` MCP results into first-image base64
+  preview output when the Art declares image output.
+- Phase 58 added targeted registry + daemon regressions, upgraded the
+  repo-owned framework/store Hook smoke to execute `图片搜索` as an image-returning
+  MCP Art, added `scripts/Install-LoomImageSearchArt.ps1`, and documented the
+  new install/operator path in `README.md`.
+- Phase 59 finishes the next user-facing loop for that Art. Loom desktop now
+  offers a repo-owned `图片搜索` hand-test entry that saves Brave Search MCP,
+  installs the `mcp` framework, and registers `custom-image-search` without
+  leaving the MCP page.
+- Phase 59 also upgrades the Hook-canvas browser flow from fixed first-result
+  behavior to multi-result selection: MCP image-search candidates plus the
+  selected index now survive into Loom's runtime canvas overlay, and the node
+  inspector can re-execute the selected node against a different result.
+- Phase 60 closes the persistence gap in that same flow. Choosing a different
+  MCP image-search result now writes `result_index`, candidate metadata, and a
+  persisted preview image back into Loom's live Hook/session representation, so
+  the same selection survives daemon runtime clears and Hook canvas reloads.
+- Phase 61 promotes that behavior into formal smoke evidence. The repo-owned
+  all-framework fake store Hook smoke now drives a real two-result
+  `brave_image_search` flow, selects the second result, clears Hook Bridge
+  runtime state, and proves the reloaded canvas still restores
+  `selectedResultIndex = 1`, both result candidates, and the correct preview
+  bytes. The packaged release candidate
+  `release/Loom/20260729-mcp-image-search-persistence-smoke` passed the full
+  `verify-release.ps1 -RunSmoke` chain with standalone, Hook canvas, Hook
+  failed-preview, and framework/store Hook smoke all green.

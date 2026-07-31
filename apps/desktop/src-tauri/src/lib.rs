@@ -92,21 +92,26 @@ fn read_loom_snapshot(base_url: Option<String>) -> LoomSnapshot {
     let checked_at = chrono::Utc::now().to_rfc3339();
 
     match read_daemon_snapshot(&resolved_base_url) {
-        Ok(snapshot) => LoomSnapshot {
-            base_url: resolved_base_url,
-            connection_state: "online".to_string(),
-            checked_at,
-            health: Some(snapshot.health),
-            status: Some(snapshot.status),
-            capabilities: snapshot.capabilities,
-            mcp_servers: snapshot.mcp_servers,
-            tools: snapshot.tools,
-            python_arts: snapshot.python_arts,
-            workflows: snapshot.workflows,
-            hook_bridge: snapshot.hook_bridge,
-            settings,
-            error: degraded_snapshot_error(&snapshot.degraded_errors),
-        },
+        Ok(snapshot) => {
+            let daemon_mismatch = std::env::current_exe()
+                .ok()
+                .and_then(|current_exe| daemon_path_mismatch_warning(&current_exe, &snapshot.health));
+            LoomSnapshot {
+                base_url: resolved_base_url,
+                connection_state: "online".to_string(),
+                checked_at,
+                health: Some(snapshot.health),
+                status: Some(snapshot.status),
+                capabilities: snapshot.capabilities,
+                mcp_servers: snapshot.mcp_servers,
+                tools: snapshot.tools,
+                python_arts: snapshot.python_arts,
+                workflows: snapshot.workflows,
+                hook_bridge: snapshot.hook_bridge,
+                settings,
+                error: snapshot_error(&snapshot.degraded_errors, daemon_mismatch.as_deref()),
+            }
+        }
         Err(error) => LoomSnapshot {
             base_url: resolved_base_url,
             connection_state: "offline".to_string(),
@@ -128,17 +133,19 @@ fn read_loom_snapshot(base_url: Option<String>) -> LoomSnapshot {
 #[tauri::command]
 fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
     let base_url = normalize_base_url(configured_loom_daemon_url());
-    if http_get_json(&base_url, "/health").is_ok() {
+    let current_exe =
+        std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+    if let Ok(health) = http_get_json(&base_url, "/health") {
+        let message = daemon_path_mismatch_warning(&current_exe, &health)
+            .unwrap_or_else(|| "Loom 本地服务已运行。".to_string());
         return Ok(LoomDaemonStartResult {
             started: false,
             base_url,
             path: String::new(),
-            message: "Loom 本地服务已运行。".to_string(),
+            message,
         });
     }
 
-    let current_exe =
-        std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
     let explicit_daemon_path = std::env::var(LOOM_DAEMON_EXECUTABLE_ENV)
         .ok()
         .and_then(|value| configured_daemon_executable(&value));
@@ -162,6 +169,15 @@ fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
     command
         .env("LOOM_DAEMON_HOST", host)
         .env("LOOM_DAEMON_PORT", port.to_string());
+
+    // Write the discovery manifest to the shared Neuro capabilities dir so peer
+    // apps (e.g. Hook) can find this daemon via %APPDATA%\Neuro\capabilities\loom.json.
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+        let manifest_dir = std::path::PathBuf::from(appdata)
+            .join("Neuro")
+            .join("capabilities");
+        command.env("LOOM_CAPABILITY_MANIFEST_DIR", manifest_dir);
+    }
 
     #[cfg(windows)]
     {
@@ -208,6 +224,19 @@ fn delete_loom_daemon_json(base_url: String, path: String) -> Result<Value, Stri
     let resolved_base_url = resolve_command_base_url(base_url);
     let path = normalize_daemon_path(path)?;
     http_delete_json(&resolved_base_url, &path)
+}
+
+// Fetch a Hook canvas preview image through the native HTTP client and return it
+// as a base64 `data:` URL. The WebView cannot reliably load `http://127.0.0.1`
+// daemon images with an `<img src>` tag, so the frontend renders previews from
+// the data URL this command returns instead of a direct daemon URL.
+#[tauri::command]
+fn read_hook_canvas_preview(base_url: String, path: String) -> Result<String, String> {
+    let resolved_base_url = resolve_command_base_url(base_url);
+    let path = normalize_daemon_path(path)?;
+    let (content_type, bytes) = http_get_binary(&resolved_base_url, &path)?;
+    let encoded = base64_encode(&bytes);
+    Ok(format!("data:{content_type};base64,{encoded}"))
 }
 
 fn configured_loom_daemon_url() -> String {
@@ -261,6 +290,64 @@ fn configured_daemon_executable(value: &str) -> Option<PathBuf> {
     }
 }
 
+fn preferred_daemon_candidate(current_exe: &Path) -> PathBuf {
+    let explicit_daemon_path = std::env::var(LOOM_DAEMON_EXECUTABLE_ENV)
+        .ok()
+        .and_then(|value| configured_daemon_executable(&value));
+    let candidates = daemon_executable_candidates(
+        current_exe,
+        explicit_daemon_path,
+        development_repo_root().as_deref(),
+    );
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .unwrap_or_else(|| {
+            candidates
+                .first()
+                .cloned()
+                .unwrap_or_else(|| daemon_sidecar_path_for_exe(current_exe))
+        })
+}
+
+fn daemon_executable_path_from_health(health: &Value) -> Option<PathBuf> {
+    health
+        .get("executablePath")
+        .or_else(|| health.get("executable_path"))
+        .or_else(|| health.get("path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        left.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        left == right
+    }
+}
+
+fn daemon_path_mismatch_warning(current_exe: &Path, health: &Value) -> Option<String> {
+    let actual = daemon_executable_path_from_health(health)?;
+    let expected = preferred_daemon_candidate(current_exe);
+    if paths_match(&expected, &actual) {
+        return None;
+    }
+    Some(format!(
+        "检测到 127.0.0.1:8765 上运行的 Loom daemon 不是当前包自带的版本：当前 Loom 期望 `{}`, 但实际连接到 `{}`。这会让执行请求仍然落到旧 daemon 上，请先关闭旧 daemon 再重启当前包。",
+        expected.display(),
+        actual.display()
+    ))
+}
+
 fn daemon_executable_candidates(
     current_exe: &Path,
     explicit_path: Option<PathBuf>,
@@ -271,6 +358,7 @@ fn daemon_executable_candidates(
         candidates.push(path);
     }
     candidates.push(daemon_sidecar_path_for_exe(current_exe));
+    candidates.push(daemon_root_sibling_path_for_exe(current_exe));
     if let Some(repo_root) = development_repo_root {
         candidates.push(
             repo_root
@@ -287,6 +375,13 @@ fn daemon_sidecar_path_for_exe(current_exe: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("runtime")
+        .join("loom-daemon.exe")
+}
+
+fn daemon_root_sibling_path_for_exe(current_exe: &Path) -> PathBuf {
+    current_exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
         .join("loom-daemon.exe")
 }
 
@@ -373,14 +468,21 @@ fn read_optional_daemon_json(
     }
 }
 
-fn degraded_snapshot_error(errors: &[String]) -> Option<String> {
-    if errors.is_empty() {
-        None
-    } else {
-        Some(format!(
+fn snapshot_error(errors: &[String], warning: Option<&str>) -> Option<String> {
+    let mut messages = Vec::new();
+    if !errors.is_empty() {
+        messages.push(format!(
             "Loom 本地服务在线，但部分模块暂不可用：{}",
             errors.join("；")
-        ))
+        ));
+    }
+    if let Some(warning) = warning.filter(|value| !value.trim().is_empty()) {
+        messages.push(warning.to_owned());
+    }
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("；"))
     }
 }
 
@@ -447,6 +549,88 @@ fn http_request_json(
 
     serde_json::from_str(body)
         .map_err(|error| format!("无法解析 Loom 本地服务响应 {path}：{error}"))
+}
+
+// Fetch a binary daemon response (e.g. a preview image) over the native HTTP
+// client. Unlike `http_request_json`, this reads raw bytes so image payloads are
+// not corrupted by UTF-8 decoding, and it returns the Content-Type so the caller
+// can build a correct `data:` URL.
+fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), String> {
+    let (host, port) = parse_loopback_http_url(base_url)?;
+    let mut stream = TcpStream::connect((host.as_str(), port))
+        .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("无法设置 Loom 本地服务读取超时：{error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("无法设置 Loom 本地服务写入超时：{error}"))?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: image/*\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("无法写入 Loom 本地服务请求 {path}：{error}"))?;
+
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .map_err(|error| format!("无法读取 Loom 本地服务响应 {path}：{error}"))?;
+
+    let separator = b"\r\n\r\n";
+    let header_end = raw
+        .windows(separator.len())
+        .position(|window| window == separator)
+        .ok_or_else(|| format!("Loom 本地服务响应格式异常：{path}"))?;
+    let headers = String::from_utf8_lossy(&raw[..header_end]).into_owned();
+    let body = raw[header_end + separator.len()..].to_vec();
+
+    if !headers.starts_with("HTTP/1.1 200") {
+        let status_line = headers.lines().next().unwrap_or("unknown status");
+        return Err(format!("{path} returned {status_line}"));
+    }
+
+    let content_type = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("content-type") {
+                Some(value.trim().to_owned())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+
+    Ok((content_type, body))
+}
+
+// Minimal standard base64 encoder so the desktop wrapper can return `data:` URLs
+// without adding a dependency.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(triple & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 fn normalize_daemon_path(path: String) -> Result<String, String> {
@@ -516,7 +700,8 @@ pub fn run() {
             get_loom_daemon_json,
             put_loom_daemon_json,
             delete_loom_daemon_json,
-            post_loom_daemon_json
+            post_loom_daemon_json,
+            read_hook_canvas_preview
         ])
         .run(context)
         .expect("error while running Loom desktop");
@@ -525,13 +710,24 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("loom-desktop-{name}-{nonce}"));
+        fs::create_dir_all(&root).expect("create temp dir");
+        root
+    }
 
     #[test]
     fn default_runtime_config_points_at_loopback_loom_daemon() {
@@ -804,6 +1000,24 @@ mod tests {
             vec![
                 std::path::PathBuf::from(r"D:\loom\custom-daemon.exe"),
                 std::path::PathBuf::from(r"C:\apps\Loom\runtime\loom-daemon.exe"),
+                std::path::PathBuf::from(r"C:\apps\Loom\loom-daemon.exe"),
+                std::path::PathBuf::from(r"C:\src\Loom\target\debug\loom-daemon.exe"),
+            ]
+        );
+    }
+
+    #[test]
+    fn daemon_candidates_include_root_sibling_fallback_before_development_target() {
+        let desktop_exe = std::path::Path::new(r"C:\apps\Loom\loom-desktop.exe");
+        let repo_root = std::path::Path::new(r"C:\src\Loom");
+
+        let candidates = daemon_executable_candidates(desktop_exe, None, Some(repo_root));
+
+        assert_eq!(
+            candidates,
+            vec![
+                std::path::PathBuf::from(r"C:\apps\Loom\runtime\loom-daemon.exe"),
+                std::path::PathBuf::from(r"C:\apps\Loom\loom-daemon.exe"),
                 std::path::PathBuf::from(r"C:\src\Loom\target\debug\loom-daemon.exe"),
             ]
         );
@@ -812,5 +1026,37 @@ mod tests {
     #[test]
     fn blank_daemon_override_is_ignored() {
         assert_eq!(configured_daemon_executable("  "), None);
+    }
+
+    #[test]
+    fn daemon_path_mismatch_warning_reports_old_running_daemon() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_override = std::env::var(LOOM_DAEMON_EXECUTABLE_ENV).ok();
+        std::env::remove_var(LOOM_DAEMON_EXECUTABLE_ENV);
+
+        let root = unique_temp_dir("daemon-path-mismatch");
+        let desktop_dir = root.join("Loom");
+        let runtime_dir = desktop_dir.join("runtime");
+        fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+        let desktop_exe = desktop_dir.join("Loom.exe");
+        let packaged_daemon = runtime_dir.join("loom-daemon.exe");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop exe placeholder");
+        fs::write(&packaged_daemon, b"daemon").expect("write daemon exe placeholder");
+
+        let warning = daemon_path_mismatch_warning(
+            &desktop_exe,
+            &serde_json::json!({
+                "status": "ok",
+                "executablePath": r"C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\older\runtime\loom-daemon.exe"
+            }),
+        )
+        .expect("mismatch warning");
+
+        assert!(warning.contains("旧 daemon"), "{warning}");
+        assert!(warning.contains("127.0.0.1:8765"), "{warning}");
+        assert!(warning.contains(&packaged_daemon.display().to_string()), "{warning}");
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+        restore_env(LOOM_DAEMON_EXECUTABLE_ENV, previous_override);
     }
 }

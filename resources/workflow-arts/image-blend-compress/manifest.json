@@ -1,0 +1,107 @@
+{
+  "id": "custom-image-blend-compress-workflow",
+  "name": "图片融合并压缩",
+  "description": "先混合图片 A 与图片 B，再使用 Pingo 压缩并输出最终图片",
+  "enabled": true,
+  "execution": {
+    "type": "workflow",
+    "workflowId": "image-blend-compress-workflow",
+    "workflowBindings": {
+      "inputs": [
+        {
+          "workflowParam": "input",
+          "nodeId": "blend",
+          "target": "input",
+          "kind": "input_image"
+        },
+        {
+          "workflowParam": "reference",
+          "nodeId": "blend",
+          "target": "reference",
+          "kind": "param"
+        },
+        {
+          "workflowParam": "mix_ratio",
+          "nodeId": "blend",
+          "target": "mix_ratio",
+          "kind": "param"
+        },
+        {
+          "workflowParam": "quality_num",
+          "nodeId": "compress",
+          "target": "quality_num",
+          "kind": "param"
+        }
+      ],
+      "primaryOutput": {
+        "nodeId": "compress",
+        "output": "output_base64",
+        "kind": "node_result"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "图片 A",
+      "type": "image",
+      "execution_type": "image_buffer"
+    },
+    {
+      "name": "reference",
+      "label": "图片 B",
+      "type": "image",
+      "execution_type": "image_buffer",
+      "exposePort": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "mix_ratio",
+      "label": "融合值",
+      "widget": "slider",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "disabled": false,
+      "data_type": "number"
+    },
+    {
+      "id": "quality_num",
+      "label": "压缩比例",
+      "widget": "slider",
+      "default": 90,
+      "min": 60,
+      "max": 100,
+      "step": 1,
+      "disabled": false,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "dependencies": {
+      "framework": "workflow",
+      "arts": [
+        "custom-image-blend-script",
+        "custom-1770146354922"
+      ]
+    },
+    "artloomCompat": {
+      "executionType": "workflow",
+      "source": "loom-local",
+      "execution": {
+        "workflowId": "image-blend-compress-workflow",
+        "sourceType": "installed"
+      }
+    }
+  }
+}

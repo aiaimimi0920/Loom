@@ -1,12 +1,14 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,7 +26,7 @@ use loom_hook_bridge::{
     ahrp_error_response, ahrp_process_base64_success_response,
     ahrp_process_shared_memory_success_response, arts_updated_broadcast,
     execute_art_node_error_response, execute_art_node_image_success_response,
-    execute_art_node_success_response, extract_ahrp_base64_output,
+    execute_art_node_success_response, extract_ahrp_base64_output, extract_execution_text_content,
     handle_request as handle_hook_bridge_request, instantiate_workflow_broadcast,
     legacy_method_names, ocr_image_error_response, ocr_image_success_response, parse_request,
     HookBridgeRequest, HookBridgeRuntimeInput, HOOK_BRIDGE_PORT,
@@ -33,8 +35,8 @@ use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::{McpServerConfig, StdioMcpClient};
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
 use loom_tool_registry::{
-    execute_tool, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
-    WorkflowExecutionBindings,
+    execute_tool, framework::FrameworkRegistry, ToolDefinition, ToolExecution, ToolRegistry,
+    ToolRegistryError, WorkflowExecutionBindings,
 };
 use loom_workflow_runtime::{execute_tool_with_workflows, WorkflowRuntimeError};
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
@@ -151,6 +153,7 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /v1/hook-bridge/status\n",
         "  GET  /v1/hook-bridge/session\n",
         "  GET  /v1/hook-bridge/canvas\n",
+        "  PUT  /v1/hook-bridge/canvas/workflows/{workflowId}\n",
         "  GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview\n",
         "  POST /v1/hook-bridge/start\n",
         "  POST /v1/hook-bridge/stop\n",
@@ -161,6 +164,7 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /v1/artloom-compat/app-paths\n",
         "  GET  /v1/artloom-compat/ipc/status\n",
         "  POST /v1/artloom-compat/ipc/instantiate-workflow\n",
+        "  POST /v1/artloom-compat/ipc/update-workflow-node\n",
         "  POST /v1/artloom-compat/ipc/execute-art-node\n",
         "  GET  /v1/artloom-compat/workflows\n",
         "  PUT  /v1/artloom-compat/workflows/{workflowId}/metadata\n",
@@ -309,6 +313,13 @@ struct DaemonRuntime {
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
+    // Root for frozen Hook-canvas workflow snapshots: <root>/canvas-workflows/<id>/
+    // holds snapshot.json plus an images/ dir of that workflow's node previews.
+    canvas_workflow_root: PathBuf,
+    // Tracks which art execution frameworks the user has installed.
+    framework_registry: FrameworkRegistry,
+    // Control-plane root, for the art install dir (<root>/arts/<id>/).
+    control_plane_root: PathBuf,
     hook_bridge: SharedHookBridgeRuntime,
     artloom_settings: SharedArtLoomCompatSettingsStore,
     shared_images: SharedImageStoreHandle,
@@ -364,6 +375,9 @@ impl LoomDaemon {
         let control_plane_root = std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(default_control_plane_root);
+        let framework_runtime_root = control_plane_root.join("framework-runtimes");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
+        std::env::set_var("LOOM_FRAMEWORK_RUNTIMES_DIR", &framework_runtime_root);
         let mut run_store: Box<dyn RunEvidenceStore> = match &config.run_store {
             RunStoreConfig::Memory => Box::new(InMemoryRunEvidenceStore::default()),
             RunStoreConfig::Sqlite(path) => {
@@ -390,9 +404,12 @@ impl LoomDaemon {
             auth_token: config.auth_token,
             config_registry: Arc::new(built_in_registry()),
             config_store: FileDocumentStore::new(config_root),
-            mcp_servers: Arc::new(Mutex::new(HashMap::new())),
+            mcp_servers: Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root))),
             tool_registry: ToolRegistry::new(control_plane_root.join("tools")),
             workflow_store: WorkflowStore::new(control_plane_root.join("workflows")),
+            canvas_workflow_root: control_plane_root.join("canvas-workflows"),
+            framework_registry: FrameworkRegistry::new(&control_plane_root),
+            control_plane_root: control_plane_root.to_path_buf(),
             hook_bridge: Arc::new(Mutex::new(HookBridgeRuntime::new(
                 control_plane_root.join("workflows"),
             ))),
@@ -566,6 +583,9 @@ fn route_with_runtime(
         &runtime.settings_base_url,
         &runtime.mcp_registry_endpoint,
         runtime.request_executor_status,
+        &runtime.canvas_workflow_root,
+        &runtime.framework_registry,
+        &runtime.control_plane_root,
     )
 }
 
@@ -824,6 +844,27 @@ enum RouteResponse {
 
 fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteResponse {
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some((workflow_id, node_id)) =
+            canvas_workflow_preview_ids(&request.method, &request.path)
+        {
+            if let Some(token) = runtime.auth_token.as_deref() {
+                if !request.has_bearer(token) {
+                    return structured_error(
+                        401,
+                        json!({
+                            "code": "unauthorized",
+                            "message": "missing or invalid Loom bearer token",
+                        }),
+                    )
+                    .map(|(status, body)| RouteResponse::Text { status, body });
+                }
+            }
+            return canvas_workflow_preview_response(
+                &workflow_id,
+                &node_id,
+                &runtime.canvas_workflow_root,
+            );
+        }
         if let Some(node_id) = hook_canvas_preview_node_id(&request.method, &request.path) {
             if let Some(token) = runtime.auth_token.as_deref() {
                 if !request.has_bearer(token) {
@@ -1001,6 +1042,76 @@ fn default_control_plane_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".runtime").join("loom").join("control-plane"))
 }
 
+fn mcp_server_store_path(control_plane_root: &Path) -> PathBuf {
+    control_plane_root.join("mcp").join("servers.json")
+}
+
+fn normalize_mcp_server_config(mut server: McpServerConfig) -> McpServerConfig {
+    if is_npx_command(&server.command) && server_uses_brave_search_package(&server.args) {
+        server.args = vec![
+            "-y".to_owned(),
+            "@brave/brave-search-mcp-server".to_owned(),
+            "--transport".to_owned(),
+            "stdio".to_owned(),
+        ];
+    }
+    server
+}
+
+fn is_npx_command(command: &str) -> bool {
+    Path::new(command)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("npx"))
+}
+
+fn server_uses_brave_search_package(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.trim(),
+            "github:brave/brave-search-mcp-server" | "@brave/brave-search-mcp-server"
+        )
+    })
+}
+
+fn load_persisted_mcp_servers(control_plane_root: &Path) -> HashMap<String, McpServerConfig> {
+    let path = mcp_server_store_path(control_plane_root);
+    let Some(content) = fs::read_to_string(path).ok() else {
+        return HashMap::new();
+    };
+
+    let parsed = serde_json::from_str::<Vec<McpServerConfig>>(&content)
+        .ok()
+        .or_else(|| {
+            serde_json::from_str::<Value>(&content)
+                .ok()
+                .and_then(|value| value.get("servers").cloned())
+                .and_then(|servers| serde_json::from_value::<Vec<McpServerConfig>>(servers).ok())
+        });
+
+    parsed
+        .unwrap_or_default()
+        .into_iter()
+        .map(normalize_mcp_server_config)
+        .map(|server| (server.id.clone(), server))
+        .collect()
+}
+
+fn persist_mcp_servers_snapshot(
+    path: &Path,
+    servers: &HashMap<String, McpServerConfig>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create MCP server store dir {}", parent.display()))?;
+    }
+    let mut ordered = servers.values().cloned().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.id.cmp(&right.id));
+    fs::write(path, serde_json::to_string_pretty(&ordered)?)
+        .with_context(|| format!("write MCP server store {}", path.display()))?;
+    Ok(())
+}
+
 enum HttpReadOutcome {
     Empty,
     Request(String),
@@ -1140,8 +1251,12 @@ impl ParsedHttpRequest {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct HealthResponse {
     status: &'static str,
+    version: &'static str,
+    pid: u32,
+    executable_path: String,
 }
 
 #[derive(Serialize)]
@@ -1193,6 +1308,19 @@ struct InvokeCapabilityRequest {
 struct PutWorkflowRequest {
     #[serde(alias = "yaml")]
     data: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveHookCanvasWorkflowRequest {
+    selected_node_id: String,
+    workflow_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameCanvasWorkflowRequest {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1325,6 +1453,18 @@ struct ArtLoomCompatInstantiateWorkflowRequest {
     mode: String,
     #[serde(default, alias = "workflow_id")]
     workflow_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtLoomCompatUpdateWorkflowNodeRequest {
+    #[serde(default, alias = "workflow_id")]
+    workflow_id: String,
+    #[serde(default, alias = "node_id")]
+    node_id: String,
+    #[serde(default)]
+    param: String,
+    value: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1612,6 +1752,9 @@ fn route(
     settings_base_url: &str,
     mcp_registry_endpoint: &str,
     request_executor: RequestExecutorStatus,
+    canvas_workflow_root: &Path,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
 ) -> Result<(u16, String)> {
     if let Some(token) = auth_token {
         let requires_auth = request.path != "/health";
@@ -1635,7 +1778,14 @@ fn route(
     match (request.method.as_str(), route_path) {
         ("GET", "/health") => Ok((
             200,
-            serde_json::to_string(&HealthResponse { status: "ok" })?,
+            serde_json::to_string(&HealthResponse {
+                status: "ok",
+                version: env!("CARGO_PKG_VERSION"),
+                pid: std::process::id(),
+                executable_path: std::env::current_exe()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+            })?,
         )),
         ("GET", "/status") => Ok((
             200,
@@ -1687,25 +1837,77 @@ fn route(
             artloom_compat_fetch_mcp_registry(&request.path, mcp_registry_endpoint)
         }
         ("GET", "/v1/artloom-compat/mcp/servers") => artloom_compat_list_mcp_servers(mcp_servers),
-        ("POST", "/v1/artloom-compat/mcp/servers") => {
-            artloom_compat_save_mcp_server(&request.body, mcp_servers)
-        }
+        ("POST", "/v1/artloom-compat/mcp/servers") => artloom_compat_save_mcp_server(
+            &request.body,
+            mcp_servers,
+            &mcp_server_store_path(control_plane_root),
+        ),
         ("DELETE", path) if path_id(path, "/v1/artloom-compat/mcp/servers/").is_some() => {
             artloom_compat_delete_mcp_server(
                 path_id(path, "/v1/artloom-compat/mcp/servers/").expect("checked path"),
                 mcp_servers,
+                &mcp_server_store_path(control_plane_root),
             )
         }
         ("PUT", path) if path_id(path, "/v1/mcp/servers/").is_some() => put_mcp_server(
             path_id(path, "/v1/mcp/servers/").expect("checked path"),
             &request.body,
             mcp_servers,
+            &mcp_server_store_path(control_plane_root),
         ),
         ("DELETE", path) if path_id(path, "/v1/mcp/servers/").is_some() => delete_mcp_server(
             path_id(path, "/v1/mcp/servers/").expect("checked path"),
             mcp_servers,
+            &mcp_server_store_path(control_plane_root),
         ),
         ("GET", "/v1/tools") => list_tools(tool_registry),
+        ("GET", "/v1/frameworks") => list_frameworks(framework_registry),
+        ("POST", "/v1/arts/install") => install_art(
+            &request.body,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+        ),
+        ("GET", path) if path.split('?').next() == Some("/v1/arts/store/catalog") => {
+            fetch_art_store_catalog(path)
+        }
+        ("POST", "/v1/arts/store/install") => install_art_from_store(
+            &request.body,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+        ),
+        ("GET", path) if path_id_with_suffix(path, "/v1/arts/", "/package").is_some() => {
+            package_art(
+                path_id_with_suffix(path, "/v1/arts/", "/package").expect("checked path"),
+                tool_registry,
+                control_plane_root,
+            )
+        }
+        ("POST", "/v1/arts/store/publish") => {
+            publish_art_to_store(&request.body, tool_registry, control_plane_root)
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/install").is_some() => {
+            install_framework(
+                path_id_with_suffix(path, "/v1/frameworks/", "/install").expect("checked path"),
+                framework_registry,
+            )
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/uninstall").is_some() => {
+            uninstall_framework(
+                path_id_with_suffix(path, "/v1/frameworks/", "/uninstall").expect("checked path"),
+                framework_registry,
+            )
+        }
+        ("GET", path) if path_id_with_suffix(path, "/v1/tools/", "/readiness").is_some() => {
+            tool_readiness(
+                path_id_with_suffix(path, "/v1/tools/", "/readiness").expect("checked path"),
+                tool_registry,
+                framework_registry,
+            )
+        }
         ("PUT", path) if path_id(path, "/v1/tools/").is_some() => put_tool(
             path_id(path, "/v1/tools/").expect("checked path"),
             &request.body,
@@ -1853,6 +2055,9 @@ fn route(
         ("POST", "/v1/artloom-compat/ipc/instantiate-workflow") => {
             artloom_compat_instantiate_workflow(&request.body, hook_bridge)
         }
+        ("POST", "/v1/artloom-compat/ipc/update-workflow-node") => {
+            artloom_compat_update_workflow_node(&request.body, hook_bridge, tool_registry)
+        }
         ("POST", "/v1/artloom-compat/ipc/execute-art-node") => artloom_compat_execute_art_node(
             &request.body,
             mcp_servers,
@@ -1931,6 +2136,38 @@ fn route(
         ("GET", "/v1/hook-bridge/status") => hook_bridge_status(hook_bridge),
         ("GET", "/v1/hook-bridge/session") => hook_bridge_session(hook_bridge),
         ("GET", "/v1/hook-bridge/canvas") => hook_canvas_snapshot(),
+        ("GET", "/v1/hook-bridge/canvas/workflows") => list_canvas_workflows(canvas_workflow_root),
+        ("GET", path) if path_id(path, "/v1/hook-bridge/canvas/workflows/").is_some() => {
+            get_canvas_workflow_snapshot(
+                path_id(path, "/v1/hook-bridge/canvas/workflows/").expect("checked path"),
+                canvas_workflow_root,
+            )
+        }
+        ("PUT", path)
+            if path_id_with_suffix(path, "/v1/hook-bridge/canvas/workflows/", "/rename")
+                .is_some() =>
+        {
+            rename_canvas_workflow(
+                path_id_with_suffix(path, "/v1/hook-bridge/canvas/workflows/", "/rename")
+                    .expect("checked path"),
+                &request.body,
+                canvas_workflow_root,
+            )
+        }
+        ("PUT", path) if path_id(path, "/v1/hook-bridge/canvas/workflows/").is_some() => {
+            save_hook_canvas_workflow(
+                path_id(path, "/v1/hook-bridge/canvas/workflows/").expect("checked path"),
+                &request.body,
+                workflow_store,
+                canvas_workflow_root,
+            )
+        }
+        ("DELETE", path) if path_id(path, "/v1/hook-bridge/canvas/workflows/").is_some() => {
+            delete_canvas_workflow(
+                path_id(path, "/v1/hook-bridge/canvas/workflows/").expect("checked path"),
+                canvas_workflow_root,
+            )
+        }
         ("POST", "/v1/hook-bridge/start") => start_hook_bridge(
             &request.body,
             hook_bridge,
@@ -2351,11 +2588,13 @@ fn put_mcp_server(
     path_id: &str,
     body: &str,
     mcp_servers: &SharedMcpServerStore,
+    store_path: &Path,
 ) -> Result<(u16, String)> {
     let server = match serde_json::from_str::<McpServerConfig>(body) {
         Ok(server) => server,
         Err(error) => return invalid_request(error.to_string()),
     };
+    let server = normalize_mcp_server_config(server);
     if server.id != path_id {
         return id_mismatch("server", path_id, &server.id);
     }
@@ -2363,30 +2602,50 @@ fn put_mcp_server(
         return invalid_request("MCP server name and command are required");
     }
 
-    mcp_servers
-        .lock()
-        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
-        .insert(server.id.clone(), server.clone());
+    {
+        let mut guard = mcp_servers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+        let previous = guard.insert(server.id.clone(), server.clone());
+        if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+            match previous {
+                Some(previous_server) => {
+                    guard.insert(server.id.clone(), previous_server);
+                }
+                None => {
+                    guard.remove(&server.id);
+                }
+            }
+            return Err(error);
+        }
+    }
 
     Ok((200, serde_json::to_string(&json!({ "server": server }))?))
 }
 
-fn delete_mcp_server(path_id: &str, mcp_servers: &SharedMcpServerStore) -> Result<(u16, String)> {
-    let removed = mcp_servers
-        .lock()
-        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
-        .remove(path_id)
-        .is_some();
-
-    if !removed {
-        return structured_error(
-            404,
-            json!({
-                "code": "mcp_server_not_found",
-                "message": format!("MCP server `{path_id}` was not found"),
-                "server_id": path_id,
-            }),
-        );
+fn delete_mcp_server(
+    path_id: &str,
+    mcp_servers: &SharedMcpServerStore,
+    store_path: &Path,
+) -> Result<(u16, String)> {
+    {
+        let mut guard = mcp_servers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+        let Some(removed) = guard.remove(path_id) else {
+            return structured_error(
+                404,
+                json!({
+                    "code": "mcp_server_not_found",
+                    "message": format!("MCP server `{path_id}` was not found"),
+                    "server_id": path_id,
+                }),
+            );
+        };
+        if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+            guard.insert(path_id.to_owned(), removed);
+            return Err(error);
+        }
     }
 
     Ok((
@@ -2417,11 +2676,13 @@ fn artloom_compat_list_mcp_servers(mcp_servers: &SharedMcpServerStore) -> Result
 fn artloom_compat_save_mcp_server(
     body: &str,
     mcp_servers: &SharedMcpServerStore,
+    store_path: &Path,
 ) -> Result<(u16, String)> {
     let server = match serde_json::from_str::<McpServerConfig>(body) {
         Ok(server) => server,
         Err(error) => return invalid_request(error.to_string()),
     };
+    let server = normalize_mcp_server_config(server);
     if server.id.trim().is_empty() {
         return invalid_request("MCP server id is required");
     }
@@ -2429,10 +2690,23 @@ fn artloom_compat_save_mcp_server(
         return invalid_request("MCP server name and command are required");
     }
 
-    mcp_servers
-        .lock()
-        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
-        .insert(server.id.clone(), server.clone());
+    {
+        let mut guard = mcp_servers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+        let previous = guard.insert(server.id.clone(), server.clone());
+        if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+            match previous {
+                Some(previous_server) => {
+                    guard.insert(server.id.clone(), previous_server);
+                }
+                None => {
+                    guard.remove(&server.id);
+                }
+            }
+            return Err(error);
+        }
+    }
 
     Ok((
         200,
@@ -2447,23 +2721,27 @@ fn artloom_compat_save_mcp_server(
 fn artloom_compat_delete_mcp_server(
     path_id: &str,
     mcp_servers: &SharedMcpServerStore,
+    store_path: &Path,
 ) -> Result<(u16, String)> {
-    let removed = mcp_servers
-        .lock()
-        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
-        .remove(path_id)
-        .is_some();
-
-    if !removed {
-        return structured_error(
-            404,
-            json!({
-                "compatCommand": "delete_mcp_server",
-                "code": "mcp_server_not_found",
-                "message": "Server not found",
-                "server_id": path_id,
-            }),
-        );
+    {
+        let mut guard = mcp_servers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+        let Some(removed) = guard.remove(path_id) else {
+            return structured_error(
+                404,
+                json!({
+                    "compatCommand": "delete_mcp_server",
+                    "code": "mcp_server_not_found",
+                    "message": "Server not found",
+                    "server_id": path_id,
+                }),
+            );
+        };
+        if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+            guard.insert(path_id.to_owned(), removed);
+            return Err(error);
+        }
     }
 
     Ok((
@@ -2565,6 +2843,7 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
             );
         }
     };
+    let config = normalize_mcp_server_config(config);
 
     let mut client = match StdioMcpClient::spawn(&config) {
         Ok(client) => client,
@@ -2816,6 +3095,389 @@ fn list_tools(tool_registry: &ToolRegistry) -> Result<(u16, String)> {
     Ok((200, serde_json::to_string(&json!({ "tools": tools }))?))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallArtRequest {
+    /// The art package zip, base64-encoded (data URL or raw base64).
+    zip_base64: String,
+}
+
+// Install an art package (zip) into the registry: extracts to <root>/arts/<id>/,
+// checks the framework is ready, and registers the ToolDefinition.
+fn install_art(
+    body: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<InstallArtRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let zip_bytes = match loom_image_io::decode_data_url_bytes(&request.zip_base64) {
+        Ok(bytes) => bytes,
+        Err(error) => return invalid_request(format!("decode art package: {error}")),
+    };
+    match loom_tool_registry::install::install_art_from_zip(
+        &zip_bytes,
+        control_plane_root,
+        framework_registry,
+        tool_registry,
+    ) {
+        Ok(report) => {
+            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            Ok((200, serde_json::to_string(&json!({ "report": report }))?))
+        }
+        Err(loom_tool_registry::install::ArtInstallError::FrameworkNotReady {
+            art_id,
+            framework,
+            reason,
+        }) => structured_error(
+            409,
+            json!({
+                "code": "framework_not_ready",
+                "message": format!("art `{art_id}` 需要框架 `{framework}`（未{reason}），请先安装该框架"),
+                "framework": framework,
+            }),
+        ),
+        Err(loom_tool_registry::install::ArtInstallError::InvalidArtId(id)) => {
+            invalid_request(format!("invalid art id `{id}`"))
+        }
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "art_install_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+// Resolve the remote art store base URL: explicit `?store=`/`store` field wins,
+// else the LOOM_ART_STORE_URL env var.
+fn resolve_art_store_url(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            std::env::var("LOOM_ART_STORE_URL")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn art_store_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .user_agent("Loom/0.1 Art Store Client")
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("build art store client")
+}
+
+// Proxy the remote art store catalog (GET {store}/catalog).
+fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
+    let Some(store) = resolve_art_store_url(query_value(path, "store").as_deref()) else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址（LOOM_ART_STORE_URL 或 ?store=）" }),
+        );
+    };
+    let url = format!("{}/catalog", store.trim_end_matches('/'));
+    let client = art_store_client()?;
+    match client.get(&url).send().and_then(|r| r.error_for_status()) {
+        Ok(response) => {
+            let body = response.text().unwrap_or_default();
+            Ok((200, body))
+        }
+        Err(error) => structured_error(
+            502,
+            json!({ "code": "art_store_unavailable", "message": format!("获取 art 商店目录失败：{error}"), "url": url }),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallFromStoreRequest {
+    art_id: String,
+    #[serde(default)]
+    store: Option<String>,
+}
+
+// Install an art (and its dependents) from the remote store: fetch the root art
+// zip, then recursively fetch/install dependent arts by id.
+fn install_art_from_store(
+    body: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<InstallFromStoreRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址" }),
+        );
+    };
+    let store = store.trim_end_matches('/').to_owned();
+    let client = match art_store_client() {
+        Ok(client) => client,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "internal", "message": error.to_string() }),
+            )
+        }
+    };
+    let fetch_zip =
+        |id: &str| -> std::result::Result<Vec<u8>, loom_tool_registry::install::ArtInstallError> {
+            let url = format!("{store}/arts/{}.zip", id);
+            let response = client
+                .get(&url)
+                .send()
+                .and_then(|r| r.error_for_status())
+                .map_err(|error| {
+                    loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                        "fetch `{id}` from store: {error}"
+                    ))
+                })?;
+            response.bytes().map(|b| b.to_vec()).map_err(|error| {
+                loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                    "read `{id}` bytes: {error}"
+                ))
+            })
+        };
+
+    let root_zip = match fetch_zip(&request.art_id) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return structured_error(
+                502,
+                json!({ "code": "art_store_unavailable", "message": error.to_string() }),
+            )
+        }
+    };
+    match loom_tool_registry::install::install_art_recursive(
+        &root_zip,
+        control_plane_root,
+        framework_registry,
+        tool_registry,
+        &fetch_zip,
+    ) {
+        Ok(reports) => {
+            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            Ok((200, serde_json::to_string(&json!({ "reports": reports }))?))
+        }
+        Err(loom_tool_registry::install::ArtInstallError::FrameworkNotReady {
+            art_id,
+            framework,
+            reason,
+        }) => structured_error(
+            409,
+            json!({
+                "code": "framework_not_ready",
+                "message": format!("art `{art_id}` 需要框架 `{framework}`（未{reason}），请先安装该框架"),
+                "framework": framework,
+            }),
+        ),
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "art_install_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+// Package an installed art into a zip (manifest + its resource dir), returned as
+// a base64 data URL so the frontend can export/save it.
+fn package_art(
+    id: &str,
+    tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let tool = match tool_registry.get_tool(id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({ "code": "tool_not_found", "message": format!("art `{id}` 不存在") }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let art_dir = control_plane_root.join("arts").join(id);
+    match loom_tool_registry::install::package_art_to_zip(&tool, &art_dir) {
+        Ok(bytes) => {
+            use base64::Engine as _;
+            let data = format!(
+                "data:application/zip;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&bytes)
+            );
+            Ok((
+                200,
+                serde_json::to_string(&json!({ "artId": id, "zipBase64": data }))?,
+            ))
+        }
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "art_package_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishArtRequest {
+    art_id: String,
+    #[serde(default)]
+    store: Option<String>,
+}
+
+// Publish a local art to the remote store: package it, then POST the zip to
+// {store}/publish.
+fn publish_art_to_store(
+    body: &str,
+    tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<PublishArtRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址" }),
+        );
+    };
+    let tool = match tool_registry.get_tool(&request.art_id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({ "code": "tool_not_found", "message": format!("art `{}` 不存在", request.art_id) }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let art_dir = control_plane_root.join("arts").join(&request.art_id);
+    let zip = match loom_tool_registry::install::package_art_to_zip(&tool, &art_dir) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "art_package_failed", "message": error.to_string() }),
+            )
+        }
+    };
+    let url = format!("{}/publish", store.trim_end_matches('/'));
+    let client = match art_store_client() {
+        Ok(client) => client,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "internal", "message": error.to_string() }),
+            )
+        }
+    };
+    match client
+        .post(&url)
+        .header("Content-Type", "application/zip")
+        .header("X-Art-Id", &request.art_id)
+        .body(zip)
+        .send()
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(_) => Ok((
+            200,
+            serde_json::to_string(&json!({ "artId": request.art_id, "published": true }))?,
+        )),
+        Err(error) => structured_error(
+            502,
+            json!({ "code": "art_store_publish_failed", "message": format!("发布失败：{error}"), "url": url }),
+        ),
+    }
+}
+
+fn list_frameworks(framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    let frameworks = framework_registry.statuses();
+    Ok((
+        200,
+        serde_json::to_string(&json!({ "frameworks": frameworks }))?,
+    ))
+}
+
+fn install_framework(id: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    match framework_registry.install(id) {
+        Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
+        Err(loom_tool_registry::framework::FrameworkError::UnknownFramework(_)) => {
+            structured_error(
+                404,
+                json!({ "code": "unknown_framework", "message": format!("未知框架 `{id}`") }),
+            )
+        }
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "framework_install_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn uninstall_framework(id: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    match framework_registry.uninstall(id) {
+        Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
+        Err(loom_tool_registry::framework::FrameworkError::UnknownFramework(_)) => {
+            structured_error(
+                404,
+                json!({ "code": "unknown_framework", "message": format!("未知框架 `{id}`") }),
+            )
+        }
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "framework_uninstall_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+// Report whether an art is runnable: its framework must be installed + ready.
+fn tool_readiness(
+    id: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let tool = match tool_registry.get_tool(id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({ "code": "tool_not_found", "message": format!("工具 `{id}` 不存在") }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let framework_id = loom_tool_registry::framework::framework_id_for_execution(&tool.execution);
+    let installed = framework_registry.is_installed(framework_id);
+    let (ready, detail) = if installed {
+        framework_registry.readiness(framework_id)
+    } else {
+        (false, "框架未安装".to_owned())
+    };
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "toolId": id,
+            "framework": framework_id,
+            "frameworkInstalled": installed,
+            "ready": ready,
+            "detail": detail,
+        }))?,
+    ))
+}
+
 fn put_tool(
     path_id: &str,
     body: &str,
@@ -2876,7 +3538,7 @@ fn list_artloom_compat_arts(
     };
     let compat_tools: Vec<ToolDefinition> = tools
         .into_iter()
-        .filter(is_artloom_compat_managed_tool)
+        .filter(is_artloom_compat_visible_tool)
         .collect();
     let arts: Vec<Value> = compat_tools
         .iter()
@@ -2906,7 +3568,7 @@ fn list_enabled_artloom_compat_arts(tool_registry: &ToolRegistry) -> Result<(u16
     };
     let compat_tools: Vec<ToolDefinition> = tools
         .into_iter()
-        .filter(|tool| is_artloom_compat_managed_tool(tool) && tool.enabled)
+        .filter(|tool| is_artloom_compat_visible_tool(tool) && tool.enabled)
         .collect();
     let arts: Vec<Value> = compat_tools.iter().map(artloom_compat_art_json).collect();
     let count = arts.len();
@@ -2997,7 +3659,7 @@ fn sync_artloom_compat_arts_value(
 
         let compat_ids: Vec<String> = existing_tools
             .iter()
-            .filter(|tool| is_artloom_compat_managed_tool(tool))
+            .filter(|tool| is_artloom_sync_managed_tool(tool))
             .map(|tool| tool.id.clone())
             .collect();
 
@@ -3008,11 +3670,19 @@ fn sync_artloom_compat_arts_value(
         }
 
         let mut synced_count = 0usize;
+        let mut preserved_count = 0usize;
         for art in arts {
             let tool = match artloom_sync_art_to_tool(art) {
                 Ok(tool) => tool,
                 Err(response) => return Err(response),
             };
+            if existing_tools
+                .iter()
+                .any(|existing| existing.id == tool.id && is_artloom_loom_local_tool(existing))
+            {
+                preserved_count += 1;
+                continue;
+            }
             match tool_registry.save_tool(tool) {
                 Ok(_) => synced_count += 1,
                 Err(error) => return Err(tool_registry_error_response(error)),
@@ -3025,7 +3695,7 @@ fn sync_artloom_compat_arts_value(
         };
         let compat_tools: Vec<ToolDefinition> = tools
             .into_iter()
-            .filter(is_artloom_compat_managed_tool)
+            .filter(is_artloom_compat_visible_tool)
             .collect();
         let compat_arts: Vec<Value> = compat_tools.iter().map(artloom_compat_art_json).collect();
 
@@ -3034,10 +3704,15 @@ fn sync_artloom_compat_arts_value(
             "synced": true,
             "sideEffect": true,
             "syncedCount": synced_count,
+            "preservedCount": preserved_count,
             "arts": compat_arts,
             "tools": compat_tools,
             "count": compat_arts.len(),
-            "message": "Imported ArtLoom compat Arts into the Loom registry and preserved non-compat Loom tools.",
+            "message": if preserved_count > 0 {
+                "Imported ArtLoom compat Arts into the Loom registry, preserved non-compat Loom tools, and kept Loom-local compat Arts as the source of truth on id collisions."
+            } else {
+                "Imported ArtLoom compat Arts into the Loom registry and preserved non-compat Loom tools."
+            },
         }));
     }
 
@@ -3047,7 +3722,7 @@ fn sync_artloom_compat_arts_value(
     };
     let compat_tools: Vec<ToolDefinition> = tools
         .into_iter()
-        .filter(is_artloom_compat_managed_tool)
+        .filter(is_artloom_compat_visible_tool)
         .collect();
     let arts: Vec<Value> = compat_tools.iter().map(artloom_compat_art_json).collect();
     Ok(json!({
@@ -3140,7 +3815,7 @@ fn get_artloom_tool(
     tool_registry: &ToolRegistry,
 ) -> std::result::Result<ToolDefinition, Result<(u16, String)>> {
     match tool_registry.get_tool(tool_id) {
-        Ok(Some(tool)) if is_artloom_compat_managed_tool(&tool) => Ok(tool),
+        Ok(Some(tool)) if is_artloom_compat_visible_tool(&tool) => Ok(tool),
         Ok(Some(_)) => Err(tool_not_found_response(tool_id)),
         Ok(None) => Err(tool_not_found_response(tool_id)),
         Err(error) => Err(tool_registry_error_response(error)),
@@ -3237,7 +3912,9 @@ fn artloom_compat_icon(tool: &ToolDefinition) -> Value {
         .and_then(Value::as_object)
         .and_then(|compat| compat.get("icon"))
         .cloned()
-        .unwrap_or(Value::Null)
+        // Empty string (not null) so string-typed consumers like Hook's
+        // ArtDefinition.icon deserialize cleanly.
+        .unwrap_or_else(|| Value::String(String::new()))
 }
 
 fn artloom_compat_auto_process(tool: &ToolDefinition) -> bool {
@@ -3331,7 +4008,7 @@ fn artloom_compat_metadata(
     Value::Object(root)
 }
 
-fn is_artloom_compat_managed_tool(tool: &ToolDefinition) -> bool {
+fn artloom_compat_source(tool: &ToolDefinition) -> Option<&str> {
     tool.metadata
         .as_ref()
         .and_then(Value::as_object)
@@ -3339,7 +4016,21 @@ fn is_artloom_compat_managed_tool(tool: &ToolDefinition) -> bool {
         .and_then(Value::as_object)
         .and_then(|compat| compat.get("source"))
         .and_then(Value::as_str)
-        == Some("artloom-compat")
+}
+
+fn is_artloom_compat_visible_tool(tool: &ToolDefinition) -> bool {
+    matches!(
+        artloom_compat_source(tool),
+        Some("artloom-compat") | Some("loom-local")
+    )
+}
+
+fn is_artloom_sync_managed_tool(tool: &ToolDefinition) -> bool {
+    artloom_compat_source(tool) == Some("artloom-compat")
+}
+
+fn is_artloom_loom_local_tool(tool: &ToolDefinition) -> bool {
+    artloom_compat_source(tool) == Some("loom-local")
 }
 
 fn artloom_object_str<'a>(
@@ -3429,6 +4120,91 @@ fn split_legacy_args_template(template: &str) -> Vec<String> {
     args
 }
 
+// Convert an ArtLoom `headers` value into the JSON-string form the cloud_api
+// executor expects (`serde_json::from_str::<HashMap<String,String>>`). ArtLoom
+// sends headers as an object (`{"x-api-key":"{api_key}"}`) with `{api_key}`
+// placeholders resolved from the execution's `api_key` field; the executor
+// wants a JSON string. A value already a string is passed through untouched.
+fn artloom_headers_to_json_string(execution: &Value) -> Option<String> {
+    let headers = execution.get("headers")?;
+    if let Some(text) = headers.as_str() {
+        let trimmed = text.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
+    }
+    let object = headers.as_object()?;
+    let api_key = execution
+        .get("api_key")
+        .or_else(|| execution.get("apiKey"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut map = serde_json::Map::new();
+    for (name, value) in object {
+        let Some(raw) = value.as_str() else {
+            continue;
+        };
+        // Resolve the ArtLoom `{api_key}` placeholder against the execution's key.
+        let resolved = raw.replace("{api_key}", api_key);
+        map.insert(name.clone(), Value::String(resolved));
+    }
+    if map.is_empty() {
+        return None;
+    }
+    Some(Value::Object(map).to_string())
+}
+
+// Convert an ArtLoom `body` value into the JSON-string form the cloud_api
+// executor expects: a flat `{ "<field>": "<template-or-value>" }` map encoded
+// as a JSON string. ArtLoom sends `body` as an array of field descriptors:
+//   - the input image field (`execution_type: image_buffer` / `source: input`)
+//     becomes `"<name>": "{{inputs.input.path}}"` so the executor uploads the
+//     temp input file (the `.path}}` suffix marks it a file field);
+//   - every other field becomes `"<name>": "<default>"` (falling back to a
+//     `{{name}}` template so a runtime arg can fill it).
+// A value already a JSON string is passed through untouched.
+fn artloom_body_to_json_string(execution: &Value) -> Option<String> {
+    let body = execution.get("body")?;
+    if let Some(text) = body.as_str() {
+        let trimmed = text.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
+    }
+    let array = body.as_array()?;
+    let mut map = serde_json::Map::new();
+    for field in array {
+        let Some(field_object) = field.as_object() else {
+            continue;
+        };
+        let Some(name) = field_object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let execution_type = field_object
+            .get("execution_type")
+            .or_else(|| field_object.get("executionType"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let source = field_object
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let is_input_image = execution_type == "image_buffer"
+            || execution_type == "image_path"
+            || execution_type == "image_base64"
+            || source == "input";
+        let template = if is_input_image {
+            // `.path}}` suffix makes the executor treat it as a file upload.
+            "{{inputs.input.path}}".to_owned()
+        } else if let Some(default) = field_object.get("default").and_then(Value::as_str) {
+            default.to_owned()
+        } else {
+            format!("{{{{{name}}}}}")
+        };
+        map.insert(name.to_owned(), Value::String(template));
+    }
+    if map.is_empty() {
+        return None;
+    }
+    Some(Value::Object(map).to_string())
+}
+
 fn artloom_sync_execution_to_tool_execution(
     tool_id: &str,
     object: &serde_json::Map<String, Value>,
@@ -3470,8 +4246,8 @@ fn artloom_sync_execution_to_tool_execution(
                         .to_owned(),
                     content_type: artloom_value_str(execution, &["contentType", "content_type"])
                         .map(str::to_owned),
-                    headers: artloom_value_str(execution, &["headers"]).map(str::to_owned),
-                    body: artloom_value_str(execution, &["body"]).map(str::to_owned),
+                    headers: artloom_headers_to_json_string(execution),
+                    body: artloom_body_to_json_string(execution),
                 }),
                 "mcp" => Ok(ToolExecution::Mcp {
                     server_id: artloom_value_str(execution, &["serverId", "server_id", "server"])
@@ -4144,6 +4920,7 @@ fn prefetch_python_art_shader(body: &str) -> Result<(u16, String)> {
         Ok(result) => result,
         Err(error) => return tool_registry_error_response(error),
     };
+    let result = unwrap_prefetch_shader_payload(result);
 
     Ok((
         200,
@@ -4153,6 +4930,41 @@ fn prefetch_python_art_shader(body: &str) -> Result<(u16, String)> {
             "result": result,
         }))?,
     ))
+}
+
+fn unwrap_prefetch_shader_payload(result: Value) -> Value {
+    if result.get("type").and_then(Value::as_str) == Some("shader") {
+        return result;
+    }
+
+    let Some(text) = result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+    else {
+        return result;
+    };
+
+    let Ok(parsed) = serde_json::from_str::<Value>(text) else {
+        return result;
+    };
+
+    if parsed.get("type").and_then(Value::as_str) == Some("shader")
+        && parsed
+            .get("vertex_shader")
+            .and_then(Value::as_str)
+            .is_some()
+        && parsed
+            .get("fragment_shader")
+            .and_then(Value::as_str)
+            .is_some()
+    {
+        parsed
+    } else {
+        result
+    }
 }
 
 fn resolve_python_launcher_path() -> Option<PathBuf> {
@@ -5591,6 +6403,412 @@ fn put_workflow(
     ))
 }
 
+fn canvas_workflow_dir(root: &Path, id: &str) -> Option<PathBuf> {
+    // The id becomes a directory name, so reject anything that could escape the
+    // canvas-workflow root or is not a plain slug.
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return None;
+    }
+    // Reject `..` traversal, hidden (leading-dot) names, and trailing-dot names
+    // (Windows silently strips a trailing dot, aliasing `foo.` to `foo`).
+    if trimmed.contains("..") || trimmed.starts_with('.') || trimmed.ends_with('.') {
+        return None;
+    }
+    Some(root.join(trimmed))
+}
+
+fn canvas_workflow_preview_ext(source: &hook_canvas::HookCanvasPreviewSource) -> &'static str {
+    // Sniff the extension from the source bytes so the saved file keeps a usable
+    // type; default to png which the content-type sniffer also accepts.
+    match source {
+        hook_canvas::HookCanvasPreviewSource::File(path) => {
+            match path.extension().and_then(|ext| ext.to_str()) {
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") =>
+                {
+                    "jpg"
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("webp") => "webp",
+                _ => "png",
+            }
+        }
+        hook_canvas::HookCanvasPreviewSource::DataUrl(_) => "png",
+    }
+}
+
+fn save_hook_canvas_workflow(
+    path_id: &str,
+    body: &str,
+    workflow_store: &WorkflowStore,
+    canvas_workflow_root: &Path,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<SaveHookCanvasWorkflowRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    if request.selected_node_id.trim().is_empty() {
+        return invalid_request("selectedNodeId is required");
+    }
+
+    let Some(workflow_dir) = canvas_workflow_dir(canvas_workflow_root, path_id) else {
+        return invalid_request("invalid workflow id");
+    };
+
+    let document = match load_active_hook_canvas_document() {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("loom Hook canvas workflow export failed: {error:#}");
+            return structured_error(
+                500,
+                json!({
+                    "code": "hook_canvas_error",
+                    "message": "Hook canvas workflow export is temporarily unavailable",
+                }),
+            );
+        }
+    };
+
+    let workflow_name = request
+        .workflow_name
+        .clone()
+        .unwrap_or_else(|| path_id.to_owned());
+
+    // Topology YAML (kept for the existing workflow store / studio).
+    let data = match document
+        .export_workflow_yaml_for_selected_node(request.selected_node_id.trim(), &workflow_name)
+    {
+        Ok(data) => data,
+        Err(hook_canvas::HookCanvasWorkflowExportError::NodeNotFound(node_id)) => {
+            return structured_error(
+                404,
+                json!({
+                    "code": "hook_canvas_node_not_found",
+                    "message": format!("Hook canvas node `{node_id}` was not found"),
+                }),
+            );
+        }
+    };
+
+    // Frozen full snapshot (geometry + crop) scoped to the selected component.
+    let component =
+        match document.component_snapshot_for_selected_node(request.selected_node_id.trim()) {
+            Ok(component) => component,
+            Err(hook_canvas::HookCanvasWorkflowExportError::NodeNotFound(node_id)) => {
+                return structured_error(
+                    404,
+                    json!({
+                        "code": "hook_canvas_node_not_found",
+                        "message": format!("Hook canvas node `{node_id}` was not found"),
+                    }),
+                );
+            }
+        };
+
+    // Persist image copies for each member node, then rewrite preview URLs to the
+    // saved-workflow preview route so the frozen snapshot renders without the
+    // live Hook session.
+    let images_dir = workflow_dir.join("images");
+    if let Err(error) = fs::create_dir_all(&images_dir) {
+        eprintln!("loom canvas workflow image dir failed: {error:#}");
+        return structured_error(
+            500,
+            json!({
+                "code": "canvas_workflow_write_failed",
+                "message": "Unable to persist canvas workflow images",
+            }),
+        );
+    }
+
+    let mut saved_previews: HashMap<String, String> = HashMap::new();
+    for (node_id, source) in &component.previews {
+        let bytes = match source {
+            hook_canvas::HookCanvasPreviewSource::DataUrl(data_url) => {
+                match loom_image_io::decode_data_url_bytes(data_url) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                }
+            }
+            hook_canvas::HookCanvasPreviewSource::File(path) => match fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            },
+        };
+        if bytes.len() as u64 > hook_canvas::MAX_PREVIEW_BYTES {
+            continue;
+        }
+        let ext = canvas_workflow_preview_ext(source);
+        let file_name = format!("{}.{ext}", sanitize_preview_file_stem(node_id));
+        if fs::write(images_dir.join(&file_name), &bytes).is_ok() {
+            saved_previews.insert(node_id.clone(), file_name);
+        }
+    }
+
+    // Rewrite the frozen snapshot's preview URLs to the saved-workflow route.
+    let mut snapshot = component.snapshot;
+    for node in &mut snapshot.nodes {
+        if saved_previews.contains_key(&node.id) {
+            node.preview_available = true;
+            node.preview_url = Some(format!(
+                "/v1/hook-bridge/canvas/workflows/{}/nodes/{}/preview",
+                percent_encode_path_segment(path_id),
+                percent_encode_path_segment(&node.id),
+            ));
+        } else {
+            node.preview_available = false;
+            node.preview_url = None;
+        }
+    }
+
+    let node_count = snapshot.nodes.len();
+    let snapshot_json = match serde_json::to_string(&snapshot) {
+        Ok(json) => json,
+        Err(error) => {
+            eprintln!("loom canvas workflow snapshot serialize failed: {error:#}");
+            return structured_error(
+                500,
+                json!({
+                    "code": "canvas_workflow_write_failed",
+                    "message": "Unable to serialize canvas workflow snapshot",
+                }),
+            );
+        }
+    };
+    let saved_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let meta = json!({
+        "id": path_id,
+        "name": workflow_name,
+        "nodeCount": node_count,
+        "savedAt": saved_at,
+    });
+    if fs::write(workflow_dir.join("snapshot.json"), &snapshot_json).is_err()
+        || fs::write(workflow_dir.join("meta.json"), meta.to_string()).is_err()
+    {
+        return structured_error(
+            500,
+            json!({
+                "code": "canvas_workflow_write_failed",
+                "message": "Unable to persist canvas workflow snapshot",
+            }),
+        );
+    }
+
+    // Keep the topology in the existing workflow store too (studio compatibility).
+    let workflow = match workflow_store.save_workflow(path_id, &data) {
+        Ok(workflow) => workflow,
+        Err(error) => return workflow_store_error_response(error),
+    };
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "workflow": workflow,
+            "sourceNodeId": request.selected_node_id,
+            "workflowName": workflow_name,
+            "canvasWorkflow": meta,
+        }))?,
+    ))
+}
+
+fn sanitize_preview_file_stem(node_id: &str) -> String {
+    let mut stem = String::with_capacity(node_id.len());
+    for ch in node_id.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            stem.push(ch);
+        } else {
+            stem.push('_');
+        }
+    }
+    if stem.is_empty() {
+        "node".to_owned()
+    } else {
+        stem
+    }
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn list_canvas_workflows(canvas_workflow_root: &Path) -> Result<(u16, String)> {
+    let mut workflows: Vec<Value> = Vec::new();
+    if let Ok(entries) = fs::read_dir(canvas_workflow_root) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let meta_path = entry.path().join("meta.json");
+            if let Ok(text) = fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<Value>(&text) {
+                    workflows.push(meta);
+                }
+            }
+        }
+    }
+    workflows.sort_by(|a, b| {
+        // savedAt is written as epoch-millis u64; sort newest first.
+        let sa = a.get("savedAt").and_then(Value::as_u64).unwrap_or(0);
+        let sb = b.get("savedAt").and_then(Value::as_u64).unwrap_or(0);
+        sb.cmp(&sa)
+    });
+    Ok((
+        200,
+        serde_json::to_string(&json!({ "workflows": workflows }))?,
+    ))
+}
+
+fn get_canvas_workflow_snapshot(
+    path_id: &str,
+    canvas_workflow_root: &Path,
+) -> Result<(u16, String)> {
+    let Some(workflow_dir) = canvas_workflow_dir(canvas_workflow_root, path_id) else {
+        return invalid_request("invalid workflow id");
+    };
+    match fs::read_to_string(workflow_dir.join("snapshot.json")) {
+        Ok(json) => Ok((200, json)),
+        Err(_) => structured_error(
+            404,
+            json!({
+                "code": "canvas_workflow_not_found",
+                "message": "Canvas workflow was not found",
+            }),
+        ),
+    }
+}
+
+fn canvas_workflow_preview_response(
+    workflow_id: &str,
+    node_id: &str,
+    canvas_workflow_root: &Path,
+) -> Result<RouteResponse> {
+    let Some(workflow_dir) = canvas_workflow_dir(canvas_workflow_root, workflow_id) else {
+        return structured_error(
+            400,
+            json!({ "code": "invalid_request", "message": "invalid workflow id" }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    let images_dir = workflow_dir.join("images");
+    let Ok(canonical_images) = fs::canonicalize(&images_dir) else {
+        return structured_error(
+            404,
+            json!({ "code": "preview_not_found", "message": "Hook canvas preview was not found" }),
+        )
+        .map(|(status, body)| RouteResponse::Text { status, body });
+    };
+    let stem = sanitize_preview_file_stem(node_id);
+    // Try known extensions for this node stem.
+    for ext in ["png", "jpg", "jpeg", "webp"] {
+        let candidate = images_dir.join(format!("{stem}.{ext}"));
+        let Ok(canonical) = fs::canonicalize(&candidate) else {
+            continue;
+        };
+        if !canonical.starts_with(&canonical_images) || !canonical.is_file() {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(&canonical) {
+            return hook_canvas_preview_binary_response(bytes);
+        }
+    }
+    structured_error(
+        404,
+        json!({ "code": "preview_not_found", "message": "Hook canvas preview was not found" }),
+    )
+    .map(|(status, body)| RouteResponse::Text { status, body })
+}
+
+fn delete_canvas_workflow(path_id: &str, canvas_workflow_root: &Path) -> Result<(u16, String)> {
+    let Some(workflow_dir) = canvas_workflow_dir(canvas_workflow_root, path_id) else {
+        return invalid_request("invalid workflow id");
+    };
+    if !workflow_dir.is_dir() {
+        return structured_error(
+            404,
+            json!({
+                "code": "canvas_workflow_not_found",
+                "message": "Canvas workflow was not found",
+            }),
+        );
+    }
+    if fs::remove_dir_all(&workflow_dir).is_err() {
+        return structured_error(
+            500,
+            json!({
+                "code": "canvas_workflow_delete_failed",
+                "message": "Unable to delete canvas workflow",
+            }),
+        );
+    }
+    Ok((
+        200,
+        serde_json::to_string(&json!({ "workflowId": path_id, "deleted": true }))?,
+    ))
+}
+
+// Rename a frozen canvas workflow by updating the `name` field in its meta.json.
+// The id (directory name) is stable; only the display name changes.
+fn rename_canvas_workflow(
+    path_id: &str,
+    body: &str,
+    canvas_workflow_root: &Path,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<RenameCanvasWorkflowRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let name = request.name.trim();
+    if name.is_empty() {
+        return invalid_request("name is required");
+    }
+    let Some(workflow_dir) = canvas_workflow_dir(canvas_workflow_root, path_id) else {
+        return invalid_request("invalid workflow id");
+    };
+    let meta_path = workflow_dir.join("meta.json");
+    let Ok(text) = fs::read_to_string(&meta_path) else {
+        return structured_error(
+            404,
+            json!({
+                "code": "canvas_workflow_not_found",
+                "message": "Canvas workflow was not found",
+            }),
+        );
+    };
+    let mut meta = match serde_json::from_str::<Value>(&text) {
+        Ok(meta) => meta,
+        Err(_) => json!({ "id": path_id }),
+    };
+    if let Some(object) = meta.as_object_mut() {
+        object.insert("name".to_owned(), json!(name));
+    }
+    if fs::write(&meta_path, meta.to_string()).is_err() {
+        return structured_error(
+            500,
+            json!({
+                "code": "canvas_workflow_rename_failed",
+                "message": "Unable to rename canvas workflow",
+            }),
+        );
+    }
+    Ok((200, serde_json::to_string(&meta)?))
+}
+
 fn delete_workflow(path_id: &str, workflow_store: &WorkflowStore) -> Result<(u16, String)> {
     if let Err(error) = workflow_store.load_workflow(path_id) {
         return workflow_store_error_response(error);
@@ -5686,6 +6904,87 @@ fn artloom_compat_instantiate_workflow(
     ))
 }
 
+fn artloom_compat_update_workflow_node(
+    body: &str,
+    hook_bridge: &SharedHookBridgeRuntime,
+    tool_registry: &ToolRegistry,
+) -> Result<(u16, String)> {
+    let request_body = if body.trim().is_empty() { "{}" } else { body };
+    let request: ArtLoomCompatUpdateWorkflowNodeRequest = match serde_json::from_str(request_body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let workflow_id = request.workflow_id.trim();
+    let node_id = request.node_id.trim();
+    let param = request.param.trim();
+    if workflow_id.is_empty() {
+        return invalid_request("update_workflow_node requires workflow_id");
+    }
+    if node_id.is_empty() {
+        return invalid_request("update_workflow_node requires node_id");
+    }
+    if param.is_empty() {
+        return invalid_request("update_workflow_node requires param");
+    }
+
+    let (workflow_root, broadcast_hub) = {
+        let runtime = hook_bridge
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
+        (runtime.workflow_root.clone(), runtime.broadcast_hub.clone())
+    };
+    let tools = tool_registry
+        .list_tools()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(is_artloom_compat_visible_tool)
+        .map(|tool| artloom_compat_art_json(&tool))
+        .collect::<Vec<_>>();
+    let input = HookBridgeRuntimeInput::new(tools, workflow_root);
+    let result = handle_hook_bridge_request(
+        HookBridgeRequest::UpdateWorkflowNode {
+            workflow_id: workflow_id.to_owned(),
+            node_id: node_id.to_owned(),
+            param: param.to_owned(),
+            value: request.value.clone(),
+        },
+        input,
+    )
+    .map_err(|error| anyhow::anyhow!("update Hook workflow node: {error}"))?;
+
+    let success = result.response.get("type").and_then(Value::as_str) == Some("success");
+    if success && is_hook_live_workflow_id(workflow_id) {
+        let mut patch = HookCanvasPersistPatch::default();
+        patch
+            .param_updates
+            .push((param.to_owned(), request.value.clone()));
+        let _ = persist_hook_canvas_live_node_patch(node_id, &patch);
+    }
+
+    let broadcasts = result
+        .broadcasts
+        .iter()
+        .filter_map(|broadcast| serde_json::to_string(broadcast).ok())
+        .collect::<Vec<_>>();
+    broadcast_hook_bridge_messages(&broadcast_hub, &broadcasts);
+
+    let mut response = result.response;
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "compatCommand".to_owned(),
+            Value::String("update_workflow_node".to_owned()),
+        );
+        object.insert(
+            "workflowId".to_owned(),
+            Value::String(workflow_id.to_owned()),
+        );
+        object.insert("nodeId".to_owned(), Value::String(node_id.to_owned()));
+        object.insert("param".to_owned(), Value::String(param.to_owned()));
+        object.insert("value".to_owned(), request.value);
+    }
+    Ok((200, serde_json::to_string(&response)?))
+}
+
 fn artloom_compat_execute_art_node(
     body: &str,
     mcp_servers: &SharedMcpServerStore,
@@ -5749,7 +7048,7 @@ fn hook_bridge_session(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, St
 }
 
 fn hook_canvas_snapshot() -> Result<(u16, String)> {
-    match hook_canvas::HookCanvasDocument::read(&arthook_session_path()) {
+    match load_active_hook_canvas_document() {
         Ok(document) => Ok((200, serde_json::to_string(&document.snapshot)?)),
         Err(error) => {
             eprintln!("loom Hook canvas snapshot failed: {error:#}");
@@ -5773,8 +7072,27 @@ fn hook_canvas_preview_node_id(method: &str, path: &str) -> Option<String> {
     Some(percent_decode(encoded_id))
 }
 
+// Parse `/v1/hook-bridge/canvas/workflows/{workflowId}/nodes/{nodeId}/preview`
+// into (workflowId, nodeId), both percent-decoded. Returns None for other paths.
+fn canvas_workflow_preview_ids(method: &str, path: &str) -> Option<(String, String)> {
+    if method != "GET" {
+        return None;
+    }
+    let path = path.split('?').next().unwrap_or(path);
+    let rest = path.strip_prefix("/v1/hook-bridge/canvas/workflows/")?;
+    let rest = rest.strip_suffix("/preview")?;
+    let (encoded_workflow, encoded_node) = rest.split_once("/nodes/")?;
+    if encoded_workflow.is_empty() || encoded_node.is_empty() {
+        return None;
+    }
+    Some((
+        percent_decode(encoded_workflow),
+        percent_decode(encoded_node),
+    ))
+}
+
 fn hook_canvas_preview_response(node_id: &str) -> Result<RouteResponse> {
-    let document = match hook_canvas::HookCanvasDocument::read(&arthook_session_path()) {
+    let document = match load_active_hook_canvas_document() {
         Ok(document) => document,
         Err(error) => {
             eprintln!("loom Hook canvas preview snapshot failed: {error:#}");
@@ -5788,7 +7106,7 @@ fn hook_canvas_preview_response(node_id: &str) -> Result<RouteResponse> {
             .map(|(status, body)| RouteResponse::Text { status, body });
         }
     };
-    let Some(path) = document.preview_path(node_id) else {
+    let Some(source) = document.preview_source(node_id) else {
         return structured_error(
             404,
             json!({
@@ -5798,84 +7116,106 @@ fn hook_canvas_preview_response(node_id: &str) -> Result<RouteResponse> {
         )
         .map(|(status, body)| RouteResponse::Text { status, body });
     };
-    let Some(preview_root) = document.preview_root() else {
-        return structured_error(
-            404,
-            json!({
-                "code": "preview_not_found",
-                "message": "Hook canvas preview was not found",
-            }),
-        )
-        .map(|(status, body)| RouteResponse::Text { status, body });
-    };
-    let Ok(canonical_root) = fs::canonicalize(preview_root) else {
-        return structured_error(
-            404,
-            json!({
-                "code": "preview_not_found",
-                "message": "Hook canvas preview was not found",
-            }),
-        )
-        .map(|(status, body)| RouteResponse::Text { status, body });
-    };
-    let Ok(canonical_path) = fs::canonicalize(path) else {
-        return structured_error(
-            404,
-            json!({
-                "code": "preview_not_found",
-                "message": "Hook canvas preview was not found",
-            }),
-        )
-        .map(|(status, body)| RouteResponse::Text { status, body });
-    };
-    if !canonical_path.is_file() || !canonical_path.starts_with(&canonical_root) {
-        return structured_error(
-            404,
-            json!({
-                "code": "preview_not_found",
-                "message": "Hook canvas preview was not found",
-            }),
-        )
-        .map(|(status, body)| RouteResponse::Text { status, body });
-    }
-    let metadata = match fs::metadata(&canonical_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return structured_error(
-                404,
-                json!({
-                    "code": "preview_not_found",
-                    "message": "Hook canvas preview was not found",
-                }),
-            )
-            .map(|(status, body)| RouteResponse::Text { status, body });
+    match source {
+        hook_canvas::HookCanvasPreviewSource::DataUrl(data_url) => {
+            let body = match loom_image_io::decode_data_url_bytes(data_url) {
+                Ok(body) => body,
+                Err(_) => {
+                    return structured_error(
+                        415,
+                        json!({
+                            "code": "unsupported_preview_type",
+                            "message": "Hook canvas preview is not a supported image",
+                        }),
+                    )
+                    .map(|(status, body)| RouteResponse::Text { status, body });
+                }
+            };
+            return hook_canvas_preview_binary_response(body);
         }
-        Err(error) => return Err(error).context("read Hook canvas preview metadata"),
-    };
-    if metadata.len() > hook_canvas::MAX_PREVIEW_BYTES {
-        return structured_error(
-            413,
-            json!({
-                "code": "preview_too_large",
-                "message": "Hook canvas preview exceeds the size limit",
-            }),
-        )
-        .map(|(status, body)| RouteResponse::Text { status, body });
-    }
-    let body = match fs::read(&canonical_path) {
-        Ok(body) => body,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return structured_error(
-                404,
-                json!({
-                    "code": "preview_not_found",
-                    "message": "Hook canvas preview was not found",
-                }),
-            )
-            .map(|(status, body)| RouteResponse::Text { status, body });
+        hook_canvas::HookCanvasPreviewSource::File(path) => {
+            let preview_roots = document.preview_roots();
+            if preview_roots.is_empty() {
+                return structured_error(
+                    404,
+                    json!({
+                        "code": "preview_not_found",
+                        "message": "Hook canvas preview was not found",
+                    }),
+                )
+                .map(|(status, body)| RouteResponse::Text { status, body });
+            }
+            let Ok(canonical_path) = fs::canonicalize(path) else {
+                return structured_error(
+                    404,
+                    json!({
+                        "code": "preview_not_found",
+                        "message": "Hook canvas preview was not found",
+                    }),
+                )
+                .map(|(status, body)| RouteResponse::Text { status, body });
+            };
+            // The preview file must be a regular file inside one of the roots the
+            // document already validated its node images against.
+            let within_root = preview_roots.iter().any(|root| {
+                fs::canonicalize(root)
+                    .map(|canonical_root| canonical_path.starts_with(&canonical_root))
+                    .unwrap_or(false)
+            });
+            if !canonical_path.is_file() || !within_root {
+                return structured_error(
+                    404,
+                    json!({
+                        "code": "preview_not_found",
+                        "message": "Hook canvas preview was not found",
+                    }),
+                )
+                .map(|(status, body)| RouteResponse::Text { status, body });
+            }
+            let metadata = match fs::metadata(&canonical_path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    return structured_error(
+                        404,
+                        json!({
+                            "code": "preview_not_found",
+                            "message": "Hook canvas preview was not found",
+                        }),
+                    )
+                    .map(|(status, body)| RouteResponse::Text { status, body });
+                }
+                Err(error) => return Err(error).context("read Hook canvas preview metadata"),
+            };
+            if metadata.len() > hook_canvas::MAX_PREVIEW_BYTES {
+                return structured_error(
+                    413,
+                    json!({
+                        "code": "preview_too_large",
+                        "message": "Hook canvas preview exceeds the size limit",
+                    }),
+                )
+                .map(|(status, body)| RouteResponse::Text { status, body });
+            }
+            let body = match fs::read(&canonical_path) {
+                Ok(body) => body,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    return structured_error(
+                        404,
+                        json!({
+                            "code": "preview_not_found",
+                            "message": "Hook canvas preview was not found",
+                        }),
+                    )
+                    .map(|(status, body)| RouteResponse::Text { status, body });
+                }
+                Err(error) => return Err(error).context("read Hook canvas preview bytes"),
+            };
+            hook_canvas_preview_binary_response(body)
         }
-        Err(error) => return Err(error).context("read Hook canvas preview bytes"),
-    };
+    }
+}
+
+fn hook_canvas_preview_binary_response(body: Vec<u8>) -> Result<RouteResponse> {
     if body.len() as u64 > hook_canvas::MAX_PREVIEW_BYTES {
         return structured_error(
             413,
@@ -5945,12 +7285,687 @@ fn read_arthook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
     }
 }
 
+// Hook has shipped under several Tauri identifiers over time. Its own runtime
+// resolves the active app-data directory by falling back from the current
+// identifier to a legacy directory that still holds user state, so the file the
+// daemon must read is not always `com.vmjcv.arthook-next`. Loom mirrors that by
+// scanning every known identifier and selecting the session file Hook is
+// actually writing (the most recently modified one).
+const HOOK_SESSION_IDENTIFIERS: &[&str] = &[
+    "com.yamiyu.hook",
+    "com.vmjcv.hook",
+    "io.github.aiaimimi0920.hook",
+    "com.vmjcv.arthook-next",
+    "com.vmjcv.arthook",
+];
+const HOOK_LIVE_WORKFLOW_ID: &str = "hook-live";
+const LEGACY_HOOK_LIVE_WORKFLOW_ID: &str = "arthook-live";
+
+#[derive(Clone, Debug)]
+struct HookLiveWorkflowSnapshot {
+    source_path: PathBuf,
+    bytes: Vec<u8>,
+    root: Value,
+    updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct HookCanvasRuntimeNodeState {
+    status: String,
+    error_message: Option<String>,
+    preview_data_url: Option<String>,
+    preview_cache_token: Option<String>,
+    result_candidates: Vec<hook_canvas::HookCanvasResultCandidate>,
+    selected_result_index: Option<usize>,
+}
+
+#[derive(Default)]
+struct HookCanvasPersistPatch {
+    param_updates: Vec<(String, Value)>,
+    image_search_metadata: Option<Option<Value>>,
+    preview_data_url: Option<Option<String>>,
+}
+
+static HOOK_LIVE_WORKFLOW_SNAPSHOTS: OnceLock<Mutex<HashMap<String, HookLiveWorkflowSnapshot>>> =
+    OnceLock::new();
+static HOOK_CANVAS_RUNTIME_STATUSES: OnceLock<Mutex<HashMap<String, HookCanvasRuntimeNodeState>>> =
+    OnceLock::new();
+
+fn hook_live_workflow_snapshots() -> &'static Mutex<HashMap<String, HookLiveWorkflowSnapshot>> {
+    HOOK_LIVE_WORKFLOW_SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn hook_canvas_runtime_statuses() -> &'static Mutex<HashMap<String, HookCanvasRuntimeNodeState>> {
+    HOOK_CANVAS_RUNTIME_STATUSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn is_hook_live_workflow_id(workflow_id: &str) -> bool {
+    workflow_id == HOOK_LIVE_WORKFLOW_ID || workflow_id == LEGACY_HOOK_LIVE_WORKFLOW_ID
+}
+
+fn clear_hook_canvas_runtime_state() {
+    if let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() {
+        snapshots.clear();
+    }
+    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
+        statuses.clear();
+    }
+}
+
+fn store_hook_live_workflow_snapshot(source_path: &Path, workflow_id: &str, snapshot: &Value) {
+    let mut root = snapshot.clone();
+    let Some(object) = root.as_object_mut() else {
+        return;
+    };
+    if !object.contains_key("workflowId") && !object.contains_key("workflow_id") {
+        object.insert(
+            "workflowId".to_owned(),
+            Value::String(workflow_id.to_owned()),
+        );
+    }
+    let Ok(bytes) = serde_json::to_vec(&root) else {
+        return;
+    };
+    let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() else {
+        return;
+    };
+    snapshots.insert(
+        workflow_id.to_owned(),
+        HookLiveWorkflowSnapshot {
+            source_path: source_path.to_path_buf(),
+            bytes,
+            root,
+            updated_at: Some(artloom_workflow_timestamp()),
+        },
+    );
+}
+
+fn hook_canvas_root_nodes_mut(root: &mut Value) -> Option<&mut Vec<Value>> {
+    let key = {
+        let object = root.as_object()?;
+        if object
+            .get("stickers")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| !nodes.is_empty())
+        {
+            "stickers"
+        } else if object
+            .get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| !nodes.is_empty())
+        {
+            "nodes"
+        } else if object.get("units").and_then(Value::as_array).is_some() {
+            "units"
+        } else if object.get("nodes").and_then(Value::as_array).is_some() {
+            "nodes"
+        } else if object.get("stickers").and_then(Value::as_array).is_some() {
+            "stickers"
+        } else {
+            return None;
+        }
+    };
+    root.get_mut(key).and_then(Value::as_array_mut)
+}
+
+fn hook_canvas_node_mut<'a>(root: &'a mut Value, node_id: &str) -> Option<&'a mut Value> {
+    hook_canvas_root_nodes_mut(root)?
+        .iter_mut()
+        .find(|node| node.get("id").and_then(Value::as_str) == Some(node_id))
+}
+
+fn hook_canvas_node_field_owner_mut<'a>(
+    node: &'a mut Value,
+    field: &str,
+) -> Option<&'a mut serde_json::Map<String, Value>> {
+    let use_top_level = node.get(field).is_some() || node.get("data").is_none();
+    if use_top_level {
+        return node.as_object_mut();
+    }
+    let object = node.as_object_mut()?;
+    let data = object.entry("data").or_insert_with(|| json!({}));
+    if !data.is_object() {
+        *data = json!({});
+    }
+    data.as_object_mut()
+}
+
+fn hook_canvas_set_node_param(node: &mut Value, param: &str, value: Value) -> bool {
+    let Some(owner) = hook_canvas_node_field_owner_mut(node, "params") else {
+        return false;
+    };
+    let params = owner.entry("params").or_insert_with(|| json!({}));
+    if !params.is_object() {
+        *params = json!({});
+    }
+    params
+        .as_object_mut()
+        .expect("params object")
+        .insert(param.to_owned(), value);
+    true
+}
+
+fn hook_canvas_set_image_search_metadata(node: &mut Value, metadata: Value) -> bool {
+    let Some(owner) = hook_canvas_node_field_owner_mut(node, "loomMetadata") else {
+        return false;
+    };
+    let loom_metadata = owner.entry("loomMetadata").or_insert_with(|| json!({}));
+    if !loom_metadata.is_object() {
+        *loom_metadata = json!({});
+    }
+    loom_metadata
+        .as_object_mut()
+        .expect("loomMetadata object")
+        .insert("imageSearch".to_owned(), metadata);
+    true
+}
+
+fn hook_canvas_set_preview_data_url(node: &mut Value, preview_data_url: String) -> bool {
+    let Some(owner) = hook_canvas_node_field_owner_mut(node, "previewSrc") else {
+        return false;
+    };
+    owner.insert("previewSrc".to_owned(), Value::String(preview_data_url));
+    true
+}
+
+fn apply_hook_canvas_persist_patch(
+    root: &mut Value,
+    node_id: &str,
+    patch: &HookCanvasPersistPatch,
+) -> bool {
+    let Some(node) = hook_canvas_node_mut(root, node_id) else {
+        return false;
+    };
+    let mut changed = false;
+    for (param, value) in &patch.param_updates {
+        changed |= hook_canvas_set_node_param(node, param, value.clone());
+    }
+    if let Some(metadata) = &patch.image_search_metadata {
+        match metadata {
+            Some(metadata) => {
+                changed |= hook_canvas_set_image_search_metadata(node, metadata.clone());
+            }
+            None => {
+                changed |= hook_canvas_set_image_search_metadata(node, Value::Null);
+            }
+        }
+    }
+    if let Some(preview_data_url) = &patch.preview_data_url {
+        match preview_data_url {
+            Some(preview_data_url) => {
+                changed |= hook_canvas_set_preview_data_url(node, preview_data_url.clone());
+            }
+            None => {
+                changed |= hook_canvas_set_preview_data_url(node, String::new());
+            }
+        }
+    }
+    changed
+}
+
+fn write_hook_canvas_root(path: &Path, root: &Value) -> Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(root).context("serialize Hook canvas root")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create Hook canvas dir `{}`", parent.display()))?;
+    }
+    fs::write(path, &bytes)
+        .with_context(|| format!("write Hook canvas root `{}`", path.display()))?;
+    Ok(bytes)
+}
+
+fn persist_hook_canvas_live_node_patch(node_id: &str, patch: &HookCanvasPersistPatch) -> bool {
+    let mut updated = false;
+    if let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() {
+        for workflow_id in [HOOK_LIVE_WORKFLOW_ID, LEGACY_HOOK_LIVE_WORKFLOW_ID] {
+            let Some(snapshot) = snapshots.get_mut(workflow_id) else {
+                continue;
+            };
+            if !apply_hook_canvas_persist_patch(&mut snapshot.root, node_id, patch) {
+                continue;
+            }
+            match write_hook_canvas_root(&snapshot.source_path, &snapshot.root) {
+                Ok(bytes) => {
+                    snapshot.bytes = bytes;
+                    snapshot.updated_at = Some(artloom_workflow_timestamp());
+                    updated = true;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "loom Hook canvas live-node persist failed for `{node_id}` at `{}`: {error:#}",
+                        snapshot.source_path.display(),
+                    );
+                    updated = true;
+                }
+            }
+        }
+    }
+    if updated {
+        return true;
+    }
+
+    let session_path = arthook_session_path();
+    let Ok(content) = fs::read_to_string(&session_path) else {
+        return false;
+    };
+    let Ok(mut root) = serde_json::from_str::<Value>(&content) else {
+        return false;
+    };
+    if !apply_hook_canvas_persist_patch(&mut root, node_id, patch) {
+        return false;
+    }
+    match write_hook_canvas_root(&session_path, &root) {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!(
+                "loom Hook canvas session persist failed for `{node_id}` at `{}`: {error:#}",
+                session_path.display(),
+            );
+            true
+        }
+    }
+}
+
+fn load_hook_live_workflow_document() -> Option<hook_canvas::HookCanvasDocument> {
+    let snapshots = hook_live_workflow_snapshots().lock().ok()?;
+    let snapshot = snapshots
+        .get(HOOK_LIVE_WORKFLOW_ID)
+        .or_else(|| snapshots.get(LEGACY_HOOK_LIVE_WORKFLOW_ID))?;
+    Some(hook_canvas::HookCanvasDocument::from_serialized_root(
+        &snapshot.source_path,
+        snapshot.bytes.clone(),
+        snapshot.root.clone(),
+        snapshot.updated_at.clone(),
+    ))
+}
+
+fn hook_canvas_overlay_revision(snapshot: &hook_canvas::HookCanvasSnapshot) -> Option<String> {
+    let statuses = hook_canvas_runtime_statuses().lock().ok()?;
+    let mut tokens = snapshot
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            statuses.get(&node.id).map(|state| {
+                format!(
+                    "{}:{}:{:?}:{:?}:{:?}:{:?}",
+                    node.id,
+                    state.status,
+                    state.error_message,
+                    state.preview_cache_token,
+                    state.selected_result_index,
+                    state
+                        .result_candidates
+                        .iter()
+                        .map(|candidate| (&candidate.index, &candidate.image_url))
+                        .collect::<Vec<_>>()
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
+    tokens.sort();
+    let mut hasher = DefaultHasher::new();
+    for token in tokens {
+        token.hash(&mut hasher);
+    }
+    Some(format!("{:016x}", hasher.finish()))
+}
+
+fn apply_hook_canvas_runtime_overlays(document: &mut hook_canvas::HookCanvasDocument) {
+    let Some(statuses) = hook_canvas_runtime_statuses().lock().ok() else {
+        return;
+    };
+    for node in &mut document.snapshot.nodes {
+        let Some(state) = statuses.get(&node.id) else {
+            continue;
+        };
+        node.status = state.status.clone();
+        node.error_message = state.error_message.clone();
+        node.result_candidates = state.result_candidates.clone();
+        node.selected_result_index = state.selected_result_index;
+    }
+    let preview_overrides = statuses
+        .iter()
+        .filter_map(|(node_id, state)| {
+            state.preview_data_url.as_ref().map(|data_url| {
+                (
+                    node_id.clone(),
+                    data_url.clone(),
+                    state.preview_cache_token.clone(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(statuses);
+    for (node_id, data_url, cache_token) in preview_overrides {
+        document.override_preview_source(
+            &node_id,
+            hook_canvas::HookCanvasPreviewSource::DataUrl(data_url),
+            cache_token.as_deref(),
+        );
+    }
+    if let Some(overlay_revision) = hook_canvas_overlay_revision(&document.snapshot) {
+        document.snapshot.revision =
+            format!("{}-rt-{overlay_revision}", document.snapshot.revision);
+    }
+}
+
+fn load_active_hook_canvas_document() -> Result<hook_canvas::HookCanvasDocument> {
+    let mut document = match load_hook_live_workflow_document() {
+        Some(document) => document,
+        None => hook_canvas::HookCanvasDocument::read(&arthook_session_path())?,
+    };
+    apply_hook_canvas_runtime_overlays(&mut document);
+    Ok(document)
+}
+
+fn set_hook_canvas_runtime_status(node_id: &str, status: &str, error_message: Option<String>) {
+    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
+        let state = statuses
+            .entry(node_id.to_owned())
+            .or_insert(HookCanvasRuntimeNodeState {
+                status: String::new(),
+                error_message: None,
+                preview_data_url: None,
+                preview_cache_token: None,
+                result_candidates: Vec::new(),
+                selected_result_index: None,
+            });
+        state.status = status.to_owned();
+        state.error_message = error_message;
+    }
+}
+
+fn hook_canvas_preview_cache_token(data_url: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    data_url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn set_hook_canvas_runtime_preview(node_id: &str, preview_data_url: Option<String>) {
+    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
+        let state = statuses
+            .entry(node_id.to_owned())
+            .or_insert(HookCanvasRuntimeNodeState {
+                status: String::new(),
+                error_message: None,
+                preview_data_url: None,
+                preview_cache_token: None,
+                result_candidates: Vec::new(),
+                selected_result_index: None,
+            });
+        state.preview_cache_token = preview_data_url
+            .as_deref()
+            .map(hook_canvas_preview_cache_token);
+        state.preview_data_url = preview_data_url;
+    }
+}
+
+fn clear_hook_canvas_runtime_preview(node_id: &str) {
+    set_hook_canvas_runtime_preview(node_id, None);
+}
+
+fn set_hook_canvas_runtime_result_candidates(
+    node_id: &str,
+    candidates: Vec<hook_canvas::HookCanvasResultCandidate>,
+    selected_result_index: Option<usize>,
+) {
+    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
+        let state = statuses
+            .entry(node_id.to_owned())
+            .or_insert(HookCanvasRuntimeNodeState {
+                status: String::new(),
+                error_message: None,
+                preview_data_url: None,
+                preview_cache_token: None,
+                result_candidates: Vec::new(),
+                selected_result_index: None,
+            });
+        state.result_candidates = candidates;
+        state.selected_result_index = selected_result_index;
+    }
+}
+
+fn clear_hook_canvas_runtime_result_candidates(node_id: &str) {
+    set_hook_canvas_runtime_result_candidates(node_id, Vec::new(), None);
+}
+
+fn extract_hook_canvas_result_candidates(
+    execution_result: &Value,
+) -> Option<(Vec<hook_canvas::HookCanvasResultCandidate>, Option<usize>)> {
+    let image_search = execution_result
+        .get("loomMetadata")
+        .and_then(|metadata| metadata.get("imageSearch"))?;
+    let candidates = image_search
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let image_url = item.get("imageUrl").and_then(Value::as_str)?.to_owned();
+                    Some(hook_canvas::HookCanvasResultCandidate {
+                        index: item.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                        title: item.get("title").and_then(Value::as_str).map(str::to_owned),
+                        image_url,
+                        thumbnail_url: item
+                            .get("thumbnailUrl")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        source_page_url: item
+                            .get("sourcePageUrl")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        width: item.get("width").and_then(Value::as_u64),
+                        height: item.get("height").and_then(Value::as_u64),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected_result_index = image_search
+        .get("selectedIndex")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    Some((candidates, selected_result_index))
+}
+
+fn hook_canvas_image_search_metadata_value(
+    candidates: &[hook_canvas::HookCanvasResultCandidate],
+    selected_result_index: Option<usize>,
+) -> Value {
+    json!({
+        "candidates": candidates
+            .iter()
+            .map(|candidate| {
+                json!({
+                    "index": candidate.index,
+                    "title": candidate.title,
+                    "imageUrl": candidate.image_url,
+                    "thumbnailUrl": candidate.thumbnail_url,
+                    "sourcePageUrl": candidate.source_page_url,
+                    "width": candidate.width,
+                    "height": candidate.height,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "selectedIndex": selected_result_index,
+    })
+}
+
+fn attach_ahrp_image_search_metadata(response: &mut Value, metadata: Value) {
+    if response.get("data").is_none() {
+        if let Some(object) = response.as_object_mut() {
+            object.insert("data".to_owned(), json!({}));
+        }
+    }
+    let Some(data) = response.get_mut("data").and_then(Value::as_object_mut) else {
+        return;
+    };
+    data.insert(
+        "loomMetadata".to_owned(),
+        json!({ "imageSearch": metadata }),
+    );
+}
+
+fn persist_hook_canvas_image_search_state(
+    node_id: &str,
+    candidates: &[hook_canvas::HookCanvasResultCandidate],
+    selected_result_index: Option<usize>,
+    preview_data_url: Option<&str>,
+) {
+    let mut patch = HookCanvasPersistPatch {
+        image_search_metadata: Some(Some(hook_canvas_image_search_metadata_value(
+            candidates,
+            selected_result_index,
+        ))),
+        ..HookCanvasPersistPatch::default()
+    };
+    if let Some(selected_result_index) = selected_result_index {
+        patch
+            .param_updates
+            .push(("result_index".to_owned(), json!(selected_result_index)));
+    }
+    if let Some(preview_data_url) = preview_data_url {
+        patch.preview_data_url = Some(Some(preview_data_url.to_owned()));
+    }
+    let _ = persist_hook_canvas_live_node_patch(node_id, &patch);
+}
+
+fn finalize_execute_art_node_runtime_status(node_id: &str, response: &Value) {
+    match response.get("type").and_then(Value::as_str) {
+        Some("success") => set_hook_canvas_runtime_status(node_id, "ready", None),
+        _ => set_hook_canvas_runtime_status(
+            node_id,
+            "error",
+            response
+                .get("data")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ),
+    }
+}
+
+fn finalize_ahrp_runtime_status(node_id: Option<&str>, response: &Value) {
+    let Some(node_id) = node_id else {
+        return;
+    };
+    match response.get("status").and_then(Value::as_str) {
+        Some("Success") => set_hook_canvas_runtime_status(node_id, "ready", None),
+        _ => set_hook_canvas_runtime_status(
+            node_id,
+            "error",
+            response
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ),
+    }
+}
+
+fn params_match_score(node_params: &Value, params: &BTreeMap<String, Value>) -> usize {
+    let Some(object) = node_params.as_object() else {
+        return 0;
+    };
+    params
+        .iter()
+        .filter(|(key, value)| {
+            object
+                .get(*key)
+                .is_some_and(|candidate| candidate == *value)
+        })
+        .count()
+}
+
+fn resolve_hook_runtime_node_id_from_document(
+    document: &hook_canvas::HookCanvasDocument,
+    art_id: &str,
+    params: &BTreeMap<String, Value>,
+) -> Option<String> {
+    let candidates = document
+        .snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.art_id.as_deref() == Some(art_id))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates[0].id.clone());
+    }
+
+    let mut scored = candidates
+        .iter()
+        .map(|node| ((*node).id.clone(), params_match_score(&node.params, params)))
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let best = scored.first()?;
+    let second_score = scored.get(1).map(|entry| entry.1).unwrap_or(0);
+    if best.1 == 0 || best.1 == second_score {
+        return None;
+    }
+    Some(best.0.clone())
+}
+
+fn resolve_hook_runtime_node_id(art_id: &str, params: &BTreeMap<String, Value>) -> Option<String> {
+    if let Some(document) = load_hook_live_workflow_document() {
+        if let Some(node_id) = resolve_hook_runtime_node_id_from_document(&document, art_id, params)
+        {
+            return Some(node_id);
+        }
+    }
+    let document = hook_canvas::HookCanvasDocument::read(&arthook_session_path()).ok()?;
+    resolve_hook_runtime_node_id_from_document(&document, art_id, params)
+}
+
 fn arthook_session_path() -> PathBuf {
-    std::env::var_os("APPDATA")
+    // An explicit full-path override wins so isolated smokes and advanced setups
+    // can point Loom at a specific session file.
+    if let Some(path) = std::env::var_os("LOOM_HOOK_SESSION_PATH") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    let appdata = std::env::var_os("APPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("com.vmjcv.arthook-next")
-        .join("session.json")
+        .unwrap_or_else(|| PathBuf::from("."));
+    // An explicit identifier-directory override still resolves `session.json`
+    // beneath it.
+    if let Some(dir) = std::env::var_os("LOOM_HOOK_APPDATA_DIR") {
+        let dir = PathBuf::from(dir);
+        if !dir.as_os_str().is_empty() {
+            return dir.join("session.json");
+        }
+    }
+    resolve_hook_session_path(&appdata)
+}
+
+fn resolve_hook_session_path(appdata: &Path) -> PathBuf {
+    let default_path = appdata.join("com.vmjcv.arthook-next").join("session.json");
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for identifier in HOOK_SESSION_IDENTIFIERS {
+        let candidate = appdata.join(identifier).join("session.json");
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+        let is_newer = match &best {
+            Some((best_modified, _)) => modified > *best_modified,
+            None => true,
+        };
+        if is_newer {
+            best = Some((modified, candidate));
+        }
+    }
+    best.map(|(_, path)| path).unwrap_or(default_path)
 }
 
 fn start_hook_bridge(
@@ -5981,6 +7996,7 @@ fn start_hook_bridge(
             }),
         );
     }
+    clear_hook_canvas_runtime_state();
 
     let listener = match TcpListener::bind(("127.0.0.1", requested_port)) {
         Ok(listener) => listener,
@@ -6052,6 +8068,7 @@ fn stop_hook_bridge(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, Strin
     runtime.connected_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
+    clear_hook_canvas_runtime_state();
 
     Ok((
         200,
@@ -6267,6 +8284,17 @@ fn handle_hook_bridge_websocket_text(
         HookBridgeRequest::Subscribe { channels } => Some(channels.clone()),
         _ => None,
     };
+    let workflow_node_param_persist = match &request {
+        HookBridgeRequest::UpdateWorkflowNode {
+            workflow_id,
+            node_id,
+            param,
+            value,
+        } if is_hook_live_workflow_id(workflow_id) => {
+            Some((node_id.clone(), param.clone(), value.clone()))
+        }
+        _ => None,
+    };
     if let HookBridgeRequest::SyncUserArts { arts }
     | HookBridgeRequest::SyncUserArtsNamespaced { arts } = request
     {
@@ -6317,6 +8345,7 @@ fn handle_hook_bridge_websocket_text(
         art_id,
         input,
         params,
+        input_images,
         disabled_params,
     } = request
     {
@@ -6325,6 +8354,7 @@ fn handle_hook_bridge_websocket_text(
             &art_id,
             input,
             params,
+            input_images,
             disabled_params,
             mcp_servers,
             tool_registry,
@@ -6332,11 +8362,20 @@ fn handle_hook_bridge_websocket_text(
             shared_images,
         );
     }
+    if let HookBridgeRequest::OverwriteWorkflow {
+        workflow_id,
+        snapshot,
+    } = &request
+    {
+        if is_hook_live_workflow_id(workflow_id) {
+            store_hook_live_workflow_snapshot(&arthook_session_path(), workflow_id, snapshot);
+        }
+    }
     let tools = tool_registry
         .list_tools()
         .unwrap_or_default()
         .into_iter()
-        .filter(is_artloom_compat_managed_tool)
+        .filter(is_artloom_compat_visible_tool)
         .map(|tool| artloom_compat_art_json(&tool))
         .collect::<Vec<_>>();
     let ocr_available = ocr_provider
@@ -6353,6 +8392,13 @@ fn handle_hook_bridge_websocket_text(
             ))
         }
     };
+    if result.response.get("type").and_then(Value::as_str) == Some("success") {
+        if let Some((node_id, param, value)) = workflow_node_param_persist {
+            let mut patch = HookCanvasPersistPatch::default();
+            patch.param_updates.push((param, value));
+            let _ = persist_hook_canvas_live_node_patch(&node_id, &patch);
+        }
+    }
     let response = serde_json::to_string(&result.response)
         .unwrap_or_else(|_| hook_bridge_error_json("Serialization failed"));
     let broadcasts = result
@@ -6654,30 +8700,38 @@ fn execute_hook_bridge_art_node(
     workflow_store: &WorkflowStore,
 ) -> HookBridgeWebSocketTextResult {
     let started = Instant::now();
+    set_hook_canvas_runtime_status(node_id, "processing", None);
     let tool = match tool_registry.get_tool(art_id) {
         Ok(Some(tool)) => tool,
         Ok(None) => {
             if loom_native_image::is_native_art_id(art_id) {
                 return execute_hook_bridge_native_art_node(node_id, art_id, input_base64, params);
             }
+            let message = format!("Art definition not found: {art_id}");
+            set_hook_canvas_runtime_status(node_id, "error", Some(message.clone()));
             return HookBridgeWebSocketTextResult::response(
-                execute_art_node_error_response(format!("Art definition not found: {art_id}"))
-                    .to_string(),
+                execute_art_node_error_response(message).to_string(),
             );
         }
         Err(error) => {
+            set_hook_canvas_runtime_status(node_id, "error", Some(error.to_string()));
             return HookBridgeWebSocketTextResult::response(
                 execute_art_node_error_response(error.to_string()).to_string(),
-            )
+            );
         }
     };
 
     let servers = match mcp_servers.lock() {
         Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
         Err(_) => {
+            set_hook_canvas_runtime_status(
+                node_id,
+                "error",
+                Some("lock MCP server store".to_owned()),
+            );
             return HookBridgeWebSocketTextResult::response(
                 execute_art_node_error_response("lock MCP server store").to_string(),
-            )
+            );
         }
     };
 
@@ -6720,21 +8774,54 @@ fn execute_hook_bridge_art_node(
         tool_registry,
         Value::Object(arguments),
     ) {
-        Ok(result) => match extract_ahrp_base64_output(&result) {
-            Some(output_base64) => execute_art_node_image_success_response(
-                node_id,
-                &output_base64,
-                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            ),
-            None => {
-                execute_art_node_success_response(node_id, result, started.elapsed().as_millis())
+        Ok(result) => {
+            let image_search_state = extract_hook_canvas_result_candidates(&result);
+            if let Some((candidates, selected_result_index)) = image_search_state.clone() {
+                set_hook_canvas_runtime_result_candidates(
+                    node_id,
+                    candidates,
+                    selected_result_index,
+                );
+            } else {
+                clear_hook_canvas_runtime_result_candidates(node_id);
             }
-        },
-        Err(error) => execute_art_node_error_response(error.to_string()),
+            match extract_ahrp_base64_output(&result) {
+                Some(output_base64) => {
+                    if let Some((candidates, selected_result_index)) = image_search_state.as_ref() {
+                        persist_hook_canvas_image_search_state(
+                            node_id,
+                            candidates,
+                            *selected_result_index,
+                            Some(output_base64.as_str()),
+                        );
+                    }
+                    set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+                    execute_art_node_image_success_response(
+                        node_id,
+                        &output_base64,
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                }
+                None => {
+                    clear_hook_canvas_runtime_preview(node_id);
+                    execute_art_node_success_response(
+                        node_id,
+                        result,
+                        started.elapsed().as_millis(),
+                    )
+                }
+            }
+        }
+        Err(error) => {
+            clear_hook_canvas_runtime_preview(node_id);
+            clear_hook_canvas_runtime_result_candidates(node_id);
+            execute_art_node_error_response(error.to_string())
+        }
     };
     for path in temporary_input_files {
         let _ = fs::remove_file(path);
     }
+    finalize_execute_art_node_runtime_status(node_id, &response);
     HookBridgeWebSocketTextResult::response(response.to_string())
 }
 
@@ -6758,7 +8845,13 @@ fn execute_hook_bridge_native_art_node(
     input_base64: Option<String>,
     params: std::collections::BTreeMap<String, Value>,
 ) -> HookBridgeWebSocketTextResult {
+    set_hook_canvas_runtime_status(node_id, "processing", None);
     let Some(input_base64) = input_base64.filter(|value| !value.is_empty()) else {
+        set_hook_canvas_runtime_status(
+            node_id,
+            "error",
+            Some("Native image filter input_base64 is required".to_owned()),
+        );
         return HookBridgeWebSocketTextResult::response(
             execute_art_node_error_response("Native image filter input_base64 is required")
                 .to_string(),
@@ -6768,20 +8861,28 @@ fn execute_hook_bridge_native_art_node(
     let result = loom_native_image::process_art(art_id, &input_base64, params);
     let response = if result.success {
         match result.output_base64 {
-            Some(output_base64) => execute_art_node_image_success_response(
-                node_id,
-                &output_base64,
-                result.processing_time_ms,
-            ),
-            None => execute_art_node_error_response("Native image filter produced no output"),
+            Some(output_base64) => {
+                set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+                execute_art_node_image_success_response(
+                    node_id,
+                    &output_base64,
+                    result.processing_time_ms,
+                )
+            }
+            None => {
+                clear_hook_canvas_runtime_preview(node_id);
+                execute_art_node_error_response("Native image filter produced no output")
+            }
         }
     } else {
+        clear_hook_canvas_runtime_preview(node_id);
         execute_art_node_error_response(
             result
                 .error
                 .unwrap_or_else(|| "Native image filter failed".to_owned()),
         )
     };
+    finalize_execute_art_node_runtime_status(node_id, &response);
     HookBridgeWebSocketTextResult::response(response.to_string())
 }
 
@@ -7024,11 +9125,21 @@ fn ahrp_process_output_response(
     }
 }
 
+fn hook_bridge_argument_value_is_blank(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.trim().is_empty(),
+        Value::Object(object) => object.is_empty(),
+        _ => false,
+    }
+}
+
 fn execute_hook_bridge_ahrp_process(
     request_id: &str,
     art_id: &str,
     input: Value,
     params: std::collections::BTreeMap<String, Value>,
+    input_images: std::collections::BTreeMap<String, Value>,
     disabled_params: Vec<String>,
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
@@ -7036,9 +9147,16 @@ fn execute_hook_bridge_ahrp_process(
     shared_images: &SharedImageStoreHandle,
 ) -> HookBridgeWebSocketTextResult {
     let started = Instant::now();
+    let matched_node_id = resolve_hook_runtime_node_id(art_id, &params);
+    if let Some(node_id) = matched_node_id.as_deref() {
+        set_hook_canvas_runtime_status(node_id, "processing", None);
+    }
     let prepared_input = match prepare_hook_bridge_ahrp_input(request_id, input, shared_images) {
         Ok(input) => input,
-        Err(response) => return HookBridgeWebSocketTextResult::response(response.to_string()),
+        Err(response) => {
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            return HookBridgeWebSocketTextResult::response(response.to_string());
+        }
     };
 
     let disabled = disabled_params
@@ -7053,7 +9171,7 @@ fn execute_hook_bridge_ahrp_process(
         Ok(Some(tool)) => tool,
         Ok(None) => {
             if loom_native_image::is_native_art_id(art_id) {
-                return execute_hook_bridge_native_ahrp_process(
+                let result = execute_hook_bridge_native_ahrp_process(
                     request_id,
                     art_id,
                     &prepared_input.input_base64,
@@ -7061,32 +9179,36 @@ fn execute_hook_bridge_ahrp_process(
                     prepared_input.width,
                     prepared_input.height,
                     prepared_input.output_preference,
+                    matched_node_id.as_deref(),
                     shared_images,
                 );
+                if let Ok(response) = serde_json::from_str::<Value>(&result.response) {
+                    finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+                }
+                return result;
             }
-            return HookBridgeWebSocketTextResult::response(
-                ahrp_error_response(
-                    request_id,
-                    "NotFound",
-                    format!("Art definition not found: {art_id}"),
-                )
-                .to_string(),
+            let response = ahrp_error_response(
+                request_id,
+                "NotFound",
+                format!("Art definition not found: {art_id}"),
             );
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            return HookBridgeWebSocketTextResult::response(response.to_string());
         }
         Err(error) => {
-            return HookBridgeWebSocketTextResult::response(
-                ahrp_error_response(request_id, "InternalError", error.to_string()).to_string(),
-            )
+            let response = ahrp_error_response(request_id, "InternalError", error.to_string());
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
 
     let servers = match mcp_servers.lock() {
         Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
         Err(_) => {
-            return HookBridgeWebSocketTextResult::response(
-                ahrp_error_response(request_id, "InternalError", "lock MCP server store")
-                    .to_string(),
-            )
+            let response =
+                ahrp_error_response(request_id, "InternalError", "lock MCP server store");
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
 
@@ -7094,12 +9216,42 @@ fn execute_hook_bridge_ahrp_process(
     for (key, value) in filtered_params {
         arguments.insert(key, value);
     }
+    for (key, value) in input_images {
+        if key.trim().is_empty() || hook_bridge_argument_value_is_blank(&value) {
+            continue;
+        }
+        arguments.insert(key, value);
+    }
     arguments
         .entry("input_base64".to_owned())
-        .or_insert_with(|| Value::String(prepared_input.input_base64));
-    arguments
-        .entry("input".to_owned())
-        .or_insert(prepared_input.tool_input);
+        .or_insert_with(|| Value::String(prepared_input.input_base64.clone()));
+    // For cloud APIs the input must be a real file path so multipart file fields
+    // (e.g. `{{inputs.input.path}}`) upload the actual image. Without this the
+    // template resolves to the raw AHRP input object and PhotoRoom-style APIs
+    // reject the call with "missing_image". Mirrors the HTTP execute_art_node
+    // path in `execute_hook_bridge_art_node`.
+    let mut temporary_input_files = Vec::new();
+    if matches!(&tool.execution, ToolExecution::CloudApi { .. }) {
+        if let Some(input_path) = write_hook_bridge_cloud_input_file(&prepared_input.input_base64) {
+            let temporary_input_file = input_path.clone();
+            let input_path = input_path.to_string_lossy().into_owned();
+            arguments
+                .entry("input".to_owned())
+                .or_insert_with(|| Value::String(input_path.clone()));
+            arguments
+                .entry("image".to_owned())
+                .or_insert_with(|| Value::String(input_path));
+            temporary_input_files.push(temporary_input_file);
+        } else {
+            arguments
+                .entry("input".to_owned())
+                .or_insert(prepared_input.tool_input);
+        }
+    } else {
+        arguments
+            .entry("input".to_owned())
+            .or_insert(prepared_input.tool_input);
+    }
 
     let response = match execute_tool_with_workflows(
         &tool,
@@ -7108,24 +9260,90 @@ fn execute_hook_bridge_ahrp_process(
         tool_registry,
         Value::Object(arguments),
     ) {
-        Ok(result) => match extract_ahrp_base64_output(&result) {
-            Some(output) => ahrp_process_output_response(
-                request_id,
-                &output,
-                prepared_input.width,
-                prepared_input.height,
-                started.elapsed().as_millis(),
-                prepared_input.output_preference,
-                shared_images,
-            ),
-            None => ahrp_error_response(
-                request_id,
-                "EngineError",
-                "MCP tool response contained no usable image data",
-            ),
-        },
-        Err(error) => ahrp_error_response(request_id, "EngineError", error.to_string()),
+        Ok(result) => {
+            let image_search_state = extract_hook_canvas_result_candidates(&result);
+            if let Some(node_id) = matched_node_id.as_deref() {
+                if let Some((candidates, selected_result_index)) = image_search_state.clone() {
+                    set_hook_canvas_runtime_result_candidates(
+                        node_id,
+                        candidates,
+                        selected_result_index,
+                    );
+                } else {
+                    clear_hook_canvas_runtime_result_candidates(node_id);
+                }
+            }
+            match extract_ahrp_base64_output(&result) {
+                Some(output) => {
+                    if let Some(node_id) = matched_node_id.as_deref() {
+                        if let Some((candidates, selected_result_index)) =
+                            image_search_state.as_ref()
+                        {
+                            persist_hook_canvas_image_search_state(
+                                node_id,
+                                candidates,
+                                *selected_result_index,
+                                Some(output.as_str()),
+                            );
+                        }
+                        set_hook_canvas_runtime_preview(node_id, Some(output.clone()));
+                    }
+                    let mut response = ahrp_process_output_response(
+                        request_id,
+                        &output,
+                        prepared_input.width,
+                        prepared_input.height,
+                        started.elapsed().as_millis(),
+                        prepared_input.output_preference,
+                        shared_images,
+                    );
+                    if let Some((candidates, selected_result_index)) = image_search_state.as_ref() {
+                        attach_ahrp_image_search_metadata(
+                            &mut response,
+                            hook_canvas_image_search_metadata_value(
+                                candidates,
+                                *selected_result_index,
+                            ),
+                        );
+                    }
+                    response
+                }
+                None => {
+                    if let Some(node_id) = matched_node_id.as_deref() {
+                        clear_hook_canvas_runtime_preview(node_id);
+                    }
+                    let detail = extract_execution_text_content(&result)
+                        .map(|text| text.trim().to_owned())
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or_else(|| {
+                            "MCP tool response contained no usable image data".to_owned()
+                        });
+                    let mut response = ahrp_error_response(request_id, "EngineError", detail);
+                    if let Some((candidates, selected_result_index)) = image_search_state.as_ref() {
+                        attach_ahrp_image_search_metadata(
+                            &mut response,
+                            hook_canvas_image_search_metadata_value(
+                                candidates,
+                                *selected_result_index,
+                            ),
+                        );
+                    }
+                    response
+                }
+            }
+        }
+        Err(error) => {
+            if let Some(node_id) = matched_node_id.as_deref() {
+                clear_hook_canvas_runtime_preview(node_id);
+                clear_hook_canvas_runtime_result_candidates(node_id);
+            }
+            ahrp_error_response(request_id, "EngineError", error.to_string())
+        }
     };
+    for path in temporary_input_files {
+        let _ = fs::remove_file(path);
+    }
+    finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
     HookBridgeWebSocketTextResult::response(response.to_string())
 }
 
@@ -7137,6 +9355,7 @@ fn execute_hook_bridge_native_ahrp_process(
     width: u64,
     height: u64,
     output_preference: AhrpOutputPreference,
+    matched_node_id: Option<&str>,
     shared_images: &SharedImageStoreHandle,
 ) -> HookBridgeWebSocketTextResult {
     let result = loom_native_image::process_art(
@@ -7146,22 +9365,35 @@ fn execute_hook_bridge_native_ahrp_process(
     );
     let response = if result.success {
         match result.output_base64 {
-            Some(output_base64) => ahrp_process_output_response(
-                request_id,
-                &output_base64,
-                width,
-                height,
-                result.processing_time_ms as u128,
-                output_preference,
-                shared_images,
-            ),
-            None => ahrp_error_response(
-                request_id,
-                "EngineError",
-                "Native image filter produced no output",
-            ),
+            Some(output_base64) => {
+                if let Some(node_id) = matched_node_id {
+                    set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+                }
+                ahrp_process_output_response(
+                    request_id,
+                    &output_base64,
+                    width,
+                    height,
+                    result.processing_time_ms as u128,
+                    output_preference,
+                    shared_images,
+                )
+            }
+            None => {
+                if let Some(node_id) = matched_node_id {
+                    clear_hook_canvas_runtime_preview(node_id);
+                }
+                ahrp_error_response(
+                    request_id,
+                    "EngineError",
+                    "Native image filter produced no output",
+                )
+            }
         }
     } else {
+        if let Some(node_id) = matched_node_id {
+            clear_hook_canvas_runtime_preview(node_id);
+        }
         ahrp_error_response(
             request_id,
             "EngineError",
@@ -7335,6 +9567,14 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "message": format!("MCP server `{server_id}` for tool `{tool_id}` was not found or is disabled"),
                 "tool_id": tool_id,
                 "server_id": server_id,
+            }),
+        ),
+        ToolRegistryError::CliWrapperFailed { id, reason } => structured_error(
+            500,
+            json!({
+                "code": "cli_wrapper_failed",
+                "message": reason,
+                "tool_id": id,
             }),
         ),
         ToolRegistryError::Mcp(error) => structured_error(
@@ -8344,9 +10584,12 @@ fn write_binary_response(
     body: &[u8],
 ) -> Result<()> {
     let reason = response_reason(status);
+    // Preview URLs carry a content version token, so a changed image always
+    // arrives under a new URL. Force revalidation anyway so an in-place image
+    // update is never masked by an aggressive WebView/browser cache.
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )
     .context("write daemon binary response")?;
@@ -8384,6 +10627,68 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // Regression: ArtLoom sends cloud_api `headers` as an object (with a
+    // `{api_key}` placeholder) and `body` as an array of field descriptors. The
+    // executor expects both as JSON strings; the old converter used a
+    // string-only extractor and silently dropped them, so RemoveBG uploaded no
+    // image and PhotoRoom answered "missing_image". These lock the conversion.
+    #[test]
+    fn artloom_cloud_headers_object_becomes_json_string_with_api_key_resolved() {
+        let execution = serde_json::json!({
+            "type": "cloud_api",
+            "method": "POST",
+            "content_type": "multipart/form-data",
+            "endpoint": "https://sdk.photoroom.com/v1/segment",
+            "api_key": "sk_test_123",
+            "headers": { "x-api-key": "{api_key}" }
+        });
+        let rendered = artloom_headers_to_json_string(&execution).expect("headers json");
+        let parsed: std::collections::HashMap<String, String> =
+            serde_json::from_str(&rendered).expect("headers parse as string map");
+        assert_eq!(
+            parsed.get("x-api-key").map(String::as_str),
+            Some("sk_test_123")
+        );
+    }
+
+    #[test]
+    fn artloom_cloud_body_array_becomes_json_string_with_image_file_field() {
+        let execution = serde_json::json!({
+            "type": "cloud_api",
+            "body": [
+                { "name": "image_file", "execution_type": "image_buffer", "source": "input" },
+                { "name": "format", "default": "png" }
+            ]
+        });
+        let rendered = artloom_body_to_json_string(&execution).expect("body json");
+        let parsed: std::collections::HashMap<String, String> =
+            serde_json::from_str(&rendered).expect("body parse as string map");
+        // Input image field must carry a `.path}}` template so the executor
+        // uploads the temp input file as a multipart file part.
+        assert_eq!(
+            parsed.get("image_file").map(String::as_str),
+            Some("{{inputs.input.path}}")
+        );
+        assert_eq!(parsed.get("format").map(String::as_str), Some("png"));
+    }
+
+    #[test]
+    fn artloom_cloud_headers_and_body_pass_through_existing_json_strings() {
+        let execution = serde_json::json!({
+            "type": "cloud_api",
+            "headers": "{\"X-Trace\":\"abc\"}",
+            "body": "{\"file\":\"{{inputs.image.path}}\"}"
+        });
+        assert_eq!(
+            artloom_headers_to_json_string(&execution).as_deref(),
+            Some("{\"X-Trace\":\"abc\"}")
+        );
+        assert_eq!(
+            artloom_body_to_json_string(&execution).as_deref(),
+            Some("{\"file\":\"{{inputs.image.path}}\"}")
+        );
+    }
 
     const CONCURRENCY_GATE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -8630,6 +10935,219 @@ mod tests {
         fs::canonicalize(path).expect("canonicalize test path")
     }
 
+    fn write_hook_session(appdata: &Path, identifier: &str, contents: &str) -> PathBuf {
+        let dir = appdata.join(identifier);
+        fs::create_dir_all(&dir).expect("create hook identifier dir");
+        let path = dir.join("session.json");
+        fs::write(&path, contents).expect("write hook session");
+        path
+    }
+
+    fn test_daemon_runtime_from_config(
+        control_plane_root: &Path,
+        config: DaemonConfig,
+    ) -> DaemonRuntime {
+        let run_store: Box<dyn RunEvidenceStore> = match config.run_store {
+            RunStoreConfig::Memory => Box::new(InMemoryRunEvidenceStore::default()),
+            RunStoreConfig::Sqlite(path) => {
+                Box::new(SqliteRunEvidenceStore::open(path).expect("open test sqlite run store"))
+            }
+        };
+        let run_store_status = run_store.status();
+        let brain_planner = build_brain_planner(config.brain_planner).expect("build test planner");
+        let config_root = std::env::var_os("LOOM_CONFIGURATION_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| control_plane_root.join("config"));
+        let settings_base_url = std::env::var("LOOM_SETTINGS_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:0/settings".to_owned());
+        DaemonRuntime {
+            hook_settings: config.hook_settings,
+            run_store: Arc::new(Mutex::new(run_store)),
+            auth_token: config.auth_token,
+            config_registry: Arc::new(built_in_registry()),
+            config_store: FileDocumentStore::new(config_root),
+            mcp_servers: Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root))),
+            tool_registry: ToolRegistry::new(control_plane_root.join("tools")),
+            workflow_store: WorkflowStore::new(control_plane_root.join("workflows")),
+            canvas_workflow_root: control_plane_root.join("canvas-workflows"),
+            framework_registry: FrameworkRegistry::new(&control_plane_root),
+            control_plane_root: control_plane_root.to_path_buf(),
+            hook_bridge: Arc::new(Mutex::new(HookBridgeRuntime::new(
+                control_plane_root.join("workflows"),
+            ))),
+            artloom_settings: Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+                control_plane_root
+                    .join("settings")
+                    .join("artloom-compat-settings.json"),
+            ))),
+            shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
+            ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
+            settings_base_url,
+            mcp_registry_endpoint: config.mcp_registry_endpoint,
+            brain_planner,
+            run_store_status,
+            request_executor_status: config.request_executor.status(),
+            serialized_route_lock: Mutex::new(()),
+            #[cfg(test)]
+            serialized_route_observer: None,
+            #[cfg(test)]
+            request_submission_observer: None,
+            #[cfg(test)]
+            shutdown_observer: None,
+        }
+    }
+
+    fn test_daemon_runtime(control_plane_root: &Path, auth_token: Option<&str>) -> DaemonRuntime {
+        let mut config = DaemonConfig::localhost(0);
+        if let Some(token) = auth_token {
+            config = config.with_bearer_token(token);
+        }
+        test_daemon_runtime_from_config(control_plane_root, config)
+    }
+
+    fn parsed_request(
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> ParsedHttpRequest {
+        ParsedHttpRequest {
+            method: method.to_owned(),
+            path: path.to_owned(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            body: body.unwrap_or_default().to_owned(),
+        }
+    }
+
+    fn expect_text_route_response(response: RouteResponse, expected_status: u16) -> String {
+        match response {
+            RouteResponse::Text { status, body } => {
+                assert_eq!(status, expected_status);
+                body
+            }
+            RouteResponse::Binary { .. } => {
+                panic!("expected text response with status {expected_status}")
+            }
+        }
+    }
+
+    fn expect_json_text_route_response(
+        response: RouteResponse,
+        expected_status: u16,
+    ) -> serde_json::Value {
+        let body = expect_text_route_response(response, expected_status);
+        serde_json::from_str(&body).expect("json route body")
+    }
+
+    fn expect_json_result_response(
+        response: Result<(u16, String)>,
+        expected_status: u16,
+    ) -> serde_json::Value {
+        let (status, body) = response.expect("route result");
+        assert_eq!(status, expected_status);
+        serde_json::from_str(&body).expect("json result body")
+    }
+
+    fn start_test_hook_bridge(runtime: &DaemonRuntime, body: &str) -> serde_json::Value {
+        expect_json_result_response(
+            start_hook_bridge(
+                body,
+                &runtime.hook_bridge,
+                &runtime.mcp_servers,
+                &runtime.tool_registry,
+                &runtime.workflow_store,
+                &runtime.artloom_settings,
+                &runtime.shared_images,
+                &runtime.ocr_provider,
+            ),
+            200,
+        )
+    }
+
+    fn stop_test_hook_bridge(runtime: &DaemonRuntime) -> serde_json::Value {
+        expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200)
+    }
+
+    fn hook_bridge_status_value(runtime: &DaemonRuntime) -> serde_json::Value {
+        expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200)
+    }
+
+    fn run_hook_bridge_text(runtime: &DaemonRuntime, request: &str) -> serde_json::Value {
+        let workflow_root = runtime
+            .hook_bridge
+            .lock()
+            .expect("lock hook bridge runtime for test")
+            .workflow_root
+            .clone();
+        let result = handle_hook_bridge_websocket_text(
+            request,
+            &runtime.mcp_servers,
+            &runtime.tool_registry,
+            &runtime.workflow_store,
+            &runtime.artloom_settings,
+            &runtime.shared_images,
+            &runtime.ocr_provider,
+            &workflow_root,
+        );
+        serde_json::from_str(&result.response).expect("hook bridge json response")
+    }
+
+    fn expect_binary_route_response(
+        response: RouteResponse,
+        expected_status: u16,
+        expected_content_type: &'static str,
+    ) -> Vec<u8> {
+        match response {
+            RouteResponse::Binary {
+                status,
+                content_type,
+                body,
+            } => {
+                assert_eq!(status, expected_status);
+                assert_eq!(content_type, expected_content_type);
+                body
+            }
+            RouteResponse::Text { .. } => {
+                panic!("expected binary response with status {expected_status}")
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_hook_session_path_prefers_the_most_recently_written_identifier() {
+        let appdata = unique_temp_dir("hook-session-resolution");
+
+        // A stale legacy directory (the previously hardcoded default) plus the
+        // directory Hook is actually writing under a newer identifier.
+        let stale = write_hook_session(&appdata, "com.vmjcv.arthook-next", r#"{"stickers":[]}"#);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let current = write_hook_session(
+            &appdata,
+            "com.vmjcv.hook",
+            r#"{"stickers":[{"id":"live","type":"sticker"}]}"#,
+        );
+
+        let resolved = resolve_hook_session_path(&appdata);
+
+        assert_eq!(resolved, current);
+        assert_ne!(resolved, stale);
+    }
+
+    #[test]
+    fn resolve_hook_session_path_falls_back_to_default_when_no_session_exists() {
+        let appdata = unique_temp_dir("hook-session-missing");
+
+        let resolved = resolve_hook_session_path(&appdata);
+
+        assert_eq!(
+            resolved,
+            appdata.join("com.vmjcv.arthook-next").join("session.json")
+        );
+    }
+
     fn start_daemon_with_store(
         path: &Path,
         brain_planner: BrainPlannerConfig,
@@ -8792,54 +11310,49 @@ mod tests {
 
     #[test]
     fn daemon_reports_brain_planner_status_by_default() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let status = http_json_get(address.port(), "/status");
+        let root = unique_temp_dir("status-brain-planner-default");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
 
         assert_eq!(status["brain_planner"]["mode"], "local_template");
         assert_eq!(status["brain_planner"]["configured"], false);
         assert!(status["brain_planner"].get("model").is_none());
         assert!(status["brain_planner"].get("timeout_seconds").is_none());
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
     fn daemon_reports_inline_request_executor_by_default() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let port = daemon.local_addr().expect("address").port();
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
-
-        let status = http_json_get(port, "/status");
+        let root = unique_temp_dir("status-inline-request-executor");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
         assert_eq!(status["requestExecutor"]["mode"], "inline");
         assert_eq!(status["requestExecutor"]["workers"], 1);
         assert_eq!(status["requestExecutor"]["queueCapacity"], 0);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server").expect("serve");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
     fn daemon_reports_explicit_bounded_request_executor() {
-        let daemon =
-            LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(2, 3))
-                .expect("bind daemon");
-        let port = daemon.local_addr().expect("address").port();
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
-
-        let status = http_json_get(port, "/status");
+        let root = unique_temp_dir("status-bounded-request-executor");
+        let runtime = test_daemon_runtime_from_config(
+            &root,
+            DaemonConfig::localhost(0).with_bounded_request_executor(2, 3),
+        );
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
         assert_eq!(status["requestExecutor"]["mode"], "bounded_workers");
         assert_eq!(status["requestExecutor"]["workers"], 2);
         assert_eq!(status["requestExecutor"]["queueCapacity"], 3);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server").expect("serve");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -9333,30 +11846,30 @@ mod tests {
 
     #[test]
     fn daemon_reports_in_memory_run_store_by_default() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
-
-        let status = http_json_get(address.port(), "/status");
+        let root = unique_temp_dir("status-run-store-memory");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
 
         assert_eq!(status["run_store"]["mode"], "memory");
         assert_eq!(status["run_store"]["persistent"], false);
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
     fn daemon_reports_explicit_sqlite_run_store() {
         let root = unique_temp_dir("sqlite-status");
         let path = root.join("runs").join("loom-runs.sqlite3");
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_sqlite_run_store(&path))
-            .expect("bind daemon");
-        let address = daemon.local_addr().expect("address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
-
-        let status = http_json_get(address.port(), "/status");
+        let runtime = test_daemon_runtime_from_config(
+            &root,
+            DaemonConfig::localhost(0).with_sqlite_run_store(&path),
+        );
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
 
         assert_eq!(status["run_store"]["mode"], "sqlite");
         assert_eq!(status["run_store"]["persistent"], true);
@@ -9364,8 +11877,7 @@ mod tests {
         assert!(!status
             .to_string()
             .contains(&path.to_string_lossy().to_string()));
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server");
+        drop(runtime);
         assert!(path.exists());
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -9380,12 +11892,12 @@ mod tests {
                 timeout: Duration::from_secs(12),
             }),
         );
-        let daemon = LoomDaemon::bind(config).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let status = http_json_get(address.port(), "/status");
+        let root = unique_temp_dir("status-gateway-brain-planner");
+        let runtime = test_daemon_runtime_from_config(&root, config);
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
 
         assert_eq!(status["brain_planner"]["mode"], "gateway");
         assert_eq!(status["brain_planner"]["configured"], true);
@@ -9393,9 +11905,7 @@ mod tests {
         assert_eq!(status["brain_planner"]["timeout_seconds"], 12);
         assert!(status["brain_planner"].get("auth_token").is_none());
         assert!(!status.to_string().contains("do-not-expose"));
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -9438,22 +11948,20 @@ mod tests {
             loom_hooks::HookRule::new(loom_hooks::HookEventKind::RunStopped)
                 .with_target(loom_hooks::HookTarget::memory("finished")),
         ]);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_hook_settings(hook_settings))
-            .expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("status-hook-settings-summary");
+        let runtime = test_daemon_runtime_from_config(
+            &root,
+            DaemonConfig::localhost(0).with_hook_settings(hook_settings),
+        );
+        let status = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+            200,
+        );
 
-        let status = http_get(address.port(), "/status");
-
-        assert!(status.contains("200 OK"));
-        assert!(status.contains("\"hooks\""));
-        assert!(status.contains("\"enabled\":true"));
-        assert!(status.contains("\"ruleCount\":2"));
-        assert!(status.contains("\"targetCount\":2"));
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        assert_eq!(status["hooks"]["enabled"], true);
+        assert_eq!(status["hooks"]["ruleCount"], 2);
+        assert_eq!(status["hooks"]["targetCount"], 2);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -9536,21 +12044,27 @@ mod tests {
     #[test]
     fn daemon_reads_and_writes_mcp_servers() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("control-plane-mcp");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let empty = http_json_get(address.port(), "/v1/mcp/servers");
+        let empty = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
         assert_eq!(empty["servers"], serde_json::json!([]));
 
-        let saved = http_json_put(
-            address.port(),
-            "/v1/mcp/servers/brave",
-            r#"{
+        let saved = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/brave",
+                    &[],
+                    Some(
+                        r#"{
               "id": "brave",
               "name": "Brave Search",
               "command": "npx",
@@ -9558,18 +12072,40 @@ mod tests {
               "env": { "BRAVE_API_KEY": "test-key" },
               "enabled": true
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved["server"]["id"], "brave");
         assert_eq!(saved["server"]["name"], "Brave Search");
         assert_eq!(saved["server"]["args"][1], "@brave/brave-search-mcp-server");
 
-        let listed = http_json_get(address.port(), "/v1/mcp/servers");
+        let listed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
         assert_eq!(listed["servers"].as_array().expect("servers").len(), 1);
         assert_eq!(listed["servers"][0]["id"], "brave");
 
-        let deleted = http_json_delete(address.port(), "/v1/mcp/servers/brave");
+        let deleted = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("DELETE", "/v1/mcp/servers/brave", &[], None),
+            ),
+            200,
+        );
         assert_eq!(deleted["deleted"], true);
-        let listed_after_delete = http_json_get(address.port(), "/v1/mcp/servers");
+        let listed_after_delete = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
         assert_eq!(
             listed_after_delete["servers"]
                 .as_array()
@@ -9578,39 +12114,145 @@ mod tests {
             0
         );
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn daemon_persists_mcp_servers_across_runtime_reloads() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("control-plane-mcp-persist");
+        let fixture = current_test_binary_mcp_fixture_config();
+
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let saved = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/fixture",
+                    &[],
+                    Some(&fixture.to_string()),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved["server"]["id"], "fixture");
+        drop(runtime);
+
+        let reloaded_runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let reloaded = expect_json_text_route_response(
+            route_request(
+                &reloaded_runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
+        assert_eq!(
+            reloaded["servers"].as_array().expect("servers").len(),
+            1,
+            "persisted MCP server should reload from disk"
+        );
+        assert_eq!(reloaded["servers"][0]["id"], "fixture");
+
+        let deleted = expect_json_text_route_response(
+            route_request(
+                &reloaded_runtime,
+                &parsed_request("DELETE", "/v1/mcp/servers/fixture", &[], None),
+            ),
+            200,
+        );
+        assert_eq!(deleted["deleted"], true);
+        drop(reloaded_runtime);
+
+        let deleted_runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let empty = expect_json_text_route_response(
+            route_request(
+                &deleted_runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
+        assert_eq!(empty["servers"], serde_json::json!([]));
+
+        drop(deleted_runtime);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalize_mcp_server_config_rewrites_legacy_brave_github_source_to_npm_transport_stdio() {
+        let normalized = normalize_mcp_server_config(McpServerConfig {
+            id: "479008f0-bd4f-483e-8598-39fbae54a117".to_owned(),
+            name: "Brave Search".to_owned(),
+            description: "legacy brave fixture".to_owned(),
+            command: "npx".to_owned(),
+            args: vec![
+                "-y".to_owned(),
+                "github:brave/brave-search-mcp-server".to_owned(),
+            ],
+            env: BTreeMap::new(),
+            enabled: true,
+        });
+
+        assert_eq!(
+            normalized.args,
+            vec![
+                "-y".to_owned(),
+                "@brave/brave-search-mcp-server".to_owned(),
+                "--transport".to_owned(),
+                "stdio".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_mcp_server_config_leaves_unrelated_servers_unchanged() {
+        let server = McpServerConfig {
+            id: "fixture".to_owned(),
+            name: "Fixture".to_owned(),
+            description: "test fixture".to_owned(),
+            command: "python".to_owned(),
+            args: vec!["server.py".to_owned()],
+            env: BTreeMap::new(),
+            enabled: true,
+        };
+
+        assert_eq!(normalize_mcp_server_config(server.clone()), server);
     }
 
     #[test]
     fn daemon_exposes_artloom_mcp_server_store_command_aliases() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let registry_fixture = McpRegistryFixture::start();
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let previous_registry_endpoint = std::env::var("LOOM_MCP_REGISTRY_ENDPOINT").ok();
         let root = unique_temp_dir("artloom-mcp-server-store");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
         std::env::set_var(
             "LOOM_MCP_REGISTRY_ENDPOINT",
             registry_fixture.url("/v0/servers"),
         );
-
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
+        let config = DaemonConfig::localhost(0);
         restore_env("LOOM_MCP_REGISTRY_ENDPOINT", previous_registry_endpoint);
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, config);
 
-        let empty = http_json_get(address.port(), "/v1/artloom-compat/mcp/servers");
+        let empty = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/mcp/servers", &[], None),
+            ),
+            200,
+        );
         assert_eq!(empty["compatCommand"], "get_mcp_servers");
         assert_eq!(empty["servers"], serde_json::json!([]));
 
-        let saved = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/mcp/servers",
-            r#"{
+        let saved = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/mcp/servers",
+                    &[],
+                    Some(
+                        r#"{
               "id": "compat-mcp",
               "name": "Compat MCP",
               "description": "Old ArtLoom MCP server store fixture",
@@ -9619,18 +12261,36 @@ mod tests {
               "env": { "COMPAT": "1" },
               "enabled": true
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved["compatCommand"], "save_mcp_server");
         assert_eq!(saved["message"], "Saved successfully");
         assert_eq!(saved["server"]["id"], "compat-mcp");
 
-        let listed = http_json_get(address.port(), "/v1/artloom-compat/mcp/servers");
+        let listed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/mcp/servers", &[], None),
+            ),
+            200,
+        );
         assert_eq!(listed["compatCommand"], "get_mcp_servers");
         assert_eq!(listed["servers"][0]["id"], "compat-mcp");
 
-        let registry = http_json_get(
-            address.port(),
-            "/v1/artloom-compat/mcp/registry?search=fixture&limit=250&cursor=cursor-1",
+        let registry = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/v1/artloom-compat/mcp/registry?search=fixture&limit=250&cursor=cursor-1",
+                    &[],
+                    None,
+                ),
+            ),
+            200,
         );
         assert_eq!(registry["compatCommand"], "fetch_mcp_registry");
         assert_eq!(
@@ -9639,14 +12299,23 @@ mod tests {
         );
         assert!(registry_fixture.request_path().contains("limit=100"));
 
-        let deleted = http_json_delete(address.port(), "/v1/artloom-compat/mcp/servers/compat-mcp");
+        let deleted = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "DELETE",
+                    "/v1/artloom-compat/mcp/servers/compat-mcp",
+                    &[],
+                    None,
+                ),
+            ),
+            200,
+        );
         assert_eq!(deleted["compatCommand"], "delete_mcp_server");
         assert_eq!(deleted["message"], "Deleted successfully");
         assert_eq!(deleted["deleted"], true);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup ArtLoom MCP server store root");
     }
 
@@ -9659,16 +12328,22 @@ mod tests {
             "LOOM_MCP_REGISTRY_ENDPOINT",
             registry_fixture.url("/v0/servers"),
         );
-
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
+        let root = unique_temp_dir("mcp-registry-contracts");
+        let config = DaemonConfig::localhost(0);
         restore_env("LOOM_MCP_REGISTRY_ENDPOINT", previous_registry_endpoint);
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, config);
 
-        let registry = http_json_get(
-            address.port(),
-            "/v1/mcp/registry?search=fixture&limit=250&cursor=cursor-1",
+        let registry = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/v1/mcp/registry?search=fixture&limit=250&cursor=cursor-1",
+                    &[],
+                    None,
+                ),
+            ),
+            200,
         );
         assert_eq!(
             registry["servers"][0]["server"]["name"],
@@ -9678,10 +12353,13 @@ mod tests {
         assert!(registry_fixture.request_path().contains("search=fixture"));
         assert!(registry_fixture.request_path().contains("cursor=cursor-1"));
 
-        let test_result = http_json_post(
-            address.port(),
-            "/v1/mcp/test",
-            &current_test_binary_mcp_fixture_config().to_string(),
+        let request_body = current_test_binary_mcp_fixture_config().to_string();
+        let test_result = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("POST", "/v1/mcp/test", &[], Some(&request_body)),
+            ),
+            200,
         );
         assert_eq!(test_result["success"], true);
         assert_eq!(test_result["compatCommand"], "test_mcp_connection");
@@ -9691,8 +12369,8 @@ mod tests {
             "daemon-fixture"
         );
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup mcp registry root");
     }
 
     #[test]
@@ -9751,15 +12429,19 @@ def run(args):
         )
         .expect("write art json fixture");
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let source = http_json_post(
-            address.port(),
-            "/v1/python-arts/source/read",
-            &serde_json::json!({ "path": python_path }).to_string(),
+        let source = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/python-arts/source/read",
+                    &[],
+                    Some(&serde_json::json!({ "path": python_path }).to_string()),
+                ),
+            ),
+            200,
         );
         assert_eq!(
             canonical_test_path(source["path"].as_str().expect("source path")),
@@ -9770,10 +12452,17 @@ def run(args):
             .expect("source content")
             .contains("args.get(\"input_image\")"));
 
-        let nearby = http_json_post(
-            address.port(),
-            "/v1/python-arts/source/check-art-json",
-            &serde_json::json!({ "pythonPath": python_path }).to_string(),
+        let nearby = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/python-arts/source/check-art-json",
+                    &[],
+                    Some(&serde_json::json!({ "pythonPath": python_path }).to_string()),
+                ),
+            ),
+            200,
         );
         assert_eq!(nearby["found"], true);
         assert_eq!(nearby["artJson"]["label"], "Source Fixture");
@@ -9786,17 +12475,31 @@ def run(args):
             canonical_test_path(&art_json_path)
         );
 
-        let art_json = http_json_post(
-            address.port(),
-            "/v1/python-arts/source/read-art-json",
-            &serde_json::json!({ "artPath": art_dir }).to_string(),
+        let art_json = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/python-arts/source/read-art-json",
+                    &[],
+                    Some(&serde_json::json!({ "artPath": art_dir }).to_string()),
+                ),
+            ),
+            200,
         );
         assert_eq!(art_json["artJson"]["art_id"], "source_fixture");
 
-        let inferred = http_json_post(
-            address.port(),
-            "/v1/python-arts/source/infer-ports",
-            &serde_json::json!({ "path": python_path }).to_string(),
+        let inferred = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/python-arts/source/infer-ports",
+                    &[],
+                    Some(&serde_json::json!({ "path": python_path }).to_string()),
+                ),
+            ),
+            200,
         );
         assert_eq!(inferred["inputs"][0]["name"], "input_image");
         assert_eq!(inferred["inputs"][0]["execution_type"], "image_path");
@@ -9807,8 +12510,7 @@ def run(args):
         assert_eq!(inferred["outputs"][1]["name"], "confidence");
         assert_eq!(inferred["outputs"][1]["execution_type"], "string");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup source fixture root");
     }
 
@@ -9824,22 +12526,34 @@ def run(args):
         .expect("write art json");
         fs::write(&source_path, "def main(args):\n    return args\n").expect("write python source");
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let installed = http_json_get(address.port(), "/v1/artloom-compat/python/installed-arts");
+        let installed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/python/installed-arts", &[], None),
+            ),
+            200,
+        );
         assert_eq!(installed["compatCommand"], "list_installed_arts");
         assert!(installed["arts"].as_array().is_some());
 
-        let read_source = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/python/read-python-file",
-            &serde_json::json!({
-                "filePath": source_path,
-            })
-            .to_string(),
+        let read_source = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/python/read-python-file",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "filePath": source_path,
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(read_source["compatCommand"], "read_python_file");
         assert!(read_source["content"]
@@ -9847,45 +12561,67 @@ def run(args):
             .expect("source content")
             .contains("def main"));
 
-        let nearby = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/python/check-art-json-nearby",
-            &serde_json::json!({
-                "pythonPath": source_path,
-            })
-            .to_string(),
+        let nearby = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/python/check-art-json-nearby",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "pythonPath": source_path,
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(nearby["compatCommand"], "check_art_json_nearby");
         assert_eq!(nearby["found"], true);
         assert_eq!(nearby["artJson"]["art_id"], "fixture_source_alias");
 
-        let art_json = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/python/read-art-json",
-            &serde_json::json!({
-                "artPath": root,
-            })
-            .to_string(),
+        let art_json = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/python/read-art-json",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "artPath": root,
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(art_json["compatCommand"], "read_art_json");
         assert_eq!(art_json["artJson"]["label"], "Fixture Source Alias");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup python source aliases root");
     }
 
     #[test]
     fn daemon_exposes_artloom_execute_python_art_command_alias() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("artloom-execute-python-art");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let response = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/python/execute-art",
-            r#"{"artId":"loom_echo","params":{"text":"direct compat"}}"#,
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/python/execute-art",
+                    &[],
+                    Some(r#"{"artId":"loom_echo","params":{"text":"direct compat"}}"#),
+                ),
+            ),
+            200,
         );
 
         assert_eq!(response["compatCommand"], "execute_python_art");
@@ -9896,8 +12632,8 @@ def run(args):
         );
         assert!(response["request_id"].as_str().is_some());
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup python art root");
     }
 
     #[test]
@@ -9917,21 +12653,27 @@ def main(args):
         )
         .expect("write python image art");
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let response = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/python/process-image",
-            &serde_json::json!({
-                "artId": "copy_image",
-                "artPath": art_dir,
-                "inputBase64": test_png_base64(),
-                "params": {}
-            })
-            .to_string(),
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/python/process-image",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "artId": "copy_image",
+                            "artPath": art_dir,
+                            "inputBase64": test_png_base64(),
+                            "params": {}
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
 
         assert_eq!(response["compatCommand"], "python_process_image");
@@ -9944,15 +12686,34 @@ def main(args):
         assert!(response["processing_time_ms"].as_u64().is_some());
         assert!(response["error"].is_null());
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup python image art root");
+    }
+
+    #[test]
+    fn unwrap_prefetch_shader_payload_promotes_text_wrapped_shader_json() {
+        let wrapped = serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "{\"type\":\"shader\",\"vertex_shader\":\"void main(){}\",\"fragment_shader\":\"void main(){ }\",\"uniforms\":{\"strength\":42.0},\"textures\":{\"lut\":\"data:image/png;base64,AAAA\"}}"
+                }
+            ]
+        });
+
+        let unwrapped = unwrap_prefetch_shader_payload(wrapped);
+
+        assert_eq!(unwrapped["type"], "shader");
+        assert_eq!(unwrapped["vertex_shader"], "void main(){}");
+        assert_eq!(unwrapped["fragment_shader"], "void main(){ }");
+        assert_eq!(unwrapped["uniforms"]["strength"], 42.0);
+        assert_eq!(unwrapped["textures"]["lut"], "data:image/png;base64,AAAA");
+        assert!(unwrapped.get("content").is_none());
     }
 
     #[test]
     fn daemon_recovers_trailing_tool_registry_data_before_listing_tools() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("control-plane-trailing-tools");
         let tools_root = root.join("tools");
         fs::create_dir_all(&tools_root).expect("create tool registry root");
@@ -9975,89 +12736,124 @@ def main(args):
             ]"#,
         )
         .expect("write corrupted tool registry");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let response = http_get(address.port(), "/v1/tools");
-        assert!(
-            response.starts_with("HTTP/1.1 200 OK"),
-            "response={response}"
+        let body = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
+            200,
         );
-        let body = response_json_body(&response);
         assert_eq!(body["tools"][0]["id"], "recovered-tool");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup recovered registry root");
     }
 
     #[test]
     fn daemon_reads_and_writes_tool_and_workflow_contracts() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("control-plane-tools-workflows");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/paint-flow",
-            r#"{
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/paint-flow",
+                    &[],
+                    Some(
+                        r#"{
               "id": "paint-flow",
               "name": "Paint Flow",
               "description": "Run a saved workflow",
               "enabled": true,
               "execution": { "type": "workflow", "workflowId": "wf-1" }
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_tool["tool"]["id"], "paint-flow");
         assert_eq!(saved_tool["tool"]["execution"]["type"], "workflow");
 
-        let tools = http_json_get(address.port(), "/v1/tools");
+        let tools = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
+            200,
+        );
         assert_eq!(tools["tools"].as_array().expect("tools").len(), 1);
         assert_eq!(tools["tools"][0]["id"], "paint-flow");
 
-        let saved_workflow = http_json_put(
-            address.port(),
-            "/v1/workflows/wf-1",
-            r#"{"data":"name: Paint Flow\nnodes:\n  - id: prompt\n    uses: text.prompt\n"}"#,
+        let saved_workflow = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/workflows/wf-1",
+                    &[],
+                    Some(
+                        r#"{"data":"name: Paint Flow\nnodes:\n  - id: prompt\n    uses: text.prompt\n"}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_workflow["workflow"]["id"], "wf-1");
         assert_eq!(saved_workflow["workflow"]["name"], "Paint Flow");
         assert_eq!(saved_workflow["workflow"]["nodeCount"], 1);
 
-        let workflows = http_json_get(address.port(), "/v1/workflows");
+        let workflows = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/workflows", &[], None)),
+            200,
+        );
         assert_eq!(
             workflows["workflows"].as_array().expect("workflows").len(),
             1
         );
         assert_eq!(workflows["workflows"][0]["id"], "wf-1");
 
-        let loaded_workflow = http_json_get(address.port(), "/v1/workflows/wf-1");
+        let loaded_workflow = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/workflows/wf-1", &[], None),
+            ),
+            200,
+        );
         assert_eq!(loaded_workflow["workflow"]["id"], "wf-1");
         assert!(loaded_workflow["workflow"]["data"]
             .as_str()
             .expect("workflow data")
             .contains("name: Paint Flow"));
 
-        let deleted_tool = http_json_delete(address.port(), "/v1/tools/paint-flow");
+        let deleted_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("DELETE", "/v1/tools/paint-flow", &[], None),
+            ),
+            200,
+        );
         assert_eq!(deleted_tool["deleted"], true);
-        let tools_after_delete = http_json_get(address.port(), "/v1/tools");
+        let tools_after_delete = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
+            200,
+        );
         assert_eq!(
             tools_after_delete["tools"].as_array().expect("tools").len(),
             0
         );
 
-        let deleted_workflow = http_json_delete(address.port(), "/v1/workflows/wf-1");
+        let deleted_workflow = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("DELETE", "/v1/workflows/wf-1", &[], None),
+            ),
+            200,
+        );
         assert_eq!(deleted_workflow["deleted"], true);
-        let workflows_after_delete = http_json_get(address.port(), "/v1/workflows");
+        let workflows_after_delete = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/workflows", &[], None)),
+            200,
+        );
         assert_eq!(
             workflows_after_delete["workflows"]
                 .as_array()
@@ -10066,27 +12862,25 @@ def main(args):
             0
         );
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn daemon_exposes_artloom_workflow_store_command_aliases() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("artloom-workflow-store");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let saved_metadata = http_json_put(
-            address.port(),
-            "/v1/artloom-compat/workflows/compat-workflow/metadata",
-            r#"{
+        let saved_metadata = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/artloom-compat/workflows/compat-workflow/metadata",
+                    &[],
+                    Some(
+                        r#"{
               "id": "compat-workflow",
               "name": "Compat Workflow",
               "description": "Old metadata path",
@@ -10096,6 +12890,10 @@ def main(args):
               "node_count": 0,
               "tags": ["compat"]
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_metadata["compatCommand"], "save_workflow_metadata");
         assert_eq!(saved_metadata["workflow"]["id"], "compat-workflow");
@@ -10107,25 +12905,48 @@ def main(args):
         assert_eq!(saved_metadata["workflow"]["status"], "draft");
         assert_eq!(saved_metadata["workflow"]["tags"][0], "compat");
 
-        let saved_data = http_json_put(
-            address.port(),
-            "/v1/artloom-compat/workflows/compat-workflow/data",
-            r#"{"data":"name: Compat Workflow\nnodes:\n  - id: prompt\n    uses: text.prompt\n"}"#,
+        let saved_data = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/artloom-compat/workflows/compat-workflow/data",
+                    &[],
+                    Some(
+                        r#"{"data":"name: Compat Workflow\nnodes:\n  - id: prompt\n    uses: text.prompt\n"}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_data["compatCommand"], "save_workflow_data");
         assert_eq!(saved_data["workflowId"], "compat-workflow");
         assert_eq!(saved_data["saved"], true);
 
-        let listed = http_json_get(address.port(), "/v1/artloom-compat/workflows");
+        let listed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/workflows", &[], None),
+            ),
+            200,
+        );
         assert_eq!(listed["compatCommand"], "list_workflows");
         assert_eq!(listed["workflows"][0]["id"], "compat-workflow");
         assert_eq!(listed["workflows"][0]["name"], "Compat Workflow");
         assert_eq!(listed["workflows"][0]["node_count"], 1);
         assert_eq!(listed["workflows"][0]["status"], "draft");
 
-        let loaded_data = http_json_get(
-            address.port(),
-            "/v1/artloom-compat/workflows/compat-workflow/data",
+        let loaded_data = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/v1/artloom-compat/workflows/compat-workflow/data",
+                    &[],
+                    None,
+                ),
+            ),
+            200,
         );
         assert_eq!(loaded_data["compatCommand"], "load_workflow_data");
         assert_eq!(loaded_data["workflowId"], "compat-workflow");
@@ -10134,17 +12955,23 @@ def main(args):
             .expect("loaded workflow data")
             .contains("uses: text.prompt"));
 
-        let deleted = http_json_delete(
-            address.port(),
-            "/v1/artloom-compat/workflows/compat-workflow/data",
+        let deleted = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "DELETE",
+                    "/v1/artloom-compat/workflows/compat-workflow/data",
+                    &[],
+                    None,
+                ),
+            ),
+            200,
         );
         assert_eq!(deleted["compatCommand"], "delete_workflow_data");
         assert_eq!(deleted["workflowId"], "compat-workflow");
         assert_eq!(deleted["deleted"], true);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup ArtLoom workflow store root");
     }
 
@@ -10420,18 +13247,89 @@ nodes:
     }
 
     #[test]
+    fn daemon_tool_readiness_reports_downloaded_python_art_runtime() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("python-art-readiness");
+        mark_framework_installed(&root, "python_art");
+        let runtime_root = provision_test_python_art_runtime(&root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/fixture-python-readiness",
+                    &[],
+                    Some(
+                        r#"{
+              "id": "fixture-python-readiness",
+              "name": "Fixture Python Readiness",
+              "description": "Report framework readiness from a downloaded runtime",
+              "enabled": true,
+              "execution": {
+                "type": "python_art",
+                "artId": "fixture_python_art",
+                "artPath": "python/Arts/FixturePythonReadiness"
+              }
+            }"#,
+                    ),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-python-readiness");
+
+        let readiness = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/v1/tools/fixture-python-readiness/readiness",
+                    &[],
+                    None,
+                ),
+            ),
+            200,
+        );
+        assert_eq!(readiness["toolId"], "fixture-python-readiness");
+        assert_eq!(readiness["framework"], "python_art");
+        assert_eq!(readiness["frameworkInstalled"], true);
+        assert_eq!(readiness["ready"], true, "response={readiness}");
+        let detail = readiness["detail"]
+            .as_str()
+            .expect("python_art readiness detail")
+            .replace('\\', "/");
+        let expected_marker = runtime_root
+            .join("python-embed")
+            .join("python.exe")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        assert!(detail.contains(&expected_marker), "response={readiness}");
+
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup python art readiness root");
+    }
+
+    #[test]
     fn daemon_reports_hook_bridge_status_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let appdata_root = unique_temp_dir("empty-arthook-appdata");
+        let control_plane_root = unique_temp_dir("hook-bridge-status-control-plane");
         let previous_appdata = std::env::var("APPDATA").ok();
         std::env::set_var("APPDATA", &appdata_root);
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime =
+            test_daemon_runtime_from_config(&control_plane_root, DaemonConfig::localhost(0));
 
-        let status = http_json_get(address.port(), "/v1/hook-bridge/status");
+        let status = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/hook-bridge/status", &[], None),
+            ),
+            200,
+        );
         assert_eq!(status["running"], false);
         assert_eq!(status["port"], 19820);
         assert_eq!(status["connectedClients"], 0);
@@ -10446,7 +13344,13 @@ nodes:
         ));
         assert_eq!(status["sessionMethod"], "read_arthook_session");
 
-        let session = http_json_get(address.port(), "/v1/hook-bridge/session");
+        let session = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/hook-bridge/session", &[], None),
+            ),
+            200,
+        );
         assert_eq!(session["method"], "read_arthook_session");
         assert_eq!(
             session["session"]["stickers"]
@@ -10460,15 +13364,15 @@ nodes:
             0
         );
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
         restore_env("APPDATA", previous_appdata);
         fs::remove_dir_all(appdata_root).expect("cleanup appdata root");
+        fs::remove_dir_all(control_plane_root).expect("cleanup control plane");
     }
 
     #[test]
     fn daemon_exposes_hook_canvas_snapshot_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
         let appdata = unique_temp_dir("hook-canvas-appdata");
         let session_dir = appdata.join("com.vmjcv.arthook-next");
         let images = session_dir.join("images");
@@ -10482,26 +13386,474 @@ nodes:
         let previous = std::env::var("APPDATA").ok();
         std::env::set_var("APPDATA", &appdata);
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
-
-        let canvas = http_json_get(address.port(), "/v1/hook-bridge/canvas");
+        let (status, body) = hook_canvas_snapshot().expect("hook canvas snapshot");
+        assert_eq!(status, 200);
+        let canvas = serde_json::from_str::<serde_json::Value>(&body).expect("snapshot json");
         assert_eq!(canvas["available"], true);
         assert_eq!(canvas["nodes"][0]["id"], "capture node");
         assert_eq!(canvas["nodes"][0]["kind"], "screenshot");
-        assert_eq!(
-            canvas["nodes"][0]["previewUrl"],
-            "/v1/hook-bridge/canvas/nodes/capture%20node/preview"
+        let preview_url = canvas["nodes"][0]["previewUrl"]
+            .as_str()
+            .expect("preview url string");
+        assert!(
+            preview_url.starts_with("/v1/hook-bridge/canvas/nodes/capture%20node/preview?v="),
+            "unexpected preview url: {preview_url}"
         );
         assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas"));
         assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview"));
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("join");
         restore_env("APPDATA", previous);
+        clear_hook_canvas_runtime_state();
         fs::remove_dir_all(appdata).expect("cleanup");
+    }
+
+    #[test]
+    fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+        let root = unique_temp_dir("hook-canvas-live-workflow");
+        let appdata = unique_temp_dir("hook-canvas-live-workflow-appdata");
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let workflow = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art_loom/overwrite_workflow",
+                "params": {
+                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
+                    "snapshot": {
+                        "name": "Hook Live",
+                        "nodes": [
+                            {
+                                "id": "capture",
+                                "type": "screenshot",
+                                "position": { "x": 20, "y": 30 },
+                                "measured": { "width": 80, "height": 80 },
+                                "data": {
+                                    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                                    "w": 80,
+                                    "h": 80
+                                }
+                            },
+                            {
+                                "id": "missing-art-node",
+                                "type": "art",
+                                "position": { "x": 160, "y": 40 },
+                                "measured": { "width": 90, "height": 90 },
+                                "data": {
+                                    "artId": "missing-art",
+                                    "previewSrc": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                                    "params": { "strength": 61 },
+                                    "w": 90,
+                                    "h": 90
+                                }
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "edge-1",
+                                "source": "capture",
+                                "target": "missing-art-node",
+                                "sourceHandle": "output",
+                                "targetHandle": "input"
+                            }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(workflow["type"], "success", "response={workflow}");
+
+        let (status, body) = hook_canvas_snapshot().expect("hook canvas snapshot");
+        assert_eq!(status, 200);
+        let canvas = serde_json::from_str::<serde_json::Value>(&body).expect("snapshot json");
+        assert_eq!(canvas["available"], true);
+        assert_eq!(canvas["workflowId"], HOOK_LIVE_WORKFLOW_ID);
+        assert_eq!(canvas["nodes"].as_array().expect("nodes").len(), 2);
+        assert_eq!(canvas["nodes"][1]["id"], "missing-art-node");
+        assert_eq!(canvas["nodes"][1]["kind"], "art");
+        assert_eq!(canvas["nodes"][1]["status"], "ready");
+        assert_eq!(canvas["nodes"][1]["previewAvailable"], true);
+
+        restore_env("APPDATA", previous_appdata);
+        clear_hook_canvas_runtime_state();
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(appdata).expect("cleanup appdata");
+    }
+
+    #[test]
+    fn daemon_hook_canvas_marks_live_art_node_error_after_ahrp_failure() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+        let root = unique_temp_dir("hook-canvas-live-error");
+        let appdata = unique_temp_dir("hook-canvas-live-error-appdata");
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let overwrite = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art_loom/overwrite_workflow",
+                "params": {
+                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
+                    "snapshot": {
+                        "name": "Hook Live",
+                        "nodes": [
+                            {
+                                "id": "capture",
+                                "type": "screenshot",
+                                "position": { "x": 20, "y": 30 },
+                                "measured": { "width": 80, "height": 80 },
+                                "data": {
+                                    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                                    "w": 80,
+                                    "h": 80
+                                }
+                            },
+                            {
+                                "id": "missing-art-node",
+                                "type": "art",
+                                "position": { "x": 160, "y": 40 },
+                                "measured": { "width": 90, "height": 90 },
+                                "data": {
+                                    "artId": "missing-art",
+                                    "previewSrc": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                                    "params": { "strength": 61 },
+                                    "w": 90,
+                                    "h": 90
+                                }
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "edge-1",
+                                "source": "capture",
+                                "target": "missing-art-node",
+                                "sourceHandle": "output",
+                                "targetHandle": "input"
+                            }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(overwrite["type"], "success", "response={overwrite}");
+
+        let before = expect_json_result_response(hook_canvas_snapshot(), 200);
+        assert_eq!(before["nodes"][1]["status"], "ready");
+        let before_revision = before["revision"]
+            .as_str()
+            .expect("before revision")
+            .to_owned();
+
+        let failure = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art/process",
+                "params": {
+                    "request_id": "req-missing-art",
+                    "art_id": "missing-art",
+                    "input": {
+                        "type": "base64",
+                        "data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                        "width": 1,
+                        "height": 1,
+                        "format": "rgba8"
+                    },
+                    "params": {
+                        "strength": 61
+                    },
+                    "disabled_params": []
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(failure["status"], "NotFound", "response={failure}");
+
+        let after = expect_json_result_response(hook_canvas_snapshot(), 200);
+        assert_eq!(after["nodes"][1]["status"], "error");
+        assert_eq!(
+            after["nodes"][1]["errorMessage"],
+            "Art definition not found: missing-art"
+        );
+        assert_eq!(after["nodes"][1]["previewAvailable"], true);
+        let after_revision = after["revision"].as_str().expect("after revision");
+        assert_ne!(after_revision, before_revision);
+        assert!(
+            after_revision.contains("-rt-"),
+            "expected runtime overlay revision suffix, got {after_revision}"
+        );
+
+        restore_env("APPDATA", previous_appdata);
+        clear_hook_canvas_runtime_state();
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(appdata).expect("cleanup appdata");
+    }
+
+    #[test]
+    fn daemon_hook_canvas_overrides_blank_live_art_preview_with_runtime_image_output() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+        let root = unique_temp_dir("hook-canvas-runtime-preview");
+        let appdata = unique_temp_dir("hook-canvas-runtime-preview-appdata");
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        #[cfg(windows)]
+        let execution = ToolExecution::CliWrapper {
+            command: "powershell.exe".to_owned(),
+            args: vec![
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                "Copy-Item -LiteralPath '{{input}}' -Destination '{{output}}' -Force".to_owned(),
+            ],
+        };
+        #[cfg(not(windows))]
+        let execution = ToolExecution::CliWrapper {
+            command: "sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "cp \"$1\" \"$2\"".to_owned(),
+                "loom-cli-wrapper".to_owned(),
+                "{{input}}".to_owned(),
+                "{{output}}".to_owned(),
+            ],
+        };
+        let tool = ToolDefinition::new(
+            "fixture-image-compress-preview",
+            "Fixture Image Preview",
+            "Return image output for preview overlay tests.",
+            execution,
+        );
+        runtime
+            .tool_registry
+            .save_tool(tool)
+            .expect("save preview fixture tool");
+
+        let black_preview = {
+            let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(1, 1, vec![0, 0, 0, 255])
+                .expect("black preview image");
+            let mut png = Cursor::new(Vec::new());
+            DynamicImage::ImageRgba8(image)
+                .write_to(&mut png, ImageFormat::Png)
+                .expect("encode black preview");
+            format!("data:image/png;base64,{}", BASE64.encode(png.into_inner()))
+        };
+
+        let overwrite = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art_loom/overwrite_workflow",
+                "params": {
+                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
+                    "snapshot": {
+                        "name": "Hook Live",
+                        "nodes": [
+                            {
+                                "id": "capture",
+                                "type": "screenshot",
+                                "position": { "x": 20, "y": 30 },
+                                "measured": { "width": 80, "height": 80 },
+                                "data": {
+                                    "src": test_png_base64(),
+                                    "w": 80,
+                                    "h": 80
+                                }
+                            },
+                            {
+                                "id": "compress-art",
+                                "type": "art",
+                                "position": { "x": 160, "y": 40 },
+                                "measured": { "width": 90, "height": 90 },
+                                "data": {
+                                    "artId": "fixture-image-compress-preview",
+                                    "previewSrc": black_preview,
+                                    "params": { "level_num": 2 },
+                                    "w": 90,
+                                    "h": 90
+                                }
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "edge-1",
+                                "source": "capture",
+                                "target": "compress-art",
+                                "sourceHandle": "output",
+                                "targetHandle": "input"
+                            }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(overwrite["type"], "success", "response={overwrite}");
+
+        let before = expect_binary_route_response(
+            hook_canvas_preview_response("compress-art").expect("initial blank preview"),
+            200,
+            "image/png",
+        );
+        assert_ne!(
+            before,
+            test_png_bytes(),
+            "test requires the stored Hook preview to be blank or otherwise not equal to the real output image"
+        );
+
+        let success = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art/process",
+                "params": {
+                    "request_id": "req-runtime-preview",
+                    "art_id": "fixture-image-compress-preview",
+                    "input": {
+                        "type": "base64",
+                        "data": test_png_base64(),
+                        "width": 1,
+                        "height": 1,
+                        "format": "rgba8"
+                    },
+                    "params": {
+                        "level_num": 2
+                    },
+                    "disabled_params": []
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(success["status"], "Success", "response={success}");
+
+        let after_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
+        assert_eq!(after_snapshot["nodes"][1]["status"], "ready");
+        let preview_url = after_snapshot["nodes"][1]["previewUrl"]
+            .as_str()
+            .expect("preview url");
+        assert!(
+            preview_url.contains("?v="),
+            "runtime preview overlay should cache-bust preview urls: {preview_url}"
+        );
+
+        let after = expect_binary_route_response(
+            hook_canvas_preview_response("compress-art").expect("runtime preview"),
+            200,
+            "image/png",
+        );
+        assert_eq!(
+            after,
+            test_png_bytes(),
+            "successful runtime image output must override the blank Hook preview payload"
+        );
+
+        restore_env("APPDATA", previous_appdata);
+        clear_hook_canvas_runtime_state();
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(appdata).expect("cleanup appdata");
+    }
+
+    #[test]
+    fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let previous_appdata = std::env::var("APPDATA").ok();
+        let root = unique_temp_dir("hook-canvas-save-workflow");
+        let appdata = unique_temp_dir("hook-canvas-save-workflow-appdata");
+        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let images = session_dir.join("images");
+        fs::create_dir_all(&images).expect("create session images");
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{
+              "stickers": [
+                {"id":"a","type":"sticker","src":"images/a.png","x":0,"y":0,"w":80,"h":80},
+                {"id":"b","type":"art","artId":"resize","src":"images/b.png","x":200,"y":0,"w":80,"h":80},
+                {"id":"c","type":"art","artId":"resize","src":"images/c.png","x":400,"y":0,"w":80,"h":80},
+                {"id":"lonely","type":"sticker","src":"images/lonely.png","x":0,"y":200,"w":80,"h":80}
+              ],
+              "links": [
+                {"id":"e1","fromUnitId":"a","toUnitId":"b"},
+                {"id":"e2","fromUnitId":"b","toUnitId":"c"}
+              ]
+            }"#,
+        )
+        .expect("write Hook session");
+        for name in ["a.png", "b.png", "c.png", "lonely.png"] {
+            fs::write(images.join(name), test_png_bytes()).expect("write preview");
+        }
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        std::env::set_var("APPDATA", &appdata);
+
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let canvas_workflow_root = root.join("canvas-workflows");
+        let (status, body) = save_hook_canvas_workflow(
+            "hook-export",
+            r#"{"selectedNodeId":"a","workflowName":"Hook Export"}"#,
+            &workflow_store,
+            &canvas_workflow_root,
+        )
+        .expect("save Hook canvas workflow");
+        assert_eq!(status, 200);
+        let saved = serde_json::from_str::<serde_json::Value>(&body).expect("saved workflow json");
+        assert_eq!(saved["workflow"]["id"], "hook-export");
+        assert_eq!(saved["workflow"]["name"], "Hook Export");
+
+        let loaded = workflow_store
+            .load_workflow("hook-export")
+            .expect("load saved workflow");
+        let data = loaded;
+        assert!(data.contains("name: 'Hook Export'"));
+        assert!(data.contains("- id: a"));
+        assert!(data.contains("- id: resize"));
+        assert!(data.contains("- id: resize-2"));
+        assert!(data.contains("needs: [a]"));
+        assert!(data.contains("needs: [resize]"));
+        assert!(!data.contains("lonely"));
+
+        // Renaming updates the display name in meta.json without changing the id.
+        let canvas_root = root.join("canvas-workflows");
+        let (rename_status, rename_body) =
+            rename_canvas_workflow("hook-export", r#"{"name":"Renamed Flow"}"#, &canvas_root)
+                .expect("rename canvas workflow");
+        assert_eq!(rename_status, 200);
+        let renamed = serde_json::from_str::<serde_json::Value>(&rename_body).expect("rename json");
+        assert_eq!(renamed["id"], "hook-export");
+        assert_eq!(renamed["name"], "Renamed Flow");
+        let (_, list_body) = list_canvas_workflows(&canvas_root).expect("list canvas workflows");
+        let list_json = serde_json::from_str::<serde_json::Value>(&list_body).expect("list json");
+        assert!(list_json["workflows"]
+            .as_array()
+            .expect("workflows array")
+            .iter()
+            .any(|w| w["id"] == "hook-export" && w["name"] == "Renamed Flow"));
+
+        // Deleting removes the frozen snapshot directory.
+        let (delete_status, _) =
+            delete_canvas_workflow("hook-export", &canvas_root).expect("delete canvas workflow");
+        assert_eq!(delete_status, 200);
+        let (_, after_body) = list_canvas_workflows(&canvas_root).expect("list after delete");
+        let after_json =
+            serde_json::from_str::<serde_json::Value>(&after_body).expect("after json");
+        assert!(after_json["workflows"]
+            .as_array()
+            .expect("workflows array")
+            .iter()
+            .all(|w| w["id"] != "hook-export"));
+
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        restore_env("APPDATA", previous_appdata);
+        clear_hook_canvas_runtime_state();
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(appdata).expect("cleanup appdata");
     }
 
     #[test]
@@ -10528,38 +13880,75 @@ nodes:
         let previous = std::env::var("APPDATA").ok();
         std::env::set_var("APPDATA", &appdata);
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
-
-        let registered = http_get_bytes(
-            address.port(),
-            "/v1/hook-bridge/canvas/nodes/capture%20node/preview",
-            "",
-        );
-        let (registered_headers, registered_body) = split_http_bytes(&registered);
-        assert!(registered_headers.starts_with("HTTP/1.1 200 OK"));
-        assert!(registered_headers.contains("Content-Type: image/png"));
-        assert_eq!(registered_body, png.as_slice());
+        let registered = hook_canvas_preview_response("capture node").expect("registered preview");
+        let registered_body = expect_binary_route_response(registered, 200, "image/png");
+        assert_eq!(registered_body, png);
 
         for node_id in ["unknown", "escape"] {
-            let response = http_get_bytes(
-                address.port(),
-                &format!("/v1/hook-bridge/canvas/nodes/{node_id}/preview"),
-                "",
-            );
-            let (headers, body) = split_http_bytes(&response);
-            assert!(headers.starts_with("HTTP/1.1 404 Not Found"));
+            let response =
+                hook_canvas_preview_response(node_id).expect("preview not found response");
+            let body = expect_text_route_response(response, 404);
             assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(body).expect("preview error json")
+                serde_json::from_str::<serde_json::Value>(&body).expect("preview error json")
                     ["error"]["code"],
                 "preview_not_found"
             );
         }
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("join");
+        restore_env("APPDATA", previous);
+        fs::remove_dir_all(appdata).expect("cleanup");
+    }
+
+    #[test]
+    fn daemon_prefers_data_url_hook_canvas_preview_over_file_backed_src() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let appdata = unique_temp_dir("hook-canvas-preview-data-url");
+        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let images = session_dir.join("images");
+        fs::create_dir_all(&images).expect("create session images");
+
+        let preferred_png = test_png_bytes();
+        let preferred_data_url = test_png_base64();
+
+        let fallback_png = {
+            let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(1, 1, vec![200, 100, 50, 255])
+                .expect("fallback png image");
+            let mut bytes = Vec::new();
+            DynamicImage::ImageRgba8(image)
+                .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+                .expect("encode fallback png");
+            bytes
+        };
+        fs::write(images.join("original.png"), &fallback_png).expect("write fallback image");
+        fs::write(
+            session_dir.join("session.json"),
+            format!(
+                r#"{{
+                  "stickers": [
+                    {{
+                      "id":"capture",
+                      "type":"sticker",
+                      "src":"images/original.png",
+                      "previewSrc":"{}"
+                    }}
+                  ],
+                  "links": []
+                }}"#,
+                preferred_data_url
+            ),
+        )
+        .expect("write session");
+
+        let previous = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+
+        let response = hook_canvas_preview_response("capture").expect("data-url preview response");
+        let body = expect_binary_route_response(response, 200, "image/png");
+        assert_eq!(
+            body, preferred_png,
+            "daemon should serve previewSrc data URL instead of falling back to src",
+        );
+
         restore_env("APPDATA", previous);
         fs::remove_dir_all(appdata).expect("cleanup");
     }
@@ -10595,42 +13984,20 @@ nodes:
         let previous = std::env::var("APPDATA").ok();
         std::env::set_var("APPDATA", &appdata);
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
+        let unsupported =
+            hook_canvas_preview_response("unsupported").expect("unsupported preview response");
+        expect_text_route_response(unsupported, 415);
 
-        let unsupported = http_get_bytes(
-            address.port(),
-            "/v1/hook-bridge/canvas/nodes/unsupported/preview",
-            "",
-        );
-        assert!(split_http_bytes(&unsupported)
-            .0
-            .starts_with("HTTP/1.1 415 Unsupported Media Type"));
-
-        let oversized = http_get_bytes(
-            address.port(),
-            "/v1/hook-bridge/canvas/nodes/oversized/preview",
-            "",
-        );
-        assert!(split_http_bytes(&oversized)
-            .0
-            .starts_with("HTTP/1.1 413 Payload Too Large"));
+        let oversized =
+            hook_canvas_preview_response("oversized").expect("oversized preview response");
+        expect_text_route_response(oversized, 413);
 
         for (node_id, expected_type) in [("jpeg", "image/jpeg"), ("webp", "image/webp")] {
-            let response = http_get_bytes(
-                address.port(),
-                &format!("/v1/hook-bridge/canvas/nodes/{node_id}/preview"),
-                "",
-            );
-            let (headers, _) = split_http_bytes(&response);
-            assert!(headers.starts_with("HTTP/1.1 200 OK"));
-            assert!(headers.contains(&format!("Content-Type: {expected_type}")));
+            let response = hook_canvas_preview_response(node_id)
+                .unwrap_or_else(|error| panic!("preview response for {node_id}: {error:#}"));
+            expect_binary_route_response(response, 200, expected_type);
         }
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("join");
         restore_env("APPDATA", previous);
         fs::remove_dir_all(appdata).expect("cleanup");
     }
@@ -10639,6 +14006,7 @@ nodes:
     fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let appdata = unique_temp_dir("hook-canvas-auth-appdata");
+        let control_plane_root = unique_temp_dir("hook-canvas-auth-control-plane");
         let session_dir = appdata.join("com.vmjcv.arthook-next");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
@@ -10650,66 +14018,66 @@ nodes:
         .expect("write Hook session");
         let previous = std::env::var("APPDATA").ok();
         std::env::set_var("APPDATA", &appdata);
+        let runtime = test_daemon_runtime(&control_plane_root, Some("canvas-secret"));
 
-        let daemon =
-            LoomDaemon::bind(DaemonConfig::localhost(0).with_bearer_token("canvas-secret"))
-                .expect("bind daemon");
-        let address = daemon.local_addr().expect("address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve"));
-
-        let unauthorized = http_get_bytes(
-            address.port(),
-            "/v1/hook-bridge/canvas/nodes/capture/preview",
-            "",
+        let unauthorized = route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                "/v1/hook-bridge/canvas/nodes/capture/preview",
+                &[],
+                None,
+            ),
         );
-        assert!(split_http_bytes(&unauthorized)
-            .0
-            .starts_with("HTTP/1.1 401 Unauthorized"));
-        let authorized = http_get_bytes(
-            address.port(),
-            "/v1/hook-bridge/canvas/nodes/capture/preview",
-            "Authorization: Bearer canvas-secret\r\n",
+        let unauthorized_body = expect_text_route_response(unauthorized, 401);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&unauthorized_body)
+                .expect("unauthorized json")["error"]["code"],
+            "unauthorized"
         );
-        assert!(split_http_bytes(&authorized)
-            .0
-            .starts_with("HTTP/1.1 200 OK"));
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("join");
+        let authorized = route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                "/v1/hook-bridge/canvas/nodes/capture/preview",
+                &[("Authorization", "Bearer canvas-secret")],
+                None,
+            ),
+        );
+        expect_binary_route_response(authorized, 200, "image/png");
 
         fs::write(session_dir.join("session.json"), "{not-json").expect("corrupt session");
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind malformed daemon");
-        let address = daemon.local_addr().expect("malformed address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server =
-            thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve malformed"));
-        let response = http_request(address.port(), "GET", "/v1/hook-bridge/canvas", None);
-        assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
+        let malformed_runtime = test_daemon_runtime(&control_plane_root, None);
+        let response = route_request(
+            &malformed_runtime,
+            &parsed_request("GET", "/v1/hook-bridge/canvas", &[], None),
+        );
+        let body = expect_text_route_response(response, 500);
         assert_eq!(
-            response_json_body(&response)["error"]["code"],
+            serde_json::from_str::<serde_json::Value>(&body).expect("malformed session json")
+                ["error"]["code"],
             "hook_canvas_error"
         );
 
-        shutdown_tx.send(()).expect("shutdown malformed");
-        server.join().expect("join malformed");
         restore_env("APPDATA", previous);
         fs::remove_dir_all(appdata).expect("cleanup");
+        fs::remove_dir_all(control_plane_root).expect("cleanup control plane");
     }
 
     #[test]
     fn daemon_exposes_artloom_settings_shortcuts_and_safe_system_contracts() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-settings");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let settings = http_json_get(address.port(), "/v1/artloom-compat/settings");
+        let settings = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/settings", &[], None),
+            ),
+            200,
+        );
         assert_eq!(settings["compatCommand"], "get_settings");
         assert_eq!(settings["settings"]["general"]["theme"], "system");
         assert_eq!(
@@ -10717,28 +14085,58 @@ nodes:
             "http://127.0.0.1:8188"
         );
 
-        let updated_settings = http_json_put(
-            address.port(),
-            "/v1/artloom-compat/settings",
-            r#"{"general":{"theme":"dark","language":"en","auto_start":false,"minimize_to_tray":true,"enable_tray_icon":true},"system":{"auto_check_updates":true,"enable_run_log":true,"run_as_admin":false,"record_screenshot_history":true,"history_retention":"7d","enable_proxy":false},"engine":{"comfyui_url":"http://127.0.0.1:8188","python_interpreter":"python.exe","virtual_env_path":"./venv","compute_device":"0","vram_reservation_gb":12},"quick_bindings":[{"id":"1","art":"ComfyUI Workflow","key":"Ctrl+Shift+1"}],"shortcuts":{}}"#,
+        let updated_settings = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/artloom-compat/settings",
+                    &[],
+                    Some(
+                        r#"{"general":{"theme":"dark","language":"en","auto_start":false,"minimize_to_tray":true,"enable_tray_icon":true},"system":{"auto_check_updates":true,"enable_run_log":true,"run_as_admin":false,"record_screenshot_history":true,"history_retention":"7d","enable_proxy":false},"engine":{"comfyui_url":"http://127.0.0.1:8188","python_interpreter":"python.exe","virtual_env_path":"./venv","compute_device":"0","vram_reservation_gb":12},"quick_bindings":[{"id":"1","art":"ComfyUI Workflow","key":"Ctrl+Shift+1"}],"shortcuts":{}}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(updated_settings["compatCommand"], "update_settings");
         assert_eq!(updated_settings["settings"]["general"]["theme"], "dark");
 
-        let shortcut = http_json_put(
-            address.port(),
-            "/v1/artloom-compat/shortcuts/capture",
-            r#"{"id":"capture","label":"Screenshot","keys":"Ctrl+Alt+1","enabled":true}"#,
+        let shortcut = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/artloom-compat/shortcuts/capture",
+                    &[],
+                    Some(
+                        r#"{"id":"capture","label":"Screenshot","keys":"Ctrl+Alt+1","enabled":true}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(shortcut["compatCommand"], "update_shortcut");
         assert_eq!(shortcut["shortcut"]["keys"], "Ctrl+Alt+1");
 
-        let shortcuts = http_json_get(address.port(), "/v1/artloom-compat/shortcuts");
+        let shortcuts = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/shortcuts", &[], None),
+            ),
+            200,
+        );
         assert_eq!(shortcuts["compatCommand"], "get_shortcuts");
         assert_eq!(shortcuts["shortcuts"][0]["id"], "capture");
         assert_eq!(shortcuts["shortcuts"][0]["keys"], "Ctrl+Alt+1");
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("POST", "/v1/hook-bridge/start", &[], Some(r#"{"port":0}"#)),
+            ),
+            200,
+        );
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
@@ -10771,63 +14169,111 @@ nodes:
         assert_eq!(hook_synced["data"][0]["keys"], "Ctrl+Alt+1");
 
         drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("POST", "/v1/hook-bridge/stop", &[], Some("{}")),
+            ),
+            200,
+        );
         assert_eq!(stopped["running"], false);
 
-        let default_autostart =
-            http_json_get(address.port(), "/v1/artloom-compat/system/autostart");
+        let default_autostart = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/system/autostart", &[], None),
+            ),
+            200,
+        );
         assert_eq!(default_autostart["compatCommand"], "is_autostart_enabled");
         assert_eq!(default_autostart["enabled"], false);
         assert_eq!(default_autostart["sideEffect"], false);
 
-        let autostart = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/system/autostart",
-            r#"{"enabled":true}"#,
+        let autostart = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/system/autostart",
+                    &[],
+                    Some(r#"{"enabled":true}"#),
+                ),
+            ),
+            200,
         );
         assert_eq!(autostart["compatCommand"], "set_autostart");
         assert_eq!(autostart["enabled"], true);
         assert_eq!(autostart["sideEffect"], false);
 
-        let updated_autostart =
-            http_json_get(address.port(), "/v1/artloom-compat/system/autostart");
+        let updated_autostart = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/system/autostart", &[], None),
+            ),
+            200,
+        );
         assert_eq!(updated_autostart["compatCommand"], "is_autostart_enabled");
         assert_eq!(updated_autostart["enabled"], true);
         assert_eq!(updated_autostart["sideEffect"], false);
 
-        let disabled_autostart = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/system/autostart/disable",
-            "{}",
+        let disabled_autostart = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/system/autostart/disable",
+                    &[],
+                    Some("{}"),
+                ),
+            ),
+            200,
         );
         assert_eq!(disabled_autostart["compatCommand"], "disable_autostart");
         assert_eq!(disabled_autostart["enabled"], false);
         assert_eq!(disabled_autostart["sideEffect"], false);
 
-        let enabled_autostart = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/system/autostart/enable",
-            "{}",
+        let enabled_autostart = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/system/autostart/enable",
+                    &[],
+                    Some("{}"),
+                ),
+            ),
+            200,
         );
         assert_eq!(enabled_autostart["compatCommand"], "enable_autostart");
         assert_eq!(enabled_autostart["enabled"], true);
         assert_eq!(enabled_autostart["sideEffect"], false);
 
-        let tray = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/system/minimize-to-tray",
-            r#"{"enabled":false}"#,
+        let tray = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/system/minimize-to-tray",
+                    &[],
+                    Some(r#"{"enabled":false}"#),
+                ),
+            ),
+            200,
         );
         assert_eq!(tray["compatCommand"], "set_minimize_to_tray");
         assert_eq!(tray["enabled"], false);
         assert_eq!(tray["sideEffect"], false);
 
-        let paths = http_json_get(address.port(), "/v1/artloom-compat/app-paths");
+        let paths = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/app-paths", &[], None),
+            ),
+            200,
+        );
         assert_eq!(paths["compatCommand"], "get_app_paths");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup settings root");
     }
 
@@ -10835,13 +14281,7 @@ nodes:
     fn daemon_exposes_artloom_registry_ipc_and_shared_memory_aliases() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-compat-aliases");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
         let sync_body = serde_json::json!({
             "arts": [{
@@ -10863,18 +14303,41 @@ nodes:
             }]
         })
         .to_string();
-        let saved_tool = http_json_post(address.port(), "/v1/artloom-compat/arts/sync", &sync_body);
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/sync",
+                    &[],
+                    Some(&sync_body),
+                ),
+            ),
+            200,
+        );
         assert_eq!(saved_tool["syncedCount"], 1);
         assert_eq!(saved_tool["arts"][0]["art_id"], "compat-art");
 
-        let arts = http_json_get(address.port(), "/v1/artloom-compat/arts");
+        let arts = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/arts", &[], None),
+            ),
+            200,
+        );
         assert_eq!(arts["compatCommand"], "list_arts");
         assert_eq!(arts["count"], 1);
         assert_eq!(arts["arts"][0]["art_id"], "compat-art");
         assert_eq!(arts["arts"][0]["auto_process"], true);
         assert_eq!(arts["arts"][0]["defaults"]["seed"], 1234);
 
-        let user_arts = http_json_get(address.port(), "/v1/artloom-compat/user-arts");
+        let user_arts = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/user-arts", &[], None),
+            ),
+            200,
+        );
         assert_eq!(user_arts["compatCommand"], "get_user_arts");
         assert_eq!(user_arts["arts"][0]["id"], "compat-art");
         assert_eq!(user_arts["arts"][0]["name"], "Compat Art");
@@ -10899,47 +14362,91 @@ nodes:
         assert_eq!(user_arts["arts"][0]["outputs"][0]["name"], "result");
         assert!(user_arts["arts"][0].get("art_id").is_none());
 
-        let art = http_json_get(address.port(), "/v1/artloom-compat/arts/compat-art");
+        let art = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/arts/compat-art", &[], None),
+            ),
+            200,
+        );
         assert_eq!(art["compatCommand"], "get_art");
         assert_eq!(art["art"]["enabled"], true);
         assert_eq!(art["art"]["auto_process"], true);
         assert_eq!(art["art"]["defaults"]["seed"], 1234);
 
-        let enabled_arts = http_json_get(address.port(), "/v1/artloom-compat/arts/enabled");
+        let enabled_arts = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/arts/enabled", &[], None),
+            ),
+            200,
+        );
         assert_eq!(enabled_arts["compatCommand"], "get_enabled_arts");
         assert_eq!(enabled_arts["count"], 1);
         assert_eq!(enabled_arts["arts"][0]["id"], "compat-art");
 
-        let disabled = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/arts/compat-art/disable",
-            "{}",
+        let disabled = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/compat-art/disable",
+                    &[],
+                    Some("{}"),
+                ),
+            ),
+            200,
         );
         assert_eq!(disabled["compatCommand"], "disable_art");
         assert_eq!(disabled["enabled"], false);
 
-        let enabled_after_disable =
-            http_json_get(address.port(), "/v1/artloom-compat/arts/enabled");
+        let enabled_after_disable = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/arts/enabled", &[], None),
+            ),
+            200,
+        );
         assert_eq!(enabled_after_disable["compatCommand"], "get_enabled_arts");
         assert_eq!(enabled_after_disable["count"], 0);
 
-        let enabled = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/arts/compat-art/enable",
-            "{}",
+        let enabled = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/compat-art/enable",
+                    &[],
+                    Some("{}"),
+                ),
+            ),
+            200,
         );
         assert_eq!(enabled["compatCommand"], "enable_art");
         assert_eq!(enabled["enabled"], true);
 
-        let defaults = http_json_put(
-            address.port(),
-            "/v1/artloom-compat/arts/compat-art/defaults",
-            r#"{"defaults":{"strength":0.8}}"#,
+        let defaults = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/artloom-compat/arts/compat-art/defaults",
+                    &[],
+                    Some(r#"{"defaults":{"strength":0.8}}"#),
+                ),
+            ),
+            200,
         );
         assert_eq!(defaults["compatCommand"], "update_art_defaults");
         assert_eq!(defaults["tool"]["params"][0]["default"], 0.8);
 
-        let synced = http_json_post(address.port(), "/v1/artloom-compat/arts/sync", "{}");
+        let synced = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("POST", "/v1/artloom-compat/arts/sync", &[], Some("{}")),
+            ),
+            200,
+        );
         assert_eq!(synced["compatCommand"], "sync_user_arts");
         assert_eq!(synced["synced"], true);
         assert_eq!(synced["sideEffect"], false);
@@ -10948,43 +14455,76 @@ nodes:
             .expect("sync message")
             .contains("source of truth"));
 
-        let ipc = http_json_get(address.port(), "/v1/artloom-compat/ipc/status");
+        let ipc = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/ipc/status", &[], None),
+            ),
+            200,
+        );
         assert_eq!(ipc["compatCommand"], "get_ipc_status");
         assert_eq!(ipc["protocol"], "artloom-compat");
 
-        let created_buffer = http_json_post(
-            address.port(),
-            "/v1/shared-memory/buffers",
-            r#"{"width":1,"height":1,"channels":4}"#,
+        let created_buffer = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/shared-memory/buffers",
+                    &[],
+                    Some(r#"{"width":1,"height":1,"channels":4}"#),
+                ),
+            ),
+            200,
         );
         assert_eq!(created_buffer["compatCommand"], "shm_create_buffer");
         let handle = created_buffer["handle"]
             .as_str()
             .expect("shared memory handle");
 
-        let buffers = http_json_get(address.port(), "/v1/shared-memory/buffers");
+        let buffers = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/shared-memory/buffers", &[], None),
+            ),
+            200,
+        );
         assert_eq!(buffers["compatCommand"], "shm_list_buffers");
         assert_eq!(buffers["buffers"][0]["handle_name"], handle);
         assert_eq!(buffers["buffers"][0]["format"], "rgba8");
         assert_eq!(buffers["buffers"][0]["ref_count"], 1);
 
-        let info = http_json_get(
-            address.port(),
-            &format!("/v1/shared-memory/buffers/{handle}"),
+        let info = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    &format!("/v1/shared-memory/buffers/{handle}"),
+                    &[],
+                    None,
+                ),
+            ),
+            200,
         );
         assert_eq!(info["compatCommand"], "shm_get_buffer_info");
         assert_eq!(info["buffer"]["handle_name"], handle);
 
-        let released = http_json_delete(
-            address.port(),
-            &format!("/v1/shared-memory/buffers/{handle}"),
+        let released = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "DELETE",
+                    &format!("/v1/shared-memory/buffers/{handle}"),
+                    &[],
+                    None,
+                ),
+            ),
+            200,
         );
         assert_eq!(released["compatCommand"], "shm_release_buffer");
         assert_eq!(released["released"], true);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup alias root");
     }
 
@@ -10992,18 +14532,21 @@ nodes:
     fn daemon_sync_user_arts_imports_payload_and_preserves_non_compat_tools() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-compat-import");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let regular_tool = http_json_put(
-            address.port(),
-            "/v1/tools/loom-tool",
-            r#"{"id":"loom-tool","name":"Loom Tool","description":"native loom tool","enabled":true,"execution":{"type":"workflow","workflowId":"wf-native"}}"#,
+        let regular_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/loom-tool",
+                    &[],
+                    Some(
+                        r#"{"id":"loom-tool","name":"Loom Tool","description":"native loom tool","enabled":true,"execution":{"type":"workflow","workflowId":"wf-native"}}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(regular_tool["tool"]["id"], "loom-tool");
 
@@ -11018,10 +14561,17 @@ nodes:
             }]
         })
         .to_string();
-        let old_compat = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/arts/sync",
-            &old_compat_body,
+        let old_compat = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/sync",
+                    &[],
+                    Some(&old_compat_body),
+                ),
+            ),
+            200,
         );
         assert_eq!(old_compat["syncedCount"], 1);
         assert_eq!(old_compat["arts"][0]["art_id"], "compat-old");
@@ -11045,83 +14595,127 @@ nodes:
             }]
         })
         .to_string();
-        let synced = http_json_post(address.port(), "/v1/artloom-compat/arts/sync", &sync_body);
+        let synced = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/sync",
+                    &[],
+                    Some(&sync_body),
+                ),
+            ),
+            200,
+        );
         assert_eq!(synced["compatCommand"], "sync_user_arts");
         assert_eq!(synced["sideEffect"], true);
         assert_eq!(synced["syncedCount"], 1);
 
-        let tools = http_json_get(address.port(), "/v1/tools");
+        let tools = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
+            200,
+        );
         let listed = tools["tools"].as_array().expect("tools array");
         assert!(listed.iter().any(|tool| tool["id"] == "loom-tool"));
         assert!(listed.iter().any(|tool| tool["id"] == "compat-new"));
         assert!(!listed.iter().any(|tool| tool["id"] == "compat-old"));
 
-        let arts = http_json_get(address.port(), "/v1/artloom-compat/arts");
+        let arts = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/arts", &[], None),
+            ),
+            200,
+        );
         let listed_arts = arts["arts"].as_array().expect("arts array");
         assert_eq!(listed_arts.len(), 1);
         assert_eq!(listed_arts[0]["art_id"], "compat-new");
         assert_eq!(listed_arts[0]["inputs"][0]["name"], "prompt");
         assert_eq!(listed_arts[0]["params"][0]["default"], 0.8);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup import root");
     }
 
     #[test]
     fn daemon_hook_bridge_runtime_start_status_stop() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("hook-bridge-runtime");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let stopped = http_json_get(address.port(), "/v1/hook-bridge/status");
+        let stopped = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
         assert_eq!(stopped["running"], false);
         assert_eq!(stopped["connectedClients"], 0);
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = expect_json_result_response(
+            start_hook_bridge(
+                r#"{"port":0}"#,
+                &runtime.hook_bridge,
+                &runtime.mcp_servers,
+                &runtime.tool_registry,
+                &runtime.workflow_store,
+                &runtime.artloom_settings,
+                &runtime.shared_images,
+                &runtime.ocr_provider,
+            ),
+            200,
+        );
         assert_eq!(started["running"], true);
         assert!(started["port"].as_u64().expect("assigned bridge port") > 0);
         assert_eq!(started["connectedClients"], 0);
         assert_eq!(started["protocol"], "artloom-compat");
 
-        let running = http_json_get(address.port(), "/v1/hook-bridge/status");
+        let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
         assert_eq!(running["running"], true);
         assert_eq!(running["port"], started["port"]);
 
-        let duplicate_start = http_request(
-            address.port(),
-            "POST",
-            "/v1/hook-bridge/start",
-            Some(r#"{"port":0}"#),
+        let duplicate_start = expect_json_result_response(
+            start_hook_bridge(
+                r#"{"port":0}"#,
+                &runtime.hook_bridge,
+                &runtime.mcp_servers,
+                &runtime.tool_registry,
+                &runtime.workflow_store,
+                &runtime.artloom_settings,
+                &runtime.shared_images,
+                &runtime.ocr_provider,
+            ),
+            409,
         );
-        assert!(
-            duplicate_start.starts_with("HTTP/1.1 409 Conflict"),
-            "duplicate_start={duplicate_start}"
-        );
+        assert_eq!(duplicate_start["error"]["code"], "hook_bridge_running");
 
-        let stopped_again = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped_again =
+            expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
         assert_eq!(stopped_again["running"], false);
         assert_eq!(stopped_again["connectedClients"], 0);
         assert_eq!(stopped_again["port"], 19820);
 
-        let final_status = http_json_get(address.port(), "/v1/hook-bridge/status");
+        let final_status =
+            expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
         assert_eq!(final_status["running"], false);
         assert_eq!(final_status["port"], 19820);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup hook bridge root");
     }
 
     #[test]
     fn daemon_hook_bridge_accepts_websocket_handshake_request() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("hook-bridge-handshake");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = expect_json_result_response(
+            start_hook_bridge(
+                r#"{"port":0}"#,
+                &runtime.hook_bridge,
+                &runtime.mcp_servers,
+                &runtime.tool_registry,
+                &runtime.workflow_store,
+                &runtime.artloom_settings,
+                &runtime.shared_images,
+                &runtime.ocr_provider,
+            ),
+            200,
+        );
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let stream =
             TcpStream::connect(("127.0.0.1", bridge_port)).expect("connect bridge tcp socket");
@@ -11147,7 +14741,7 @@ nodes:
         assert_eq!(response["data"]["server_version"], "0.1.0");
         assert!(response["data"]["session_id"].as_str().is_some());
 
-        let running = http_json_get(address.port(), "/v1/hook-bridge/status");
+        let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
         assert_eq!(running["running"], true);
         assert!(
             running["connectedClients"]
@@ -11157,24 +14751,18 @@ nodes:
         );
 
         drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup hook bridge root");
     }
 
     #[test]
     fn daemon_artloom_sync_without_defaults_does_not_treat_art_shape_as_defaults() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-compat-no-defaults");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
         let sync_body = serde_json::json!({
             "arts": [{
@@ -11194,19 +14782,34 @@ nodes:
             }]
         })
         .to_string();
-        let saved_tool = http_json_post(address.port(), "/v1/artloom-compat/arts/sync", &sync_body);
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/sync",
+                    &[],
+                    Some(&sync_body),
+                ),
+            ),
+            200,
+        );
         assert_eq!(saved_tool["syncedCount"], 1);
 
-        let arts = http_json_get(address.port(), "/v1/artloom-compat/arts");
+        let arts = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/artloom-compat/arts", &[], None),
+            ),
+            200,
+        );
         assert_eq!(arts["compatCommand"], "list_arts");
         assert_eq!(arts["arts"][0]["defaults"], json!({ "strength": 0.2 }));
         assert!(arts["arts"][0]["defaults"].get("id").is_none());
         assert!(arts["arts"][0]["defaults"].get("execution").is_none());
         assert!(arts["arts"][0]["defaults"].get("params").is_none());
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup settings root");
     }
 
@@ -11214,22 +14817,37 @@ nodes:
     fn daemon_hook_bridge_sync_user_arts_imports_hook_payload() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("hook-bridge-sync-user-arts");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_native_tool = http_json_put(
-            address.port(),
-            "/v1/tools/loom-tool",
-            r#"{"id":"loom-tool","name":"Loom Tool","description":"native loom tool","enabled":true,"execution":{"type":"workflow","workflowId":"wf-native"}}"#,
+        let saved_native_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/loom-tool",
+                    &[],
+                    Some(
+                        r#"{"id":"loom-tool","name":"Loom Tool","description":"native loom tool","enabled":true,"execution":{"type":"workflow","workflowId":"wf-native"}}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_native_tool["tool"]["id"], "loom-tool");
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = expect_json_result_response(
+            start_hook_bridge(
+                r#"{"port":0}"#,
+                &runtime.hook_bridge,
+                &runtime.mcp_servers,
+                &runtime.tool_registry,
+                &runtime.workflow_store,
+                &runtime.artloom_settings,
+                &runtime.shared_images,
+                &runtime.ocr_provider,
+            ),
+            200,
+        );
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
         let mut socket = connect_hook_bridge_websocket(bridge_port);
@@ -11305,34 +14923,272 @@ nodes:
         assert_eq!(relisted["data"][0]["defaults"]["strength"], 0.9);
         assert_eq!(relisted["data"][0]["params"][0]["default"], 0.9);
 
-        let tools = http_json_get(address.port(), "/v1/tools");
+        let tools = expect_json_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
+            200,
+        );
         let listed_tools = tools["tools"].as_array().expect("tools array");
         assert!(listed_tools.iter().any(|tool| tool["id"] == "loom-tool"));
         assert!(listed_tools.iter().any(|tool| tool["id"] == "hook-art"));
 
         drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup hook sync root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_sync_user_arts_preserves_loom_local_compat_art_on_id_collision() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("hook-bridge-sync-loom-local-collision");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let art_id = "custom-1770146354922";
+        let local_command = root
+            .join("arts")
+            .join(art_id)
+            .join("bin")
+            .join("pingo.exe")
+            .to_string_lossy()
+            .to_string();
+        let local_tool: ToolDefinition = serde_json::from_value(json!({
+            "id": art_id,
+            "name": "图片压缩",
+            "description": "使用 Pingo 对 PNG/JPEG/WebP/APNG 图片执行本地压缩",
+            "enabled": true,
+            "execution": {
+                "type": "cli_wrapper",
+                "command": local_command,
+                "args": [
+                    "-s{{level_num}}",
+                    "-quality={{quality_num}}",
+                    "{{-lossless}}",
+                    "{{output}}"
+                ]
+            },
+            "outputs": [{
+                "name": "output",
+                "label": "output",
+                "type": "image",
+                "execution_type": "image_buffer"
+            }],
+            "params": [
+                {
+                    "id": "level_num",
+                    "label": "压缩级别",
+                    "widget": "slider",
+                    "default": 2,
+                    "min": 1,
+                    "max": 4,
+                    "step": 1,
+                    "data_type": "number"
+                },
+                {
+                    "id": "quality_num",
+                    "label": "质量",
+                    "widget": "slider",
+                    "default": 90,
+                    "min": 60,
+                    "max": 100,
+                    "step": 1,
+                    "data_type": "number"
+                },
+                {
+                    "id": "lossless",
+                    "label": "无损压缩",
+                    "widget": "checkbox",
+                    "default": false,
+                    "data_type": "bool"
+                }
+            ],
+            "metadata": {
+                "dependencies": {
+                    "framework": "cli_wrapper",
+                    "binaries": [{
+                        "name": "bin/pingo.exe",
+                        "sha256": "abc"
+                    }]
+                },
+                "artloomCompat": {
+                    "defaults": {},
+                    "executionType": "cli_wrapper",
+                    "icon": "#52c41a",
+                    "source": "loom-local",
+                    "execution": {
+                        "command": local_command,
+                        "args": "-s{{level_num}} -quality={{quality_num}} {{-lossless}} {{output}}",
+                        "outputs": [{
+                            "name": "output",
+                            "label": "output",
+                            "type": "image",
+                            "execution_type": "image_buffer"
+                        }],
+                        "sourceType": "installed"
+                    }
+                }
+            }
+        }))
+        .expect("local tool definition");
+        runtime
+            .tool_registry
+            .save_tool(local_tool)
+            .expect("save loom-local compat art");
+
+        let started = expect_json_result_response(
+            start_hook_bridge(
+                r#"{"port":0}"#,
+                &runtime.hook_bridge,
+                &runtime.mcp_servers,
+                &runtime.tool_registry,
+                &runtime.workflow_store,
+                &runtime.artloom_settings,
+                &runtime.shared_images,
+                &runtime.ocr_provider,
+            ),
+            200,
+        );
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+        let request = serde_json::json!({
+            "method": "sync_user_arts",
+            "params": {
+                "arts": [{
+                    "id": art_id,
+                    "name": "图片压缩",
+                    "description": "",
+                    "enabled": true,
+                    "execution_type": "cli_wrapper",
+                    "execution": {
+                        "command": "\"C:\\Users\\vmjcv\\Downloads\\pingo-win64\\pingo.exe\"",
+                        "args": "-s{{level_num}} -quality={{quality_num}} {{-lossless}} {{output}}",
+                        "outputs": [{
+                            "captureMode": "explicit_path",
+                            "execution_type": "image_path",
+                            "filename": "{{input}}",
+                            "label": "output",
+                            "name": "output",
+                            "type": "image"
+                        }]
+                    },
+                    "outputs": [{
+                        "captureMode": "explicit_path",
+                        "execution_type": "image_path",
+                        "filename": "{{input}}",
+                        "label": "output",
+                        "name": "output",
+                        "type": "image"
+                    }],
+                    "params": [
+                        {
+                            "data_type": "number",
+                            "default": "2",
+                            "id": "level_num",
+                            "label": "level_num",
+                            "max": 9.0,
+                            "min": 1.0,
+                            "step": 1.0,
+                            "widget": "slider"
+                        },
+                        {
+                            "data_type": "number",
+                            "default": "90",
+                            "id": "quality_num",
+                            "label": "quality_num",
+                            "max": 100.0,
+                            "min": 60.0,
+                            "step": 1.0,
+                            "widget": "slider"
+                        },
+                        {
+                            "data_type": "string",
+                            "default": "-lossless",
+                            "id": "lossless",
+                            "label": "lossless",
+                            "widget": "text"
+                        }
+                    ]
+                }]
+            }
+        });
+        socket
+            .send(tungstenite::Message::Text(request.to_string()))
+            .expect("send colliding sync_user_arts");
+        let response = read_hook_bridge_json(&mut socket);
+        assert_eq!(response["type"], "success");
+        assert_eq!(response["data"]["compatCommand"], "sync_user_arts");
+        assert_eq!(response["data"]["sideEffect"], true);
+        assert_eq!(response["data"]["syncedCount"], 0);
+        assert_eq!(response["data"]["count"], 1);
+        assert_eq!(response["data"]["arts"][0]["id"], art_id);
+        assert_eq!(
+            response["data"]["arts"][0]["execution"]["command"],
+            local_command
+        );
+        assert_eq!(
+            response["data"]["arts"][0]["outputs"][0]["execution_type"],
+            "image_buffer"
+        );
+        assert_eq!(
+            response["data"]["arts"][0]["params"][2]["data_type"],
+            "bool"
+        );
+
+        let saved = runtime
+            .tool_registry
+            .get_tool(art_id)
+            .expect("get saved art")
+            .expect("art exists");
+        match saved.execution {
+            ToolExecution::CliWrapper { command, args } => {
+                assert_eq!(command, local_command);
+                assert_eq!(
+                    args,
+                    vec![
+                        "-s{{level_num}}".to_owned(),
+                        "-quality={{quality_num}}".to_owned(),
+                        "{{-lossless}}".to_owned(),
+                        "{{output}}".to_owned(),
+                    ]
+                );
+            }
+            other => panic!("expected cli_wrapper execution, got {other:?}"),
+        }
+        assert_eq!(saved.outputs[0]["execution_type"], "image_buffer");
+        assert_eq!(saved.params[2]["data_type"], "bool");
+
+        socket
+            .send(tungstenite::Message::Text(
+                r#"{"method":"list_arts"}"#.to_owned(),
+            ))
+            .expect("send list_arts");
+        let listed = read_hook_bridge_json(&mut socket);
+        assert_eq!(listed["type"], "arts");
+        assert_eq!(listed["data"].as_array().expect("arts").len(), 1);
+        assert_eq!(listed["data"][0]["art_id"], art_id);
+        assert_eq!(listed["data"][0]["execution"]["command"], local_command);
+        assert_eq!(
+            listed["data"][0]["outputs"][0]["execution_type"],
+            "image_buffer"
+        );
+
+        drop(socket);
+        let stopped = expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
+        assert_eq!(stopped["running"], false);
+
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup hook sync collision root");
     }
 
     #[test]
     fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("hook-bridge-fanout");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
@@ -11360,7 +15216,7 @@ nodes:
         assert_eq!(broadcast["params"]["nodes"][0]["id"], "prompt");
         assert_eq!(broadcast["params"]["edges"][0]["target"], "out");
 
-        let running = http_json_get(address.port(), "/v1/hook-bridge/status");
+        let running = hook_bridge_status_value(&runtime);
         assert!(
             running["subscribedClients"]
                 .as_u64()
@@ -11370,12 +15226,10 @@ nodes:
 
         drop(publisher);
         drop(subscriber);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup Hook Bridge fanout root");
     }
 
@@ -11383,14 +15237,9 @@ nodes:
     fn daemon_exposes_artloom_ipc_workflow_command_aliases() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-ipc-workflow-aliases");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
         subscriber
@@ -11401,10 +15250,19 @@ nodes:
         let subscribe_response = read_hook_bridge_json(&mut subscriber);
         assert_eq!(subscribe_response["type"], "success");
 
-        let instantiated = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/ipc/instantiate-workflow",
-            r#"{"nodes":[{"id":"compat-node"}],"edges":[{"source":"compat-node","target":"compat-output"}],"mode":"reference","workflowId":"compat-workflow"}"#,
+        let instantiated = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/ipc/instantiate-workflow",
+                    &[],
+                    Some(
+                        r#"{"nodes":[{"id":"compat-node"}],"edges":[{"source":"compat-node","target":"compat-output"}],"mode":"reference","workflowId":"compat-workflow"}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(instantiated["compatCommand"], "instantiate_workflow");
         assert_eq!(instantiated["type"], "success");
@@ -11415,16 +15273,25 @@ nodes:
         assert_eq!(broadcast["params"]["workflow_id"], "compat-workflow");
         assert_eq!(broadcast["params"]["nodes"][0]["id"], "compat-node");
 
-        let executed = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/ipc/execute-art-node",
-            &serde_json::json!({
-                "nodeId": "compat-native-node",
-                "artId": "core.image.invert",
-                "inputBase64": test_png_base64(),
-                "params": {}
-            })
-            .to_string(),
+        let executed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/ipc/execute-art-node",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "nodeId": "compat-native-node",
+                            "artId": "core.image.invert",
+                            "inputBase64": test_png_base64(),
+                            "params": {}
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(executed["compatCommand"], "execute_art_node");
         assert_eq!(executed["type"], "success", "response={executed}");
@@ -11436,12 +15303,10 @@ nodes:
             .starts_with("data:image/png;base64,"));
 
         drop(subscriber);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup ArtLoom IPC workflow aliases root");
     }
 
@@ -11449,15 +15314,9 @@ nodes:
     fn daemon_broadcasts_arts_updated_after_tool_and_artloom_registry_mutations() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-compat-broadcasts");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
@@ -11471,10 +15330,17 @@ nodes:
         assert_eq!(subscribe_response["type"], "success");
         assert_eq!(subscribe_response["data"]["subscribed"], true);
 
-        let explicit_broadcast = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/arts/broadcast-updated",
-            "{}",
+        let explicit_broadcast = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/broadcast-updated",
+                    &[],
+                    Some("{}"),
+                ),
+            ),
+            200,
         );
         assert_eq!(
             explicit_broadcast["compatCommand"],
@@ -11484,10 +15350,19 @@ nodes:
         let explicit_broadcast_event = read_hook_bridge_json(&mut subscriber);
         assert_eq!(explicit_broadcast_event["method"], "art_loom/arts_updated");
 
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/native-tool",
-            r#"{"id":"native-tool","name":"Native Tool","description":"broadcast fixture","enabled":true,"execution":{"type":"cli_wrapper","command":"echo","args":["native"]}}"#,
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/native-tool",
+                    &[],
+                    Some(
+                        r#"{"id":"native-tool","name":"Native Tool","description":"broadcast fixture","enabled":true,"execution":{"type":"cli_wrapper","command":"echo","args":["native"]}}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_tool["tool"]["id"], "native-tool");
         let put_broadcast = read_hook_bridge_json(&mut subscriber);
@@ -11504,46 +15379,81 @@ nodes:
             }]
         })
         .to_string();
-        let imported = http_json_post(address.port(), "/v1/artloom-compat/arts/sync", &sync_body);
+        let imported = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/sync",
+                    &[],
+                    Some(&sync_body),
+                ),
+            ),
+            200,
+        );
         assert_eq!(imported["compatCommand"], "sync_user_arts");
         let import_broadcast = read_hook_bridge_json(&mut subscriber);
         assert_eq!(import_broadcast["method"], "art_loom/arts_updated");
 
-        let disabled = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/arts/compat-art/disable",
-            "{}",
+        let disabled = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/arts/compat-art/disable",
+                    &[],
+                    Some("{}"),
+                ),
+            ),
+            200,
         );
         assert_eq!(disabled["compatCommand"], "disable_art");
         let disable_broadcast = read_hook_bridge_json(&mut subscriber);
         assert_eq!(disable_broadcast["method"], "art_loom/arts_updated");
 
-        let defaults = http_json_put(
-            address.port(),
-            "/v1/artloom-compat/arts/compat-art/defaults",
-            r#"{"defaults":{"strength":0.8}}"#,
+        let defaults = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/artloom-compat/arts/compat-art/defaults",
+                    &[],
+                    Some(r#"{"defaults":{"strength":0.8}}"#),
+                ),
+            ),
+            200,
         );
         assert_eq!(defaults["compatCommand"], "update_art_defaults");
         let defaults_broadcast = read_hook_bridge_json(&mut subscriber);
         assert_eq!(defaults_broadcast["method"], "art_loom/arts_updated");
 
-        let mirrored = http_json_post(address.port(), "/v1/artloom-compat/arts/sync", "{}");
+        let mirrored = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("POST", "/v1/artloom-compat/arts/sync", &[], Some("{}")),
+            ),
+            200,
+        );
         assert_eq!(mirrored["compatCommand"], "sync_user_arts");
         let mirror_broadcast = read_hook_bridge_json(&mut subscriber);
         assert_eq!(mirror_broadcast["method"], "art_loom/arts_updated");
 
-        let deleted_tool = http_json_delete(address.port(), "/v1/tools/native-tool");
+        let deleted_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("DELETE", "/v1/tools/native-tool", &[], None),
+            ),
+            200,
+        );
         assert_eq!(deleted_tool["deleted"], true);
         let delete_broadcast = read_hook_bridge_json(&mut subscriber);
         assert_eq!(delete_broadcast["method"], "art_loom/arts_updated");
 
         drop(subscriber);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup broadcast root");
     }
 
@@ -11551,15 +15461,9 @@ nodes:
     fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("hook-bridge-channel-filter");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
@@ -11573,10 +15477,19 @@ nodes:
         assert_eq!(subscribe_response["type"], "success");
         assert_eq!(subscribe_response["data"]["subscribed"], true);
 
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/filter-art",
-            r#"{"id":"filter-art","name":"Filter Art","description":"channel filter fixture","enabled":true,"execution":{"type":"cli_wrapper","command":"echo","args":["ok"]},"params":[{"id":"strength","default":0.1}]}"#,
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/filter-art",
+                    &[],
+                    Some(
+                        r#"{"id":"filter-art","name":"Filter Art","description":"channel filter fixture","enabled":true,"execution":{"type":"cli_wrapper","command":"echo","args":["ok"]},"params":[{"id":"strength","default":0.1}]}"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_tool["tool"]["id"], "filter-art");
 
@@ -11592,38 +15505,43 @@ nodes:
         }
 
         drop(subscriber);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup channel filter root");
     }
 
     #[test]
     fn daemon_hook_bridge_executes_mcp_backed_art_node() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("mcp-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let fixture = current_test_binary_mcp_fixture_config();
 
-        let saved_server = http_json_put(
-            address.port(),
-            "/v1/mcp/servers/fixture",
-            &fixture.to_string(),
+        let saved_server = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/fixture",
+                    &[],
+                    Some(&fixture.to_string()),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_server["server"]["id"], "fixture");
 
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-art",
-            r#"{
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/fixture-art",
+                    &[],
+                    Some(
+                        r#"{
               "id": "fixture-art",
               "name": "Fixture Art",
               "description": "Execute fixture MCP through Hook bridge",
@@ -11634,10 +15552,14 @@ nodes:
                 "toolName": "echo"
               }
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_tool["tool"]["id"], "fixture-art");
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
@@ -11654,39 +15576,404 @@ nodes:
         assert_eq!(response["data"]["output_text"], "execute art node runtime");
 
         drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup mcp art node root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("mcp-image-search-art-node");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let image_data = test_png_base64();
+        let image_fixture = HttpImageFixture::start(
+            "image/png",
+            loom_image_io::decode_data_url_bytes(&image_data).expect("decode test image"),
+        );
+        let fixture = current_test_binary_mcp_fixture_config_with_env(&[(
+            "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
+            image_fixture.url("/fixture.png"),
+        )]);
+
+        let saved_server = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/fixture",
+                    &[],
+                    Some(&fixture.to_string()),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved_server["server"]["id"], "fixture");
+
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/fixture-image-search-art",
+                    &[],
+                    Some(
+                        r#"{
+              "id": "fixture-image-search-art",
+              "name": "图片搜索",
+              "description": "Execute fixture MCP image search through Hook bridge",
+              "enabled": true,
+              "execution": {
+                "type": "mcp",
+                "serverId": "fixture",
+                "toolName": "brave_image_search"
+              },
+              "outputs": [
+                {
+                  "name": "output",
+                  "label": "output",
+                  "type": "image",
+                  "execution_type": "image_buffer"
+                }
+              ]
+            }"#,
+                    ),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-image-search-art");
+
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art_loom/execute_art_node",
+                    "params": {
+                        "node_id": "node-mcp-image-search",
+                        "art_id": "fixture-image-search-art",
+                        "params": {
+                            "query": "fixture cat",
+                            "count": 1,
+                            "safesearch": "off",
+                            "spellcheck": true
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send MCP image-search execute art node");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["data"]["success"], true);
+        assert_eq!(response["data"]["node_id"], "node-mcp-image-search");
+        assert_eq!(response["data"]["output_base64"], image_data);
+
+        drop(socket);
+        let stopped = stop_test_hook_bridge(&runtime);
+        assert_eq!(stopped["running"], false);
+
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup mcp image-search art node root");
+    }
+
+    #[test]
+    fn daemon_hook_canvas_surfaces_mcp_image_search_candidates_and_selection() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+        let root = unique_temp_dir("mcp-image-search-canvas");
+        let appdata = unique_temp_dir("mcp-image-search-canvas-appdata");
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let first_image_data = test_png_base64();
+        let second_image_data =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AAoUHv8BpAE8tOS4KAAAAABJRU5ErkJggg==";
+        let first_fixture = HttpImageFixture::start(
+            "image/png",
+            loom_image_io::decode_data_url_bytes(&first_image_data).expect("decode first image"),
+        );
+        let second_fixture = HttpImageFixture::start(
+            "image/png",
+            loom_image_io::decode_data_url_bytes(second_image_data).expect("decode second image"),
+        );
+        let fixture = current_test_binary_mcp_fixture_config_with_env(&[
+            (
+                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
+                first_fixture.url("/fixture-a.png"),
+            ),
+            (
+                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL_ALT",
+                second_fixture.url("/fixture-b.png"),
+            ),
+        ]);
+
+        let saved_server = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/fixture",
+                    &[],
+                    Some(&fixture.to_string()),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved_server["server"]["id"], "fixture");
+
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/fixture-image-search-art-canvas",
+                    &[],
+                    Some(
+                        r#"{
+              "id": "fixture-image-search-art-canvas",
+              "name": "图片搜索",
+              "description": "Execute fixture MCP image search for Hook canvas state",
+              "enabled": true,
+              "execution": {
+                "type": "mcp",
+                "serverId": "fixture",
+                "toolName": "brave_image_search"
+              },
+              "outputs": [
+                {
+                  "name": "output",
+                  "label": "output",
+                  "type": "image",
+                  "execution_type": "image_buffer"
+                }
+              ],
+              "params": [
+                { "id": "query", "default": "fixture cat" },
+                { "id": "count", "default": 2 },
+                { "id": "result_index", "default": 0 }
+              ]
+            }"#,
+                    ),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-image-search-art-canvas");
+
+        let overwrite = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art_loom/overwrite_workflow",
+                "params": {
+                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
+                    "snapshot": {
+                        "name": "Hook Live",
+                        "nodes": [
+                            {
+                                "id": "image-search-node",
+                                "type": "art",
+                                "position": { "x": 160, "y": 40 },
+                                "measured": { "width": 90, "height": 90 },
+                                "data": {
+                                    "artId": "fixture-image-search-art-canvas",
+                                    "params": {
+                                        "query": "fixture cat",
+                                        "count": 2
+                                    },
+                                    "w": 90,
+                                    "h": 90
+                                }
+                            }
+                        ],
+                        "edges": []
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(overwrite["type"], "success", "response={overwrite}");
+
+        let success = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art_loom/execute_art_node",
+                "params": {
+                    "node_id": "image-search-node",
+                    "art_id": "fixture-image-search-art-canvas",
+                    "params": {
+                        "query": "fixture cat",
+                        "count": 2,
+                        "result_index": 1
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(success["type"], "success", "response={success}");
+        assert_eq!(success["data"]["output_base64"], second_image_data);
+
+        let after_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
+        assert_eq!(after_snapshot["nodes"][0]["selectedResultIndex"], 1);
+        assert_eq!(
+            after_snapshot["nodes"][0]["resultCandidates"][0]["index"],
+            0
+        );
+        assert_eq!(
+            after_snapshot["nodes"][0]["resultCandidates"][1]["index"],
+            1
+        );
+        assert_eq!(after_snapshot["nodes"][0]["previewAvailable"], true);
+
+        clear_hook_canvas_runtime_state();
+
+        let persisted_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
+        assert_eq!(persisted_snapshot["available"], true);
+        assert_eq!(persisted_snapshot["nodes"][0]["id"], "image-search-node");
+        assert_eq!(persisted_snapshot["nodes"][0]["params"]["result_index"], 1);
+        assert_eq!(persisted_snapshot["nodes"][0]["selectedResultIndex"], 1);
+        assert_eq!(
+            persisted_snapshot["nodes"][0]["resultCandidates"][0]["index"],
+            0
+        );
+        assert_eq!(
+            persisted_snapshot["nodes"][0]["resultCandidates"][1]["index"],
+            1
+        );
+        assert_eq!(persisted_snapshot["nodes"][0]["previewAvailable"], true);
+
+        let persisted_preview = expect_binary_route_response(
+            hook_canvas_preview_response("image-search-node").expect("persisted preview"),
+            200,
+            "image/png",
+        );
+        assert_eq!(
+            persisted_preview,
+            loom_image_io::decode_data_url_bytes(second_image_data)
+                .expect("decode persisted preview"),
+        );
+
+        restore_env("APPDATA", previous_appdata);
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup mcp image search canvas root");
+        fs::remove_dir_all(appdata).expect("cleanup mcp image search canvas appdata");
+    }
+
+    #[test]
+    fn daemon_artloom_update_workflow_node_route_persists_live_hook_params() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+        let root = unique_temp_dir("hook-live-update-workflow-node");
+        let appdata = unique_temp_dir("hook-live-update-workflow-node-appdata");
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &appdata);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let overwrite = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": "art_loom/overwrite_workflow",
+                "params": {
+                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
+                    "snapshot": {
+                        "name": "Hook Live",
+                        "nodes": [
+                            {
+                                "id": "image-search-node",
+                                "type": "art",
+                                "position": { "x": 160, "y": 40 },
+                                "measured": { "width": 90, "height": 90 },
+                                "data": {
+                                    "artId": "fixture-image-search-art-canvas",
+                                    "params": {
+                                        "query": "fixture cat",
+                                        "count": 2
+                                    },
+                                    "w": 90,
+                                    "h": 90
+                                }
+                            }
+                        ],
+                        "edges": []
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(overwrite["type"], "success", "response={overwrite}");
+
+        let updated = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/ipc/update-workflow-node",
+                    &[],
+                    Some(
+                        r#"{
+                            "workflowId": "hook-live",
+                            "nodeId": "image-search-node",
+                            "param": "result_index",
+                            "value": 1
+                        }"#,
+                    ),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(updated["compatCommand"], "update_workflow_node");
+        assert_eq!(updated["type"], "success");
+
+        clear_hook_canvas_runtime_state();
+
+        let persisted_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
+        assert_eq!(persisted_snapshot["available"], true);
+        assert_eq!(persisted_snapshot["nodes"][0]["params"]["result_index"], 1);
+        assert_eq!(persisted_snapshot["nodes"][0]["selectedResultIndex"], 1);
+
+        restore_env("APPDATA", previous_appdata);
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup hook live update workflow node root");
+        fs::remove_dir_all(appdata).expect("cleanup hook live update workflow node appdata");
     }
 
     #[test]
     fn daemon_hook_bridge_executes_ahrp_process_through_mcp_tool() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("mcp-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let fixture = current_test_binary_mcp_fixture_config();
         let image_data = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
-        let saved_server = http_json_put(
-            address.port(),
-            "/v1/mcp/servers/fixture",
-            &fixture.to_string(),
+        let saved_server = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/fixture",
+                    &[],
+                    Some(&fixture.to_string()),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_server["server"]["id"], "fixture");
 
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-process-art",
-            r#"{
+        let saved_tool = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/tools/fixture-process-art",
+                    &[],
+                    Some(
+                        r#"{
               "id": "fixture-process-art",
               "name": "Fixture Process Art",
               "description": "Execute fixture MCP through AHRP process",
@@ -11697,10 +15984,14 @@ nodes:
                 "toolName": "echo"
               }
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(saved_tool["tool"]["id"], "fixture-process-art");
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
@@ -11740,20 +16031,430 @@ nodes:
         assert!(response["data"]["processing_time_ms"].as_u64().is_some());
 
         drop(socket);
+        let stopped = stop_test_hook_bridge(&runtime);
+        assert_eq!(stopped["running"], false);
+
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup mcp ahrp process root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_executes_ahrp_process_mcp_image_search_with_legacy_hook_params() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("mcp-ahrp-process-legacy-image-search");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let image_data = test_png_base64();
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let alternate_image_data =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AAoUHv8BpAE8tOS4KAAAAABJRU5ErkJggg==";
+        let alternate_image_fixture = HttpImageFixture::start(
+            "image/png",
+            loom_image_io::decode_data_url_bytes(alternate_image_data)
+                .expect("decode alternate image"),
+        );
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let fixture = current_test_binary_mcp_fixture_config_with_env(&[
+            (
+                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
+                image_fixture.url("/fixture-a.png"),
+            ),
+            (
+                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL_ALT",
+                alternate_image_fixture.url("/fixture-b.png"),
+            ),
+        ]);
+        http_json_put(
+            address.port(),
+            "/v1/mcp/servers/fixture",
+            &fixture.to_string(),
+        );
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-process-image-search-legacy",
+            &serde_json::json!({
+                "id": "fixture-process-image-search-legacy",
+                "name": "Fixture Process Image Search Legacy",
+                "description": "Execute MCP image search through the real Hook art/process path with legacy Hook params",
+                "enabled": true,
+                "execution": {
+                    "type": "mcp",
+                    "serverId": "fixture",
+                    "toolName": "brave_image_search"
+                },
+                "outputs": [
+                    {
+                        "name": "output",
+                        "label": "output",
+                        "type": "image",
+                        "execution_type": "image_buffer"
+                    }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            saved_tool["tool"]["id"],
+            "fixture-process-image-search-legacy"
+        );
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art/process",
+                    "params": {
+                        "request_id": "req-ahrp-mcp-legacy-image-search",
+                        "art_id": "fixture-process-image-search-legacy",
+                        "input": {
+                            "type": "base64",
+                            "data": image_data,
+                            "width": 1,
+                            "height": 1,
+                            "format": "rgba8"
+                        },
+                        "params": {
+                            "query": "fixture cat",
+                            "count": "2",
+                            "search_lang": "ZH",
+                            "spellcheck": "true"
+                        },
+                        "disabled_params": []
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send legacy hook mcp image search ahrp process");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["request_id"], "req-ahrp-mcp-legacy-image-search");
+        assert_eq!(response["status"], "Success", "response={response}");
+        assert_eq!(response["data"]["type"], "result", "response={response}");
+        assert_eq!(
+            response["data"]["output"]["type"], "base64",
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["output"]["data"],
+            fixture_image_base64(),
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["imageSearch"]["selectedIndex"], 0,
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["imageSearch"]["candidates"]
+                .as_array()
+                .map(Vec::len),
+            Some(2),
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            image_fixture.url("/fixture-a.png"),
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["imageSearch"]["candidates"][1]["imageUrl"],
+            alternate_image_fixture.url("/fixture-b.png"),
+            "response={response}"
+        );
+
+        drop(socket);
         let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
         assert_eq!(stopped["running"], false);
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup mcp ahrp process root");
+        fs::remove_dir_all(root).expect("cleanup mcp legacy image search ahrp process root");
     }
 
     #[test]
-    fn daemon_hook_bridge_executes_native_art_node_without_registry_tool() {
+    fn daemon_hook_bridge_reports_friendly_message_when_mcp_image_search_returns_no_images() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("native-art-node");
+        let root = unique_temp_dir("mcp-ahrp-process-empty-image-search");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let image_data = test_png_base64();
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let fixture = current_test_binary_mcp_fixture_config();
+        http_json_put(
+            address.port(),
+            "/v1/mcp/servers/fixture",
+            &fixture.to_string(),
+        );
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-process-image-search-empty",
+            &serde_json::json!({
+                "id": "fixture-process-image-search-empty",
+                "name": "Fixture Process Image Search Empty",
+                "description": "Surface a friendly message when image search yields no usable image",
+                "enabled": true,
+                "execution": {
+                    "type": "mcp",
+                    "serverId": "fixture",
+                    "toolName": "brave_image_search"
+                },
+                "outputs": [
+                    {
+                        "name": "output",
+                        "label": "output",
+                        "type": "image",
+                        "execution_type": "image_buffer"
+                    }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            saved_tool["tool"]["id"],
+            "fixture-process-image-search-empty"
+        );
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art/process",
+                    "params": {
+                        "request_id": "req-ahrp-mcp-empty-image-search",
+                        "art_id": "fixture-process-image-search-empty",
+                        "input": {
+                            "type": "base64",
+                            "data": image_data,
+                            "width": 1,
+                            "height": 1,
+                            "format": "rgba8"
+                        },
+                        "params": {
+                            "query": "offensive fixture",
+                            "count": "3",
+                            "search_lang": "ZH",
+                            "spellcheck": "true"
+                        },
+                        "disabled_params": []
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send empty-image MCP image search ahrp process");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["request_id"], "req-ahrp-mcp-empty-image-search");
+        assert_eq!(response["status"], "EngineError", "response={response}");
+        assert_eq!(
+            response["error"],
+            "图片搜索未返回可用结果：搜索服务将该查询判定为可能敏感，请尝试更换关键词。",
+            "response={response}"
+        );
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup empty-image mcp image search root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_retains_image_search_candidates_when_mcp_candidate_download_fails() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("mcp-ahrp-process-candidate-download-failure");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let image_data = test_png_base64();
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let fixture = current_test_binary_mcp_fixture_config_with_env(&[(
+            "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
+            "http://127.0.0.1:9/broken.jpg".to_owned(),
+        )]);
+        http_json_put(
+            address.port(),
+            "/v1/mcp/servers/fixture",
+            &fixture.to_string(),
+        );
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-process-image-search-download-failure",
+            &serde_json::json!({
+                "id": "fixture-process-image-search-download-failure",
+                "name": "Fixture Process Image Search Download Failure",
+                "description": "Keep image-search candidates in the Hook bridge error payload when Loom cannot download them server-side",
+                "enabled": true,
+                "execution": {
+                    "type": "mcp",
+                    "serverId": "fixture",
+                    "toolName": "brave_image_search"
+                },
+                "outputs": [
+                    {
+                        "name": "output",
+                        "label": "output",
+                        "type": "image",
+                        "execution_type": "image_buffer"
+                    }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            saved_tool["tool"]["id"],
+            "fixture-process-image-search-download-failure"
+        );
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art/process",
+                    "params": {
+                        "request_id": "req-ahrp-mcp-candidate-download-failure",
+                        "art_id": "fixture-process-image-search-download-failure",
+                        "input": {
+                            "type": "base64",
+                            "data": image_data,
+                            "width": 1,
+                            "height": 1,
+                            "format": "rgba8"
+                        },
+                        "params": {
+                            "query": "fixture cat",
+                            "count": "1",
+                            "search_lang": "ZH",
+                            "spellcheck": "true"
+                        },
+                        "disabled_params": []
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send candidate-download-failure MCP image search ahrp process");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(
+            response["request_id"],
+            "req-ahrp-mcp-candidate-download-failure"
+        );
+        assert_eq!(response["status"], "EngineError", "response={response}");
+        assert_eq!(
+            response["error"], "图片搜索已返回候选结果，但图片下载失败，请稍后重试。",
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            "http://127.0.0.1:9/broken.jpg",
+            "response={response}"
+        );
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup candidate-download-failure mcp image search root");
+    }
+
+    #[test]
+    fn daemon_registered_tool_executes_realshape_mcp_image_search_with_legacy_hook_params() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("mcp-direct-legacy-image-search-realshape");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let fixture = current_test_binary_mcp_fixture_config_with_env(&[(
+            "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
+            image_fixture.url("/fixture.png"),
+        )]);
+        http_json_put(
+            address.port(),
+            "/v1/mcp/servers/fixture",
+            &fixture.to_string(),
+        );
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-image-search-realshape",
+            &serde_json::json!({
+                "id": "fixture-image-search-realshape",
+                "name": "Fixture Image Search Realshape",
+                "description": "Execute MCP image search through the direct tool route with Brave-like string-only search_lang schema",
+                "enabled": true,
+                "execution": {
+                    "type": "mcp",
+                    "serverId": "fixture",
+                    "toolName": "brave_image_search_realshape"
+                },
+                "outputs": [
+                    {
+                        "name": "output",
+                        "label": "output",
+                        "type": "image",
+                        "execution_type": "image_buffer"
+                    }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-image-search-realshape");
+
+        let executed = http_json_post(
+            address.port(),
+            "/v1/tools/fixture-image-search-realshape/execute",
+            r#"{"arguments":{"query":"fixture cat","count":"1","search_lang":"ZH","spellcheck":"true"}}"#,
+        );
+        assert_eq!(executed["toolId"], "fixture-image-search-realshape");
+        assert_eq!(executed["status"], "succeeded");
+        assert_eq!(executed["result"]["content"][0]["type"], "image");
+        assert_eq!(
+            executed["result"]["content"][0]["data"],
+            fixture_image_base64()
+        );
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup mcp direct legacy image search realshape root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_executes_cli_wrapper_art_node_image_output() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("cli-wrapper-art-node");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
         let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
@@ -11761,7 +16462,166 @@ nodes:
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
         let image_data = test_png_base64();
 
+        #[cfg(windows)]
+        let execution = serde_json::json!({
+            "type": "cli_wrapper",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "Copy-Item -LiteralPath '{{input}}' -Destination '{{output}}' -Force"
+            ]
+        });
+        #[cfg(not(windows))]
+        let execution = serde_json::json!({
+            "type": "cli_wrapper",
+            "command": "sh",
+            "args": [
+                "-c",
+                "cp \"$1\" \"$2\"",
+                "loom-cli-wrapper",
+                "{{input}}",
+                "{{output}}"
+            ]
+        });
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-cli-wrapper-art",
+            &serde_json::json!({
+                "id": "fixture-cli-wrapper-art",
+                "name": "Fixture CLI Wrapper Art",
+                "description": "Execute fixture cli_wrapper Art through Hook bridge",
+                "enabled": true,
+                "execution": execution
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-cli-wrapper-art");
+
         let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art_loom/execute_art_node",
+                    "params": {
+                        "node_id": "node-cli-wrapper",
+                        "art_id": "fixture-cli-wrapper-art",
+                        "input_base64": image_data,
+                        "params": {}
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send cli_wrapper execute art node");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["data"]["success"], true);
+        assert_eq!(response["data"]["node_id"], "node-cli-wrapper");
+        assert_eq!(response["data"]["output_base64"], image_data);
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup cli wrapper art node root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_executes_python_art_art_node_text_output() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let previous_runtime_root = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR").ok();
+        let root = unique_temp_dir("python-art-node");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        mark_framework_installed(&root, "python_art");
+        let runtime_root = provision_test_python_art_runtime(&root);
+        let art_path = write_daemon_python_art_fixture(&root);
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-python-art-node",
+            &serde_json::json!({
+                "id": "fixture-python-art-node",
+                "name": "Fixture Python Art Node",
+                "description": "Execute fixture python_art through Hook bridge",
+                "enabled": true,
+                "execution": {
+                    "type": "python_art",
+                    "artId": "fixture_python_art",
+                    "artPath": art_path.display().to_string()
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-python-art-node");
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art_loom/execute_art_node",
+                    "params": {
+                        "node_id": "node-python-art",
+                        "art_id": "fixture-python-art-node",
+                        "params": {
+                            "text": "hook python art"
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send python_art execute art node");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["data"]["success"], true);
+        assert_eq!(response["data"]["node_id"], "node-python-art");
+        assert_eq!(
+            response["data"]["output_text"],
+            "python art saw hook python art"
+        );
+        assert!(
+            runtime_root
+                .join("python-embed")
+                .join("python.exe")
+                .is_file(),
+            "python_art runtime marker missing"
+        );
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        restore_env("LOOM_FRAMEWORK_RUNTIMES_DIR", previous_runtime_root);
+        fs::remove_dir_all(root).expect("cleanup python art node root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_executes_native_art_node_without_registry_tool() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("native-art-node");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let image_data = test_png_base64();
+
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
@@ -11790,28 +16650,21 @@ nodes:
             .starts_with("data:image/png;base64,"));
 
         drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup native art node root");
     }
 
     #[test]
     fn daemon_hook_bridge_executes_native_art_ahrp_process_without_registry_tool() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("native-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let image_data = test_png_base64();
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
         let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
@@ -11853,32 +16706,37 @@ nodes:
         assert_eq!(response["data"]["output"]["height"], 1);
 
         drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup native ahrp process root");
     }
 
     #[test]
     fn daemon_exposes_artloom_native_process_art_command_alias() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("native-process-art-alias");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let image_data = test_png_base64();
 
-        let response = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/native/process-art",
-            &serde_json::json!({
-                "artId": "core.image.invert",
-                "inputBase64": image_data,
-                "params": {}
-            })
-            .to_string(),
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/native/process-art",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "artId": "core.image.invert",
+                            "inputBase64": image_data,
+                            "params": {}
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
 
         assert_eq!(response["compatCommand"], "native_process_art");
@@ -11890,21 +16748,26 @@ nodes:
         assert!(response["error"].is_null());
         assert!(response["processing_time_ms"].as_u64().is_some());
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup native compat root");
     }
 
     #[test]
     fn daemon_shared_image_api_create_list_get_delete_contract() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("shared-images-api");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let created = http_json_post(
-            address.port(),
-            "/v1/shared-images",
-            r#"{"width":1,"height":1,"format":"rgba8","data":[10,20,30,255]}"#,
+        let created = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/shared-images",
+                    &[],
+                    Some(r#"{"width":1,"height":1,"format":"rgba8","data":[10,20,30,255]}"#),
+                ),
+            ),
+            200,
         );
         let handle = created["image"]["handle"]
             .as_str()
@@ -11916,11 +16779,23 @@ nodes:
         assert_eq!(created["image"]["height"], 1);
         assert_eq!(created["image"]["format"], "rgba8");
 
-        let listed = http_json_get(address.port(), "/v1/shared-images");
+        let listed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/shared-images", &[], None),
+            ),
+            200,
+        );
         assert_eq!(listed["images"].as_array().expect("images").len(), 1);
         assert_eq!(listed["images"][0]["handle"], handle);
 
-        let fetched = http_json_get(address.port(), &format!("/v1/shared-images/{handle}"));
+        let fetched = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", &format!("/v1/shared-images/{handle}"), &[], None),
+            ),
+            200,
+        );
         assert_eq!(fetched["image"]["handle"], handle);
         assert_eq!(fetched["data"], serde_json::json!([10, 20, 30, 255]));
         assert!(fetched["dataBase64"]
@@ -11928,31 +16803,50 @@ nodes:
             .expect("png data URL")
             .starts_with("data:image/png;base64,"));
 
-        let deleted = http_json_delete(address.port(), &format!("/v1/shared-images/{handle}"));
+        let deleted = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("DELETE", &format!("/v1/shared-images/{handle}"), &[], None),
+            ),
+            200,
+        );
         assert_eq!(deleted["deleted"], true);
-        let listed = http_json_get(address.port(), "/v1/shared-images");
+        let listed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/shared-images", &[], None),
+            ),
+            200,
+        );
         assert!(listed["images"].as_array().expect("images").is_empty());
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup shared images root");
     }
 
     #[test]
     fn daemon_image_helper_converts_base64_to_rgba_buffer() {
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let root = unique_temp_dir("image-helper-base64");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let response = http_json_post(
-            address.port(),
-            "/v1/image-helpers/convert",
-            &serde_json::json!({
-                "sourceType": "image_base64",
-                "targetType": "image_buffer",
-                "data": test_png_base64()
-            })
-            .to_string(),
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/image-helpers/convert",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "sourceType": "image_base64",
+                            "targetType": "image_buffer",
+                            "data": test_png_base64()
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
 
         assert_eq!(response["image"]["width"], 1);
@@ -11961,8 +16855,8 @@ nodes:
         assert_eq!(response["image"]["size"], 4);
         assert_eq!(response["data"], serde_json::json!([10, 20, 30, 255]));
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup image helper base64 root");
     }
 
     #[test]
@@ -11977,20 +16871,26 @@ nodes:
                 .expect("decode test png"),
         )
         .expect("write image fixture");
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let response = http_json_post(
-            address.port(),
-            "/v1/image-helpers/convert",
-            &serde_json::json!({
-                "sourceType": "image_path",
-                "targetType": "image_base64",
-                "path": image_path.display().to_string()
-            })
-            .to_string(),
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/image-helpers/convert",
+                    &[],
+                    Some(
+                        &serde_json::json!({
+                            "sourceType": "image_path",
+                            "targetType": "image_base64",
+                            "path": image_path.display().to_string()
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            200,
         );
 
         assert!(response["dataBase64"]
@@ -12003,8 +16903,7 @@ nodes:
         .expect("decode converted path");
         assert_eq!(rgba.data, vec![10, 20, 30, 255]);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
         fs::remove_dir_all(root).expect("cleanup image helper root");
     }
 
@@ -12014,40 +16913,27 @@ nodes:
         let previous_fixture = std::env::var("LOOM_OCR_FIXTURE_TEXT").ok();
         std::env::set_var("LOOM_OCR_FIXTURE_TEXT", "hello loom ocr");
         let root = unique_temp_dir("ocr-fixture");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/get_capabilities"
-                })
-                .to_string(),
-            ))
-            .expect("send capabilities request");
-        let capabilities = read_hook_bridge_json(&mut socket);
+        let capabilities = run_hook_bridge_text(
+            &runtime,
+            &serde_json::json!({
+                "method": "art_loom/get_capabilities"
+            })
+            .to_string(),
+        );
         assert_eq!(capabilities["data"]["ocr"], true);
 
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/ocr_image",
-                    "params": {
-                        "image_base64": test_png_base64()
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send ocr request");
-        let response = read_hook_bridge_json(&mut socket);
+        let response = run_hook_bridge_text(
+            &runtime,
+            &serde_json::json!({
+                "method": "art_loom/ocr_image",
+                "params": {
+                    "image_base64": test_png_base64()
+                }
+            })
+            .to_string(),
+        );
 
         assert_eq!(response["type"], "success", "response={response}");
         assert_eq!(response["data"]["fullText"], "hello loom ocr");
@@ -12055,13 +16941,7 @@ nodes:
         assert_eq!(response["data"]["height"], 1);
         assert_eq!(response["data"]["textBlocks"][0]["text"], "hello loom ocr");
 
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
         fs::remove_dir_all(root).expect("cleanup ocr fixture root");
     }
@@ -12073,31 +16953,18 @@ nodes:
         let previous_endpoint = std::env::var("LOOM_TRANSLATE_ENDPOINT").ok();
         std::env::set_var("LOOM_TRANSLATE_ENDPOINT", fixture.url("/translate"));
         let root = unique_temp_dir("translate-provider");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/translate_text",
-                    "params": {
-                        "text": "hello loom",
-                        "target_lang": "zh"
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send translate request");
-        let response = read_hook_bridge_json(&mut socket);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let response = run_hook_bridge_text(
+            &runtime,
+            &serde_json::json!({
+                "method": "art_loom/translate_text",
+                "params": {
+                    "text": "hello loom",
+                    "target_lang": "zh"
+                }
+            })
+            .to_string(),
+        );
 
         assert_eq!(response["type"], "success", "response={response}");
         assert_eq!(
@@ -12110,13 +16977,7 @@ nodes:
         assert!(request.contains(r#""text":"hello loom""#));
         assert!(request.contains(r#""target_lang":"zh""#));
 
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         restore_env("LOOM_TRANSLATE_ENDPOINT", previous_endpoint);
         fs::remove_dir_all(root).expect("cleanup translate provider root");
     }
@@ -12210,40 +17071,22 @@ nodes:
         let empty_model_dir = root.join("empty-ocr-models");
         fs::create_dir_all(&empty_model_dir).expect("create empty model dir");
         std::env::set_var("LOOM_OCR_MODEL_DIR", &empty_model_dir);
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/ocr_image",
-                    "params": {
-                        "image_base64": test_png_base64()
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send ocr request");
-        let response = read_hook_bridge_json(&mut socket);
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let response = run_hook_bridge_text(
+            &runtime,
+            &serde_json::json!({
+                "method": "art_loom/ocr_image",
+                "params": {
+                    "image_base64": test_png_base64()
+                }
+            })
+            .to_string(),
+        );
 
         assert_eq!(response["type"], "error");
         assert_eq!(response["data"]["message"], "OCR enhancement unavailable");
 
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        drop(runtime);
         restore_env("LOOM_OCR_MODEL_DIR", previous_model_dir);
         restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
         fs::remove_dir_all(root).expect("cleanup ocr unavailable root");
@@ -12392,6 +17235,258 @@ nodes:
     }
 
     #[test]
+    fn daemon_hook_bridge_executes_script_image_blend_art_node() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("script-image-blend-art-node");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let script_path = workspace_image_blend_script_path();
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let input_image = test_color_png_base64([240, 60, 0, 255]);
+        let reference_image = test_color_png_base64([40, 160, 200, 255]);
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-script-image-blend",
+            &serde_json::json!({
+                "id": "fixture-script-image-blend",
+                "name": "Fixture Script Image Blend",
+                "description": "Blend two images through script",
+                "enabled": true,
+                "execution": {
+                    "type": "script",
+                    "path": script_path.display().to_string()
+                },
+                "inputs": [
+                    { "name": "input", "label": "源图", "type": "image", "execution_type": "image_buffer" },
+                    { "name": "reference", "label": "参考图", "type": "image", "execution_type": "image_buffer" }
+                ],
+                "outputs": [
+                    { "name": "output", "label": "结果", "type": "image", "execution_type": "image_buffer" }
+                ],
+                "params": [
+                    { "id": "reference", "label": "参考图", "widget": "image_link", "default": "", "data_type": "image_path", "disabled": false },
+                    { "id": "mix_ratio", "label": "混合比例", "widget": "slider", "default": 25, "min": 0, "max": 100, "step": 1, "data_type": "number", "disabled": false }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-script-image-blend");
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art_loom/execute_art_node",
+                    "params": {
+                        "node_id": "node-script-blend",
+                        "art_id": "fixture-script-image-blend",
+                        "input_base64": input_image,
+                        "params": {
+                            "reference": reference_image,
+                            "mix_ratio": 25
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send script image blend execute art node");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["data"]["success"], true);
+        assert_eq!(response["data"]["node_id"], "node-script-blend");
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            response["data"]["output_base64"]
+                .as_str()
+                .expect("blend output_base64"),
+        )
+        .expect("decode script image blend output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+        assert_eq!(output.data, vec![190, 85, 50, 255]);
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup script image blend art node root");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_hook_bridge_executes_script_image_blend_art_node_with_large_payload_and_valid_images()
+    {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("script-image-blend-art-node-large-images");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let script_path = workspace_image_blend_script_path();
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let input_image = test_color_png_base64([240, 60, 0, 255]);
+        let reference_image = test_color_png_base64([40, 160, 200, 255]);
+        let debug_padding = "x".repeat(40_000);
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-script-image-blend-large-images",
+            &serde_json::json!({
+                "id": "fixture-script-image-blend-large-images",
+                "name": "Fixture Script Image Blend Large Images",
+                "description": "Blend two large images through script",
+                "enabled": true,
+                "execution": {
+                    "type": "script",
+                    "path": script_path.display().to_string()
+                },
+                "inputs": [
+                    { "name": "input", "label": "源图", "type": "image", "execution_type": "image_buffer" },
+                    { "name": "reference", "label": "参考图", "type": "image", "execution_type": "image_buffer", "exposePort": true }
+                ],
+                "outputs": [
+                    { "name": "output", "label": "结果", "type": "image", "execution_type": "image_buffer" }
+                ],
+                "params": [
+                    { "id": "reference", "label": "参考图", "widget": "image_link", "default": "", "data_type": "image_path", "disabled": false },
+                    { "id": "mix_ratio", "label": "混合比例", "widget": "slider", "default": 50, "min": 0, "max": 100, "step": 1, "data_type": "number", "disabled": false }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            saved_tool["tool"]["id"],
+            "fixture-script-image-blend-large-images"
+        );
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art_loom/execute_art_node",
+                    "params": {
+                        "node_id": "node-script-blend-large",
+                        "art_id": "fixture-script-image-blend-large-images",
+                        "input_base64": input_image,
+                        "params": {
+                            "reference": reference_image,
+                            "mix_ratio": 50,
+                            "debug_padding": debug_padding
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send large payload script blend execute art node");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["data"]["success"], true);
+        assert_eq!(response["data"]["node_id"], "node-script-blend-large");
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            response["data"]["output_base64"]
+                .as_str()
+                .expect("large payload blend output_base64"),
+        )
+        .expect("decode large payload script image blend output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup large valid image blend art node root");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_hook_bridge_executes_script_art_node_with_large_payload() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("script-art-node-large-payload");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let script_path = write_daemon_script_fixture(&root);
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let image_data = format!("data:image/png;base64,{}", "A".repeat(40_000));
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-script-art-large-payload",
+            &serde_json::json!({
+                "id": "fixture-script-art-large-payload",
+                "name": "Fixture Script Art Large Payload",
+                "description": "Execute fixture script Art through Hook bridge with a large payload",
+                "enabled": true,
+                "execution": {
+                    "type": "script",
+                    "path": script_path.display().to_string()
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-script-art-large-payload");
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art_loom/execute_art_node",
+                    "params": {
+                        "node_id": "node-script-large",
+                        "art_id": "fixture-script-art-large-payload",
+                        "input_base64": image_data,
+                        "params": {}
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send script execute art node with large payload");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["data"]["success"], true);
+        assert_eq!(response["data"]["node_id"], "node-script-large");
+        let output = response["data"]["output_base64"]
+            .as_str()
+            .expect("large payload output_base64");
+        assert!(output.starts_with("data:image/png;base64,"));
+        assert_eq!(output.len(), "data:image/png;base64,".len() + 40_000);
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup large payload script art node root");
+    }
+
+    #[test]
     fn daemon_hook_bridge_executes_script_ahrp_process_image_output() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
@@ -12467,6 +17562,255 @@ nodes:
         server.join().expect("server thread");
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup script ahrp process root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_process_uses_explicit_auxiliary_input_images_for_script_blend() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("script-ahrp-process-image-blend");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let script_path = workspace_image_blend_script_path();
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let input_image = test_color_png_base64([240, 60, 0, 255]);
+        let reference_image = test_color_png_base64([40, 160, 200, 255]);
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-script-process-blend",
+            &serde_json::json!({
+                "id": "fixture-script-process-blend",
+                "name": "Fixture Script Process Blend",
+                "description": "Execute image blend script through the real art/process route",
+                "enabled": true,
+                "execution": {
+                    "type": "script",
+                    "path": script_path.display().to_string()
+                },
+                "inputs": [
+                    { "name": "input", "label": "源图", "type": "image", "execution_type": "image_buffer" },
+                    { "name": "reference", "label": "参考图", "type": "image", "execution_type": "image_buffer", "exposePort": true }
+                ],
+                "outputs": [
+                    { "name": "output", "label": "结果", "type": "image", "execution_type": "image_buffer" }
+                ],
+                "params": [
+                    { "id": "reference", "label": "参考图", "widget": "image_link", "default": "", "data_type": "image_path", "disabled": false },
+                    { "id": "mix_ratio", "label": "混合比例", "widget": "slider", "default": 25, "min": 0, "max": 100, "step": 1, "data_type": "number", "disabled": false }
+                ]
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-script-process-blend");
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art/process",
+                    "params": {
+                        "request_id": "req-script-process-blend",
+                        "art_id": "fixture-script-process-blend",
+                        "input": {
+                            "type": "base64",
+                            "data": input_image,
+                            "width": 1,
+                            "height": 1,
+                            "format": "rgba8"
+                        },
+                        "params": {
+                            "reference": "",
+                            "mix_ratio": 25
+                        },
+                        "input_images": {
+                            "reference": reference_image
+                        },
+                        "disabled_params": []
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send script blend ahrp process");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(
+            response["request_id"], "req-script-process-blend",
+            "response={response}"
+        );
+        assert_eq!(response["status"], "Success");
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            response["data"]["output"]["data"]
+                .as_str()
+                .expect("script blend process output data"),
+        )
+        .expect("decode script blend process output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+        assert_eq!(output.data, vec![190, 85, 50, 255]);
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup script blend ahrp process root");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_hook_bridge_process_executes_image_blend_compress_workflow_art() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("image-blend-compress-workflow-ahrp");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let workflow_yaml =
+            fs::read_to_string(workspace_image_blend_compress_resource("workflow.yaml"))
+                .expect("read image blend compress workflow");
+        let workflow_manifest =
+            fs::read_to_string(workspace_image_blend_compress_resource("manifest.json"))
+                .expect("read image blend compress manifest");
+        let blend_script = workspace_image_blend_script_path();
+        let (compress_script, compress_evidence) = write_daemon_cli_image_copy_fixture(&root);
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let input_image = test_color_png_base64([240, 60, 0, 255]);
+        let reference_image = test_color_png_base64([40, 160, 200, 255]);
+
+        let saved_blend = http_json_put(
+            address.port(),
+            "/v1/tools/custom-image-blend-script",
+            &serde_json::json!({
+                "id": "custom-image-blend-script",
+                "name": "Fixture Image Blend",
+                "description": "Production image blend script child",
+                "enabled": true,
+                "execution": {
+                    "type": "script",
+                    "path": blend_script.display().to_string()
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_blend["tool"]["id"], "custom-image-blend-script");
+        let saved_compress = http_json_put(
+            address.port(),
+            "/v1/tools/custom-1770146354922",
+            &serde_json::json!({
+                "id": "custom-1770146354922",
+                "name": "Fixture Image Compress",
+                "description": "Deterministic cli_wrapper child",
+                "enabled": true,
+                "execution": {
+                    "type": "cli_wrapper",
+                    "command": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        compress_script.display().to_string(),
+                        "-InputPath",
+                        "{{input}}",
+                        "-OutputPath",
+                        "{{output}}",
+                        "-Quality",
+                        "{{quality_num}}",
+                        "-EvidencePath",
+                        compress_evidence.display().to_string()
+                    ]
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_compress["tool"]["id"], "custom-1770146354922");
+        let saved_workflow = http_json_put(
+            address.port(),
+            "/v1/workflows/image-blend-compress-workflow",
+            &serde_json::json!({ "data": workflow_yaml }).to_string(),
+        );
+        assert_eq!(
+            saved_workflow["workflow"]["id"],
+            "image-blend-compress-workflow"
+        );
+        let saved_workflow_art = http_json_put(
+            address.port(),
+            "/v1/tools/custom-image-blend-compress-workflow",
+            &workflow_manifest,
+        );
+        assert_eq!(
+            saved_workflow_art["tool"]["id"],
+            "custom-image-blend-compress-workflow"
+        );
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art/process",
+                    "params": {
+                        "request_id": "req-image-blend-compress-workflow",
+                        "art_id": "custom-image-blend-compress-workflow",
+                        "input": {
+                            "type": "base64",
+                            "data": input_image,
+                            "width": 1,
+                            "height": 1,
+                            "format": "rgba8"
+                        },
+                        "params": {
+                            "mix_ratio": 25,
+                            "quality_num": 73
+                        },
+                        "input_images": {
+                            "reference": reference_image
+                        },
+                        "disabled_params": []
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send image blend compress workflow process");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(
+            response["request_id"], "req-image-blend-compress-workflow",
+            "response={response}"
+        );
+        assert_eq!(response["status"], "Success", "response={response}");
+        assert_eq!(response["data"]["output"]["type"], "base64");
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            response["data"]["output"]["data"]
+                .as_str()
+                .expect("workflow process output data"),
+        )
+        .expect("decode workflow process output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+        assert_eq!(output.data, vec![190, 85, 50, 255]);
+        assert_eq!(
+            fs::read_to_string(&compress_evidence).expect("read compression evidence"),
+            "73"
+        );
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup image blend compress workflow root");
     }
 
     #[test]
@@ -12876,6 +18220,99 @@ nodes:
         fs::remove_dir_all(root).expect("cleanup cloud multipart art node root");
     }
 
+    // Regression: the real Hook path is `art/process` (not `art_loom/execute_art_node`).
+    // For cloud_api multipart arts it must write the AHRP input to a temp file and
+    // bind it to `input`/`image` so `{{inputs.input.path}}` uploads the real image.
+    // Before the fix this path bound `input` to the raw AHRP input object, so the
+    // template rendered a JSON blob and PhotoRoom-style APIs answered "missing_image".
+    #[test]
+    fn daemon_hook_bridge_ahrp_process_cloud_multipart_uploads_input_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let root = unique_temp_dir("cloud-multipart-ahrp-process");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        let image_data = test_png_base64();
+        let fixture =
+            CloudApiFixture::start(CloudApiFixtureMode::MultipartImage(image_data.clone()));
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let address = daemon.local_addr().expect("local address");
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+
+        let saved_tool = http_json_put(
+            address.port(),
+            "/v1/tools/fixture-cloud-multipart-process",
+            &serde_json::json!({
+                "id": "fixture-cloud-multipart-process",
+                "name": "Fixture Cloud Multipart Process",
+                "description": "Execute multipart cloud Art through the AHRP process path",
+                "enabled": true,
+                "execution": {
+                    "type": "cloud_api",
+                    "url": fixture.url("/multipart/segment"),
+                    "method": "POST",
+                    "contentType": "multipart/form-data",
+                    "headers": "{\"x-api-key\":\"sk_test\"}",
+                    "body": "{\"image_file\":\"{{inputs.input}}\",\"format\":\"png\"}"
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(saved_tool["tool"]["id"], "fixture-cloud-multipart-process");
+
+        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+        socket
+            .send(tungstenite::Message::Text(
+                serde_json::json!({
+                    "method": "art/process",
+                    "params": {
+                        "request_id": "req-cloud-multipart-process",
+                        "art_id": "fixture-cloud-multipart-process",
+                        "input": {
+                            "type": "base64",
+                            "data": image_data,
+                            "width": 1,
+                            "height": 1,
+                            "format": "rgba8"
+                        },
+                        "params": {},
+                        "disabled_params": []
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("send cloud multipart ahrp process");
+        let response = read_hook_bridge_json(&mut socket);
+
+        assert_eq!(
+            response["request_id"], "req-cloud-multipart-process",
+            "response={response}"
+        );
+        assert_eq!(response["status"], "Success", "response={response}");
+
+        let request = fixture.request();
+        // The image field must be a real file upload, not the AHRP input JSON.
+        assert!(request.contains("name=\"image_file\""));
+        assert!(request.contains("filename=\"loom-cloud-input-"));
+        assert!(request.contains("name=\"format\""));
+        assert!(request.contains("\r\npng\r\n"));
+        // No unrendered template and no leaked AHRP input object.
+        assert!(!request.contains("{{"));
+        assert!(!request.contains("\"type\":\"base64\""));
+
+        drop(socket);
+        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
+        assert_eq!(stopped["running"], false);
+
+        shutdown_tx.send(()).expect("shutdown");
+        server.join().expect("server thread");
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup cloud multipart ahrp process root");
+    }
+
     #[test]
     fn daemon_hook_bridge_executes_cloud_api_ahrp_process_image_output() {
         let _guard = ENV_LOCK.lock().expect("env lock");
@@ -12979,6 +18416,19 @@ nodes:
         format!("data:image/png;base64,{}", BASE64.encode(test_png_bytes()))
     }
 
+    fn test_color_png_base64(rgba: [u8; 4]) -> String {
+        loom_image_io::rgba8_to_png_data_url(1, 1, &rgba).expect("encode colored test png")
+    }
+    fn fixture_image_base64() -> String {
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+            .to_owned()
+    }
+
+    fn fixture_image_bytes() -> Vec<u8> {
+        loom_image_io::decode_data_url_bytes(&fixture_image_base64())
+            .expect("decode fixture image data url")
+    }
+
     fn test_png_bytes() -> Vec<u8> {
         let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(1, 1, vec![10, 20, 30, 255])
             .expect("test png image");
@@ -13009,6 +18459,183 @@ nodes:
                     .then_some(path)
             })
             .expect("locate Loom/resources/ocr")
+    }
+
+    fn workspace_image_blend_script_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let script = candidate
+                    .join("resources")
+                    .join("script-arts")
+                    .join("image-blend")
+                    .join("main.ps1");
+                script.exists().then_some(script)
+            })
+            .expect("locate Loom/resources/script-arts/image-blend/main.ps1")
+    }
+
+    fn workspace_image_blend_compress_resource(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let path = candidate
+                    .join("resources")
+                    .join("workflow-arts")
+                    .join("image-blend-compress")
+                    .join(name);
+                path.exists().then_some(path)
+            })
+            .unwrap_or_else(|| panic!("locate image-blend-compress resource `{name}`"))
+    }
+
+    #[cfg(windows)]
+    fn write_daemon_cli_image_copy_fixture(root: &Path) -> (PathBuf, PathBuf) {
+        let script_path = root.join("fixture-compress.ps1");
+        let evidence_path = root.join("compress-evidence.txt");
+        let source = r#"
+param(
+    [Parameter(Mandatory = $true)][string]$InputPath,
+    [Parameter(Mandatory = $true)][string]$OutputPath,
+    [Parameter(Mandatory = $true)][int]$Quality,
+    [Parameter(Mandatory = $true)][string]$EvidencePath
+)
+$ErrorActionPreference = "Stop"
+Copy-Item -LiteralPath $InputPath -Destination $OutputPath -Force
+[System.IO.File]::WriteAllText(
+    $EvidencePath,
+    [string]$Quality,
+    [System.Text.UTF8Encoding]::new($false)
+)
+"#;
+        fs::write(&script_path, source).expect("write daemon CLI image copy fixture");
+        (script_path, evidence_path)
+    }
+
+    fn workspace_python_embed_resources() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let path = candidate.join("resources").join("python-embed");
+                path.join("python.exe").exists().then_some(path)
+            })
+            .expect("locate Loom/resources/python-embed")
+    }
+
+    fn workspace_python_resources() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let path = candidate.join("resources").join("python");
+                path.join("Launcher.py").exists().then_some(path)
+            })
+            .expect("locate Loom/resources/python")
+    }
+
+    fn copy_dir_recursive(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("create recursive copy destination");
+        for entry in fs::read_dir(source).expect("read recursive copy source") {
+            let entry = entry.expect("read recursive copy entry");
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if source_path.is_dir() {
+                copy_dir_recursive(&source_path, &destination_path);
+            } else {
+                if let Some(parent) = destination_path.parent() {
+                    fs::create_dir_all(parent).expect("create recursive copy parent");
+                }
+                fs::copy(&source_path, &destination_path).expect("copy recursive file");
+            }
+        }
+    }
+
+    fn mark_framework_installed(root: &Path, id: &str) {
+        let mut installed = vec![
+            "cli_wrapper".to_owned(),
+            "cloud_api".to_owned(),
+            "script".to_owned(),
+            "workflow".to_owned(),
+        ];
+        if !installed.iter().any(|candidate| candidate == id) {
+            installed.push(id.to_owned());
+        }
+        installed.sort();
+        fs::write(
+            root.join("frameworks.json"),
+            serde_json::to_vec_pretty(&installed).expect("serialize frameworks"),
+        )
+        .expect("write frameworks.json");
+    }
+
+    fn provision_test_python_art_runtime(root: &Path) -> PathBuf {
+        let runtime_root = root.join("framework-runtimes").join("python_art");
+        let python_embed_root = runtime_root.join("python-embed");
+        let python_root = runtime_root.join("python");
+        copy_dir_recursive(&workspace_python_embed_resources(), &python_embed_root);
+        fs::create_dir_all(&python_root).expect("create python_art runtime python dir");
+        fs::copy(
+            workspace_python_resources().join("Launcher.py"),
+            python_root.join("Launcher.py"),
+        )
+        .expect("copy python_art launcher");
+        runtime_root
+    }
+
+    fn write_daemon_python_art_fixture(root: &Path) -> PathBuf {
+        let art_dir = root.join("fixture-python-art");
+        fs::create_dir_all(&art_dir).expect("create python art fixture dir");
+        fs::write(
+            art_dir.join("art.json"),
+            r#"{
+  "art_id": "fixture_python_art",
+  "label": "Fixture Python Art",
+  "description": "Python Art fixture for daemon Hook bridge tests.",
+  "version": "1.0.0",
+  "execution": {
+    "engine": "python",
+    "entry": "main.py"
+  },
+  "signature": {
+    "inputs": [
+      {
+        "id": "text",
+        "label": "Text",
+        "type": "String"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "text",
+        "label": "Text",
+        "type": "String"
+      }
+    ]
+  },
+  "variables": []
+}
+"#,
+        )
+        .expect("write python art fixture art.json");
+        fs::write(
+            art_dir.join("main.py"),
+            r#"#!/usr/bin/env python3
+import sys
+
+
+def main(args):
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"python art saw {args.get('text', '')}",
+            }
+        ],
+        "pythonExecutable": sys.executable,
+    }
+"#,
+        )
+        .expect("write python art fixture main.py");
+        art_dir
     }
 
     fn write_daemon_script_fixture(root: &Path) -> PathBuf {
@@ -13325,12 +18952,84 @@ PY
         }
     }
 
+    struct HttpImageFixture {
+        port: u16,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl HttpImageFixture {
+        fn start(content_type: &'static str, body: Vec<u8>) -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind HTTP image fixture");
+            let port = listener
+                .local_addr()
+                .expect("HTTP image fixture address")
+                .port();
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("accept HTTP image fixture request");
+                let _ = read_cloud_fixture_request(&mut stream);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            });
+            Self {
+                port,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+    }
+
+    impl Drop for HttpImageFixture {
+        fn drop(&mut self) {
+            if let Some(worker) = self.worker.take() {
+                let _ = TcpStream::connect(("127.0.0.1", self.port));
+                let _ = worker.join();
+            }
+        }
+    }
+
     fn read_cloud_fixture_request(stream: &mut TcpStream) -> String {
-        let mut buffer = [0_u8; 8192];
-        let read = stream
-            .read(&mut buffer)
-            .expect("read cloud fixture request");
-        String::from_utf8_lossy(&buffer[..read]).to_string()
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        // Read headers first (until CRLFCRLF), then the body per Content-Length.
+        // A single 8 KB read stops at the header boundary because reqwest sends
+        // the multipart body in a later packet, so multipart assertions (file
+        // parts, field values) would miss the body without this.
+        loop {
+            let read = stream.read(&mut chunk).expect("read cloud fixture request");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&buffer);
+            if let Some(header_end) = text.find("\r\n\r\n") {
+                let headers = &text[..header_end];
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let body_start = header_end + 4;
+                if buffer.len() >= body_start + content_length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buffer).to_string()
     }
 
     fn write_cloud_fixture_response(
@@ -13666,21 +19365,23 @@ PY
         let previous_base = std::env::var("LOOM_SETTINGS_BASE_URL").ok();
         std::env::remove_var("LOOM_MANAGED_CONFIG_APPS");
         std::env::remove_var("LOOM_SETTINGS_BASE_URL");
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let response = http_json_get(address.port(), "/v1/configuration/claims?app=tea");
+        let root = unique_temp_dir("claims-tea-default");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/configuration/claims?app=tea", &[], None),
+            ),
+            200,
+        );
 
         assert_eq!(response["app"], "tea");
         assert_eq!(response["managed"], false);
         assert_eq!(response["panel_url"], serde_json::Value::Null);
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
         restore_env("LOOM_SETTINGS_BASE_URL", previous_base);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -13691,21 +19392,23 @@ PY
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "hook,tea,talk");
         std::env::set_var("LOOM_SETTINGS_BASE_URL", "http://127.0.0.1:8765/settings");
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let response = http_json_get(address.port(), "/v1/configuration/claims?app=tea");
+        let root = unique_temp_dir("claims-tea-managed");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/configuration/claims?app=tea", &[], None),
+            ),
+            200,
+        );
 
         assert_eq!(response["app"], "tea");
         assert_eq!(response["managed"], true);
         assert_eq!(response["panel_url"], "http://127.0.0.1:8765/settings/tea");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
         restore_env("LOOM_SETTINGS_BASE_URL", previous_base);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -13715,13 +19418,15 @@ PY
         let previous_base = std::env::var("LOOM_SETTINGS_BASE_URL").ok();
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "tea");
         std::env::set_var("LOOM_SETTINGS_BASE_URL", "http://127.0.0.1:8765/settings");
-
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let response = http_json_get(address.port(), "/v1/configuration/claims?app=tea");
+        let root = unique_temp_dir("claims-tea-owner-source");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let response = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/configuration/claims?app=tea", &[], None),
+            ),
+            200,
+        );
 
         assert_eq!(response["app"], "tea");
         assert_eq!(response["managed"], true);
@@ -13730,10 +19435,9 @@ PY
         assert_eq!(response["schema_version"], 1);
         assert_eq!(response["panel_url"], "http://127.0.0.1:8765/settings/tea");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
         restore_env("LOOM_SETTINGS_BASE_URL", previous_base);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -13746,21 +19450,30 @@ PY
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "tea");
         std::env::set_var("LOOM_CONFIGURATION_ROOT", &root);
+        let control_plane_root = unique_temp_dir("configuration-api-control-plane");
+        let runtime =
+            test_daemon_runtime_from_config(&control_plane_root, DaemonConfig::localhost(0));
 
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let first = http_json_get(address.port(), "/v1/configuration/apps/tea");
+        let first = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/configuration/apps/tea", &[], None),
+            ),
+            200,
+        );
         assert_eq!(first["source"], "loom-managed");
         assert_eq!(first["created"], true);
         assert_eq!(first["document"]["revision"], 1);
 
-        let write = http_json_put(
-            address.port(),
-            "/v1/configuration/apps/tea",
-            r#"{
+        let write = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/configuration/apps/tea",
+                    &[],
+                    Some(
+                        r#"{
               "expected_revision": 1,
               "config": {
                 "notifications_enabled": false,
@@ -13768,20 +19481,30 @@ PY
                 "hook_ticket_default_approval_policy": "plan_only"
               }
             }"#,
+                    ),
+                ),
+            ),
+            200,
         );
         assert_eq!(write["ok"], true);
         assert_eq!(write["document"]["revision"], 2);
 
-        let stale = http_request(
-            address.port(),
-            "PUT",
-            "/v1/configuration/apps/tea",
-            Some(r#"{"expected_revision":1,"config":{"notifications_enabled":true}}"#),
+        let stale = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/configuration/apps/tea",
+                    &[],
+                    Some(r#"{"expected_revision":1,"config":{"notifications_enabled":true}}"#),
+                ),
+            ),
+            409,
         );
-        assert!(stale.starts_with("HTTP/1.1 409 Conflict"), "stale={stale}");
+        assert_eq!(stale["error"]["code"], "revision_conflict");
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        fs::remove_dir_all(control_plane_root).expect("cleanup control plane");
         let _ = std::fs::remove_dir_all(&root);
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
         restore_env("LOOM_CONFIGURATION_ROOT", previous_root);
@@ -13797,12 +19520,17 @@ PY
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "tea,hook");
         std::env::set_var("LOOM_CONFIGURATION_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+        let control_plane_root = unique_temp_dir("settings-pages-control-plane");
+        let runtime =
+            test_daemon_runtime_from_config(&control_plane_root, DaemonConfig::localhost(0));
 
-        let index = http_get(address.port(), "/settings");
+        let index_body = expect_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/settings", &[], None)),
+            200,
+        );
+        let mut index_http = Vec::new();
+        write_response(&mut index_http, 200, &index_body).expect("write settings index");
+        let index = String::from_utf8(index_http).expect("settings index http");
         assert!(
             index.contains("Content-Type: text/html; charset=utf-8"),
             "index should be served as browser-renderable HTML: {index}"
@@ -13810,7 +19538,13 @@ PY
         assert!(index.contains("Loom Settings"));
         assert!(index.contains("/settings/tea"));
 
-        let tea = http_get(address.port(), "/settings/tea");
+        let tea_body = expect_text_route_response(
+            route_request(&runtime, &parsed_request("GET", "/settings/tea", &[], None)),
+            200,
+        );
+        let mut tea_http = Vec::new();
+        write_response(&mut tea_http, 200, &tea_body).expect("write tea settings");
+        let tea = String::from_utf8(tea_http).expect("tea settings http");
         assert!(
             tea.contains("Content-Type: text/html; charset=utf-8"),
             "app settings should be served as browser-renderable HTML: {tea}"
@@ -13818,8 +19552,8 @@ PY
         assert!(tea.contains("Tea Settings"));
         assert!(tea.contains("expected_revision"));
 
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&control_plane_root);
         let _ = std::fs::remove_dir_all(&root);
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
         restore_env("LOOM_CONFIGURATION_ROOT", previous_root);
@@ -14573,31 +20307,6 @@ PY
         http_request(port, "GET", path, None)
     }
 
-    fn http_get_bytes(port: u16, path: &str, extra_headers: &str) -> Vec<u8> {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .expect("set timeout");
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra_headers}Connection: close\r\n\r\n"
-        )
-        .expect("write request");
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).expect("read response");
-        response
-    }
-
-    fn split_http_bytes(response: &[u8]) -> (&str, &[u8]) {
-        let separator = b"\r\n\r\n";
-        let index = response
-            .windows(separator.len())
-            .position(|window| window == separator)
-            .expect("HTTP header separator");
-        let headers = std::str::from_utf8(&response[..index]).expect("HTTP headers are UTF-8");
-        (headers, &response[index + separator.len()..])
-    }
-
     fn http_post(port: u16, path: &str, body: &str) -> String {
         let response = http_request(port, "POST", path, Some(body));
         assert!(
@@ -14631,15 +20340,6 @@ PY
 
     fn http_json_put(port: u16, path: &str, body: &str) -> serde_json::Value {
         let response = http_request(port, "PUT", path, Some(body));
-        assert!(
-            response.starts_with("HTTP/1.1 200 OK"),
-            "unexpected response: {response}"
-        );
-        response_json_body(&response)
-    }
-
-    fn http_json_delete(port: u16, path: &str) -> serde_json::Value {
-        let response = http_request(port, "DELETE", path, None);
         assert!(
             response.starts_with("HTTP/1.1 200 OK"),
             "unexpected response: {response}"
@@ -14759,7 +20459,21 @@ PY
     }
 
     fn current_test_binary_mcp_fixture_config() -> serde_json::Value {
+        current_test_binary_mcp_fixture_config_with_env(&[])
+    }
+
+    fn current_test_binary_mcp_fixture_config_with_env(
+        extra_env: &[(&str, String)],
+    ) -> serde_json::Value {
         let exe = std::env::current_exe().expect("current test executable");
+        let mut env = serde_json::Map::new();
+        env.insert(
+            "LOOM_DAEMON_MCP_FIXTURE_SERVER".to_owned(),
+            Value::String("1".to_owned()),
+        );
+        for (key, value) in extra_env {
+            env.insert((*key).to_owned(), Value::String(value.clone()));
+        }
         serde_json::json!({
             "id": "fixture",
             "name": "Fixture MCP",
@@ -14769,9 +20483,7 @@ PY
                 "--exact",
                 "--nocapture"
             ],
-            "env": {
-                "LOOM_DAEMON_MCP_FIXTURE_SERVER": "1"
-            },
+            "env": env,
             "enabled": true
         })
     }
@@ -14779,6 +20491,8 @@ PY
     fn run_mcp_fixture_server() {
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
+        let fixture_image_url = std::env::var("LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL").ok();
+        let fixture_image_url_alt = std::env::var("LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL_ALT").ok();
 
         for line in stdin.lock().lines() {
             let line = line.expect("fixture stdin line");
@@ -14819,30 +20533,216 @@ PY
                                             "text": { "type": "string" }
                                         }
                                     }
+                                },
+                                {
+                                    "name": "brave_image_search",
+                                    "description": "Return structured image-search results",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": { "type": "string" },
+                                            "count": { "type": "integer" },
+                                            "search_lang": {
+                                                "type": "string",
+                                                "enum": ["zh-hans", "en"]
+                                            },
+                                            "spellcheck": { "type": "boolean" }
+                                        },
+                                        "required": ["query"]
+                                    }
+                                },
+                                {
+                                    "name": "brave_image_search_realshape",
+                                    "description": "Return structured image-search results with Brave-like string-only search_lang schema",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": { "type": "string" },
+                                            "count": { "type": "integer" },
+                                            "search_lang": { "type": "string" },
+                                            "spellcheck": { "type": "boolean" }
+                                        },
+                                        "required": ["query"]
+                                    }
                                 }
                             ]
                         }
                     }),
                 ),
                 "tools/call" => {
-                    let text = request["params"]["arguments"]["text"]
-                        .as_str()
-                        .unwrap_or_default();
-                    write_fixture_response(
-                        &mut stdout,
-                        serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": request["id"].clone(),
-                            "result": {
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": text
+                    let tool_name = request["params"]["name"].as_str().unwrap_or_default();
+                    match tool_name {
+                        "echo" => {
+                            let text = request["params"]["arguments"]["text"]
+                                .as_str()
+                                .unwrap_or_default();
+                            write_fixture_response(
+                                &mut stdout,
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"].clone(),
+                                    "result": {
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": text
+                                            }
+                                        ]
                                     }
-                                ]
+                                }),
+                            );
+                        }
+                        "brave_image_search" | "brave_image_search_realshape" => {
+                            let arguments = &request["params"]["arguments"];
+                            if arguments.get("count").is_some()
+                                && !arguments["count"].is_i64()
+                                && !arguments["count"].is_u64()
+                            {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "count must be an integer"
+                                        }
+                                    }),
+                                );
+                                continue;
                             }
-                        }),
-                    );
+                            if arguments.get("spellcheck").is_some()
+                                && !arguments["spellcheck"].is_boolean()
+                            {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "spellcheck must be a boolean"
+                                        }
+                                    }),
+                                );
+                                continue;
+                            }
+                            if let Some(search_lang) = arguments
+                                .get("search_lang")
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                if !matches!(search_lang, "zh-hans" | "en") {
+                                    write_fixture_response(
+                                        &mut stdout,
+                                        serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": request["id"].clone(),
+                                            "error": {
+                                                "code": -32602,
+                                                "message": "search_lang must be one of [\"zh-hans\", \"en\"]"
+                                            }
+                                        }),
+                                    );
+                                    continue;
+                                }
+                            } else if arguments.get("search_lang").is_some() {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "search_lang must be a string"
+                                        }
+                                    }),
+                                );
+                                continue;
+                            }
+                            let query = request["params"]["arguments"]["query"]
+                                .as_str()
+                                .unwrap_or_default();
+                            if query.contains("offensive fixture") {
+                                write_fixture_response(
+                                    &mut stdout,
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request["id"].clone(),
+                                        "result": {
+                                            "content": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "{\"type\":\"object\",\"items\":[],\"count\":0,\"might_be_offensive\":true}"
+                                                }
+                                            ],
+                                            "structuredContent": {
+                                                "type": "object",
+                                                "items": [],
+                                                "count": 0,
+                                                "might_be_offensive": true
+                                            }
+                                        }
+                                    }),
+                                );
+                                continue;
+                            }
+                            let image_url = fixture_image_url.clone().unwrap_or_else(|| {
+                                "https://example.invalid/fixture.png".to_owned()
+                            });
+                            let alternate_image_url = fixture_image_url_alt
+                                .clone()
+                                .unwrap_or_else(|| image_url.clone());
+                            write_fixture_response(
+                                &mut stdout,
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"].clone(),
+                                    "result": {
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": format!("fixture brave_image_search results for {query}")
+                                            }
+                                        ],
+                                        "structuredContent": {
+                                            "type": "object",
+                                            "items": [
+                                                {
+                                                    "title": "Fixture image",
+                                                    "url": "https://example.invalid/page",
+                                                    "properties": {
+                                                        "url": image_url,
+                                                        "width": 1,
+                                                        "height": 1
+                                                    }
+                                                },
+                                                {
+                                                    "title": "Fixture image alternate",
+                                                    "url": "https://example.invalid/page-2",
+                                                    "properties": {
+                                                        "url": alternate_image_url,
+                                                        "width": 1,
+                                                        "height": 1
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                }),
+                            );
+                        }
+                        _ => write_fixture_response(
+                            &mut stdout,
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": request["id"].clone(),
+                                "error": {
+                                    "code": -32601,
+                                    "message": format!("unknown tool {tool_name}")
+                                }
+                            }),
+                        ),
+                    }
                 }
                 _ => write_fixture_response(
                     &mut stdout,

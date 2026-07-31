@@ -20,6 +20,16 @@ __pycache__/
 /evidence/
 *.log
 
+# Local daemon, Art Store, and one-off protocol fixtures
+/.daemon-*/
+/.daemon-*.err
+/.loom-art-store-data/
+/.pkg-verify-cp/
+/.mp-*
+/.sync-*
+/apps/daemon/latest.yaml
+/*.err
+
 # Local configuration and credentials
 .env
 .env.*

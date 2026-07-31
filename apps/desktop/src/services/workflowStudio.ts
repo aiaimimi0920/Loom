@@ -92,7 +92,7 @@ export interface WorkflowInterfaceInference {
   warnings: string[];
 }
 
-interface ToolInputDefinition {
+export interface ToolInputDefinition {
   name?: string;
   label?: string;
   type?: string;
@@ -102,7 +102,7 @@ interface ToolInputDefinition {
   disabled?: boolean;
 }
 
-interface ToolParamDefinition {
+export interface ToolParamDefinition {
   id?: string;
   name?: string;
   label?: string;
@@ -629,7 +629,7 @@ const optionalNumber = (value: unknown) => (typeof value === "number" ? value : 
 
 const optionalBoolean = (value: unknown) => (typeof value === "boolean" ? value : undefined);
 
-const normalizeToolInputs = (tool: LoomToolDefinition): ToolInputDefinition[] => {
+export const normalizeToolInputs = (tool: LoomToolDefinition): ToolInputDefinition[] => {
   if (!Array.isArray(tool.inputs)) return [];
   return tool.inputs.filter(isRecord).map((input) => ({
     name: optionalString(input.name),
@@ -642,7 +642,7 @@ const normalizeToolInputs = (tool: LoomToolDefinition): ToolInputDefinition[] =>
   }));
 };
 
-const normalizeToolParams = (tool: LoomToolDefinition): ToolParamDefinition[] => {
+export const normalizeToolParams = (tool: LoomToolDefinition): ToolParamDefinition[] => {
   if (!Array.isArray(tool.params)) return [];
   return tool.params.filter(isRecord).map((param) => ({
     id: optionalString(param.id),
@@ -676,7 +676,7 @@ const toolLabel = (tool: LoomToolDefinition | undefined, fallback: string) => {
   return label || tool.name || fallback;
 };
 
-const mapParamUiType = (param: ToolParamDefinition) => {
+export const mapParamUiType = (param: ToolParamDefinition) => {
   const dataType = param.dataType || param.data_type;
   if (param.widget === "slider" || param.widget === "number" || dataType === "number") {
     return typeof param.default === "number" && Number.isInteger(param.default) ? "int" : "float";
@@ -686,10 +686,10 @@ const mapParamUiType = (param: ToolParamDefinition) => {
   return "string";
 };
 
-const mapParamExecutionType = (param: ToolParamDefinition, uiType: string) =>
+export const mapParamExecutionType = (param: ToolParamDefinition, uiType: string) =>
   param.dataType || param.data_type || (uiType === "image" ? "image_path" : uiType === "boolean" ? "bool" : uiType);
 
-const normalizeInputExecutionType = (input: ToolInputDefinition, uiType: string) =>
+export const normalizeInputExecutionType = (input: ToolInputDefinition, uiType: string) =>
   input.executionType || input.execution_type || (uiType === "image" ? "image_path" : "string");
 
 const normalizeOutputType = (output?: ToolOutputDefinition) => {

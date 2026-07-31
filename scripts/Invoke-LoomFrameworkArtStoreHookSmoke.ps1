@@ -1,0 +1,1241 @@
+[CmdletBinding()]
+param(
+    [string]$PackageDir = "",
+    [string]$EvidenceRoot = ".\target\framework-art-store-hook-smoke",
+    [ValidateSet("Debug", "Release")][string]$Configuration = "Debug",
+    [switch]$SkipBuild
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function ConvertFrom-UnicodeCodePoints {
+    param([int[]]$CodePoints)
+
+    $characters = foreach ($codePoint in $CodePoints) {
+        [char]$codePoint
+    }
+    return -join $characters
+}
+
+$imageSearchLabel = ConvertFrom-UnicodeCodePoints @(0x56FE, 0x7247, 0x641C, 0x7D22)
+
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$smokePortHelperPath = Join-Path $repoRoot "scripts\LoomSmokePorts.ps1"
+. $smokePortHelperPath
+$packageFullPath = $null
+if (-not [string]::IsNullOrWhiteSpace($PackageDir)) {
+    $packageFullPath = if ([System.IO.Path]::IsPathRooted($PackageDir)) {
+        [System.IO.Path]::GetFullPath($PackageDir)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $repoRoot $PackageDir))
+    }
+}
+$EvidenceRoot = if ([System.IO.Path]::IsPathRooted($EvidenceRoot)) {
+    [System.IO.Path]::GetFullPath($EvidenceRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $EvidenceRoot))
+}
+
+function Assert-True {
+    param(
+        [bool]$Condition,
+        [string]$Message
+    )
+
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Assert-Equal {
+    param(
+        [object]$Expected,
+        [object]$Actual,
+        [string]$Message
+    )
+
+    $matches = if ($Expected -is [string] -or $Actual -is [string]) {
+        [string]::Equals([string]$Expected, [string]$Actual, [System.StringComparison]::Ordinal)
+    } else {
+        $Expected -eq $Actual
+    }
+    if (-not $matches) {
+        throw "$Message Expected=[$Expected] Actual=[$Actual]"
+    }
+}
+
+function Assert-Contains {
+    param(
+        [string]$Needle,
+        [string]$Haystack,
+        [string]$Message
+    )
+
+    if (-not $Haystack.Contains($Needle)) {
+        throw "$Message Missing=[$Needle]"
+    }
+}
+
+function Write-Utf8NoBomFile {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function ConvertTo-ProcessArgument {
+    param([AllowEmptyString()][string]$Argument)
+
+    if (($Argument.Length -gt 0) -and ($Argument -notmatch '[\s"]')) {
+        return $Argument
+    }
+
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashCount = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq [char]0x5c) {
+            $backslashCount += 1
+            continue
+        }
+
+        if ($character -eq [char]0x22) {
+            if ($backslashCount -gt 0) {
+                [void]$builder.Append("\" * (($backslashCount * 2) + 1))
+            } else {
+                [void]$builder.Append("\")
+            }
+            [void]$builder.Append('"')
+            $backslashCount = 0
+            continue
+        }
+
+        if ($backslashCount -gt 0) {
+            [void]$builder.Append("\" * $backslashCount)
+            $backslashCount = 0
+        }
+        [void]$builder.Append($character)
+    }
+
+    if ($backslashCount -gt 0) {
+        [void]$builder.Append("\" * ($backslashCount * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Start-SmokeProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = "",
+        [string]$StdoutPath = "",
+        [string]$StderrPath = ""
+    )
+
+    $argumentLine = (@($ArgumentList) | ForEach-Object { ConvertTo-ProcessArgument -Argument $_ }) -join " "
+    $parameters = @{
+        FilePath = $FilePath
+        PassThru = $true
+        WindowStyle = "Hidden"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($argumentLine)) {
+        $parameters.ArgumentList = $argumentLine
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        $parameters.WorkingDirectory = $WorkingDirectory
+    }
+    if (-not [string]::IsNullOrWhiteSpace($StdoutPath)) {
+        $parameters.RedirectStandardOutput = $StdoutPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($StderrPath)) {
+        $parameters.RedirectStandardError = $StderrPath
+    }
+
+    return Start-Process @parameters
+}
+
+function Stop-SpawnedProcess {
+    param([System.Diagnostics.Process]$Process)
+
+    if ($null -eq $Process) {
+        return
+    }
+
+    try {
+        if (-not $Process.HasExited) {
+            Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+            [void]$Process.WaitForExit(5000)
+        }
+    } finally {
+        $Process.Dispose()
+    }
+}
+
+function Start-InheritedEnvProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = "",
+        [hashtable]$Environment = @{},
+        [string]$StdoutPath = "",
+        [string]$StderrPath = ""
+    )
+
+    $previous = @{}
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $previous[$entry.Key] = [Environment]::GetEnvironmentVariable($entry.Key, "Process")
+        [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, "Process")
+    }
+
+    try {
+        return Start-SmokeProcess `
+            -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -WorkingDirectory $WorkingDirectory `
+            -StdoutPath $StdoutPath `
+            -StderrPath $StderrPath
+    } finally {
+        foreach ($entry in $previous.GetEnumerator()) {
+            [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Process")
+        }
+    }
+}
+
+function Invoke-JsonGet {
+    param([string]$Uri)
+    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 15
+}
+
+function Invoke-JsonPost {
+    param(
+        [string]$Uri,
+        [object]$Body
+    )
+
+    $json = $Body | ConvertTo-Json -Depth 20
+    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec 20
+}
+
+function Invoke-JsonPut {
+    param(
+        [string]$Uri,
+        [object]$Body
+    )
+
+    $json = $Body | ConvertTo-Json -Depth 20
+    return Invoke-RestMethod -Uri $Uri -Method Put -ContentType "application/json" -Body $json -TimeoutSec 20
+}
+
+function Invoke-JsonDelete {
+    param([string]$Uri)
+    return Invoke-RestMethod -Uri $Uri -Method Delete -TimeoutSec 20
+}
+
+function Invoke-BinaryGetBytes {
+    param([string]$Uri)
+
+    $tempPath = Join-Path $env:TEMP ("loom-binary-" + [System.Guid]::NewGuid().ToString("N") + ".bin")
+    try {
+        Invoke-WebRequest -Uri $Uri -Method Get -OutFile $tempPath -TimeoutSec 20 | Out-Null
+        return [System.IO.File]::ReadAllBytes($tempPath)
+    } finally {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Wait-HttpJson {
+    param(
+        [string]$Uri,
+        [string]$Message,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            return Invoke-JsonGet -Uri $Uri
+        } catch {
+            Start-Sleep -Milliseconds 150
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "$Message ($Uri)"
+}
+
+function Wait-TcpPort {
+    param(
+        [string]$HostName,
+        [int]$Port,
+        [string]$Message,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $client = $null
+        try {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            $async = $client.BeginConnect($HostName, $Port, $null, $null)
+            if ($async.AsyncWaitHandle.WaitOne(250) -and $client.Connected) {
+                $client.EndConnect($async)
+                return
+            }
+        } catch {
+        } finally {
+            if ($null -ne $client) {
+                $client.Dispose()
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+
+    throw "$Message (${HostName}:$Port)"
+}
+
+function New-LoomHookBridgeWebSocket {
+    param([int]$Port)
+
+    $client = [System.Net.WebSockets.ClientWebSocket]::new()
+    $uri = [Uri]::new("ws://127.0.0.1:$Port")
+    $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+    try {
+        [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
+    } finally {
+        $connectCts.Dispose()
+    }
+    return $client
+}
+
+function Send-LoomHookBridgeWebSocketJson {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Client,
+        [string]$Json
+    )
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    $sendCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+    try {
+        [void]$Client.SendAsync(
+            [ArraySegment[byte]]::new($bytes),
+            [System.Net.WebSockets.WebSocketMessageType]::Text,
+            $true,
+            $sendCts.Token
+        ).GetAwaiter().GetResult()
+    } finally {
+        $sendCts.Dispose()
+    }
+}
+
+function Receive-LoomHookBridgeWebSocketJson {
+    param([System.Net.WebSockets.ClientWebSocket]$Client)
+
+    $buffer = New-Object byte[] 4096
+    $builder = [System.Text.StringBuilder]::new()
+    do {
+        $receiveCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+        try {
+            $result = $Client.ReceiveAsync(
+                [ArraySegment[byte]]::new($buffer),
+                $receiveCts.Token
+            ).GetAwaiter().GetResult()
+        } finally {
+            $receiveCts.Dispose()
+        }
+
+        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+            throw "Hook Bridge WebSocket closed before sending a JSON response."
+        }
+        [void]$builder.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count))
+    } while (-not $result.EndOfMessage)
+
+    return $builder.ToString() | ConvertFrom-Json
+}
+
+function Close-LoomHookBridgeWebSocket {
+    param([System.Net.WebSockets.ClientWebSocket]$Client)
+
+    if ($null -eq $Client) {
+        return
+    }
+
+    try {
+        if ($Client.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            $closeCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+            try {
+                try {
+                    [void]$Client.CloseAsync(
+                        [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
+                        "done",
+                        $closeCts.Token
+                    ).GetAwaiter().GetResult()
+                } catch {
+                }
+            } finally {
+                $closeCts.Dispose()
+            }
+        }
+    } finally {
+        $Client.Dispose()
+    }
+}
+
+function New-ZipFixture {
+    param(
+        [string]$ZipPath,
+        [hashtable]$TextFiles = @{},
+        [hashtable]$FileCopies = @{},
+        [hashtable]$DirectoryCopies = @{}
+    )
+
+    $stage = Join-Path $env:TEMP ("loom-zip-stage-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    try {
+        foreach ($entry in $TextFiles.GetEnumerator()) {
+            $target = Join-Path $stage $entry.Key
+            Write-Utf8NoBomFile -Path $target -Content ([string]$entry.Value)
+        }
+        foreach ($entry in $FileCopies.GetEnumerator()) {
+            $target = Join-Path $stage $entry.Key
+            $parent = Split-Path -Parent $target
+            if (-not [string]::IsNullOrWhiteSpace($parent)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath ([string]$entry.Value) -Destination $target -Force
+        }
+        foreach ($entry in $DirectoryCopies.GetEnumerator()) {
+            $target = Join-Path $stage $entry.Key
+            $parent = Split-Path -Parent $target
+            if (-not [string]::IsNullOrWhiteSpace($parent)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath ([string]$entry.Value) -Destination $target -Recurse -Force
+        }
+        if (Test-Path -LiteralPath $ZipPath) {
+            Remove-Item -LiteralPath $ZipPath -Force
+        }
+        $zipParent = Split-Path -Parent $ZipPath
+        if (-not [string]::IsNullOrWhiteSpace($zipParent)) {
+            New-Item -ItemType Directory -Force -Path $zipParent | Out-Null
+        }
+        Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+    } finally {
+        if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force
+        }
+    }
+}
+
+function ConvertTo-NormalizedJson {
+    param([object]$Value)
+    return (($Value | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+}
+
+$buildArgs = @("build", "-p", "loom-daemon", "-p", "loom-art-store")
+$targetSubdir = "debug"
+if ($Configuration -eq "Release") {
+    $buildArgs = @("build", "--release", "-p", "loom-daemon", "-p", "loom-art-store")
+    $targetSubdir = "release"
+}
+
+$daemonExe = Join-Path $repoRoot "target\$targetSubdir\loom-daemon.exe"
+$daemonWorkingDirectory = $repoRoot
+$artStoreExe = Join-Path $repoRoot "target\$targetSubdir\loom-art-store.exe"
+$embeddedPython = Join-Path $repoRoot "resources\python-embed\python.exe"
+$pythonResourcesRoot = Join-Path $repoRoot "resources\python"
+$isWindows = ($env:OS -eq "Windows_NT")
+$fixturePythonCommand = $null
+$fixturePythonArgsPrefix = @()
+
+$pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if ($null -ne $pythonCommand) {
+    $fixturePythonCommand = $pythonCommand.Source
+} else {
+    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -ne $pyLauncher) {
+        $fixturePythonCommand = $pyLauncher.Source
+        $fixturePythonArgsPrefix = @("-3")
+    }
+}
+
+Assert-True (Test-Path -LiteralPath $embeddedPython -PathType Leaf) "Missing packaged Python runtime: $embeddedPython"
+Assert-True (Test-Path -LiteralPath (Join-Path $pythonResourcesRoot "Launcher.py") -PathType Leaf) "Missing packaged Python launcher resources."
+Assert-True (-not [string]::IsNullOrWhiteSpace($fixturePythonCommand)) "No host Python interpreter was found for the temporary cloud/MCP fixture servers."
+
+if ($null -ne $packageFullPath) {
+    $daemonExe = Join-Path $packageFullPath "runtime\loom-daemon.exe"
+    $daemonWorkingDirectory = $packageFullPath
+    Assert-True (Test-Path -LiteralPath $daemonExe -PathType Leaf) "Missing packaged Loom daemon for framework/store smoke: $daemonExe"
+    $buildArgs = @("build", "-p", "loom-art-store")
+    if ($Configuration -eq "Release") {
+        $buildArgs = @("build", "--release", "-p", "loom-art-store")
+    }
+}
+
+if (-not $SkipBuild) {
+    Push-Location $repoRoot
+    try {
+        & cargo @buildArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo $($buildArgs -join ' ') failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+Assert-True (Test-Path -LiteralPath $daemonExe -PathType Leaf) "Missing daemon binary: $daemonExe"
+Assert-True (Test-Path -LiteralPath $artStoreExe -PathType Leaf) "Missing art store binary: $artStoreExe"
+
+$runId = "$(Get-Date -Format 'yyyyMMdd-HHmmss')-framework-store-$PID-$([System.Guid]::NewGuid().ToString('N'))"
+$runRoot = Join-Path $EvidenceRoot $runId
+$storeRoot = Join-Path $runRoot "store"
+$controlPlaneRoot = Join-Path $runRoot "control-plane"
+$appDataRoot = Join-Path $runRoot "appdata"
+$localAppDataRoot = Join-Path $runRoot "localappdata"
+$logsRoot = Join-Path $runRoot "logs"
+$fixturesRoot = Join-Path $runRoot "fixtures"
+$summaryPath = Join-Path $runRoot "summary.json"
+
+New-Item -ItemType Directory -Force -Path $storeRoot, $controlPlaneRoot, $appDataRoot, $localAppDataRoot, $logsRoot, $fixturesRoot | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $storeRoot "arts"), (Join-Path $storeRoot "frameworks"), (Join-Path $storeRoot "binaries") | Out-Null
+
+$cloudPort = Get-LoomSmokePort
+$storePort = Get-LoomSmokePort
+$daemonPort = Get-LoomSmokePort
+
+$imageData = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+$secondImageData = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AAoUHv8BpAE8tOS4KAAAAABJRU5ErkJggg=="
+$cloudEvidencePath = Join-Path $fixturesRoot "cloud-request.json"
+$mcpEvidencePath = Join-Path $fixturesRoot "mcp-request.json"
+$cloudScriptPath = Join-Path $fixturesRoot "fake-cloud-server.py"
+$mcpScriptPath = Join-Path $fixturesRoot "fake-mcp-server.py"
+
+$cloudScript = @"
+import base64
+import http.server
+import json
+import sys
+
+PORT = int(sys.argv[1])
+EVIDENCE_PATH = sys.argv[2]
+IMAGE_DATA = sys.argv[3]
+ALT_IMAGE_DATA = sys.argv[4]
+IMAGE_BYTES = base64.b64decode(IMAGE_DATA.split(",", 1)[1])
+ALT_IMAGE_BYTES = base64.b64decode(ALT_IMAGE_DATA.split(",", 1)[1])
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/raw-image.png":
+            body = IMAGE_BYTES
+        elif self.path == "/raw-image-alt.png":
+            body = ALT_IMAGE_BYTES
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        payload = {
+            "path": self.path,
+            "contentType": self.headers.get("Content-Type", ""),
+            "bodyLength": length,
+            "bodyPreview": body[:256].decode("utf-8", "replace"),
+        }
+        with open(EVIDENCE_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        response = {
+            "content": [
+                {
+                    "type": "image",
+                    "data": IMAGE_DATA,
+                    "mimeType": "image/png",
+                }
+            ]
+        }
+        encoded = json.dumps(response, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, format, *args):
+        pass
+
+
+http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+"@
+Write-Utf8NoBomFile -Path $cloudScriptPath -Content $cloudScript
+
+$mcpScript = @"
+import json
+import sys
+
+EVIDENCE_PATH = sys.argv[1]
+IMAGE_URL = sys.argv[2]
+ALT_IMAGE_URL = sys.argv[3]
+
+
+def write_message(message):
+    sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+    if not raw_line:
+        continue
+    request = json.loads(raw_line)
+    method = request.get("method", "")
+    if method == "initialize":
+        write_message({
+            "jsonrpc": "2.0",
+            "id": request.get("id"),
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "store-fixture", "version": "1.0.0"},
+            },
+        })
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        write_message({
+            "jsonrpc": "2.0",
+            "id": request.get("id"),
+            "result": {
+                "tools": [
+                    {
+                        "name": "echo",
+                        "description": "Echo fixture text",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"}
+                            }
+                        },
+                    },
+                    {
+                        "name": "brave_image_search",
+                        "description": "Return structured image-search results",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"},
+                                "count": {"type": "integer"},
+                                "safesearch": {"type": "string"},
+                                "spellcheck": {"type": "boolean"},
+                            },
+                            "required": ["query"],
+                        },
+                    }
+                ]
+            },
+        })
+    elif method == "tools/call":
+        arguments = request.get("params", {}).get("arguments", {})
+        payload = {
+            "toolName": request.get("params", {}).get("name"),
+            "arguments": arguments,
+        }
+        with open(EVIDENCE_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        tool_name = request.get("params", {}).get("name", "")
+        if tool_name == "brave_image_search":
+            query = str(arguments.get("query", ""))
+            count = max(1, int(arguments.get("count", 1)))
+            items = [
+                {
+                    "title": "Fixture image",
+                    "url": "https://example.invalid/page",
+                    "properties": {
+                        "url": IMAGE_URL,
+                        "width": 1,
+                        "height": 1,
+                    },
+                }
+            ]
+            if count >= 2:
+                items.append({
+                    "title": "Fixture image alt",
+                    "url": "https://example.invalid/page-alt",
+                    "properties": {
+                        "url": ALT_IMAGE_URL,
+                        "width": 1,
+                        "height": 1,
+                    },
+                })
+            write_message({
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"fixture brave_image_search results for {query}",
+                        }
+                    ],
+                    "structuredContent": {
+                        "type": "object",
+                        "items": items,
+                    },
+                },
+            })
+        else:
+            text = str(arguments.get("text", ""))
+            write_message({
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text,
+                        }
+                    ]
+                },
+            })
+"@
+Write-Utf8NoBomFile -Path $mcpScriptPath -Content $mcpScript
+
+$runtimeZipPath = Join-Path $storeRoot "frameworks\python_art.zip"
+New-ZipFixture `
+    -ZipPath $runtimeZipPath `
+    -FileCopies @{ "python/Launcher.py" = (Join-Path $pythonResourcesRoot "Launcher.py") } `
+    -DirectoryCopies @{ "python-embed" = (Join-Path $repoRoot "resources\python-embed") }
+
+$cliManifest = @{
+    id = "store-cli-art"
+    name = "Store CLI Art"
+    description = "Fake store cli_wrapper Art"
+    enabled = $true
+    execution = if ($isWindows) {
+        @{
+            type = "cli_wrapper"
+            command = "powershell.exe"
+            args = @(
+                "-NoProfile",
+                "-Command",
+                "Copy-Item -LiteralPath '{{input}}' -Destination '{{output}}' -Force"
+            )
+        }
+    } else {
+        @{
+            type = "cli_wrapper"
+            command = "sh"
+            args = @(
+                "-c",
+                "cp `"$1`" `"$2`"",
+                "loom-cli-wrapper",
+                "{{input}}",
+                "{{output}}"
+            )
+        }
+    }
+}
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cli-art.zip") -TextFiles @{
+    "manifest.json" = (ConvertTo-NormalizedJson $cliManifest)
+}
+
+$scriptSource = @'
+$ErrorActionPreference = "Stop"
+$payload = $args[0] | ConvertFrom-Json
+$arguments = $payload.arguments
+$response = [ordered]@{
+    content = @(
+        [ordered]@{
+            type = "image"
+            data = [string]$arguments.input_base64
+            mimeType = "image/png"
+        }
+    )
+}
+[Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
+'@
+$scriptManifest = @{
+    id = "store-script-art"
+    name = "Store Script Art"
+    description = "Fake store script Art"
+    enabled = $true
+    execution = @{
+        type = "script"
+        path = "script.ps1"
+    }
+}
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-script-art.zip") -TextFiles @{
+    "manifest.json" = (ConvertTo-NormalizedJson $scriptManifest)
+    "script.ps1" = $scriptSource
+}
+
+$cloudManifest = @{
+    id = "store-cloud-art"
+    name = "Store Cloud Art"
+    description = "Fake store cloud_api Art"
+    enabled = $true
+    execution = @{
+        type = "cloud_api"
+        endpoint = "http://127.0.0.1:$cloudPort/image"
+        method = "POST"
+    }
+}
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cloud-art.zip") -TextFiles @{
+    "manifest.json" = (ConvertTo-NormalizedJson $cloudManifest)
+}
+
+$pythonArtJson = @'
+{
+  "art_id": "store_echo",
+  "label": "Store Echo",
+  "description": "Fake store Python Art fixture",
+  "version": "1.0.0",
+  "execution": {
+    "engine": "python",
+    "entry": "main.py"
+  },
+  "signature": {
+    "inputs": [
+      {
+        "id": "text",
+        "label": "Text",
+        "type": "String"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "text",
+        "label": "Text",
+        "type": "String"
+      }
+    ]
+  },
+  "variables": []
+}
+'@
+$pythonMain = @'
+#!/usr/bin/env python3
+import sys
+
+
+def main(args):
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"python art saw {args.get('text', '')}",
+            }
+        ],
+        "pythonExecutable": sys.executable,
+    }
+'@
+$pythonManifest = @{
+    id = "store-python-art"
+    name = "Store Python Art"
+    description = "Fake store python_art Art"
+    enabled = $true
+    execution = @{
+        type = "python_art"
+        artId = "store_echo"
+        artPath = "python/Arts/Art_StoreEcho"
+    }
+}
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-python-art.zip") -TextFiles @{
+    "manifest.json" = (ConvertTo-NormalizedJson $pythonManifest)
+    "python/Arts/Art_StoreEcho/art.json" = $pythonArtJson
+    "python/Arts/Art_StoreEcho/main.py" = $pythonMain
+}
+
+$mcpManifest = @{
+    id = "store-mcp-art"
+    name = $imageSearchLabel
+    description = "Fake store MCP image-search Art"
+    enabled = $true
+    execution = @{
+        type = "mcp"
+        serverId = "store-fixture"
+        toolName = "brave_image_search"
+    }
+    outputs = @(
+        @{
+            name = "output"
+            label = "output"
+            type = "image"
+            execution_type = "image_buffer"
+        }
+    )
+    params = @(
+        @{ id = "query"; default = "smoke mcp image search" },
+        @{ id = "count"; default = 2 },
+        @{ id = "result_index"; default = 0 }
+    )
+}
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art.zip") -TextFiles @{
+    "manifest.json" = (ConvertTo-NormalizedJson $mcpManifest)
+}
+
+$workflowManifest = @{
+    id = "store-workflow-art"
+    name = "Store Workflow Art"
+    description = "Fake store workflow Art"
+    enabled = $true
+    execution = @{
+        type = "workflow"
+        workflowId = "store-script-workflow"
+    }
+}
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-workflow-art.zip") -TextFiles @{
+    "manifest.json" = (ConvertTo-NormalizedJson $workflowManifest)
+}
+
+$catalogExpectedIds = @(
+    "store-cli-art",
+    "store-cloud-art",
+    "store-mcp-art",
+    "store-python-art",
+    "store-script-art",
+    "store-workflow-art"
+)
+
+$cloudProcess = $null
+$artStoreProcess = $null
+$daemonProcess = $null
+$summary = [ordered]@{
+    runId = $runId
+    configuration = $Configuration
+    packageDir = $packageFullPath
+    runRoot = $runRoot
+    storePort = $storePort
+    daemonPort = $daemonPort
+    cloudPort = $cloudPort
+    catalogExpectedIds = $catalogExpectedIds
+}
+
+try {
+    $cloudProcess = Start-SmokeProcess `
+        -FilePath $fixturePythonCommand `
+        -ArgumentList @($fixturePythonArgsPrefix + @($cloudScriptPath, "$cloudPort", $cloudEvidencePath, $imageData, $secondImageData)) `
+        -WorkingDirectory $repoRoot `
+        -StdoutPath (Join-Path $logsRoot "cloud.stdout.log") `
+        -StderrPath (Join-Path $logsRoot "cloud.stderr.log")
+    Wait-TcpPort -HostName "127.0.0.1" -Port $cloudPort -Message "Cloud fixture did not open its TCP port"
+
+    $artStoreProcess = Start-InheritedEnvProcess `
+        -FilePath $artStoreExe `
+        -WorkingDirectory $repoRoot `
+        -Environment @{
+            LOOM_ART_STORE_HOST = "127.0.0.1"
+            LOOM_ART_STORE_PORT = "$storePort"
+            LOOM_ART_STORE_ROOT = $storeRoot
+        } `
+        -StdoutPath (Join-Path $logsRoot "art-store.stdout.log") `
+        -StderrPath (Join-Path $logsRoot "art-store.stderr.log")
+    [void](Wait-HttpJson -Uri "http://127.0.0.1:$storePort/health" -Message "Art store did not become healthy")
+
+    $daemonProcess = Start-InheritedEnvProcess `
+        -FilePath $daemonExe `
+        -WorkingDirectory $daemonWorkingDirectory `
+        -Environment @{
+            LOOM_DAEMON_HOST = "127.0.0.1"
+            LOOM_DAEMON_PORT = "$daemonPort"
+            LOOM_CONTROL_PLANE_ROOT = $controlPlaneRoot
+            LOOM_ART_STORE_URL = "http://127.0.0.1:$storePort"
+            APPDATA = $appDataRoot
+            LOCALAPPDATA = $localAppDataRoot
+        } `
+        -StdoutPath (Join-Path $logsRoot "daemon.stdout.log") `
+        -StderrPath (Join-Path $logsRoot "daemon.stderr.log")
+    [void](Wait-HttpJson -Uri "http://127.0.0.1:$daemonPort/health" -Message "Loom daemon did not become healthy")
+
+    $baseUrl = "http://127.0.0.1:$daemonPort"
+    $summary.baseUrl = $baseUrl
+
+    $frameworksBefore = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"
+    Assert-Equal 6 (@($frameworksBefore.frameworks).Count) "Framework list must expose exactly six framework ids."
+    $summary.frameworksBefore = $frameworksBefore.frameworks
+
+    $catalog = Invoke-JsonGet -Uri "$baseUrl/v1/arts/store/catalog"
+    $catalogIds = @($catalog.arts | ForEach-Object { [string]$_.id })
+    Assert-Equal ($catalogExpectedIds -join ",") (($catalogIds | Sort-Object) -join ",") "Store catalog ids mismatch."
+    $summary.catalog = $catalog.arts
+
+    $savedServer = Invoke-JsonPut -Uri "$baseUrl/v1/mcp/servers/store-fixture" -Body @{
+        id = "store-fixture"
+        name = "Store Fixture MCP"
+        command = $fixturePythonCommand
+        args = @($fixturePythonArgsPrefix + @($mcpScriptPath, $mcpEvidencePath, "http://127.0.0.1:$cloudPort/raw-image.png", "http://127.0.0.1:$cloudPort/raw-image-alt.png"))
+        env = @{}
+        enabled = $true
+    }
+    Assert-Equal "store-fixture" ([string]$savedServer.server.id) "MCP server save id mismatch."
+    $summary.mcpServer = $savedServer.server
+
+    $mcpFramework = Invoke-JsonPost -Uri "$baseUrl/v1/frameworks/mcp/install" -Body @{}
+    Assert-Equal "mcp" ([string]$mcpFramework.framework.id) "MCP framework install id mismatch."
+    Assert-Equal $true ([bool]$mcpFramework.framework.ready) "MCP framework should be ready after install."
+
+    $pythonFramework = Invoke-JsonPost -Uri "$baseUrl/v1/frameworks/python_art/install" -Body @{}
+    Assert-Equal "python_art" ([string]$pythonFramework.framework.id) "python_art framework install id mismatch."
+    Assert-Equal $true ([bool]$pythonFramework.framework.ready) "python_art framework should be ready after runtime download."
+    Assert-Contains "framework-runtimes" ([string]$pythonFramework.framework.readyDetail) "python_art ready detail should point at the downloaded runtime."
+
+    $frameworksAfter = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"
+    $summary.frameworksAfter = $frameworksAfter.frameworks
+
+    $workflowYaml = @"
+name: Store Script Workflow
+nodes:
+  - id: image
+    uses: store-script-art
+"@
+    $savedWorkflow = Invoke-JsonPut -Uri "$baseUrl/v1/workflows/store-script-workflow" -Body @{
+        data = $workflowYaml
+    }
+    Assert-Equal "store-script-workflow" ([string]$savedWorkflow.workflow.id) "Workflow save id mismatch."
+    $summary.workflow = $savedWorkflow.workflow
+
+    $installOrder = @(
+        "store-cli-art",
+        "store-script-art",
+        "store-cloud-art",
+        "store-python-art",
+        "store-mcp-art",
+        "store-workflow-art"
+    )
+    $installReports = @{}
+    foreach ($artId in $installOrder) {
+        $installed = Invoke-JsonPost -Uri "$baseUrl/v1/arts/store/install" -Body @{
+            artId = $artId
+        }
+        Assert-Equal $artId ([string]$installed.reports[0].toolId) "Installed art id mismatch for $artId."
+        $installReports[$artId] = $installed.reports
+    }
+    $summary.installReports = $installReports
+
+    $readinessChecks = @{}
+    foreach ($artId in $installOrder) {
+        $readiness = Invoke-JsonGet -Uri "$baseUrl/v1/tools/$artId/readiness"
+        Assert-Equal $true ([bool]$readiness.frameworkInstalled) "Tool readiness must report installed framework for $artId."
+        Assert-Equal $true ([bool]$readiness.ready) "Tool readiness must report ready framework for $artId."
+        $readinessChecks[$artId] = $readiness
+    }
+    $summary.toolReadiness = $readinessChecks
+
+    $hookBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Body @{ port = 0 }
+    Assert-Equal $true ([bool]$hookBridgeStarted.running) "Hook Bridge should start."
+    $summary.hookBridge = $hookBridgeStarted
+    $hookBridgeRunning = $true
+
+    $subscriber = $null
+    try {
+        $subscriber = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
+        Send-LoomHookBridgeWebSocketJson `
+            -Client $subscriber `
+            -Json '{"method":"subscribe","params":{"channels":["art_hook"]}}'
+        $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
+        Assert-Equal "success" ([string]$subscribed.type) "Hook Bridge subscribe response type mismatch."
+        Assert-Equal $true ([bool]$subscribed.data.subscribed) "Hook Bridge subscribe flag mismatch."
+
+        $nodes = @(
+            @{ id = "node-cli"; type = "artNode"; data = @{ artId = "store-cli-art"; label = "Store CLI Art" } },
+            @{ id = "node-script"; type = "artNode"; data = @{ artId = "store-script-art"; label = "Store Script Art" } },
+            @{ id = "node-cloud"; type = "artNode"; data = @{ artId = "store-cloud-art"; label = "Store Cloud Art" } },
+            @{ id = "node-python"; type = "artNode"; data = @{ artId = "store-python-art"; label = "Store Python Art" } },
+            @{ id = "node-mcp"; type = "artNode"; data = @{ artId = "store-mcp-art"; label = "Store MCP Art" } },
+            @{ id = "node-workflow"; type = "artNode"; data = @{ artId = "store-workflow-art"; label = "Store Workflow Art" } }
+        )
+        $instantiated = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/instantiate-workflow" -Body @{
+            nodes = $nodes
+            edges = @()
+            mode = "reference"
+            workflowId = "store-framework-smoke"
+        }
+        Assert-Equal "instantiate_workflow" ([string]$instantiated.compatCommand) "Instantiate workflow compat command mismatch."
+        Assert-Equal "success" ([string]$instantiated.type) "Instantiate workflow response type mismatch."
+
+        $broadcast = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
+        Assert-Equal "art_hook/instantiate" ([string]$broadcast.method) "Instantiate workflow broadcast method mismatch."
+        Assert-Equal 6 (@($broadcast.params.nodes).Count) "Hook broadcast node count mismatch."
+        $summary.instantiateWorkflow = @{
+            compatCommand = [string]$instantiated.compatCommand
+            workflowId = [string]$broadcast.params.workflow_id
+            nodeCount = @($broadcast.params.nodes).Count
+        }
+
+        Send-LoomHookBridgeWebSocketJson `
+            -Client $subscriber `
+            -Json (@{
+                method = "art_loom/overwrite_workflow"
+                params = @{
+                    workflow_id = "hook-live"
+                    snapshot = @{
+                        name = "Hook Live"
+                        nodes = @(
+                            @{
+                                id = "node-mcp"
+                                type = "art"
+                                position = @{ x = 160; y = 40 }
+                                measured = @{ width = 96; height = 96 }
+                                data = @{
+                                    artId = "store-mcp-art"
+                                    label = "Store MCP Art"
+                                    params = @{
+                                        query = "smoke mcp image search"
+                                        count = 2
+                                    }
+                                    w = 96
+                                    h = 96
+                                }
+                            }
+                        )
+                        edges = @()
+                    }
+                }
+            } | ConvertTo-Json -Depth 20 -Compress)
+        $overwritten = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
+        Assert-Equal "success" ([string]$overwritten.type) "Hook live overwrite response type mismatch."
+        $summary.liveWorkflowOverwrite = @{
+            workflowId = "hook-live"
+            nodeCount = 1
+        }
+
+        $executeResults = [ordered]@{}
+        $executeResults["store-cli-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
+            nodeId = "node-cli"
+            artId = "store-cli-art"
+            inputBase64 = $imageData
+            params = @{}
+        }
+        $executeResults["store-script-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
+            nodeId = "node-script"
+            artId = "store-script-art"
+            inputBase64 = $imageData
+            params = @{}
+        }
+        $executeResults["store-cloud-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
+            nodeId = "node-cloud"
+            artId = "store-cloud-art"
+            inputBase64 = $imageData
+            params = @{}
+        }
+        $executeResults["store-python-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
+            nodeId = "node-python"
+            artId = "store-python-art"
+            params = @{ text = "smoke python art" }
+        }
+        $executeResults["store-mcp-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
+            nodeId = "node-mcp"
+            artId = "store-mcp-art"
+            params = @{
+                query = "smoke mcp image search"
+                count = 2
+                result_index = 1
+                safesearch = "off"
+                spellcheck = $true
+            }
+        }
+        $executeResults["store-workflow-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
+            nodeId = "node-workflow"
+            artId = "store-workflow-art"
+            inputBase64 = $imageData
+            params = @{}
+        }
+
+        foreach ($imageArtId in @("store-cli-art", "store-script-art", "store-cloud-art", "store-workflow-art")) {
+            $result = $executeResults[$imageArtId]
+            Assert-Equal "success" ([string]$result.type) "$imageArtId execute-art-node response type mismatch."
+            Assert-Equal $true ([bool]$result.data.success) "$imageArtId execute-art-node success mismatch."
+            Assert-Equal $imageData ([string]$result.data.output_base64) "$imageArtId execute-art-node image output mismatch."
+        }
+        Assert-Equal "success" ([string]$executeResults["store-mcp-art"].type) "store-mcp-art execute-art-node response type mismatch."
+        Assert-Equal $true ([bool]$executeResults["store-mcp-art"].data.success) "store-mcp-art execute-art-node success mismatch."
+        Assert-Equal $secondImageData ([string]$executeResults["store-mcp-art"].data.output_base64) "store-mcp-art execute-art-node image output mismatch."
+        Assert-Equal "python art saw smoke python art" ([string]$executeResults["store-python-art"].data.output_text) "store-python-art output text mismatch."
+        $summary.executeResults = $executeResults
+
+        $canvasSnapshotBeforeClear = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/canvas"
+        $mcpNodeBeforeClear = @($canvasSnapshotBeforeClear.nodes | Where-Object { [string]$_.id -eq "node-mcp" })[0]
+        Assert-True ($null -ne $mcpNodeBeforeClear) "Hook canvas must include node-mcp."
+        Assert-Equal 1 ([int]$mcpNodeBeforeClear.selectedResultIndex) "node-mcp selected result mismatch before runtime clear."
+        Assert-Equal 2 (@($mcpNodeBeforeClear.resultCandidates).Count) "node-mcp result candidate count mismatch before runtime clear."
+        Assert-Equal $true ([bool]$mcpNodeBeforeClear.previewAvailable) "node-mcp preview must be available before runtime clear."
+
+        $stopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
+        $summary.hookBridgeStopped = $stopped
+        $hookBridgeRunning = $false
+
+        $canvasSnapshotAfterClear = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/canvas"
+        $mcpNodeAfterClear = @($canvasSnapshotAfterClear.nodes | Where-Object { [string]$_.id -eq "node-mcp" })[0]
+        Assert-True ($null -ne $mcpNodeAfterClear) "Hook canvas must still include node-mcp after runtime clear."
+        Assert-Equal 1 ([int]$mcpNodeAfterClear.selectedResultIndex) "node-mcp selected result mismatch after runtime clear."
+        Assert-Equal 2 (@($mcpNodeAfterClear.resultCandidates).Count) "node-mcp result candidate count mismatch after runtime clear."
+        Assert-Equal 1 ([int]$mcpNodeAfterClear.params.result_index) "node-mcp persisted result_index mismatch after runtime clear."
+        Assert-Equal $true ([bool]$mcpNodeAfterClear.previewAvailable) "node-mcp preview must still be available after runtime clear."
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$mcpNodeAfterClear.previewUrl)) "node-mcp preview URL missing after runtime clear."
+
+        $previewBytes = Invoke-BinaryGetBytes -Uri "$baseUrl$([string]$mcpNodeAfterClear.previewUrl)"
+        $expectedPreviewBytes = [Convert]::FromBase64String($secondImageData.Split(",", 2)[1])
+        Assert-Equal ($expectedPreviewBytes.Length) ($previewBytes.Length) "node-mcp preview byte length mismatch after runtime clear."
+        Assert-Equal ([Convert]::ToBase64String($expectedPreviewBytes)) ([Convert]::ToBase64String($previewBytes)) "node-mcp preview bytes mismatch after runtime clear."
+        $summary.mcpSelectionPersistence = [ordered]@{
+            selectedResultIndexBeforeClear = [int]$mcpNodeBeforeClear.selectedResultIndex
+            selectedResultIndexAfterClear = [int]$mcpNodeAfterClear.selectedResultIndex
+            candidateCountBeforeClear = @($mcpNodeBeforeClear.resultCandidates).Count
+            candidateCountAfterClear = @($mcpNodeAfterClear.resultCandidates).Count
+            previewAvailableAfterClear = [bool]$mcpNodeAfterClear.previewAvailable
+            previewBytesMatchedSelectedResult = $true
+        }
+    } finally {
+        if ($null -ne $subscriber) {
+            Close-LoomHookBridgeWebSocket -Client $subscriber
+        }
+        try {
+            if ($hookBridgeRunning) {
+                $stopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
+                $summary.hookBridgeStopped = $stopped
+                $hookBridgeRunning = $false
+            }
+        } catch {
+        }
+    }
+
+    if (Test-Path -LiteralPath $cloudEvidencePath) {
+        $summary.cloudEvidence = Get-Content -Raw -LiteralPath $cloudEvidencePath | ConvertFrom-Json
+    }
+    if (Test-Path -LiteralPath $mcpEvidencePath) {
+        $summary.mcpEvidence = Get-Content -Raw -LiteralPath $mcpEvidencePath | ConvertFrom-Json
+    }
+
+    $summary.result = "passed"
+    Write-Utf8NoBomFile -Path $summaryPath -Content (ConvertTo-NormalizedJson $summary)
+    Write-Output ($summary | ConvertTo-Json -Depth 20)
+} catch {
+    $summary.result = "failed"
+    $summary.error = $_.Exception.ToString()
+    Write-Utf8NoBomFile -Path $summaryPath -Content (ConvertTo-NormalizedJson $summary)
+    throw
+} finally {
+    if ($null -ne $daemonProcess -and -not $daemonProcess.HasExited) {
+        try {
+            Invoke-JsonDelete -Uri "$($summary.baseUrl)/v1/mcp/servers/store-fixture" | Out-Null
+        } catch {
+        }
+    }
+    Stop-SpawnedProcess $daemonProcess
+    Stop-SpawnedProcess $artStoreProcess
+    Stop-SpawnedProcess $cloudProcess
+}

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,21 @@ fn default_enabled() -> bool {
     true
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SpawnCommandSpec {
+    program: String,
+    args: Vec<String>,
+}
+
+impl SpawnCommandSpec {
+    fn direct(program: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+}
+
 impl McpServerConfig {
     #[must_use]
     pub fn new(id: impl Into<String>, name: impl Into<String>, command: impl Into<String>) -> Self {
@@ -89,6 +105,153 @@ impl McpServerConfig {
         self.enabled = false;
         self
     }
+}
+
+fn spawn_command_spec(config: &McpServerConfig) -> SpawnCommandSpec {
+    #[cfg(windows)]
+    if let Some(spec) = resolve_windows_spawn_command(config) {
+        return spec;
+    }
+
+    SpawnCommandSpec::direct(config.command.clone(), config.args.clone())
+}
+
+#[cfg(windows)]
+fn resolve_windows_spawn_command(config: &McpServerConfig) -> Option<SpawnCommandSpec> {
+    let command = Path::new(&config.command);
+
+    if is_windows_powershell_script(command) {
+        return Some(windows_powershell_spawn_spec(command, &config.args));
+    }
+
+    if command.extension().is_some() {
+        return None;
+    }
+
+    let resolved = resolve_windows_command_path(command)?;
+    if is_windows_powershell_script(&resolved) {
+        return Some(windows_powershell_spawn_spec(&resolved, &config.args));
+    }
+
+    Some(SpawnCommandSpec::direct(
+        resolved.display().to_string(),
+        config.args.clone(),
+    ))
+}
+
+#[cfg(windows)]
+fn resolve_windows_command_path(command: &Path) -> Option<PathBuf> {
+    let extensions = windows_path_extensions();
+
+    if is_windows_path_qualified(command) {
+        return resolve_windows_command_in_paths(command, &[], &extensions);
+    }
+
+    let search_paths = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    resolve_windows_command_in_paths(command, &search_paths, &extensions)
+}
+
+#[cfg(windows)]
+fn resolve_windows_command_in_paths(
+    command: &Path,
+    search_paths: &[PathBuf],
+    extensions: &[String],
+) -> Option<PathBuf> {
+    if command.extension().is_some() {
+        return None;
+    }
+
+    if is_windows_path_qualified(command) {
+        return resolve_windows_command_candidates(command, extensions);
+    }
+
+    search_paths.iter().find_map(|search_path| {
+        resolve_windows_command_candidates(&search_path.join(command), extensions)
+    })
+}
+
+#[cfg(windows)]
+fn resolve_windows_command_candidates(command: &Path, extensions: &[String]) -> Option<PathBuf> {
+    extensions
+        .iter()
+        .map(|extension| append_windows_extension(command, extension))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(windows)]
+fn windows_path_extensions() -> Vec<String> {
+    let mut extensions = std::env::var_os("PATHEXT")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_windows_extension)
+        .collect::<Vec<_>>();
+
+    if extensions.is_empty() {
+        extensions = [".com", ".exe", ".bat", ".cmd"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+    }
+
+    if !extensions
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(".ps1"))
+    {
+        extensions.push(".ps1".to_owned());
+    }
+
+    extensions
+}
+
+#[cfg(windows)]
+fn normalize_windows_extension(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.starts_with('.') {
+        trimmed.to_ascii_lowercase()
+    } else {
+        format!(".{}", trimmed.to_ascii_lowercase())
+    }
+}
+
+#[cfg(windows)]
+fn append_windows_extension(command: &Path, extension: &str) -> PathBuf {
+    let mut candidate = command.as_os_str().to_os_string();
+    candidate.push(extension);
+    PathBuf::from(candidate)
+}
+
+#[cfg(windows)]
+fn is_windows_path_qualified(command: &Path) -> bool {
+    command.is_absolute()
+        || command
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty())
+}
+
+#[cfg(windows)]
+fn is_windows_powershell_script(command: &Path) -> bool {
+    command
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("ps1"))
+}
+
+#[cfg(windows)]
+fn windows_powershell_spawn_spec(command: &Path, args: &[String]) -> SpawnCommandSpec {
+    let mut command_args = vec![
+        "-NoProfile".to_owned(),
+        "-ExecutionPolicy".to_owned(),
+        "Bypass".to_owned(),
+        "-File".to_owned(),
+        command.display().to_string(),
+    ];
+    command_args.extend(args.iter().cloned());
+    SpawnCommandSpec::direct("powershell.exe", command_args)
 }
 
 /// Build the official MCP Registry URL using the same limit bounds as ArtLoom.
@@ -169,9 +332,10 @@ pub struct StdioMcpClient {
 
 impl StdioMcpClient {
     pub fn spawn(config: &McpServerConfig) -> McpResult<Self> {
-        let mut command = Command::new(&config.command);
+        let spawn_spec = spawn_command_spec(config);
+        let mut command = Command::new(&spawn_spec.program);
         command
-            .args(&config.args)
+            .args(&spawn_spec.args)
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -404,6 +568,65 @@ mod tests {
         assert_eq!(result["content"][0]["text"], "hello loom");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn stdio_client_spawns_extensionless_windows_cmd_fixture() {
+        let fixture = windows_cmd_fixture_config();
+        let mut client =
+            StdioMcpClient::spawn(&fixture).expect("spawn extensionless cmd MCP fixture");
+
+        let init = client.initialize().expect("initialize MCP fixture");
+        let tools = client.list_tools().expect("list fixture MCP tools");
+
+        assert_eq!(init["serverInfo"]["name"], "loom-fixture");
+        assert_eq!(tools["tools"][0]["name"], "echo");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_windows_command_in_paths_prefers_cmd_wrapper_for_bare_command() {
+        let temp_root = unique_test_temp_dir("resolve-path");
+        std::fs::create_dir_all(&temp_root).expect("create path resolution temp dir");
+
+        let command_base = temp_root.join("npx");
+        std::fs::write(command_base.with_extension("ps1"), "Write-Host ignored")
+            .expect("write ps1 candidate");
+        std::fs::write(command_base.with_extension("cmd"), "@echo off\r\n")
+            .expect("write cmd candidate");
+
+        let resolved = resolve_windows_command_in_paths(
+            Path::new("npx"),
+            &[temp_root],
+            &[".cmd".to_owned(), ".ps1".to_owned()],
+        )
+        .expect("resolve command candidate");
+
+        assert_eq!(resolved, command_base.with_extension("cmd"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_windows_spawn_command_wraps_powershell_scripts() {
+        let config = McpServerConfig::new("fixture-ps1", "Fixture PS1", r"C:\loom\fixture.ps1")
+            .arg("--flag");
+
+        let spawn_spec =
+            resolve_windows_spawn_command(&config).expect("resolve powershell spawn wrapper");
+
+        assert_eq!(spawn_spec.program, "powershell.exe");
+        assert_eq!(
+            spawn_spec.args,
+            vec![
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                r"C:\loom\fixture.ps1",
+                "--flag",
+            ]
+        );
+    }
+
     #[test]
     fn mcp_fixture_server() {
         if std::env::var("LOOM_MCP_FIXTURE_SERVER").ok().as_deref() != Some("1") {
@@ -514,5 +737,38 @@ mod tests {
         )
         .expect("write fixture response");
         stdout.flush().expect("flush fixture response");
+    }
+
+    #[cfg(windows)]
+    fn windows_cmd_fixture_config() -> McpServerConfig {
+        let temp_root = unique_test_temp_dir("fixture");
+        std::fs::create_dir_all(&temp_root).expect("create MCP fixture temp dir");
+
+        let command_base = temp_root.join("loom-mcp-fixture");
+        let script_path = command_base.with_extension("cmd");
+        let current_exe = std::env::current_exe().expect("current test executable");
+        let script = format!(
+            "@echo off\r\nset LOOM_MCP_FIXTURE_SERVER=1\r\n\"{}\" tests::mcp_fixture_server --exact --nocapture\r\n",
+            current_exe.display()
+        );
+        std::fs::write(&script_path, script).expect("write MCP fixture cmd wrapper");
+
+        McpServerConfig::new(
+            "fixture-cmd",
+            "Fixture MCP CMD",
+            command_base.display().to_string(),
+        )
+    }
+
+    #[cfg(windows)]
+    fn unique_test_temp_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "loom-mcp-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("fixture timestamp")
+                .as_nanos()
+        ))
     }
 }

@@ -288,6 +288,8 @@ Assert-CliZipPayload -PackagePath $packageFullPath -Manifest $manifest
 
 $smokeStatus = "not-run"
 $hookCanvasSmokeStatus = "not-run"
+$hookErrorPreviewSmokeStatus = "not-run"
+$frameworkArtStoreHookSmokeStatus = "not-run"
 if ($RunSmoke) {
     $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $smokePath -PathType Leaf) -Message "Missing standalone smoke script: $smokePath"
@@ -320,6 +322,39 @@ if ($RunSmoke) {
         throw "Hook canvas UI smoke failed: $($hookCanvasSmokeOutput -join [Environment]::NewLine)"
     }
     $hookCanvasSmokeStatus = "passed"
+
+    $hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $hookErrorPreviewSmokePath -PathType Leaf) -Message "Missing Hook error preview smoke script: $hookErrorPreviewSmokePath"
+    $hookErrorPreviewEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\hook-error-preview"
+    $hookErrorPreviewSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $hookErrorPreviewSmokePath,
+        "-PackageDir", $packageFullPath,
+        "-EvidenceRoot", $hookErrorPreviewEvidenceRoot
+    )
+    $hookErrorPreviewSmokeOutput = @($hookErrorPreviewSmokeResult.output)
+    if ([int]$hookErrorPreviewSmokeResult.exitCode -ne 0) {
+        throw "Hook error preview smoke failed: $($hookErrorPreviewSmokeOutput -join [Environment]::NewLine)"
+    }
+    $hookErrorPreviewSmokeStatus = "passed"
+
+    $frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $frameworkArtStoreHookSmokePath -PathType Leaf) -Message "Missing framework art-store Hook smoke script: $frameworkArtStoreHookSmokePath"
+    $frameworkArtStoreEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\framework-art-store-hook"
+    $frameworkArtStoreHookSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $frameworkArtStoreHookSmokePath,
+        "-PackageDir", $packageFullPath,
+        "-Configuration", "Release",
+        "-EvidenceRoot", $frameworkArtStoreEvidenceRoot
+    )
+    $frameworkArtStoreHookSmokeOutput = @($frameworkArtStoreHookSmokeResult.output)
+    if ([int]$frameworkArtStoreHookSmokeResult.exitCode -ne 0) {
+        throw "Framework art-store Hook smoke failed: $($frameworkArtStoreHookSmokeOutput -join [Environment]::NewLine)"
+    }
+    $frameworkArtStoreHookSmokeStatus = "passed"
 }
 
 $result = [ordered]@{
@@ -331,5 +366,7 @@ $result = [ordered]@{
     filesChecked = @($checksumEntries.Keys).Count
     smoke = $smokeStatus
     hookCanvasSmoke = $hookCanvasSmokeStatus
+    hookErrorPreviewSmoke = $hookErrorPreviewSmokeStatus
+    frameworkArtStoreHookSmoke = $frameworkArtStoreHookSmokeStatus
 }
 Write-Output ($result | ConvertTo-Json -Depth 10)

@@ -827,6 +827,72 @@ nodes:
         fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn workflow_runtime_executes_image_blend_then_cli_compress_with_bound_inputs_and_params() {
+        let root = temp_root("image-blend-compress");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        let workflow_yaml =
+            fs::read_to_string(workspace_image_blend_compress_resource("workflow.yaml"))
+                .expect("read image blend compress workflow");
+        let workflow_tool: ToolDefinition = serde_json::from_str(
+            &fs::read_to_string(workspace_image_blend_compress_resource("manifest.json"))
+                .expect("read image blend compress manifest"),
+        )
+        .expect("parse image blend compress manifest");
+
+        tool_registry
+            .save_tool(ToolDefinition::new(
+                "custom-image-blend-script",
+                "Fixture Image Blend",
+                "Production image blend script child",
+                ToolExecution::Script {
+                    path: workspace_image_blend_script().display().to_string(),
+                },
+            ))
+            .expect("save production image blend script tool");
+        let (compress_script, compress_evidence) = write_cli_image_copy_fixture(&root);
+        save_fixture_compress_tool(&tool_registry, &compress_script, &compress_evidence);
+        workflow_store
+            .save_workflow("image-blend-compress-workflow", &workflow_yaml)
+            .expect("save image blend compress workflow");
+
+        let source = loom_image_io::rgba8_to_png_data_url(1, 1, &[240, 60, 0, 255])
+            .expect("encode workflow source image");
+        let reference = loom_image_io::rgba8_to_png_data_url(1, 1, &[40, 160, 200, 255])
+            .expect("encode workflow reference image");
+        let result = execute_tool_with_workflows(
+            &workflow_tool,
+            &[],
+            &workflow_store,
+            &tool_registry,
+            json!({
+                "input_base64": source,
+                "reference": reference,
+                "mix_ratio": 25,
+                "quality_num": 73
+            }),
+        )
+        .expect("execute image blend compress workflow");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        let output = loom_image_io::decode_image_base64_to_rgba8(
+            result["content"][0]["data"]
+                .as_str()
+                .expect("workflow image output data"),
+        )
+        .expect("decode workflow image output");
+        assert_eq!(output.width, 1);
+        assert_eq!(output.height, 1);
+        assert_eq!(output.data, vec![190, 85, 50, 255]);
+        assert_eq!(
+            fs::read_to_string(&compress_evidence).expect("read compression evidence"),
+            "73"
+        );
+        fs::remove_dir_all(root).expect("cleanup image blend compress workflow root");
+    }
+
     #[test]
     fn workflow_runtime_reports_unresolved_dependencies() {
         let root = temp_root("cycle");
@@ -939,5 +1005,89 @@ PY
             fs::set_permissions(&script_path, permissions).expect("make shell fixture executable");
             script_path
         }
+    }
+
+    #[cfg(windows)]
+    fn write_cli_image_copy_fixture(root: &Path) -> (PathBuf, PathBuf) {
+        let script_path = root.join("fixture-compress.ps1");
+        let evidence_path = root.join("compress-evidence.txt");
+        let source = r#"
+param(
+    [Parameter(Mandatory = $true)][string]$InputPath,
+    [Parameter(Mandatory = $true)][string]$OutputPath,
+    [Parameter(Mandatory = $true)][int]$Quality,
+    [Parameter(Mandatory = $true)][string]$EvidencePath
+)
+$ErrorActionPreference = "Stop"
+Copy-Item -LiteralPath $InputPath -Destination $OutputPath -Force
+[System.IO.File]::WriteAllText(
+    $EvidencePath,
+    [string]$Quality,
+    [System.Text.UTF8Encoding]::new($false)
+)
+"#;
+        fs::write(&script_path, source).expect("write CLI image copy fixture");
+        (script_path, evidence_path)
+    }
+
+    #[cfg(windows)]
+    fn save_fixture_compress_tool(
+        registry: &ToolRegistry,
+        script_path: &Path,
+        evidence_path: &Path,
+    ) {
+        registry
+            .save_tool(ToolDefinition::new(
+                "custom-1770146354922",
+                "Fixture Image Compress",
+                "Deterministic cli_wrapper child for workflow tests",
+                ToolExecution::CliWrapper {
+                    command: "powershell.exe".to_owned(),
+                    args: vec![
+                        "-NoProfile".to_owned(),
+                        "-ExecutionPolicy".to_owned(),
+                        "Bypass".to_owned(),
+                        "-File".to_owned(),
+                        script_path.display().to_string(),
+                        "-InputPath".to_owned(),
+                        "{{input}}".to_owned(),
+                        "-OutputPath".to_owned(),
+                        "{{output}}".to_owned(),
+                        "-Quality".to_owned(),
+                        "{{quality_num}}".to_owned(),
+                        "-EvidencePath".to_owned(),
+                        evidence_path.display().to_string(),
+                    ],
+                },
+            ))
+            .expect("save fixture compression tool");
+    }
+
+    fn workspace_image_blend_compress_resource(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let path = candidate
+                    .join("resources")
+                    .join("workflow-arts")
+                    .join("image-blend-compress")
+                    .join(name);
+                path.exists().then_some(path)
+            })
+            .unwrap_or_else(|| panic!("locate image-blend-compress resource `{name}`"))
+    }
+
+    fn workspace_image_blend_script() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find_map(|candidate| {
+                let path = candidate
+                    .join("resources")
+                    .join("script-arts")
+                    .join("image-blend")
+                    .join("main.ps1");
+                path.exists().then_some(path)
+            })
+            .expect("locate production image blend script")
     }
 }

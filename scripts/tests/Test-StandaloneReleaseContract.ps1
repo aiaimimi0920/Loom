@@ -12,10 +12,14 @@ $smokePortHelperPath = Join-Path $repoRoot "scripts\LoomSmokePorts.ps1"
 $focusedSmokePaths = @(
     (Join-Path $repoRoot "scripts\Invoke-LoomGatewayBrainPlanSmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomRunPersistenceSmoke.ps1"),
-    (Join-Path $repoRoot "scripts\Invoke-LoomDaemonConcurrencySmoke.ps1")
+    (Join-Path $repoRoot "scripts\Invoke-LoomDaemonConcurrencySmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1")
 )
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
+$hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
+$frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
 
 function Assert-True {
     param(
@@ -147,6 +151,11 @@ Assert-ScriptContract `
         'manifest.json',
         '[switch]$RunSmoke',
         'function Invoke-CapturedPowerShell',
+        'Invoke-LoomHookErrorPreviewSmoke.ps1',
+        'hookErrorPreviewSmoke',
+        'Invoke-LoomFrameworkArtStoreHookSmoke.ps1',
+        'frameworkArtStoreHookSmoke',
+        '-PackageDir',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'
     ) `
@@ -223,6 +232,35 @@ Assert-ScriptContract `
         'desktop-wrong',
         'cli-wrong',
         'Loom release integrity tamper contract passed.'
+    ) `
+    -ForbiddenText $commonForbidden
+
+Assert-ScriptContract `
+    -Path $hookErrorPreviewSmokePath `
+    -RequiredText @(
+        'Write-HookFixture',
+        'failed-art',
+        'status = "error"',
+        'minified = $true',
+        'savedRect',
+        'cropOffset',
+        'reference = "upstream"',
+        'fromPortId = "output"',
+        'toPortId = "input"',
+        'previewMatchesFailedArtSource',
+        'previewDiffersFromUpstream'
+    ) `
+    -ForbiddenText $commonForbidden
+
+Assert-ScriptContract `
+    -Path $frameworkArtStoreHookSmokePath `
+    -RequiredText @(
+        'raw-image-alt.png',
+        'mcpSelectionPersistence',
+        'selectedResultIndex',
+        'resultCandidates',
+        'result_index',
+        '/v1/hook-bridge/canvas'
     ) `
     -ForbiddenText $commonForbidden
 
