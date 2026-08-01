@@ -13,6 +13,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -60,7 +62,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
             -VersionId $env:LOOM_TAG `
-            -OutputRoot .\release\Loom
+            -OutputRoot .\release\Loom `
+            -RequireCleanSource
 
       - name: Verify and smoke standalone Loom release
         shell: powershell
@@ -68,7 +71,19 @@ jobs:
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release.ps1 `
             -PackageDir ".\release\Loom\$env:LOOM_TAG" `
-            -RunSmoke
+            -RunSmoke `
+            -RequireCleanSource
+
+      - name: Attest release build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/Loom/${{ env.LOOM_TAG }}/packages/*.zip
+
+      - name: Attest release SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip
+          sbom-path: release/Loom/${{ env.LOOM_TAG }}/sbom/Loom-${{ env.LOOM_TAG }}.cdx.json
 
       - name: Publish ZIP and checksum
         uses: softprops/action-gh-release@v3
@@ -82,4 +97,10 @@ jobs:
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip.sha256
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-CLI-${{ env.LOOM_TAG }}-windows-x64.zip
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-CLI-${{ env.LOOM_TAG }}-windows-x64.zip.sha256
+            release/Loom/${{ env.LOOM_TAG }}/packages/Loom-Plugin-SDK-${{ env.LOOM_TAG }}-windows-x64.zip
+            release/Loom/${{ env.LOOM_TAG }}/packages/Loom-Plugin-SDK-${{ env.LOOM_TAG }}-windows-x64.zip.sha256
+            release/Loom/${{ env.LOOM_TAG }}/sbom/*.json
+            release/Loom/${{ env.LOOM_TAG }}/provenance/*.json
+            release/Loom/${{ env.LOOM_TAG }}/manifest.json
+            release/Loom/${{ env.LOOM_TAG }}/checksums.sha256
           fail_on_unmatched_files: true

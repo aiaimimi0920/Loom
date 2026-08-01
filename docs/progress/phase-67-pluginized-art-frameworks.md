@@ -2,10 +2,12 @@
 
 ## Status
 
-Phase complete. The Loom host, package-backed framework registry, generic
-framework process protocol, sample packages, Hook capability protocol,
-third-party no-source-change smoke, and final release verification are all
-implemented and validated.
+Phase complete after a post-completion release audit. The Loom host,
+package-backed framework registry, generic framework process protocol, sample
+packages, Hook capability protocol, independently authored third-party
+no-source-change smoke, and release verification are implemented and
+validated. The audit found and removed release-only leakage and false-positive
+test conditions that the original `final2` evidence did not cover.
 
 ## Why this phase exists
 
@@ -71,6 +73,14 @@ Out of scope for this phase:
 - remote payment/licensing;
 - cloud provider credential UI beyond existing framework/Art manifest
   declarations.
+
+Those boundaries describe Phase 67 only. Phase 68 subsequently adds the public
+Plugin SDK and Schemas, publisher-qualified identity, Ed25519 trust/revocation,
+credential management, immutable rollback/recovery hardening, diagnostics,
+malicious-package CI, SBOM/provenance assets, and the Desktop security surface.
+See [Phase 68](phase-68-art-plugin-platform-hardening.md). Hosted marketplace
+operations, payment/licensing, and a complete AppContainer/namespace sandbox
+remain outside both phases.
 
 ## Progress checklist
 
@@ -382,6 +392,13 @@ executes the package, exercises framework and Art enable/disable/uninstall and
 reinstall flows, restarts the daemon, and compares Loom/Hook source
 fingerprints before and after the run.
 
+The corresponding product invariant is stronger than the smoke snapshot:
+framework/Art installation, execution, upgrade, rollback, disable, uninstall,
+and recovery may write only to Loom control-plane package/state/evidence roots.
+No package lifecycle operation is allowed to modify Loom or Hook source, and
+canonical third-party identity is `publisher/id` rather than a privileged
+catalog-only ID.
+
 Evidence: target/plugin-boundary-smoke/plugin-boundary-evidence.json records
 thirdPartyFrameworkInstalled=true, thirdPartyArtInstalled=true,
 thirdPartyArtExecuted=true, restarted=true, loomSourceChanged=false, and
@@ -411,11 +428,11 @@ tests passed, and the plugin boundary smoke passed.
 | Sample Art package source/ZIP contract | passed |
 | Sample Art runtime contract | passed for all six Arts |
 | Sample Art install/execute contract | passed for all six Arts |
-| Framework registry lifecycle | 74 passed |
-| Loom daemon library tests | 172 passed |
+| Framework registry lifecycle | 79 passed |
+| Loom daemon library tests | 173 passed |
 | Hook typecheck/tests | 800 tests passed |
-| Third-party plugin boundary smoke | passed |
-| Final packaged Loom release | passed: final2 |
+| Third-party plugin boundary smoke | passed, including outside-repository compile and Hook Bridge execution |
+| Current audited Loom release candidate | passed: `20260801-art-plugin-boundary-hardening-r3` |
 | Final Hook release | passed: final2 |
 
 ## Task 10 implementation and verification
@@ -446,12 +463,104 @@ Final release verification:
 - Hook typecheck passed.
 - Hook test suite passed: 208 test files and 800 tests.
 
+## Post-completion audit and hardening
+
+The original Phase 67 implementation proved the package architecture, but a
+fresh release-level audit found that the completion claim was incomplete under
+real installation conditions:
+
+- `scripts/build-release.ps1` still copied the legacy
+  `runtime/python/Arts/Art_LoomEcho` sample into the default package;
+- the release daemon searched the startup directory and compile-time source
+  tree for Python Arts, so a developer checkout appeared to have a default Art
+  even when a clean installed package would not;
+- the official `python_art.zip` package exceeded the daemon's global 1 MiB
+  request limit and therefore could not traverse the real install API;
+- generic installed Arts were not marked as Loom-local capabilities, so Hook's
+  enabled-Art discovery omitted independently authored packages;
+- framework IDs and downloaded dependency paths needed stronger directory
+  containment checks;
+- framework process error paths leaked temporary directories, and waiting for
+  child exit before draining stdout/stderr could deadlock on large output;
+- the original third-party smoke renamed a repo-owned runtime instead of
+  compiling an independently authored framework outside Loom and Hook.
+
+The audit hardened the boundary as follows:
+
+- the default release no longer copies any optional Python Art, and release
+  verification rejects `runtime/python/Arts/`;
+- production discovery only uses executable-relative package paths; source-tree
+  and current-directory fallbacks are debug-only, while
+  `LOOM_PYTHON_ARTS_DIR` provides an explicit isolated compatibility fixture;
+- ordinary daemon APIs remain bounded to 1 MiB, while framework/Art install and
+  framework-upgrade package routes have a separate bounded 32 MiB limit;
+- package-installed generic Arts are forced to `artloomCompat.source =
+  "loom-local"`, making them visible through the same capability list Hook
+  consumes and preventing a package from claiming sync-owned provenance;
+- `FrameworkArt` definitions and execution validate safe package IDs, resolve
+  canonical framework package paths, and enforce containment under the package
+  root;
+- downloaded Art dependency paths reject absolute, rooted, drive-prefixed,
+  colon-containing, and parent-directory paths;
+- framework execution now uses RAII temporary-directory cleanup, terminates the
+  child on early I/O failure, and drains stdout/stderr concurrently;
+- the third-party smoke writes and compiles a Rust framework runtime in the OS
+  temporary directory, packages a separate PowerShell Art, installs both into
+  a fresh control plane, upgrades framework v1 to v2, verifies changed runtime
+  behavior, discovers the Art through Hook capability metadata, instantiates a
+  dynamic Hook node, executes it through Hook Bridge, restarts the daemon, and
+  exercises enable/disable/uninstall/reinstall lifecycles without changing
+  Loom or Hook source.
+
+Current evidence:
+
+- audited release candidate:
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260801-art-plugin-boundary-hardening-r3`;
+- the candidate contains 30 checksum entries; its manifest records desktop ZIP SHA-256
+  `af617e0798468b9a09a84f3bb74fa36178fa8b3d77350e31a4aedec15b115d78`,
+  and packaged `loom-daemon.exe` SHA-256
+  `cc47760db3a3f57d812b2de26d1e4b3a49bd1ab2118b029d3d449371c36ed808`;
+- the candidate was intentionally built from the audit worktree and its
+  manifest records `gitDirty=true`; it is runtime evidence, not a clean-source
+  publication claim;
+- standalone release smoke evidence:
+  `target/runtime-smoke/art-plugin-boundary-hardening-r3-retry/runs/20260801-153352-Loom-68452-aee1788942a94da68da0ac90dbb94c4a`;
+- that smoke records `pythonArtCatalog.count=0` and `defaultEmpty=true` before
+  explicitly provisioning the isolated `loom_echo` compatibility fixture, then
+  records `installedCount=1` and successful legacy catalog/direct execution;
+- independent third-party evidence:
+  `target/plugin-boundary-smoke-current/plugin-boundary-evidence.json`, with
+  outside-repository compilation, v1-to-v2 upgrade, Hook capability discovery,
+  Hook node instantiation, Hook Bridge execution, restart and lifecycle flags
+  all passing, and `loomSourceChanged=false` / `hookSourceChanged=false`;
+- all-six Hook evidence:
+  `target/framework-art-store-hook-smoke-current/20260801-145606-framework-store-50748-90e9039de6434184abd5a35aa98fd61a/summary.json`, with six framework installs,
+  six dynamic nodes, six successful executions, and preserved MCP selection;
+- `loom_tool_registry`: 79 tests passed;
+- `loom-daemon --lib`: 173 tests passed;
+- Hook: typecheck passed, 208 test files and 800 tests passed;
+- all six official framework packages and all six official Art packages passed
+  source/ZIP, direct runtime, install, and execution contracts.
+- a fresh formal `verify-release.ps1 -RunSmoke` against R3 checked 30 files and
+  returned `smoke=passed`, `hookCanvasSmoke=passed`,
+  `hookErrorPreviewSmoke=passed`, `frameworkArtStoreHookSmoke=passed`, and
+  `pluginBoundarySmoke=passed`.
+
 ## Notes
 
 - Current formal framework list comes from
-  `crates/loom_tool_registry/src/framework.rs`.
+  `crates/loom_tool_registry/src/framework.rs`; it is a repo-owned catalog, not
+  a closed allowlist for dynamically installed framework IDs.
+- Loom desktop may expose these six IDs as Art-authoring presets. Those entries
+  are UI/manifest metadata and do not compile or bundle their framework
+  runtimes into the default host.
 - The default Loom release contains the host, registry, installer, and broker
   only. Framework and Art ZIPs are built and installed separately.
 - Current Color Transfer is implemented as `python_art` with Hook-facing
   shader compatibility metadata. Treat "shader" as UI/capability behavior
   unless product requirements promote it into a seventh framework ID.
+- Phase 67's R3 `gitDirty=true` candidate remains immutable historical runtime
+  evidence. It must not be relabeled or overwritten as the later clean-source
+  Phase 68 publication artifact.
+- Phase 68 implementation and final validation are tracked in
+  [phase-68-art-plugin-platform-hardening.md](phase-68-art-plugin-platform-hardening.md).

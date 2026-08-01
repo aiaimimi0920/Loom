@@ -27,6 +27,16 @@ daemon, CLI, and desktop remain application shells.
 - `loom_memory`: memory/retrieval contracts.
 - `loom_sandbox`: deny-by-default safe execution policy and explicit allow
   contracts.
+- `loom_protocol`: language-neutral framework/Art manifest, process+JSON ABI,
+  lockfile, permission, diagnostics, and authoring contracts embedded from the
+  public v1 Schemas.
+- `loom_plugin_security`: canonical package digests, Ed25519 signatures,
+  publisher trust, and revocation policy.
+- `loom_process`: bounded child-process execution, output capture, timeout,
+  process-tree termination, and resource diagnostics.
+- `loom_tool_registry`: publisher-qualified framework/Art registry, secure ZIP
+  install, immutable versions, dependency/runtime locks, rollback, lifecycle
+  recovery, credentials, and host-mediated network policy.
 - `loom_gateway`: bounded OpenAI-compatible client boundary for calling the
   external Neuro Gateway.
 - `loom_hooks`: hook event contracts and disabled-by-default dispatch.
@@ -36,6 +46,8 @@ daemon, CLI, and desktop remain application shells.
 - `loom-daemon`: headless runtime host with local health/status APIs.
 - `loom`: CLI client with `status`, `agents list`, `workflows list`, and
   `run <workflow-id>`.
+- `loom-plugin`: independent Plugin SDK CLI for scaffolding, signing,
+  validating, packing, conformance testing, and trust-store administration.
 - `apps/desktop`: Tauri desktop shell published as the single user-facing
   `Loom.exe` entry in Windows desktop packages.
 
@@ -127,14 +139,78 @@ The v1 executor is deterministic and test-first. It is suitable for CLI smoke,
 ArtLoom migration fixtures, and daemon integration before persistent storage or
 real agent/model dispatch is introduced.
 
+## Plugin runtime model
+
+Frameworks and Arts are control-plane packages, not code linked into Loom's
+default binaries. The six repo-owned framework IDs are a catalog only. A
+third-party package uses the same public `loom.framework.v1` process+JSON ABI
+and canonical `publisher/id` identity as those packages.
+
+The package roots are:
+
+```text
+<control-plane>/
+  frameworks/<publisher?>/<id>/
+    versions/<version>-<digest-prefix>/
+    active.json
+    locks/
+    lifecycle.json
+  arts/<publisher?>/<id>/
+    versions/<version>-<digest-prefix>/
+    active.json
+    locks/
+    state/
+    cache/
+    outputs/
+```
+
+Install and upgrade validate a securely extracted staging tree, signature and
+trust policy, dependency resolution, self-test, and canonical digest before an
+immutable version becomes active. Activation is journaled. Rollback repeats
+identity, signature/trust/revocation, digest, lockfile, and runtime checks.
+Uninstall first atomically renames the live package to a same-parent tombstone,
+then commits registry removal; startup restores or deletes interrupted
+tombstones according to the durable registry state.
+
+Hook does not load plugin code and does not contain per-plugin branches. It
+consumes generic capability metadata from Loom. HTTP, ArtLoom compatibility,
+Hook Bridge, and AHRP executions all run inside Loom and create durable run
+evidence. Package-backed Arts are revalidated immediately before every launch,
+so an active pointer, payload, lockfile, signature, or revocation change cannot
+bypass the normal HTTP execution path.
+
+The source immutability invariant is explicit: framework/Art install,
+execution, upgrade, rollback, disable, uninstall, and crash recovery may write
+only to control-plane package/state roots and evidence stores. They never edit
+the Loom or Hook repository/source tree. Plugin authors therefore require no
+source access to either product.
+
+Permissions combine enforced and declared boundaries. Loom enforces package
+containment, immutable code versus writable state, bounded process trees,
+timeout/output limits, scoped credential brokering, and
+host-mediated HTTP policy. Direct arbitrary process network/filesystem access,
+GPU, and clipboard are not fully OS-denied by current Job Object/process-group
+isolation. Windows Job Objects also enforce memory and active-process limits;
+Unix process groups currently expose those declarations as advisory.
+`LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatible default;
+`strict` fails closed for those unenforceable declarations. The doctor API and
+Desktop expose the same enforcement matrix rather than claiming a complete OS
+sandbox.
+
+Release builds publish the Plugin SDK, CycloneDX and SPDX SBOMs, and build
+provenance as independently checksummed assets. Formal release workflows require
+a clean source tree and request GitHub build/SBOM attestations.
+
 ## Integration model
 
 `loom_gateway` is intentionally a client boundary. Loom forwards model work to
 the external Neuro Gateway and does not duplicate provider routing, credential
 selection, browser-worker execution, or quota logic.
 
-`loom_sandbox` is deny-by-default. Process execution only happens when an
-explicit policy allows the requested command.
+`loom_sandbox` is deny-by-default for its mediated command boundary. Generic
+plugin processes additionally use `loom_process` controls and the permission
+mode described above; this is not equivalent to a complete AppContainer or
+Linux namespace sandbox.
 
 `loom_hooks` is disabled by default. Enabled dispatch serializes hook events to
 registered handlers, but hooks do not affect runtime unless configured.

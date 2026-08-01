@@ -102,3 +102,26 @@ Conversion behavior:
 
 The converter intentionally ignores ArtLoom canvas metadata, visual state,
 desktop IPC, ArtHook behavior, and embedded Python runtime concerns.
+
+## Workflow Art package dependencies
+
+A packaged workflow Art may declare child Arts under
+`metadata.dependencies.arts`. This package-install contract is separate from
+the native `WorkflowGraph` execution contract above:
+
+1. Loom installs the root Art through the normal secure ZIP and framework
+   readiness path.
+2. Child Art IDs are fetched and installed breadth-first.
+3. A visited set suppresses duplicate work and terminates dependency cycles.
+4. A child already present in the tool registry is retained rather than copied
+   into the parent package or reinstalled implicitly.
+5. Every child is its own immutable package with its own activation pointer,
+   canonical digest, framework lockfile, writable state/cache/output roots, and
+   execution-time integrity verification.
+
+The parent workflow package never receives child source code and neither Loom
+nor Hook source is modified. The current v1 parent lockfile does **not** pin a
+child Art version/digest, and uninstall does not maintain dependency reference
+counts or automatically garbage-collect orphan child Arts. Operators must
+upgrade, rollback, or uninstall those independently installed child packages
+explicitly until a future Art dependency lock/GC contract is introduced.

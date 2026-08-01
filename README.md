@@ -123,13 +123,13 @@ daemon is not under the packaged `runtime` directory. Debug builds also check
 the repository's `target\debug\loom-daemon.exe` after the explicit override
 and packaged runtime location.
 
-The UI names the ArtHook compatibility route as **截图同步**. Internally the
+The UI names the ArtHook compatibility route as **Hook 同步**. Internally the
 daemon still exposes Hook Bridge APIs because old ArtHook/ArtLoom clients expect
 those method names and port behavior. Hook-generated live workflow data is
 stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Hook
 实时工作流`.
 
-For the normal user path, open **截图同步** to inspect the real Hook canvas:
+For the normal user path, open **Hook 同步** to inspect the real Hook canvas:
 node placement, image previews, and links are rendered directly in the Loom
 workbench. Click **打开可视化工作流** or a node to enter the full visual
 workflow canvas. YAML, cURL, raw JSON, protocol methods, session paths, IPC,
@@ -168,7 +168,7 @@ Loom treats Art execution kinds as installable frameworks. An Art package
 belongs to exactly one framework, and Loom refuses to install that Art until
 its framework is both installed and ready.
 
-The current framework ids are:
+The six repo-owned sample framework ids are:
 
 - `cli_wrapper`
 - `cloud_api`
@@ -177,10 +177,17 @@ The current framework ids are:
 - `mcp`
 - `workflow`
 
-All six frameworks are optional packages and are not installed in a fresh
-control plane. Install a framework ZIP before installing an Art ZIP; Loom
-validates the package manifest, process entry, protocol version, and platform
-before marking the framework ready.
+These six packages are optional and are not installed in a fresh control plane.
+They are a repo-owned catalog, not a closed allowlist: safe third-party
+framework IDs use the same package and runtime protocol. Install a framework ZIP
+before installing an Art ZIP; Loom validates the package manifest, process
+entry, protocol version, and platform before marking the framework ready.
+
+Package identity is publisher-qualified: the canonical form is
+`publisher/id`. HTTP path parameters encode that slash as `%2F`, for example
+`publisher.alpha%2Fshared-framework`; raw slashes are rejected so the route
+cannot be confused with another endpoint. Legacy local IDs remain readable
+when they resolve to exactly one installed package.
 
 Daemon routes:
 
@@ -191,12 +198,27 @@ POST /v1/frameworks/{frameworkId}/install
 POST /v1/frameworks/{frameworkId}/enable
 POST /v1/frameworks/{frameworkId}/disable
 POST /v1/frameworks/{frameworkId}/upgrade
+POST /v1/frameworks/{frameworkId}/rollback
 POST /v1/frameworks/{frameworkId}/uninstall
+GET  /v1/doctor/frameworks
 GET  /v1/tools/{toolId}/readiness
 POST /v1/arts/install
+POST /v1/arts/create
+POST /v1/arts/{artId}/rollback
+POST /v1/arts/{artId}/uninstall
+GET  /v1/arts/{artId}/package
+GET  /v1/doctor/arts
 GET  /v1/arts/store/catalog
 POST /v1/arts/store/install
 POST /v1/arts/store/publish
+GET  /v1/plugin-trust
+POST /v1/plugin-trust/publishers
+POST /v1/plugin-trust/revoke
+GET  /v1/plugin-credentials
+POST /v1/plugin-credentials
+POST /v1/plugin-credentials/delete
+GET  /v1/diagnostics/executions/{runId}
+GET  /v1/support-bundle?runId={runId}
 ```
 
 `GET /v1/tools/{toolId}/readiness` reports the Art's resolved framework plus
@@ -257,7 +279,7 @@ legacy built-in execution definition. The corresponding wrappers are
 
 When `python_art` is installed from the store, Loom downloads the framework
 runtime zip first, unpacks it under
-`<LOOM_CONTROL_PLANE_ROOT>\framework-runtimes\python_art\`, and then prefers
+`<LOOM_CONTROL_PLANE_ROOT>\frameworks\python_art\`, and then prefers
 that runtime over packaged or PATH Python fallbacks when executing Python Arts.
 
 For a repo-owned all-framework local proof path, run the dedicated fake-store
@@ -284,17 +306,61 @@ target\framework-art-store-hook-smoke\<runId>\summary.json
 
 ## Third-party plugin boundary smoke
 
-For the third-party boundary, run the isolated smoke after building the
-framework packages:
+For the third-party boundary, run the isolated smoke with a built daemon and a
+Rust toolchain available:
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomPluginBoundarySmoke.ps1 -DaemonExecutable .\target\debug\loom-daemon.exe -FrameworkArtifactRoot .\.loom-art-store-data\frameworks -EvidenceRoot .\target\plugin-boundary-smoke
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomPluginBoundarySmoke.ps1 -DaemonExecutable .\target\debug\loom-daemon.exe -EvidenceRoot .\target\plugin-boundary-smoke
 
-This smoke creates a framework and Art package outside the repository, installs
-them into a fresh control plane, exercises restart, enable, disable, uninstall
-and reinstall, and proves that Loom and Hook source fingerprints do not
-change. Framework IDs supplied by third-party packages are accepted when they
-match Loom's safe package ID rules; the six catalog IDs are not a closed
-allowlist.
+This smoke generates and independently compiles a framework runtime outside the
+repository, creates a separate Art package whose content is loaded by that
+runtime, and installs both into a fresh control plane. It proves v1-to-v2
+framework upgrade, restart, enable, disable, uninstall, reinstall, Hook-facing
+dynamic capability discovery, generic Hook node instantiation, Hook Bridge
+execution, and unchanged Loom/Hook source fingerprints. Framework IDs supplied
+by third-party packages are accepted when they match Loom's safe package ID
+rules; the six catalog IDs are not a closed allowlist.
+
+This is a local boundary smoke, not a hosted marketplace certification. It
+requires a Rust toolchain and a built daemon. The invariant it proves is that
+install, execution, upgrade, rollback, restart, disable, uninstall, and
+reinstall operate only on control-plane package/state directories; they do not
+edit Loom or Hook source.
+
+### Plugin SDK, trust, and lifecycle
+
+The release build publishes an independent `Loom-Plugin-SDK-<version>-windows-x64.zip`
+containing `loom-plugin.exe`, the five v1 JSON Schemas, and the public plugin
+documentation. The CLI supports `init`, `keygen`, `sign`, `validate`, `pack`,
+`conformance`, `trust add`, and `trust revoke`. The language-neutral source of
+truth is [protocol/README.md](protocol/README.md).
+
+Installed code is immutable under `versions/<version>-<digest-prefix>/`.
+Activation pointers, dependency lockfiles, lifecycle journals, and uninstall
+tombstones provide restart-safe upgrade, rollback, and crash recovery. Mutable
+`state/`, `cache/`, and `outputs/` directories remain outside immutable code.
+Every HTTP, ArtLoom compatibility, Hook Bridge, and AHRP package execution
+revalidates the active package digest, lockfile, signature/trust state, and
+publisher revocation before launching it.
+
+The default `LOOM_PLUGIN_PERMISSION_MODE=audit` keeps existing packages
+compatible and reports permissions through the Desktop and
+`GET /v1/doctor/frameworks`. `LOOM_PLUGIN_PERMISSION_MODE=strict` fails closed
+when a package requests direct network, arbitrary filesystem, GPU, or clipboard
+access that Loom cannot currently enforce with an OS sandbox. Process trees,
+timeouts/output limits, package containment, credential brokering, and
+host-mediated HTTP policy are enforced cross-platform. Windows Job Objects also
+enforce memory and active-process limits; Unix process groups currently report
+those two declarations as advisory. Neither boundary is a complete
+AppContainer/namespace sandbox.
+
+Further references:
+
+- [Plugin development](docs/plugin-development.md)
+- [Plugin security](docs/plugin-security.md)
+- [Permissions and enforcement](docs/plugin-permissions.md)
+- [Signing, trust, and revocation](docs/plugin-signing-and-trust.md)
+- [Migration guide](docs/plugin-migration.md)
+- [Release SBOM and provenance](docs/release-provenance.md)
 
 ## Local capability API
 
@@ -588,12 +654,16 @@ smoke chain in sequence:
 
 1. `scripts\smoke-release.ps1`
 2. `scripts\Invoke-LoomHookCanvasUiSmoke.ps1`
-3. `scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1`
+3. `scripts\Invoke-LoomHookErrorPreviewSmoke.ps1`
+4. `scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1`
+5. `scripts\Invoke-LoomPluginBoundarySmoke.ps1`
 
-The third step reuses the packaged `runtime\loom-daemon.exe` from the release
-candidate, starts a temporary local fake art store plus fake cloud/MCP
-fixtures, installs one Art for each framework id, instantiates six Hook nodes,
-and executes all six through the release-smoke entrypoint that CI already uses.
+The fourth step reuses the packaged `runtime\loom-daemon.exe` from the release
+candidate, starts a temporary local fake art store plus fake cloud/MCP fixtures,
+installs one Art for each repo-owned framework id, instantiates six Hook nodes,
+and executes all six. The fifth step independently compiles a temporary
+third-party framework outside the repository and proves the no-source-change
+plugin lifecycle through Loom and the Hook Bridge.
 
 ## Validation
 

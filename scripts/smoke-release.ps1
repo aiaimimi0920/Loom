@@ -1206,28 +1206,61 @@ print(json.dumps(response, ensure_ascii=False))
 function Test-LoomPythonArtCatalog {
     param(
         [string]$BaseUrl,
-        [string]$PackageDir
+        [string]$PackageDir,
+        [string]$FixtureRoot
     )
 
     $packagedPython = Join-Path $PackageDir "runtime\bin\python-embed\python.exe"
-    $packagedArtJson = Join-Path $PackageDir "runtime\python\Arts\Art_LoomEcho\art.json"
-    $packagedArtMain = Join-Path $PackageDir "runtime\python\Arts\Art_LoomEcho\main.py"
+    $packagedArtsRoot = Join-Path $PackageDir "runtime\python\Arts"
     Assert-PathExists $packagedPython
-    Assert-PathExists $packagedArtJson
-    Assert-PathExists $packagedArtMain
+    if (Test-Path -LiteralPath $packagedArtsRoot) {
+        throw "Default Loom release unexpectedly contains packaged Python Arts: $packagedArtsRoot"
+    }
 
     $catalog = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts"
     $catalogArts = @($catalog.arts)
-    $loomEcho = $catalogArts | Where-Object { [string]$_.art_id -eq "loom_echo" } | Select-Object -First 1
-    if ($null -eq $loomEcho) {
-        throw "Loom Python Art catalog did not include loom_echo."
+    Assert-Equal 0 $catalogArts.Count "Fresh default release must not expose preinstalled Python Arts."
+
+    $fixtureArtDir = Join-Path $FixtureRoot "Art_LoomEcho"
+    New-Item -ItemType Directory -Force -Path $fixtureArtDir | Out-Null
+    $fixtureArtJson = @'
+{
+  "art_id": "loom_echo",
+  "label": "Loom Echo",
+  "description": "Explicit release smoke Python Art fixture.",
+  "version": "1.0.0",
+  "execution": { "engine": "python", "entry": "main.py" },
+  "signature": {
+    "inputs": [{ "id": "text", "label": "Text", "type": "String" }],
+    "outputs": [{ "id": "text", "label": "Text", "type": "String" }]
+  },
+  "variables": []
+}
+'@
+    $fixtureMain = @'
+import sys
+
+def main(args):
+    text = args.get("text", "")
+    return {
+        "content": [{"type": "text", "text": f"python art saw {text}"}],
+        "pythonExecutable": sys.executable,
     }
-    Assert-Equal "Loom Echo" ([string]$loomEcho.label) "Loom Python Art catalog label mismatch."
+'@
+    [System.IO.File]::WriteAllText((Join-Path $fixtureArtDir "art.json"), $fixtureArtJson, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $fixtureArtDir "main.py"), $fixtureMain, [System.Text.UTF8Encoding]::new($false))
+
+    $installedCatalog = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts"
+    $installedCatalogArts = @($installedCatalog.arts)
+    $loomEcho = $installedCatalogArts | Where-Object { [string]$_.art_id -eq "loom_echo" } | Select-Object -First 1
+    if ($null -eq $loomEcho) {
+        throw "Explicit Python Art fixture was not discovered."
+    }
 
     $savedPythonArtTool = Invoke-JsonPut -Uri "$BaseUrl/v1/tools/fixture-python-art" -Body @{
         id = "fixture-python-art"
         name = "Fixture Python Art"
-        description = "Release smoke installed Python Art"
+        description = "Release smoke explicitly provisioned Python Art"
         enabled = $true
         execution = @{
             type = "python_art"
@@ -1236,25 +1269,21 @@ function Test-LoomPythonArtCatalog {
         }
     }
     Assert-Equal "fixture-python-art" $savedPythonArtTool.tool.id "Loom Python Art tool save id mismatch."
-    Assert-Equal "python_art" $savedPythonArtTool.tool.execution.type "Loom Python Art execution type mismatch."
-
     $executedPythonArtTool = Invoke-JsonPost -Uri "$BaseUrl/v1/tools/fixture-python-art/execute" -Body @{
-        arguments = @{
-            text = "release installed python art"
-        }
+        arguments = @{ text = "release installed python art" }
     }
     Assert-Equal "succeeded" $executedPythonArtTool.status "Loom Python Art tool execution status mismatch."
     Assert-Equal "python art saw release installed python art" ([string]$executedPythonArtTool.result.content[0].text) "Loom Python Art tool content mismatch."
-
     $actualPython = [System.IO.Path]::GetFullPath([string]$executedPythonArtTool.result.pythonExecutable)
     $expectedPython = [System.IO.Path]::GetFullPath($packagedPython)
     Assert-Equal $expectedPython $actualPython "Loom Python Art did not use packaged embedded Python."
 
     return [ordered]@{
-        artId = [string]$loomEcho.art_id
-        label = [string]$loomEcho.label
-        path = [string]$loomEcho.path
         count = [int]$catalogArts.Count
+        defaultEmpty = $true
+        installedArtId = [string]$loomEcho.art_id
+        installedArtPath = [string]$loomEcho.path
+        installedCount = [int]$installedCatalogArts.Count
     }
 }
 
@@ -1586,7 +1615,8 @@ function Test-LoomArtLoomSharedMemoryCompat {
 
 function Test-LoomPythonEngineCompat {
     param(
-        [string]$BaseUrl
+        [string]$BaseUrl,
+        [string]$ArtPath
     )
 
     $status = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts/engine/status"
@@ -1595,6 +1625,7 @@ function Test-LoomPythonEngineCompat {
 
     $prefetch = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/shader/prefetch" -Body @{
         artId = "loom_echo"
+        artPath = $ArtPath
         params = @{
             output_mode = "shader"
             mode = "shader"
@@ -1615,11 +1646,13 @@ function Test-LoomPythonEngineCompat {
 function Test-LoomPythonDirectCompat {
     param(
         [string]$BaseUrl,
-        [string]$TempRoot
+        [string]$TempRoot,
+        [string]$ArtPath
     )
 
     $executed = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/execute-art" -Body @{
         artId = "loom_echo"
+        artPath = $ArtPath
         params = @{
             text = "release direct python art"
         }
@@ -3018,6 +3051,7 @@ function Test-LoomRelease {
         $oldControlPlaneRoot = [Environment]::GetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", "Process")
         $oldOcrFixtureText = [Environment]::GetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", "Process")
         $oldLoomPython = [Environment]::GetEnvironmentVariable("LOOM_PYTHON", "Process")
+        $oldPythonArtsDir = [Environment]::GetEnvironmentVariable("LOOM_PYTHON_ARTS_DIR", "Process")
         $oldMcpRegistryEndpoint = [Environment]::GetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", "Process")
         $oldTranslateEndpoint = [Environment]::GetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", "Process")
         $mcpRegistryFixtureDir = Join-Path $tempRoot "mcp-registry-fixture"
@@ -3028,11 +3062,14 @@ function Test-LoomRelease {
         $translatePort = Get-LoomSmokePort
         $translateJob = Start-LoomTranslateFixtureJob -Port $translatePort -OutputDir $translateFixtureDir
         Wait-ForPath -Path (Join-Path $translateFixtureDir "ready.txt") -TimeoutSeconds 20
+        $pythonArtsRoot = Join-Path $tempRoot "python-arts"
+        New-Item -ItemType Directory -Force -Path $pythonArtsRoot | Out-Null
         [Environment]::SetEnvironmentVariable("LOOM_DAEMON_HOST", "127.0.0.1", "Process")
         [Environment]::SetEnvironmentVariable("LOOM_DAEMON_PORT", [string]$port, "Process")
         [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $controlPlaneRoot, "Process")
         [Environment]::SetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", "release loom ocr", "Process")
         [Environment]::SetEnvironmentVariable("LOOM_PYTHON", $null, "Process")
+        [Environment]::SetEnvironmentVariable("LOOM_PYTHON_ARTS_DIR", $pythonArtsRoot, "Process")
         [Environment]::SetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", "http://127.0.0.1:$mcpRegistryPort/v0/servers", "Process")
         [Environment]::SetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", "http://127.0.0.1:$translatePort/translate", "Process")
         try {
@@ -3047,6 +3084,7 @@ function Test-LoomRelease {
             [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $oldControlPlaneRoot, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", $oldOcrFixtureText, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_PYTHON", $oldLoomPython, "Process")
+            [Environment]::SetEnvironmentVariable("LOOM_PYTHON_ARTS_DIR", $oldPythonArtsDir, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", $oldMcpRegistryEndpoint, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", $oldTranslateEndpoint, "Process")
         }
@@ -3372,14 +3410,18 @@ if ($arguments.mode -eq "shader") {
             -TempRoot $tempRoot
         $pythonArtCatalog = Test-LoomPythonArtCatalog `
             -BaseUrl $baseUrl `
-            -PackageDir $PackageDir
+            -PackageDir $PackageDir `
+            -FixtureRoot $pythonArtsRoot
         $artLoomRegistryCompat = Test-LoomArtLoomRegistryCompat -BaseUrl $baseUrl
         $artLoomNativeProcessArt = Test-LoomArtLoomNativeProcessArtCompat -BaseUrl $baseUrl
         $artLoomSystemCompat = Test-LoomArtLoomSystemCompat -BaseUrl $baseUrl
-        $pythonEngineCompat = Test-LoomPythonEngineCompat -BaseUrl $baseUrl
+        $pythonEngineCompat = Test-LoomPythonEngineCompat `
+            -BaseUrl $baseUrl `
+            -ArtPath ([string]$pythonArtCatalog.installedArtPath)
         $pythonDirectCompat = Test-LoomPythonDirectCompat `
             -BaseUrl $baseUrl `
-            -TempRoot $tempRoot
+            -TempRoot $tempRoot `
+            -ArtPath ([string]$pythonArtCatalog.installedArtPath)
         $pythonArtSourceImport = Test-LoomPythonArtSourceImport `
             -BaseUrl $baseUrl `
             -TempRoot $tempRoot

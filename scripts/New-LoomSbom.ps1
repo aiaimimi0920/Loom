@@ -1,0 +1,151 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [Parameter(Mandatory = $true)][string]$Version
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
+New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Value)
+    [System.IO.File]::WriteAllText($Path, $Value, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Get-Purl {
+    param([string]$Type, [string]$Name, [string]$PackageVersion)
+    $escapedName = [Uri]::EscapeDataString($Name)
+    $escapedVersion = [Uri]::EscapeDataString($PackageVersion)
+    return "pkg:${Type}/${escapedName}@${escapedVersion}"
+}
+
+$componentsByRef = [ordered]@{}
+$cargoLockPath = Join-Path $repoRoot "Cargo.lock"
+$cargoLock = Get-Content -Raw -Encoding UTF8 -LiteralPath $cargoLockPath
+$cargoPackages = [regex]::Matches(
+    $cargoLock,
+    '(?ms)^\[\[package\]\]\s+name\s*=\s*"([^"]+)"\s+version\s*=\s*"([^"]+)"'
+)
+foreach ($match in $cargoPackages) {
+    $name = [string]$match.Groups[1].Value
+    $packageVersion = [string]$match.Groups[2].Value
+    $purl = Get-Purl -Type "cargo" -Name $name -PackageVersion $packageVersion
+    $componentsByRef[$purl] = [ordered]@{
+        type = "library"
+        name = $name
+        version = $packageVersion
+        purl = $purl
+        "bom-ref" = $purl
+    }
+}
+
+$packageLockPath = Join-Path $repoRoot "apps\desktop\package-lock.json"
+if (Test-Path -LiteralPath $packageLockPath -PathType Leaf) {
+    $previousPackageLock = $env:LOOM_SBOM_PACKAGE_LOCK
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $env:LOOM_SBOM_PACKAGE_LOCK = $packageLockPath
+        $ErrorActionPreference = "Continue"
+        $nodeOutput = & node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync(process.env.LOOM_SBOM_PACKAGE_LOCK,'utf8'));const out=Object.values(p.packages||{}).filter(x=>x&&x.name&&x.version).map(x=>({name:x.name,version:x.version}));process.stdout.write(JSON.stringify(out));" 2>$null
+        $nodeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $env:LOOM_SBOM_PACKAGE_LOCK = $previousPackageLock
+    }
+    if ($nodeExitCode -ne 0) {
+        throw "Node.js failed to parse the desktop package lock for the SBOM."
+    }
+    $npmPackages = (($nodeOutput | ForEach-Object { $_.ToString() }) -join "`n") | ConvertFrom-Json
+    foreach ($entry in @($npmPackages)) {
+        $name = [string]$entry.name
+        $packageVersion = [string]$entry.version
+        if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($packageVersion)) {
+            continue
+        }
+        $purl = Get-Purl -Type "npm" -Name $name -PackageVersion $packageVersion
+        if (-not $componentsByRef.Contains($purl)) {
+            $componentsByRef[$purl] = [ordered]@{
+                type = "library"
+                name = $name
+                version = $packageVersion
+                purl = $purl
+                "bom-ref" = $purl
+            }
+        }
+    }
+}
+
+$components = @($componentsByRef.Values | Sort-Object { [string]$_['bom-ref'] })
+$serial = "urn:uuid:$([Guid]::NewGuid())"
+$timestamp = (Get-Date).ToUniversalTime().ToString("o")
+$cycloneDx = [ordered]@{
+    bomFormat = "CycloneDX"
+    specVersion = "1.6"
+    serialNumber = $serial
+    version = 1
+    metadata = [ordered]@{
+        timestamp = $timestamp
+        tools = @([ordered]@{
+            vendor = "Neuro"
+            name = "New-LoomSbom.ps1"
+            version = "1"
+        })
+        component = [ordered]@{
+            type = "application"
+            name = "Loom"
+            version = $Version
+            "bom-ref" = "pkg:generic/loom@$([Uri]::EscapeDataString($Version))"
+        }
+    }
+    components = $components
+}
+
+$spdxPackages = @()
+$index = 0
+foreach ($component in $components) {
+    $index++
+    $spdxPackages += [ordered]@{
+        SPDXID = "SPDXRef-Package-$index"
+        name = [string]$component.name
+        versionInfo = [string]$component.version
+        downloadLocation = "NOASSERTION"
+        filesAnalyzed = $false
+        licenseConcluded = "NOASSERTION"
+        licenseDeclared = "NOASSERTION"
+        copyrightText = "NOASSERTION"
+        externalRefs = @([ordered]@{
+            referenceCategory = "PACKAGE-MANAGER"
+            referenceType = "purl"
+            referenceLocator = [string]$component.purl
+        })
+    }
+}
+$spdx = [ordered]@{
+    spdxVersion = "SPDX-2.3"
+    dataLicense = "CC0-1.0"
+    SPDXID = "SPDXRef-DOCUMENT"
+    name = "Loom-$Version"
+    documentNamespace = "https://github.com/aiaimimi0920/Loom/sbom/$([Guid]::NewGuid())"
+    creationInfo = [ordered]@{
+        created = $timestamp
+        creators = @("Tool: New-LoomSbom.ps1-1")
+    }
+    packages = $spdxPackages
+}
+
+$cyclonePath = Join-Path $outputRoot "Loom-$Version.cdx.json"
+$spdxPath = Join-Path $outputRoot "Loom-$Version.spdx.json"
+Write-Utf8NoBom -Path $cyclonePath -Value (($cycloneDx | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+Write-Utf8NoBom -Path $spdxPath -Value (($spdx | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+
+[ordered]@{
+    schemaVersion = 1
+    componentCount = $components.Count
+    cycloneDx = $cyclonePath
+    spdx = $spdxPath
+} | ConvertTo-Json -Depth 5

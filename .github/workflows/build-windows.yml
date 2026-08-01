@@ -45,7 +45,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
             -VersionId $env:LOOM_VERSION `
-            -OutputRoot .\release\Loom
+            -OutputRoot .\release\Loom `
+            -RequireCleanSource
 
       - name: Verify standalone Loom release
         shell: powershell
@@ -53,7 +54,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release.ps1 `
             -PackageDir ".\release\Loom\$env:LOOM_VERSION" `
-            -RunSmoke
+            -RunSmoke `
+            -RequireCleanSource
 
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v6

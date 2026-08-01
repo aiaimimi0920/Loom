@@ -63,7 +63,10 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     '.\scripts\tests\Test-StandaloneReleaseContract.ps1',
     '.\scripts\tests\Test-ReleaseIntegrityTamper.ps1',
     '.\scripts\tests\Test-HookCanvasUiContract.ps1',
-    '.\scripts\tests\Test-GitHubActionsContract.ps1'
+    '.\scripts\tests\Test-GitHubActionsContract.ps1',
+    '.\scripts\tests\Test-MaliciousPluginPackages.ps1',
+    'Clean-host plugin SDK and schema validation',
+    'cli_sign_trust_pack_install_conformance_and_revoke_e2e'
 )
 
 $ciPath = Join-Path $workflowRoot "ci.yml"
@@ -103,6 +106,8 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     "- 'V*.*.*'",
     'workflow_dispatch:',
     'contents: write',
+    'id-token: write',
+    'attestations: write',
     'actions/checkout@v5',
     'actions/setup-node@v6',
     'dtolnay/rust-toolchain@1.95.0',
@@ -110,12 +115,18 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     '.\scripts\build-release.ps1',
     '.\scripts\verify-release.ps1',
     '-RunSmoke',
+    '-RequireCleanSource',
+    'actions/attest-build-provenance@v2',
+    'actions/attest-sbom@v2',
     'softprops/action-gh-release@v3',
     'generate_release_notes: true',
     'fail_on_unmatched_files: true',
     '.zip.sha256',
     'Loom-CLI-',
-    'Loom-CLI-${{ env.LOOM_TAG }}-windows-x64.zip'
+    'Loom-CLI-${{ env.LOOM_TAG }}-windows-x64.zip',
+    'Loom-Plugin-SDK-${{ env.LOOM_TAG }}-windows-x64.zip',
+    'sbom/*.json',
+    'provenance/*.json'
 )
 
 Assert-Workflow -Name "docker.yml" -RequiredText @(
@@ -125,7 +136,12 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
     'contents: read',
     'runs-on: ubuntu-latest',
     'actions/checkout@v5',
-    'docker build -t loom-ci .'
+    'docker/setup-buildx-action@v3',
+    'docker/build-push-action@v6',
+    'examples/**',
+    'provenance: mode=max',
+    'sbom: true',
+    'aquasecurity/trivy-action@0.33.1'
 )
 
 $dockerfile = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "Dockerfile")

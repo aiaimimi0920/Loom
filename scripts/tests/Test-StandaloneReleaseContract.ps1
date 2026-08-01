@@ -14,7 +14,8 @@ $focusedSmokePaths = @(
     (Join-Path $repoRoot "scripts\Invoke-LoomRunPersistenceSmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomDaemonConcurrencySmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"),
-    (Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1")
+    (Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1")
 )
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
@@ -112,10 +113,15 @@ Assert-ScriptContract `
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
         '[string]$OutputRoot = ".\release\Loom"',
         '[switch]$DryRun',
+        '[switch]$RequireCleanSource',
         'New-ExeSpec -Name "Loom.exe"',
         '-DestinationRelativePath "runtime\loom-daemon.exe"',
         'Loom-CLI-',
         'cliArtifact',
+        'pluginSdkArtifact',
+        'Loom-Plugin-SDK-',
+        'New-LoomSbom.ps1',
+        'build-provenance.json',
         'runtime\resources\ocr',
         'runtime\bin\python-embed',
         'sourcePaths = @(".")',
@@ -139,22 +145,30 @@ Assert-ScriptContract `
         'runtime\loom-daemon.exe',
         'cliArtifact',
         'Loom-CLI-',
+        'pluginSdkArtifact',
+        'Loom-Plugin-SDK-',
+        'Assert-SupplyChainMetadata',
         'Get-LoomReleaseLayout',
         'Assert-ZipChecksumSidecar',
         'ZIP checksum sidecar content mismatch',
         'CLI artifact ZIP byte count mismatch',
         'Desktop ZIP name does not match the manifest version.',
         'CLI ZIP name does not match the manifest version.',
+        'Plugin SDK ZIP path does not match its name.',
         '[System.StringComparison]::Ordinal',
         '$expectedLine = "$actualZipHash  $zipName"',
         'checksums.sha256',
         'manifest.json',
         '[switch]$RunSmoke',
+        '[switch]$RequireCleanSource',
         'function Invoke-CapturedPowerShell',
         'Invoke-LoomHookErrorPreviewSmoke.ps1',
         'hookErrorPreviewSmoke',
         'Invoke-LoomFrameworkArtStoreHookSmoke.ps1',
         'frameworkArtStoreHookSmoke',
+        'Invoke-LoomPluginBoundarySmoke.ps1',
+        'pluginBoundarySmoke',
+        'runtime/python/Arts/',
         '-PackageDir',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'
@@ -229,6 +243,7 @@ Assert-ScriptContract `
         'Traversal archive unexpectedly passed shared entry validation.',
         'Non-empty CLI extraction destination unexpectedly passed validation.',
         'ArtifactNamingMismatch',
+        'PluginSdkPathMismatch',
         'desktop-wrong',
         'cli-wrong',
         'Loom release integrity tamper contract passed.'
@@ -330,7 +345,11 @@ Assert-Equal -Expected "Loom.exe,loom-daemon.exe" -Actual (@($defaultPlan.exes |
 Assert-Equal -Expected "Loom.exe,runtime\loom-daemon.exe" -Actual (@($defaultPlan.exes | ForEach-Object { [string]$_.destinationRelativePath }) -join ",") -Message "Dry-run executable paths must expose one root entry and one runtime sidecar."
 Assert-Equal -Expected "loom.exe" -Actual ([string]$defaultPlan.cliArtifact.entryName) -Message "Dry-run must catalog the separate CLI entry."
 Assert-True -Condition ([string]$defaultPlan.cliArtifact.zipNamePattern -eq "Loom-CLI-{versionId}-windows-x64.zip") -Message "Dry-run CLI ZIP naming contract mismatch."
+Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$defaultPlan.pluginSdkArtifact.pluginCliEntryName) -Message "Dry-run must catalog the plugin developer CLI."
+Assert-True -Condition ([string]$defaultPlan.pluginSdkArtifact.zipNamePattern -eq "Loom-Plugin-SDK-{versionId}-windows-x64.zip") -Message "Dry-run plugin SDK ZIP naming contract mismatch."
+Assert-Equal -Expected 12 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas and developer documentation."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { -not ([string]$_.destinationRelativePath).StartsWith("runtime\") }).Count -eq 0) -Message "All daemon-owned support files must live under runtime."
+Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { ([string]$_.destinationRelativePath).Replace('\', '/').StartsWith("runtime/python/Arts/", [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) -Message "Default release must not package optional Python Arts."
 Assert-Equal -Expected "." -Actual (@($defaultPlan.sourcePaths) -join ",") -Message "Manifest source paths must be standalone-relative."
 
 $explicitRoot = [System.IO.Path]::GetFullPath((Join-Path $env:TEMP "loom-parent-release-contract"))

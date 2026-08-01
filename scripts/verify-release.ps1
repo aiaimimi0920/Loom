@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$PackageDir,
-    [switch]$RunSmoke
+    [switch]$RunSmoke,
+    [switch]$RequireCleanSource
 )
 
 Set-StrictMode -Version Latest
@@ -179,7 +180,7 @@ function Assert-CliZipPayload {
     $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
     Assert-True -Condition (Test-Path -LiteralPath $zipPath -PathType Leaf) -Message "CLI ZIP is missing."
 
-    $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath)
+    $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath | ForEach-Object { $_.Replace("\", "/") } | Sort-Object)
     Assert-Equal -Expected "loom.exe" -Actual ($actualEntries -join "`n") -Message "Loom CLI ZIP must contain exactly one loom.exe entry."
 
     $cliProperty = $Manifest.PSObject.Properties["cliArtifact"]
@@ -191,6 +192,75 @@ function Assert-CliZipPayload {
     Assert-Equal -Expected $cliRecordPath -Actual $cliArtifactPath -Message "CLI artifact ZIP path mismatch."
     Assert-Equal -Expected ([int64]$zipRecord[0].bytes) -Actual ([int64]$cliProperty.Value.bytes) -Message "CLI artifact ZIP byte count mismatch."
     Assert-Equal -Expected ([string]$zipRecord[0].sha256) -Actual ([string]$cliProperty.Value.sha256) -Message "CLI artifact ZIP SHA-256 mismatch."
+}
+
+function Assert-PluginSdkZipPayload {
+    param(
+        [string]$PackagePath,
+        [object]$Manifest
+    )
+
+    $artifacts = Get-ManifestRecord -Manifest $Manifest -Name "artifacts"
+    $zipRecord = @($artifacts | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "plugin-sdk-zip" })
+    Assert-Equal -Expected 1 -Actual $zipRecord.Count -Message "Manifest must contain exactly one plugin SDK ZIP."
+    $shaRecord = @($artifacts | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "plugin-sdk-zip-sha256" })
+    Assert-Equal -Expected 1 -Actual $shaRecord.Count -Message "Manifest must contain exactly one plugin SDK ZIP checksum sidecar."
+    $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
+    $expectedEntries = @(
+        "docs/plugin-development.md",
+        "docs/plugin-migration.md",
+        "docs/plugin-permissions.md",
+        "docs/plugin-security.md",
+        "docs/plugin-signing-and-trust.md",
+        "docs/release-provenance.md",
+        "loom-plugin.exe",
+        "protocol/README.md",
+        "protocol/schemas/art-runtime.v1.schema.json",
+        "protocol/schemas/framework-authoring.v1.schema.json",
+        "protocol/schemas/framework-execute-request.v1.schema.json",
+        "protocol/schemas/framework-execute-response.v1.schema.json",
+        "protocol/schemas/framework-manifest.v1.schema.json"
+    ) | Sort-Object
+    $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath | ForEach-Object { $_.Replace("\", "/") } | Sort-Object)
+    Assert-Equal -Expected ($expectedEntries -join "`n") -Actual ($actualEntries -join "`n") -Message "Plugin SDK ZIP contents do not match the public SDK contract."
+
+    $sdkProperty = $Manifest.PSObject.Properties["pluginSdkArtifact"]
+    Assert-True -Condition ($null -ne $sdkProperty -and $null -ne $sdkProperty.Value) -Message "Manifest is missing pluginSdkArtifact."
+    Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$sdkProperty.Value.entryName) -Message "Plugin SDK entry name mismatch."
+    Assert-Equal -Expected "loom.framework.v1" -Actual ([string]$sdkProperty.Value.protocolVersion) -Message "Plugin SDK protocol version mismatch."
+    Assert-Equal -Expected 5 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
+}
+
+function Assert-SupplyChainMetadata {
+    param(
+        [string]$PackagePath,
+        [object]$Manifest
+    )
+
+    $sbomRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "sbom")
+    Assert-Equal -Expected 2 -Actual $sbomRecords.Count -Message "Manifest must contain CycloneDX and SPDX SBOM records."
+    foreach ($record in $sbomRecords) {
+        $relative = Assert-FileRecord -PackagePath $PackagePath -Record $record
+        $path = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath $relative
+        $document = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json
+        if ($relative.EndsWith(".cdx.json", [System.StringComparison]::OrdinalIgnoreCase)) {
+            Assert-Equal -Expected "CycloneDX" -Actual ([string]$document.bomFormat) -Message "CycloneDX SBOM format mismatch."
+            Assert-Equal -Expected "1.6" -Actual ([string]$document.specVersion) -Message "CycloneDX SBOM version mismatch."
+        }
+        elseif ($relative.EndsWith(".spdx.json", [System.StringComparison]::OrdinalIgnoreCase)) {
+            Assert-Equal -Expected "SPDX-2.3" -Actual ([string]$document.spdxVersion) -Message "SPDX SBOM version mismatch."
+        }
+        else {
+            throw "Unknown SBOM format: $relative"
+        }
+    }
+    $provenanceRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "provenance")
+    Assert-Equal -Expected 1 -Actual $provenanceRecords.Count -Message "Manifest must contain one provenance record."
+    $provenanceRelative = Assert-FileRecord -PackagePath $PackagePath -Record $provenanceRecords[0]
+    $provenancePath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath $provenanceRelative
+    $provenance = Get-Content -Raw -Encoding UTF8 -LiteralPath $provenancePath | ConvertFrom-Json
+    Assert-Equal -Expected ([string]$Manifest.gitHead) -Actual ([string]$provenance.gitHead) -Message "Provenance Git head mismatch."
+    Assert-Equal -Expected ([bool]$Manifest.gitDirty) -Actual ([bool]$provenance.gitDirty) -Message "Provenance dirty flag mismatch."
 }
 
 function Assert-ZipChecksumSidecar {
@@ -231,7 +301,8 @@ $forbiddenOptionalPayloadPrefixes = @(
     "art-packages/samples/",
     "resources/script-arts/",
     "resources/workflow-arts/",
-    "framework-runtimes/"
+    "framework-runtimes/",
+    "runtime/python/Arts/"
 )
 $packageFiles = Get-ChildItem -LiteralPath $packageFullPath -Recurse -File | ForEach-Object {
     $_.FullName.Substring($packageFullPath.Length).TrimStart('\', '/').Replace('\', '/')
@@ -252,6 +323,10 @@ Assert-Equal -Expected "windows-x64" -Actual ([string]$manifest.target) -Message
 Assert-Equal -Expected "." -Actual (@($manifest.sourcePaths) -join ",") -Message "Manifest source paths must be standalone-relative."
 Assert-True -Condition (-not ([string]$manifest.repoRoot).Contains("Neuro")) -Message "Manifest must not contain parent repository paths."
 Assert-True -Condition (-not ([string]$manifest.destination).Contains(":")) -Message "Manifest destination must not contain an absolute local path."
+if ($RequireCleanSource) {
+    Assert-Equal -Expected $false -Actual ([bool]$manifest.gitDirty) -Message "Formal release manifest must record gitDirty=false."
+    Assert-Equal -Expected $false -Actual ([bool]$manifest.sourceGitDirty) -Message "Formal release source must record sourceGitDirty=false."
+}
 
 $exeRecords = @(Get-ManifestRecord -Manifest $manifest -Name "exes")
 $expectedExeNames = @("Loom.exe", "loom-daemon.exe")
@@ -288,19 +363,29 @@ $desktopSidecarRecord = @($artifactRecords | Where-Object { Test-LoomArtifactKin
 Assert-Equal -Expected 1 -Actual $desktopSidecarRecord.Count -Message "Manifest must contain exactly one desktop ZIP checksum sidecar."
 $cliSidecarRecord = @($artifactRecords | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "cli-zip-sha256" })
 Assert-Equal -Expected 1 -Actual $cliSidecarRecord.Count -Message "Manifest must contain exactly one CLI ZIP checksum sidecar."
+$pluginSdkZipRecord = @($artifactRecords | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "plugin-sdk-zip" })
+Assert-Equal -Expected 1 -Actual $pluginSdkZipRecord.Count -Message "Manifest must contain exactly one plugin SDK ZIP."
+$pluginSdkSidecarRecord = @($artifactRecords | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "plugin-sdk-zip-sha256" })
+Assert-Equal -Expected 1 -Actual $pluginSdkSidecarRecord.Count -Message "Manifest must contain exactly one plugin SDK ZIP checksum sidecar."
 $expectedDesktopZipName = "Loom-$($manifest.versionId)-windows-x64.zip"
 $expectedCliZipName = "Loom-CLI-$($manifest.versionId)-windows-x64.zip"
+$expectedPluginSdkZipName = "Loom-Plugin-SDK-$($manifest.versionId)-windows-x64.zip"
 Assert-Equal -Expected $expectedDesktopZipName -Actual ([string]$desktopZipRecord[0].name) -Message "Desktop ZIP name does not match the manifest version."
 Assert-Equal -Expected $expectedCliZipName -Actual ([string]$cliZipRecord[0].name) -Message "CLI ZIP name does not match the manifest version."
+Assert-Equal -Expected $expectedPluginSdkZipName -Actual ([string]$pluginSdkZipRecord[0].name) -Message "Plugin SDK ZIP name does not match the manifest version."
 Assert-Equal -Expected "packages\$expectedDesktopZipName" -Actual (([string]$desktopZipRecord[0].path).Replace("/", "\")) -Message "Desktop ZIP path does not match its name."
 Assert-Equal -Expected "packages\$expectedCliZipName" -Actual (([string]$cliZipRecord[0].path).Replace("/", "\")) -Message "CLI ZIP path does not match its name."
+Assert-Equal -Expected "packages\$expectedPluginSdkZipName" -Actual (([string]$pluginSdkZipRecord[0].path).Replace("/", "\")) -Message "Plugin SDK ZIP path does not match its name."
 Assert-ZipChecksumSidecar -PackagePath $packageFullPath -ZipRecord $desktopZipRecord[0] -SidecarRecord $desktopSidecarRecord[0]
 Assert-ZipChecksumSidecar -PackagePath $packageFullPath -ZipRecord $cliZipRecord[0] -SidecarRecord $cliSidecarRecord[0]
+Assert-ZipChecksumSidecar -PackagePath $packageFullPath -ZipRecord $pluginSdkZipRecord[0] -SidecarRecord $pluginSdkSidecarRecord[0]
 
 $checksumEntries = Get-ChecksumEntries -PackagePath $packageFullPath
 Assert-Checksums -PackagePath $packageFullPath -Entries $checksumEntries
 Assert-ZipPayload -PackagePath $packageFullPath -Manifest $manifest -ExpectedPayloadPaths $payloadPaths
 Assert-CliZipPayload -PackagePath $packageFullPath -Manifest $manifest
+Assert-PluginSdkZipPayload -PackagePath $packageFullPath -Manifest $manifest
+Assert-SupplyChainMetadata -PackagePath $packageFullPath -Manifest $manifest
 
 $smokeStatus = "not-run"
 $hookCanvasSmokeStatus = "not-run"
@@ -381,7 +466,6 @@ if ($RunSmoke) {
         "-ExecutionPolicy", "Bypass",
         "-File", $pluginBoundarySmokePath,
         "-DaemonExecutable", (Join-Path $packageFullPath "runtime\loom-daemon.exe"),
-        "-FrameworkArtifactRoot", (Join-Path $repoRoot ".loom-art-store-data\frameworks"),
         "-EvidenceRoot", $pluginBoundaryEvidenceRoot
     )
     $pluginBoundarySmokeOutput = @($pluginBoundarySmokeResult.output)

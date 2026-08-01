@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
-    [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks",
     [string]$EvidenceRoot = ".\target\plugin-boundary-smoke"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -30,22 +31,27 @@ function Write-Utf8NoBomFile {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Get-FreePort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    try {
-        $listener.Start()
-        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
-    }
-    finally {
-        $listener.Stop()
-    }
-}
-
 function Get-GitStateFingerprint {
     param([string]$Repository)
     $head = (& git -C $Repository rev-parse HEAD 2>$null | Out-String).Trim()
     $status = (& git -C $Repository status --porcelain=v1 --untracked-files=all 2>$null | Out-String).Trim()
-    return "$head|$status"
+    $sourcePatterns = @("*.rs", "*.toml", "*.ps1", "*.ts", "*.tsx", "*.json", "*.yaml", "*.yml")
+    $trackedSources = @(& git -C $Repository ls-files -- $sourcePatterns 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $sourceHashes = foreach ($relativePath in $trackedSources) {
+        $sourcePath = Join-Path $Repository $relativePath
+        if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+            "$relativePath|$((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant())"
+        }
+    }
+    $sourceBytes = [System.Text.Encoding]::UTF8.GetBytes(($sourceHashes -join "`n"))
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $sourceHash = ([BitConverter]::ToString($sha256.ComputeHash($sourceBytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    return "$head|$status|$sourceHash"
 }
 
 function Invoke-LoomRaw {
@@ -127,28 +133,198 @@ function Install-Zip {
     }
 }
 
-function Copy-ZipEntry {
-    param([string]$ZipPath, [string]$EntryName, [string]$Destination)
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
-    try {
-        $normalizedEntryName = $EntryName.Replace('\', '/')
-        $entry = @($archive.Entries | Where-Object {
-            $_.FullName.Replace('\', '/') -eq $normalizedEntryName
-        }) | Select-Object -First 1
-        Assert-True ($null -ne $entry) "Framework artifact is missing $EntryName."
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
-        $source = $entry.Open()
-        $target = [System.IO.File]::Create($Destination)
-        try {
-            $source.CopyTo($target)
-        }
-        finally {
-            $target.Dispose()
-            $source.Dispose()
+function Build-ExternalFrameworkRuntime {
+    param(
+        [string]$Version,
+        [string]$SourcePath,
+        [string]$Destination
+    )
+
+    $runtimeSource = @'
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+fn extract_json_string(input: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = input.find(&needle)? + needle.len();
+    let mut value = String::new();
+    let mut escaped = false;
+    for ch in input[start..].chars() {
+        if escaped {
+            match ch {
+                '\\' => value.push('\\'),
+                '"' => value.push('"'),
+                '/' => value.push('/'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                other => {
+                    value.push('\\');
+                    value.push(other);
+                }
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(value);
+        } else {
+            value.push(ch);
         }
     }
+    None
+}
+
+fn main() {
+    let mut request = String::new();
+    std::io::stdin()
+        .read_to_string(&mut request)
+        .expect("read Loom framework request");
+    let art_dir = extract_json_string(&request, "artDir").expect("request artDir");
+    let script = PathBuf::from(art_dir).join("runtime").join("main.ps1");
+    let mut child = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(script)
+        .env("THIRD_PARTY_FRAMEWORK_VERSION", "__FRAMEWORK_VERSION__")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start Art package runtime");
+    child
+        .stdin
+        .take()
+        .expect("Art runtime stdin")
+        .write_all(request.as_bytes())
+        .expect("write Art runtime request");
+    let output = child.wait_with_output().expect("wait for Art runtime");
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
+    }
+    std::io::stdout()
+        .write_all(&output.stdout)
+        .expect("relay Art runtime response");
+}
+'@
+    $runtimeSource = $runtimeSource.Replace("__FRAMEWORK_VERSION__", $Version)
+    Write-Utf8NoBomFile -Path $SourcePath -Content $runtimeSource
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+    $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
+    if ($null -eq $rustc) {
+        $rustc = Get-Command rustc -ErrorAction Stop
+    }
+    & $rustc.Path --edition=2021 -C opt-level=1 -C debuginfo=0 -o $Destination $SourcePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Independent third-party framework compilation failed for version $Version."
+    }
+    Assert-True (Test-Path -LiteralPath $Destination -PathType Leaf) "Independent framework runtime was not created: $Destination"
+}
+
+function New-ThirdPartyFrameworkPackage {
+    param(
+        [string]$Version,
+        [string]$StageRoot,
+        [string]$SourcePath,
+        [string]$ZipPath,
+        [string]$FrameworkId
+    )
+
+    New-Item -ItemType Directory -Force -Path $StageRoot | Out-Null
+    $frameworkRuntime = Join-Path $StageRoot "runtime\loom-framework-third-party.exe"
+    Build-ExternalFrameworkRuntime -Version $Version -SourcePath $SourcePath -Destination $frameworkRuntime
+    $frameworkManifest = [ordered]@{
+        id = $FrameworkId
+        name = "Third-party Echo Framework"
+        description = "Framework package compiled outside the Loom source tree."
+        version = $Version
+        protocolVersion = "loom.framework.v1"
+        platforms = @("windows-x64")
+        entry = [ordered]@{
+            kind = "process"
+            command = "runtime/loom-framework-third-party.exe"
+            args = @()
+        }
+        permissions = @("process.spawn", "file.read")
+        artExecution = [ordered]@{
+            requestSchema = "loom.art.execute.v1"
+            responseSchema = "loom.art.result.v1"
+        }
+    }
+    Write-Utf8NoBomFile -Path (Join-Path $StageRoot "framework.manifest.json") -Content (($frameworkManifest | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
+    Compress-Archive -Path (Join-Path $StageRoot "*") -DestinationPath $ZipPath -CompressionLevel Optimal -Force
+}
+
+function New-LoomHookBridgeWebSocket {
+    param([int]$Port)
+
+    $client = [System.Net.WebSockets.ClientWebSocket]::new()
+    $uri = [Uri]::new("ws://127.0.0.1:$Port")
+    $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+    try {
+        [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
+    }
     finally {
-        $archive.Dispose()
+        $connectCts.Dispose()
+    }
+    return $client
+}
+
+function Send-LoomHookBridgeWebSocketJson {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Client,
+        [string]$Json
+    )
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    $sendCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+    try {
+        [void]$Client.SendAsync(
+            [ArraySegment[byte]]::new($bytes),
+            [System.Net.WebSockets.WebSocketMessageType]::Text,
+            $true,
+            $sendCts.Token
+        ).GetAwaiter().GetResult()
+    }
+    finally {
+        $sendCts.Dispose()
+    }
+}
+
+function Receive-LoomHookBridgeWebSocketJson {
+    param([System.Net.WebSockets.ClientWebSocket]$Client)
+
+    $buffer = New-Object byte[] 4096
+    $builder = [System.Text.StringBuilder]::new()
+    do {
+        $receiveCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+        try {
+            $result = $Client.ReceiveAsync(
+                [ArraySegment[byte]]::new($buffer),
+                $receiveCts.Token
+            ).GetAwaiter().GetResult()
+        }
+        finally {
+            $receiveCts.Dispose()
+        }
+        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+            throw "Hook Bridge WebSocket closed before sending a JSON response."
+        }
+        [void]$builder.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count))
+    } while (-not $result.EndOfMessage)
+    return $builder.ToString() | ConvertFrom-Json
+}
+
+function Close-LoomHookBridgeWebSocket {
+    param([AllowNull()][System.Net.WebSockets.ClientWebSocket]$Client)
+
+    if ($null -eq $Client) {
+        return
+    }
+    try {
+        $Client.Dispose()
+    }
+    catch {
     }
 }
 
@@ -193,26 +369,29 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
 $hookRoot = Join-Path $repoRoot "..\Hook"
 $daemonPath = Resolve-RepoPath -Path $DaemonExecutable
-$frameworkRootPath = Resolve-RepoPath -Path $FrameworkArtifactRoot
 $evidencePath = Resolve-RepoPath -Path $EvidenceRoot
-$scriptFrameworkZip = Join-Path $frameworkRootPath "script.zip"
 $controlPlane = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-plugin-boundary-" + [guid]::NewGuid().ToString("N"))
 $configuration = Join-Path $controlPlane "configuration"
 $runStore = Join-Path $controlPlane "runs.sqlite3"
 $packageRoot = Join-Path $controlPlane "third-party-packages"
-$frameworkStage = Join-Path $packageRoot "framework"
+$frameworkSourceRoot = Join-Path $packageRoot "source"
+$frameworkStageV1 = Join-Path $packageRoot "framework-v1"
+$frameworkStageV2 = Join-Path $packageRoot "framework-v2"
 $artStage = Join-Path $packageRoot "art"
-$thirdPartyFrameworkZip = Join-Path $packageRoot "third-party-echo-framework.zip"
+$thirdPartyFrameworkZipV1 = Join-Path $packageRoot "third-party-echo-framework-v1.zip"
+$thirdPartyFrameworkZipV2 = Join-Path $packageRoot "third-party-echo-framework-v2.zip"
 $thirdPartyArtZip = Join-Path $packageRoot "third-party-image-echo-art.zip"
 $stdoutPath = Join-Path $controlPlane "daemon.stdout.log"
 $stderrPath = Join-Path $controlPlane "daemon.stderr.log"
-$port = Get-FreePort
+$port = Get-LoomSmokePort
 $baseUrl = "http://127.0.0.1:$port"
 $frameworkId = "third-party-echo"
 $artId = "third-party-image-echo"
 $loomBefore = Get-GitStateFingerprint -Repository $repoRoot
 $hookBefore = Get-GitStateFingerprint -Repository $hookRoot
 $daemon = $null
+$hookBridgeClient = $null
+$hookBridgeRunning = $false
 $succeeded = $false
 $oldEnvironment = @{}
 
@@ -220,47 +399,30 @@ foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_
     $oldEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name)
 }
 
-New-Item -ItemType Directory -Force -Path $evidencePath, $configuration, $frameworkStage, $artStage | Out-Null
+New-Item -ItemType Directory -Force -Path $evidencePath, $configuration, $frameworkSourceRoot, $frameworkStageV1, $frameworkStageV2, $artStage | Out-Null
 Assert-True (Test-Path -LiteralPath $daemonPath -PathType Leaf) "Loom daemon executable not found: $daemonPath"
-Assert-True (Test-Path -LiteralPath $scriptFrameworkZip -PathType Leaf) "script framework artifact not found: $scriptFrameworkZip"
 
 try {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-    $frameworkRuntime = Join-Path $frameworkStage "runtime\loom-framework-third-party.exe"
-    Copy-ZipEntry -ZipPath $scriptFrameworkZip -EntryName "runtime/loom-framework-script.exe" -Destination $frameworkRuntime
-    $frameworkManifest = [ordered]@{
-        id = $frameworkId
-        name = "Third-party Echo Framework"
-        description = "Framework package created outside the Loom source tree."
-        version = "1.0.0"
-        protocolVersion = "loom.framework.v1"
-        platforms = @("windows-x64")
-        entry = [ordered]@{
-            kind = "process"
-            command = "runtime/loom-framework-third-party.exe"
-            args = @("--framework-id", $frameworkId)
-        }
-        permissions = @("process.spawn", "file.read", "file.write")
-        artExecution = [ordered]@{
-            requestSchema = "loom.art.execute.v1"
-            responseSchema = "loom.art.result.v1"
-        }
-    }
-    Write-Utf8NoBomFile -Path (Join-Path $frameworkStage "framework.manifest.json") -Content (($frameworkManifest | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
-    Compress-Archive -Path (Join-Path $frameworkStage "*") -DestinationPath $thirdPartyFrameworkZip -CompressionLevel Optimal -Force
+    New-ThirdPartyFrameworkPackage -Version "1.0.0" -StageRoot $frameworkStageV1 -SourcePath (Join-Path $frameworkSourceRoot "framework-v1.rs") -ZipPath $thirdPartyFrameworkZipV1 -FrameworkId $frameworkId
+    New-ThirdPartyFrameworkPackage -Version "2.0.0" -StageRoot $frameworkStageV2 -SourcePath (Join-Path $frameworkSourceRoot "framework-v2.rs") -ZipPath $thirdPartyFrameworkZipV2 -FrameworkId $frameworkId
 
     $runtimeScript = @'
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$prefix = [string]$request.params.prefix
+$prefix = if ($null -ne $request.params.prefix) { [string]$request.params.prefix } else { [string]$request.inputs.prefix }
 $inputValue = [string]$request.inputs.input
+$frameworkVersion = [string]$env:THIRD_PARTY_FRAMEWORK_VERSION
+$value = ($prefix + ":" + $inputValue + ":" + $frameworkVersion)
 $response = [ordered]@{
     status = "success"
     output = [ordered]@{
         thirdParty = $true
         frameworkId = [string]$request.frameworkId
         artId = [string]$request.artId
-        value = ($prefix + ":" + $inputValue)
+        frameworkVersion = $frameworkVersion
+        value = $value
+        content = @(
+            [ordered]@{ type = "text"; text = $value }
+        )
     }
 }
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 30 -Compress))
@@ -320,8 +482,9 @@ $response = [ordered]@{
     Assert-True ($notReady.statusCode -eq 409) "Art install without framework did not return 409."
     Assert-True ([string]$notReady.body.error.code -eq "framework_not_ready") "Missing framework error was not named framework_not_ready."
 
-    $installedFramework = Install-Zip -Url "$baseUrl/v1/frameworks/install" -Path $thirdPartyFrameworkZip
+    $installedFramework = Install-Zip -Url "$baseUrl/v1/frameworks/install" -Path $thirdPartyFrameworkZipV1
     Assert-True ([string]$installedFramework.framework.id -eq $frameworkId) "Third-party framework install returned the wrong id."
+    Assert-True ([string]$installedFramework.framework.version -eq "1.0.0") "Third-party framework install returned the wrong version."
     $frameworkStatus = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/frameworks" -Body $null
     $dynamicStatus = @($frameworkStatus.frameworks | Where-Object { [string]$_.id -eq $frameworkId }) | Select-Object -First 1
     Assert-True ($null -ne $dynamicStatus -and [bool]$dynamicStatus.ready) "Third-party framework is not ready."
@@ -336,7 +499,53 @@ $response = [ordered]@{
     $executed = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/tools/$artId/execute" -Body @{ arguments = $arguments }
     Assert-True ([string]$executed.status -eq "succeeded") "Third-party Art execution failed: $($executed | ConvertTo-Json -Depth 30 -Compress)"
     Assert-True ([bool]$executed.result.thirdParty) "Third-party runtime marker is missing."
-    Assert-True ([string]$executed.result.value -eq "plugin:hello") "Third-party runtime did not receive inputs and params."
+    Assert-True ([string]$executed.result.value -eq "plugin:hello:1.0.0") "Third-party runtime did not receive inputs, params, and framework version."
+
+    $upgradedFramework = Install-Zip -Url "$baseUrl/v1/frameworks/$frameworkId/upgrade" -Path $thirdPartyFrameworkZipV2
+    Assert-True ([string]$upgradedFramework.framework.version -eq "2.0.0") "Third-party framework upgrade did not persist version 2.0.0."
+    $upgradedExecution = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/tools/$artId/execute" -Body @{ arguments = $arguments }
+    Assert-True ([string]$upgradedExecution.result.value -eq "plugin:hello:2.0.0") "Third-party framework upgrade did not replace runtime behavior."
+
+    $enabledArts = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/artloom-compat/arts/enabled" -Body $null
+    $hookCapability = @($enabledArts.arts | Where-Object { [string]$_.id -eq $artId }) | Select-Object -First 1
+    Assert-True ($null -ne $hookCapability) "Hook-facing enabled Art discovery did not include the third-party Art."
+    Assert-True ([string]$hookCapability.execution_type -eq "framework_art") "Hook-facing capability did not preserve generic framework_art execution metadata."
+
+    $hookBridgeStarted = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/start" -Body @{ port = 0 }
+    Assert-True ([bool]$hookBridgeStarted.running) "Hook Bridge did not start for the third-party Art."
+    $hookBridgeRunning = $true
+    $hookBridgeClient = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
+    Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json '{"method":"subscribe","params":{"channels":["art_hook"]}}'
+    $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
+    Assert-True ([bool]$subscribed.data.subscribed) "Hook Bridge did not subscribe to Art node events."
+    $instantiated = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/artloom-compat/ipc/instantiate-workflow" -Body @{
+        workflowId = "third-party-plugin-smoke"
+        mode = "reference"
+        nodes = @(
+            @{ id = "third-party-node"; type = "artNode"; data = @{ artId = $artId; label = "Third-party Image Echo" } }
+        )
+        edges = @()
+    }
+    Assert-True ([string]$instantiated.type -eq "success") "Third-party Hook node instantiation failed."
+    $instantiatedBroadcast = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
+    Assert-True ([string]$instantiatedBroadcast.method -eq "art_hook/instantiate") "Third-party Hook node broadcast was not emitted."
+    Assert-True ([string]$instantiatedBroadcast.params.nodes[0].data.artId -eq $artId) "Hook node broadcast lost the dynamic Art id."
+    $hookExecutionRequest = [ordered]@{
+        method = "art_loom/execute_art_node"
+        params = [ordered]@{
+            node_id = "third-party-node"
+            art_id = $artId
+            params = [ordered]@{ input = "hello"; prefix = "hook" }
+        }
+    }
+    Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json ($hookExecutionRequest | ConvertTo-Json -Depth 20 -Compress)
+    $hookExecution = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
+    Assert-True ([string]$hookExecution.type -eq "success") "Third-party Art failed through the Hook Bridge."
+    Assert-True ([string]$hookExecution.data.output_text -eq "hook:hello:2.0.0") "Hook Bridge did not execute the upgraded third-party framework and Art content."
+    Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
+    $hookBridgeClient = $null
+    Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
+    $hookBridgeRunning = $false
 
     $disabledFramework = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/frameworks/$frameworkId/disable" -Body $null
     Assert-True (-not [bool]$disabledFramework.framework.ready) "Third-party framework disable did not make it unready."
@@ -371,14 +580,14 @@ $response = [ordered]@{
 
     Install-Zip -Url "$baseUrl/v1/arts/install" -Path $thirdPartyArtZip | Out-Null
     $reinstalled = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/tools/$artId/execute" -Body @{ arguments = $arguments }
-    Assert-True ([string]$reinstalled.result.value -eq "plugin:hello") "Third-party Art did not execute after reinstall."
+    Assert-True ([string]$reinstalled.result.value -eq "plugin:hello:2.0.0") "Third-party Art did not execute after reinstall."
 
     Invoke-LoomJson -Method Post -Url "$baseUrl/v1/frameworks/$frameworkId/uninstall" -Body $null | Out-Null
     $uninstalledReadiness = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools/$artId/readiness" -Body $null
     Assert-True (-not [bool]$uninstalledReadiness.ready) "Art remained ready after framework uninstall."
-    Install-Zip -Url "$baseUrl/v1/frameworks/install" -Path $thirdPartyFrameworkZip | Out-Null
+    Install-Zip -Url "$baseUrl/v1/frameworks/install" -Path $thirdPartyFrameworkZipV2 | Out-Null
     $reinstalledFrameworkRun = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/tools/$artId/execute" -Body @{ arguments = $arguments }
-    Assert-True ([string]$reinstalledFrameworkRun.result.value -eq "plugin:hello") "Art did not execute after framework reinstall."
+    Assert-True ([string]$reinstalledFrameworkRun.result.value -eq "plugin:hello:2.0.0") "Art did not execute after framework reinstall."
 
     $loomAfter = Get-GitStateFingerprint -Repository $repoRoot
     $hookAfter = Get-GitStateFingerprint -Repository $hookRoot
@@ -390,8 +599,13 @@ $response = [ordered]@{
         thirdPartyFrameworkInstalled = $true
         thirdPartyArtInstalled = $true
         thirdPartyArtExecuted = $true
+        thirdPartyFrameworkCompiledOutsideRepository = $true
+        frameworkUpgraded = $true
+        hookCapabilityDiscovered = $true
+        hookNodeInstantiated = $true
+        hookBridgeExecuted = $true
         restarted = $true
-        frameworkLifecycle = "install-disable-enable-uninstall-reinstall"
+        frameworkLifecycle = "install-upgrade-disable-enable-uninstall-reinstall"
         artLifecycle = "install-disable-enable-uninstall-reinstall"
         loomSourceChanged = $false
         hookSourceChanged = $false
@@ -402,6 +616,14 @@ $response = [ordered]@{
     Write-Host "Plugin Art boundary smoke passed."
 }
 finally {
+    Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
+    if ($hookBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
+        try {
+            Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
+        }
+        catch {
+        }
+    }
     Stop-TestDaemon -Process $daemon
     if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
         Copy-Item -LiteralPath $stdoutPath -Destination (Join-Path $evidencePath "daemon.stdout.log") -Force

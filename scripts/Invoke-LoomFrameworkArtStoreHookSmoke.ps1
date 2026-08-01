@@ -1006,7 +1006,8 @@ try {
         Assert-Equal $true ([bool]$frameworkReport.framework.ready) "Framework should be ready after install: $frameworkId."
         $frameworkInstallReports[$frameworkId] = $frameworkReport.framework
     }
-    Assert-Contains "已安装框架包" ([string]$frameworkInstallReports['python_art'].readyDetail) "python_art ready detail should describe the installed framework package."
+    $installedFrameworkPackageText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5bey5a6J6KOF5qGG5p625YyF"))
+    Assert-Contains $installedFrameworkPackageText ([string]$frameworkInstallReports['python_art'].readyDetail) "python_art ready detail should describe the installed framework package."
     $summary.frameworkInstallReports = $frameworkInstallReports
 
     $frameworksAfter = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"

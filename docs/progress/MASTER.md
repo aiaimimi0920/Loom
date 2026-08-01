@@ -405,10 +405,39 @@ Latest completed phases:
   IDs, generic external framework process execution, and package-backed Arts.
   Hook consumes generic capability/result metadata without sample Art ID
   branches. The third-party no-source-change smoke and release verifier guard
-  pass. Final Loom release is
+  pass. The original formal Loom release is
   release/Loom/20260801-pluginized-art-frameworks-final2 and final Hook
   release is release/Hook/20260801-pluginized-art-frameworks-final2.
   Rollback tags remain `框架修改前的最后一个版本` in both repositories.
+- Phase 67 post-completion audit hardening is complete. It removed the legacy
+  Python sample Art from the default release, made source-tree Python Art
+  discovery debug-only, added an explicit compatibility-fixture path, allowed
+  bounded large package uploads without relaxing ordinary API limits, exposed
+  generic installed Arts to Hook, hardened framework/dependency paths, and
+  fixed framework process cleanup and output draining. The independent plugin
+  smoke now compiles a third-party runtime outside both repositories, proves a
+  v1-to-v2 upgrade, Hook discovery, dynamic node instantiation, Hook Bridge
+  execution, restart, and full install/enable/disable/uninstall/reinstall
+  lifecycles with no Loom/Hook source change. Audited runtime candidate
+  `release/Loom/20260801-art-plugin-boundary-hardening-r3` starts with an empty
+  Python Art catalog. A fresh formal verifier run checked all 30 package files
+  and passed standalone, Hook canvas, failed-preview, all-six-framework Hook,
+  and independently compiled third-party plugin smokes. Its manifest records
+  `gitDirty=true`, so it is evidence for the current worktree rather than a
+  clean-source publication artifact.
+- Phase 68 implementation is complete and final validation/publication is in
+  progress. The platform now has a public process+JSON protocol and five v1
+  Schemas, an independent `loom-plugin` SDK CLI, publisher-qualified identity,
+  Ed25519 signing/trust/revocation, secure ZIP and outbound policy, scoped
+  write-only credentials, immutable versions and dependency lockfiles,
+  rollback/journal/tombstone crash recovery, process-tree/resource controls,
+  durable HTTP/Hook/AHRP execution evidence, diagnostics/redaction, dynamic
+  Desktop authoring and plugin-security management, malicious-package CI,
+  CycloneDX/SPDX SBOMs, build provenance, and GitHub attestations. The compatible
+  permission default is audit mode; strict mode rejects direct network,
+  arbitrary filesystem, GPU, and clipboard declarations that are not fully
+  OS-enforced. Full details and current test evidence are in
+  `docs/progress/phase-68-art-plugin-platform-hardening.md`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local
@@ -495,16 +524,18 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Keep the Phase 44 candidate and its checksum/evidence immutable after final
-   verification; regenerate it after any production source or release-tooling
-   change.
-2. Keep `20260721-release-integrity-f99e810` and its checksum evidence immutable;
-   later documentation-only commits do not change that package provenance.
-3. Treat later test/documentation-only commits separately from runtime package
-   provenance. Regenerate a candidate after any production source, resource,
-   dependency, or release-tooling change.
-4. If further ArtLoom gaps are reported, classify them as user-visible UI,
-   protocol/runtime, packaging, or intentionally replaced before making changes.
+1. Complete the Phase 68 fresh full verification matrix, commit Loom and Hook
+   separately, then build and verify a new clean-source R4/final package with
+   `gitDirty=false` and `sourceGitDirty=false`.
+2. Preserve `20260801-art-plugin-boundary-hardening-r3` unchanged as historical
+   dirty-worktree runtime evidence; never overwrite or relabel it as the clean
+   Phase 68 publication.
+3. Keep the Phase 44 and `20260721-release-integrity-f99e810` candidates and
+   their checksum evidence immutable; regenerate a candidate after any later
+   production source, resource, dependency, or release-tooling change.
+4. If further ArtLoom/plugin gaps are reported, classify them as user-visible
+   UI, public protocol/runtime, package lifecycle/supply chain, OS enforcement,
+   or intentionally replaced before making changes.
 5. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
    internal Tauri source target, while the packaged user entry is `Loom.exe`.
 

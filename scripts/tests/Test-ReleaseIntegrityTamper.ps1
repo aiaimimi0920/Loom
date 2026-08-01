@@ -146,6 +146,7 @@ function New-IntegrityFixture {
         [switch]$CliEntryCaseMismatch,
         [switch]$CliKindCaseMismatch,
         [switch]$ArtifactNamingMismatch,
+        [switch]$PluginSdkPathMismatch,
         [switch]$ForwardSlashPaths,
         [ValidateSet("valid", "desktop-wrong", "cli-wrong", "no-newline", "extra-line")]
         [string]$SidecarMode = "valid"
@@ -162,6 +163,10 @@ function New-IntegrityFixture {
 
     $desktopZipRelative = "packages/Loom-integrity-fixture-windows-x64.zip"
     $cliZipRelative = "packages/Loom-CLI-integrity-fixture-windows-x64.zip"
+    $pluginSdkZipRelative = "packages/Loom-Plugin-SDK-integrity-fixture-windows-x64.zip"
+    if ($PluginSdkPathMismatch) {
+        $pluginSdkZipRelative = "sdk/Loom-Plugin-SDK-integrity-fixture-windows-x64.zip"
+    }
     if ($ArtifactNamingMismatch) {
         $desktopZipRelative = "packages/Loom-wrong-version-windows-x64.zip"
         $cliZipRelative = "packages/Loom-CLI-wrong-version-windows-x64.zip"
@@ -173,13 +178,32 @@ function New-IntegrityFixture {
     $cliEntries = @(@{ path = "loom.exe"; content = "cli-fixture" })
     if ($ExtraCliEntry) { $cliEntries += @{ path = "extra.txt"; content = "unexpected-entry" } }
     New-FixtureZip -PackageDir $packageDir -RelativeZipPath $cliZipRelative -Entries $cliEntries
+    $pluginSdkEntries = @(
+        @{ path = "loom-plugin.exe"; content = "plugin-cli-fixture" },
+        @{ path = "protocol/README.md"; content = "protocol" },
+        @{ path = "protocol/schemas/framework-manifest.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/framework-execute-request.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/framework-execute-response.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/framework-authoring.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/art-runtime.v1.schema.json"; content = "{}" },
+        @{ path = "docs/plugin-development.md"; content = "development" },
+        @{ path = "docs/plugin-security.md"; content = "security" },
+        @{ path = "docs/plugin-permissions.md"; content = "permissions" },
+        @{ path = "docs/plugin-signing-and-trust.md"; content = "signing" },
+        @{ path = "docs/plugin-migration.md"; content = "migration" },
+        @{ path = "docs/release-provenance.md"; content = "provenance" }
+    )
+    New-FixtureZip -PackageDir $packageDir -RelativeZipPath $pluginSdkZipRelative -Entries $pluginSdkEntries
 
     $desktopZipPath = Join-Path $packageDir $desktopZipRelative
     $cliZipPath = Join-Path $packageDir $cliZipRelative
+    $pluginSdkZipPath = Join-Path $packageDir $pluginSdkZipRelative
     $desktopZipHash = (Get-FileHash -LiteralPath $desktopZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $cliZipHash = (Get-FileHash -LiteralPath $cliZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $pluginSdkZipHash = (Get-FileHash -LiteralPath $pluginSdkZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $desktopZipName = Split-Path -Leaf $desktopZipPath
     $cliZipName = Split-Path -Leaf $cliZipPath
+    $pluginSdkZipName = Split-Path -Leaf $pluginSdkZipPath
 
     $desktopSidecarLine = "$desktopZipHash  $desktopZipName"
     $cliSidecarLine = "$cliZipHash  $cliZipName"
@@ -196,11 +220,18 @@ function New-IntegrityFixture {
     }
     Write-Ascii -Path "$desktopZipPath.sha256" -Value ($desktopSidecarLine + $sidecarSuffix)
     Write-Ascii -Path "$cliZipPath.sha256" -Value ($cliSidecarLine + $sidecarSuffix)
+    Write-Ascii -Path "$pluginSdkZipPath.sha256" -Value ("$pluginSdkZipHash  $pluginSdkZipName" + [Environment]::NewLine)
+
+    Write-FixtureFile -PackageDir $packageDir -RelativePath "sbom/Loom-integrity-fixture.cdx.json" -Content '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}'
+    Write-FixtureFile -PackageDir $packageDir -RelativePath "sbom/Loom-integrity-fixture.spdx.json" -Content '{"spdxVersion":"SPDX-2.3","packages":[]}'
+    Write-FixtureFile -PackageDir $packageDir -RelativePath "provenance/build-provenance.json" -Content '{"schemaVersion":1,"gitHead":"integrity-fixture","gitDirty":false,"subjects":[]}'
 
     $desktopRecord = Get-Record -PackageDir $packageDir -Kind "desktop-zip" -RelativePath $desktopZipRelative
     $desktopSidecarRecord = Get-Record -PackageDir $packageDir -Kind "zip-sha256" -RelativePath "$desktopZipRelative.sha256"
     $cliRecord = Get-Record -PackageDir $packageDir -Kind "cli-zip" -RelativePath $cliZipRelative
     $cliSidecarRecord = Get-Record -PackageDir $packageDir -Kind "cli-zip-sha256" -RelativePath "$cliZipRelative.sha256"
+    $pluginSdkRecord = Get-Record -PackageDir $packageDir -Kind "plugin-sdk-zip" -RelativePath $pluginSdkZipRelative
+    $pluginSdkSidecarRecord = Get-Record -PackageDir $packageDir -Kind "plugin-sdk-zip-sha256" -RelativePath "$pluginSdkZipRelative.sha256"
     if ($CliKindCaseMismatch) { $cliRecord.kind = "CLI-ZIP" }
 
     $cliArtifact = [ordered]@{
@@ -216,6 +247,17 @@ function New-IntegrityFixture {
         $cliArtifact.sha256 = "a" * 64
     }
     if ($CliEntryCaseMismatch) { $cliArtifact.entryName = "LOOM.EXE" }
+
+    $pluginSdkArtifact = [ordered]@{
+        name = "loom-plugin-sdk"
+        entryName = "loom-plugin.exe"
+        zipName = $pluginSdkZipName
+        path = $pluginSdkZipRelative.Replace("/", "\")
+        bytes = $pluginSdkRecord.bytes
+        sha256 = $pluginSdkRecord.sha256
+        protocolVersion = "loom.framework.v1"
+        schemaCount = 5
+    }
 
     $manifest = [ordered]@{
         schemaVersion = 1
@@ -241,8 +283,14 @@ function New-IntegrityFixture {
         )
         supportFiles = @()
         cliArtifact = $cliArtifact
+        pluginSdkArtifact = $pluginSdkArtifact
         buildInfo = (Get-Record -PackageDir $packageDir -Kind "build-info" -RelativePath "BUILD_INFO.txt")
-        artifacts = @($desktopRecord, $desktopSidecarRecord, $cliRecord, $cliSidecarRecord)
+        artifacts = @($desktopRecord, $desktopSidecarRecord, $cliRecord, $cliSidecarRecord, $pluginSdkRecord, $pluginSdkSidecarRecord)
+        sbom = @(
+            (Get-Record -PackageDir $packageDir -Kind "sbom" -RelativePath "sbom/Loom-integrity-fixture.cdx.json"),
+            (Get-Record -PackageDir $packageDir -Kind "sbom" -RelativePath "sbom/Loom-integrity-fixture.spdx.json")
+        )
+        provenance = (Get-Record -PackageDir $packageDir -Kind "provenance" -RelativePath "provenance/build-provenance.json")
         checksums = "checksums.sha256"
         sourceGitDirty = $false
         sourcePaths = @(".")
@@ -253,6 +301,7 @@ function New-IntegrityFixture {
             $record.path = ([string]$record.path).Replace("\", "/")
         }
         $manifest.cliArtifact.path = ([string]$manifest.cliArtifact.path).Replace("\", "/")
+        $manifest.pluginSdkArtifact.path = ([string]$manifest.pluginSdkArtifact.path).Replace("\", "/")
     }
 
     Write-Utf8NoBom -Path (Join-Path $packageDir "manifest.json") -Value (($manifest | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
@@ -383,6 +432,9 @@ try {
 
     $artifactNaming = New-IntegrityFixture -Name "artifact-naming" -ArtifactNamingMismatch
     Invoke-VerifierFailure -PackageDir $artifactNaming -ExpectedMessage "Desktop ZIP name does not match the manifest version."
+
+    $pluginSdkPath = New-IntegrityFixture -Name "plugin-sdk-path" -PluginSdkPathMismatch
+    Invoke-VerifierFailure -PackageDir $pluginSdkPath -ExpectedMessage "Plugin SDK ZIP path does not match its name."
 
     $desktopSidecar = New-IntegrityFixture -Name "desktop-sidecar" -SidecarMode desktop-wrong
     Invoke-VerifierFailure -PackageDir $desktopSidecar -ExpectedMessage "ZIP checksum sidecar content mismatch for Loom-integrity-fixture-windows-x64.zip."
