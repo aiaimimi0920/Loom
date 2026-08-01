@@ -275,6 +275,8 @@ Assert-ScriptContract `
         'selectedResultIndex',
         'resultCandidates',
         'result_index',
+        'Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256',
+        'Write-Utf8NoBomFile -Path "$ZipPath.sha256"',
         '/v1/hook-bridge/canvas'
     ) `
     -ForbiddenText $commonForbidden

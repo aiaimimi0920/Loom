@@ -571,16 +571,47 @@ fn replace_registry_file(source: &Path, destination: &Path) -> std::io::Result<(
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    fn extended_length_path(path: &Path) -> std::io::Result<Vec<u16>> {
+        let absolute = match fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = path.parent().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "registry file path has no parent",
+                    )
+                })?;
+                let file_name = path.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "registry file path has no file name",
+                    )
+                })?;
+                fs::canonicalize(parent)?.join(file_name)
+            }
+            Err(error) => return Err(error),
+        };
+        let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+        let mut extended =
+            if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
+                || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
+            {
+                wide
+            } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+                let mut path = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
+                path.extend_from_slice(&wide[2..]);
+                path
+            } else {
+                let mut path = r"\\?\".encode_utf16().collect::<Vec<_>>();
+                path.extend_from_slice(&wide);
+                path
+            };
+        extended.push(0);
+        Ok(extended)
+    }
+
+    let source = extended_length_path(source)?;
+    let destination = extended_length_path(destination)?;
     let moved = unsafe {
         MoveFileExW(
             source.as_ptr(),
@@ -845,6 +876,8 @@ fn execute_python_art_tool(
             art_id: art_id.to_owned(),
         }
     })?;
+    let launcher_path = canonical_process_path(launcher_path);
+    let plugin_path = canonical_process_path(plugin_path);
     let base_dir = launcher_path
         .parent()
         .and_then(Path::parent)
@@ -858,7 +891,7 @@ fn execute_python_art_tool(
         "params": arguments,
     });
     let request_json = serde_json::to_string(&request)?;
-    let mut command = Command::new(resolve_python_executable());
+    let mut command = Command::new(canonical_process_path(resolve_python_executable()));
     configure_python_process(&mut command);
     command
         .arg(&launcher_path)
@@ -963,9 +996,10 @@ fn resolve_python_launcher_path() -> Option<PathBuf> {
     // A framework package installed via the framework registry wins: the
     // `python_art` package may ship the launcher alongside its interpreter.
     if let Some(runtime_dir) = framework_packages_root_env() {
-        let base = Path::new(&runtime_dir).join("python_art");
-        candidates.push(base.join("python").join("Launcher.py"));
-        candidates.push(base.join("Launcher.py"));
+        for base in python_framework_package_dirs(Path::new(&runtime_dir)) {
+            candidates.push(base.join("python").join("Launcher.py"));
+            candidates.push(base.join("Launcher.py"));
+        }
     }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
@@ -1016,9 +1050,10 @@ fn python_arts_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     // Arts bundled inside the installed python_art framework package win.
     if let Some(runtime_dir) = framework_packages_root_env() {
-        let base = Path::new(&runtime_dir).join("python_art");
-        dirs.push(base.join("python").join("Arts"));
-        dirs.push(base.join("Arts"));
+        for base in python_framework_package_dirs(Path::new(&runtime_dir)) {
+            dirs.push(base.join("python").join("Arts"));
+            dirs.push(base.join("Arts"));
+        }
     }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
@@ -1037,6 +1072,28 @@ fn python_arts_dirs() -> Vec<PathBuf> {
         );
     }
     dirs
+}
+
+fn python_framework_package_dirs(runtime_root: &Path) -> Vec<PathBuf> {
+    let legacy = runtime_root.join("python_art");
+    let mut packages = Vec::new();
+    if let Some(active) = framework::resolve_framework_package_dir(runtime_root, "python_art") {
+        packages.push(active);
+    }
+    if packages.first() != Some(&legacy) {
+        packages.push(legacy);
+    }
+    packages
+}
+
+#[cfg(windows)]
+fn canonical_process_path(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
+#[cfg(not(windows))]
+fn canonical_process_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn find_python_art_in_dir(arts_dir: &Path, art_id: &str) -> Option<PathBuf> {
@@ -2629,12 +2686,11 @@ fn resolve_python_executable_from(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let package_dir =
-            framework::resolve_framework_package_dir(Path::new(runtime_root), "python_art")
-                .unwrap_or_else(|| Path::new(runtime_root).join("python_art"));
-        let candidate = package_dir.join("python-embed").join("python.exe");
-        if candidate.is_file() {
-            return candidate;
+        for package_dir in python_framework_package_dirs(Path::new(runtime_root)) {
+            let candidate = package_dir.join("python-embed").join("python.exe");
+            if candidate.is_file() {
+                return candidate;
+            }
         }
     }
 
@@ -2732,6 +2788,67 @@ mod tests {
         let root = std::env::temp_dir().join(format!("loom-tool-registry-{name}-{nonce}"));
         fs::create_dir_all(&root).expect("create temp tool registry root");
         root
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registry_file_replacement_supports_extended_length_paths() {
+        let root = temp_root("long-registry-path");
+        let mut directory = root.clone();
+        while directory.as_os_str().to_string_lossy().len() < 270 {
+            directory = directory.join("extended-registry-segment");
+        }
+        fs::create_dir_all(&directory).expect("create extended-length directory");
+        let source = directory.join("registry.json.tmp");
+        let destination = directory.join("registry.json");
+        fs::write(&source, b"replacement").expect("write temporary registry file");
+
+        replace_registry_file(&source, &destination)
+            .expect("atomically replace registry file at an extended-length path");
+
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(&destination).expect("read registry file"),
+            b"replacement"
+        );
+        fs::remove_dir_all(root).expect("remove extended-length test directory");
+    }
+
+    #[test]
+    fn python_framework_paths_follow_the_active_immutable_version() {
+        let root = temp_root("python-framework-active-version");
+        let package_root = root.join("python_art");
+        let active = package_root.join("versions").join("1.0.0-deadbeef0000");
+        fs::create_dir_all(active.join("python")).expect("create active Python framework");
+        fs::write(active.join("framework.manifest.json"), b"{}").expect("write framework manifest");
+        fs::write(
+            package_root.join("active.json"),
+            br#"{"active":"versions/1.0.0-deadbeef0000"}"#,
+        )
+        .expect("write framework activation");
+
+        assert_eq!(
+            python_framework_package_dirs(&root),
+            vec![active, package_root]
+        );
+        fs::remove_dir_all(root).expect("cleanup Python framework path fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_process_path_supports_extended_length_executables() {
+        let root = temp_root("long-process-path");
+        let mut directory = root.clone();
+        while directory.as_os_str().to_string_lossy().len() < 270 {
+            directory = directory.join("extended-process-segment");
+        }
+        fs::create_dir_all(&directory).expect("create extended process directory");
+        let executable = directory.join("python.exe");
+        fs::write(&executable, b"fixture").expect("write extended process fixture");
+
+        let canonical = canonical_process_path(executable);
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        fs::remove_dir_all(root).expect("cleanup extended process fixture");
     }
 
     #[test]

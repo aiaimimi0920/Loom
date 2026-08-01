@@ -441,6 +441,9 @@ function New-ZipFixture {
             New-Item -ItemType Directory -Force -Path $zipParent | Out-Null
         }
         Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+        $zipHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $zipName = Split-Path -Leaf $ZipPath
+        Write-Utf8NoBomFile -Path "$ZipPath.sha256" -Content ("$zipHash  $zipName" + [Environment]::NewLine)
     } finally {
         if (Test-Path -LiteralPath $stage) {
             Remove-Item -LiteralPath $stage -Recurse -Force
@@ -1171,6 +1174,7 @@ nodes:
             inputBase64 = $imageData
             params = @{}
         }
+        $summary.executeResults = $executeResults
 
         foreach ($imageArtId in @("store-cli-art", "store-script-art", "store-cloud-art", "store-workflow-art")) {
             $result = $executeResults[$imageArtId]
@@ -1181,8 +1185,9 @@ nodes:
         Assert-Equal "success" ([string]$executeResults["store-mcp-art"].type) "store-mcp-art execute-art-node response type mismatch."
         Assert-Equal $true ([bool]$executeResults["store-mcp-art"].data.success) "store-mcp-art execute-art-node success mismatch."
         Assert-Equal $secondImageData ([string]$executeResults["store-mcp-art"].data.output_base64) "store-mcp-art execute-art-node image output mismatch."
+        Assert-Equal "success" ([string]$executeResults["store-python-art"].type) "store-python-art execute-art-node response type mismatch."
+        Assert-Equal $true ([bool]$executeResults["store-python-art"].data.success) "store-python-art execute-art-node success mismatch."
         Assert-Equal "python art saw smoke python art" ([string]$executeResults["store-python-art"].data.output_text) "store-python-art output text mismatch."
-        $summary.executeResults = $executeResults
 
         $canvasSnapshotBeforeClear = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/canvas"
         $mcpNodeBeforeClear = @($canvasSnapshotBeforeClear.nodes | Where-Object { [string]$_.id -eq "node-mcp" })[0]

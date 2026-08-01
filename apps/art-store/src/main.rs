@@ -4,11 +4,13 @@
 //! art catalog, raw art packages, third-party portable binaries, and accepts
 //! published packages. Data lives under a store root:
 //!   <root>/arts/<id>.zip        art packages
+//!   <root>/arts/<id>.zip.sha256 package digest sidecars
 //!   <root>/binaries/<name>      third-party portable executables
 //!
 //! Endpoints (matching the daemon's client contract):
 //!   GET  /catalog               -> { "arts": [ {id,name,description,framework} ] }
 //!   GET  /arts/<id>.zip         -> raw art package bytes (application/zip)
+//!   GET  /arts/<id>.zip.sha256  -> package digest sidecar (text/plain)
 //!   GET  /binaries/<name>       -> raw binary bytes (application/octet-stream)
 //!   POST /publish               -> body = zip, header X-Art-Id: <id>
 //!   GET  /health                -> { "ok": true }
@@ -23,8 +25,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use loom_art_store::{
-    build_catalog, read_art_zip, read_binary, read_framework_package, store_published_zip,
-    StoreError,
+    build_catalog, read_art_zip, read_art_zip_sha256, read_binary, read_framework_package,
+    store_published_zip, StoreError,
 };
 
 fn main() -> Result<()> {
@@ -221,6 +223,16 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
         ("POST", "/publish") => handle_publish(request, root),
         ("GET", path) if path.starts_with("/arts/") => {
             let file = &path["/arts/".len()..];
+            if let Some(id) = file.strip_suffix(".zip.sha256") {
+                return match read_art_zip_sha256(root, id) {
+                    Ok(Some(bytes)) => Response::bytes(200, "text/plain; charset=utf-8", bytes),
+                    Ok(None) => Response::json(
+                        404,
+                        serde_json::json!({ "error": format!("art `{id}` not found") }),
+                    ),
+                    Err(error) => store_error_response(error),
+                };
+            }
             let Some(id) = file.strip_suffix(".zip") else {
                 return Response::json(
                     404,

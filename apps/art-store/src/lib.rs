@@ -2,11 +2,13 @@
 //!
 //! On-disk layout under the store root:
 //!   <root>/arts/<id>.zip        art packages (manifest.json + resources)
+//!   <root>/arts/<id>.zip.sha256 package digest sidecars
 //!   <root>/binaries/<name>      third-party portable executables
 //!
 //! The daemon's art-store client (see `loom_tool_registry` / daemon) speaks:
 //!   GET  /catalog               -> { "arts": [ {id,name,description,framework} ] }
 //!   GET  /arts/<id>.zip         -> raw art package bytes
+//!   GET  /arts/<id>.zip.sha256  -> package digest sidecar
 //!   GET  /binaries/<name>       -> raw portable-exe bytes
 //!   POST /publish               -> body = zip, header X-Art-Id: <id>
 //!
@@ -17,6 +19,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 pub const ARTS_DIR: &str = "arts";
 pub const BINARIES_DIR: &str = "binaries";
@@ -182,6 +185,29 @@ pub fn read_art_zip(root: &Path, id: &str) -> Result<Option<Vec<u8>>, StoreError
     }
 }
 
+/// Read the adjacent SHA-256 sidecar for an Art package. Legacy store roots
+/// that predate sidecars remain readable: the digest is synthesized from the
+/// ZIP without mutating the store.
+pub fn read_art_zip_sha256(root: &Path, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
+    let zip_path = art_zip_path(root, id)?;
+    let sidecar_path = zip_path.with_extension("zip.sha256");
+    match std::fs::read(&sidecar_path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(zip_bytes) = read_art_zip(root, id)? else {
+                return Ok(None);
+            };
+            Ok(Some(art_zip_sha256_sidecar(id, &zip_bytes).into_bytes()))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn art_zip_sha256_sidecar(id: &str, zip_bytes: &[u8]) -> String {
+    let digest = Sha256::digest(zip_bytes);
+    format!("{digest:x}  {id}.zip\n")
+}
+
 /// Absolute path to a third-party binary resource, validated for a safe name.
 pub fn binary_path(root: &Path, name: &str) -> Result<PathBuf, StoreError> {
     if !is_safe_resource_name(name) {
@@ -246,6 +272,10 @@ pub fn store_published_zip(
     std::fs::create_dir_all(&arts_dir)?;
     let path = arts_dir.join(format!("{}.zip", entry.id));
     std::fs::write(&path, zip_bytes)?;
+    std::fs::write(
+        path.with_extension("zip.sha256"),
+        art_zip_sha256_sidecar(&entry.id, zip_bytes),
+    )?;
     Ok(entry.id)
 }
 
@@ -347,7 +377,31 @@ mod tests {
         assert_eq!(id, "pingo-art");
         let read = read_art_zip(&root, "pingo-art").unwrap().unwrap();
         assert_eq!(read, zip);
+        let sidecar = read_art_zip_sha256(&root, "pingo-art").unwrap().unwrap();
+        assert_eq!(
+            String::from_utf8(sidecar).unwrap(),
+            art_zip_sha256_sidecar("pingo-art", &zip)
+        );
         assert!(read_art_zip(&root, "missing").unwrap().is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn digest_sidecar_is_synthesized_for_legacy_art_packages() {
+        let root = temp_root();
+        let zip = build_zip(
+            r#"{"id":"legacy-art","name":"Legacy","description":"d",
+            "execution":{"type":"cli_wrapper","command":"x","args":[]}}"#,
+        );
+        std::fs::create_dir_all(root.join(ARTS_DIR)).unwrap();
+        std::fs::write(root.join(ARTS_DIR).join("legacy-art.zip"), &zip).unwrap();
+
+        let sidecar = read_art_zip_sha256(&root, "legacy-art").unwrap().unwrap();
+        assert_eq!(
+            String::from_utf8(sidecar).unwrap(),
+            art_zip_sha256_sidecar("legacy-art", &zip)
+        );
+        assert!(!root.join(ARTS_DIR).join("legacy-art.zip.sha256").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
