@@ -1,0 +1,18 @@
+{
+  "id": "cloud_api",
+  "name": "Cloud API Framework",
+  "description": "Executes cloud API backed Art packages in an isolated process boundary.",
+  "version": "0.1.0",
+  "protocolVersion": "loom.framework.v1",
+  "platforms": ["windows-x64"],
+  "entry": {
+    "kind": "process",
+    "command": "runtime/loom-framework-cloud-api.exe",
+    "args": ["--stdio"]
+  },
+  "permissions": ["network.connect", "file.read", "file.write"],
+  "artExecution": {
+    "requestSchema": "loom.art.execute.v1",
+    "responseSchema": "loom.art.result.v1"
+  }
+}

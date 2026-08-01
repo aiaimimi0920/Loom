@@ -72,7 +72,7 @@ Out of scope for this phase:
 ## Progress checklist
 
 - [ ] Task 1: Add source-contract guards before runtime changes.
-- [ ] Task 2: Define framework package manifests and explicit installed state.
+- [x] Task 2: Define framework package manifests and explicit installed state.
 - [ ] Task 3: Implement framework package install, disable, upgrade, and uninstall.
 - [ ] Task 4: Add the generic external framework execution protocol.
 - [ ] Task 5: Convert the six sample frameworks into independent packages.
@@ -102,6 +102,50 @@ Optional Art frameworks must not be installed by default.
 This is the expected RED result: the current `framework.rs` still declares
 `BUILT_IN_FRAMEWORKS`, so the source-contract guard correctly rejects the
 pre-pluginized host implementation.
+
+## Task 2 RED evidence
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\tests\Test-ArtFrameworkPackageContract.ps1
+```
+
+Observed exit code: `1`
+
+Observed failure:
+
+```text
+framework-packages directory is required.
+```
+
+This is the expected RED result before the six external framework package
+manifests are added.
+
+## Task 2 verification
+
+Implemented and verified:
+
+- Added `FrameworkPackageManifest`, runtime-entry, and execution-contract
+  types using `loom.framework.v1`.
+- Removed the built-in framework default set. A fresh control plane now reports
+  all six frameworks as `installed=false`, `enabled=false`, and `ready=false`.
+- Framework status now exposes `enabled`, `version`, and `runtimeDir` and only
+  reports a framework as installed when its persisted state and package
+  manifest are both present.
+- Added six source package manifests under `framework-packages/`.
+
+Verification commands and results:
+
+```text
+cargo fmt --all -- --check                       -> passed
+cargo test --manifest-path .\Cargo.toml -p loom_tool_registry framework -- --nocapture
+                                                -> 11 passed, 0 failed
+powershell -NoProfile -ExecutionPolicy Bypass \
+  -File .\scripts\tests\Test-ArtFrameworkPackageContract.ps1
+                                                -> passed for 6 manifests
+```
 
 ## Acceptance checklist
 

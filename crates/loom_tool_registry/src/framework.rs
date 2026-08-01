@@ -3,11 +3,11 @@
 //! can only run when its framework is installed and ready.
 //!
 //! Unified model (per product decision): all 6 frameworks share the same
-//! installed/ready state. The 4 built-in kinds (cli_wrapper/cloud_api/script/
-//! workflow) need no external runtime, so they default to installed; python_art
-//! and mcp require an explicit install and a readiness probe.
+//! package-backed installed/ready state. No optional framework is compiled or
+//! installed into a fresh control plane by default. A framework becomes
+//! available only after its package manifest and runtime have been installed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::{ToolDefinition, ToolExecution};
 
 const FRAMEWORKS_FILE: &str = "frameworks.json";
+const FRAMEWORK_MANIFEST_FILE: &str = "framework.manifest.json";
+const FRAMEWORK_PROTOCOL_VERSION: &str = "loom.framework.v1";
+const WINDOWS_X64_PLATFORM: &str = "windows-x64";
 /// Subdir under the control-plane root holding installed framework runtimes:
 /// `<control-plane>/framework-runtimes/<id>/`.
 const FRAMEWORK_RUNTIMES_DIR: &str = "framework-runtimes";
@@ -31,9 +34,43 @@ pub const FRAMEWORK_IDS: [&str; 6] = [
     "workflow",
 ];
 
-/// Framework ids that ship built into Loom and need no external runtime, so they
-/// are installed by default.
-const BUILT_IN_FRAMEWORKS: [&str; 4] = ["cli_wrapper", "cloud_api", "script", "workflow"];
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameworkPackageManifest {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub protocol_version: String,
+    pub platforms: Vec<String>,
+    pub entry: FrameworkRuntimeEntry,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    pub art_execution: FrameworkArtExecutionContract,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameworkRuntimeEntry {
+    pub kind: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameworkArtExecutionContract {
+    pub request_schema: String,
+    pub response_schema: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameworkInstallationState {
+    pub version: String,
+    pub enabled: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,9 +80,17 @@ pub struct FrameworkStatus {
     pub description: String,
     /// Whether the user has installed/enabled this framework.
     pub installed: bool,
+    /// Whether an installed framework package is enabled for execution.
+    pub enabled: bool,
     /// Whether the framework's runtime is actually available (probed).
     pub ready: bool,
     pub ready_detail: String,
+    /// Version read from the installed package manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Directory containing the installed package, when installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_dir: Option<PathBuf>,
 }
 
 /// The framework id that an execution belongs to (same mapping as
@@ -124,27 +169,17 @@ fn framework_description(id: &str) -> &'static str {
     }
 }
 
-/// Whether a framework needs an external runtime installed before it is ready.
-/// The 4 built-in kinds and mcp ship inside Loom; only python_art needs a
-/// downloaded runtime (an embedded Python + launcher).
+/// Whether a framework needs an external package/runtime before it is ready.
+/// All optional Art frameworks are package-backed. The helper remains public
+/// for callers that need to distinguish package installation from ambient host
+/// dependencies.
 pub fn framework_needs_runtime(id: &str) -> bool {
-    id == "python_art"
+    is_valid_framework(id)
 }
 
-/// The relative path, inside a framework's runtime dir, that must exist for the
-/// framework to be considered installed via a downloaded runtime. For
-/// python_art this is the embedded interpreter.
-fn framework_runtime_marker(id: &str) -> Option<&'static str> {
-    match id {
-        "python_art" => Some("python-embed/python.exe"),
-        _ => None,
-    }
-}
-
-/// Probe whether a framework's runtime is available. Built-in frameworks are
-/// always ready; python_art is ready when a runtime was installed under
-/// `runtime_root` (or a Python is otherwise discoverable); mcp uses the
-/// built-in stdio client. `runtime_root` is `<control-plane>/framework-runtimes`.
+/// Probe whether a framework package's runtime is available. `runtime_root` is
+/// `<control-plane>/framework-runtimes`. The package must contain a valid
+/// `framework.manifest.json` and the manifest's process entry must exist.
 pub fn framework_ready(id: &str) -> (bool, String) {
     framework_ready_in(id, None)
 }
@@ -153,71 +188,61 @@ pub fn framework_ready(id: &str) -> (bool, String) {
 /// points at `<control-plane>/framework-runtimes`; the framework's own runtime
 /// lives at `<runtime_root>/<id>/`.
 pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, String) {
-    match id {
-        "cli_wrapper" | "cloud_api" | "script" | "workflow" => {
-            (true, "内置能力，随 Loom 就绪".to_owned())
-        }
-        "mcp" => (true, "内置 MCP 客户端".to_owned()),
-        "python_art" => {
-            // Prefer a runtime installed into the control-plane dir.
-            if let Some(root) = runtime_root {
-                if let Some(marker) = framework_runtime_marker(id) {
-                    let installed = root.join(id).join(marker);
-                    if installed.is_file() {
-                        return (true, format!("已安装运行时：{}", installed.display()));
-                    }
-                }
-            }
-            match probe_python() {
-                Some(path) => (true, format!("已找到 Python：{path}")),
-                None => (false, "未安装 Python 运行时（点击安装以下载）".to_owned()),
-            }
-        }
-        _ => (false, "未知框架".to_owned()),
+    if !is_valid_framework(id) {
+        return (false, "未知框架".to_owned());
     }
-}
 
-/// Find a usable Python executable: prefer a bundled `python-embed` next to the
-/// exe or cwd, else fall back to `python --version` on PATH.
-fn probe_python() -> Option<String> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("bin").join("python-embed").join("python.exe"));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("bin").join("python-embed").join("python.exe"));
-        candidates.push(
-            cwd.join("Loom")
-                .join("resources")
-                .join("python-embed")
-                .join("python.exe"),
+    let Some(root) = runtime_root else {
+        return (false, "未提供框架包目录".to_owned());
+    };
+    let package_dir = root.join(id);
+    let manifest_path = package_dir.join(FRAMEWORK_MANIFEST_FILE);
+    let manifest = match read_framework_manifest(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(detail) => return (false, detail),
+    };
+    if manifest.id != id {
+        return (
+            false,
+            format!("框架包 ID 不匹配：期望 {id}，实际 {}", manifest.id),
         );
     }
-    for candidate in candidates {
-        if candidate.exists() {
-            return Some(candidate.display().to_string());
-        }
+    if manifest.protocol_version != FRAMEWORK_PROTOCOL_VERSION {
+        return (
+            false,
+            format!("不支持的框架协议：{}", manifest.protocol_version),
+        );
     }
-    // Fall back to PATH python.
-    let python = if cfg!(windows) { "python" } else { "python3" };
-    if std::process::Command::new(python)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    if !manifest
+        .platforms
+        .iter()
+        .any(|platform| platform == WINDOWS_X64_PLATFORM)
     {
-        return Some(python.to_owned());
+        return (false, "框架包不支持 windows-x64".to_owned());
     }
-    None
+    if manifest.entry.kind != "process" || manifest.entry.command.trim().is_empty() {
+        return (false, "框架包缺少有效的进程入口".to_owned());
+    }
+    let entry_path = package_dir.join(&manifest.entry.command);
+    if !entry_path.is_file() {
+        return (false, format!("框架入口不存在：{}", entry_path.display()));
+    }
+    (
+        true,
+        format!("已安装框架包 {} {}", manifest.name, manifest.version),
+    )
 }
 
-/// Tracks which frameworks the user has installed, persisted to
+fn read_framework_manifest(path: &Path) -> Result<FrameworkPackageManifest, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("无法读取框架包清单 {}：{error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("框架包清单无效 {}：{error}", path.display()))
+}
+
+/// Tracks which framework packages the user has installed, persisted to
 /// `<control-plane>/frameworks.json`. `root` also anchors installed framework
-/// runtimes under `<root>/framework-runtimes/<id>/`.
+/// packages under `<root>/framework-runtimes/<id>/`.
 #[derive(Debug, Clone)]
 pub struct FrameworkRegistry {
     root: PathBuf,
@@ -239,19 +264,14 @@ impl FrameworkRegistry {
         self.root.join(FRAMEWORK_RUNTIMES_DIR).join(id)
     }
 
-    /// The set of installed framework ids. If no file exists yet, the built-in
-    /// frameworks are considered installed by default.
+    /// The set of installed framework ids. A persisted state entry is not
+    /// enough by itself: the package manifest must also be present.
     pub fn installed_ids(&self) -> BTreeSet<String> {
-        match fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str::<Vec<String>>(&text)
-                .map(|ids| {
-                    ids.into_iter()
-                        .filter(|id| is_valid_framework(id))
-                        .collect()
-                })
-                .unwrap_or_else(|_| default_installed()),
-            Err(_) => default_installed(),
-        }
+        self.installation_states()
+            .into_iter()
+            .filter(|(id, _)| is_valid_framework(id) && self.package_manifest(id).is_some())
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Whether a specific framework is installed.
@@ -259,42 +279,36 @@ impl FrameworkRegistry {
         self.installed_ids().contains(id)
     }
 
-    /// Readiness of a framework, probing this registry's installed runtime dir
-    /// first (so a downloaded python-embed counts) before falling back to the
-    /// ambient probe.
+    /// Whether an installed framework package is enabled for execution.
+    pub fn is_enabled(&self, id: &str) -> bool {
+        self.is_installed(id)
+            && self
+                .installation_states()
+                .get(id)
+                .map(|state| state.enabled)
+                .unwrap_or(false)
+    }
+
+    /// Readiness of a framework, probing its installed package manifest and
+    /// process entry. Disabled or uninstalled packages are never ready.
     pub fn readiness(&self, id: &str) -> (bool, String) {
+        if !self.is_installed(id) {
+            return (false, "未安装".to_owned());
+        }
+        if !self.is_enabled(id) {
+            return (false, "已禁用".to_owned());
+        }
         let runtime_root = self.root.join(FRAMEWORK_RUNTIMES_DIR);
         framework_ready_in(id, Some(&runtime_root))
     }
 
     /// Full status for all 6 frameworks (installed + readiness probe).
     pub fn statuses(&self) -> Vec<FrameworkStatus> {
-        let installed = self.installed_ids();
-        FRAMEWORK_IDS
-            .iter()
-            .map(|&id| {
-                let is_installed = installed.contains(id);
-                let (ready, ready_detail) = if is_installed {
-                    self.readiness(id)
-                } else {
-                    (false, "未安装".to_owned())
-                };
-                FrameworkStatus {
-                    id: id.to_owned(),
-                    name: framework_name(id).to_owned(),
-                    description: framework_description(id).to_owned(),
-                    installed: is_installed,
-                    ready,
-                    ready_detail,
-                }
-            })
-            .collect()
+        FRAMEWORK_IDS.iter().map(|&id| self.status_of(id)).collect()
     }
 
-    /// Install a framework: if it declares a downloadable runtime, fetch and
-    /// unpack it into the runtime dir first; only mark it installed once that
-    /// succeeds. Built-in frameworks (no runtime) just flip the flag. Errors on
-    /// an unknown id or a failed runtime download.
+    /// Install a framework package from the configured store. The package
+    /// manifest and process entry must be present before the state is saved.
     pub fn install(&self, id: &str) -> Result<FrameworkStatus, FrameworkError> {
         self.install_with_runtime_fetcher(id, &default_runtime_fetcher)
     }
@@ -312,33 +326,33 @@ impl FrameworkRegistry {
         if !is_valid_framework(id) {
             return Err(FrameworkError::UnknownFramework(id.to_owned()));
         }
-        // Frameworks that need an external runtime download it now; failure
-        // leaves the framework un-installed (the flag is not flipped).
-        if framework_needs_runtime(id) {
-            let runtime_dir = self.runtime_dir(id);
-            // Only a runtime already downloaded into the control-plane counts as
-            // "already installed" — a Python that merely happens to be on the
-            // machine's PATH must not skip the download (方向 A: install always
-            // provisions the runtime into Loom's own dir).
-            let already_installed = framework_runtime_marker(id)
-                .map(|marker| runtime_dir.join(marker).is_file())
-                .unwrap_or(false);
-            if !already_installed {
-                let zip = fetch_runtime(id)?;
-                unpack_runtime_zip(id, &zip, &runtime_dir)?;
-                let (ready, detail) = framework_ready_in(id, Some(&runtime_dir));
-                if !ready {
-                    // Downloaded but still not runnable — do not mark installed.
-                    let _ = fs::remove_dir_all(&runtime_dir);
-                    return Err(FrameworkError::RuntimeUnavailable {
-                        id: id.to_owned(),
-                        reason: detail,
-                    });
-                }
-            }
+        let runtime_dir = self.runtime_dir(id);
+        if self.package_manifest(id).is_none() {
+            let zip = fetch_runtime(id)?;
+            unpack_runtime_zip(id, &zip, &runtime_dir)?;
         }
-        let mut installed = self.installed_ids();
-        installed.insert(id.to_owned());
+        let (ready, detail) = framework_ready_in(id, Some(&self.root.join(FRAMEWORK_RUNTIMES_DIR)));
+        if !ready {
+            let _ = fs::remove_dir_all(&runtime_dir);
+            return Err(FrameworkError::RuntimeUnavailable {
+                id: id.to_owned(),
+                reason: detail,
+            });
+        }
+        let manifest =
+            self.package_manifest(id)
+                .ok_or_else(|| FrameworkError::RuntimeUnavailable {
+                    id: id.to_owned(),
+                    reason: "框架包清单不存在".to_owned(),
+                })?;
+        let mut installed = self.installation_states();
+        installed.insert(
+            id.to_owned(),
+            FrameworkInstallationState {
+                version: manifest.version,
+                enabled: true,
+            },
+        );
         self.write_installed(&installed)?;
         Ok(self.status_of(id))
     }
@@ -349,7 +363,7 @@ impl FrameworkRegistry {
         if !is_valid_framework(id) {
             return Err(FrameworkError::UnknownFramework(id.to_owned()));
         }
-        let mut installed = self.installed_ids();
+        let mut installed = self.installation_states();
         installed.remove(id);
         self.write_installed(&installed)?;
         // Reclaim disk from the downloaded runtime, if present.
@@ -361,25 +375,90 @@ impl FrameworkRegistry {
     }
 
     fn status_of(&self, id: &str) -> FrameworkStatus {
-        self.statuses()
-            .into_iter()
-            .find(|status| status.id == id)
-            .unwrap_or(FrameworkStatus {
-                id: id.to_owned(),
-                name: framework_name(id).to_owned(),
-                description: framework_description(id).to_owned(),
-                installed: false,
-                ready: false,
-                ready_detail: "未知框架".to_owned(),
-            })
+        let manifest = self.package_manifest(id);
+        let state = self.installation_states().get(id).cloned();
+        let installed = state.is_some() && manifest.is_some();
+        let enabled = installed && state.as_ref().map(|value| value.enabled).unwrap_or(false);
+        let (name, description, version) = match &manifest {
+            Some(manifest) => (
+                manifest.name.clone(),
+                manifest.description.clone(),
+                Some(manifest.version.clone()),
+            ),
+            None => (
+                framework_name(id).to_owned(),
+                framework_description(id).to_owned(),
+                None,
+            ),
+        };
+        let (ready, ready_detail) = if !installed {
+            (false, "未安装".to_owned())
+        } else if !enabled {
+            (false, "已禁用".to_owned())
+        } else {
+            self.readiness(id)
+        };
+        FrameworkStatus {
+            id: id.to_owned(),
+            name,
+            description,
+            installed,
+            enabled,
+            ready,
+            ready_detail,
+            version,
+            runtime_dir: installed.then(|| self.runtime_dir(id)),
+        }
     }
 
-    fn write_installed(&self, installed: &BTreeSet<String>) -> Result<(), FrameworkError> {
+    fn package_manifest(&self, id: &str) -> Option<FrameworkPackageManifest> {
+        let manifest =
+            read_framework_manifest(&self.runtime_dir(id).join(FRAMEWORK_MANIFEST_FILE)).ok()?;
+        (manifest.id == id
+            && manifest.protocol_version == FRAMEWORK_PROTOCOL_VERSION
+            && manifest
+                .platforms
+                .iter()
+                .any(|platform| platform == WINDOWS_X64_PLATFORM))
+        .then_some(manifest)
+    }
+
+    fn installation_states(&self) -> BTreeMap<String, FrameworkInstallationState> {
+        let Ok(text) = fs::read_to_string(&self.path) else {
+            return BTreeMap::new();
+        };
+        if let Ok(states) =
+            serde_json::from_str::<BTreeMap<String, FrameworkInstallationState>>(&text)
+        {
+            return states;
+        }
+        // Read the pre-pluginization array once so an old control plane does
+        // not crash. Entries still remain unavailable until package manifests
+        // are installed, so this cannot silently restore built-in runtimes.
+        serde_json::from_str::<Vec<String>>(&text)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| is_valid_framework(id))
+            .map(|id| {
+                (
+                    id,
+                    FrameworkInstallationState {
+                        version: String::new(),
+                        enabled: true,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn write_installed(
+        &self,
+        installed: &BTreeMap<String, FrameworkInstallationState>,
+    ) -> Result<(), FrameworkError> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let ids: Vec<&String> = installed.iter().collect();
-        let text = serde_json::to_string_pretty(&ids)?;
+        let text = serde_json::to_string_pretty(installed)?;
         fs::write(&self.path, text)?;
         Ok(())
     }
@@ -477,10 +556,6 @@ fn is_valid_framework(id: &str) -> bool {
     FRAMEWORK_IDS.contains(&id)
 }
 
-fn default_installed() -> BTreeSet<String> {
-    BUILT_IN_FRAMEWORKS.iter().map(|s| s.to_string()).collect()
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum FrameworkError {
     #[error("unknown framework `{0}`")]
@@ -516,13 +591,23 @@ mod tests {
     }
 
     #[test]
-    fn defaults_built_in_frameworks_installed() {
+    fn starts_with_no_frameworks_installed() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         let installed = registry.installed_ids();
-        assert!(installed.contains("cli_wrapper"));
-        assert!(installed.contains("workflow"));
-        // python_art / mcp are not installed by default.
+        assert!(installed.is_empty());
+        for id in FRAMEWORK_IDS {
+            assert!(!registry.is_installed(id));
+        }
+        for status in registry.statuses() {
+            assert!(!status.installed);
+            assert!(!status.enabled);
+            assert!(!status.ready);
+            assert!(status.version.is_none());
+            assert!(status.runtime_dir.is_none());
+        }
+        // All optional frameworks, including the former built-in kinds, are
+        // absent from a fresh control plane.
         assert!(!installed.contains("python_art"));
         assert!(!installed.contains("mcp"));
         std::fs::remove_dir_all(&root).ok();
@@ -532,9 +617,14 @@ mod tests {
     fn install_and_uninstall_roundtrip() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
-        let status = registry.install("mcp").expect("install mcp");
+        let status = registry
+            .install_with_runtime_fetcher("mcp", &|_id| Ok(fake_framework_package_zip("mcp")))
+            .expect("install mcp");
         assert!(status.installed);
-        assert!(status.ready, "mcp is built-in ready once installed");
+        assert!(status.enabled);
+        assert!(status.ready, "mcp package entry should be ready");
+        assert_eq!(status.version.as_deref(), Some("0.1.0"));
+        assert!(status.runtime_dir.is_some());
         assert!(registry.is_installed("mcp"));
 
         registry.uninstall("mcp").expect("uninstall mcp");
@@ -549,7 +639,10 @@ mod tests {
         let statuses = registry.statuses();
         assert_eq!(statuses.len(), 6);
         for id in FRAMEWORK_IDS {
-            assert!(statuses.iter().any(|s| s.id == id));
+            let status = statuses.iter().find(|status| status.id == id).unwrap();
+            assert!(!status.installed, "{id} should not be installed by default");
+            assert!(!status.enabled, "{id} should not be enabled by default");
+            assert!(!status.ready, "{id} should not be ready by default");
         }
         std::fs::remove_dir_all(&root).ok();
     }
@@ -560,14 +653,6 @@ mod tests {
         let registry = FrameworkRegistry::new(&root);
         assert!(registry.install("nope").is_err());
         std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn built_in_frameworks_ready_when_installed() {
-        for id in BUILT_IN_FRAMEWORKS {
-            let (ready, _) = framework_ready(id);
-            assert!(ready, "{id} should be ready");
-        }
     }
 
     #[test]
@@ -620,33 +705,68 @@ mod tests {
         assert_eq!(deps.arts, vec!["dep-art-1"]);
     }
 
-    // Build a minimal zip whose single entry is `python-embed/python.exe` (the
-    // python_art runtime marker), so a fetcher can hand it to `install`.
-    fn fake_python_runtime_zip() -> Vec<u8> {
+    fn fake_framework_package_zip(id: &str) -> Vec<u8> {
         use std::io::Write;
+        let command = match id {
+            "cli_wrapper" => "runtime/loom-framework-cli-wrapper.exe",
+            "cloud_api" => "runtime/loom-framework-cloud-api.exe",
+            "script" => "runtime/loom-framework-script.exe",
+            "python_art" => "runtime/loom-framework-python-art.exe",
+            "mcp" => "runtime/loom-framework-mcp.exe",
+            "workflow" => "runtime/loom-framework-workflow.exe",
+            other => panic!("unknown test framework: {other}"),
+        };
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": format!("{id} test framework"),
+            "description": "test framework",
+            "version": "0.1.0",
+            "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
+            "platforms": [WINDOWS_X64_PLATFORM],
+            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "permissions": ["process.spawn"],
+            "artExecution": {
+                "requestSchema": "loom.art.execute.v1",
+                "responseSchema": "loom.art.result.v1"
+            }
+        });
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
-            writer.start_file("python-embed/python.exe", opts).unwrap();
-            writer.write_all(b"MZ-fake-python").unwrap();
+            writer.start_file(FRAMEWORK_MANIFEST_FILE, opts).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file(command, opts).unwrap();
+            writer.write_all(b"MZ-fake-framework").unwrap();
+            if id == "python_art" {
+                writer.start_file("python-embed/python.exe", opts).unwrap();
+                writer.write_all(b"MZ-fake-python").unwrap();
+            }
             writer.finish().unwrap();
         }
         buf
+    }
+
+    // Build a complete package zip for python_art. The package manifest and
+    // process entry are required even when the package also carries Python.
+    fn fake_python_runtime_zip() -> Vec<u8> {
+        fake_framework_package_zip("python_art")
     }
 
     #[test]
     fn install_python_art_downloads_runtime_and_marks_installed() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
-        // python_art is NOT installed by default and needs a runtime.
+        // python_art is NOT installed by default and requires its package.
         assert!(!registry.is_installed("python_art"));
 
         let status = registry
             .install_with_runtime_fetcher("python_art", &|_id| Ok(fake_python_runtime_zip()))
             .expect("install python_art with runtime");
         assert!(status.installed);
-        assert!(status.ready, "runtime marker present => ready");
+        assert!(status.ready, "package entry present => ready");
         assert!(registry.is_installed("python_art"));
         // The runtime landed under framework-runtimes/python_art/.
         assert!(root
@@ -666,21 +786,18 @@ mod tests {
     }
 
     #[test]
-    fn python_art_readiness_prefers_framework_runtime_marker_detail() {
+    fn python_art_readiness_reports_framework_package_detail() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         let status = registry
             .install_with_runtime_fetcher("python_art", &|_id| Ok(fake_python_runtime_zip()))
             .expect("install python_art with runtime");
-        let expected_marker = root
-            .join(FRAMEWORK_RUNTIMES_DIR)
-            .join("python_art")
-            .join("python-embed")
-            .join("python.exe");
-        let expected_marker = expected_marker.display().to_string().replace('\\', "/");
         let ready_detail = status.ready_detail.replace('\\', "/");
         assert!(status.ready, "status={status:?}");
-        assert!(ready_detail.contains(&expected_marker), "status={status:?}");
+        assert!(
+            ready_detail.contains("python_art test framework"),
+            "status={status:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
