@@ -282,6 +282,20 @@ machine-readable summary under:
 target\framework-art-store-hook-smoke\<runId>\summary.json
 ```
 
+## Third-party plugin boundary smoke
+
+For the third-party boundary, run the isolated smoke after building the
+framework packages:
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomPluginBoundarySmoke.ps1 -DaemonExecutable .\target\debug\loom-daemon.exe -FrameworkArtifactRoot .\.loom-art-store-data\frameworks -EvidenceRoot .\target\plugin-boundary-smoke
+
+This smoke creates a framework and Art package outside the repository, installs
+them into a fresh control plane, exercises restart, enable, disable, uninstall
+and reinstall, and proves that Loom and Hook source fingerprints do not
+change. Framework IDs supplied by third-party packages are accepted when they
+match Loom's safe package ID rules; the six catalog IDs are not a closed
+allowlist.
+
 ## Local capability API
 
 `loom-daemon` exposes local capability discovery and unified invocation:

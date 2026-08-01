@@ -122,7 +122,7 @@ separate projects.
   [details](./phase-65-script-image-blend-art.md)
 - [x] Phase 66: Image blend and compress workflow Art (12/12 tasks)
   [details](./phase-66-image-blend-compress-workflow-art.md)
-- [ ] Phase 67: Pluginized Art frameworks (9/10 tasks; release build pending)
+- [x] Phase 67: Pluginized Art frameworks (10/10 tasks)
   [details](./phase-67-pluginized-art-frameworks.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
@@ -405,7 +405,9 @@ Latest completed phases:
   IDs, generic external framework process execution, and package-backed Arts.
   Hook consumes generic capability/result metadata without sample Art ID
   branches. The third-party no-source-change smoke and release verifier guard
-  pass; final Loom and Hook release artifacts are still pending.
+  pass. Final Loom release is
+  release/Loom/20260801-pluginized-art-frameworks-final2 and final Hook
+  release is release/Hook/20260801-pluginized-art-frameworks-final2.
   Rollback tags remain `框架修改前的最后一个版本` in both repositories.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining

@@ -54,7 +54,7 @@ Key current source anchors:
 
 ## Non-negotiable acceptance criteria
 
-- [ ] A default Loom release contains no optional Art framework runtime package.
+- [x] A default Loom release contains no optional Art framework runtime package.
 - [x] A fresh control-plane root starts with zero installed optional frameworks.
 - [x] Installing an Art without its framework returns a named `framework_not_ready` error.
 - [x] A framework can be installed from a package ZIP, listed, readiness-probed, disabled, re-enabled, upgraded, and uninstalled.
@@ -66,7 +66,7 @@ Key current source anchors:
 - [x] No production Hook code branches on the six sample Art IDs.
 - [x] No production Loom host code branches on the six sample Art IDs except test fixtures, compatibility smoke fixtures, or migration docs.
 - [x] The six existing proof Arts are available only through packages after this phase.
-- [ ] A final packaged release under `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\<version-id>` proves default-empty, install, execute, restart, disable, uninstall, and no-source-change flows.
+- [x] A final packaged release under `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\<version-id>` proves default-empty, install, execute, restart, disable, uninstall, and no-source-change flows.
 
 ## File map
 
@@ -913,10 +913,10 @@ git commit -m "docs(loom): document plugin art framework boundary"
 ## Task 10: Build final Loom and Hook releases
 
 **Files:**
-- Output: `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260801-pluginized-art-frameworks`
-- Output: `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Hook\<matching-version-if-hook-changed>`
+- Output: `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260801-pluginized-art-frameworks-final2`
+- Output: `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Hook\20260801-pluginized-art-frameworks-final2`
 
-- [ ] **Step 1: Build framework and Art package artifacts**
+- [x] **Step 1: Build framework and Art package artifacts**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -928,26 +928,25 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -OutputRoot .\.loom-art-store-data\arts
 ```
 
-- [ ] **Step 2: Build Loom release**
+- [x] **Step 2: Build Loom release**
 
 From `C:\Users\Public\nas_home\AI\GameEditor\Neuro`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\build-release-exes.ps1 `
-  -Apps Loom `
-  -VersionId 20260801-pluginized-art-frameworks `
-  -Force
+  -File .\Loom\scripts\build-release.ps1 `
+  -OutputRoot C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom `
+  -VersionId 20260801-pluginized-art-frameworks-final2
 ```
 
-- [ ] **Step 3: Run release verification**
+- [x] **Step 3: Run release verification**
 
 From `C:\Users\Public\nas_home\AI\GameEditor\Neuro\Loom`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\verify-release.ps1 `
-  -PackageDir C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260801-pluginized-art-frameworks `
+  -PackageDir C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260801-pluginized-art-frameworks-final2 `
   -RunSmoke
 ```
 
@@ -960,11 +959,11 @@ frameworkArtStoreHookSmoke=passed
 pluginBoundarySmoke=passed
 ```
 
-- [ ] **Step 4: Build Hook release if Hook source changed**
+- [x] **Step 4: Build Hook release if Hook source changed**
 
 Use the existing Hook release command from the Hook repository release docs. The final report must include the exact package path and SHA-256.
 
-- [ ] **Step 5: Commit final progress**
+- [x] **Step 5: Commit final progress**
 
 ```powershell
 git add -- docs/progress/phase-67-pluginized-art-frameworks.md
@@ -985,4 +984,4 @@ git commit -m "docs(loom): record pluginized framework acceptance"
 - [x] Loom source has no production branch on sample Art IDs outside documented fixtures/tests.
 - [x] Default release payload excludes optional framework runtimes and sample Art resources.
 - [x] `verify-release.ps1 -RunSmoke` includes and passes the plugin boundary smoke.
-- [ ] Final release is built under the required Neuro release root.
+- [x] Final release is built under the required Neuro release root.

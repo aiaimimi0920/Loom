@@ -2,10 +2,10 @@
 
 ## Status
 
-Implementation is complete through the plugin boundary and release verification
-is in progress. The Loom host, package-backed framework registry, generic
-framework process protocol, sample packages, Hook capability protocol, and
-third-party no-source-change smoke are implemented.
+Phase complete. The Loom host, package-backed framework registry, generic
+framework process protocol, sample packages, Hook capability protocol,
+third-party no-source-change smoke, and final release verification are all
+implemented and validated.
 
 ## Why this phase exists
 
@@ -83,7 +83,7 @@ Out of scope for this phase:
 - [x] Task 7: Make Hook fully capability-driven for plugin Arts.
 - [x] Task 8: Add end-to-end plugin boundary smoke.
 - [x] Task 9: Update documentation and remove default-build/resource leakage.
-- [ ] Task 10: Build final Loom and Hook releases.
+- [x] Task 10: Build final Loom and Hook releases.
 
 ## Task 1 RED evidence
 
@@ -262,7 +262,7 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
 
 ## Acceptance checklist
 
-- [ ] Default Loom release contains no optional Art framework runtime package.
+- [x] Default Loom release contains no optional Art framework runtime package.
 - [x] Fresh control-plane root starts with zero installed optional frameworks.
 - [x] Framework installation is package-backed rather than a built-in flag flip.
 - [x] Framework disable/enable/upgrade/uninstall are supported.
@@ -274,7 +274,7 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
 - [x] Hook has no production branch on sample Art IDs.
 - [x] Loom has no production branch on sample Art IDs outside fixtures/tests/docs.
 - [x] `verify-release.ps1 -RunSmoke` includes the plugin boundary smoke.
-- [ ] Final Loom release exists under
+- [x] Final Loom release exists under
   `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom`.
 
 ## Task 6 RED evidence
@@ -415,8 +415,36 @@ tests passed, and the plugin boundary smoke passed.
 | Loom daemon library tests | 172 passed |
 | Hook typecheck/tests | 800 tests passed |
 | Third-party plugin boundary smoke | passed |
-| Final packaged Loom release | pending |
-| Final Hook release | pending |
+| Final packaged Loom release | passed: final2 |
+| Final Hook release | passed: final2 |
+
+## Task 10 implementation and verification
+
+Framework and sample Art ZIPs were rebuilt in Release configuration. The final
+Loom package was built with the Loom-owned scripts/build-release.ps1 so its
+desktop root, runtime sidecar, CLI ZIP, and manifest match the Loom release
+layout contract.
+
+Loom release:
+C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260801-pluginized-art-frameworks-final2
+
+Loom desktop ZIP SHA-256:
+57805c5b174d8a59ee9fc320ccb247323ca3285ec8a225a5f11ce6c7f5582c06
+
+Hook release:
+C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Hook\20260801-pluginized-art-frameworks-final2
+
+Hook executable SHA-256:
+8b99ae5badc1483ea076039027e6ae24bbf08f38698beff231438cc0f5492241
+Hook ZIP SHA-256:
+8772581f50a0632d480c470c1492b67e9899c594ddf9fa917d35b4931b90f39f
+
+Final release verification:
+- 32 Loom package checksum entries validated.
+- default payload contains no optional framework or sample Art package directories.
+- standalone, Hook canvas, failed-preview, all-framework art-store/Hook, and third-party plugin boundary smokes passed.
+- Hook typecheck passed.
+- Hook test suite passed: 208 test files and 800 tests.
 
 ## Notes
 
