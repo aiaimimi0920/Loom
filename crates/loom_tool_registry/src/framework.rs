@@ -584,7 +584,19 @@ impl FrameworkRegistry {
 
     fn resolve_state_key(&self, reference: &str) -> Result<Option<String>, FrameworkError> {
         let states = self.installation_states();
-        if states.contains_key(reference) {
+        if let Some(state) = states.get(reference) {
+            if !reference.contains('/') && state.version.is_empty() {
+                let qualified_matches = states
+                    .keys()
+                    .filter(|key| key.contains('/') && framework_local_id(key) == reference)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                match qualified_matches.as_slice() {
+                    [] => {}
+                    [only] => return Ok(Some(only.clone())),
+                    _ => return Err(FrameworkError::AmbiguousFramework(reference.to_owned())),
+                }
+            }
             return Ok(Some(reference.to_owned()));
         }
         if reference.contains('/') {
@@ -793,10 +805,13 @@ impl FrameworkRegistry {
     pub fn installed_ids(&self) -> BTreeSet<String> {
         self.installation_states()
             .into_iter()
-            .filter(|(id, _)| {
-                is_valid_framework_reference(id) && self.package_manifest(id).is_some()
+            .filter_map(|(id, _)| {
+                if !is_valid_framework_reference(&id) {
+                    return None;
+                }
+                self.package_manifest(&id)
+                    .map(|manifest| manifest.qualified_id())
             })
-            .map(|(id, _)| id)
             .collect()
     }
 
@@ -1063,6 +1078,13 @@ impl FrameworkRegistry {
             }
 
             let mut installed = self.installation_states();
+            if storage_key != manifest.id
+                && installed
+                    .get(&manifest.id)
+                    .is_some_and(|state| state.version.is_empty())
+            {
+                installed.remove(&manifest.id);
+            }
             installed.insert(
                 storage_key.clone(),
                 FrameworkInstallationState {
@@ -2166,6 +2188,80 @@ mod tests {
             assert!(!status.enabled, "{id} should not be enabled by default");
             assert!(!status.ready, "{id} should not be ready by default");
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn legacy_local_state_alias_does_not_duplicate_a_qualified_framework() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                "cloud_api",
+                "0.1.0",
+                Some("neuro.official"),
+            ))
+            .expect("install qualified official framework");
+
+        let mut states = registry.installation_states();
+        states.insert(
+            "cloud_api".to_owned(),
+            FrameworkInstallationState {
+                version: String::new(),
+                enabled: true,
+            },
+        );
+        registry
+            .write_installed(&states)
+            .expect("write legacy local alias");
+
+        assert_eq!(
+            registry
+                .resolve_state_key("cloud_api")
+                .expect("resolve legacy alias"),
+            Some("neuro.official/cloud_api".to_owned())
+        );
+        assert_eq!(
+            registry.installed_ids(),
+            BTreeSet::from(["neuro.official/cloud_api".to_owned()])
+        );
+        let statuses = registry.statuses();
+        assert_eq!(statuses.len(), FRAMEWORK_IDS.len());
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| status.qualified_id == "neuro.official/cloud_api")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn qualified_framework_install_removes_a_blank_legacy_alias() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        registry
+            .write_installed(&BTreeMap::from([(
+                "script".to_owned(),
+                FrameworkInstallationState {
+                    version: String::new(),
+                    enabled: true,
+                },
+            )]))
+            .expect("write legacy script alias");
+
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                "script",
+                "0.1.0",
+                Some("neuro.official"),
+            ))
+            .expect("install qualified script framework");
+
+        let states = registry.installation_states();
+        assert!(!states.contains_key("script"));
+        assert!(states.contains_key("neuro.official/script"));
         std::fs::remove_dir_all(&root).ok();
     }
 

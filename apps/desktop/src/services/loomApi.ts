@@ -999,9 +999,29 @@ interface LoomFrameworkResponse {
   framework?: LoomFramework;
 }
 
+const frameworkStatusWeight = (framework: LoomFramework): number => (
+  (framework.installed ? 16 : 0)
+  + (framework.ready ? 8 : 0)
+  + (framework.enabled ? 4 : 0)
+  + (framework.version ? 2 : 0)
+  + (framework.runtimeDir ? 1 : 0)
+);
+
+const uniqueFrameworks = (frameworks: LoomFramework[]): LoomFramework[] => {
+  const byIdentity = new Map<string, LoomFramework>();
+  for (const framework of frameworks) {
+    const identity = framework.qualifiedId?.trim() || framework.id;
+    const existing = byIdentity.get(identity);
+    if (!existing || frameworkStatusWeight(framework) > frameworkStatusWeight(existing)) {
+      byIdentity.set(identity, framework);
+    }
+  }
+  return [...byIdentity.values()];
+};
+
 export async function listFrameworks(baseUrl: string): Promise<LoomFramework[]> {
   const response = await getJson<LoomFrameworksResponse>(baseUrl, "/v1/frameworks");
-  return Array.isArray(response.frameworks) ? response.frameworks : [];
+  return Array.isArray(response.frameworks) ? uniqueFrameworks(response.frameworks) : [];
 }
 
 export async function installFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {

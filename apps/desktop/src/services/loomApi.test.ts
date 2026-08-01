@@ -348,11 +348,24 @@ test("framework helpers call the framework management routes", async (context) =
         frameworks: [
           {
             id: "python_art",
+            qualifiedId: "neuro.official/python_art",
             name: "Python Art 框架",
             description: "运行 Python Art，需要 Python 运行时。",
             installed: false,
+            enabled: false,
             ready: false,
             readyDetail: "未安装",
+          },
+          {
+            id: "python_art",
+            qualifiedId: "neuro.official/python_art",
+            name: "Python Art 框架",
+            description: "运行 Python Art，需要 Python 运行时。",
+            installed: true,
+            enabled: true,
+            ready: true,
+            readyDetail: "已安装",
+            version: "0.1.0",
           },
         ],
       }), {
@@ -420,6 +433,7 @@ test("framework helpers call the framework management routes", async (context) =
 
   assert.equal(frameworks.length, 1);
   assert.equal(frameworks[0]?.id, "python_art");
+  assert.equal(frameworks[0]?.installed, true);
   assert.equal(installed?.installed, true);
   assert.equal(installed?.ready, true);
   assert.equal(uninstalled?.installed, false);
@@ -454,6 +468,38 @@ test("framework install surfaces the daemon error message in browser mode", asyn
   await assert.rejects(
     installFramework("http://127.0.0.1:18771", "python_art"),
     /HTTP 500.*no available package source/,
+  );
+});
+
+test("framework listing deduplicates canonical identities without merging publishers", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const framework = (qualifiedId: string) => ({
+    id: "shared",
+    qualifiedId,
+    name: "Shared",
+    description: "",
+    installed: true,
+    enabled: true,
+    ready: true,
+    readyDetail: "ready",
+  });
+  globalThis.fetch = (async () => Response.json({
+    frameworks: [
+      framework("publisher.alpha/shared"),
+      framework("publisher.alpha/shared"),
+      framework("publisher.beta/shared"),
+    ],
+  })) as typeof fetch;
+
+  const frameworks = await listFrameworks("http://127.0.0.1:18771");
+
+  assert.deepEqual(
+    frameworks.map((entry) => entry.qualifiedId),
+    ["publisher.alpha/shared", "publisher.beta/shared"],
   );
 });
 
