@@ -1,5 +1,6 @@
 # Rust and Tauri build output
 /target/
+framework-packages/runtime-host/target/
 /apps/desktop/src-tauri/target/
 **/*.rs.bk
 
@@ -37,6 +38,7 @@ __pycache__/
 
 # Temporary and editor files
 /_temp/
+/.tmp-framework-*/
 /temp/
 /tmp/
 .idea/

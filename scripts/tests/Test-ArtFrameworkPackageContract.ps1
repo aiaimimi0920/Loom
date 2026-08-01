@@ -1,3 +1,7 @@
+param(
+    [string]$ArtifactRoot
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -15,6 +19,8 @@ function Assert-True {
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $packagesRoot = Join-Path $repoRoot "framework-packages"
+$buildScript = Join-Path $repoRoot "scripts\Build-LoomArtFrameworkPackages.ps1"
+$runtimeHostManifest = Join-Path $packagesRoot "runtime-host\Cargo.toml"
 $expectedIds = @(
     "cli_wrapper",
     "cloud_api",
@@ -25,6 +31,8 @@ $expectedIds = @(
 )
 
 Assert-True (Test-Path -LiteralPath $packagesRoot -PathType Container) "framework-packages directory is required."
+Assert-True (Test-Path -LiteralPath $buildScript -PathType Leaf) "Independent framework package build script is required."
+Assert-True (Test-Path -LiteralPath $runtimeHostManifest -PathType Leaf) "External framework runtime host manifest is required."
 
 $manifestFiles = @(Get-ChildItem -LiteralPath $packagesRoot -Directory | ForEach-Object {
     $manifestPath = Join-Path $_.FullName "framework.manifest.json"
@@ -59,6 +67,47 @@ foreach ($manifestFile in $manifestFiles) {
 
 foreach ($expectedId in $expectedIds) {
     Assert-True ($actualIds -contains $expectedId) "Missing repo-owned framework manifest: $expectedId"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
+    $artifactRootPath = if ([System.IO.Path]::IsPathRooted($ArtifactRoot)) {
+        [System.IO.Path]::GetFullPath($ArtifactRoot)
+    }
+    else {
+        [System.IO.Path]::GetFullPath((Join-Path $repoRoot $ArtifactRoot))
+    }
+    Assert-True (Test-Path -LiteralPath $artifactRootPath -PathType Container) "Framework artifact root is required: $artifactRootPath"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipFiles = @(Get-ChildItem -LiteralPath $artifactRootPath -Filter *.zip -File)
+    Assert-True ($zipFiles.Count -eq $expectedIds.Count) "Expected exactly $($expectedIds.Count) framework ZIPs, found $($zipFiles.Count)."
+    foreach ($expectedId in $expectedIds) {
+        $zipPath = Join-Path $artifactRootPath "$expectedId.zip"
+        $hashPath = "$zipPath.sha256"
+        Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Missing framework ZIP: $zipPath"
+        Assert-True (Test-Path -LiteralPath $hashPath -PathType Leaf) "Missing framework ZIP hash: $hashPath"
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+        try {
+            $manifestEntry = $archive.Entries | Where-Object { $_.FullName -eq "framework.manifest.json" } | Select-Object -First 1
+            Assert-True ($null -ne $manifestEntry) "Framework ZIP lacks framework.manifest.json: $zipPath"
+            $reader = [System.IO.StreamReader]::new($manifestEntry.Open())
+            try {
+                $zipManifest = $reader.ReadToEnd() | ConvertFrom-Json
+            }
+            finally {
+                $reader.Dispose()
+            }
+            Assert-True ([string]$zipManifest.id -eq $expectedId) "Framework ZIP manifest id mismatch: $zipPath"
+            $command = ([string]$zipManifest.entry.command).Replace('\', '/')
+            $runtimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $command } | Select-Object -First 1
+            Assert-True ($null -ne $runtimeEntry) "Framework ZIP entry.command is not staged: $zipPath -> $command"
+        }
+        finally {
+            $archive.Dispose()
+        }
+        $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash = ((Get-Content -Raw -Encoding UTF8 -LiteralPath $hashPath).Trim() -split '\s+')[0].ToLowerInvariant()
+        Assert-True ($actualHash -eq $expectedHash) "Framework ZIP hash mismatch: $zipPath"
+    }
 }
 
 Write-Host "Art framework package contract passed for $($manifestFiles.Count) manifests."

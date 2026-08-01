@@ -75,7 +75,7 @@ Out of scope for this phase:
 - [x] Task 2: Define framework package manifests and explicit installed state.
 - [x] Task 3: Implement framework package install, disable, upgrade, and uninstall.
 - [x] Task 4: Add the generic external framework execution protocol.
-- [ ] Task 5: Convert the six sample frameworks into independent packages.
+- [x] Task 5: Convert the six sample frameworks into independent packages.
 - [ ] Task 6: Convert the six sample Arts into external Art packages.
 - [ ] Task 7: Make Hook fully capability-driven for plugin Arts.
 - [ ] Task 8: Add end-to-end plugin boundary smoke.
@@ -122,6 +122,56 @@ framework-packages directory is required.
 
 This is the expected RED result before the six external framework package
 manifests are added.
+
+## Task 5 RED evidence
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\tests\Test-ArtFrameworkPackageContract.ps1
+```
+
+Observed exit code: `1`
+
+Observed failure:
+
+```text
+Independent framework package build script is required.
+```
+
+The source manifests alone are intentionally insufficient; the runtime host
+and independent ZIP build path must exist before Task 5 can pass.
+
+## Task 5 verification
+
+Implemented and verified:
+
+- Added a standalone `framework-packages/runtime-host` Cargo package. It is
+  outside the Loom workspace and is not part of the default Loom build.
+- The runtime host implements the external process boundary generically: it
+  validates the requested framework ID, loads an Art package's
+  `art.runtime.json`, invokes that Art-owned runtime entry, and normalizes
+  text/JSON/error output into `loom.framework.v1` responses.
+- Added `scripts/Build-LoomArtFrameworkPackages.ps1`, which explicitly builds
+  the host, stages all six manifests and runtime entries, emits six ZIPs,
+  SHA-256 sidecars, and a JSON build summary.
+- Extended the package contract test to validate ZIP contents and hashes, not
+  just source manifests.
+
+Verification commands and results:
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass \
+  -File .\scripts\Build-LoomArtFrameworkPackages.ps1 \
+  -OutputRoot .\.loom-art-store-data\frameworks \
+  -Configuration Release
+                                                -> 6 ZIPs built
+powershell -NoProfile -ExecutionPolicy Bypass \
+  -File .\scripts\tests\Test-ArtFrameworkPackageContract.ps1 \
+  -ArtifactRoot .\.loom-art-store-data\frameworks
+                                                -> passed for 6 manifests and ZIPs
+```
 
 ## Task 2 verification
 
