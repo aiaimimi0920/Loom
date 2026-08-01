@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, KeyboardEvent, SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArtLoomAppPaths,
@@ -97,6 +97,11 @@ import {
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import { createLatestRequestGate } from "./services/latestRequest";
 import {
+  artWorkspaceItems,
+  nextArtWorkspaceIndex,
+  type ArtWorkspaceId,
+} from "./services/artHubUi";
+import {
   IMAGE_SEARCH_ART_ID,
   IMAGE_SEARCH_SERVER_ID,
   buildImageSearchArtDefinition,
@@ -135,7 +140,6 @@ type SectionId =
   | "overview"
   | "mcp"
   | "registry"
-  | "frameworks"
   | "hook-bridge"
   | "workflows"
   | "agents"
@@ -163,8 +167,7 @@ interface NavigationItem {
 const navigationItems: NavigationItem[] = [
   { id: "overview", label: "总览", eyebrow: "本地工作台" },
   { id: "mcp", label: "MCP", eyebrow: "服务工具" },
-  { id: "registry", label: "Art 注册表", eyebrow: "工具中心" },
-  { id: "frameworks", label: "框架", eyebrow: "执行能力" },
+  { id: "registry", label: "Art", eyebrow: "创作与运行" },
   { id: "hook-bridge", label: "Hook 同步", eyebrow: "" },
   { id: "workflows", label: "工作流工作台", eyebrow: "节点编排" },
   { id: "agents", label: "智能体", eyebrow: "本地大脑" },
@@ -2830,6 +2833,8 @@ function RegistryPanel({
   pythonArts,
   mcpServers,
   workflows,
+  frameworks,
+  reloadFrameworks,
   baseUrl,
   refresh,
 }: {
@@ -2837,6 +2842,8 @@ function RegistryPanel({
   pythonArts: LoomPythonArt[];
   mcpServers: LoomMcpServer[];
   workflows: LoomWorkflowMetadata[];
+  frameworks: LoomFramework[];
+  reloadFrameworks: () => Promise<void>;
   baseUrl: string;
   refresh: () => Promise<void>;
 }) {
@@ -2857,21 +2864,6 @@ function RegistryPanel({
   const [compatArts, setCompatArts] = useState<ArtLoomCompatArt[]>([]);
   const [pythonEngineSummary, setPythonEngineSummary] = useState<string>("Not probed");
   const [shaderArtId, setShaderArtId] = useState("");
-  const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void listFrameworks(baseUrl)
-      .then((items) => {
-        if (!cancelled) setFrameworks(items);
-      })
-      .catch(() => {
-        if (!cancelled) setFrameworks([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [baseUrl]);
 
   const importPythonArt = async (art: LoomPythonArt) => {
     const toolId = `python-art-${art.art_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -3268,7 +3260,7 @@ function RegistryPanel({
           text: `已通过 ${selectedFramework.name} 的 authoring schema 创建并安装 Art ${derivedName}。`,
         });
         await refresh();
-        setFrameworks(await listFrameworks(baseUrl));
+        await reloadFrameworks();
       } catch (error) {
         setRegistryMessage({
           kind: "error",
@@ -3767,55 +3759,17 @@ function frameworkResourceSummary(framework: LoomFramework): string[] {
   ].filter((value): value is string => Boolean(value));
 }
 
-function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
-  const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const loadVersion = useRef(0);
-
-  const load = useCallback(() => {
-    const version = ++loadVersion.current;
-    void listFrameworks(baseUrl)
-      .then((list) => {
-        if (version !== loadVersion.current) return;
-        setFrameworks(list);
-        setError(null);
-      })
-      .catch((err) => {
-        if (version === loadVersion.current) {
-          setError(err instanceof Error ? err.message : "无法读取框架列表。");
-        }
-      });
-  }, [baseUrl]);
-
-  useEffect(() => {
-    load();
-    return () => {
-      loadVersion.current += 1;
-    };
-  }, [load]);
-
-  const toggle = async (framework: LoomFramework) => {
-    const identity = frameworkIdentity(framework);
-    const permissions = frameworkPermissionSummary(framework);
-    const action = framework.installed ? "卸载" : "安装";
-    const review = permissions.length ? `\n\n权限审阅:\n- ${permissions.join("\n- ")}` : "";
-    if (!window.confirm(`${action}框架 ${identity}？${review}`)) return;
-    setBusyId(identity);
-    try {
-      if (framework.installed) {
-        await uninstallFramework(baseUrl, identity);
-      } else {
-        await installFramework(baseUrl, identity);
-      }
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败。");
-    } finally {
-      setBusyId(null);
-    }
-  };
-
+function FrameworksPanel({
+  frameworks,
+  busyId,
+  error,
+  onToggle,
+}: {
+  frameworks: LoomFramework[];
+  busyId: string | null;
+  error: string | null;
+  onToggle: (framework: LoomFramework) => Promise<void>;
+}) {
   return (
     <section className="content-grid">
       <div className="main-board">
@@ -3824,7 +3778,6 @@ function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
         <p className="muted-line">
           框架是 art 的执行能力底座。包使用 publisher/id 作为唯一身份；安装或卸载前请审阅签名、权限和资源上限。
         </p>
-        {error ? <p className="error-text">{error}</p> : null}
       </div>
       <div className="card-grid">
         {frameworks.map((framework) => {
@@ -3862,7 +3815,7 @@ function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
               <button
                 className={framework.installed ? "ghost-button" : "signal-button"}
                 type="button"
-                onClick={() => toggle(framework)}
+                onClick={() => void onToggle(framework)}
                 disabled={busyId === identity}
               >
                 {busyId === identity
@@ -3880,8 +3833,6 @@ function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
           </article>
         ) : null}
       </div>
-      <PluginSecurityPanel baseUrl={baseUrl} />
-      <ArtStoreCard baseUrl={baseUrl} onInstalled={load} />
     </section>
   );
 }
@@ -4073,7 +4024,13 @@ function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   );
 }
 
-function ArtStoreCard({ baseUrl, onInstalled }: { baseUrl: string; onInstalled: () => void }) {
+function ArtStoreCard({
+  baseUrl,
+  onInstalled,
+}: {
+  baseUrl: string;
+  onInstalled: () => void | Promise<void>;
+}) {
   const [store, setStore] = useState("");
   const [catalog, setCatalog] = useState<ArtStoreEntry[]>([]);
   const [busy, setBusy] = useState(false);
@@ -4099,7 +4056,7 @@ function ArtStoreCard({ baseUrl, onInstalled }: { baseUrl: string; onInstalled: 
     try {
       await installArtFromStore(baseUrl, artId, store || undefined);
       setMessage({ ok: true, text: `已安装 ${artId}（含依赖）。` });
-      onInstalled();
+      await onInstalled();
     } catch (err) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : "安装失败。" });
     } finally {
@@ -4153,6 +4110,213 @@ function ArtStoreCard({ baseUrl, onInstalled }: { baseUrl: string; onInstalled: 
         ))}
       </div>
     </div>
+  );
+}
+
+function ArtPanel({
+  tools,
+  pythonArts,
+  mcpServers,
+  workflows,
+  baseUrl,
+  refresh,
+}: {
+  tools: LoomToolDefinition[];
+  pythonArts: LoomPythonArt[];
+  mcpServers: LoomMcpServer[];
+  workflows: LoomWorkflowMetadata[];
+  baseUrl: string;
+  refresh: () => Promise<void>;
+}) {
+  const [activeWorkspace, setActiveWorkspace] = useState<ArtWorkspaceId>("registry");
+  const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
+  const [frameworkBusyId, setFrameworkBusyId] = useState<string | null>(null);
+  const [frameworkError, setFrameworkError] = useState<string | null>(null);
+  const [snapshotRefreshError, setSnapshotRefreshError] = useState<string | null>(null);
+  const frameworkLoadVersion = useRef(0);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const loadFrameworks = useCallback(async () => {
+    const version = ++frameworkLoadVersion.current;
+    try {
+      const list = await listFrameworks(baseUrl);
+      if (version !== frameworkLoadVersion.current) return;
+      setFrameworks(list);
+      setFrameworkError(null);
+    } catch (error) {
+      if (version === frameworkLoadVersion.current) {
+        setFrameworkError(error instanceof Error ? error.message : "无法读取框架列表。");
+      }
+    }
+  }, [baseUrl]);
+
+  useEffect(() => {
+    setSnapshotRefreshError(null);
+    void loadFrameworks();
+    return () => {
+      frameworkLoadVersion.current += 1;
+    };
+  }, [loadFrameworks]);
+
+  const synchronizeArtState = useCallback(async () => {
+    const [, snapshotResult] = await Promise.allSettled([loadFrameworks(), refresh()]);
+    if (snapshotResult.status === "rejected") {
+      const detail = snapshotResult.reason instanceof Error
+        ? snapshotResult.reason.message
+        : "无法刷新 Loom 主快照。";
+      setSnapshotRefreshError(`Art 操作已完成，但主快照刷新失败：${detail}`);
+      return;
+    }
+    setSnapshotRefreshError(null);
+  }, [loadFrameworks, refresh]);
+
+  const toggleFramework = async (framework: LoomFramework) => {
+    const identity = frameworkIdentity(framework);
+    const permissions = frameworkPermissionSummary(framework);
+    const action = framework.installed ? "卸载" : "安装";
+    const review = permissions.length ? `\n\n权限审阅:\n- ${permissions.join("\n- ")}` : "";
+    if (!window.confirm(`${action}框架 ${identity}？${review}`)) return;
+    setFrameworkBusyId(identity);
+    setFrameworkError(null);
+    try {
+      if (framework.installed) {
+        await uninstallFramework(baseUrl, identity);
+      } else {
+        await installFramework(baseUrl, identity);
+      }
+      await synchronizeArtState();
+    } catch (error) {
+      setFrameworkError(error instanceof Error ? error.message : "框架操作失败。");
+    } finally {
+      setFrameworkBusyId(null);
+    }
+  };
+
+  const selectAdjacentWorkspace = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const nextIndex = nextArtWorkspaceIndex(event.key, index, artWorkspaceItems.length);
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = artWorkspaceItems[nextIndex];
+    setActiveWorkspace(next.id);
+    tabRefs.current[nextIndex]?.focus();
+  };
+
+  const installedFrameworks = frameworks.filter((framework) => framework.installed).length;
+  const readyFrameworks = frameworks.filter((framework) => framework.ready).length;
+
+  return (
+    <section className="art-hub" aria-labelledby="art-hub-title">
+      <header className="art-hub__hero">
+        <div className="art-hub__identity">
+          <p className="section-kicker">Layer 2 · Art runtime</p>
+          <h2 id="art-hub-title">Art 运行与注册中心</h2>
+          <p>
+            在一个界面中管理 Art 定义、可插拔执行框架、商店安装以及发布者信任与作用域凭据。
+          </p>
+        </div>
+        <div className="art-hub__telemetry" aria-label="Art 状态摘要">
+          <div><span>已注册 Art</span><strong>{tools.length}</strong></div>
+          <div><span>执行框架</span><strong>{installedFrameworks}/{frameworks.length || "-"}</strong></div>
+          <div><span>就绪框架</span><strong>{readyFrameworks}</strong></div>
+          <div><span>Python Art</span><strong>{pythonArts.length}</strong></div>
+        </div>
+      </header>
+
+      <div className="art-hub__tabs" role="tablist" aria-label="Art 工作区">
+        {artWorkspaceItems.map((item, index) => {
+          const active = activeWorkspace === item.id;
+          return (
+            <button
+              key={item.id}
+              ref={(element) => {
+                tabRefs.current[index] = element;
+              }}
+              id={`art-tab-${item.id}`}
+              className={active ? "art-hub__tab art-hub__tab--active" : "art-hub__tab"}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls={`art-panel-${item.id}`}
+              tabIndex={active ? 0 : -1}
+              onClick={() => setActiveWorkspace(item.id)}
+              onKeyDown={(event) => selectAdjacentWorkspace(event, index)}
+            >
+              <small>{item.eyebrow}</small>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {frameworkError ? (
+        <div className="art-hub__notice" role="alert">
+          <span>{frameworkError}</span>
+          <button className="ghost-button" type="button" onClick={() => void loadFrameworks()}>
+            重试框架状态
+          </button>
+        </div>
+      ) : null}
+
+      {snapshotRefreshError ? (
+        <div className="art-hub__notice art-hub__notice--warning" role="alert">
+          <span>{snapshotRefreshError}</span>
+          <button className="ghost-button" type="button" onClick={() => void synchronizeArtState()}>
+            重新同步 Art 状态
+          </button>
+        </div>
+      ) : null}
+
+      <div
+        className="art-hub__surface"
+        id="art-panel-registry"
+        role="tabpanel"
+        aria-labelledby="art-tab-registry"
+        hidden={activeWorkspace !== "registry"}
+      >
+        <RegistryPanel
+          tools={tools}
+          pythonArts={pythonArts}
+          mcpServers={mcpServers}
+          workflows={workflows}
+          frameworks={frameworks}
+          reloadFrameworks={loadFrameworks}
+          baseUrl={baseUrl}
+          refresh={refresh}
+        />
+      </div>
+      <div
+        className="art-hub__surface"
+        id="art-panel-frameworks"
+        role="tabpanel"
+        aria-labelledby="art-tab-frameworks"
+        hidden={activeWorkspace !== "frameworks"}
+      >
+        <FrameworksPanel
+          frameworks={frameworks}
+          busyId={frameworkBusyId}
+          error={frameworkError}
+          onToggle={toggleFramework}
+        />
+      </div>
+      <div
+        className="art-hub__surface"
+        id="art-panel-store"
+        role="tabpanel"
+        aria-labelledby="art-tab-store"
+        hidden={activeWorkspace !== "store"}
+      >
+        <ArtStoreCard baseUrl={baseUrl} onInstalled={synchronizeArtState} />
+      </div>
+      <div
+        className="art-hub__surface"
+        id="art-panel-security"
+        role="tabpanel"
+        aria-labelledby="art-tab-security"
+        hidden={activeWorkspace !== "security"}
+      >
+        <PluginSecurityPanel baseUrl={baseUrl} />
+      </div>
+    </section>
   );
 }
 
@@ -4920,7 +5084,7 @@ export default function App() {
             />
           )}
           {activeSection === "registry" && (
-            <RegistryPanel
+            <ArtPanel
               tools={snapshot.tools}
               pythonArts={snapshot.pythonArts}
               mcpServers={snapshot.mcpServers}
@@ -4928,9 +5092,6 @@ export default function App() {
               baseUrl={snapshot.baseUrl}
               refresh={refresh}
             />
-          )}
-          {activeSection === "frameworks" && (
-            <FrameworksPanel baseUrl={snapshot.baseUrl} />
           )}
           {activeSection === "hook-bridge" && (
             <HookBridgePanel
