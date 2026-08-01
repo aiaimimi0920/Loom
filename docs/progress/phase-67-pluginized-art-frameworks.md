@@ -274,6 +274,28 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
 - [ ] Final Loom release exists under
   `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom`.
 
+## Task 6 RED evidence
+
+Added the sample Art package contract before implementation:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\tests\Test-LoomSampleArtPackageContract.ps1
+```
+
+Expected RED result:
+
+```text
+Sample Art package source directory is required:
+...\Loom\art-packages\samples
+EXIT_CODE=1
+```
+
+The failure is intentional: the six independent Art package source
+directories and their builder do not exist yet. The contract requires each
+package to declare `framework_art`, an explicit framework dependency, an
+`art.runtime.json` entry, and a bundled runtime entry before it will pass.
+
 ## Notes
 
 - Current formal framework list comes from
