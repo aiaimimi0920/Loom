@@ -18,7 +18,7 @@ use crate::{ToolDefinition, ToolExecution};
 
 const FRAMEWORKS_FILE: &str = "frameworks.json";
 const FRAMEWORK_MANIFEST_FILE: &str = "framework.manifest.json";
-const FRAMEWORK_PROTOCOL_VERSION: &str = "loom.framework.v1";
+pub const FRAMEWORK_PROTOCOL_VERSION: &str = "loom.framework.v1";
 const WINDOWS_X64_PLATFORM: &str = "windows-x64";
 /// Subdir under the control-plane root holding installed framework packages:
 /// `<control-plane>/frameworks/<id>/`.
@@ -95,7 +95,7 @@ pub struct FrameworkStatus {
 
 /// The framework id that an execution belongs to (same mapping as
 /// `execution_type_name`, exposed for readiness checks).
-pub fn framework_id_for_execution(execution: &ToolExecution) -> &'static str {
+pub fn framework_id_for_execution(execution: &ToolExecution) -> &str {
     match execution {
         ToolExecution::CliWrapper { .. } => "cli_wrapper",
         ToolExecution::CloudApi { .. } => "cloud_api",
@@ -103,6 +103,7 @@ pub fn framework_id_for_execution(execution: &ToolExecution) -> &'static str {
         ToolExecution::PythonArt { .. } => "python_art",
         ToolExecution::Mcp { .. } => "mcp",
         ToolExecution::Workflow { .. } => "workflow",
+        ToolExecution::FrameworkArt { framework } => framework,
     }
 }
 

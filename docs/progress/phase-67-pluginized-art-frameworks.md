@@ -74,7 +74,7 @@ Out of scope for this phase:
 - [ ] Task 1: Add source-contract guards before runtime changes.
 - [x] Task 2: Define framework package manifests and explicit installed state.
 - [x] Task 3: Implement framework package install, disable, upgrade, and uninstall.
-- [ ] Task 4: Add the generic external framework execution protocol.
+- [x] Task 4: Add the generic external framework execution protocol.
 - [ ] Task 5: Convert the six sample frameworks into independent packages.
 - [ ] Task 6: Convert the six sample Arts into external Art packages.
 - [ ] Task 7: Make Hook fully capability-driven for plugin Arts.
@@ -176,6 +176,35 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
                                                 -> 172 passed, 0 failed
 npm run typecheck --prefix .\apps\desktop       -> passed
 npm test --prefix .\apps\desktop               -> 56 passed, 0 failed
+```
+
+## Task 4 verification
+
+Implemented and verified:
+
+- Added `loom.framework.v1` stdin/stdout request and response contracts in
+  `crates/loom_tool_registry/src/framework_process.rs`.
+- Added the generic `ToolExecution::FrameworkArt { framework }` execution kind;
+  no third-party framework-specific execution enum variants are required.
+- Installed Art packages now persist `metadata.artPackage.dir`, allowing the
+  host to pass the package resource directory without embedding Art-specific
+  branches in the framework broker.
+- The broker resolves the framework package manifest, launches its declared
+  process, sends one JSON request, enforces the 120-second production timeout,
+  preserves structured framework errors, and returns output/candidates/cache
+  through the existing tool result channel.
+- Daemon error mapping now preserves package-not-found, protocol, timeout, and
+  framework-provided failure details for Hook-facing callers.
+
+Verification commands and results:
+
+```text
+cargo test --manifest-path .\Cargo.toml -p loom_tool_registry framework_process -- --nocapture
+                                                -> 5 passed, 0 failed
+cargo test --manifest-path .\Cargo.toml -p loom_tool_registry -- --nocapture
+                                                -> 73 passed, 0 failed
+cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
+                                                -> 172 passed, 0 failed
 ```
 
 ## Acceptance checklist

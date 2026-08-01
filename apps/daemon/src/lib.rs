@@ -4115,6 +4115,7 @@ fn artloom_execution_type_name(execution: &ToolExecution) -> &'static str {
         ToolExecution::PythonArt { .. } => "python_art",
         ToolExecution::Mcp { .. } => "mcp",
         ToolExecution::Workflow { .. } => "workflow",
+        ToolExecution::FrameworkArt { .. } => "framework_art",
     }
 }
 
@@ -9935,6 +9936,99 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "message": format!("cloud API {field} template is invalid: {reason}"),
                 "tool_id": id,
                 "field": field,
+            }),
+        ),
+        ToolRegistryError::FrameworkPackageNotFound {
+            id,
+            framework,
+            path,
+        } => structured_error(
+            404,
+            json!({
+                "code": "framework_package_not_found",
+                "message": format!("framework package `{framework}` for tool `{id}` was not found"),
+                "tool_id": id,
+                "framework": framework,
+                "path": path,
+            }),
+        ),
+        ToolRegistryError::FrameworkArtDirectoryNotFound { id, path } => structured_error(
+            404,
+            json!({
+                "code": "framework_art_directory_not_found",
+                "message": format!("framework Art directory for tool `{id}` was not found"),
+                "tool_id": id,
+                "path": path,
+            }),
+        ),
+        ToolRegistryError::FrameworkProcessSpawn {
+            id,
+            framework,
+            reason,
+        } => structured_error(
+            500,
+            json!({
+                "code": "framework_process_spawn_error",
+                "message": reason,
+                "tool_id": id,
+                "framework": framework,
+            }),
+        ),
+        ToolRegistryError::FrameworkProcessTimeout {
+            id,
+            framework,
+            timeout_ms,
+        } => structured_error(
+            504,
+            json!({
+                "code": "framework_process_timeout",
+                "message": format!("framework process timed out after {timeout_ms}ms"),
+                "tool_id": id,
+                "framework": framework,
+                "timeoutMs": timeout_ms,
+            }),
+        ),
+        ToolRegistryError::FrameworkProcessIo {
+            id,
+            framework,
+            reason,
+        } => structured_error(
+            500,
+            json!({
+                "code": "framework_process_io_error",
+                "message": reason,
+                "tool_id": id,
+                "framework": framework,
+            }),
+        ),
+        ToolRegistryError::FrameworkProcessProtocol {
+            id,
+            framework,
+            reason,
+        } => structured_error(
+            502,
+            json!({
+                "code": "framework_process_protocol_error",
+                "message": reason,
+                "tool_id": id,
+                "framework": framework,
+            }),
+        ),
+        ToolRegistryError::FrameworkProcessFailed {
+            id,
+            framework,
+            code,
+            message,
+            detail,
+        } => structured_error(
+            500,
+            json!({
+                "code": "framework_execution_error",
+                "message": message,
+                "detail": detail,
+                "frameworkCode": code,
+                "tool_id": id,
+                "framework": framework,
             }),
         ),
         ToolRegistryError::Io(error) => structured_error(

@@ -152,6 +152,21 @@ fn rewrite_artloom_compat_execution_paths(
     }
 }
 
+fn record_art_package_directory(metadata: &mut Option<serde_json::Value>, art_dir: &Path) {
+    let root = metadata.get_or_insert_with(|| serde_json::json!({}));
+    if !root.is_object() {
+        *root = serde_json::json!({});
+    }
+    if let Some(object) = root.as_object_mut() {
+        object.insert(
+            "artPackage".to_owned(),
+            serde_json::json!({
+                "dir": art_dir.to_string_lossy().to_string()
+            }),
+        );
+    }
+}
+
 /// Install an art package from zip bytes into `<control_plane_root>/arts/<id>/`.
 pub fn install_art_from_zip(
     zip_bytes: &[u8],
@@ -224,6 +239,7 @@ pub fn install_art_from_zip(
     // Rewrite bundled binary/script paths into the art dir, then register.
     rewrite_execution_paths(&mut tool.execution, &art_dir);
     rewrite_artloom_compat_execution_paths(&mut tool.metadata, &art_dir);
+    record_art_package_directory(&mut tool.metadata, &art_dir);
     let tool_id = tool.id.clone();
     tool_registry
         .save_tool(tool)
@@ -789,6 +805,40 @@ mod tests {
         assert_eq!(manifest_back.id, "pkg-art");
         let mut archive = zip::ZipArchive::new(Cursor::new(&packaged)).unwrap();
         assert!(archive.by_name("bin/tool.exe").is_ok());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn installs_framework_art_and_records_external_package_directory() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "script");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{
+            "id":"external-script-art","name":"External Script Art","description":"d","enabled":true,
+            "execution":{"type":"framework_art","framework":"script"},
+            "metadata":{"dependencies":{"framework":"script"}}
+        }"#;
+        let zip = build_zip(manifest, &[("resources/input.txt", b"fixture")]);
+        let report = install_art_from_zip(&zip, &root, &framework, &registry).expect("install");
+        let saved = registry
+            .get_tool("external-script-art")
+            .expect("get tool")
+            .expect("saved tool");
+        assert!(matches!(
+            saved.execution,
+            ToolExecution::FrameworkArt { ref framework } if framework == "script"
+        ));
+        let expected_dir = report.art_dir.to_string_lossy().to_string();
+        assert_eq!(
+            saved
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("artPackage"))
+                .and_then(|package| package.get("dir"))
+                .and_then(serde_json::Value::as_str),
+            Some(expected_dir.as_str())
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -1,6 +1,7 @@
 //! User-managed tool and Art registry contracts for Loom.
 
 pub mod framework;
+pub mod framework_process;
 pub mod install;
 
 use std::collections::HashMap;
@@ -139,6 +140,46 @@ pub enum ToolRegistryError {
         field: &'static str,
         reason: String,
     },
+    #[error("framework package `{framework}` for tool `{id}` was not found: {path}")]
+    FrameworkPackageNotFound {
+        id: String,
+        framework: String,
+        path: String,
+    },
+    #[error("framework Art directory for tool `{id}` was not found: {path}")]
+    FrameworkArtDirectoryNotFound { id: String, path: String },
+    #[error("framework `{framework}` for tool `{id}` failed to spawn: {reason}")]
+    FrameworkProcessSpawn {
+        id: String,
+        framework: String,
+        reason: String,
+    },
+    #[error("framework `{framework}` for tool `{id}` timed out after {timeout_ms}ms")]
+    FrameworkProcessTimeout {
+        id: String,
+        framework: String,
+        timeout_ms: u128,
+    },
+    #[error("framework `{framework}` for tool `{id}` process I/O failed: {reason}")]
+    FrameworkProcessIo {
+        id: String,
+        framework: String,
+        reason: String,
+    },
+    #[error("framework `{framework}` for tool `{id}` returned invalid protocol data: {reason}")]
+    FrameworkProcessProtocol {
+        id: String,
+        framework: String,
+        reason: String,
+    },
+    #[error("framework `{framework}` for tool `{id}` failed [{code}]: {message}{detail}")]
+    FrameworkProcessFailed {
+        id: String,
+        framework: String,
+        code: String,
+        message: String,
+        detail: String,
+    },
     #[error("filesystem error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -230,6 +271,8 @@ pub enum ToolExecution {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workflow_bindings: Option<WorkflowExecutionBindings>,
     },
+    #[serde(rename_all = "camelCase")]
+    FrameworkArt { framework: String },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -280,6 +323,7 @@ impl ToolExecution {
             Self::Workflow { workflow_id, .. } => {
                 require_non_empty(tool_id, workflow_id, "workflow_id")
             }
+            Self::FrameworkArt { framework } => require_non_empty(tool_id, framework, "framework"),
         }
     }
 }
@@ -533,6 +577,9 @@ pub fn execute_tool(
         }
         ToolExecution::PythonArt { art_id, art_path } => {
             execute_python_art_tool(tool, art_id, art_path.as_deref(), arguments)
+        }
+        ToolExecution::FrameworkArt { framework } => {
+            framework_process::execute_framework_art(tool, framework, arguments)
         }
         _ => Err(ToolRegistryError::UnsupportedExecution {
             id: tool.id.clone(),
@@ -2507,6 +2554,7 @@ fn execution_type_name(execution: &ToolExecution) -> &'static str {
         ToolExecution::PythonArt { .. } => "python_art",
         ToolExecution::Mcp { .. } => "mcp",
         ToolExecution::Workflow { .. } => "workflow",
+        ToolExecution::FrameworkArt { .. } => "framework_art",
     }
 }
 
@@ -2745,6 +2793,24 @@ mod tests {
         for tool in tools {
             tool.validate().expect("legacy execution type validates");
         }
+    }
+
+    #[test]
+    fn framework_art_execution_type_deserializes_without_host_specific_fields() {
+        let value = serde_json::from_value::<ToolDefinition>(serde_json::json!({
+            "id": "third-party-art",
+            "name": "Third-party Art",
+            "description": "External framework Art",
+            "enabled": true,
+            "execution": {
+                "type": "framework_art",
+                "framework": "script"
+            }
+        }));
+        assert!(
+            value.is_ok(),
+            "framework_art execution should deserialize: {value:?}"
+        );
     }
 
     #[test]
