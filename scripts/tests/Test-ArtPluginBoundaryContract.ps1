@@ -31,6 +31,8 @@ foreach ($requiredText in @(
     "Build-ExternalFrameworkRuntime",
     "rustc.exe",
     "/upgrade",
+    "frameworkLockRefreshRequired",
+    "art_package_integrity_failed",
     "art_hook/instantiate",
     "art_loom/execute_art_node",
     "hookBridgeExecuted"

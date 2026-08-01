@@ -503,6 +503,11 @@ $response = [ordered]@{
 
     $upgradedFramework = Install-Zip -Url "$baseUrl/v1/frameworks/$frameworkId/upgrade" -Path $thirdPartyFrameworkZipV2
     Assert-True ([string]$upgradedFramework.framework.version -eq "2.0.0") "Third-party framework upgrade did not persist version 2.0.0."
+    $staleFrameworkLockExecution = Invoke-LoomRaw -Method Post -Url "$baseUrl/v1/tools/$artId/execute" -Body @{ arguments = $arguments }
+    Assert-True ($staleFrameworkLockExecution.statusCode -eq 409) "Art with a stale framework lock did not return 409 after framework upgrade."
+    Assert-True ([string]$staleFrameworkLockExecution.body.error.code -eq "art_package_integrity_failed") "Stale framework lock error was not named art_package_integrity_failed."
+    Assert-True ([string]$staleFrameworkLockExecution.body.error.message -like "*locked framework*$frameworkId*version is no longer active*") "Stale framework lock error did not explain the inactive locked version."
+    Install-Zip -Url "$baseUrl/v1/arts/install" -Path $thirdPartyArtZip | Out-Null
     $upgradedExecution = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/tools/$artId/execute" -Body @{ arguments = $arguments }
     Assert-True ([string]$upgradedExecution.result.value -eq "plugin:hello:2.0.0") "Third-party framework upgrade did not replace runtime behavior."
 
@@ -601,6 +606,7 @@ $response = [ordered]@{
         thirdPartyArtExecuted = $true
         thirdPartyFrameworkCompiledOutsideRepository = $true
         frameworkUpgraded = $true
+        frameworkLockRefreshRequired = $true
         hookCapabilityDiscovered = $true
         hookNodeInstantiated = $true
         hookBridgeExecuted = $true
