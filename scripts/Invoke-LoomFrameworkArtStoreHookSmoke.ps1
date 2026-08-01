@@ -3,7 +3,8 @@ param(
     [string]$PackageDir = "",
     [string]$EvidenceRoot = ".\target\framework-art-store-hook-smoke",
     [ValidateSet("Debug", "Release")][string]$Configuration = "Debug",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks"
 )
 
 Set-StrictMode -Version Latest
@@ -21,6 +22,19 @@ function ConvertFrom-UnicodeCodePoints {
 $imageSearchLabel = ConvertFrom-UnicodeCodePoints @(0x56FE, 0x7247, 0x641C, 0x7D22)
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$frameworkArtifactFullPath = if ([System.IO.Path]::IsPathRooted($FrameworkArtifactRoot)) {
+    [System.IO.Path]::GetFullPath($FrameworkArtifactRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $FrameworkArtifactRoot))
+}
+$frameworkIds = @(
+    "cli_wrapper",
+    "cloud_api",
+    "script",
+    "python_art",
+    "mcp",
+    "workflow"
+)
 $smokePortHelperPath = Join-Path $repoRoot "scripts\LoomSmokePorts.ps1"
 . $smokePortHelperPath
 $packageFullPath = $null
@@ -508,6 +522,12 @@ $summaryPath = Join-Path $runRoot "summary.json"
 New-Item -ItemType Directory -Force -Path $storeRoot, $controlPlaneRoot, $appDataRoot, $localAppDataRoot, $logsRoot, $fixturesRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $storeRoot "arts"), (Join-Path $storeRoot "frameworks"), (Join-Path $storeRoot "binaries") | Out-Null
 
+foreach ($frameworkId in $frameworkIds) {
+    $sourceZip = Join-Path $frameworkArtifactFullPath "$frameworkId.zip"
+    Assert-True (Test-Path -LiteralPath $sourceZip -PathType Leaf) "Missing framework package artifact: $sourceZip. Run Build-LoomArtFrameworkPackages.ps1 first."
+    Copy-Item -LiteralPath $sourceZip -Destination (Join-Path $storeRoot "frameworks\$frameworkId.zip") -Force
+}
+
 $cloudPort = Get-LoomSmokePort
 $storePort = Get-LoomSmokePort
 $daemonPort = Get-LoomSmokePort
@@ -714,11 +734,6 @@ for raw_line in sys.stdin:
 "@
 Write-Utf8NoBomFile -Path $mcpScriptPath -Content $mcpScript
 
-$runtimeZipPath = Join-Path $storeRoot "frameworks\python_art.zip"
-New-ZipFixture `
-    -ZipPath $runtimeZipPath `
-    -FileCopies @{ "python/Launcher.py" = (Join-Path $pythonResourcesRoot "Launcher.py") } `
-    -DirectoryCopies @{ "python-embed" = (Join-Path $repoRoot "resources\python-embed") }
 
 $cliManifest = @{
     id = "store-cli-art"
@@ -984,14 +999,15 @@ try {
     Assert-Equal "store-fixture" ([string]$savedServer.server.id) "MCP server save id mismatch."
     $summary.mcpServer = $savedServer.server
 
-    $mcpFramework = Invoke-JsonPost -Uri "$baseUrl/v1/frameworks/mcp/install" -Body @{}
-    Assert-Equal "mcp" ([string]$mcpFramework.framework.id) "MCP framework install id mismatch."
-    Assert-Equal $true ([bool]$mcpFramework.framework.ready) "MCP framework should be ready after install."
-
-    $pythonFramework = Invoke-JsonPost -Uri "$baseUrl/v1/frameworks/python_art/install" -Body @{}
-    Assert-Equal "python_art" ([string]$pythonFramework.framework.id) "python_art framework install id mismatch."
-    Assert-Equal $true ([bool]$pythonFramework.framework.ready) "python_art framework should be ready after runtime download."
-    Assert-Contains "framework-runtimes" ([string]$pythonFramework.framework.readyDetail) "python_art ready detail should point at the downloaded runtime."
+    $frameworkInstallReports = @{}
+    foreach ($frameworkId in $frameworkIds) {
+        $frameworkReport = Invoke-JsonPost -Uri "$baseUrl/v1/frameworks/$frameworkId/install" -Body @{}
+        Assert-Equal $frameworkId ([string]$frameworkReport.framework.id) "Framework install id mismatch for $frameworkId."
+        Assert-Equal $true ([bool]$frameworkReport.framework.ready) "Framework should be ready after install: $frameworkId."
+        $frameworkInstallReports[$frameworkId] = $frameworkReport.framework
+    }
+    Assert-Contains "已安装框架包" ([string]$frameworkInstallReports['python_art'].readyDetail) "python_art ready detail should describe the installed framework package."
+    $summary.frameworkInstallReports = $frameworkInstallReports
 
     $frameworksAfter = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"
     $summary.frameworksAfter = $frameworksAfter.frameworks
