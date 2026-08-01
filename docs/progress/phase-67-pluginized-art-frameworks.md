@@ -73,7 +73,7 @@ Out of scope for this phase:
 
 - [ ] Task 1: Add source-contract guards before runtime changes.
 - [x] Task 2: Define framework package manifests and explicit installed state.
-- [ ] Task 3: Implement framework package install, disable, upgrade, and uninstall.
+- [x] Task 3: Implement framework package install, disable, upgrade, and uninstall.
 - [ ] Task 4: Add the generic external framework execution protocol.
 - [ ] Task 5: Convert the six sample frameworks into independent packages.
 - [ ] Task 6: Convert the six sample Arts into external Art packages.
@@ -145,6 +145,37 @@ cargo test --manifest-path .\Cargo.toml -p loom_tool_registry framework -- --noc
 powershell -NoProfile -ExecutionPolicy Bypass \
   -File .\scripts\tests\Test-ArtFrameworkPackageContract.ps1
                                                 -> passed for 6 manifests
+```
+
+## Task 3 verification
+
+Implemented and verified:
+
+- Framework packages are installed atomically under
+  `<control-plane>/frameworks/<id>/` after manifest, platform, protocol, entry,
+  and Art execution schema validation.
+- Package replacement supports upgrades without leaving a partially extracted
+  directory; unsafe ZIP paths and mismatched manifest IDs are rejected.
+- Persisted framework state now records `version` and `enabled`. Enable,
+  disable, uninstall, and upgrade operations update the same package-backed
+  state used by readiness checks.
+- Added daemon routes for direct package install, enable, disable, upgrade, and
+  uninstall while retaining the old per-ID install route as a store-backed
+  package install.
+- The local Art Store now names and serves framework ZIPs as framework packages.
+
+Verification commands and results:
+
+```text
+cargo test --manifest-path .\Cargo.toml -p loom_tool_registry -- --nocapture
+                                                -> 67 passed, 0 failed
+cargo test --manifest-path .\Cargo.toml -p loom-daemon \
+  framework_package_routes_cover_install_upgrade_disable_enable_uninstall -- --nocapture
+                                                -> passed
+cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
+                                                -> 172 passed, 0 failed
+npm run typecheck --prefix .\apps\desktop       -> passed
+npm test --prefix .\apps\desktop               -> 56 passed, 0 failed
 ```
 
 ## Acceptance checklist

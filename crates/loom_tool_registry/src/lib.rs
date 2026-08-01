@@ -831,14 +831,9 @@ fn normalize_python_art_data(data: serde_json::Value) -> serde_json::Value {
 
 fn resolve_python_launcher_path() -> Option<PathBuf> {
     let mut candidates = Vec::new();
-    // A framework runtime installed via the framework registry wins: the
-    // `python_art` runtime bundle may ship the launcher alongside the embedded
-    // interpreter (方向 A: installing the framework provisions the runtime).
-    if let Some(runtime_dir) = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-    {
+    // A framework package installed via the framework registry wins: the
+    // `python_art` package may ship the launcher alongside its interpreter.
+    if let Some(runtime_dir) = framework_packages_root_env() {
         let base = Path::new(&runtime_dir).join("python_art");
         candidates.push(base.join("python").join("Launcher.py"));
         candidates.push(base.join("Launcher.py"));
@@ -890,12 +885,8 @@ fn resolve_python_art_path(tool_id: &str, art_id: &str, art_path: Option<&str>) 
 
 fn python_arts_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    // Arts bundled inside the installed python_art framework runtime win.
-    if let Some(runtime_dir) = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-    {
+    // Arts bundled inside the installed python_art framework package win.
+    if let Some(runtime_dir) = framework_packages_root_env() {
         let base = Path::new(&runtime_dir).join("python_art");
         dirs.push(base.join("python").join("Arts"));
         dirs.push(base.join("Arts"));
@@ -2432,9 +2423,20 @@ fn configure_python_process(command: &mut Command) {
     command.env("PYTHONDONTWRITEBYTECODE", "1");
 }
 
+fn framework_packages_root_env() -> Option<String> {
+    ["LOOM_FRAMEWORK_PACKAGES_DIR", "LOOM_FRAMEWORK_RUNTIMES_DIR"]
+        .into_iter()
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
+}
+
 fn resolve_python_executable() -> PathBuf {
     let loom_python = std::env::var("LOOM_PYTHON").ok();
-    let framework_runtime_root = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR").ok();
+    let framework_runtime_root = framework_packages_root_env();
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf));
@@ -3879,8 +3881,8 @@ mod tests {
 
     #[test]
     fn resolve_python_executable_prefers_framework_runtime_dir() {
-        // A python_art runtime installed via the framework registry
-        // (<control-plane>/framework-runtimes/) must win over a packaged
+        // A python_art framework package installed via the framework registry
+        // (<control-plane>/frameworks/) must win over a packaged
         // python-embed next to the exe/cwd — this is what wires "installing the
         // framework" to "executing an art with it" (方向 A).
         let root = temp_root("python-runtime-dir");

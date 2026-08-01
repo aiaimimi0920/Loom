@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use loom_art_store::{
-    build_catalog, read_art_zip, read_binary, read_framework_runtime, store_published_zip,
+    build_catalog, read_art_zip, read_binary, read_framework_package, store_published_zip,
     StoreError,
 };
 
@@ -252,14 +252,14 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
             let Some(id) = file.strip_suffix(".zip") else {
                 return Response::json(
                     404,
-                    serde_json::json!({ "error": "framework runtime must end with .zip" }),
+                    serde_json::json!({ "error": "framework package must end with .zip" }),
                 );
             };
-            match read_framework_runtime(root, id) {
+            match read_framework_package(root, id) {
                 Ok(Some(bytes)) => Response::bytes(200, "application/zip", bytes),
                 Ok(None) => Response::json(
                     404,
-                    serde_json::json!({ "error": format!("framework runtime `{id}` not found") }),
+                    serde_json::json!({ "error": format!("framework package `{id}` not found") }),
                 ),
                 Err(error) => store_error_response(error),
             }

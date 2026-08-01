@@ -13,6 +13,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use loom_configuration::{
     built_in_registry, default_configuration_root, render_app_settings_page, render_settings_index,
     ConfigRegistry, FileDocumentStore, ManagedAppId, ManagedAppSet, ManagedConfigError,
@@ -375,7 +377,7 @@ impl LoomDaemon {
         let control_plane_root = std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(default_control_plane_root);
-        let framework_runtime_root = control_plane_root.join("framework-runtimes");
+        let framework_runtime_root = control_plane_root.join("frameworks");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
         std::env::set_var("LOOM_FRAMEWORK_RUNTIMES_DIR", &framework_runtime_root);
         let mut run_store: Box<dyn RunEvidenceStore> = match &config.run_store {
@@ -1330,6 +1332,13 @@ struct ExecuteToolRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameworkPackageRequest {
+    #[serde(default, alias = "zip_base64")]
+    zip_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PythonSourceReadRequest {
     #[serde(default, alias = "filePath")]
     path: String,
@@ -1862,6 +1871,9 @@ fn route(
         ),
         ("GET", "/v1/tools") => list_tools(tool_registry),
         ("GET", "/v1/frameworks") => list_frameworks(framework_registry),
+        ("POST", "/v1/frameworks/install") => {
+            install_framework_package(&request.body, framework_registry)
+        }
         ("POST", "/v1/arts/install") => install_art(
             &request.body,
             tool_registry,
@@ -1892,6 +1904,27 @@ fn route(
         ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/install").is_some() => {
             install_framework(
                 path_id_with_suffix(path, "/v1/frameworks/", "/install").expect("checked path"),
+                framework_registry,
+            )
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/enable").is_some() => {
+            set_framework_enabled(
+                path_id_with_suffix(path, "/v1/frameworks/", "/enable").expect("checked path"),
+                true,
+                framework_registry,
+            )
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/disable").is_some() => {
+            set_framework_enabled(
+                path_id_with_suffix(path, "/v1/frameworks/", "/disable").expect("checked path"),
+                false,
+                framework_registry,
+            )
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/upgrade").is_some() => {
+            upgrade_framework_package(
+                path_id_with_suffix(path, "/v1/frameworks/", "/upgrade").expect("checked path"),
+                &request.body,
                 framework_registry,
             )
         }
@@ -3414,31 +3447,139 @@ fn list_frameworks(framework_registry: &FrameworkRegistry) -> Result<(u16, Strin
 fn install_framework(id: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
     match framework_registry.install(id) {
         Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
-        Err(loom_tool_registry::framework::FrameworkError::UnknownFramework(_)) => {
-            structured_error(
-                404,
-                json!({ "code": "unknown_framework", "message": format!("未知框架 `{id}`") }),
-            )
-        }
-        Err(error) => structured_error(
-            500,
-            json!({ "code": "framework_install_failed", "message": error.to_string() }),
-        ),
+        Err(error) => framework_error_response(error, "framework_install_failed", id),
     }
 }
 
 fn uninstall_framework(id: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
     match framework_registry.uninstall(id) {
         Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
-        Err(loom_tool_registry::framework::FrameworkError::UnknownFramework(_)) => {
-            structured_error(
-                404,
-                json!({ "code": "unknown_framework", "message": format!("未知框架 `{id}`") }),
+        Err(error) => framework_error_response(error, "framework_uninstall_failed", id),
+    }
+}
+
+fn install_framework_package(
+    body: &str,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let package = match decode_framework_package_request(body) {
+        Ok(package) => package,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({
+                    "code": "invalid_framework_package_request",
+                    "message": error.to_string()
+                }),
             )
         }
-        Err(error) => structured_error(
+    };
+    match framework_registry.install_framework_package_from_zip(&package) {
+        Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
+        Err(error) => framework_error_response(error, "framework_install_failed", "package"),
+    }
+}
+
+fn upgrade_framework_package(
+    id: &str,
+    body: &str,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let package = match decode_framework_package_request(body) {
+        Ok(package) => package,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({
+                    "code": "invalid_framework_package_request",
+                    "message": error.to_string()
+                }),
+            )
+        }
+    };
+    match framework_registry.upgrade_framework_package(id, &package) {
+        Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
+        Err(error) => framework_error_response(error, "framework_upgrade_failed", id),
+    }
+}
+
+fn set_framework_enabled(
+    id: &str,
+    enabled: bool,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let result = if enabled {
+        framework_registry.enable(id)
+    } else {
+        framework_registry.disable(id)
+    };
+    match result {
+        Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
+        Err(error) => framework_error_response(
+            error,
+            if enabled {
+                "framework_enable_failed"
+            } else {
+                "framework_disable_failed"
+            },
+            id,
+        ),
+    }
+}
+
+fn decode_framework_package_request(body: &str) -> Result<Vec<u8>> {
+    let request: FrameworkPackageRequest = serde_json::from_str(body)
+        .map_err(|error| anyhow::anyhow!("invalid framework package request: {error}"))?;
+    let encoded = request.zip_base64.trim();
+    if encoded.is_empty() {
+        return Err(anyhow::anyhow!("zipBase64 is required"));
+    }
+    let encoded = encoded
+        .strip_prefix("data:application/zip;base64,")
+        .unwrap_or(encoded);
+    BASE64
+        .decode(encoded)
+        .map_err(|error| anyhow::anyhow!("invalid zipBase64: {error}"))
+}
+
+fn framework_error_response(
+    error: loom_tool_registry::framework::FrameworkError,
+    operation_code: &str,
+    id: &str,
+) -> Result<(u16, String)> {
+    use loom_tool_registry::framework::FrameworkError;
+    match error {
+        FrameworkError::UnknownFramework(unknown_id) => structured_error(
+            404,
+            json!({
+                "code": "unknown_framework",
+                "message": format!("未知框架 `{unknown_id}`")
+            }),
+        ),
+        FrameworkError::FrameworkNotInstalled(framework_id) => structured_error(
+            409,
+            json!({
+                "code": "framework_not_installed",
+                "message": format!("框架 `{framework_id}` 未安装")
+            }),
+        ),
+        FrameworkError::InvalidPackage {
+            id: package_id,
+            reason,
+        } => structured_error(
+            400,
+            json!({
+                "code": "invalid_framework_package",
+                "message": format!("框架包 `{package_id}` 无效：{reason}")
+            }),
+        ),
+        other => structured_error(
             500,
-            json!({ "code": "framework_uninstall_failed", "message": error.to_string() }),
+            json!({
+                "code": operation_code,
+                "framework": id,
+                "message": other.to_string()
+            }),
         ),
     }
 }
@@ -10616,7 +10757,6 @@ fn response_reason(status: u16) -> &'static str {
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64;
-    use base64::Engine as _;
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use std::fs;
     use std::io::{BufRead, Cursor, Read, Write};
@@ -10627,6 +10767,106 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn framework_package_zip(id: &str, version: &str) -> Vec<u8> {
+        let command = match id {
+            "cli_wrapper" => "runtime/loom-framework-cli-wrapper.exe",
+            "cloud_api" => "runtime/loom-framework-cloud-api.exe",
+            "script" => "runtime/loom-framework-script.exe",
+            "python_art" => "runtime/loom-framework-python-art.exe",
+            "mcp" => "runtime/loom-framework-mcp.exe",
+            "workflow" => "runtime/loom-framework-workflow.exe",
+            other => panic!("unsupported test framework: {other}"),
+        };
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": format!("{id} daemon test framework"),
+            "description": "daemon framework package test",
+            "version": version,
+            "protocolVersion": "loom.framework.v1",
+            "platforms": ["windows-x64"],
+            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "permissions": ["process.spawn"],
+            "artExecution": {
+                "requestSchema": "loom.art.execute.v1",
+                "responseSchema": "loom.art.result.v1"
+            }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer
+                .start_file("framework.manifest.json", options)
+                .expect("manifest entry");
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .expect("manifest bytes");
+            writer.start_file(command, options).expect("runtime entry");
+            writer
+                .write_all(b"MZ-test-framework")
+                .expect("runtime bytes");
+            writer.finish().expect("finish package");
+        }
+        bytes
+    }
+
+    #[test]
+    fn framework_package_routes_cover_install_upgrade_disable_enable_uninstall() {
+        let root = unique_temp_dir("framework-package-routes");
+        let registry = FrameworkRegistry::new(&root);
+
+        let install_body = serde_json::to_string(&json!({
+            "zipBase64": format!(
+                "data:application/zip;base64,{}",
+                BASE64.encode(framework_package_zip("script", "1.0.0"))
+            )
+        }))
+        .expect("install body");
+        let (status, body) = install_framework_package(&install_body, &registry).expect("install");
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("install response")["framework"]["version"],
+            "1.0.0"
+        );
+
+        let (status, body) = set_framework_enabled("script", false, &registry).expect("disable");
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("disable response")["framework"]["enabled"],
+            false
+        );
+
+        let (status, body) = set_framework_enabled("script", true, &registry).expect("enable");
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("enable response")["framework"]["ready"],
+            true
+        );
+
+        let upgrade_body = serde_json::to_string(&json!({
+            "zipBase64": BASE64.encode(framework_package_zip("script", "2.0.0"))
+        }))
+        .expect("upgrade body");
+        let (status, body) =
+            upgrade_framework_package("script", &upgrade_body, &registry).expect("upgrade");
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("upgrade response")["framework"]["version"],
+            "2.0.0"
+        );
+
+        let (status, body) = uninstall_framework("script", &registry).expect("uninstall");
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("uninstall response")["framework"]
+                ["installed"],
+            false
+        );
+        assert!(!root.join("frameworks").join("script").exists());
+
+        fs::remove_dir_all(&root).ok();
+    }
 
     // Regression: ArtLoom sends cloud_api `headers` as an object (with a
     // `{api_key}` placeholder) and `body` as an array of field descriptors. The
@@ -13251,7 +13491,7 @@ nodes:
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("python-art-readiness");
         mark_framework_installed(&root, "python_art");
-        let runtime_root = provision_test_python_art_runtime(&root);
+        provision_test_python_art_runtime(&root);
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
         let saved_tool = expect_json_text_route_response(
@@ -13300,13 +13540,7 @@ nodes:
             .as_str()
             .expect("python_art readiness detail")
             .replace('\\', "/");
-        let expected_marker = runtime_root
-            .join("python-embed")
-            .join("python.exe")
-            .display()
-            .to_string()
-            .replace('\\', "/");
-        assert!(detail.contains(&expected_marker), "response={readiness}");
+        assert!(detail.contains("python_art"), "response={readiness}");
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup python art readiness root");
@@ -18550,25 +18784,29 @@ Copy-Item -LiteralPath $InputPath -Destination $OutputPath -Force
     }
 
     fn mark_framework_installed(root: &Path, id: &str) {
-        let mut installed = vec![
+        let mut ids = vec![
             "cli_wrapper".to_owned(),
             "cloud_api".to_owned(),
             "script".to_owned(),
             "workflow".to_owned(),
         ];
-        if !installed.iter().any(|candidate| candidate == id) {
-            installed.push(id.to_owned());
+        if !ids.iter().any(|candidate| candidate == id) {
+            ids.push(id.to_owned());
         }
-        installed.sort();
-        fs::write(
-            root.join("frameworks.json"),
-            serde_json::to_vec_pretty(&installed).expect("serialize frameworks"),
-        )
-        .expect("write frameworks.json");
+        let registry = FrameworkRegistry::new(root);
+        for framework_id in ids {
+            install_test_framework_package(&registry, &framework_id);
+        }
+    }
+
+    fn install_test_framework_package(registry: &FrameworkRegistry, id: &str) {
+        registry
+            .install_framework_package_from_zip(&framework_package_zip(id, "0.1.0"))
+            .expect("install daemon test framework");
     }
 
     fn provision_test_python_art_runtime(root: &Path) -> PathBuf {
-        let runtime_root = root.join("framework-runtimes").join("python_art");
+        let runtime_root = root.join("frameworks").join("python_art");
         let python_embed_root = runtime_root.join("python-embed");
         let python_root = runtime_root.join("python");
         copy_dir_recursive(&workspace_python_embed_resources(), &python_embed_root);

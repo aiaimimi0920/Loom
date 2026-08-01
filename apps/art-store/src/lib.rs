@@ -20,10 +20,9 @@ use serde::Serialize;
 
 pub const ARTS_DIR: &str = "arts";
 pub const BINARIES_DIR: &str = "binaries";
-/// Subdir holding framework runtime bundles, served as `/frameworks/<id>.zip`:
-/// `<root>/frameworks/<id>.zip`. A framework's runtime (e.g. python_art's
-/// embedded Python + launcher) is downloaded from here by the daemon's
-/// framework registry.
+/// Subdir holding framework package bundles, served as `/frameworks/<id>.zip`:
+/// `<root>/frameworks/<id>.zip`. The daemon downloads an independently built
+/// framework package from here and validates its manifest before installing it.
 pub const FRAMEWORKS_DIR: &str = "frameworks";
 const MANIFEST_NAME: &str = "manifest.json";
 
@@ -201,17 +200,17 @@ pub fn read_binary(root: &Path, name: &str) -> Result<Option<Vec<u8>>, StoreErro
     }
 }
 
-/// Absolute path to a framework runtime bundle zip, validated for a safe id.
-pub fn framework_runtime_path(root: &Path, id: &str) -> Result<PathBuf, StoreError> {
+/// Absolute path to a framework package ZIP, validated for a safe id.
+pub fn framework_package_path(root: &Path, id: &str) -> Result<PathBuf, StoreError> {
     if !is_safe_art_id(id) {
         return Err(StoreError::InvalidArtId(id.to_owned()));
     }
     Ok(root.join(FRAMEWORKS_DIR).join(format!("{id}.zip")))
 }
 
-/// Read a framework runtime bundle zip by framework id.
-pub fn read_framework_runtime(root: &Path, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
-    let path = framework_runtime_path(root, id)?;
+/// Read a framework package ZIP by framework id.
+pub fn read_framework_package(root: &Path, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
+    let path = framework_package_path(root, id)?;
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),

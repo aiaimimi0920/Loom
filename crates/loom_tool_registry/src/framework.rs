@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,9 +20,9 @@ const FRAMEWORKS_FILE: &str = "frameworks.json";
 const FRAMEWORK_MANIFEST_FILE: &str = "framework.manifest.json";
 const FRAMEWORK_PROTOCOL_VERSION: &str = "loom.framework.v1";
 const WINDOWS_X64_PLATFORM: &str = "windows-x64";
-/// Subdir under the control-plane root holding installed framework runtimes:
-/// `<control-plane>/framework-runtimes/<id>/`.
-const FRAMEWORK_RUNTIMES_DIR: &str = "framework-runtimes";
+/// Subdir under the control-plane root holding installed framework packages:
+/// `<control-plane>/frameworks/<id>/`.
+const FRAMEWORK_PACKAGES_DIR: &str = "frameworks";
 
 /// The 6 framework ids, matching `ToolExecution` variants one-to-one.
 pub const FRAMEWORK_IDS: [&str; 6] = [
@@ -178,14 +178,14 @@ pub fn framework_needs_runtime(id: &str) -> bool {
 }
 
 /// Probe whether a framework package's runtime is available. `runtime_root` is
-/// `<control-plane>/framework-runtimes`. The package must contain a valid
+/// `<control-plane>/frameworks`. The package must contain a valid
 /// `framework.manifest.json` and the manifest's process entry must exist.
 pub fn framework_ready(id: &str) -> (bool, String) {
     framework_ready_in(id, None)
 }
 
 /// Readiness probe that also checks a control-plane runtime dir. `runtime_root`
-/// points at `<control-plane>/framework-runtimes`; the framework's own runtime
+/// points at `<control-plane>/frameworks`; the framework's own package
 /// lives at `<runtime_root>/<id>/`.
 pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, String) {
     if !is_valid_framework(id) {
@@ -223,7 +223,15 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     if manifest.entry.kind != "process" || manifest.entry.command.trim().is_empty() {
         return (false, "框架包缺少有效的进程入口".to_owned());
     }
-    let entry_path = package_dir.join(&manifest.entry.command);
+    let command_path = Path::new(&manifest.entry.command);
+    if command_path.is_absolute()
+        || command_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
+    {
+        return (false, "框架入口必须位于框架包目录内".to_owned());
+    }
+    let entry_path = package_dir.join(command_path);
     if !entry_path.is_file() {
         return (false, format!("框架入口不存在：{}", entry_path.display()));
     }
@@ -240,9 +248,63 @@ fn read_framework_manifest(path: &Path) -> Result<FrameworkPackageManifest, Stri
         .map_err(|error| format!("框架包清单无效 {}：{error}", path.display()))
 }
 
+fn validate_framework_manifest(
+    manifest: &FrameworkPackageManifest,
+    package_dir: &Path,
+) -> Result<(), FrameworkError> {
+    let invalid = |reason: String| FrameworkError::InvalidPackage {
+        id: manifest.id.clone(),
+        reason,
+    };
+    if manifest.version.trim().is_empty() {
+        return Err(invalid("version is required".to_owned()));
+    }
+    if manifest.protocol_version != FRAMEWORK_PROTOCOL_VERSION {
+        return Err(invalid(format!(
+            "unsupported protocol {}",
+            manifest.protocol_version
+        )));
+    }
+    if !manifest
+        .platforms
+        .iter()
+        .any(|platform| platform == WINDOWS_X64_PLATFORM)
+    {
+        return Err(invalid("windows-x64 is not supported".to_owned()));
+    }
+    if manifest.entry.kind != "process" {
+        return Err(invalid("entry.kind must be process".to_owned()));
+    }
+    if manifest.entry.command.trim().is_empty() {
+        return Err(invalid("entry.command is required".to_owned()));
+    }
+    let command_path = Path::new(&manifest.entry.command);
+    if command_path.is_absolute()
+        || command_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
+    {
+        return Err(invalid(
+            "entry.command must be a relative package path".to_owned(),
+        ));
+    }
+    if !package_dir.join(command_path).is_file() {
+        return Err(invalid(format!(
+            "entry.command does not exist: {}",
+            manifest.entry.command
+        )));
+    }
+    if manifest.art_execution.request_schema != "loom.art.execute.v1"
+        || manifest.art_execution.response_schema != "loom.art.result.v1"
+    {
+        return Err(invalid("unsupported Art execution schema".to_owned()));
+    }
+    Ok(())
+}
+
 /// Tracks which framework packages the user has installed, persisted to
 /// `<control-plane>/frameworks.json`. `root` also anchors installed framework
-/// packages under `<root>/framework-runtimes/<id>/`.
+/// packages under `<root>/frameworks/<id>/`.
 #[derive(Debug, Clone)]
 pub struct FrameworkRegistry {
     root: PathBuf,
@@ -258,10 +320,10 @@ impl FrameworkRegistry {
         }
     }
 
-    /// Directory holding this framework's installed runtime (if any):
-    /// `<root>/framework-runtimes/<id>/`.
+    /// Directory holding this framework's installed package:
+    /// `<root>/frameworks/<id>/`.
     pub fn runtime_dir(&self, id: &str) -> PathBuf {
-        self.root.join(FRAMEWORK_RUNTIMES_DIR).join(id)
+        self.root.join(FRAMEWORK_PACKAGES_DIR).join(id)
     }
 
     /// The set of installed framework ids. A persisted state entry is not
@@ -298,7 +360,7 @@ impl FrameworkRegistry {
         if !self.is_enabled(id) {
             return (false, "已禁用".to_owned());
         }
-        let runtime_root = self.root.join(FRAMEWORK_RUNTIMES_DIR);
+        let runtime_root = self.root.join(FRAMEWORK_PACKAGES_DIR);
         framework_ready_in(id, Some(&runtime_root))
     }
 
@@ -313,8 +375,9 @@ impl FrameworkRegistry {
         self.install_with_runtime_fetcher(id, &default_runtime_fetcher)
     }
 
-    /// Install variant with an injectable runtime fetcher (a closure returning
-    /// the runtime zip bytes for a framework id). Testable without the network.
+    /// Install variant with an injectable package fetcher (a closure returning
+    /// the framework package zip bytes for a framework id). Testable without
+    /// the network.
     pub fn install_with_runtime_fetcher<F>(
         &self,
         id: &str,
@@ -326,35 +389,160 @@ impl FrameworkRegistry {
         if !is_valid_framework(id) {
             return Err(FrameworkError::UnknownFramework(id.to_owned()));
         }
-        let runtime_dir = self.runtime_dir(id);
-        if self.package_manifest(id).is_none() {
-            let zip = fetch_runtime(id)?;
-            unpack_runtime_zip(id, &zip, &runtime_dir)?;
+        let package = fetch_runtime(id)?;
+        self.install_framework_package_zip(&package, Some(id))
+    }
+
+    /// Install a framework package supplied as a ZIP. The ZIP must contain a
+    /// root `framework.manifest.json` and the manifest's process entry.
+    pub fn install_framework_package_from_zip(
+        &self,
+        zip_bytes: &[u8],
+    ) -> Result<FrameworkStatus, FrameworkError> {
+        self.install_framework_package_zip(zip_bytes, None)
+    }
+
+    /// Upgrade a package by replacing its installed directory with a fully
+    /// validated new ZIP. Installation and upgrade share the same atomic path
+    /// so a bad package cannot leave a half-written runtime behind.
+    pub fn upgrade_framework_package_from_zip(
+        &self,
+        zip_bytes: &[u8],
+    ) -> Result<FrameworkStatus, FrameworkError> {
+        self.install_framework_package_zip(zip_bytes, None)
+    }
+
+    /// Upgrade a specific installed framework package and reject a ZIP whose
+    /// manifest belongs to another framework.
+    pub fn upgrade_framework_package(
+        &self,
+        id: &str,
+        zip_bytes: &[u8],
+    ) -> Result<FrameworkStatus, FrameworkError> {
+        if !is_valid_framework(id) {
+            return Err(FrameworkError::UnknownFramework(id.to_owned()));
         }
-        let (ready, detail) = framework_ready_in(id, Some(&self.root.join(FRAMEWORK_RUNTIMES_DIR)));
-        if !ready {
-            let _ = fs::remove_dir_all(&runtime_dir);
-            return Err(FrameworkError::RuntimeUnavailable {
-                id: id.to_owned(),
-                reason: detail,
-            });
+        if !self.is_installed(id) {
+            return Err(FrameworkError::FrameworkNotInstalled(id.to_owned()));
         }
-        let manifest =
-            self.package_manifest(id)
-                .ok_or_else(|| FrameworkError::RuntimeUnavailable {
-                    id: id.to_owned(),
-                    reason: "框架包清单不存在".to_owned(),
-                })?;
+        self.install_framework_package_zip(zip_bytes, Some(id))
+    }
+
+    /// Enable an installed framework package.
+    pub fn enable(&self, id: &str) -> Result<FrameworkStatus, FrameworkError> {
+        self.set_enabled(id, true)
+    }
+
+    /// Disable an installed framework package.
+    pub fn disable(&self, id: &str) -> Result<FrameworkStatus, FrameworkError> {
+        self.set_enabled(id, false)
+    }
+
+    fn set_enabled(&self, id: &str, enabled: bool) -> Result<FrameworkStatus, FrameworkError> {
+        if !is_valid_framework(id) {
+            return Err(FrameworkError::UnknownFramework(id.to_owned()));
+        }
+        if !self.is_installed(id) {
+            return Err(FrameworkError::FrameworkNotInstalled(id.to_owned()));
+        }
         let mut installed = self.installation_states();
-        installed.insert(
-            id.to_owned(),
-            FrameworkInstallationState {
-                version: manifest.version,
-                enabled: true,
-            },
-        );
+        let state = installed
+            .get_mut(id)
+            .ok_or_else(|| FrameworkError::FrameworkNotInstalled(id.to_owned()))?;
+        state.enabled = enabled;
+        if let Some(manifest) = self.package_manifest(id) {
+            state.version = manifest.version;
+        }
         self.write_installed(&installed)?;
         Ok(self.status_of(id))
+    }
+
+    fn install_framework_package_zip(
+        &self,
+        zip_bytes: &[u8],
+        expected_id: Option<&str>,
+    ) -> Result<FrameworkStatus, FrameworkError> {
+        let staging = self.staging_dir(expected_id.unwrap_or("package"));
+        let result = (|| {
+            unpack_runtime_zip(expected_id.unwrap_or("package"), zip_bytes, &staging)?;
+            let manifest = read_framework_manifest(&staging.join(FRAMEWORK_MANIFEST_FILE))
+                .map_err(|reason| FrameworkError::InvalidPackage {
+                    id: expected_id.unwrap_or("package").to_owned(),
+                    reason,
+                })?;
+            if !is_valid_framework(&manifest.id) {
+                return Err(FrameworkError::UnknownFramework(manifest.id));
+            }
+            if let Some(expected_id) = expected_id {
+                if manifest.id != expected_id {
+                    return Err(FrameworkError::InvalidPackage {
+                        id: expected_id.to_owned(),
+                        reason: format!("manifest id is {}", manifest.id),
+                    });
+                }
+            }
+            validate_framework_manifest(&manifest, &staging)?;
+
+            let id = manifest.id.clone();
+            let target = self.runtime_dir(&id);
+            let packages_root = self.root.join(FRAMEWORK_PACKAGES_DIR);
+            fs::create_dir_all(&packages_root)?;
+            let backup = self.backup_dir(&id);
+            let had_old_package = target.exists();
+            if had_old_package {
+                if backup.exists() {
+                    fs::remove_dir_all(&backup)?;
+                }
+                fs::rename(&target, &backup)?;
+            }
+            if let Err(error) = fs::rename(&staging, &target) {
+                if had_old_package {
+                    let _ = fs::rename(&backup, &target);
+                }
+                return Err(FrameworkError::Io(error));
+            }
+
+            let mut installed = self.installation_states();
+            installed.insert(
+                id.clone(),
+                FrameworkInstallationState {
+                    version: manifest.version,
+                    enabled: true,
+                },
+            );
+            if let Err(error) = self.write_installed(&installed) {
+                let _ = fs::remove_dir_all(&target);
+                if had_old_package {
+                    let _ = fs::rename(&backup, &target);
+                }
+                return Err(error);
+            }
+            if had_old_package {
+                fs::remove_dir_all(&backup)?;
+            }
+            Ok(self.status_of(&id))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        result
+    }
+
+    fn staging_dir(&self, id: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        self.root.join(format!(".loom-framework-{id}-{nonce}"))
+    }
+
+    fn backup_dir(&self, id: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        self.root
+            .join(format!(".loom-framework-backup-{id}-{nonce}"))
     }
 
     /// Mark a framework uninstalled and remove any downloaded runtime. Errors on
@@ -560,6 +748,10 @@ fn is_valid_framework(id: &str) -> bool {
 pub enum FrameworkError {
     #[error("unknown framework `{0}`")]
     UnknownFramework(String),
+    #[error("framework `{0}` is not installed")]
+    FrameworkNotInstalled(String),
+    #[error("invalid framework package `{id}`: {reason}")]
+    InvalidPackage { id: String, reason: String },
     #[error("framework `{id}` has no configured runtime download source (set LOOM_ART_STORE_URL or LOOM_FRAMEWORK_RUNTIME_URL)")]
     RuntimeSourceMissing { id: String },
     #[error("framework `{id}` runtime download failed: {reason}")]
@@ -706,6 +898,10 @@ mod tests {
     }
 
     fn fake_framework_package_zip(id: &str) -> Vec<u8> {
+        fake_framework_package_zip_with_version(id, "0.1.0")
+    }
+
+    fn fake_framework_package_zip_with_version(id: &str, version: &str) -> Vec<u8> {
         use std::io::Write;
         let command = match id {
             "cli_wrapper" => "runtime/loom-framework-cli-wrapper.exe",
@@ -720,7 +916,7 @@ mod tests {
             "id": id,
             "name": format!("{id} test framework"),
             "description": "test framework",
-            "version": "0.1.0",
+            "version": version,
             "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
             "platforms": [WINDOWS_X64_PLATFORM],
             "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
@@ -749,6 +945,77 @@ mod tests {
         buf
     }
 
+    #[test]
+    fn framework_package_install_uses_package_directory_and_replaces_version() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+
+        let first = registry
+            .install_with_runtime_fetcher("script", &|_id| {
+                Ok(fake_framework_package_zip_with_version("script", "0.1.0"))
+            })
+            .expect("install first package");
+        assert_eq!(first.version.as_deref(), Some("0.1.0"));
+        assert!(root
+            .join("frameworks")
+            .join("script")
+            .join(FRAMEWORK_MANIFEST_FILE)
+            .is_file());
+
+        let second = registry
+            .install_with_runtime_fetcher("script", &|_id| {
+                Ok(fake_framework_package_zip_with_version("script", "0.2.0"))
+            })
+            .expect("upgrade package");
+        assert_eq!(second.version.as_deref(), Some("0.2.0"));
+        assert!(second.ready);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn framework_package_can_be_disabled_and_reenabled() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip("script"))
+            .expect("install package");
+
+        let disabled = registry.disable("script").expect("disable package");
+        assert!(disabled.installed);
+        assert!(!disabled.enabled);
+        assert!(!disabled.ready);
+        assert_eq!(disabled.ready_detail, "已禁用");
+
+        let enabled = registry.enable("script").expect("enable package");
+        assert!(enabled.installed);
+        assert!(enabled.enabled);
+        assert!(enabled.ready);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn framework_package_rejects_unsafe_zip_paths() {
+        use std::io::Write;
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let mut zip_bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file("../escape.txt", opts).unwrap();
+            writer.write_all(b"escape").unwrap();
+            writer.finish().unwrap();
+        }
+        let error = registry
+            .install_framework_package_from_zip(&zip_bytes)
+            .expect_err("unsafe package path must fail");
+        assert!(matches!(error, FrameworkError::RuntimeUnpackFailed { .. }));
+        assert!(!root.join("escape.txt").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     // Build a complete package zip for python_art. The package manifest and
     // process entry are required even when the package also carries Python.
     fn fake_python_runtime_zip() -> Vec<u8> {
@@ -768,9 +1035,9 @@ mod tests {
         assert!(status.installed);
         assert!(status.ready, "package entry present => ready");
         assert!(registry.is_installed("python_art"));
-        // The runtime landed under framework-runtimes/python_art/.
+        // The package landed under frameworks/python_art/.
         assert!(root
-            .join(FRAMEWORK_RUNTIMES_DIR)
+            .join(FRAMEWORK_PACKAGES_DIR)
             .join("python_art")
             .join("python-embed/python.exe")
             .is_file());
@@ -779,7 +1046,7 @@ mod tests {
         registry.uninstall("python_art").expect("uninstall");
         assert!(!registry.is_installed("python_art"));
         assert!(!root
-            .join(FRAMEWORK_RUNTIMES_DIR)
+            .join(FRAMEWORK_PACKAGES_DIR)
             .join("python_art")
             .exists());
         std::fs::remove_dir_all(&root).ok();

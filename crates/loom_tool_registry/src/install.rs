@@ -491,11 +491,78 @@ mod tests {
         buf
     }
 
+    fn install_test_framework(framework: &FrameworkRegistry, id: &str) {
+        let command = match id {
+            "cli_wrapper" => "runtime/loom-framework-cli-wrapper.exe",
+            "cloud_api" => "runtime/loom-framework-cloud-api.exe",
+            "script" => "runtime/loom-framework-script.exe",
+            "python_art" => "runtime/loom-framework-python-art.exe",
+            "mcp" => "runtime/loom-framework-mcp.exe",
+            "workflow" => "runtime/loom-framework-workflow.exe",
+            other => panic!("unknown test framework: {other}"),
+        };
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": format!("{id} test framework"),
+            "description": "test framework",
+            "version": "0.1.0",
+            "protocolVersion": "loom.framework.v1",
+            "platforms": ["windows-x64"],
+            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "permissions": ["process.spawn"],
+            "artExecution": {
+                "requestSchema": "loom.art.execute.v1",
+                "responseSchema": "loom.art.result.v1"
+            }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let opts = SimpleFileOptions::default();
+            writer.start_file("framework.manifest.json", opts).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file(command, opts).unwrap();
+            writer.write_all(b"MZ-test-framework").unwrap();
+            writer.finish().unwrap();
+        }
+        framework
+            .install_framework_package_from_zip(&bytes)
+            .expect("install test framework");
+    }
+
     fn build_runtime_zip(extra: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
             let opts = SimpleFileOptions::default();
+            let manifest = serde_json::json!({
+                "id": "python_art",
+                "name": "python_art test framework",
+                "description": "test framework",
+                "version": "0.1.0",
+                "protocolVersion": "loom.framework.v1",
+                "platforms": ["windows-x64"],
+                "entry": {
+                    "kind": "process",
+                    "command": "runtime/loom-framework-python-art.exe",
+                    "args": ["--stdio"]
+                },
+                "permissions": ["process.spawn"],
+                "artExecution": {
+                    "requestSchema": "loom.art.execute.v1",
+                    "responseSchema": "loom.art.result.v1"
+                }
+            });
+            writer.start_file("framework.manifest.json", opts).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer
+                .start_file("runtime/loom-framework-python-art.exe", opts)
+                .unwrap();
+            writer.write_all(b"MZ-test-framework").unwrap();
             for (name, bytes) in extra {
                 writer.start_file(*name, opts).unwrap();
                 writer.write_all(bytes).unwrap();
@@ -518,7 +585,7 @@ mod tests {
     fn installs_package_extracts_files_and_rewrites_paths() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
-        // cli_wrapper is built-in => installed + ready by default.
+        install_test_framework(&framework, "cli_wrapper");
         let registry = ToolRegistry::new(root.join("tools"));
 
         let manifest = r#"{"id":"pingo-art","name":"Pingo","description":"compress","enabled":true,
@@ -553,6 +620,7 @@ mod tests {
     fn install_preserves_non_bundled_cli_command_names() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
         let registry = ToolRegistry::new(root.join("tools"));
 
         let manifest = r#"{"id":"shell-copy-art","name":"Shell Copy","description":"copy","enabled":true,
@@ -573,6 +641,7 @@ mod tests {
     fn verifies_bundled_binary_hash_and_reports_it() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
         let registry = ToolRegistry::new(root.join("tools"));
 
         let exe = b"MZ-fake-exe";
@@ -593,6 +662,7 @@ mod tests {
     fn rejects_bundled_binary_hash_mismatch() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
         let registry = ToolRegistry::new(root.join("tools"));
 
         let manifest = r#"{"id":"pingo-badhash","name":"Pingo","description":"c","enabled":true,
@@ -608,6 +678,7 @@ mod tests {
     fn rejects_binary_neither_bundled_nor_downloadable() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
         let registry = ToolRegistry::new(root.join("tools"));
 
         let manifest = r#"{"id":"pingo-nobs","name":"Pingo","description":"c","enabled":true,
@@ -650,6 +721,7 @@ mod tests {
     fn returns_dependent_arts_from_manifest() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "workflow");
         let registry = ToolRegistry::new(root.join("tools"));
         let manifest = r#"{"id":"wf-art","name":"WF","description":"d","enabled":true,
             "execution":{"type":"workflow","workflowId":"wf"},
@@ -665,6 +737,8 @@ mod tests {
     fn recursive_install_pulls_dependent_arts() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "workflow");
+        install_test_framework(&framework, "cloud_api");
         let registry = ToolRegistry::new(root.join("tools"));
 
         // Root workflow art depends on dep-1; dep-1 depends on dep-2.
@@ -701,6 +775,7 @@ mod tests {
     fn package_roundtrips_installed_art() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
         let registry = ToolRegistry::new(root.join("tools"));
         let manifest = r#"{"id":"pkg-art","name":"Pkg","description":"d","enabled":true,
             "execution":{"type":"cli_wrapper","command":"bin/tool.exe","args":["{{input}}"]}}"#;
