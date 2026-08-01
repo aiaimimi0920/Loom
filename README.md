@@ -177,16 +177,20 @@ The current framework ids are:
 - `mcp`
 - `workflow`
 
-Built-in frameworks (`cli_wrapper`, `cloud_api`, `script`, `workflow`) are
-installed by default. `python_art` requires an explicit runtime installation so
-Loom can provision its own interpreter under the control-plane root instead of
-depending on an ambient machine-wide Python.
+All six frameworks are optional packages and are not installed in a fresh
+control plane. Install a framework ZIP before installing an Art ZIP; Loom
+validates the package manifest, process entry, protocol version, and platform
+before marking the framework ready.
 
 Daemon routes:
 
 ```http
 GET  /v1/frameworks
+POST /v1/frameworks/install
 POST /v1/frameworks/{frameworkId}/install
+POST /v1/frameworks/{frameworkId}/enable
+POST /v1/frameworks/{frameworkId}/disable
+POST /v1/frameworks/{frameworkId}/upgrade
 POST /v1/frameworks/{frameworkId}/uninstall
 GET  /v1/tools/{toolId}/readiness
 POST /v1/arts/install
@@ -221,67 +225,35 @@ Point the daemon at that store with:
 $env:LOOM_ART_STORE_URL = "http://127.0.0.1:8790"
 ```
 
-To rebuild and locally install the repo-owned `图片压缩` Art from the official
-portable Pingo package, run:
+The six repo-owned sample framework packages and Art packages are built
+independently of the default Loom release:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Install-LoomImageCompressArt.ps1 `
-  -ForceDownload
+  -File .\scripts\Build-LoomArtFrameworkPackages.ps1 `
+  -OutputRoot .\.loom-art-store-data\frameworks
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Build-LoomSampleArtPackages.ps1 `
+  -OutputRoot .\.loom-art-store-data\arts
 ```
 
-That script downloads `https://css-ig.net/bin/pingo-win64.zip`, rebuilds the
-Art ZIP, publishes it into `.loom-art-store-data\arts\`, and by default
-installs it directly into `%APPDATA%\Loom\control-plane\arts\...`. The default
-mode is `local` because binary-backed Art ZIPs can exceed the daemon's direct
-`POST /v1/arts/install` body limit once base64 encoded. If you already have
-`loom-art-store` running, the same script also supports `-InstallMode store`.
-
-To build and install the repo-owned `图片搜索` MCP Art, run:
+The output contains one framework ZIP per framework and one Art ZIP per sample
+Art. Both ZIP types have independent manifests and SHA-256 files. A sample Art
+is installed through its generic package installer; the installer never edits
+Loom or Hook source and never writes into the default release payload:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Install-LoomImageSearchArt.ps1 `
-  -BraveApiKey $env:BRAVE_API_KEY
+  -File .\scripts\Install-LoomImageCompressArt.ps1
 ```
 
-That script packages `custom-image-search` as an `mcp` Art, optionally saves a
-`brave-search` MCP server config (`npx -y @brave/brave-search-mcp-server
---transport stdio`), installs the `mcp` framework, and by default uploads the
-tiny Art ZIP through `POST /v1/arts/install`. Use `-SkipServerConfig` if you
-only want the Art package without touching daemon-side MCP server settings.
-
-To rebuild and locally install the repo-owned `Color Transfer (RBF)` Art on
-the installable `python_art` framework, run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Install-LoomColorTransferArt.ps1
-```
-
-That script vendors the existing Color Transfer Python Art source, downloads
-CPython 3.12 Windows wheels for `numpy` and `Pillow`, stages a Loom-local
-`python_art` runtime bundle, publishes both ZIPs into
-`.loom-art-store-data\{arts,frameworks}\`, and by default installs the
-framework/runtime plus Art directly into `%APPDATA%\Loom\control-plane\...`.
-The installed tool keeps the live production id `custom-1770131241684` and
-preserves the Hook-facing shader editing flow while pointing `artPath` at the
-Loom-managed control-plane copy.
-
-To build and locally install the repo-owned `图片混合` Script Art, run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Install-LoomImageBlendScriptArt.ps1
-```
-
-That script packages `custom-image-blend-script` as a formal `script` Art,
-bundles the production PowerShell blend script, publishes the zip into
-`.loom-art-store-data\arts\`, and by default installs it directly into
-`%APPDATA%\Loom\control-plane\arts\...`. The Art blends the upstream input image
-and a reference image by `mix_ratio`, keeps the reference image available as a
-true second image input port in Hook, and is intended as a real framework proof
-for Loom's `script` execution line.
+The legacy per-Art script names are now thin wrappers over
+`Install-LoomSampleArtPackage.ps1`; they no longer generate or install a
+legacy built-in execution definition. The corresponding wrappers are
+`Install-LoomImageSearchArt.ps1`, `Install-LoomColorTransferArt.ps1`,
+`Install-LoomImageBlendScriptArt.ps1`, and
+`Install-LoomImageBlendCompressWorkflowArt.ps1`.
 
 When `python_art` is installed from the store, Loom downloads the framework
 runtime zip first, unpacks it under

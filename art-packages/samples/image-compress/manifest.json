@@ -1,0 +1,59 @@
+{
+  "id": "custom-1770146354922",
+  "name": "图片压缩",
+  "description": "通过可插拔命令行框架对输入图片重新编码并输出 PNG。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "cli_wrapper"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "输入图",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "压缩结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "quality_num",
+      "label": "质量",
+      "widget": "slider",
+      "default": 90,
+      "min": 60,
+      "max": 100,
+      "step": 1,
+      "data_type": "number"
+    },
+    {
+      "id": "lossless",
+      "label": "无损压缩",
+      "widget": "checkbox",
+      "default": true,
+      "data_type": "boolean"
+    }
+  ],
+  "metadata": {
+    "dependencies": {
+      "framework": "cli_wrapper"
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic"
+    },
+    "plugin": {
+      "packageVersion": "1.0.0",
+      "runtimeMode": "deterministic-local-adapter"
+    }
+  }
+}

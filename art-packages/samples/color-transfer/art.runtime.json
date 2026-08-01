@@ -1,0 +1,7 @@
+{
+  "protocolVersion": "loom.art.runtime.v1",
+  "entry": {
+    "command": "python.exe",
+    "args": ["runtime/main.py"]
+  }
+}

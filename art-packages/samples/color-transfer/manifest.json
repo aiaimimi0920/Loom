@@ -1,0 +1,59 @@
+{
+  "id": "custom-1770131241684",
+  "name": "颜色迁移",
+  "description": "通过可插拔 Python Art 框架把参考图的颜色特征迁移到输入图。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "python_art"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "输入图",
+      "type": "image",
+      "execution_type": "image_buffer"
+    },
+    {
+      "name": "reference",
+      "label": "参考图",
+      "type": "image",
+      "execution_type": "image_buffer",
+      "exposePort": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "颜色迁移结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "strength",
+      "label": "迁移强度",
+      "widget": "slider",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "dependencies": {
+      "framework": "python_art"
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic"
+    },
+    "python": {
+      "module": "Pillow",
+      "runtimeMode": "package-adapter"
+    }
+  }
+}

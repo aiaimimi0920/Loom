@@ -609,7 +609,7 @@ git commit -m "feat(loom): package art framework runtimes"
 - Modify: existing `scripts/Install-Loom*Art.ps1` scripts or replace them with package builders.
 - Remove default runtime ownership from `resources/script-arts`, `resources/workflow-arts`, and framework-specific resource staging after replacements are in place.
 
-- [ ] **Step 1: Add sample Art package source directories**
+- [x] **Step 1: Add sample Art package source directories**
 
 Create one directory per sample Art:
 
@@ -653,7 +653,7 @@ Each manifest declares:
 }
 ```
 
-- [ ] **Step 2: Add sample Art package build script**
+- [x] **Step 2: Add sample Art package build script**
 
 Create `scripts/Build-LoomSampleArtPackages.ps1` that:
 
@@ -665,7 +665,7 @@ verifies no package writes into %APPDATA% during build
 emits summary JSON with id, framework, zip path, bytes, sha256
 ```
 
-- [ ] **Step 3: Update installers**
+- [x] **Step 3: Update installers**
 
 Either update each existing installer to call the package build script or replace per-Art logic with a thin wrapper over:
 
@@ -677,7 +677,7 @@ POST /v1/arts/store/install
 
 The installers must not modify Loom source, Hook source, or default release resources.
 
-- [ ] **Step 4: Run package and install tests**
+- [x] **Step 4: Run package and install tests**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -986,4 +986,3 @@ git commit -m "docs(loom): record pluginized framework acceptance"
 - [ ] Default release payload excludes optional framework runtimes and sample Art resources.
 - [ ] `verify-release.ps1 -RunSmoke` includes and passes the plugin boundary smoke.
 - [ ] Final release is built under the required Neuro release root.
-

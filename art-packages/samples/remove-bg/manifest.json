@@ -1,0 +1,41 @@
+{
+  "id": "custom-remove-bg-cloud",
+  "name": "移除背景",
+  "description": "通过可插拔云 API 框架执行背景移除；本地包带有确定性的离线适配器用于安装和 smoke 验证。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "cloud_api"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "输入图",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "抠图结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [],
+  "metadata": {
+    "dependencies": {
+      "framework": "cloud_api"
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic"
+    },
+    "cloud": {
+      "mode": "deterministic-local-adapter",
+      "endpoint": "package://remove-bg"
+    }
+  }
+}

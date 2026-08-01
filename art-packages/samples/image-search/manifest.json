@@ -1,0 +1,54 @@
+{
+  "id": "custom-image-search",
+  "name": "图片搜索",
+  "description": "通过可插拔 MCP 框架搜索图片并返回可缓存的候选缩略图。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "mcp"
+  },
+  "inputs": [],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "搜索结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "query",
+      "label": "搜索词",
+      "widget": "text",
+      "default": "",
+      "data_type": "string"
+    },
+    {
+      "id": "count",
+      "label": "候选数量",
+      "widget": "slider",
+      "default": 3,
+      "min": 1,
+      "max": 6,
+      "step": 1,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "dependencies": {
+      "framework": "mcp"
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic",
+      "candidates": "image-thumbnails",
+      "cache": "eager"
+    },
+    "mcp": {
+      "serverId": "package-image-search",
+      "toolName": "image_search"
+    }
+  }
+}

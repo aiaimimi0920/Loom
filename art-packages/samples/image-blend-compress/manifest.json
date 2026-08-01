@@ -1,0 +1,72 @@
+{
+  "id": "custom-image-blend-compress-workflow",
+  "name": "图片融合并压缩",
+  "description": "工作流框架先调用图片融合 Art，再调用图片压缩 Art，输出最终图片。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "workflow"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "图片 A",
+      "type": "image",
+      "execution_type": "image_buffer"
+    },
+    {
+      "name": "reference",
+      "label": "图片 B",
+      "type": "image",
+      "execution_type": "image_buffer",
+      "exposePort": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "mix_ratio",
+      "label": "融合值",
+      "widget": "slider",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "data_type": "number"
+    },
+    {
+      "id": "quality_num",
+      "label": "压缩比例",
+      "widget": "slider",
+      "default": 90,
+      "min": 60,
+      "max": 100,
+      "step": 1,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "dependencies": {
+      "framework": "workflow",
+      "arts": ["custom-image-blend-script", "custom-1770146354922"]
+    },
+    "workflow": {
+      "steps": [
+        {"artId": "custom-image-blend-script", "name": "blend"},
+        {"artId": "custom-1770146354922", "name": "compress"}
+      ]
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic"
+    }
+  }
+}

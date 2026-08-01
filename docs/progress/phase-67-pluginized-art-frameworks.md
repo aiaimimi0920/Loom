@@ -296,6 +296,62 @@ directories and their builder do not exist yet. The contract requires each
 package to declare `framework_art`, an explicit framework dependency, an
 `art.runtime.json` entry, and a bundled runtime entry before it will pass.
 
+## Task 6 implementation and verification
+
+Implemented the six sample Arts as independent package sources under
+`art-packages/samples/`:
+
+| Package source | Art id | Framework |
+| --- | --- | --- |
+| `image-compress` | `custom-1770146354922` | `cli_wrapper` |
+| `remove-bg` | `custom-remove-bg-cloud` | `cloud_api` |
+| `image-search` | `custom-image-search` | `mcp` |
+| `color-transfer` | `custom-1770131241684` | `python_art` |
+| `image-blend` | `custom-image-blend-script` | `script` |
+| `image-blend-compress` | `custom-image-blend-compress-workflow` | `workflow` |
+
+Each package now owns `manifest.json`, `art.runtime.json`, and its runtime
+adapter. The workflow package also owns its child-Art dependency declaration
+and `workflow.yaml`. The generic `runtime-host` remains the only framework
+broker; it reads the Art package runtime manifest and does not branch on these
+sample IDs.
+
+Added:
+
+- `scripts/Build-LoomSampleArtPackages.ps1`
+- `scripts/Install-LoomSampleArtPackage.ps1`
+- `scripts/tests/Test-LoomSampleArtPackageContract.ps1`
+- `scripts/tests/Test-LoomSampleArtRuntime.ps1`
+- `scripts/tests/Test-LoomSampleArtInstallExecution.ps1`
+
+The legacy per-Art installers are now thin wrappers over the generic package
+installer. They no longer generate legacy `cli_wrapper`, `cloud_api`,
+`script`, `python_art`, `mcp`, or `workflow` definitions in Loom's registry.
+
+Fresh verification:
+
+```text
+Test-LoomSampleArtPackageContract.ps1
+  -> source contract passed for 6 packages
+  -> ZIP/hash contract passed for 6 packages
+
+Test-LoomSampleArtRuntime.ps1
+  -> all 6 package-local adapters returned image output
+  -> image-search returned 3 image candidates
+
+Test-LoomSampleArtInstallExecution.ps1
+  -> installed all 6 framework ZIPs into a fresh control plane
+  -> installed all 6 Art ZIPs through /v1/arts/install
+  -> executed all 6 through /v1/tools/{id}/execute
+
+Test-ImageBlendCompressWorkflowArtContract.ps1
+  -> pluginized workflow contract passed
+
+Test-ArtPluginBoundaryContract.ps1
+  -> passed; README and Hook production source contain no stale default-install
+     claim or sample-ID branch
+```
+
 ## Notes
 
 - Current formal framework list comes from

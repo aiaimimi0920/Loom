@@ -1,0 +1,55 @@
+{
+  "id": "custom-image-blend-script",
+  "name": "图片融合",
+  "description": "通过可插拔脚本框架按比例混合两张输入图片。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "script"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "源图",
+      "type": "image",
+      "execution_type": "image_buffer"
+    },
+    {
+      "name": "reference",
+      "label": "参考图",
+      "type": "image",
+      "execution_type": "image_buffer",
+      "exposePort": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "融合结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "mix_ratio",
+      "label": "融合值",
+      "widget": "slider",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "dependencies": {
+      "framework": "script"
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic"
+    }
+  }
+}

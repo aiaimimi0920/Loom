@@ -21,12 +21,12 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $packagesRoot = Join-Path $repoRoot "art-packages\samples"
 $buildScript = Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"
 $expected = [ordered]@{
-    "image-compress" = "cli_wrapper"
-    "remove-bg" = "cloud_api"
-    "image-search" = "mcp"
-    "color-transfer" = "python_art"
-    "image-blend" = "script"
-    "image-blend-compress" = "workflow"
+    "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "cli_wrapper" }
+    "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api" }
+    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp" }
+    "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "python_art" }
+    "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "script" }
+    "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow" }
 }
 
 Assert-True (Test-Path -LiteralPath $packagesRoot -PathType Container) "Sample Art package source directory is required: $packagesRoot"
@@ -49,9 +49,10 @@ foreach ($entry in $expected.GetEnumerator()) {
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$manifest.name)) "Sample Art name is required: $manifestPath"
     Assert-True ([bool]$manifest.enabled) "Sample Art must be enabled by default in its package manifest: $manifestPath"
     Assert-True ([string]$manifest.execution.type -eq "framework_art") "Sample Art must use framework_art execution: $manifestPath"
-    Assert-True ([string]$manifest.execution.framework -eq $entry.Value) "Sample Art framework mismatch: $manifestPath"
-    Assert-True ([string]$manifest.metadata.dependencies.framework -eq $entry.Value) "Sample Art framework dependency mismatch: $manifestPath"
-    Assert-True ($null -ne $manifest.inputs -and @($manifest.inputs).Count -gt 0) "Sample Art inputs are required: $manifestPath"
+    Assert-True ([string]$manifest.id -eq $entry.Value.id) "Sample Art id mismatch: $manifestPath"
+    Assert-True ([string]$manifest.execution.framework -eq $entry.Value.framework) "Sample Art framework mismatch: $manifestPath"
+    Assert-True ([string]$manifest.metadata.dependencies.framework -eq $entry.Value.framework) "Sample Art framework dependency mismatch: $manifestPath"
+    Assert-True (($null -ne $manifest.inputs -and @($manifest.inputs).Count -gt 0) -or ($null -ne $manifest.params -and @($manifest.params).Count -gt 0)) "Sample Art inputs or params are required: $manifestPath"
     Assert-True ($null -ne $manifest.outputs -and @($manifest.outputs).Count -gt 0) "Sample Art outputs are required: $manifestPath"
 
     $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath | ConvertFrom-Json
@@ -61,7 +62,14 @@ foreach ($entry in $expected.GetEnumerator()) {
 
     $runtimeCommand = ([string]$runtime.entry.command).Replace('/', '\')
     $runtimeCommandPath = Join-Path $sourceDirectory $runtimeCommand
-    Assert-True (Test-Path -LiteralPath $runtimeCommandPath -PathType Leaf) "Sample Art runtime entry is not bundled: $runtimeCommandPath"
+    if ($runtimeCommand -match '\\|/') {
+        Assert-True (Test-Path -LiteralPath $runtimeCommandPath -PathType Leaf) "Sample Art runtime entry is not bundled: $runtimeCommandPath"
+    }
+    else {
+        $runtimeFile = @($runtime.entry.args | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^runtime[\\/]' } | Select-Object -First 1)
+        Assert-True ($runtimeFile.Count -eq 1) "Sample Art runtime must reference a bundled runtime file: $runtimePath"
+        Assert-True (Test-Path -LiteralPath (Join-Path $sourceDirectory ($runtimeFile[0] -replace '/', '\')) -PathType Leaf) "Sample Art runtime file is not bundled: $runtimeFile"
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
@@ -73,11 +81,12 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
     }
     Assert-True (Test-Path -LiteralPath $artifactRootPath -PathType Container) "Sample Art artifact root is required: $artifactRootPath"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zipFiles = @(Get-ChildItem -LiteralPath $artifactRootPath -Filter *.zip -File)
-    Assert-True ($zipFiles.Count -eq $expected.Count) "Expected exactly $($expected.Count) sample Art ZIPs, found $($zipFiles.Count)."
+    $expectedZipNames = @($expected.Values | ForEach-Object { "$($_.id).zip" })
+    $zipFiles = @(Get-ChildItem -LiteralPath $artifactRootPath -Filter *.zip -File | Where-Object { $expectedZipNames -contains $_.Name })
+    Assert-True ($zipFiles.Count -eq $expected.Count) "Expected all $($expected.Count) sample Art ZIPs, found $($zipFiles.Count)."
 
     foreach ($entry in $expected.GetEnumerator()) {
-        $zipPath = Join-Path $artifactRootPath "$($entry.Key).zip"
+        $zipPath = Join-Path $artifactRootPath "$($entry.Value.id).zip"
         $hashPath = "$zipPath.sha256"
         Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Missing sample Art ZIP: $zipPath"
         Assert-True (Test-Path -LiteralPath $hashPath -PathType Leaf) "Missing sample Art ZIP hash: $hashPath"
@@ -97,7 +106,8 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 $reader.Dispose()
             }
             Assert-True ([string]$zipManifest.execution.type -eq "framework_art") "Sample Art ZIP execution type is invalid: $zipPath"
-            Assert-True ([string]$zipManifest.metadata.dependencies.framework -eq $entry.Value) "Sample Art ZIP framework dependency mismatch: $zipPath"
+            Assert-True ([string]$zipManifest.id -eq $entry.Value.id) "Sample Art ZIP id mismatch: $zipPath"
+            Assert-True ([string]$zipManifest.metadata.dependencies.framework -eq $entry.Value.framework) "Sample Art ZIP framework dependency mismatch: $zipPath"
 
             $runtimeReader = [System.IO.StreamReader]::new($runtimeEntry.Open())
             try {
@@ -107,8 +117,16 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 $runtimeReader.Dispose()
             }
             $command = ([string]$zipRuntime.entry.command).Replace('\', '/')
-            $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $command } | Select-Object -First 1
-            Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime entry is not bundled: $zipPath -> $command"
+            if ($command -match '/') {
+                $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $command } | Select-Object -First 1
+                Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime entry is not bundled: $zipPath -> $command"
+            }
+            else {
+                $runtimeFile = @($zipRuntime.entry.args | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^runtime[\\/]' } | Select-Object -First 1)
+                Assert-True ($runtimeFile.Count -eq 1) "Sample Art ZIP runtime must reference a bundled runtime file: $zipPath"
+                $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $runtimeFile[0].Replace('\', '/') } | Select-Object -First 1
+                Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime file is not bundled: $zipPath -> $runtimeFile"
+            }
         }
         finally {
             $archive.Dispose()
