@@ -98,6 +98,7 @@ import {
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import { createLatestRequestGate } from "./services/latestRequest";
 import {
+  artFrameworkReference,
   artWorkspaceItems,
   filterToolsByFrameworks,
   frameworkFilterLabel,
@@ -1223,6 +1224,209 @@ function WorkflowStudioPanel({
 
 function EnabledChip({ enabled }: { enabled?: boolean }) {
   return <span className="mini-chip">{enabled === false ? "已禁用" : "已启用"}</span>;
+}
+
+type ArtIconKind =
+  | "cloud"
+  | "terminal"
+  | "code"
+  | "python"
+  | "plug"
+  | "workflow"
+  | "image"
+  | "package"
+  | "edit"
+  | "power"
+  | "trash"
+  | "close";
+
+function ArtIcon({ kind }: { kind: ArtIconKind }) {
+  const iconProps = {
+    className: "art-icon",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  switch (kind) {
+    case "cloud":
+      return <svg {...iconProps}><path d="M6.5 18a4.5 4.5 0 0 1-.4-8.98A6 6 0 0 1 17.7 10.5 3.75 3.75 0 0 1 17 18H6.5Z" /></svg>;
+    case "terminal":
+      return <svg {...iconProps}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></svg>;
+    case "code":
+      return <svg {...iconProps}><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14" /></svg>;
+    case "python":
+      return <svg {...iconProps}><path d="M8 4h5a3 3 0 0 1 3 3v3H9a3 3 0 0 0-3 3v1" /><path d="M16 20h-5a3 3 0 0 1-3-3v-3h7a3 3 0 0 0 3-3v-1" /><path d="M10 7h.01M14 17h.01" /></svg>;
+    case "plug":
+      return <svg {...iconProps}><path d="M8 3v5M16 3v5M6 8h12v2a6 6 0 0 1-6 6v5M9 21h6" /></svg>;
+    case "workflow":
+      return <svg {...iconProps}><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="12" cy="18" r="2" /><path d="M8 6h8M7 8l4 8M17 8l-4 8" /></svg>;
+    case "image":
+      return <svg {...iconProps}><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m5 17 4-4 3 3 2-2 5 5" /></svg>;
+    case "edit":
+      return <svg {...iconProps}><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></svg>;
+    case "power":
+      return <svg {...iconProps}><path d="M12 3v9" /><path d="M7.1 5.8a8 8 0 1 0 9.8 0" /></svg>;
+    case "trash":
+      return <svg {...iconProps}><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg>;
+    case "close":
+      return <svg {...iconProps}><path d="m6 6 12 12M18 6 6 18" /></svg>;
+    default:
+      return <svg {...iconProps}><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></svg>;
+  }
+}
+
+function artFrameworkIconKind(reference: string | null): ArtIconKind {
+  switch (reference) {
+    case "cloud_api": return "cloud";
+    case "cli_wrapper": return "terminal";
+    case "script": return "code";
+    case "python_art": return "python";
+    case "mcp": return "plug";
+    case "workflow": return "workflow";
+    case "native_image": return "image";
+    default: return "package";
+  }
+}
+
+function artFrameworkIconLabel(reference: string | null): string {
+  switch (reference) {
+    case "cloud_api": return "云 API";
+    case "cli_wrapper": return "命令行";
+    case "script": return "脚本";
+    case "python_art": return "Python";
+    case "mcp": return "MCP";
+    case "workflow": return "工作流";
+    case "native_image": return "图像";
+    default: return "Art";
+  }
+}
+
+function ArtEditDialog({
+  tool,
+  busy,
+  error,
+  onClose,
+  onSave,
+}: {
+  tool: LoomToolDefinition | null;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSave: (name: string, description: string) => Promise<void>;
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  useEffect(() => {
+    setName(tool?.name || "");
+    setDescription(tool?.description || "");
+  }, [tool]);
+
+  useEffect(() => {
+    if (!tool) return;
+    nameInputRef.current?.focus();
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!busy) onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [busy, onClose, tool]);
+
+  if (!tool) return null;
+
+  return (
+    <div
+      className="framework-dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (!busy && event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="framework-dialog art-edit-dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="art-edit-dialog-title"
+      >
+        <header className="framework-dialog__header">
+          <div>
+            <h2 id="art-edit-dialog-title">编辑 Art</h2>
+            <code>{tool.id}</code>
+          </div>
+          <button
+            className="art-card-action"
+            type="button"
+            aria-label="关闭编辑"
+            title="关闭"
+            onClick={onClose}
+            disabled={busy}
+          >
+            <ArtIcon kind="close" />
+          </button>
+        </header>
+        {error ? <p className="error-text" role="alert">{error}</p> : null}
+        <form
+          className="art-edit-dialog__form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onSave(name, description);
+          }}
+        >
+          <label className="field-label">
+            名称
+            <input
+              className="studio-input"
+              ref={nameInputRef}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label className="field-label">
+            描述
+            <textarea
+              className="studio-input art-edit-dialog__description"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <div className="art-edit-dialog__actions">
+            <button className="ghost-button" type="button" onClick={onClose} disabled={busy}>取消</button>
+            <button className="signal-button" type="submit" disabled={busy || !name.trim()}>
+              {busy ? "保存中" : "保存"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 interface ArtWizardSubmitDraft {
@@ -2855,8 +3059,12 @@ function RegistryPanel({
 }) {
   const [busyArtId, setBusyArtId] = useState<string | null>(null);
   const [busyToolId, setBusyToolId] = useState<string | null>(null);
+  const [busyToolAction, setBusyToolAction] = useState<"delete" | "toggle" | "edit" | null>(null);
   const [busyWizard, setBusyWizard] = useState(false);
   const [registryMessage, setRegistryMessage] = useState<StudioMessage | null>(null);
+  const [editingTool, setEditingTool] = useState<LoomToolDefinition | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const editButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [sourcePath, setSourcePath] = useState("");
   const [sourceToolId, setSourceToolId] = useState("");
   const [sourceToolName, setSourceToolName] = useState("");
@@ -3049,6 +3257,7 @@ function RegistryPanel({
 
   const removeTool = async (tool: LoomToolDefinition) => {
     setBusyToolId(tool.id);
+    setBusyToolAction("delete");
     try {
       await deleteToolDefinition(baseUrl, tool.id);
       setRegistryMessage({ kind: "info", text: `已删除工具 ${tool.name || tool.id}。` });
@@ -3060,6 +3269,66 @@ function RegistryPanel({
       });
     } finally {
       setBusyToolId(null);
+      setBusyToolAction(null);
+    }
+  };
+
+  const toggleTool = async (tool: LoomToolDefinition) => {
+    const nextEnabled = tool.enabled === false;
+    setBusyToolId(tool.id);
+    setBusyToolAction("toggle");
+    try {
+      await saveToolDefinition(baseUrl, { ...tool, enabled: nextEnabled });
+      setRegistryMessage({
+        kind: "info",
+        text: `已${nextEnabled ? "启用" : "禁用"} ${tool.name || tool.id}。`,
+      });
+      await refresh();
+    } catch (error) {
+      setRegistryMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "无法切换 Art 状态。",
+      });
+    } finally {
+      setBusyToolId(null);
+      setBusyToolAction(null);
+    }
+  };
+
+  const closeToolEditor = useCallback(() => {
+    const toolId = editingTool?.id;
+    setEditingTool(null);
+    setEditError(null);
+    if (toolId) {
+      window.setTimeout(() => editButtonRefs.current[toolId]?.focus(), 0);
+    }
+  }, [editingTool]);
+
+  const saveToolEdits = async (name: string, description: string) => {
+    if (!editingTool) return;
+    const tool = editingTool;
+    setBusyToolId(tool.id);
+    setBusyToolAction("edit");
+    setEditError(null);
+    try {
+      await saveToolDefinition(baseUrl, {
+        ...tool,
+        name: name.trim() || tool.id,
+        description: description.trim(),
+      });
+      setRegistryMessage({ kind: "info", text: `已更新 ${name.trim() || tool.id}。` });
+      await refresh();
+      closeToolEditor();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "无法更新 Art。";
+      setEditError(detail);
+      setRegistryMessage({
+        kind: "error",
+        text: detail,
+      });
+    } finally {
+      setBusyToolId(null);
+      setBusyToolAction(null);
     }
   };
 
@@ -3423,37 +3692,90 @@ function RegistryPanel({
         </div>
         <span className="mini-chip">{visibleTools.length}</span>
       </div>
-      <div className="card-grid">
-        {visibleTools.length ? visibleTools.map((tool) => (
-          <article className="glass-card control-card art-registry-card" key={tool.id}>
-            <div className="control-card__head">
-              <div>
-                <p className="card-kicker">{tool.execution?.type ?? "tool"}</p>
-                <h3>{tool.name || tool.id}</h3>
-              </div>
-              <EnabledChip enabled={tool.enabled} />
-            </div>
-            <p>{firstWords(tool.description, "无描述。")}</p>
-            <div className="port-summary">
-              <span>输入 {(tool.inputs || []).length || "auto"}</span>
-              <span>输出 {(tool.outputs || []).length || "auto"}</span>
-              <span>参数 {Object.keys(tool.execution || {}).length}</span>
-            </div>
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => removeTool(tool)}
-              disabled={busyToolId === tool.id}
+      <div className="card-grid art-registry-grid">
+        {visibleTools.length ? visibleTools.map((tool) => {
+          const enabled = tool.enabled !== false;
+          const frameworkReference = artFrameworkReference(tool) || tool.execution?.type || null;
+          const framework = frameworks.find((candidate) => (
+            frameworkIdentity(candidate) === frameworkReference || candidate.id === frameworkReference
+          ));
+          const frameworkLabel = framework
+            ? frameworkFilterLabel(framework)
+            : artFrameworkIconLabel(frameworkReference);
+          const toolBusy = busyToolId === tool.id;
+          return (
+            <article
+              className={`glass-card art-registry-card ${enabled ? "art-registry-card--enabled" : "art-registry-card--disabled"}`}
+              key={tool.id}
             >
-              {busyToolId === tool.id ? "删除中" : "删除工具"}
-            </button>
-          </article>
-        )) : (
+              <div className="art-registry-card__head">
+                <h3>{tool.name || tool.id}</h3>
+                <span
+                  className="art-registry-card__framework-icon"
+                  role="img"
+                  aria-label={`${frameworkLabel} Art`}
+                  title={frameworkLabel}
+                >
+                  <ArtIcon kind={artFrameworkIconKind(frameworkReference)} />
+                </span>
+              </div>
+              {tool.description ? (
+                <p className="art-registry-card__description">{firstWords(tool.description, tool.description)}</p>
+              ) : null}
+              <div className="art-registry-card__actions">
+                <button
+                  className="art-card-action"
+                  type="button"
+                  ref={(element) => { editButtonRefs.current[tool.id] = element; }}
+                  aria-label={`编辑 ${tool.name || tool.id}`}
+                  title="编辑"
+                  onClick={() => {
+                    setEditError(null);
+                    setEditingTool(tool);
+                  }}
+                  disabled={toolBusy}
+                >
+                  <ArtIcon kind="edit" />
+                </button>
+                <button
+                  className={`art-card-action art-card-action--toggle ${enabled ? "art-card-action--active" : ""}`}
+                  type="button"
+                  aria-label={`${enabled ? "禁用" : "启用"} ${tool.name || tool.id}`}
+                  aria-pressed={enabled}
+                  aria-busy={toolBusy && busyToolAction === "toggle"}
+                  title={enabled ? "禁用" : "启用"}
+                  onClick={() => void toggleTool(tool)}
+                  disabled={toolBusy}
+                >
+                  <ArtIcon kind="power" />
+                </button>
+                <button
+                  className="art-card-action art-card-action--danger"
+                  type="button"
+                  aria-label={`删除 ${tool.name || tool.id}`}
+                  aria-busy={toolBusy && busyToolAction === "delete"}
+                  title="删除"
+                  onClick={() => void removeTool(tool)}
+                  disabled={toolBusy}
+                >
+                  <ArtIcon kind="trash" />
+                </button>
+              </div>
+            </article>
+          );
+        }) : (
           <article className="glass-card empty-card">
             <h3>{tools.length ? "所选框架下暂无 Art" : "暂无工具"}</h3>
           </article>
         )}
       </div>
+      <ArtEditDialog
+        tool={editingTool}
+        busy={Boolean(editingTool && busyToolId === editingTool.id && busyToolAction === "edit")}
+        error={editError}
+        onClose={closeToolEditor}
+        onSave={saveToolEdits}
+      />
       <div className="card-grid">
         <article className="glass-card control-card">
           <div className="control-card__head">

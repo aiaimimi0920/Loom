@@ -29,6 +29,38 @@ test("keeps the Art workspace compact without a descriptive hero", () => {
   assert.doesNotMatch(appSource, /查看注册表 JSON/);
 });
 
+test("renders compact Art cards with framework icons and icon-only actions", () => {
+  const cardSource = appSource.match(
+    /\{visibleTools\.length \? visibleTools\.map\(\(tool\) => \{[\s\S]*?<ArtEditDialog/,
+  );
+  assert.ok(cardSource);
+  assert.match(cardSource[0], /art-registry-card--enabled/);
+  assert.match(cardSource[0], /art-registry-card--disabled/);
+  assert.match(cardSource[0], /art-registry-card__framework-icon/);
+  assert.match(cardSource[0], /<ArtIcon kind=\{artFrameworkIconKind\(frameworkReference\)\}/);
+  assert.match(cardSource[0], /<ArtIcon kind="edit"/);
+  assert.match(cardSource[0], /<ArtIcon kind="power"/);
+  assert.match(cardSource[0], /<ArtIcon kind="trash"/);
+  assert.doesNotMatch(cardSource[0], /<EnabledChip/);
+  assert.doesNotMatch(cardSource[0], /className="card-kicker"/);
+  assert.doesNotMatch(cardSource[0], /className="port-summary"/);
+  assert.doesNotMatch(cardSource[0], />输入 \{/);
+  assert.doesNotMatch(cardSource[0], />输出 \{/);
+  assert.doesNotMatch(cardSource[0], />参数 \{/);
+  assert.doesNotMatch(cardSource[0], /删除工具/);
+  assert.match(styleSource, /\.art-registry-card--enabled \{[\s\S]*?border-color: rgba\(42, 151, 91/);
+  assert.match(styleSource, /\.art-registry-card--disabled \{[\s\S]*?border-color: rgba\(88, 97, 92/);
+});
+
+test("Art card edit and enable controls persist through the tool API", () => {
+  assert.match(appSource, /saveToolDefinition\(baseUrl, \{ \.\.\.tool, enabled: nextEnabled \}\)/);
+  assert.match(appSource, /role="dialog"\s+aria-modal="true"\s+aria-labelledby="art-edit-dialog-title"/);
+  assert.match(appSource, /await saveToolDefinition\(baseUrl, \{\s*\.\.\.tool,\s*name:/);
+  assert.match(appSource, /aria-pressed=\{enabled\}/);
+  assert.match(appSource, /aria-label=\{`编辑 \$\{tool\.name \|\| tool\.id\}`\}/);
+  assert.match(appSource, /aria-label=\{`删除 \$\{tool\.name \|\| tool\.id\}`\}/);
+});
+
 test("keeps only Chinese registry store and security labels in the Art workspace", () => {
   assert.deepEqual(artWorkspaceItems.map((item) => item.id), ["registry", "store", "security"]);
   assert.equal(artWorkspaceItems.some((item) => "eyebrow" in item), false);
