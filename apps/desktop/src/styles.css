@@ -512,7 +512,7 @@ button {
 
 .art-hub__tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid rgba(17, 22, 20, 0.2);
   border-radius: 12px;
   background: #111614;
@@ -520,30 +520,21 @@ button {
 }
 
 .art-hub__tab {
-  display: grid;
+  display: flex;
+  align-items: center;
   min-width: 0;
-  gap: 4px;
   border: 0;
   border-right: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 8px;
   background: transparent;
   color: rgba(245, 247, 239, 0.68);
-  padding: 12px 14px;
+  padding: 14px;
   text-align: left;
   transition: background 140ms ease, color 140ms ease;
 }
 
 .art-hub__tab:last-child {
   border-right: 0;
-}
-
-.art-hub__tab small {
-  overflow: hidden;
-  font-size: 0.66rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .art-hub__tab span {
@@ -607,6 +598,71 @@ button {
 .art-hub__surface > .main-board,
 .art-hub__surface > .content-grid > .main-board:first-child {
   border-radius: 12px;
+}
+
+.framework-filter {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.48);
+  padding: 12px;
+}
+
+.framework-filter legend {
+  padding: 0 6px;
+  font-weight: 900;
+}
+
+.framework-filter__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.framework-filter__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-radius: 8px;
+  background: rgba(17, 22, 20, 0.05);
+  padding: 9px 11px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.framework-filter__option--checked {
+  border-color: rgba(159, 190, 30, 0.72);
+  background: rgba(217, 255, 56, 0.2);
+}
+
+.framework-filter__option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #9fbe1e;
+}
+
+.framework-filter__option:focus-within {
+  outline: 2px solid #168fa8;
+  outline-offset: 2px;
+}
+
+.framework-management {
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.38);
+  padding: 12px;
+}
+
+.framework-management summary {
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.framework-management__grid {
+  margin-top: 12px;
 }
 
 .flow-strip,

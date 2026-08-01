@@ -98,6 +98,8 @@ import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import { createLatestRequestGate } from "./services/latestRequest";
 import {
   artWorkspaceItems,
+  filterToolsByFrameworks,
+  frameworkIdentity,
   nextArtWorkspaceIndex,
   type ArtWorkspaceId,
 } from "./services/artHubUi";
@@ -2834,6 +2836,9 @@ function RegistryPanel({
   mcpServers,
   workflows,
   frameworks,
+  frameworkBusyId,
+  frameworkError,
+  onToggleFramework,
   reloadFrameworks,
   baseUrl,
   refresh,
@@ -2843,6 +2848,9 @@ function RegistryPanel({
   mcpServers: LoomMcpServer[];
   workflows: LoomWorkflowMetadata[];
   frameworks: LoomFramework[];
+  frameworkBusyId: string | null;
+  frameworkError: string | null;
+  onToggleFramework: (framework: LoomFramework) => Promise<void>;
   reloadFrameworks: () => Promise<void>;
   baseUrl: string;
   refresh: () => Promise<void>;
@@ -2864,6 +2872,27 @@ function RegistryPanel({
   const [compatArts, setCompatArts] = useState<ArtLoomCompatArt[]>([]);
   const [pythonEngineSummary, setPythonEngineSummary] = useState<string>("Not probed");
   const [shaderArtId, setShaderArtId] = useState("");
+  const [selectedFrameworkIds, setSelectedFrameworkIds] = useState<Set<string> | null>(null);
+  const frameworkIds = useMemo(
+    () => [...new Set(frameworks.map((framework) => frameworkIdentity(framework)))],
+    [frameworks],
+  );
+  const visibleTools = useMemo(
+    () => filterToolsByFrameworks(tools, frameworks, selectedFrameworkIds),
+    [frameworks, selectedFrameworkIds, tools],
+  );
+
+  const toggleFrameworkFilter = (frameworkId: string) => {
+    setSelectedFrameworkIds((current) => {
+      const next = current === null ? new Set(frameworkIds) : new Set(current);
+      if (next.has(frameworkId)) {
+        next.delete(frameworkId);
+      } else {
+        next.add(frameworkId);
+      }
+      return next.size === frameworkIds.length ? null : next;
+    });
+  };
 
   const importPythonArt = async (art: LoomPythonArt) => {
     const toolId = `python-art-${art.art_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -3413,6 +3442,76 @@ function RegistryPanel({
           <p className={registryMessage.kind === "error" ? "error-text" : "success-text"}>{registryMessage.text}</p>
         ) : null}
       </div>
+      <fieldset className="framework-filter" aria-label="按框架筛选 Art">
+        <legend>框架</legend>
+        <div className="framework-filter__options">
+          {frameworks.map((framework) => {
+            const identity = frameworkIdentity(framework);
+            const checked = selectedFrameworkIds === null || selectedFrameworkIds.has(identity);
+            return (
+              <label
+                className={checked ? "framework-filter__option framework-filter__option--checked" : "framework-filter__option"}
+                key={identity}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleFrameworkFilter(identity)}
+                />
+                <span>{framework.name}</span>
+              </label>
+            );
+          })}
+          {frameworks.length === 0 ? <span className="muted-line">暂无框架</span> : null}
+        </div>
+      </fieldset>
+      <div className="section-heading-row">
+        <div>
+          <p className="section-kicker">Art 注册表卡片</p>
+          <h3>已保存 Art / 工具定义</h3>
+        </div>
+        <span className="mini-chip">{visibleTools.length}</span>
+      </div>
+      <div className="card-grid">
+        {visibleTools.length ? visibleTools.map((tool) => (
+          <article className="glass-card control-card art-registry-card" key={tool.id}>
+            <div className="control-card__head">
+              <div>
+                <p className="card-kicker">{tool.execution?.type ?? "tool"}</p>
+                <h3>{tool.name || tool.id}</h3>
+              </div>
+              <EnabledChip enabled={tool.enabled} />
+            </div>
+            <p>{firstWords(tool.description, "无描述。")}</p>
+            <div className="port-summary">
+              <span>输入 {(tool.inputs || []).length || "auto"}</span>
+              <span>输出 {(tool.outputs || []).length || "auto"}</span>
+              <span>参数 {Object.keys(tool.execution || {}).length}</span>
+            </div>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => removeTool(tool)}
+              disabled={busyToolId === tool.id}
+            >
+              {busyToolId === tool.id ? "删除中" : "删除工具"}
+            </button>
+          </article>
+        )) : (
+          <article className="glass-card empty-card">
+            <h3>{tools.length ? "所选框架下暂无 Art" : "暂无工具"}</h3>
+          </article>
+        )}
+      </div>
+      <details className="framework-management">
+        <summary>管理框架</summary>
+        <FrameworksPanel
+          frameworks={frameworks}
+          busyId={frameworkBusyId}
+          error={frameworkError}
+          onToggle={onToggleFramework}
+        />
+      </details>
       <div className="card-grid">
         <article className="glass-card control-card">
           <div className="control-card__head">
@@ -3511,44 +3610,6 @@ function RegistryPanel({
         busy={busyWizard}
         onCreate={createArtToolFromWizard}
       />
-      <div className="section-heading-row">
-        <div>
-          <p className="section-kicker">Art 注册表卡片</p>
-          <h3>已保存 Art / 工具定义</h3>
-        </div>
-        <span className="mini-chip">{tools.length}</span>
-      </div>
-      <div className="card-grid">
-        {tools.length ? tools.map((tool) => (
-          <article className="glass-card control-card art-registry-card" key={tool.id}>
-            <div className="control-card__head">
-              <div>
-                <p className="card-kicker">{tool.execution?.type ?? "tool"}</p>
-                <h3>{tool.name || tool.id}</h3>
-              </div>
-              <EnabledChip enabled={tool.enabled} />
-            </div>
-            <p>{firstWords(tool.description, "无描述。")}</p>
-            <div className="port-summary">
-              <span>输入 {(tool.inputs || []).length || "auto"}</span>
-              <span>输出 {(tool.outputs || []).length || "auto"}</span>
-              <span>参数 {Object.keys(tool.execution || {}).length}</span>
-            </div>
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => removeTool(tool)}
-              disabled={busyToolId === tool.id}
-            >
-              {busyToolId === tool.id ? "删除中" : "删除工具"}
-            </button>
-          </article>
-        )) : (
-          <article className="glass-card empty-card">
-            <h3>暂无工具</h3>
-          </article>
-        )}
-      </div>
       <div className="main-board python-art-board">
         <p className="section-kicker">Python Art 目录</p>
         <h2>已安装 Python Art</h2>
@@ -3718,10 +3779,6 @@ function RegistryPanel({
   );
 }
 
-function frameworkIdentity(framework: LoomFramework): string {
-  return framework.qualifiedId || framework.id;
-}
-
 function frameworkPermissionSummary(framework: LoomFramework): string[] {
   const policy = framework.permissionPolicy;
   const permissions = new Set(framework.declaredPermissions ?? []);
@@ -3771,15 +3828,7 @@ function FrameworksPanel({
   onToggle: (framework: LoomFramework) => Promise<void>;
 }) {
   return (
-    <section className="content-grid">
-      <div className="main-board">
-        <p className="section-kicker">框架</p>
-        <h2>执行框架</h2>
-        <p className="muted-line">
-          框架是 art 的执行能力底座。包使用 publisher/id 作为唯一身份；安装或卸载前请审阅签名、权限和资源上限。
-        </p>
-      </div>
-      <div className="card-grid">
+    <div className="card-grid framework-management__grid">
         {frameworks.map((framework) => {
           const identity = frameworkIdentity(framework);
           const permissions = frameworkPermissionSummary(framework);
@@ -3798,7 +3847,7 @@ function FrameworksPanel({
               <p>{framework.description}</p>
               <p className="mono-line">{identity}</p>
               <p className="muted-line">
-                发布者: {framework.publisher?.name || framework.publisher?.id || "未声明"} · 信任: {framework.trustStatus || "unknown"}
+                发布者: {framework.publisher?.name || framework.publisher?.id || "未声明"} · 信任: {framework.trustStatus || "未知"}
               </p>
               <p className="mono-line">{framework.readyDetail}</p>
               <div>
@@ -3832,8 +3881,7 @@ function FrameworksPanel({
             <h3>加载中…</h3>
           </article>
         ) : null}
-      </div>
-    </section>
+    </div>
   );
 }
 
@@ -4222,7 +4270,6 @@ function ArtPanel({
               onClick={() => setActiveWorkspace(item.id)}
               onKeyDown={(event) => selectAdjacentWorkspace(event, index)}
             >
-              <small>{item.eyebrow}</small>
               <span>{item.label}</span>
             </button>
           );
@@ -4260,23 +4307,12 @@ function ArtPanel({
           mcpServers={mcpServers}
           workflows={workflows}
           frameworks={frameworks}
+          frameworkBusyId={frameworkBusyId}
+          frameworkError={frameworkError}
+          onToggleFramework={toggleFramework}
           reloadFrameworks={loadFrameworks}
           baseUrl={baseUrl}
           refresh={refresh}
-        />
-      </div>
-      <div
-        className="art-hub__surface"
-        id="art-panel-frameworks"
-        role="tabpanel"
-        aria-labelledby="art-tab-frameworks"
-        hidden={activeWorkspace !== "frameworks"}
-      >
-        <FrameworksPanel
-          frameworks={frameworks}
-          busyId={frameworkBusyId}
-          error={frameworkError}
-          onToggle={toggleFramework}
         />
       </div>
       <div
