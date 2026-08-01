@@ -1088,6 +1088,12 @@ fn python_framework_package_dirs(runtime_root: &Path) -> Vec<PathBuf> {
 
 #[cfg(windows)]
 fn canonical_process_path(path: PathBuf) -> PathBuf {
+    use std::os::windows::ffi::OsStrExt;
+
+    const WINDOWS_DIRECTORY_PATH_LIMIT: usize = 248;
+    if path.as_os_str().encode_wide().count() < WINDOWS_DIRECTORY_PATH_LIMIT {
+        return path;
+    }
     fs::canonicalize(&path).unwrap_or(path)
 }
 
@@ -2849,6 +2855,17 @@ mod tests {
         let canonical = canonical_process_path(executable);
         assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
         fs::remove_dir_all(root).expect("cleanup extended process fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_process_path_preserves_ordinary_windows_paths() {
+        let root = temp_root("ordinary-process-path");
+        let executable = root.join("python.exe");
+        fs::write(&executable, b"fixture").expect("write ordinary process fixture");
+
+        assert_eq!(canonical_process_path(executable.clone()), executable);
+        fs::remove_dir_all(root).expect("cleanup ordinary process fixture");
     }
 
     #[test]
