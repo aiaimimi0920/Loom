@@ -167,7 +167,7 @@ interface NavigationItem {
 const navigationItems: NavigationItem[] = [
   { id: "overview", label: "总览", eyebrow: "本地工作台" },
   { id: "mcp", label: "MCP", eyebrow: "服务工具" },
-  { id: "registry", label: "Art", eyebrow: "创作与运行" },
+  { id: "registry", label: "Art", eyebrow: "" },
   { id: "hook-bridge", label: "Hook 同步", eyebrow: "" },
   { id: "workflows", label: "工作流工作台", eyebrow: "节点编排" },
   { id: "agents", label: "智能体", eyebrow: "本地大脑" },
@@ -4201,27 +4201,8 @@ function ArtPanel({
     tabRefs.current[nextIndex]?.focus();
   };
 
-  const installedFrameworks = frameworks.filter((framework) => framework.installed).length;
-  const readyFrameworks = frameworks.filter((framework) => framework.ready).length;
-
   return (
-    <section className="art-hub" aria-labelledby="art-hub-title">
-      <header className="art-hub__hero">
-        <div className="art-hub__identity">
-          <p className="section-kicker">Layer 2 · Art runtime</p>
-          <h2 id="art-hub-title">Art 运行与注册中心</h2>
-          <p>
-            在一个界面中管理 Art 定义、可插拔执行框架、商店安装以及发布者信任与作用域凭据。
-          </p>
-        </div>
-        <div className="art-hub__telemetry" aria-label="Art 状态摘要">
-          <div><span>已注册 Art</span><strong>{tools.length}</strong></div>
-          <div><span>执行框架</span><strong>{installedFrameworks}/{frameworks.length || "-"}</strong></div>
-          <div><span>就绪框架</span><strong>{readyFrameworks}</strong></div>
-          <div><span>Python Art</span><strong>{pythonArts.length}</strong></div>
-        </div>
-      </header>
-
+    <section className="art-hub" aria-label="Art">
       <div className="art-hub__tabs" role="tablist" aria-label="Art 工作区">
         {artWorkspaceItems.map((item, index) => {
           const active = activeWorkspace === item.id;

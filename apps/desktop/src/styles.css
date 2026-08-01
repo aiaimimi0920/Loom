@@ -510,91 +510,6 @@ button {
   gap: 14px;
 }
 
-.art-hub__hero {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
-  gap: 24px;
-  overflow: hidden;
-  border: 1px solid rgba(217, 255, 56, 0.3);
-  border-radius: 16px;
-  background:
-    linear-gradient(135deg, rgba(12, 16, 15, 0.98), rgba(24, 31, 35, 0.98)),
-    repeating-linear-gradient(90deg, transparent 0 34px, rgba(255, 255, 255, 0.025) 34px 35px);
-  color: #f4f7ed;
-  padding: 24px;
-}
-
-.art-hub__hero::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 4px;
-  background: #d9ff38;
-  content: "";
-}
-
-.art-hub__identity {
-  display: grid;
-  align-content: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.art-hub__identity h2,
-.art-hub__identity p {
-  margin: 0;
-}
-
-.art-hub__identity h2 {
-  font-size: clamp(1.8rem, 3.2vw, 3.5rem);
-  letter-spacing: -0.04em;
-}
-
-.art-hub__identity > p:last-child {
-  max-width: 760px;
-  color: rgba(244, 247, 237, 0.7);
-  line-height: 1.7;
-}
-
-.art-hub__telemetry {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.16);
-}
-
-.art-hub__telemetry div {
-  display: grid;
-  align-content: center;
-  min-height: 84px;
-  gap: 4px;
-  border-right: 1px solid rgba(255, 255, 255, 0.09);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
-  padding: 14px 16px;
-}
-
-.art-hub__telemetry div:nth-child(2n) {
-  border-right: 0;
-}
-
-.art-hub__telemetry div:nth-last-child(-n + 2) {
-  border-bottom: 0;
-}
-
-.art-hub__telemetry span {
-  color: rgba(244, 247, 237, 0.55);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-}
-
-.art-hub__telemetry strong {
-  color: #d9ff38;
-  font-size: 1.55rem;
-  font-variant-numeric: tabular-nums;
-}
-
 .art-hub__tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1234,10 +1149,6 @@ code {
 }
 
 @media (max-width: 1180px) {
-  .art-hub__hero {
-    grid-template-columns: 1fr;
-  }
-
   .port-editor-row,
   .port-editor-row--output {
     grid-template-columns: repeat(2, minmax(140px, 1fr));
@@ -2307,7 +2218,6 @@ code {
 
   .hero-panel,
   .stat-row,
-  .art-hub__telemetry,
   .studio-grid,
   .manual-mcp-grid,
   .legacy-settings-grid,
@@ -2318,17 +2228,6 @@ code {
 
   .art-hub__tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .art-hub__telemetry div,
-  .art-hub__telemetry div:nth-child(2n),
-  .art-hub__telemetry div:nth-last-child(-n + 2) {
-    border-right: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.09);
-  }
-
-  .art-hub__telemetry div:last-child {
-    border-bottom: 0;
   }
 
   .art-hub__tab:nth-child(2n) {

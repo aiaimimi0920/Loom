@@ -6,10 +6,17 @@ import { artWorkspaceItems, nextArtWorkspaceIndex } from "./artHubUi.ts";
 const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
 
 test("exposes one Art navigation entry instead of separate registry and framework pages", () => {
-  assert.match(appSource, /id: "registry", label: "Art", eyebrow: "创作与运行"/);
+  assert.match(appSource, /id: "registry", label: "Art", eyebrow: ""/);
   assert.doesNotMatch(appSource, /id: "frameworks", label: "框架"/);
   assert.doesNotMatch(appSource, /activeSection === "frameworks"/);
   assert.match(appSource, /activeSection === "registry" && \(\s*<ArtPanel/);
+});
+
+test("keeps the Art workspace compact without a descriptive hero", () => {
+  assert.doesNotMatch(appSource, /art-hub__hero/);
+  assert.doesNotMatch(appSource, /Art 运行与注册中心/);
+  assert.doesNotMatch(appSource, /Layer 2 · Art runtime/);
+  assert.doesNotMatch(appSource, /Art 状态摘要/);
 });
 
 test("keeps registry frameworks store and security inside the Art workspace", () => {
