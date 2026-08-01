@@ -157,6 +157,8 @@ function New-SupportSpec {
 }
 
 function Get-LoomCatalog {
+    param([string]$FrameworkPackageOutputRoot)
+
     $ocrRoot = Join-Path $repoRoot "resources\ocr"
     $pythonEmbedRoot = Join-Path $repoRoot "resources\python-embed"
     $pythonRoot = Join-Path $repoRoot "resources\python"
@@ -216,6 +218,18 @@ function Get-LoomCatalog {
         )
     }
 
+    $frameworkPackageCatalog = [ordered]@{
+        outputRoot = [System.IO.Path]::GetFullPath($FrameworkPackageOutputRoot)
+        expectedIds = @(
+            "cli_wrapper",
+            "cloud_api",
+            "script",
+            "python_art",
+            "mcp",
+            "workflow"
+        )
+    }
+
     return [ordered]@{
         app = "Loom"
         sourceProject = "Loom"
@@ -224,6 +238,7 @@ function Get-LoomCatalog {
         supportFiles = $support
         cliArtifact = $cliArtifact
         pluginSdkArtifact = $pluginSdkArtifact
+        frameworkPackageCatalog = $frameworkPackageCatalog
         commands = @(
             New-CommandSpec -Executable "cargo" `
                 -Arguments @("build", "--locked", "--release", "-p", "loom-daemon", "-p", "loom-cli", "-p", "loom-plugin-cli") `
@@ -240,6 +255,17 @@ function Get-LoomCatalog {
                 -WorkingDirectory (Join-Path $repoRoot "apps\desktop") `
                 -Display "npm run tauri build -- --no-bundle" `
                 -LogName "build-03.log"
+            New-CommandSpec -Executable "powershell.exe" `
+                -Arguments @(
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", (Join-Path $repoRoot "scripts\Build-LoomArtFrameworkPackages.ps1"),
+                    "-OutputRoot", $frameworkPackageCatalog.outputRoot,
+                    "-Configuration", "Release"
+                ) `
+                -WorkingDirectory $repoRoot `
+                -Display "Build-LoomArtFrameworkPackages.ps1 -OutputRoot packages\frameworks -Configuration Release" `
+                -LogName "build-04.log"
         )
     }
 }
@@ -300,6 +326,10 @@ function New-Plan {
                     destinationRelativePath = $_.destinationRelativePath
                 }
             })
+        }
+        frameworkPackageCatalog = [ordered]@{
+            outputRoot = $Catalog.frameworkPackageCatalog.outputRoot
+            expectedIds = @($Catalog.frameworkPackageCatalog.expectedIds)
         }
         requireCleanSource = [bool]$RequireCleanSource
         zip = (-not $NoZip)
@@ -370,6 +400,99 @@ function Copy-PayloadFile {
         path = $RelativePath.Replace("/", "\")
         bytes = [int64]$file.Length
         sha256 = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+function Get-FrameworkPackageArtifacts {
+    param([System.Collections.Specialized.OrderedDictionary]$FrameworkCatalog)
+
+    $catalogRoot = [string]$FrameworkCatalog.outputRoot
+    $summaryPath = Join-Path $catalogRoot "summary.json"
+    if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+        throw "Framework package catalog summary is missing: $summaryPath"
+    }
+    $summary = Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath | ConvertFrom-Json
+    $expectedIds = @($FrameworkCatalog.expectedIds | ForEach-Object { [string]$_ })
+    $summaryEntries = @($summary.frameworks)
+    $actualIds = @($summaryEntries | ForEach-Object { [string]$_.id })
+    $actualIdSet = (@($actualIds | Sort-Object) -join "`n")
+    $expectedIdSet = (@($expectedIds | Sort-Object) -join "`n")
+    if (-not [string]::Equals($actualIdSet, $expectedIdSet, [System.StringComparison]::Ordinal)) {
+        throw "Framework package catalog ids do not match the release contract."
+    }
+
+    $packageRecords = @()
+    $artifactRecords = @()
+    $payloadRecords = @()
+    foreach ($id in $expectedIds) {
+        $entry = @($summaryEntries | Where-Object { [string]$_.id -eq $id })
+        if ($entry.Count -ne 1) {
+            throw "Framework package catalog must contain exactly one entry for ${id}."
+        }
+        $zipPath = Join-Path $catalogRoot "$id.zip"
+        $sidecarPath = "$zipPath.sha256"
+        foreach ($required in @($zipPath, $sidecarPath)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw "Framework package artifact is missing: $required"
+            }
+        }
+        $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sidecarFields = @((Get-Content -Raw -Encoding UTF8 -LiteralPath $sidecarPath).Trim() -split '\s+')
+        if (
+            $sidecarFields.Count -ne 2 -or
+            -not [string]::Equals($sidecarFields[0], $zipHash, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($sidecarFields[1], "$id.zip", [System.StringComparison]::Ordinal)
+        ) {
+            throw "Framework package checksum sidecar is invalid: $sidecarPath"
+        }
+        if (-not [string]::Equals([string]$entry[0].sha256, $zipHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Framework package summary hash mismatch: $id"
+        }
+
+        $zipFile = Get-Item -LiteralPath $zipPath
+        $zipRelative = "packages\frameworks\$id.zip"
+        $zipRecord = [ordered]@{
+            kind = "framework-package-zip"
+            role = "framework"
+            id = $id
+            version = [string]$entry[0].version
+            protocolVersion = [string]$entry[0].protocolVersion
+            name = $zipFile.Name
+            path = $zipRelative
+            bytes = [int64]$zipFile.Length
+            sha256 = $zipHash
+        }
+        $sidecarFile = Get-Item -LiteralPath $sidecarPath
+        $sidecarRelative = "$zipRelative.sha256"
+        $sidecarRecord = [ordered]@{
+            kind = "framework-package-zip-sha256"
+            role = "framework"
+            id = $id
+            name = $sidecarFile.Name
+            path = $sidecarRelative
+            bytes = [int64]$sidecarFile.Length
+            sha256 = (Get-FileHash -LiteralPath $sidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $packageRecords += $zipRecord
+        $artifactRecords += @($zipRecord, $sidecarRecord)
+        $payloadRecords += @($zipRecord, $sidecarRecord)
+    }
+
+    $summaryFile = Get-Item -LiteralPath $summaryPath
+    $summaryRecord = [ordered]@{
+        kind = "framework-package-catalog"
+        name = $summaryFile.Name
+        path = "packages\frameworks\summary.json"
+        bytes = [int64]$summaryFile.Length
+        sha256 = (Get-FileHash -LiteralPath $summaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $artifactRecords += $summaryRecord
+    $payloadRecords += $summaryRecord
+    return [pscustomobject]@{
+        packages = @($packageRecords)
+        catalog = $summaryRecord
+        artifacts = @($artifactRecords)
+        payload = @($payloadRecords)
     }
 }
 
@@ -588,7 +711,7 @@ function New-PluginSdkZip {
 $resolvedVersionId = Resolve-VersionId -ExplicitVersionId $VersionId
 $resolvedOutputRoot = Resolve-OutputRoot -Value $OutputRoot
 $destination = Join-Path $resolvedOutputRoot $resolvedVersionId
-$catalog = Get-LoomCatalog
+$catalog = Get-LoomCatalog -FrameworkPackageOutputRoot (Join-Path $destination "packages\frameworks")
 $sourceGitDirty = Get-GitDirty
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
     throw "Formal Loom release requires a clean, readable Git worktree. gitDirty=$sourceGitDirty"
@@ -641,6 +764,12 @@ foreach ($support in $catalog.supportFiles) {
         -Kind "support-file"
 }
 
+$frameworkArtifacts = Get-FrameworkPackageArtifacts -FrameworkCatalog $catalog.frameworkPackageCatalog
+$frameworkPackageRecords = @($frameworkArtifacts.packages)
+$frameworkCatalogRecord = $frameworkArtifacts.catalog
+$frameworkArtifactRecords = @($frameworkArtifacts.artifacts)
+$frameworkPayloadRecords = @($frameworkArtifacts.payload)
+
 $gitHead = Get-GitText -Arguments @("rev-parse", "HEAD")
 if ([string]::IsNullOrWhiteSpace($gitHead)) {
     $gitHead = "unknown"
@@ -666,15 +795,20 @@ $buildInfo = [ordered]@{
     sha256 = (Get-FileHash -LiteralPath $buildInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-$payloadRecords = @($exeRecords + $supportRecords)
-$artifactRecords = @()
+$payloadRecords = @($exeRecords + $supportRecords + $frameworkPayloadRecords)
+$artifactRecords = @($frameworkArtifactRecords)
 $cliArtifactManifest = $null
 $pluginSdkArtifactManifest = $null
 if (-not $NoZip) {
     $desktopArtifactRecords = @(New-PayloadZip -Destination $destination -ResolvedVersionId $resolvedVersionId -PayloadRecords $payloadRecords)
     $cliArtifactRecords = @(New-CliZip -Destination $destination -ResolvedVersionId $resolvedVersionId -CliArtifact $catalog.cliArtifact)
     $pluginSdkArtifactRecords = @(New-PluginSdkZip -Destination $destination -ResolvedVersionId $resolvedVersionId -PluginSdkArtifact $catalog.pluginSdkArtifact)
-    $artifactRecords = @($desktopArtifactRecords + $cliArtifactRecords + $pluginSdkArtifactRecords)
+    $artifactRecords = @(
+        $desktopArtifactRecords +
+        $cliArtifactRecords +
+        $pluginSdkArtifactRecords +
+        $frameworkArtifactRecords
+    )
     $cliZipRecord = @($cliArtifactRecords | Where-Object { [string]$_.kind -eq "cli-zip" })[0]
     $cliArtifactManifest = [ordered]@{
         name = $catalog.cliArtifact.name
@@ -739,7 +873,7 @@ $provenanceRecord = [ordered]@{
 }
 
 $manifest = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     app = "Loom"
     sourceProject = "Loom"
     versionId = $resolvedVersionId
@@ -757,6 +891,8 @@ $manifest = [ordered]@{
     supportFiles = $supportRecords
     cliArtifact = $cliArtifactManifest
     pluginSdkArtifact = $pluginSdkArtifactManifest
+    frameworkPackages = $frameworkPackageRecords
+    frameworkCatalog = $frameworkCatalogRecord
     sbom = $sbomRecords
     provenance = $provenanceRecord
     buildInfo = $buildInfo
@@ -784,6 +920,8 @@ $result = [ordered]@{
     supportFiles = $supportRecords
     cliArtifact = $cliArtifactManifest
     pluginSdkArtifact = $pluginSdkArtifactManifest
+    frameworkPackages = $frameworkPackageRecords
+    frameworkCatalog = $frameworkCatalogRecord
     sbom = $sbomRecords
     provenance = $provenanceRecord
     artifacts = $artifactRecords

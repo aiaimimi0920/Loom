@@ -14,6 +14,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use loom_plugin_security::{
     canonical_package_digest, verify_package_signature, PluginSecurityError, TrustPolicy,
@@ -40,6 +41,8 @@ const FRAMEWORK_VERSIONS_DIR: &str = "versions";
 const FRAMEWORK_LIFECYCLE_FILE: &str = "lifecycle.json";
 const FRAMEWORK_UNINSTALL_TOMBSTONE_PREFIX: &str = ".loom-delete-framework-";
 const WINDOWS_X64_PLATFORM: &str = "windows-x64";
+const FRAMEWORK_PACKAGE_CATALOG_ENV: &str = "LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR";
+const FRAMEWORK_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Subdir under the control-plane root holding installed framework packages:
 /// `<control-plane>/frameworks/<id>/`.
 const FRAMEWORK_PACKAGES_DIR: &str = "frameworks";
@@ -1802,10 +1805,115 @@ fn framework_runtime_url(id: &str) -> Option<String> {
     Some(format!("{store}/frameworks/{id}.zip"))
 }
 
-/// Download a framework runtime zip from the configured store URL.
+fn configured_framework_package_path(id: &str) -> Option<PathBuf> {
+    let root = std::env::var_os(FRAMEWORK_PACKAGE_CATALOG_ENV)?;
+    let root = PathBuf::from(root);
+    (!root.as_os_str().is_empty()).then(|| root.join(format!("{id}.zip")))
+}
+
+fn packaged_framework_catalog_roots(executable: &Path) -> Vec<PathBuf> {
+    let Some(executable_dir) = executable.parent() else {
+        return Vec::new();
+    };
+    let mut roots = vec![executable_dir.join("packages").join("frameworks")];
+    if let Some(release_root) = executable_dir.parent() {
+        roots.push(release_root.join("packages").join("frameworks"));
+    }
+    roots
+}
+
+fn packaged_framework_package_path(id: &str) -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    packaged_framework_catalog_roots(&executable)
+        .into_iter()
+        .map(|root| root.join(format!("{id}.zip")))
+        .find(|path| path.is_file())
+}
+
+fn read_framework_package_from_catalog(
+    id: &str,
+    package_path: &Path,
+) -> Result<Vec<u8>, FrameworkError> {
+    let metadata =
+        fs::metadata(package_path).map_err(|error| FrameworkError::RuntimeDownloadFailed {
+            id: id.to_owned(),
+            reason: format!(
+                "cannot read local package `{}`: {error}",
+                package_path.display()
+            ),
+        })?;
+    if !metadata.is_file() {
+        return Err(FrameworkError::RuntimeDownloadFailed {
+            id: id.to_owned(),
+            reason: format!("local package is not a file: {}", package_path.display()),
+        });
+    }
+    if metadata.len() > FRAMEWORK_PACKAGE_MAX_BYTES {
+        return Err(FrameworkError::RuntimeDownloadFailed {
+            id: id.to_owned(),
+            reason: format!(
+                "local package exceeds {FRAMEWORK_PACKAGE_MAX_BYTES} bytes: {}",
+                package_path.display()
+            ),
+        });
+    }
+    let bytes = fs::read(package_path).map_err(|error| FrameworkError::RuntimeDownloadFailed {
+        id: id.to_owned(),
+        reason: format!(
+            "cannot read local package `{}`: {error}",
+            package_path.display()
+        ),
+    })?;
+    let checksum_path = package_path.with_extension("zip.sha256");
+    let checksum = fs::read_to_string(&checksum_path).map_err(|error| {
+        FrameworkError::RuntimeDownloadFailed {
+            id: id.to_owned(),
+            reason: format!(
+                "cannot read local package checksum `{}`: {error}",
+                checksum_path.display()
+            ),
+        }
+    })?;
+    let mut fields = checksum.split_whitespace();
+    let expected_hash = fields
+        .next()
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let expected_name = fields.next();
+    let package_name = package_path.file_name().and_then(OsStr::to_str);
+    if expected_hash.is_none() || expected_name != package_name || fields.next().is_some() {
+        return Err(FrameworkError::RuntimeDownloadFailed {
+            id: id.to_owned(),
+            reason: format!(
+                "invalid local package checksum: {}",
+                checksum_path.display()
+            ),
+        });
+    }
+    let actual_hash = format!("{:x}", Sha256::digest(&bytes));
+    if !actual_hash.eq_ignore_ascii_case(expected_hash.expect("validated checksum hash")) {
+        return Err(FrameworkError::RuntimeDownloadFailed {
+            id: id.to_owned(),
+            reason: format!(
+                "local package checksum mismatch: {}",
+                package_path.display()
+            ),
+        });
+    }
+    Ok(bytes)
+}
+
+/// Load a framework package from an explicit local catalog, a configured
+/// network store, or the package catalog next to a formal Loom release.
 fn default_runtime_fetcher(id: &str) -> Result<Vec<u8>, FrameworkError> {
-    let url = framework_runtime_url(id)
-        .ok_or_else(|| FrameworkError::RuntimeSourceMissing { id: id.to_owned() })?;
+    if let Some(package_path) = configured_framework_package_path(id) {
+        return read_framework_package_from_catalog(id, &package_path);
+    }
+    let Some(url) = framework_runtime_url(id) else {
+        if let Some(package_path) = packaged_framework_package_path(id) {
+            return read_framework_package_from_catalog(id, &package_path);
+        }
+        return Err(FrameworkError::RuntimeSourceMissing { id: id.to_owned() });
+    };
     let policy = crate::network_policy::OutboundPolicy {
         allow_http_loopback: true,
         ..crate::network_policy::OutboundPolicy::default()
@@ -1819,12 +1927,11 @@ fn default_runtime_fetcher(id: &str) -> Result<Vec<u8>, FrameworkError> {
         id: id.to_owned(),
         reason: error,
     })?;
-    crate::network_policy::get_bounded(&client, &url, &policy, 32 * 1024 * 1024).map_err(|error| {
-        FrameworkError::RuntimeDownloadFailed {
+    crate::network_policy::get_bounded(&client, &url, &policy, FRAMEWORK_PACKAGE_MAX_BYTES as usize)
+        .map_err(|error| FrameworkError::RuntimeDownloadFailed {
             id: id.to_owned(),
             reason: error,
-        }
-    })
+        })
 }
 
 fn run_framework_self_test(
@@ -1941,7 +2048,7 @@ pub enum FrameworkError {
     NoRollback { id: String },
     #[error("invalid framework package `{id}`: {reason}")]
     InvalidPackage { id: String, reason: String },
-    #[error("framework `{id}` has no configured runtime download source (set LOOM_ART_STORE_URL or LOOM_FRAMEWORK_RUNTIME_URL)")]
+    #[error("framework `{id}` has no available package source (ship packages/frameworks with Loom, or set LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR, LOOM_ART_STORE_URL, or LOOM_FRAMEWORK_RUNTIME_URL)")]
     RuntimeSourceMissing { id: String },
     #[error("framework `{id}` runtime download failed: {reason}")]
     RuntimeDownloadFailed { id: String, reason: String },
@@ -2067,6 +2174,52 @@ mod tests {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         assert!(registry.install("nope").is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn packaged_catalog_discovery_reaches_release_root_from_runtime_sidecar() {
+        let executable = Path::new("C:/Loom/runtime/loom-daemon.exe");
+        let roots = packaged_framework_catalog_roots(executable);
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("C:/Loom/runtime/packages/frameworks"),
+                PathBuf::from("C:/Loom/packages/frameworks"),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_framework_catalog_requires_matching_sha256_sidecar() {
+        let root = temp_root();
+        let catalog = root.join("catalog");
+        std::fs::create_dir_all(&catalog).expect("catalog directory");
+        let package_path = catalog.join("script.zip");
+        let package = b"independent-framework-package";
+        std::fs::write(&package_path, package).expect("framework package");
+        let hash = format!("{:x}", Sha256::digest(package));
+        std::fs::write(
+            package_path.with_extension("zip.sha256"),
+            format!("{hash}  script.zip\n"),
+        )
+        .expect("framework checksum");
+
+        assert_eq!(
+            read_framework_package_from_catalog("script", &package_path)
+                .expect("verified local framework package"),
+            package
+        );
+
+        std::fs::write(
+            package_path.with_extension("zip.sha256"),
+            format!("{}  script.zip\n", "0".repeat(64)),
+        )
+        .expect("tampered framework checksum");
+        let error = read_framework_package_from_catalog("script", &package_path)
+            .expect_err("checksum mismatch must fail");
+        assert!(error.to_string().contains("checksum mismatch"));
         std::fs::remove_dir_all(&root).ok();
     }
 

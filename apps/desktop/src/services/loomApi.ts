@@ -1005,11 +1005,13 @@ export async function listFrameworks(baseUrl: string): Promise<LoomFramework[]> 
 }
 
 export async function installFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {
-  const response = await postJson<LoomFrameworkResponse>(
-    baseUrl,
-    `/v1/frameworks/${encodeURIComponent(id)}/install`,
-    {},
-  );
+  const response = isTauri()
+    ? await invokeJsonViaTauri<LoomFrameworkResponse>("install_packaged_framework", { baseUrl, id })
+    : await postJson<LoomFrameworkResponse>(
+      baseUrl,
+      `/v1/frameworks/${encodeURIComponent(id)}/install`,
+      {},
+    );
   return response.framework ?? null;
 }
 

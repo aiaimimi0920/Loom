@@ -85,7 +85,8 @@ first and then open the desktop:
 The CLI entry for advanced scripting is available from the separate
 `Loom-CLI-*.zip` release artifact. It is not copied into the desktop package
 root. The desktop package contains only the user-facing `Loom.exe` plus its
-internal runtime sidecar and support files.
+internal runtime sidecar, support files, and uninstalled framework package
+catalog. Framework runtimes remain separate ZIPs until the user installs one.
 
 The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
@@ -178,7 +179,10 @@ The six repo-owned sample framework ids are:
 - `workflow`
 
 These six packages are optional and are not installed in a fresh control plane.
-They are a repo-owned catalog, not a closed allowlist: safe third-party
+Formal desktop releases carry them as independent ZIPs under
+`packages\frameworks`; clicking **安装** verifies and installs the selected ZIP
+into the writable control plane at runtime. They are never statically linked
+into `Loom.exe` or `loom-daemon.exe`. They are a repo-owned catalog, not a closed allowlist: safe third-party
 framework IDs use the same package and runtime protocol. Install a framework ZIP
 before installing an Art ZIP; Loom validates the package manifest, process
 entry, protocol version, and platform before marking the framework ready.
@@ -247,8 +251,14 @@ Point the daemon at that store with:
 $env:LOOM_ART_STORE_URL = "http://127.0.0.1:8790"
 ```
 
-The six repo-owned sample framework packages and Art packages are built
-independently of the default Loom release:
+An explicit local catalog can be selected with
+`LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR`. Without an override or network store, a
+packaged daemon automatically checks the release's sibling
+`packages\frameworks` directory and verifies each ZIP against its `.sha256`
+sidecar before installation.
+
+The six repo-owned framework packages and sample Art packages are built
+independently from the Loom binaries:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -261,7 +271,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 The output contains one framework ZIP per framework and one Art ZIP per sample
-Art. Both ZIP types have independent manifests and SHA-256 files. A sample Art
+Art. Both ZIP types have independent manifests and SHA-256 files. Formal desktop
+release tooling runs the framework builder and publishes those six uninstalled
+ZIPs as its local catalog; sample Art packages remain separate. A sample Art
 is installed through its generic package installer; the installer never edits
 Loom or Hook source and never writes into the default release payload:
 
@@ -639,15 +651,24 @@ runtime\loom-daemon.exe
 runtime\resources\...
 runtime\bin\...
 runtime\python\...
+packages\frameworks\cli_wrapper.zip
+packages\frameworks\cloud_api.zip
+packages\frameworks\script.zip
+packages\frameworks\python_art.zip
+packages\frameworks\mcp.zip
+packages\frameworks\workflow.zip
+packages\frameworks\*.zip.sha256
+packages\frameworks\summary.json
 packages\Loom-<versionId>-windows-x64.zip
 packages\Loom-<versionId>-windows-x64.zip.sha256
 packages\Loom-CLI-<versionId>-windows-x64.zip
 packages\Loom-CLI-<versionId>-windows-x64.zip.sha256
 ```
 
-The desktop ZIP contains `Loom.exe` and the runtime tree. The CLI ZIP contains
-only `loom.exe`, allowing command-line use without adding a second executable
-to the desktop package root.
+The desktop ZIP contains `Loom.exe`, the runtime tree, and the six independent
+framework ZIPs as an uninstalled local catalog. The CLI ZIP contains only
+`loom.exe`, allowing command-line use without adding a second executable to the
+desktop package root.
 
 `verify-release.ps1` validates the complete candidate boundary: the desktop
 root must contain exactly `Loom.exe`, the CLI artifact metadata must agree with

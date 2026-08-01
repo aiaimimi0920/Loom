@@ -16,6 +16,15 @@ function Write-Utf8NoBomFile {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Write-AsciiFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.ASCIIEncoding]::new())
+}
+
 function Assert-PathInside {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -129,11 +138,13 @@ try {
         }
         [System.IO.Compression.ZipFile]::CreateFromDirectory($stageDir, $zipPath)
         $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        Write-Utf8NoBomFile -Path "$zipPath.sha256" -Content "$hash  $id.zip`n"
+        Write-AsciiFile -Path "$zipPath.sha256" -Content "$hash  $id.zip`r`n"
         $summary += [ordered]@{
             id = $id
-            manifest = $sourceManifestPath
-            zip = $zipPath
+            version = [string]$stagedManifest.version
+            protocolVersion = [string]$stagedManifest.protocolVersion
+            manifest = "framework-packages/$id/framework.manifest.json"
+            zip = "$id.zip"
             bytes = (Get-Item -LiteralPath $zipPath).Length
             sha256 = $hash
         }

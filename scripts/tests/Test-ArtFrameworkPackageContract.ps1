@@ -108,6 +108,21 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
         $expectedHash = ((Get-Content -Raw -Encoding UTF8 -LiteralPath $hashPath).Trim() -split '\s+')[0].ToLowerInvariant()
         Assert-True ($actualHash -eq $expectedHash) "Framework ZIP hash mismatch: $zipPath"
     }
+
+    $summaryPath = Join-Path $artifactRootPath "summary.json"
+    Assert-True (Test-Path -LiteralPath $summaryPath -PathType Leaf) "Framework package summary is required: $summaryPath"
+    $summary = Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath | ConvertFrom-Json
+    Assert-True ([string]$summary.configuration -in @("Debug", "Release")) "Framework package summary configuration is invalid."
+    Assert-True (@($summary.frameworks).Count -eq $expectedIds.Count) "Framework package summary entry count mismatch."
+    foreach ($expectedId in $expectedIds) {
+        $entry = @($summary.frameworks | Where-Object { [string]$_.id -eq $expectedId })
+        Assert-True ($entry.Count -eq 1) "Framework package summary must contain one entry for $expectedId."
+        Assert-True ([string]$entry[0].zip -eq "$expectedId.zip") "Framework package summary ZIP must be relative: $expectedId"
+        Assert-True ([string]$entry[0].manifest -eq "framework-packages/$expectedId/framework.manifest.json") "Framework package summary manifest must be repository-relative: $expectedId"
+        Assert-True ([string]$entry[0].protocolVersion -eq "loom.framework.v1") "Framework package summary protocol mismatch: $expectedId"
+        Assert-True (-not [System.IO.Path]::IsPathRooted([string]$entry[0].zip)) "Framework package summary must not expose an absolute ZIP path: $expectedId"
+        Assert-True (-not [System.IO.Path]::IsPathRooted([string]$entry[0].manifest)) "Framework package summary must not expose an absolute manifest path: $expectedId"
+    }
 }
 
 Write-Host "Art framework package contract passed for $($manifestFiles.Count) manifests."

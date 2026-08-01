@@ -1,5 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -8,6 +10,16 @@ use std::time::Duration;
 const DEFAULT_LOOM_DAEMON_URL: &str = "http://127.0.0.1:8765";
 const DEFAULT_HOOK_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
 const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
+const FRAMEWORK_PACKAGE_CATALOG_ENV: &str = "LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR";
+const FRAMEWORK_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const OFFICIAL_FRAMEWORK_IDS: [&str; 6] = [
+    "cli_wrapper",
+    "cloud_api",
+    "script",
+    "python_art",
+    "mcp",
+    "workflow",
+];
 #[cfg(target_os = "windows")]
 const LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV: &str = "LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT";
 #[cfg(target_os = "windows")]
@@ -203,6 +215,14 @@ fn post_loom_daemon_json(base_url: String, path: String, body: Value) -> Result<
     let resolved_base_url = resolve_command_base_url(base_url);
     let path = normalize_daemon_path(path)?;
     http_post_json(&resolved_base_url, &path, &body)
+}
+
+#[tauri::command]
+fn install_packaged_framework(base_url: String, id: String) -> Result<Value, String> {
+    let resolved_base_url = resolve_command_base_url(base_url);
+    let current_exe =
+        std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+    install_packaged_framework_from_exe(&resolved_base_url, &id, &current_exe)
 }
 
 #[tauri::command]
@@ -494,6 +514,15 @@ fn http_post_json(base_url: &str, path: &str, body: &Value) -> Result<Value, Str
     http_request_json(base_url, "POST", path, Some(body))
 }
 
+fn http_post_json_with_timeout(
+    base_url: &str,
+    path: &str,
+    body: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    http_request_json_with_timeout(base_url, "POST", path, Some(body), timeout)
+}
+
 fn http_put_json(base_url: &str, path: &str, body: &Value) -> Result<Value, String> {
     http_request_json(base_url, "PUT", path, Some(body))
 }
@@ -521,14 +550,24 @@ fn http_request_json(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value, String> {
+    http_request_json_with_timeout(base_url, method, path, body, Duration::from_secs(3))
+}
+
+fn http_request_json_with_timeout(
+    base_url: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Result<Value, String> {
     let (host, port) = parse_loopback_http_url(base_url)?;
     let mut stream = TcpStream::connect((host.as_str(), port))
         .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(timeout))
         .map_err(|error| format!("无法设置 Loom 本地服务读取超时：{error}"))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(3)))
+        .set_write_timeout(Some(timeout))
         .map_err(|error| format!("无法设置 Loom 本地服务写入超时：{error}"))?;
 
     let request = if let Some(body) = body {
@@ -574,6 +613,151 @@ fn http_request_json(
 
     serde_json::from_str(body)
         .map_err(|error| format!("无法解析 Loom 本地服务响应 {path}：{error}"))
+}
+
+fn install_packaged_framework_from_exe(
+    base_url: &str,
+    id: &str,
+    current_exe: &Path,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 256 {
+        return Err("框架 ID 无效。".to_string());
+    }
+
+    let install_path = format!("/v1/frameworks/{}/install", percent_encode_path_segment(id));
+    let install_timeout = Duration::from_secs(60);
+    let original_error = match http_post_json_with_timeout(
+        base_url,
+        &install_path,
+        &serde_json::json!({}),
+        install_timeout,
+    ) {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+
+    if !framework_source_is_missing(&original_error) || !OFFICIAL_FRAMEWORK_IDS.contains(&id) {
+        return Err(original_error);
+    }
+
+    let candidates = packaged_framework_package_candidates(current_exe, id);
+    let package_path = candidates
+        .iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            let searched = candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("{original_error}；当前 Loom 包内未找到框架安装包：{searched}")
+        })?;
+    let package = read_verified_framework_package(id, package_path)?;
+    let response = http_post_json_with_timeout(
+        base_url,
+        "/v1/frameworks/install",
+        &serde_json::json!({ "zipBase64": base64_encode(&package) }),
+        install_timeout,
+    )?;
+    Ok(response)
+}
+
+fn framework_source_is_missing(error: &str) -> bool {
+    error.contains("no configured runtime download source")
+        || error.contains("no available package source")
+}
+
+fn packaged_framework_package_candidates(current_exe: &Path, id: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os(FRAMEWORK_PACKAGE_CATALOG_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        candidates.push(root.join(format!("{id}.zip")));
+    }
+    let packaged = packaged_framework_package_path(current_exe, id);
+    if !candidates.iter().any(|candidate| candidate == &packaged) {
+        candidates.push(packaged);
+    }
+    candidates
+}
+
+fn packaged_framework_package_path(current_exe: &Path, id: &str) -> PathBuf {
+    current_exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("packages")
+        .join("frameworks")
+        .join(format!("{id}.zip"))
+}
+
+fn read_verified_framework_package(id: &str, package_path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = fs::metadata(package_path).map_err(|error| {
+        format!(
+            "无法读取框架 `{id}` 安装包 `{}`：{error}",
+            package_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "框架 `{id}` 安装包不是文件：{}",
+            package_path.display()
+        ));
+    }
+    if metadata.len() > FRAMEWORK_PACKAGE_MAX_BYTES {
+        return Err(format!(
+            "框架 `{id}` 安装包超过 {} 字节限制：{}",
+            FRAMEWORK_PACKAGE_MAX_BYTES,
+            package_path.display()
+        ));
+    }
+
+    let package = fs::read(package_path).map_err(|error| {
+        format!(
+            "无法读取框架 `{id}` 安装包 `{}`：{error}",
+            package_path.display()
+        )
+    })?;
+    let checksum_path = package_path.with_extension("zip.sha256");
+    let checksum = fs::read_to_string(&checksum_path).map_err(|error| {
+        format!(
+            "无法读取框架 `{id}` 校验文件 `{}`：{error}",
+            checksum_path.display()
+        )
+    })?;
+    let mut fields = checksum.split_whitespace();
+    let expected_hash = fields
+        .next()
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let expected_name = fields.next();
+    let package_name = package_path.file_name().and_then(|name| name.to_str());
+    if expected_hash.is_none() || expected_name != package_name || fields.next().is_some() {
+        return Err(format!(
+            "框架 `{id}` 校验文件格式无效：{}",
+            checksum_path.display()
+        ));
+    }
+    let actual_hash = format!("{:x}", Sha256::digest(&package));
+    if !actual_hash.eq_ignore_ascii_case(expected_hash.expect("validated checksum hash")) {
+        return Err(format!(
+            "框架 `{id}` 安装包 SHA-256 不匹配：{}",
+            package_path.display()
+        ));
+    }
+    Ok(package)
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 // Fetch a binary daemon response (e.g. a preview image) over the native HTTP
@@ -725,6 +909,7 @@ pub fn run() {
             put_loom_daemon_json,
             delete_loom_daemon_json,
             post_loom_daemon_json,
+            install_packaged_framework,
             read_hook_canvas_preview
         ])
         .run(context)
@@ -751,6 +936,50 @@ mod tests {
         let root = std::env::temp_dir().join(format!("loom-desktop-{name}-{nonce}"));
         fs::create_dir_all(&root).expect("create temp dir");
         root
+    }
+
+    fn read_test_http_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set test request timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let bytes = stream.read(&mut buffer).expect("read test request");
+            if bytes == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..bytes]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("test request is utf8")
+    }
+
+    fn write_test_json_response(stream: &mut TcpStream, status: &str, body: &str) {
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write test response");
     }
 
     #[test]
@@ -922,7 +1151,7 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept error request");
             let mut request = [0_u8; 512];
             let _ = stream.read(&mut request).expect("read error request");
-            let body = r#"{"error":{"code":"framework_install_failed","message":"framework `python_art` has no configured runtime download source"}}"#;
+            let body = r#"{"error":{"code":"framework_install_failed","message":"framework `python_art` has no available package source"}}"#;
             let response = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -941,7 +1170,7 @@ mod tests {
         server.join().expect("join error fixture");
 
         assert!(error.contains("HTTP/1.1 500 Internal Server Error"));
-        assert!(error.contains("no configured runtime download source"));
+        assert!(error.contains("no available package source"));
     }
 
     #[test]
@@ -970,6 +1199,132 @@ mod tests {
         server.join().expect("join success fixture");
 
         assert_eq!(response, serde_json::json!({"created": true}));
+    }
+
+    #[test]
+    fn packaged_framework_path_uses_release_catalog() {
+        let desktop_exe = Path::new(r"C:\Release\Loom.exe");
+
+        assert_eq!(
+            packaged_framework_package_path(desktop_exe, "cloud_api"),
+            PathBuf::from(r"C:\Release\packages\frameworks\cloud_api.zip")
+        );
+    }
+
+    #[test]
+    fn packaged_framework_checksum_mismatch_is_rejected() {
+        let root = unique_temp_dir("framework-checksum");
+        let package_path = root.join("cloud_api.zip");
+        fs::write(&package_path, b"framework-package").expect("write package");
+        fs::write(
+            package_path.with_extension("zip.sha256"),
+            format!("{}  cloud_api.zip\n", "0".repeat(64)),
+        )
+        .expect("write checksum");
+
+        let error = read_verified_framework_package("cloud_api", &package_path)
+            .expect_err("mismatched checksum must fail");
+
+        assert!(error.contains("SHA-256 不匹配"), "{error}");
+        fs::remove_dir_all(root).expect("cleanup checksum fixture");
+    }
+
+    #[test]
+    fn packaged_framework_install_falls_back_for_an_old_daemon() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_catalog = std::env::var(FRAMEWORK_PACKAGE_CATALOG_ENV).ok();
+        std::env::remove_var(FRAMEWORK_PACKAGE_CATALOG_ENV);
+
+        let root = unique_temp_dir("framework-old-daemon");
+        let desktop_exe = root.join("Loom.exe");
+        let catalog = root.join("packages").join("frameworks");
+        fs::create_dir_all(&catalog).expect("create package catalog");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop placeholder");
+        let package_path = catalog.join("cloud_api.zip");
+        let package = b"independent-cloud-api-framework";
+        fs::write(&package_path, package).expect("write framework package");
+        let hash = format!("{:x}", Sha256::digest(package));
+        fs::write(
+            package_path.with_extension("zip.sha256"),
+            format!("{hash}  cloud_api.zip\n"),
+        )
+        .expect("write framework checksum");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind old daemon fixture");
+        let address = listener.local_addr().expect("read old daemon address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for (status, body) in [
+                (
+                    "500 Internal Server Error",
+                    r#"{"error":{"code":"framework_install_failed","message":"framework `cloud_api` has no configured runtime download source (set LOOM_ART_STORE_URL or LOOM_FRAMEWORK_RUNTIME_URL)"}}"#,
+                ),
+                (
+                    "200 OK",
+                    r#"{"framework":{"id":"cloud_api","installed":true,"ready":true}}"#,
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().expect("accept install request");
+                request_tx
+                    .send(read_test_http_request(&mut stream))
+                    .expect("record install request");
+                write_test_json_response(&mut stream, status, body);
+            }
+        });
+
+        let response = install_packaged_framework_from_exe(
+            &format!("http://127.0.0.1:{}", address.port()),
+            "cloud_api",
+            &desktop_exe,
+        )
+        .expect("packaged fallback install");
+        server.join().expect("join old daemon fixture");
+        let first_request = request_rx.recv().expect("first install request");
+        let second_request = request_rx.recv().expect("fallback install request");
+
+        assert!(first_request.starts_with("POST /v1/frameworks/cloud_api/install HTTP/1.1"));
+        assert!(second_request.starts_with("POST /v1/frameworks/install HTTP/1.1"));
+        let fallback_body: Value = serde_json::from_str(
+            second_request
+                .split_once("\r\n\r\n")
+                .expect("fallback request body")
+                .1,
+        )
+        .expect("fallback request json");
+        assert_eq!(fallback_body["zipBase64"], base64_encode(package));
+        assert_eq!(response["framework"]["installed"], true);
+        assert_eq!(response["framework"]["ready"], true);
+
+        fs::remove_dir_all(root).expect("cleanup old daemon fixture");
+        restore_env(FRAMEWORK_PACKAGE_CATALOG_ENV, previous_catalog);
+    }
+
+    #[test]
+    fn packaged_framework_install_does_not_mask_other_daemon_errors() {
+        let root = unique_temp_dir("framework-daemon-error");
+        let desktop_exe = root.join("Loom.exe");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind daemon error fixture");
+        let address = listener.local_addr().expect("read daemon error address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept failed install request");
+            let _ = read_test_http_request(&mut stream);
+            write_test_json_response(
+                &mut stream,
+                "500 Internal Server Error",
+                r#"{"error":{"code":"framework_install_failed","message":"framework runtime self-test failed"}}"#,
+            );
+        });
+
+        let error = install_packaged_framework_from_exe(
+            &format!("http://127.0.0.1:{}", address.port()),
+            "cloud_api",
+            &desktop_exe,
+        )
+        .expect_err("non-source error must remain visible");
+        server.join().expect("join daemon error fixture");
+
+        assert!(error.contains("runtime self-test failed"), "{error}");
+        fs::remove_dir_all(root).expect("cleanup daemon error fixture");
     }
 
     #[test]

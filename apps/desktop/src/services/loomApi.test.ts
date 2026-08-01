@@ -447,17 +447,17 @@ test("framework install surfaces the daemon error message in browser mode", asyn
   globalThis.fetch = (async () => Response.json({
     error: {
       code: "framework_install_failed",
-      message: "framework `python_art` has no configured runtime download source",
+      message: "framework `python_art` has no available package source",
     },
   }, { status: 500 })) as typeof fetch;
 
   await assert.rejects(
     installFramework("http://127.0.0.1:18771", "python_art"),
-    /HTTP 500.*no configured runtime download source/,
+    /HTTP 500.*no available package source/,
   );
 });
 
-test("Tauri framework failures are not retried through direct HTTP", async (context) => {
+test("Tauri framework installs use the packaged fallback command without direct HTTP", async (context) => {
   const globals = globalThis;
   const originalFetch = globals.fetch;
   const hadWindow = Reflect.has(globals, "window");
@@ -488,21 +488,33 @@ test("Tauri framework failures are not retried through direct HTTP", async (cont
   }) as typeof fetch;
   Reflect.set(globals, "window", globals);
   Reflect.set(globals, "isTauri", true);
+  let invokeCalls = 0;
   Reflect.set(globals, "__TAURI_INTERNALS__", {
-    invoke: async (command: string) => {
-      assert.equal(command, "post_loom_daemon_json");
-      throw "framework `python_art` has no configured runtime download source";
+    invoke: async (command: string, args: Record<string, unknown>) => {
+      invokeCalls += 1;
+      assert.equal(command, "install_packaged_framework");
+      assert.equal(args.baseUrl, "http://127.0.0.1:18771");
+      if (args.id === "cloud_api") {
+        return { framework: { id: "cloud_api", installed: true, ready: true } };
+      }
+      assert.equal(args.id, "python_art");
+      throw "framework `python_art` package checksum mismatch";
     },
   });
+
+  const installed = await installFramework("http://127.0.0.1:18771", "cloud_api");
+  assert.equal(installed?.id, "cloud_api");
+  assert.equal(installed?.ready, true);
 
   await assert.rejects(
     installFramework("http://127.0.0.1:18771", "python_art"),
     (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /no configured runtime download source/);
+      assert.match(error.message, /checksum mismatch/);
       return true;
     },
   );
+  assert.equal(invokeCalls, 2);
   assert.equal(fetchCalls, 0);
 });
 
