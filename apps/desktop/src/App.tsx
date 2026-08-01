@@ -3721,31 +3721,6 @@ function RegistryPanel({
   );
 }
 
-function frameworkPermissionSummary(framework: LoomFramework): string[] {
-  const policy = framework.permissionPolicy;
-  const permissions = new Set(framework.declaredPermissions ?? []);
-  if (policy?.network?.domains?.length) {
-    permissions.add(`网络域名: ${policy.network.domains.join(", ")}`);
-  }
-  if (policy?.network?.allowLocalhost) permissions.add("网络: localhost");
-  if (policy?.network?.allowPrivateNetworks) permissions.add("网络: private networks");
-  if (policy?.filesystem?.read?.length) {
-    permissions.add(`文件读取: ${policy.filesystem.read.join(", ")}`);
-  }
-  if (policy?.filesystem?.write?.length) {
-    permissions.add(`文件写入: ${policy.filesystem.write.join(", ")}`);
-  }
-  if (policy?.process?.spawn) {
-    permissions.add(`子进程: 最多 ${policy.process.maxProcesses ?? framework.resources?.maxProcesses ?? "未声明"}`);
-  }
-  if (policy?.gpu) permissions.add("GPU");
-  if (policy?.clipboard) permissions.add("剪贴板");
-  if (policy?.credentials?.length) {
-    permissions.add(`凭据: ${policy.credentials.join(", ")}`);
-  }
-  return [...permissions];
-}
-
 function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   const [publishers, setPublishers] = useState<LoomPublisherTrustRecord[]>([]);
   const [credentials, setCredentials] = useState<LoomCredentialSummary[]>([]);
@@ -4112,6 +4087,7 @@ function FrameworkManagementDialog({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [pendingUninstallId, setPendingUninstallId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -4140,6 +4116,10 @@ function FrameworkManagementDialog({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose, open]);
+
+  useEffect(() => {
+    if (!open) setPendingUninstallId(null);
+  }, [open]);
 
   if (!open) return null;
 
@@ -4184,6 +4164,7 @@ function FrameworkManagementDialog({
                 const rowBusy = busyId === identity;
                 const toggleBusy = rowBusy && busyAction === "toggle";
                 const upgradeBusy = rowBusy && busyAction === "upgrade";
+                const confirmingUninstall = framework.installed && pendingUninstallId === identity;
                 return (
                   <tr key={identity}>
                     <th scope="row">{frameworkFilterLabel(framework)}</th>
@@ -4192,10 +4173,27 @@ function FrameworkManagementDialog({
                       <button
                         className={framework.installed ? "ghost-button" : "signal-button"}
                         type="button"
-                        disabled={rowBusy}
-                        onClick={() => void onToggle(framework)}
+                        disabled={busyId !== null}
+                        onClick={() => {
+                          if (!framework.installed) {
+                            void onToggle(framework);
+                            return;
+                          }
+                          if (!confirmingUninstall) {
+                            setPendingUninstallId(identity);
+                            return;
+                          }
+                          setPendingUninstallId(null);
+                          void onToggle(framework);
+                        }}
                       >
-                        {toggleBusy ? "处理中" : framework.installed ? "卸载" : "安装"}
+                        {toggleBusy
+                          ? "处理中"
+                          : confirmingUninstall
+                            ? "确认卸载"
+                            : framework.installed
+                              ? "卸载"
+                              : "安装"}
                       </button>
                     </td>
                     <td>
@@ -4215,7 +4213,7 @@ function FrameworkManagementDialog({
                       <button
                         className="ghost-button"
                         type="button"
-                        disabled={!framework.installed || rowBusy}
+                        disabled={!framework.installed || busyId !== null}
                         onClick={() => fileInputRefs.current[identity]?.click()}
                       >
                         {upgradeBusy ? "更新中" : "更新"}
@@ -4313,10 +4311,7 @@ function ArtPanel({
 
   const toggleFramework = async (framework: LoomFramework) => {
     const identity = frameworkIdentity(framework);
-    const permissions = frameworkPermissionSummary(framework);
     const action = framework.installed ? "卸载" : "安装";
-    const review = permissions.length ? `\n\n权限审阅:\n- ${permissions.join("\n- ")}` : "";
-    if (!window.confirm(`${action}框架 ${identity}？${review}`)) return;
     setFrameworkBusyId(identity);
     setFrameworkBusyAction("toggle");
     setFrameworkError(null);

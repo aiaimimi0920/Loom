@@ -69,6 +69,18 @@ test("opens an accessible framework management dialog with version and package u
   assert.match(styleSource, /\.framework-dialog-backdrop \{[\s\S]*?position: fixed;/);
 });
 
+test("starts framework installs immediately and confirms uninstall inside the dialog", () => {
+  const toggleFrameworkSource = appSource.match(
+    /const toggleFramework = async \(framework: LoomFramework\) => \{[\s\S]*?\n  \};/,
+  );
+  assert.ok(toggleFrameworkSource);
+  assert.doesNotMatch(toggleFrameworkSource[0], /window\.confirm/);
+  assert.match(appSource, /const \[pendingUninstallId, setPendingUninstallId\] = useState<string \| null>\(null\)/);
+  assert.match(appSource, /if \(!framework\.installed\) \{\s*void onToggle\(framework\);\s*return;/);
+  assert.match(appSource, /\? "确认卸载"/);
+  assert.match(appSource, /disabled=\{busyId !== null\}/);
+});
+
 test("moves Art workspace focus with arrow, Home, and End keys", () => {
   const count = artWorkspaceItems.length;
   assert.equal(nextArtWorkspaceIndex("ArrowRight", 2, count), 0);

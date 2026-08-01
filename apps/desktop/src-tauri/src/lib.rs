@@ -93,9 +93,9 @@ fn read_loom_snapshot(base_url: Option<String>) -> LoomSnapshot {
 
     match read_daemon_snapshot(&resolved_base_url) {
         Ok(snapshot) => {
-            let daemon_mismatch = std::env::current_exe()
-                .ok()
-                .and_then(|current_exe| daemon_path_mismatch_warning(&current_exe, &snapshot.health));
+            let daemon_mismatch = std::env::current_exe().ok().and_then(|current_exe| {
+                daemon_path_mismatch_warning(&current_exe, &snapshot.health)
+            });
             LoomSnapshot {
                 base_url: resolved_base_url,
                 connection_state: "online".to_string(),
@@ -502,6 +502,19 @@ fn http_delete_json(base_url: &str, path: &str) -> Result<Value, String> {
     http_request_json(base_url, "DELETE", path, None)
 }
 
+fn daemon_error_message(body: &str) -> Option<String> {
+    let payload = serde_json::from_str::<Value>(body).ok()?;
+    payload
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("message").and_then(Value::as_str))
+        .or_else(|| payload.get("detail").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn http_request_json(
     base_url: &str,
     method: &str,
@@ -542,9 +555,21 @@ fn http_request_json(
     let (headers, body) = response
         .split_once("\r\n\r\n")
         .ok_or_else(|| format!("Loom 本地服务响应格式异常：{path}"))?;
-    if !headers.starts_with("HTTP/1.1 200") {
-        let status_line = headers.lines().next().unwrap_or("unknown status");
+    let status_line = headers.lines().next().unwrap_or("unknown status");
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| format!("Loom 本地服务响应状态异常：{path} returned {status_line}"))?;
+    if !(200..=299).contains(&status_code) {
+        if let Some(message) = daemon_error_message(body) {
+            return Err(format!("{path} returned {status_line}: {message}"));
+        }
         return Err(format!("{path} returned {status_line}"));
+    }
+
+    if body.trim().is_empty() {
+        return Ok(Value::Null);
     }
 
     serde_json::from_str(body)
@@ -609,8 +634,7 @@ fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), Stri
 // Minimal standard base64 encoder so the desktop wrapper can return `data:` URLs
 // without adding a dependency.
 fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -891,6 +915,64 @@ mod tests {
     }
 
     #[test]
+    fn daemon_http_error_preserves_structured_message() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind error fixture");
+        let address = listener.local_addr().expect("read error fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept error request");
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request).expect("read error request");
+            let body = r#"{"error":{"code":"framework_install_failed","message":"framework `python_art` has no configured runtime download source"}}"#;
+            let response = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write error response");
+        });
+
+        let error = http_post_json(
+            &format!("http://127.0.0.1:{}", address.port()),
+            "/v1/frameworks/python_art/install",
+            &serde_json::json!({}),
+        )
+        .expect_err("framework install must fail");
+        server.join().expect("join error fixture");
+
+        assert!(error.contains("HTTP/1.1 500 Internal Server Error"));
+        assert!(error.contains("no configured runtime download source"));
+    }
+
+    #[test]
+    fn daemon_http_client_accepts_successful_non_200_status() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind success fixture");
+        let address = listener.local_addr().expect("read success fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept success request");
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request).expect("read success request");
+            let body = r#"{"created":true}"#;
+            let response = format!(
+                "HTTP/1.0 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write success response");
+        });
+
+        let response = http_get_json(
+            &format!("http://127.0.0.1:{}", address.port()),
+            "/v1/frameworks",
+        )
+        .expect("201 response should be accepted");
+        server.join().expect("join success fixture");
+
+        assert_eq!(response, serde_json::json!({"created": true}));
+    }
+
+    #[test]
     fn daemon_that_disappears_after_core_probes_is_offline() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind disappearing fixture");
         let address = listener
@@ -1054,7 +1136,10 @@ mod tests {
 
         assert!(warning.contains("旧 daemon"), "{warning}");
         assert!(warning.contains("127.0.0.1:8765"), "{warning}");
-        assert!(warning.contains(&packaged_daemon.display().to_string()), "{warning}");
+        assert!(
+            warning.contains(&packaged_daemon.display().to_string()),
+            "{warning}"
+        );
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
         restore_env(LOOM_DAEMON_EXECUTABLE_ENV, previous_override);

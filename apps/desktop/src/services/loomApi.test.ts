@@ -438,6 +438,74 @@ test("framework helpers call the framework management routes", async (context) =
   assert.equal(seen[3]?.body, "{}");
 });
 
+test("framework install surfaces the daemon error message in browser mode", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = (async () => Response.json({
+    error: {
+      code: "framework_install_failed",
+      message: "framework `python_art` has no configured runtime download source",
+    },
+  }, { status: 500 })) as typeof fetch;
+
+  await assert.rejects(
+    installFramework("http://127.0.0.1:18771", "python_art"),
+    /HTTP 500.*no configured runtime download source/,
+  );
+});
+
+test("Tauri framework failures are not retried through direct HTTP", async (context) => {
+  const globals = globalThis;
+  const originalFetch = globals.fetch;
+  const hadWindow = Reflect.has(globals, "window");
+  const originalWindow: unknown = Reflect.get(globals, "window");
+  const hadIsTauri = Reflect.has(globals, "isTauri");
+  const originalIsTauri: unknown = Reflect.get(globals, "isTauri");
+  const hadInternals = Reflect.has(globals, "__TAURI_INTERNALS__");
+  const originalInternals: unknown = Reflect.get(globals, "__TAURI_INTERNALS__");
+  context.after(() => {
+    globals.fetch = originalFetch;
+    for (const [name, existed, value] of [
+      ["window", hadWindow, originalWindow],
+      ["isTauri", hadIsTauri, originalIsTauri],
+      ["__TAURI_INTERNALS__", hadInternals, originalInternals],
+    ] as const) {
+      if (existed) {
+        Reflect.set(globals, name, value);
+      } else {
+        Reflect.deleteProperty(globals, name);
+      }
+    }
+  });
+
+  let fetchCalls = 0;
+  globals.fetch = (async () => {
+    fetchCalls += 1;
+    return Response.json({ framework: { id: "python_art", installed: true } });
+  }) as typeof fetch;
+  Reflect.set(globals, "window", globals);
+  Reflect.set(globals, "isTauri", true);
+  Reflect.set(globals, "__TAURI_INTERNALS__", {
+    invoke: async (command: string) => {
+      assert.equal(command, "post_loom_daemon_json");
+      throw "framework `python_art` has no configured runtime download source";
+    },
+  });
+
+  await assert.rejects(
+    installFramework("http://127.0.0.1:18771", "python_art"),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /no configured runtime download source/);
+      return true;
+    },
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 test("plugin trust and credential helpers preserve qualified scopes and write-only values", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => {

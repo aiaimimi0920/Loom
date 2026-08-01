@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { McpRegistryResponse } from "./mcpMarketplace";
 
 export const DEFAULT_LOOM_DAEMON_URL = "http://127.0.0.1:8765";
@@ -598,6 +598,45 @@ export async function waitForLoomOnline(
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
+const daemonErrorMessage = (payload: unknown): string | null => {
+  if (!isRecord(payload)) return null;
+  const nestedError = payload.error;
+  if (isRecord(nestedError)) {
+    const message = nestedError.message;
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message.trim();
+    }
+  }
+  for (const key of ["message", "detail"]) {
+    const message = payload[key];
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message.trim();
+    }
+  }
+  return null;
+};
+
+const daemonResponseError = async (response: Response, path: string): Promise<Error> => {
+  let detail: string | null = null;
+  try {
+    detail = daemonErrorMessage(await response.json());
+  } catch {
+    // Preserve the HTTP status when an error response has no JSON body.
+  }
+  const suffix = detail ? `：${detail}` : "";
+  return new Error(`Loom 本地服务请求 ${path} 返回 HTTP ${response.status}${suffix}`);
+};
+
+const responseJson = async <T>(response: Response, path: string): Promise<T> => {
+  if (!response.ok) {
+    throw await daemonResponseError(response, path);
+  }
+  if (response.status === 204) {
+    return null as T;
+  }
+  return (await response.json()) as T;
+};
+
 const buildSettingsLinks = (baseUrl: string): LoomSettingsLinks => {
   const root = `${trimTrailingSlash(baseUrl)}/settings`;
   return {
@@ -615,11 +654,7 @@ const readJson = async <T>(baseUrl: string, path: string): Promise<T> => {
     },
   });
 
-  if (!response.ok) {
-    throw new Error(`Loom 本地服务请求 ${path} 返回 HTTP ${response.status}`);
-  }
-
-  return (await response.json()) as T;
+  return await responseJson<T>(response, path);
 };
 
 const errorMessage = (error: unknown): string => {
@@ -679,30 +714,34 @@ export async function startLoomDaemon(): Promise<LoomDaemonStartResult> {
   return await invoke<LoomDaemonStartResult>("start_loom_daemon");
 }
 
+const invokeJsonViaTauri = async <T>(command: string, args: Record<string, unknown>): Promise<T> => {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw new Error(errorMessage(error));
+  }
+};
+
 const getJsonViaTauri = async <T>(baseUrl: string, path: string): Promise<T> => {
-  return await invoke<T>("get_loom_daemon_json", { baseUrl, path });
+  return await invokeJsonViaTauri<T>("get_loom_daemon_json", { baseUrl, path });
 };
 
 const postJsonViaTauri = async <T>(baseUrl: string, path: string, body: unknown): Promise<T> => {
-  return await invoke<T>("post_loom_daemon_json", { baseUrl, path, body });
+  return await invokeJsonViaTauri<T>("post_loom_daemon_json", { baseUrl, path, body });
 };
 
 const putJsonViaTauri = async <T>(baseUrl: string, path: string, body: unknown): Promise<T> => {
-  return await invoke<T>("put_loom_daemon_json", { baseUrl, path, body });
+  return await invokeJsonViaTauri<T>("put_loom_daemon_json", { baseUrl, path, body });
 };
 
 const deleteJsonViaTauri = async <T>(baseUrl: string, path: string): Promise<T> => {
-  return await invoke<T>("delete_loom_daemon_json", { baseUrl, path });
+  return await invokeJsonViaTauri<T>("delete_loom_daemon_json", { baseUrl, path });
 };
 
 const getJson = async <T>(baseUrl: string, path: string): Promise<T> => {
-  try {
+  if (isTauri()) {
     return await getJsonViaTauri<T>(baseUrl, path);
-  } catch {
-    // Browser previews do not expose Tauri commands. Fall back to direct HTTP so
-    // local frontend checks can still exercise the action when CORS allows it.
   }
-
   return await readJson<T>(baseUrl, path);
 };
 
@@ -726,13 +765,9 @@ export async function loadHookCanvasPreview(baseUrl: string, path: string): Prom
 }
 
 const postJson = async <T>(baseUrl: string, path: string, body: unknown): Promise<T> => {
-  try {
+  if (isTauri()) {
     return await postJsonViaTauri<T>(baseUrl, path, body);
-  } catch {
-    // Browser previews do not expose Tauri commands. Fall back to direct HTTP so
-    // local frontend checks can still exercise the action when CORS allows it.
   }
-
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "POST",
     headers: {
@@ -742,21 +777,13 @@ const postJson = async <T>(baseUrl: string, path: string, body: unknown): Promis
     body: JSON.stringify(body ?? {}),
   });
 
-  if (!response.ok) {
-    throw new Error(`Loom 本地服务请求 ${path} 返回 HTTP ${response.status}`);
-  }
-
-  return (await response.json()) as T;
+  return await responseJson<T>(response, path);
 };
 
 const putJson = async <T>(baseUrl: string, path: string, body: unknown): Promise<T> => {
-  try {
+  if (isTauri()) {
     return await putJsonViaTauri<T>(baseUrl, path, body);
-  } catch {
-    // Browser previews do not expose Tauri commands. Fall back to direct HTTP so
-    // local frontend checks can still exercise the action when CORS allows it.
   }
-
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "PUT",
     headers: {
@@ -766,21 +793,13 @@ const putJson = async <T>(baseUrl: string, path: string, body: unknown): Promise
     body: JSON.stringify(body ?? {}),
   });
 
-  if (!response.ok) {
-    throw new Error(`Loom 本地服务请求 ${path} 返回 HTTP ${response.status}`);
-  }
-
-  return (await response.json()) as T;
+  return await responseJson<T>(response, path);
 };
 
 const deleteJson = async <T>(baseUrl: string, path: string): Promise<T> => {
-  try {
+  if (isTauri()) {
     return await deleteJsonViaTauri<T>(baseUrl, path);
-  } catch {
-    // Browser previews do not expose Tauri commands. Fall back to direct HTTP so
-    // local frontend checks can still exercise the action when CORS allows it.
   }
-
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "DELETE",
     headers: {
@@ -788,11 +807,7 @@ const deleteJson = async <T>(baseUrl: string, path: string): Promise<T> => {
     },
   });
 
-  if (!response.ok) {
-    throw new Error(`Loom 本地服务请求 ${path} 返回 HTTP ${response.status}`);
-  }
-
-  return (await response.json()) as T;
+  return await responseJson<T>(response, path);
 };
 
 export async function startHookBridge(
