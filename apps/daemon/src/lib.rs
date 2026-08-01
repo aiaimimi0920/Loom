@@ -1006,6 +1006,12 @@ fn write_local_capability_manifest(
 ) -> Result<()> {
     fs::create_dir_all(manifest_dir)
         .with_context(|| format!("create loom manifest dir {}", manifest_dir.display()))?;
+    restrict_sensitive_path_permissions(manifest_dir, true).with_context(|| {
+        format!(
+            "restrict loom manifest directory permissions {}",
+            manifest_dir.display()
+        )
+    })?;
     let mut transport = json!({
         "type": "http",
         "baseUrl": format!("http://{}", address),
@@ -1029,11 +1035,214 @@ fn write_local_capability_manifest(
         "capabilities": invokable_capability_ids(),
         "startedAt": started_at
     });
-    fs::write(
-        manifest_dir.join("loom.json"),
-        serde_json::to_string_pretty(&manifest)?,
-    )
-    .with_context(|| format!("write loom manifest in {}", manifest_dir.display()))?;
+    let path = manifest_dir.join("loom.json");
+    let mut bytes = serde_json::to_vec_pretty(&manifest)?;
+    bytes.push(b'\n');
+    let (temporary, mut file) = create_sensitive_temporary(&path).with_context(|| {
+        format!(
+            "create loom manifest temporary in {}",
+            manifest_dir.display()
+        )
+    })?;
+    let result = (|| -> Result<()> {
+        file.write_all(&bytes)
+            .with_context(|| format!("write loom manifest temporary {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("flush loom manifest temporary {}", temporary.display()))?;
+        drop(file);
+        restrict_sensitive_path_permissions(&temporary, false).with_context(|| {
+            format!(
+                "restrict loom manifest temporary permissions {}",
+                temporary.display()
+            )
+        })?;
+        replace_sensitive_file(&temporary, &path)
+            .with_context(|| format!("atomically replace loom manifest {}", path.display()))?;
+        restrict_sensitive_path_permissions(&path, false)
+            .with_context(|| format!("restrict loom manifest permissions {}", path.display()))?;
+        sync_sensitive_parent(&path)
+            .with_context(|| format!("flush loom manifest directory {}", manifest_dir.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(())
+}
+
+fn create_sensitive_temporary(path: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "sensitive file path has no parent",
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "sensitive file path has no UTF-8 file name",
+            )
+        })?;
+    for attempt in 0..100u32 {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary = parent.join(format!(
+            ".{file_name}.tmp-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "could not allocate a unique sensitive temporary file",
+    ))
+}
+
+#[cfg(not(windows))]
+fn replace_sensitive_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_sensitive_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = extended_windows_path(source)?;
+    let destination = extended_windows_path(destination)?;
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_sensitive_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(if directory { 0o700 } else { 0o600 });
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(windows)]
+fn restrict_sensitive_path_permissions(path: &Path, _directory: bool) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+
+    let path = extended_windows_path(path)?;
+    let sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let updated = unsafe {
+        SetFileSecurityW(
+            path.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        )
+    };
+    unsafe {
+        LocalFree(descriptor.cast());
+    }
+    if updated == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_sensitive_path_permissions(_path: &Path, _directory: bool) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn extended_windows_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let absolute = match fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                std::io::Error::new(ErrorKind::InvalidInput, "Windows path has no parent")
+            })?;
+            let file_name = path.file_name().ok_or_else(|| {
+                std::io::Error::new(ErrorKind::InvalidInput, "Windows path has no file name")
+            })?;
+            fs::canonicalize(parent)?.join(file_name)
+        }
+        Err(error) => return Err(error),
+    };
+    let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+    let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
+        || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
+    {
+        wide
+    } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+        let mut path = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
+        path.extend_from_slice(&wide[2..]);
+        path
+    } else {
+        let mut path = r"\\?\".encode_utf16().collect::<Vec<_>>();
+        path.extend_from_slice(&wide);
+        path
+    };
+    extended.push(0);
+    Ok(extended)
+}
+
+#[cfg(unix)]
+fn sync_sensitive_parent(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(ErrorKind::InvalidInput, "sensitive path has no parent")
+    })?;
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_sensitive_parent(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -21286,6 +21495,59 @@ PY
                 "tea.ticket.review.v1".to_owned()
             )));
         assert!(manifest["startedAt"].as_u64().is_some() || manifest["startedAt"].is_string());
+        assert_eq!(
+            fs::read_dir(&manifest_dir)
+                .expect("list manifest directory")
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+                .count(),
+            0
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&manifest_dir)
+                    .expect("manifest directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&manifest_path)
+                    .expect("manifest metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn local_capability_manifest_atomic_write_replaces_existing_token() {
+        let temp_dir = unique_temp_dir("manifest-atomic-replace");
+        let manifest_dir = temp_dir.join("capabilities");
+        let address = "127.0.0.1:38191".parse().expect("address");
+        write_local_capability_manifest(&manifest_dir, address, Some("token-one"))
+            .expect("write first manifest");
+        write_local_capability_manifest(&manifest_dir, address, Some("token-two"))
+            .expect("replace manifest");
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(manifest_dir.join("loom.json")).expect("read replaced manifest"),
+        )
+        .expect("parse replaced manifest");
+        assert_eq!(manifest["transport"]["authToken"], "token-two");
+        assert_eq!(
+            fs::read_dir(&manifest_dir)
+                .expect("list manifest directory")
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+                .count(),
+            0
+        );
     }
 
     #[test]

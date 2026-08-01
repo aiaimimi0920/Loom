@@ -109,19 +109,26 @@ A packaged workflow Art may declare child Arts under
 `metadata.dependencies.arts`. This package-install contract is separate from
 the native `WorkflowGraph` execution contract above:
 
-1. Loom installs the root Art through the normal secure ZIP and framework
-   readiness path.
-2. Child Art IDs are fetched and installed breadth-first.
-3. A visited set suppresses duplicate work and terminates dependency cycles.
-4. A child already present in the tool registry is retained rather than copied
-   into the parent package or reinstalled implicitly.
+1. Loom reads the dependency graph without activating the parent, then installs
+   missing children dependency-first through the normal secure ZIP path.
+2. Cycles and fetched packages whose identity does not match the requested child
+   reference are rejected.
+3. A child already present in the tool registry is retained rather than copied
+   into the parent package or reinstalled implicitly, but its integrity is
+   revalidated before the parent can be locked.
+4. The parent lockfile records every direct child as `kind: "art"` with the
+   child's canonical publisher-qualified ID, exact package version, and
+   canonical digest.
 5. Every child is its own immutable package with its own activation pointer,
    canonical digest, framework lockfile, writable state/cache/output roots, and
    execution-time integrity verification.
+6. Parent readiness, execution, and rollback recursively verify that the child
+   graph still matches the exact locks. A child upgrade, rollback, activation
+   edit, payload/lock tamper, or uninstall makes the parent not ready until the
+   matching child state is restored or the parent is explicitly reinstalled to
+   refresh its lock.
 
 The parent workflow package never receives child source code and neither Loom
-nor Hook source is modified. The current v1 parent lockfile does **not** pin a
-child Art version/digest, and uninstall does not maintain dependency reference
-counts or automatically garbage-collect orphan child Arts. Operators must
-upgrade, rollback, or uninstall those independently installed child packages
-explicitly until a future Art dependency lock/GC contract is introduced.
+nor Hook source is modified. Uninstall does not maintain dependency reference
+counts or automatically garbage-collect orphan child Arts; operators still
+remove independently installed child packages explicitly.

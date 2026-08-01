@@ -117,8 +117,13 @@ restores the prior pointer; code is never written into Loom or Hook source.
 The resolver selects the highest compatible candidate that also satisfies the
 pin. The lockfile records exact kind, ID, version, and digest. Runtime registry
 entries whose directories no longer exist are pruned. Art-to-Art dependencies
-are installed recursively with duplicate/cycle suppression; they are still
-separate immutable packages rather than copied into the parent Art.
+are installed dependency-first. Each parent lock records every direct child as
+`kind: "art"` with its publisher-qualified ID, exact version, and canonical
+digest; the entire child lock graph is revalidated before execution and
+rollback. Missing locks, cycles, child upgrades, activation changes, payload
+tampering, and uninstall all fail closed until the parent package is explicitly
+reinstalled/upgraded to refresh its lock. Children remain separate immutable
+packages rather than being copied into the parent Art.
 
 ## Signing and trust
 

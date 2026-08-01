@@ -33,6 +33,12 @@ Expected states:
 - `Revoked`: valid signature from a revoked `(publisherId, keyId)`.
 - invalid signatures return an error rather than a usable state.
 
+Trust-store updates use a create-new sibling temporary, flush the new document,
+and atomically replace the previous file. Windows uses replace-existing,
+write-through file replacement; Unix additionally syncs the parent directory.
+The store directory, temporary, and final file are owner-only (`SYSTEM` is also
+retained on Windows).
+
 ## Revocation
 
 ```powershell

@@ -50,6 +50,11 @@ source immutability invariant:
   limits before install/uninstall.
 - The Desktop also manages publisher trust and write-only, framework/Art-scoped
   credentials. Credential values are never returned by the daemon.
+- Credential files and token-bearing loopback discovery manifests use
+  create-new temporaries, atomic replacement, and owner-only permissions;
+  Windows credential values additionally use current-user DPAPI.
+- Trust-store replacement is atomic on Unix and Windows rather than deleting
+  the previous document before rename.
 - `LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatible default.
 - `LOOM_PLUGIN_PERMISSION_MODE=strict` fails closed when a package requests
   direct network, arbitrary filesystem, GPU, or clipboard access that the
@@ -96,10 +101,15 @@ source immutability invariant:
   SHA-256 pins and persist exact runtime lock records.
 - Runtime registry startup prunes entries whose immutable directories no longer
   exist.
-- Workflow Art child dependencies install breadth-first with visited/cycle
-  suppression. Each child remains an independent immutable Art package.
-- V1 does not yet pin child Art versions in the parent lockfile and does not
-  maintain dependency reference counts or automatic orphan GC.
+- Workflow Art child dependencies install dependency-first; cycles and fetched
+  identity mismatches are rejected before parent activation.
+- Parent Art lockfiles pin each direct child to its publisher-qualified ID,
+  exact version, and canonical digest. Readiness, execution, and rollback
+  recursively reject missing locks, child upgrades/rollbacks, activation or
+  payload tampering, revocation, and uninstall until the exact child state is
+  restored or the parent is explicitly reinstalled to refresh its lock.
+- Children remain independent immutable Art packages. Reference counting and
+  automatic orphan garbage collection are not implemented.
 
 ## CI and supply chain
 
@@ -116,15 +126,20 @@ source immutability invariant:
 
 ## Current verification snapshot
 
-- `loom_tool_registry`: 107 tests passed, including retention, tombstone
-  recovery, revocation, lockfile version, rollback tamper, Windows long-path
-  registry replacement, and versioned Python runtime coverage.
+- `loom_tool_registry`: 111 tests passed, including exact child Art locks,
+  child upgrade/rollback/tamper/uninstall rejection, publisher-qualified child
+  identity, retention, tombstone recovery, revocation, rollback tamper,
+  Windows ACL/long-path replacement, and versioned Python runtime coverage.
 - `loom-art-store`: 9 tests passed, including persisted and legacy-synthesized
   Art package SHA-256 sidecars.
 - `loom-plugin-cli`: 5 tests passed, including real sign/trust/install/
   conformance/revoke E2E.
 - `apps/desktop`: 61 tests passed; TypeScript typecheck passed.
-- `loom-daemon --lib`: 181 tests passed, including qualified routes,
+- Hook: 801 frontend tests and 144 Rust library tests passed; production
+  TypeScript typecheck, static build, Cargo format, and connector contracts
+  passed after removing the direct package Art executor.
+- `loom-daemon --lib`: 182 tests passed, including atomic owner-only discovery
+  manifest replacement, qualified routes,
   redaction/support, durable Hook/AHRP evidence, pre-execution integrity,
   authored Art lifecycle, and permission doctor coverage.
 - Full locked workspace check/test, Desktop build/typecheck/tests, standalone
@@ -142,10 +157,15 @@ source immutability invariant:
   or VM sandbox.
 - Direct arbitrary plugin network/filesystem access, GPU, and clipboard cannot
   be fully OS-denied in audit mode; strict mode rejects those declarations.
+- Unix persistent credential protection is an owner-only local-file fallback,
+  not an OS keyring. Its `local-file-base64` protection label is intentionally
+  explicit; deployments requiring hardware/OS secret storage should use an
+  external credential broker.
 - Hosted marketplace operations, payment/licensing, and remote publisher
   governance are not implemented.
-- Legacy execution paths remain for compatibility and are not a preferred path
-  for new packages.
+- Legacy protocol names remain for compatibility, but Hook no longer owns a
+  direct package Art command executor; CLI-backed Arts use Loom's supervised
+  AHRP execution path like every other package execution type.
 
 ## Final closure checklist
 
@@ -159,6 +179,6 @@ source immutability invariant:
 - [x] Dependency/runtime registry and workflow child dependency contract.
 - [x] Malicious-package CI, SBOM, provenance, and attestation workflows.
 - [x] Fresh full Rust/Desktop/PowerShell/malicious-package/release validation.
-- [x] Clean commits for Loom and the one-line Hook contract update.
+- [x] Clean commits for Loom and Hook execution-boundary updates.
 - [x] Clean-source R4 build and verifier with `gitDirty=false` and
       `sourceGitDirty=false`.

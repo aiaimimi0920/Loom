@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -215,15 +216,69 @@ impl CredentialStore {
     fn write_file(&self, file: &CredentialFile) -> Result<(), CredentialError> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
+            restrict_path_permissions(parent, true)?;
         }
-        let temporary = self.path.with_extension("json.tmp");
         let mut bytes = serde_json::to_vec_pretty(file)?;
         bytes.push(b'\n');
-        fs::write(&temporary, bytes)?;
-        crate::replace_registry_file(&temporary, &self.path)?;
-        restrict_file_permissions(&self.path)?;
-        Ok(())
+        let (temporary, mut output) = create_sensitive_temporary(&self.path)?;
+        let result = (|| {
+            output.write_all(&bytes)?;
+            output.sync_all()?;
+            drop(output);
+            restrict_path_permissions(&temporary, false)?;
+            crate::replace_registry_file(&temporary, &self.path)?;
+            restrict_path_permissions(&self.path, false)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
+}
+
+fn create_sensitive_temporary(path: &Path) -> Result<(PathBuf, fs::File), CredentialError> {
+    let parent = path.parent().ok_or_else(|| {
+        CredentialError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "credential path has no parent",
+        ))
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CredentialError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "credential path has no UTF-8 file name",
+            ))
+        })?;
+    for attempt in 0..100u32 {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary = parent.join(format!(
+            ".{file_name}.tmp-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(CredentialError::Io(error)),
+        }
+    }
+    Err(CredentialError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique credential temporary file",
+    )))
 }
 
 fn validate_input(input: &CredentialInput) -> Result<(), CredentialError> {
@@ -351,14 +406,76 @@ fn unprotect_value(value: &str, protection: &str) -> Result<Vec<u8>, CredentialE
 }
 
 #[cfg(unix)]
-fn restrict_file_permissions(path: &Path) -> Result<(), CredentialError> {
+fn restrict_path_permissions(path: &Path, directory: bool) -> Result<(), CredentialError> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
+    )?;
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn restrict_file_permissions(_path: &Path) -> Result<(), CredentialError> {
+#[cfg(windows)]
+fn restrict_path_permissions(path: &Path, _directory: bool) -> Result<(), CredentialError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+
+    let canonical = fs::canonicalize(path)?;
+    let wide = canonical.as_os_str().encode_wide().collect::<Vec<_>>();
+    let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
+        || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
+    {
+        wide
+    } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+        let mut value = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
+        value.extend_from_slice(&wide[2..]);
+        value
+    } else {
+        let mut value = r"\\?\".encode_utf16().collect::<Vec<_>>();
+        value.extend_from_slice(&wide);
+        value
+    };
+    extended.push(0);
+    let sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(CredentialError::Io(std::io::Error::last_os_error()));
+    }
+    let updated = unsafe {
+        SetFileSecurityW(
+            extended.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        )
+    };
+    unsafe {
+        LocalFree(descriptor.cast());
+    }
+    if updated == 0 {
+        return Err(CredentialError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_path_permissions(_path: &Path, _directory: bool) -> Result<(), CredentialError> {
     Ok(())
 }
 
@@ -407,6 +524,36 @@ mod tests {
             .grants_for("cloud_api", "example-art", &["api_key".to_owned()])
             .expect("grants");
         assert_eq!(grants[0].value, "secret-value");
+        let credential_path = root.join(CREDENTIALS_FILE);
+        assert!(credential_path.is_file());
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("list credential root")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+                .count(),
+            0
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&root)
+                    .expect("credential root metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&credential_path)
+                    .expect("credential file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 }

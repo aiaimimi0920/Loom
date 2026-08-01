@@ -26,7 +26,7 @@ Framework manifests declare a structured `permissionPolicy`.
 | Cancellation/drop | Whole managed process tree termination |
 | Host HTTP/download | HTTPS/DNS/IP/redirect/domain/size policy |
 | Credential names/scopes/expiry | Brokered and enforced |
-| Credential storage | Windows DPAPI; restricted local fallback on Unix |
+| Credential storage | Windows DPAPI current-user plus owner-only DACL; Unix owner-only `0700` directory/`0600` file with a reversible local-file fallback |
 | Direct plugin network | Declared/audited; not fully OS-denied |
 | Direct arbitrary filesystem | Declared/audited; not fully OS-denied |
 | GPU/clipboard | Declared/audited; not fully OS-denied |
@@ -57,7 +57,17 @@ returned only when:
 4. the credential is not expired.
 
 Desktop and API list operations return name, scope, expiration, and protection
-method only. The value is write-only after submission.
+method only. The value is write-only after submission. Credential files use
+create-new temporary files, durable atomic replacement, and owner-only
+permissions. On Unix, `local-file-base64` is deliberately named as a reversible
+local fallback rather than OS-backed secret encryption; deployments requiring
+an OS keyring should inject credentials from an external broker and avoid
+persisting them through that fallback.
+
+The loopback discovery manifest can contain a bearer token and is therefore
+treated as a sensitive credential file: Loom writes it through a create-new
+temporary, atomically replaces the prior manifest, and restricts the directory
+and file to the current owner (plus `SYSTEM` on Windows).
 
 ## Recommended deployment policy
 

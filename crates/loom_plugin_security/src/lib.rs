@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -97,16 +98,25 @@ impl TrustStore {
     pub fn write_atomic(&self, path: &Path) -> Result<(), PluginSecurityError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            restrict_trust_path_permissions(parent, true)?;
         }
-        let temporary = path.with_extension("json.tmp");
         let mut bytes = serde_json::to_vec_pretty(self)?;
         bytes.push(b'\n');
-        fs::write(&temporary, bytes)?;
-        if path.exists() {
-            fs::remove_file(path)?;
+        let (temporary, mut file) = create_atomic_temporary(path)?;
+        let result = (|| {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            restrict_trust_path_permissions(&temporary, false)?;
+            replace_file_atomic(&temporary, path)?;
+            restrict_trust_path_permissions(path, false)?;
+            sync_parent_directory(path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
         }
-        fs::rename(temporary, path)?;
-        Ok(())
+        result
     }
 
     pub fn trust(&mut self, record: PublisherTrustRecord) {
@@ -130,6 +140,202 @@ impl TrustStore {
         record.revoked = true;
         true
     }
+}
+
+fn create_atomic_temporary(path: &Path) -> std::io::Result<(PathBuf, File)> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "trust store path has no parent",
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "trust store path has no UTF-8 file name",
+            )
+        })?;
+    for attempt in 0..100u32 {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary = parent.join(format!(
+            ".{file_name}.tmp-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique trust-store temporary file",
+    ))
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn extended_length_path(path: &Path) -> std::io::Result<Vec<u16>> {
+        let absolute = match fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = path.parent().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "atomic replacement path has no parent",
+                    )
+                })?;
+                let file_name = path.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "atomic replacement path has no file name",
+                    )
+                })?;
+                fs::canonicalize(parent)?.join(file_name)
+            }
+            Err(error) => return Err(error),
+        };
+        let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+        let mut extended =
+            if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
+                || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
+            {
+                wide
+            } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+                let mut path = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
+                path.extend_from_slice(&wide[2..]);
+                path
+            } else {
+                let mut path = r"\\?\".encode_utf16().collect::<Vec<_>>();
+                path.extend_from_slice(&wide);
+                path
+            };
+        extended.push(0);
+        Ok(extended)
+    }
+
+    let source = extended_length_path(source)?;
+    let destination = extended_length_path(destination)?;
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+    })?;
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_trust_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(if directory { 0o700 } else { 0o600 });
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(windows)]
+fn restrict_trust_path_permissions(path: &Path, _directory: bool) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+
+    let canonical = fs::canonicalize(path)?;
+    let wide = canonical.as_os_str().encode_wide().collect::<Vec<_>>();
+    let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
+        || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
+    {
+        wide
+    } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+        let mut value = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
+        value.extend_from_slice(&wide[2..]);
+        value
+    } else {
+        let mut value = r"\\?\".encode_utf16().collect::<Vec<_>>();
+        value.extend_from_slice(&wide);
+        value
+    };
+    extended.push(0);
+    let sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let updated = unsafe {
+        SetFileSecurityW(
+            extended.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        )
+    };
+    unsafe {
+        LocalFree(descriptor.cast());
+    }
+    if updated == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_trust_path_permissions(_path: &Path, _directory: bool) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -465,5 +671,53 @@ mod tests {
         assert!(TrustPolicy::RequireTrusted
             .enforce(PackageTrustStatus::Verified)
             .is_err());
+    }
+
+    #[test]
+    fn trust_store_atomic_write_replaces_existing_document() {
+        let root = temp_dir("trust-store-atomic");
+        let path = root.join("plugin-trust.json");
+        let mut trust = TrustStore::default();
+        trust
+            .write_atomic(&path)
+            .expect("write initial trust store");
+        trust.trust(PublisherTrustRecord {
+            publisher_id: "publisher.atomic".to_owned(),
+            key_id: "key-1".to_owned(),
+            public_key: "public-key".to_owned(),
+            revoked: false,
+        });
+        trust.write_atomic(&path).expect("replace trust store");
+
+        assert_eq!(TrustStore::load(&path).expect("load replaced store"), trust);
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("list trust root")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+                .count(),
+            0
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&root)
+                    .expect("trust root metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("trust metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

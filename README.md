@@ -342,6 +342,13 @@ Every HTTP, ArtLoom compatibility, Hook Bridge, and AHRP package execution
 revalidates the active package digest, lockfile, signature/trust state, and
 publisher revocation before launching it.
 
+Workflow parents lock each direct child Art to its publisher-qualified ID,
+exact version, and canonical digest. Child upgrades, rollbacks, activation
+changes, tampering, or uninstall invalidate the parent until its exact child
+state is restored or the parent is explicitly reinstalled to refresh the lock.
+Hook forwards every package execution type, including CLI-backed Arts, to Loom;
+it does not contain an Art-specific local command executor.
+
 The default `LOOM_PLUGIN_PERMISSION_MODE=audit` keeps existing packages
 compatible and reports permissions through the Desktop and
 `GET /v1/doctor/frameworks`. `LOOM_PLUGIN_PERMISSION_MODE=strict` fails closed
