@@ -2,9 +2,9 @@
 
 ## Status
 
-Implementation complete; the final workspace/release matrix and clean-source R4
-publication are pending. Phase 67's R3 candidate remains immutable historical
-runtime evidence and is not overwritten by this phase.
+Implementation and clean-source R4 publication are complete. Phase 67's R3
+candidate remains immutable historical runtime evidence and was not overwritten
+by this phase.
 
 ## Objective
 
@@ -116,17 +116,24 @@ source immutability invariant:
 
 ## Current verification snapshot
 
-- `loom_tool_registry`: 104 tests passed, including retention, tombstone
-  recovery, revocation, lockfile version, and rollback tamper coverage.
+- `loom_tool_registry`: 107 tests passed, including retention, tombstone
+  recovery, revocation, lockfile version, rollback tamper, Windows long-path
+  registry replacement, and versioned Python runtime coverage.
+- `loom-art-store`: 9 tests passed, including persisted and legacy-synthesized
+  Art package SHA-256 sidecars.
 - `loom-plugin-cli`: 5 tests passed, including real sign/trust/install/
   conformance/revoke E2E.
 - `apps/desktop`: 61 tests passed; TypeScript typecheck passed.
 - `loom-daemon --lib`: 181 tests passed, including qualified routes,
   redaction/support, durable Hook/AHRP evidence, pre-execution integrity,
   authored Art lifecycle, and permission doctor coverage.
-- Standalone release, release-tamper, GitHub Actions, SBOM generation, and the
-  existing targeted supply-chain contracts passed before final workspace
-  closure.
+- Full locked workspace check/test, Desktop build/typecheck/tests, standalone
+  release, release-tamper, GitHub Actions, SBOM generation, malicious-package,
+  and targeted supply-chain contracts passed.
+- Clean-source R4 was built and verified at
+  `release/Loom/20260801-art-plugin-platform-hardening-r4`; standalone, Hook
+  canvas, Hook error preview, Framework Art Store Hook, and Plugin Boundary
+  smoke all passed with `gitDirty=false` and `sourceGitDirty=false`.
 
 ## Known limits and non-goals
 
@@ -151,7 +158,7 @@ source immutability invariant:
       redaction.
 - [x] Dependency/runtime registry and workflow child dependency contract.
 - [x] Malicious-package CI, SBOM, provenance, and attestation workflows.
-- [ ] Fresh full Rust/Desktop/PowerShell/malicious-package/release validation.
-- [ ] Clean commits for Loom and the one-line Hook contract update.
-- [ ] Clean-source R4 build and verifier with `gitDirty=false` and
+- [x] Fresh full Rust/Desktop/PowerShell/malicious-package/release validation.
+- [x] Clean commits for Loom and the one-line Hook contract update.
+- [x] Clean-source R4 build and verifier with `gitDirty=false` and
       `sourceGitDirty=false`.
