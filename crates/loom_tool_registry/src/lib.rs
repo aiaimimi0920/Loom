@@ -1,8 +1,12 @@
 //! User-managed tool and Art registry contracts for Loom.
 
+pub mod credentials;
+pub mod dependency;
 pub mod framework;
 pub mod framework_process;
 pub mod install;
+pub mod network_policy;
+mod secure_zip;
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -10,12 +14,13 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use reqwest::blocking::{multipart, Client};
+use loom_process::{ProcessError, ProcessSpec};
+use loom_protocol::{is_safe_publisher_id, PublisherIdentity};
+use reqwest::blocking::multipart;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,6 +33,7 @@ const MCP_IMAGE_FETCH_USER_AGENT: &str =
 const MCP_IMAGE_FETCH_ACCEPT: &str =
     "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
 const MCP_IMAGE_FETCH_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
+const MAX_MCP_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 static REGISTRY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
@@ -36,6 +42,8 @@ pub enum ToolRegistryError {
     InvalidToolDefinition { id: String, reason: String },
     #[error("tool `{id}` is disabled")]
     ExecutionRejected { id: String },
+    #[error("tool id `{id}` is ambiguous; use a publisher-qualified id")]
+    AmbiguousToolId { id: String },
     #[error("tool `{id}` execution type `{execution_type}` is not supported by this runtime")]
     UnsupportedExecution {
         id: String,
@@ -119,6 +127,12 @@ pub enum ToolRegistryError {
         id: String,
         endpoint: String,
         source: reqwest::Error,
+    },
+    #[error("cloud API endpoint `{endpoint}` for tool `{id}` violates network policy: {reason}")]
+    CloudSecurity {
+        id: String,
+        endpoint: String,
+        reason: String,
     },
     #[error("cloud API request to `{endpoint}` for tool `{id}` returned HTTP {status}: {body}")]
     CloudHttpStatus {
@@ -231,7 +245,31 @@ impl ToolDefinition {
         require_non_empty(&self.id, &self.id, "id")?;
         require_no_path_separator(&self.id, &self.id)?;
         require_non_empty(&self.id, &self.name, "name")?;
+        if let Some(publisher) = self.publisher_identity() {
+            if !is_safe_publisher_id(&publisher.id) {
+                return Err(ToolRegistryError::InvalidToolDefinition {
+                    id: self.id.clone(),
+                    reason: "publisher id must be a safe package namespace".to_owned(),
+                });
+            }
+        }
         self.execution.validate(&self.id)
+    }
+
+    #[must_use]
+    pub fn publisher_identity(&self) -> Option<PublisherIdentity> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("packageSecurity"))
+            .and_then(|security| security.get("publisher"))
+            .and_then(|publisher| serde_json::from_value(publisher.clone()).ok())
+    }
+
+    #[must_use]
+    pub fn qualified_id(&self) -> String {
+        self.publisher_identity()
+            .map(|publisher| format!("{}/{}", publisher.id, self.id))
+            .unwrap_or_else(|| self.id.clone())
     }
 }
 
@@ -323,7 +361,16 @@ impl ToolExecution {
             Self::Workflow { workflow_id, .. } => {
                 require_non_empty(tool_id, workflow_id, "workflow_id")
             }
-            Self::FrameworkArt { framework } => require_non_empty(tool_id, framework, "framework"),
+            Self::FrameworkArt { framework } => {
+                require_non_empty(tool_id, framework, "framework")?;
+                if !framework::is_valid_framework_reference(framework) {
+                    return Err(ToolRegistryError::InvalidToolDefinition {
+                        id: tool_id.to_owned(),
+                        reason: "framework must be a safe package id".to_owned(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -346,7 +393,11 @@ impl ToolRegistry {
         self.ensure_root()?;
 
         let mut tools = self.read_tools()?;
-        if let Some(existing) = tools.iter_mut().find(|existing| existing.id == tool.id) {
+        let qualified_id = tool.qualified_id();
+        if let Some(existing) = tools
+            .iter_mut()
+            .find(|existing| existing.qualified_id() == qualified_id)
+        {
             *existing = tool.clone();
         } else {
             tools.push(tool.clone());
@@ -364,14 +415,44 @@ impl ToolRegistry {
     }
 
     pub fn get_tool(&self, id: &str) -> ToolRegistryResult<Option<ToolDefinition>> {
-        Ok(self.list_tools()?.into_iter().find(|tool| tool.id == id))
+        let tools = self.list_tools()?;
+        if let Some(tool) = tools.iter().find(|tool| tool.qualified_id() == id) {
+            return Ok(Some(tool.clone()));
+        }
+        let mut matches = tools.into_iter().filter(|tool| tool.id == id);
+        let first = matches.next();
+        if first.is_some() && matches.next().is_some() {
+            return Err(ToolRegistryError::AmbiguousToolId { id: id.to_owned() });
+        }
+        Ok(first)
     }
 
     pub fn delete_tool(&self, id: &str) -> ToolRegistryResult<bool> {
         self.ensure_root()?;
         let mut tools = self.read_tools()?;
+        let exact = tools
+            .iter()
+            .position(|tool| tool.qualified_id() == id)
+            .or_else(|| {
+                let matches = tools
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, tool)| tool.id == id)
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if matches.len() == 1 {
+                    Some(matches[0])
+                } else {
+                    None
+                }
+            });
+        if exact.is_none() && tools.iter().filter(|tool| tool.id == id).count() > 1 {
+            return Err(ToolRegistryError::AmbiguousToolId { id: id.to_owned() });
+        }
         let before = tools.len();
-        tools.retain(|tool| tool.id != id);
+        if let Some(index) = exact {
+            tools.remove(index);
+        }
         let deleted = tools.len() != before;
         if deleted {
             self.write_tools(&tools)?;
@@ -514,7 +595,7 @@ fn replace_registry_file(source: &Path, destination: &Path) -> std::io::Result<(
 }
 
 fn sort_tools(tools: &mut [ToolDefinition]) {
-    tools.sort_by(|left, right| left.id.cmp(&right.id));
+    tools.sort_by_key(ToolDefinition::qualified_id);
 }
 
 pub fn execute_tool(
@@ -779,18 +860,19 @@ fn execute_python_art_tool(
     let request_json = serde_json::to_string(&request)?;
     let mut command = Command::new(resolve_python_executable());
     configure_python_process(&mut command);
-    let output = command
+    command
         .arg(&launcher_path)
         .arg(request_json)
-        .current_dir(base_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|source| ToolRegistryError::PythonArtSpawn {
+        .current_dir(base_dir);
+    let mut process = ProcessSpec::from_command(&command);
+    process.limits.timeout = SCRIPT_EXECUTION_TIMEOUT;
+    let output = loom_process::run_with_input(&process, b"").map_err(|error| {
+        ToolRegistryError::PythonArtSpawn {
             id: tool.id.clone(),
             art_id: art_id.to_owned(),
-            source,
-        })?;
+            source: std::io::Error::other(error.to_string()),
+        }
+    })?;
 
     if !output.status.success() {
         return Err(ToolRegistryError::PythonArtFailed {
@@ -1001,19 +1083,31 @@ fn execute_cloud_api_tool(
         .trim()
         .to_owned();
     let content_type_lower = content_type.to_ascii_lowercase();
+    let policy = cloud_network_policy(tool);
+    let parsed_endpoint =
+        reqwest::Url::parse(&endpoint).map_err(|error| ToolRegistryError::CloudSecurity {
+            id: tool.id.clone(),
+            endpoint: endpoint.clone(),
+            reason: error.to_string(),
+        })?;
+    crate::network_policy::validate_outbound_url(&parsed_endpoint, &policy).map_err(|reason| {
+        ToolRegistryError::CloudSecurity {
+            id: tool.id.clone(),
+            endpoint: endpoint.clone(),
+            reason,
+        }
+    })?;
     // Bypass the system proxy: on Windows reqwest picks up the OS proxy setting
     // (e.g. a stale 127.0.0.1:7890 from a stopped Clash/V2Ray), which makes every
     // cloud API call fail with "error sending request". Cloud arts talk directly
     // to their endpoint, matching Hook's own no_proxy client.
-    let client = Client::builder()
-        .timeout(CLOUD_API_TIMEOUT)
-        .no_proxy()
-        .build()
-        .map_err(|source| ToolRegistryError::CloudRequest {
-            id: tool.id.clone(),
-            endpoint: endpoint.clone(),
-            source,
-        })?;
+    let client =
+        crate::network_policy::secure_client("Loom/0.1 Cloud API", CLOUD_API_TIMEOUT, policy)
+            .map_err(|reason| ToolRegistryError::CloudSecurity {
+                id: tool.id.clone(),
+                endpoint: endpoint.clone(),
+                reason,
+            })?;
     let mut request = client.request(method.clone(), &endpoint);
     let mut explicit_content_type = false;
     if let Some(headers) = headers.filter(|value| !value.trim().is_empty()) {
@@ -1059,7 +1153,7 @@ fn execute_cloud_api_tool(
             request = request.json(&arguments);
         }
     }
-    let response = request
+    let mut response = request
         .send()
         .map_err(|source| ToolRegistryError::CloudRequest {
             id: tool.id.clone(),
@@ -1073,13 +1167,30 @@ fn execute_cloud_api_tool(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let bytes = response
-        .bytes()
-        .map_err(|source| ToolRegistryError::CloudRequest {
+    const MAX_CLOUD_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_CLOUD_RESPONSE_BYTES as u64)
+    {
+        return Err(ToolRegistryError::CloudSecurity {
             id: tool.id.clone(),
             endpoint: endpoint.clone(),
-            source,
-        })?;
+            reason: format!("response exceeds {MAX_CLOUD_RESPONSE_BYTES} bytes"),
+        });
+    }
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take(MAX_CLOUD_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(ToolRegistryError::Io)?;
+    if bytes.len() > MAX_CLOUD_RESPONSE_BYTES {
+        return Err(ToolRegistryError::CloudSecurity {
+            id: tool.id.clone(),
+            endpoint: endpoint.clone(),
+            reason: format!("response exceeds {MAX_CLOUD_RESPONSE_BYTES} bytes"),
+        });
+    }
 
     if !status.is_success() {
         return Err(ToolRegistryError::CloudHttpStatus {
@@ -1091,6 +1202,36 @@ fn execute_cloud_api_tool(
     }
 
     normalize_cloud_response(tool, &endpoint, &content_type, &bytes)
+}
+
+fn cloud_network_policy(tool: &ToolDefinition) -> crate::network_policy::OutboundPolicy {
+    let network = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("permissionPolicy"))
+        .and_then(|policy| policy.get("network"));
+    crate::network_policy::OutboundPolicy {
+        allow_http_loopback: network
+            .and_then(|network| network.get("allowLocalhost"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        allow_private_networks: network
+            .and_then(|network| network.get("allowPrivateNetworks"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        allowed_domains: network
+            .and_then(|network| network.get("domains"))
+            .and_then(serde_json::Value::as_array)
+            .map(|domains| {
+                domains
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ..crate::network_policy::OutboundPolicy::default()
+    }
 }
 
 fn build_cloud_multipart_form(
@@ -1808,14 +1949,17 @@ fn download_mcp_image_candidate_with_reqwest(
     url: &str,
     referer: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let client = Client::builder()
-        .user_agent(MCP_IMAGE_FETCH_USER_AGENT)
-        .no_proxy()
-        .timeout(CLOUD_API_TIMEOUT)
-        .build()
-        .ok()?;
+    let policy = network_policy::OutboundPolicy {
+        allow_http_loopback: true,
+        ..network_policy::OutboundPolicy::default()
+    };
+    let parsed_url = reqwest::Url::parse(url).ok()?;
+    network_policy::validate_outbound_url(&parsed_url, &policy).ok()?;
+    let client =
+        network_policy::secure_client(MCP_IMAGE_FETCH_USER_AGENT, CLOUD_API_TIMEOUT, policy)
+            .ok()?;
     let mut request = client
-        .get(url)
+        .get(parsed_url)
         .header(reqwest::header::ACCEPT, MCP_IMAGE_FETCH_ACCEPT)
         .header(
             reqwest::header::ACCEPT_LANGUAGE,
@@ -1833,7 +1977,7 @@ fn download_mcp_image_candidate_with_reqwest(
         .map(str::trim)
         .filter(|value| value.starts_with("image/"))
         .map(str::to_owned);
-    let bytes = response.bytes().ok()?;
+    let bytes = network_policy::read_bounded_response(response, MAX_MCP_IMAGE_BYTES).ok()?;
     let mime_type = header_mime_type
         .or_else(|| infer_image_mime_type_from_url(url))
         .or_else(|| infer_image_mime_type_from_bytes(&bytes))?;
@@ -1862,9 +2006,16 @@ fn download_image_bytes_with_powershell_httpclient(
     url: &str,
     referer: Option<&str>,
 ) -> Option<(String, Vec<u8>)> {
+    let policy = network_policy::OutboundPolicy {
+        allow_http_loopback: true,
+        ..network_policy::OutboundPolicy::default()
+    };
+    let parsed_url = reqwest::Url::parse(url).ok()?;
+    network_policy::validate_outbound_url(&parsed_url, &policy).ok()?;
     let script = r#"
 Add-Type -AssemblyName System.Net.Http
 $handler = New-Object System.Net.Http.HttpClientHandler
+$handler.AllowAutoRedirect = $false
 $client = New-Object System.Net.Http.HttpClient($handler)
 $client.Timeout = [TimeSpan]::FromSeconds(30)
 $client.DefaultRequestHeaders.UserAgent.ParseAdd($env:LOOM_FETCH_USER_AGENT)
@@ -1877,11 +2028,29 @@ if ($env:LOOM_FETCH_REFERER) {
   }
 }
 try {
-  $resp = $client.GetAsync($env:LOOM_FETCH_URL).GetAwaiter().GetResult()
+  $resp = $client.GetAsync($env:LOOM_FETCH_URL, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
   if (-not $resp.IsSuccessStatusCode) {
     exit 22
   }
-  $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+  $maxBytes = [int64]$env:LOOM_FETCH_MAX_BYTES
+  if ($resp.Content.Headers.ContentLength -and $resp.Content.Headers.ContentLength.Value -gt $maxBytes) {
+    exit 23
+  }
+  $stream = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+  $memory = New-Object System.IO.MemoryStream
+  $buffer = New-Object byte[] 81920
+  try {
+    while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      if ($memory.Length + $read -gt $maxBytes) {
+        exit 23
+      }
+      $memory.Write($buffer, 0, $read)
+    }
+    $bytes = $memory.ToArray()
+  } finally {
+    $stream.Dispose()
+    $memory.Dispose()
+  }
   $contentType = ''
   if ($resp.Content.Headers.ContentType) {
     $contentType = $resp.Content.Headers.ContentType.MediaType
@@ -1901,6 +2070,7 @@ try {
         .arg("-Command")
         .arg(script)
         .env("LOOM_FETCH_URL", url)
+        .env("LOOM_FETCH_MAX_BYTES", MAX_MCP_IMAGE_BYTES.to_string())
         .env("LOOM_FETCH_USER_AGENT", MCP_IMAGE_FETCH_USER_AGENT)
         .env("LOOM_FETCH_ACCEPT", MCP_IMAGE_FETCH_ACCEPT)
         .env(
@@ -1922,7 +2092,13 @@ try {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command.output().ok()?;
+    let mut process = ProcessSpec::from_command(&command);
+    process.limits.timeout = CLOUD_API_TIMEOUT;
+    process.limits.stdout_bytes = MAX_MCP_IMAGE_BYTES.saturating_mul(2);
+    process.limits.stderr_bytes = 1024 * 1024;
+    process.limits.memory_bytes = Some(256 * 1024 * 1024);
+    process.limits.max_processes = Some(2);
+    let output = loom_process::run_with_input(&process, &[]).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1935,6 +2111,9 @@ try {
         .get("dataBase64")
         .and_then(serde_json::Value::as_str)
         .and_then(|base64| BASE64.decode(base64).ok())?;
+    if bytes.len() > MAX_MCP_IMAGE_BYTES {
+        return None;
+    }
     let mime_type = response
         .get("contentType")
         .and_then(serde_json::Value::as_str)
@@ -1962,6 +2141,9 @@ fn image_response_from_mcp_candidate_url(
     referer: Option<&str>,
 ) -> Option<serde_json::Value> {
     if url.starts_with("data:image/") {
+        if url.len() > MAX_MCP_IMAGE_BYTES.saturating_mul(4) / 3 + 4096 {
+            return None;
+        }
         let mime_type = data_url_mime_type(url).unwrap_or("image/png");
         return Some(image_content_response(url, mime_type));
     }
@@ -2195,12 +2377,24 @@ fn execute_cli_wrapper_tool(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = cmd
-        .output()
-        .map_err(|error| ToolRegistryError::CliWrapperFailed {
+    let mut process = ProcessSpec::from_command(&cmd);
+    process.limits.timeout = SCRIPT_EXECUTION_TIMEOUT;
+    let output = loom_process::run_with_input(&process, b"").map_err(|error| {
+        ToolRegistryError::CliWrapperFailed {
             id: tool.id.clone(),
-            reason: format!("spawn `{program}`: {error}"),
-        })?;
+            reason: format!("run `{program}`: {error}"),
+        }
+    })?;
+    if !output.status.success() {
+        return Err(ToolRegistryError::CliWrapperFailed {
+            id: tool.id.clone(),
+            reason: format!(
+                "process exited with {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
 
     if !output_path.exists() {
         return Err(ToolRegistryError::CliWrapperFailed {
@@ -2273,109 +2467,33 @@ fn run_script_process(
     payload: &str,
 ) -> ToolRegistryResult<Output> {
     let ScriptInvocation {
-        mut command,
+        command,
         staged_files,
     } = script_command(path, payload).map_err(|source| ToolRegistryError::ScriptSpawn {
         id: tool.id.clone(),
         path: path.to_owned(),
         source,
     })?;
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| ToolRegistryError::ScriptSpawn {
+    let mut process = ProcessSpec::from_command(&command);
+    process.limits.timeout = SCRIPT_EXECUTION_TIMEOUT;
+    let result = loom_process::run_with_input(&process, b"");
+    cleanup_staged_script_files(&staged_files);
+    match result {
+        Ok(output) => Ok(Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }),
+        Err(ProcessError::Timeout { .. }) => Err(ToolRegistryError::ScriptTimedOut {
             id: tool.id.clone(),
             path: path.to_owned(),
-            source,
-        });
-    let mut child = match child {
-        Ok(child) => child,
-        Err(error) => {
-            cleanup_staged_script_files(&staged_files);
-            return Err(error);
-        }
-    };
-    let stdout_reader = spawn_script_output_reader(child.stdout.take());
-    let stderr_reader = spawn_script_output_reader(child.stderr.take());
-    let started = Instant::now();
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout =
-                    join_script_output_reader(stdout_reader, &tool.id, path).map_err(|source| {
-                        ToolRegistryError::ScriptSpawn {
-                            id: tool.id.clone(),
-                            path: path.to_owned(),
-                            source,
-                        }
-                    })?;
-                let stderr =
-                    join_script_output_reader(stderr_reader, &tool.id, path).map_err(|source| {
-                        ToolRegistryError::ScriptSpawn {
-                            id: tool.id.clone(),
-                            path: path.to_owned(),
-                            source,
-                        }
-                    })?;
-                cleanup_staged_script_files(&staged_files);
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            Ok(None) if started.elapsed() >= SCRIPT_EXECUTION_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                cleanup_staged_script_files(&staged_files);
-                return Err(ToolRegistryError::ScriptTimedOut {
-                    id: tool.id.clone(),
-                    path: path.to_owned(),
-                    timeout_ms: SCRIPT_EXECUTION_TIMEOUT.as_millis(),
-                });
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
-            Err(source) => {
-                cleanup_staged_script_files(&staged_files);
-                return Err(ToolRegistryError::ScriptSpawn {
-                    id: tool.id.clone(),
-                    path: path.to_owned(),
-                    source,
-                });
-            }
-        }
-    }
-}
-
-fn spawn_script_output_reader<T>(stream: Option<T>) -> thread::JoinHandle<std::io::Result<Vec<u8>>>
-where
-    T: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let Some(mut stream) = stream else {
-            return Ok(Vec::new());
-        };
-        let mut buffer = Vec::new();
-        stream.read_to_end(&mut buffer)?;
-        Ok(buffer)
-    })
-}
-
-fn join_script_output_reader(
-    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    tool_id: &str,
-    path: &str,
-) -> std::io::Result<Vec<u8>> {
-    match handle.join() {
-        Ok(result) => result,
-        Err(_) => Err(std::io::Error::other(format!(
-            "script output reader panicked for tool `{tool_id}` at `{path}`"
-        ))),
+            timeout_ms: SCRIPT_EXECUTION_TIMEOUT.as_millis(),
+        }),
+        Err(error) => Err(ToolRegistryError::ScriptSpawn {
+            id: tool.id.clone(),
+            path: path.to_owned(),
+            source: std::io::Error::other(error.to_string()),
+        }),
     }
 }
 
@@ -2511,10 +2629,10 @@ fn resolve_python_executable_from(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let candidate = Path::new(runtime_root)
-            .join("python_art")
-            .join("python-embed")
-            .join("python.exe");
+        let package_dir =
+            framework::resolve_framework_package_dir(Path::new(runtime_root), "python_art")
+                .unwrap_or_else(|| Path::new(runtime_root).join("python_art"));
+        let candidate = package_dir.join("python-embed").join("python.exe");
         if candidate.is_file() {
             return candidate;
         }
@@ -2672,6 +2790,33 @@ mod tests {
             ToolExecution::Workflow {
                 workflow_id: "workflow-1".to_owned(),
                 workflow_bindings: None,
+            },
+        );
+        assert!(valid.validate().is_ok());
+    }
+
+    #[test]
+    fn framework_art_tool_definition_requires_a_safe_framework_id() {
+        let invalid = ToolDefinition::new(
+            "third-party-art",
+            "Third-party Art",
+            "Reject a framework path instead of treating it as a package id",
+            ToolExecution::FrameworkArt {
+                framework: "../outside".to_owned(),
+            },
+        );
+        assert!(matches!(
+            invalid.validate(),
+            Err(ToolRegistryError::InvalidToolDefinition { reason, .. })
+                if reason.contains("safe package id")
+        ));
+
+        let valid = ToolDefinition::new(
+            "third-party-art",
+            "Third-party Art",
+            "Accept a safe dynamic framework id",
+            ToolExecution::FrameworkArt {
+                framework: "third-party.echo-v2".to_owned(),
             },
         );
         assert!(valid.validate().is_ok());
@@ -2867,6 +3012,57 @@ mod tests {
         assert!(!registry.delete_tool("brave-search").expect("delete absent"));
 
         fs::remove_dir_all(root).expect("cleanup temp tool registry root");
+    }
+
+    #[test]
+    fn registry_keeps_same_local_id_isolated_by_publisher() {
+        let root = temp_root("publisher-namespace");
+        let registry = ToolRegistry::new(&root);
+        let make_tool = |publisher: &str, name: &str| {
+            let mut tool = ToolDefinition::new(
+                "shared-art",
+                name,
+                "Publisher-scoped Art",
+                ToolExecution::CliWrapper {
+                    command: "echo".to_owned(),
+                    args: vec!["ok".to_owned()],
+                },
+            );
+            tool.metadata = Some(serde_json::json!({
+                "packageSecurity": {
+                    "publisher": { "id": publisher, "name": publisher }
+                }
+            }));
+            tool
+        };
+        let alpha = make_tool("publisher.alpha", "Alpha");
+        let beta = make_tool("publisher.beta", "Beta");
+        registry.save_tool(alpha.clone()).expect("save alpha");
+        registry.save_tool(beta.clone()).expect("save beta");
+
+        assert_eq!(registry.list_tools().expect("list").len(), 2);
+        assert_eq!(
+            registry
+                .get_tool("publisher.alpha/shared-art")
+                .expect("get qualified alpha"),
+            Some(alpha)
+        );
+        assert!(matches!(
+            registry.get_tool("shared-art"),
+            Err(ToolRegistryError::AmbiguousToolId { .. })
+        ));
+        assert!(registry
+            .delete_tool("publisher.beta/shared-art")
+            .expect("delete qualified beta"));
+        assert_eq!(
+            registry
+                .get_tool("shared-art")
+                .expect("bare id becomes unambiguous")
+                .expect("remaining alpha")
+                .name,
+            "Alpha"
+        );
+        fs::remove_dir_all(root).expect("cleanup publisher namespace registry");
     }
 
     #[test]

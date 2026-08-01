@@ -1,8 +1,7 @@
 //! Safe execution contracts for Loom.
 
 use std::collections::BTreeSet;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,6 +19,8 @@ pub enum SandboxError {
         program: String,
         source: std::io::Error,
     },
+    #[error("command `{program}` was stopped by sandbox resource policy: {reason}")]
+    Resource { program: String, reason: String },
 }
 
 /// Result alias for sandbox operations.
@@ -59,9 +60,48 @@ impl SandboxCommand {
 }
 
 /// Deny-by-default execution policy.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SandboxPolicy {
     allowed_commands: BTreeSet<String>,
+    #[serde(default = "default_timeout_ms")]
+    timeout_ms: u64,
+    #[serde(default = "default_output_bytes")]
+    stdout_bytes: usize,
+    #[serde(default = "default_output_bytes")]
+    stderr_bytes: usize,
+    #[serde(default = "default_memory_bytes")]
+    memory_bytes: Option<usize>,
+    #[serde(default = "default_max_processes")]
+    max_processes: Option<u32>,
+}
+
+fn default_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_output_bytes() -> usize {
+    8 * 1024 * 1024
+}
+
+fn default_memory_bytes() -> Option<usize> {
+    Some(512 * 1024 * 1024)
+}
+
+fn default_max_processes() -> Option<u32> {
+    Some(4)
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self {
+            allowed_commands: BTreeSet::new(),
+            timeout_ms: default_timeout_ms(),
+            stdout_bytes: default_output_bytes(),
+            stderr_bytes: default_output_bytes(),
+            memory_bytes: default_memory_bytes(),
+            max_processes: default_max_processes(),
+        }
+    }
 }
 
 impl SandboxPolicy {
@@ -75,6 +115,19 @@ impl SandboxPolicy {
     pub fn permits(&self, command: &SandboxCommand) -> bool {
         self.allowed_commands.contains(command.program())
     }
+
+    #[must_use]
+    pub fn timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms.max(1);
+        self
+    }
+
+    #[must_use]
+    pub fn output_limits(mut self, stdout_bytes: usize, stderr_bytes: usize) -> Self {
+        self.stdout_bytes = stdout_bytes.max(1);
+        self.stderr_bytes = stderr_bytes.max(1);
+        self
+    }
 }
 
 /// Captured process output.
@@ -83,6 +136,7 @@ pub struct SandboxOutput {
     pub status_success: bool,
     pub stdout: String,
     pub stderr: String,
+    pub diagnostics: loom_protocol::ExecutionDiagnostics,
 }
 
 /// Safe execution facade. Default construction denies every command.
@@ -104,19 +158,7 @@ impl Sandbox {
             });
         }
 
-        let output = Command::new(command.program())
-            .args(command.args())
-            .output()
-            .map_err(|source| SandboxError::Io {
-                program: command.program().to_owned(),
-                source,
-            })?;
-
-        Ok(SandboxOutput {
-            status_success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        })
+        self.execute_input(command, &[])
     }
 
     pub fn execute_with_stdin(
@@ -130,37 +172,36 @@ impl Sandbox {
             });
         }
 
-        let mut child = Command::new(command.program())
-            .args(command.args())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| SandboxError::Io {
+        self.execute_input(command, stdin.as_bytes())
+    }
+
+    fn execute_input(
+        &self,
+        command: &SandboxCommand,
+        stdin: &[u8],
+    ) -> SandboxResult<SandboxOutput> {
+        let mut spec = loom_process::ProcessSpec::new(command.program());
+        spec.args = command.args().to_vec();
+        spec.limits.timeout = Duration::from_millis(self.policy.timeout_ms.max(1));
+        spec.limits.stdout_bytes = self.policy.stdout_bytes;
+        spec.limits.stderr_bytes = self.policy.stderr_bytes;
+        spec.limits.memory_bytes = self.policy.memory_bytes;
+        spec.limits.max_processes = self.policy.max_processes;
+        let output = loom_process::run_with_input(&spec, stdin).map_err(|error| match error {
+            loom_process::ProcessError::Spawn(source) => SandboxError::Io {
                 program: command.program().to_owned(),
                 source,
-            })?;
-
-        if let Some(mut child_stdin) = child.stdin.take() {
-            child_stdin
-                .write_all(stdin.as_bytes())
-                .map_err(|source| SandboxError::Io {
-                    program: command.program().to_owned(),
-                    source,
-                })?;
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|source| SandboxError::Io {
+            },
+            error => SandboxError::Resource {
                 program: command.program().to_owned(),
-                source,
-            })?;
-
+                reason: error.to_string(),
+            },
+        })?;
         Ok(SandboxOutput {
             status_success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            diagnostics: output.diagnostics,
         })
     }
 }
@@ -209,6 +250,31 @@ mod tests {
         assert!(output.stdout.contains("loom-sandbox-stdin"));
     }
 
+    #[test]
+    fn sandbox_enforces_timeout_and_output_limits() {
+        let slow = slow_command();
+        let sandbox = Sandbox::new(
+            SandboxPolicy::default()
+                .allow_command(slow.program())
+                .timeout_ms(100),
+        );
+        assert!(matches!(
+            sandbox.execute(&slow),
+            Err(SandboxError::Resource { .. })
+        ));
+
+        let noisy = noisy_command();
+        let sandbox = Sandbox::new(
+            SandboxPolicy::default()
+                .allow_command(noisy.program())
+                .output_limits(1024, 1024),
+        );
+        assert!(matches!(
+            sandbox.execute(&noisy),
+            Err(SandboxError::Resource { .. })
+        ));
+    }
+
     #[cfg(windows)]
     fn safe_echo_command() -> SandboxCommand {
         SandboxCommand::new("cmd")
@@ -231,5 +297,33 @@ mod tests {
     #[cfg(not(windows))]
     fn safe_stdin_command() -> SandboxCommand {
         SandboxCommand::new("grep").arg("loom-sandbox-stdin")
+    }
+
+    #[cfg(windows)]
+    fn slow_command() -> SandboxCommand {
+        SandboxCommand::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("Start-Sleep -Seconds 5")
+    }
+
+    #[cfg(not(windows))]
+    fn slow_command() -> SandboxCommand {
+        SandboxCommand::new("sh").arg("-c").arg("sleep 5")
+    }
+
+    #[cfg(windows)]
+    fn noisy_command() -> SandboxCommand {
+        SandboxCommand::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("[Console]::Out.Write(('x' * 100000))")
+    }
+
+    #[cfg(not(windows))]
+    fn noisy_command() -> SandboxCommand {
+        SandboxCommand::new("sh")
+            .arg("-c")
+            .arg("head -c 100000 /dev/zero")
     }
 }

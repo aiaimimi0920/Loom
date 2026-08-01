@@ -1,0 +1,18 @@
+[package]
+name = "loom_process"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded cross-platform child process supervision for Loom plugins"
+
+[dependencies]
+loom_protocol.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

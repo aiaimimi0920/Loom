@@ -1,9 +1,12 @@
 //! MCP server configuration and JSON-RPC request contracts for Loom.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -34,6 +37,14 @@ pub enum McpError {
     JsonRpc(JsonValue),
     #[error("MCP protocol error: {0}")]
     Protocol(String),
+    #[error("MCP process supervision failed for `{command}`: {reason}")]
+    ProcessSupervision { command: String, reason: String },
+    #[error("MCP request timed out after {timeout_ms}ms; stderr: {stderr}")]
+    Timeout { timeout_ms: u128, stderr: String },
+    #[error("MCP response exceeded the {limit} byte message limit")]
+    OutputLimit { limit: usize },
+    #[error("MCP process exited with code {code:?}; stderr: {stderr}")]
+    ProcessExited { code: Option<i32>, stderr: String },
 }
 
 pub type McpResult<T> = Result<T, McpError>;
@@ -324,40 +335,86 @@ pub fn tools_call_request(id: u64, name: &str, arguments: serde_json::Value) -> 
 
 /// Synchronous stdio MCP JSON-RPC client.
 pub struct StdioMcpClient {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    process: loom_process::ManagedChild,
+    stdin: std::process::ChildStdin,
+    stdout: Receiver<StdoutEvent>,
+    stderr: Arc<Mutex<BoundedStderr>>,
+    request_timeout: Duration,
     next_id: u64,
+}
+
+const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MCP_MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+const MCP_MAX_STDERR_BYTES: usize = 1024 * 1024;
+
+enum StdoutEvent {
+    Line(Vec<u8>),
+    Eof,
+    Error(String),
+    Oversized,
+}
+
+#[derive(Default)]
+struct BoundedStderr {
+    bytes: Vec<u8>,
+    total: u64,
+}
+
+impl BoundedStderr {
+    fn text(&self) -> String {
+        let mut text = String::from_utf8_lossy(&self.bytes).trim().to_owned();
+        if self.total > self.bytes.len() as u64 {
+            text.push_str(" [truncated]");
+        }
+        text
+    }
 }
 
 impl StdioMcpClient {
     pub fn spawn(config: &McpServerConfig) -> McpResult<Self> {
-        let spawn_spec = spawn_command_spec(config);
-        let mut command = Command::new(&spawn_spec.program);
-        command
-            .args(&spawn_spec.args)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        Self::spawn_with_timeout(config, MCP_REQUEST_TIMEOUT)
+    }
 
-        let mut child = command.spawn().map_err(|source| McpError::ProcessStart {
-            command: config.command.clone(),
-            source,
-        })?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or(McpError::MissingPipe { pipe: "stdin" })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(McpError::MissingPipe { pipe: "stdout" })?;
+    pub fn spawn_with_timeout(
+        config: &McpServerConfig,
+        request_timeout: Duration,
+    ) -> McpResult<Self> {
+        let spawn_spec = spawn_command_spec(config);
+        let mut process_spec = loom_process::ProcessSpec::new(&spawn_spec.program);
+        process_spec.args = spawn_spec.args;
+        process_spec.env = config.env.clone();
+        process_spec.limits.timeout = request_timeout;
+        process_spec.limits.stdout_bytes = MCP_MAX_MESSAGE_BYTES;
+        process_spec.limits.stderr_bytes = MCP_MAX_STDERR_BYTES;
+        process_spec.limits.memory_bytes = Some(512 * 1024 * 1024);
+        process_spec.limits.max_processes = Some(8);
+        let (process, pipes) = match loom_process::ManagedChild::spawn(&process_spec) {
+            Ok(value) => value,
+            Err(loom_process::ProcessError::Spawn(source)) => {
+                return Err(McpError::ProcessStart {
+                    command: config.command.clone(),
+                    source,
+                })
+            }
+            Err(error) => {
+                return Err(McpError::ProcessSupervision {
+                    command: config.command.clone(),
+                    reason: error.to_string(),
+                })
+            }
+        };
+        let (stdout_tx, stdout_rx) = mpsc::channel();
+        thread::spawn(move || read_stdout_lines(pipes.stdout, stdout_tx));
+        let stderr = Arc::new(Mutex::new(BoundedStderr::default()));
+        let stderr_capture = Arc::clone(&stderr);
+        thread::spawn(move || drain_stderr(pipes.stderr, stderr_capture));
 
         Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            process,
+            stdin: pipes.stdin,
+            stdout: stdout_rx,
+            stderr,
+            request_timeout,
             next_id: 1,
         })
     }
@@ -397,20 +454,41 @@ impl StdioMcpClient {
 
     fn read_result(&mut self, expected_id: u64) -> McpResult<JsonValue> {
         loop {
-            let mut line = String::new();
-            let bytes = self.stdout.read_line(&mut line)?;
-            if bytes == 0 {
-                return Err(McpError::Protocol(format!(
-                    "MCP process closed stdout before response id {expected_id}"
-                )));
-            }
-
-            let trimmed = line.trim();
+            let line = match self.stdout.recv_timeout(self.request_timeout) {
+                Ok(StdoutEvent::Line(line)) => line,
+                Ok(StdoutEvent::Oversized) => {
+                    self.process.terminate();
+                    return Err(McpError::OutputLimit {
+                        limit: MCP_MAX_MESSAGE_BYTES,
+                    });
+                }
+                Ok(StdoutEvent::Error(error)) => return Err(McpError::Protocol(error)),
+                Ok(StdoutEvent::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let code = self
+                        .process
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .and_then(|status| status.code());
+                    return Err(McpError::ProcessExited {
+                        code,
+                        stderr: self.stderr_text(),
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.process.terminate();
+                    return Err(McpError::Timeout {
+                        timeout_ms: self.request_timeout.as_millis(),
+                        stderr: self.stderr_text(),
+                    });
+                }
+            };
+            let trimmed = String::from_utf8_lossy(&line).trim().to_owned();
             if trimmed.is_empty() {
                 continue;
             }
 
-            let Ok(message) = serde_json::from_str::<JsonValue>(trimmed) else {
+            let Ok(message) = serde_json::from_str::<JsonValue>(&trimmed) else {
                 continue;
             };
 
@@ -427,14 +505,76 @@ impl StdioMcpClient {
             });
         }
     }
+
+    pub fn cancel(&mut self) {
+        self.process.terminate();
+    }
+
+    fn stderr_text(&self) -> String {
+        self.stderr
+            .lock()
+            .map(|stderr| stderr.text())
+            .unwrap_or_else(|_| "stderr capture unavailable".to_owned())
+    }
 }
 
-impl Drop for StdioMcpClient {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+fn read_stdout_lines(mut stdout: std::process::ChildStdout, sender: mpsc::Sender<StdoutEvent>) {
+    let mut buffer = [0u8; 16 * 1024];
+    let mut line = Vec::new();
+    let mut oversized = false;
+    loop {
+        let read = match stdout.read(&mut buffer) {
+            Ok(0) => {
+                if oversized {
+                    let _ = sender.send(StdoutEvent::Oversized);
+                } else if !line.is_empty() {
+                    let _ = sender.send(StdoutEvent::Line(line));
+                }
+                let _ = sender.send(StdoutEvent::Eof);
+                return;
+            }
+            Ok(read) => read,
+            Err(error) => {
+                let _ = sender.send(StdoutEvent::Error(error.to_string()));
+                return;
+            }
+        };
+        for byte in &buffer[..read] {
+            if *byte == b'\n' {
+                let event = if oversized {
+                    StdoutEvent::Oversized
+                } else {
+                    StdoutEvent::Line(std::mem::take(&mut line))
+                };
+                if sender.send(event).is_err() {
+                    return;
+                }
+                line.clear();
+                oversized = false;
+            } else if line.len() < MCP_MAX_MESSAGE_BYTES {
+                line.push(*byte);
+            } else {
+                oversized = true;
+            }
         }
+    }
+}
+
+fn drain_stderr(mut stderr: std::process::ChildStderr, capture: Arc<Mutex<BoundedStderr>>) {
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let read = match stderr.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        let Ok(mut capture) = capture.lock() else {
+            return;
+        };
+        capture.total = capture.total.saturating_add(read as u64);
+        let remaining = MCP_MAX_STDERR_BYTES.saturating_sub(capture.bytes.len());
+        capture
+            .bytes
+            .extend_from_slice(&buffer[..read.min(remaining)]);
     }
 }
 
@@ -568,6 +708,27 @@ mod tests {
         assert_eq!(result["content"][0]["text"], "hello loom");
     }
 
+    #[test]
+    fn stdio_client_times_out_and_terminates_hung_server() {
+        let config = current_test_binary_fixture_config().env("LOOM_MCP_FIXTURE_MODE", "hang");
+        let mut client = StdioMcpClient::spawn_with_timeout(&config, Duration::from_millis(150))
+            .expect("spawn hung fixture");
+        let error = client.initialize().expect_err("hung fixture must time out");
+        assert!(matches!(error, McpError::Timeout { .. }));
+    }
+
+    #[test]
+    fn stdio_client_drains_bounded_stderr_without_deadlocking() {
+        let config =
+            current_test_binary_fixture_config().env("LOOM_MCP_FIXTURE_MODE", "stderr-flood");
+        let mut client = StdioMcpClient::spawn_with_timeout(&config, Duration::from_secs(5))
+            .expect("spawn stderr fixture");
+        let init = client
+            .initialize()
+            .expect("stderr flood must not block stdout");
+        assert_eq!(init["serverInfo"]["name"], "loom-fixture");
+    }
+
     #[cfg(windows)]
     #[test]
     fn stdio_client_spawns_extensionless_windows_cmd_fixture() {
@@ -647,6 +808,22 @@ mod tests {
     }
 
     fn run_mcp_fixture_server() {
+        match std::env::var("LOOM_MCP_FIXTURE_MODE").ok().as_deref() {
+            Some("hang") => {
+                std::thread::sleep(Duration::from_secs(30));
+                return;
+            }
+            Some("stderr-flood") => {
+                let mut stderr = std::io::stderr().lock();
+                for _ in 0..256 {
+                    stderr
+                        .write_all(&[b'e'; 8192])
+                        .expect("write stderr fixture chunk");
+                }
+                stderr.flush().expect("flush stderr fixture");
+            }
+            _ => {}
+        }
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
 

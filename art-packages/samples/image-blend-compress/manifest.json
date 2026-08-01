@@ -53,8 +53,16 @@
     }
   ],
   "metadata": {
+    "packageSecurity": {
+      "version": "0.1.0",
+      "publisher": {
+        "id": "neuro.official",
+        "name": "Neuro"
+      }
+    },
     "dependencies": {
       "framework": "workflow",
+      "frameworkVersion": "^0.1",
       "arts": ["custom-image-blend-script", "custom-1770146354922"]
     },
     "workflow": {

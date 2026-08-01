@@ -4,6 +4,7 @@ members = [
     "apps/daemon",
     "apps/cli",
     "apps/art-store",
+    "apps/plugin-cli",
     "crates/loom_core",
     "crates/loom_durable",
     "crates/loom_agent",
@@ -22,6 +23,9 @@ members = [
     "crates/loom_shared_image",
     "crates/loom_image_io",
     "crates/loom_ocr",
+    "crates/loom_protocol",
+    "crates/loom_plugin_security",
+    "crates/loom_process",
 ]
 
 [workspace.package]
@@ -37,21 +41,25 @@ async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+libc = "0.2"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 num_cpus = "1.17"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic", "download-binaries", "copy-dylibs"] }
 paddle-ocr-rs = { version = "=0.6.0", default-features = false }
 rayon = "1.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+semver = "1.0"
 sha2 = "0.10"
 thiserror = "1.0"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
 tungstenite = "0.24"
 uuid = { version = "1.18", features = ["v4", "serde"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Threading"] }
 zerocopy = "=0.8.50"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
@@ -73,3 +81,6 @@ loom_workflow_runtime = { path = "crates/loom_workflow_runtime" }
 loom_shared_image = { path = "crates/loom_shared_image" }
 loom_image_io = { path = "crates/loom_image_io" }
 loom_ocr = { path = "crates/loom_ocr" }
+loom_protocol = { path = "crates/loom_protocol" }
+loom_plugin_security = { path = "crates/loom_plugin_security" }
+loom_process = { path = "crates/loom_process" }

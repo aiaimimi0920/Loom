@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/art-runtime.v1.schema.json",
+  "title": "Loom Art runtime manifest v1",
+  "type": "object",
+  "required": ["protocolVersion", "entry"],
+  "properties": {
+    "protocolVersion": { "const": "loom.art.runtime.v1" },
+    "entry": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

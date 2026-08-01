@@ -1,62 +1,43 @@
 //! Generic stdin/stdout bridge for externally packaged Art frameworks.
 
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use loom_process::{ProcessError, ProcessSpec};
 use serde_json::{json, Map, Value};
 
-use crate::framework::{FrameworkPackageManifest, FRAMEWORK_PROTOCOL_VERSION};
+use crate::framework::{
+    enforce_framework_permission_policy, is_valid_framework, resolve_framework_package_dir,
+    FrameworkPackageManifest, FRAMEWORK_PROTOCOL_VERSION,
+};
 use crate::{ToolDefinition, ToolRegistryError, ToolRegistryResult};
+
+pub use loom_protocol::{
+    FrameworkExecuteError, FrameworkExecuteRequest, FrameworkExecuteResponse,
+    FrameworkExecutionContext,
+};
 
 pub const DEFAULT_FRAMEWORK_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FrameworkExecuteRequest {
-    pub protocol_version: String,
-    pub framework_id: String,
-    pub art_id: String,
-    pub art_dir: PathBuf,
-    pub inputs: Value,
-    pub params: Value,
-    pub disabled_params: Vec<String>,
-    pub context: FrameworkExecutionContext,
+struct TempDirectoryGuard {
+    path: PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FrameworkExecutionContext {
-    pub request_id: String,
-    pub cache_dir: PathBuf,
-    pub temp_dir: PathBuf,
+impl TempDirectoryGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FrameworkExecuteResponse {
-    pub status: String,
-    #[serde(default)]
-    pub output: Value,
-    #[serde(default)]
-    pub error: Option<FrameworkExecuteError>,
-    #[serde(default)]
-    pub candidates: Vec<Value>,
-    #[serde(default)]
-    pub cache: Value,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FrameworkExecuteError {
-    pub code: String,
-    pub message: String,
-    #[serde(default)]
-    pub detail: Option<String>,
+impl Drop for TempDirectoryGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 /// Execute a pluginized Art through its installed framework package.
@@ -87,7 +68,38 @@ fn execute_framework_art_in_root_with_timeout(
     packages_root: &Path,
     timeout: Duration,
 ) -> ToolRegistryResult<Value> {
-    let package_dir = packages_root.join(framework);
+    if !is_valid_framework(framework) {
+        return Err(ToolRegistryError::FrameworkProcessProtocol {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason: "framework id is not a safe package id".to_owned(),
+        });
+    }
+
+    let package_dir = resolve_framework_package_dir(packages_root, framework)
+        .unwrap_or_else(|| packages_root.join(framework));
+    let manifest_path = package_dir.join("framework.manifest.json");
+    let canonical_packages_root = fs::canonicalize(packages_root).map_err(|_error| {
+        ToolRegistryError::FrameworkPackageNotFound {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            path: packages_root.display().to_string(),
+        }
+    })?;
+    let package_dir = fs::canonicalize(&package_dir).map_err(|_error| {
+        ToolRegistryError::FrameworkPackageNotFound {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            path: manifest_path.display().to_string(),
+        }
+    })?;
+    if !package_dir.starts_with(&canonical_packages_root) {
+        return Err(ToolRegistryError::FrameworkProcessProtocol {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason: "framework package resolves outside the package root".to_owned(),
+        });
+    }
     let manifest_path = package_dir.join("framework.manifest.json");
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|_error| {
         ToolRegistryError::FrameworkPackageNotFound {
@@ -104,14 +116,19 @@ fn execute_framework_art_in_root_with_timeout(
                 reason: format!("invalid framework.manifest.json: {error}"),
             }
         })?;
-    if manifest.id != framework || manifest.protocol_version != FRAMEWORK_PROTOCOL_VERSION {
+    let negotiated_protocol =
+        loom_protocol::negotiate_framework_protocol(&manifest).map_err(|error| {
+            ToolRegistryError::FrameworkProcessProtocol {
+                id: tool.id.clone(),
+                framework: framework.to_owned(),
+                reason: error.to_string(),
+            }
+        })?;
+    if manifest.id != framework {
         return Err(ToolRegistryError::FrameworkProcessProtocol {
             id: tool.id.clone(),
             framework: framework.to_owned(),
-            reason: format!(
-                "manifest identity/protocol mismatch: id={}, protocol={}",
-                manifest.id, manifest.protocol_version
-            ),
+            reason: format!("manifest identity mismatch: id={}", manifest.id),
         });
     }
     if manifest.entry.kind != "process" || manifest.entry.command.trim().is_empty() {
@@ -121,6 +138,13 @@ fn execute_framework_art_in_root_with_timeout(
             reason: "manifest entry must be a process with a command".to_owned(),
         });
     }
+    enforce_framework_permission_policy(&manifest).map_err(|reason| {
+        ToolRegistryError::FrameworkProcessProtocol {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason: format!("permission enforcement unavailable: {reason}"),
+        }
+    })?;
     let command_path = Path::new(&manifest.entry.command);
     if command_path.is_absolute()
         || command_path
@@ -155,16 +179,32 @@ fn execute_framework_art_in_root_with_timeout(
     }
 
     let request_id = request_id();
-    let cache_dir = art_dir.join(".loom-cache");
+    let cache_dir =
+        art_package_path(tool, "cacheDir").unwrap_or_else(|| art_dir.join(".loom-cache"));
+    let state_dir = art_package_path(tool, "stateDir");
+    let output_dir = art_package_path(tool, "outputDir");
     let temp_dir = std::env::temp_dir()
         .join("loom-framework")
         .join(&request_id);
     fs::create_dir_all(&cache_dir).map_err(|error| framework_io_error(tool, framework, error))?;
     fs::create_dir_all(&temp_dir).map_err(|error| framework_io_error(tool, framework, error))?;
+    let temp_dir = TempDirectoryGuard::new(temp_dir);
 
     let (inputs, params, disabled_params) = split_arguments(&arguments);
+    let credentials = packages_root
+        .parent()
+        .map(crate::credentials::CredentialStore::new)
+        .map(|store| store.grants_for(framework, &tool.id, &manifest.permission_policy.credentials))
+        .transpose()
+        .map_err(|error| ToolRegistryError::FrameworkProcessProtocol {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason: format!("credential broker failed: {error}"),
+        })?
+        .unwrap_or_default();
     let request = FrameworkExecuteRequest {
-        protocol_version: FRAMEWORK_PROTOCOL_VERSION.to_owned(),
+        protocol_version: negotiated_protocol.to_owned(),
+        supported_protocol_versions: vec![FRAMEWORK_PROTOCOL_VERSION.to_owned()],
         framework_id: framework.to_owned(),
         art_id: tool.id.clone(),
         art_dir: art_dir.clone(),
@@ -174,7 +214,15 @@ fn execute_framework_art_in_root_with_timeout(
         context: FrameworkExecutionContext {
             request_id,
             cache_dir,
-            temp_dir: temp_dir.clone(),
+            temp_dir: temp_dir.path().to_path_buf(),
+            state_dir,
+            output_dir,
+            host_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            framework_version: Some(manifest.version.clone()),
+            art_version: art_package_string(tool, "version"),
+            granted_permissions: manifest.permission_policy.clone(),
+            credentials,
+            ..FrameworkExecutionContext::default()
         },
     };
     let payload = serde_json::to_vec(&request).map_err(|error| {
@@ -185,59 +233,41 @@ fn execute_framework_art_in_root_with_timeout(
         }
     })?;
 
-    let mut child = Command::new(&command_path)
-        .args(&manifest.entry.args)
-        .current_dir(&package_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| ToolRegistryError::FrameworkProcessSpawn {
-            id: tool.id.clone(),
-            framework: framework.to_owned(),
-            reason: error.to_string(),
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&payload)
-            .and_then(|_| stdin.write_all(b"\n"))
-            .map_err(|error| framework_io_error(tool, framework, error))?;
-    }
-
-    let deadline = Instant::now() + timeout;
-    let exit_status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = fs::remove_dir_all(&temp_dir);
-                return Err(ToolRegistryError::FrameworkProcessTimeout {
-                    id: tool.id.clone(),
-                    framework: framework.to_owned(),
-                    timeout_ms: timeout.as_millis(),
-                });
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(framework_io_error(tool, framework, error));
-            }
-        }
-    };
-
-    let mut stdout = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)
-            .map_err(|error| framework_io_error(tool, framework, error))?;
-    }
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_string(&mut stderr)
-            .map_err(|error| framework_io_error(tool, framework, error))?;
-    }
+    let mut process = ProcessSpec::new(&command_path);
+    process.args = manifest.entry.args.clone();
+    process.current_dir = Some(package_dir.clone());
+    process.limits.timeout = manifest
+        .resources
+        .timeout_seconds
+        .map(Duration::from_secs)
+        .map(|declared| declared.min(timeout))
+        .unwrap_or(timeout);
+    process.limits.stdout_bytes = manifest
+        .resources
+        .stdout_mib
+        .and_then(|value| usize::try_from(value.saturating_mul(1024 * 1024)).ok())
+        .unwrap_or(process.limits.stdout_bytes);
+    process.limits.stderr_bytes = manifest
+        .resources
+        .stderr_mib
+        .and_then(|value| usize::try_from(value.saturating_mul(1024 * 1024)).ok())
+        .unwrap_or(process.limits.stderr_bytes);
+    process.limits.memory_bytes = manifest
+        .resources
+        .memory_mib
+        .and_then(|value| usize::try_from(value.saturating_mul(1024 * 1024)).ok())
+        .or(process.limits.memory_bytes);
+    process.limits.max_processes = manifest
+        .resources
+        .max_processes
+        .or(process.limits.max_processes);
+    let mut stdin_payload = payload;
+    stdin_payload.push(b'\n');
+    let process_output = loom_process::run_with_input(&process, &stdin_payload)
+        .map_err(|error| map_process_error(tool, framework, process.limits.timeout, error))?;
+    let exit_status = process_output.status;
+    let stdout = process_output.stdout;
+    let stderr = String::from_utf8_lossy(&process_output.stderr).into_owned();
     let stdout_text = String::from_utf8_lossy(&stdout).trim().to_owned();
     if !exit_status.success() {
         return Err(ToolRegistryError::FrameworkProcessFailed {
@@ -251,7 +281,7 @@ fn execute_framework_art_in_root_with_timeout(
             detail: stderr.trim().to_owned(),
         });
     }
-    let response: FrameworkExecuteResponse =
+    let mut response: FrameworkExecuteResponse =
         serde_json::from_str(&stdout_text).map_err(|error| {
             ToolRegistryError::FrameworkProcessProtocol {
                 id: tool.id.clone(),
@@ -259,8 +289,11 @@ fn execute_framework_art_in_root_with_timeout(
                 reason: format!("invalid JSON response: {error}; stdout: {stdout_text}"),
             }
         })?;
+    response
+        .diagnostics
+        .get_or_insert(process_output.diagnostics);
     let status = response.status.trim().to_ascii_lowercase();
-    if !matches!(status.as_str(), "success" | "ok" | "completed") {
+    if !loom_protocol::response_status_is_success(&status) {
         let error = response.error.unwrap_or(FrameworkExecuteError {
             code: "framework_failed".to_owned(),
             message: "framework returned a failure status".to_owned(),
@@ -275,9 +308,48 @@ fn execute_framework_art_in_root_with_timeout(
         });
     }
 
-    let result = response_to_tool_value(response);
-    let _ = fs::remove_dir_all(&temp_dir);
-    Ok(result)
+    Ok(response_to_tool_value(response))
+}
+
+fn map_process_error(
+    tool: &ToolDefinition,
+    framework: &str,
+    timeout: Duration,
+    error: ProcessError,
+) -> ToolRegistryError {
+    match error {
+        ProcessError::Spawn(error) => ToolRegistryError::FrameworkProcessSpawn {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason: error.to_string(),
+        },
+        ProcessError::Timeout { .. } => ToolRegistryError::FrameworkProcessTimeout {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            timeout_ms: timeout.as_millis(),
+        },
+        ProcessError::OutputLimit {
+            stderr,
+            diagnostics,
+            ..
+        } => ToolRegistryError::FrameworkProcessFailed {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            code: "resource_limit".to_owned(),
+            message: "framework process exceeded bounded output limits".to_owned(),
+            detail: format!(
+                "stderr={} bytes; stdout={} bytes; {}",
+                diagnostics.stderr_bytes,
+                diagnostics.stdout_bytes,
+                String::from_utf8_lossy(&stderr)
+            ),
+        },
+        other => ToolRegistryError::FrameworkProcessIo {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason: other.to_string(),
+        },
+    }
 }
 
 fn framework_io_error(
@@ -324,6 +396,21 @@ fn art_directory(tool: &ToolDefinition) -> Option<PathBuf> {
     })
 }
 
+fn art_package_path(tool: &ToolDefinition, key: &str) -> Option<PathBuf> {
+    art_package_string(tool, key).map(PathBuf::from)
+}
+
+fn art_package_string(tool: &ToolDefinition, key: &str) -> Option<String> {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .and_then(|package| package.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn split_arguments(arguments: &Value) -> (Value, Value, Vec<String>) {
     let Some(object) = arguments.as_object() else {
         return (arguments.clone(), Value::Object(Map::new()), Vec::new());
@@ -351,15 +438,25 @@ fn split_arguments(arguments: &Value) -> (Value, Value, Vec<String>) {
 fn response_to_tool_value(response: FrameworkExecuteResponse) -> Value {
     let has_candidates = !response.candidates.is_empty();
     let has_cache = !response.cache.is_null();
-    if !has_candidates && !has_cache {
+    let has_execution_metadata = response.diagnostics.is_some() || !response.events.is_empty();
+    if !has_candidates && !has_cache && !has_execution_metadata {
         return response.output;
     }
+    let execution_metadata = has_execution_metadata.then(|| {
+        json!({
+            "diagnostics": response.diagnostics,
+            "events": response.events,
+        })
+    });
     if let Value::Object(mut output) = response.output {
         if has_candidates {
             output.insert("candidates".to_owned(), Value::Array(response.candidates));
         }
         if has_cache {
             output.insert("cache".to_owned(), response.cache);
+        }
+        if let Some(execution_metadata) = execution_metadata {
+            output.insert("_loomExecution".to_owned(), execution_metadata);
         }
         Value::Object(output)
     } else {
@@ -370,6 +467,9 @@ fn response_to_tool_value(response: FrameworkExecuteResponse) -> Value {
         }
         if has_cache {
             result.insert("cache".to_owned(), response.cache);
+        }
+        if let Some(execution_metadata) = execution_metadata {
+            result.insert("_loomExecution".to_owned(), execution_metadata);
         }
         Value::Object(result)
     }
@@ -388,6 +488,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -477,12 +578,18 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ request = $requ
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 50 -Compress))
 "#;
     const ERROR_SCRIPT: &str = r#"
-$response = [ordered]@{ status = "error"; error = [ordered]@{ code = "quota_exhausted"; message = "quota exhausted"; detail = "fixture detail" } }
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$response = [ordered]@{ status = "error"; error = [ordered]@{ code = "quota_exhausted"; message = "quota exhausted"; detail = [string]$request.context.tempDir } }
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
 "#;
     const INVALID_SCRIPT: &str = "[Console]::Out.Write('not-json')";
     const TIMEOUT_SCRIPT: &str =
         "Start-Sleep -Milliseconds 300; [Console]::Out.Write('{\"status\":\"success\"}')";
+    const LARGE_OUTPUT_SCRIPT: &str = r#"
+$large = "x" * 200000
+$response = [ordered]@{ status = "success"; output = [ordered]@{ large = $large } }
+[Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
+"#;
 
     #[test]
     fn process_request_contains_art_inputs_params_and_context() {
@@ -549,14 +656,39 @@ $response = [ordered]@{ status = "error"; error = [ordered]@{ code = "quota_exha
             Duration::from_secs(10),
         )
         .expect_err("framework error response");
-        assert!(matches!(
-            error,
+        let detail = match error {
             ToolRegistryError::FrameworkProcessFailed {
                 code,
                 message,
                 detail,
                 ..
-            } if code == "quota_exhausted" && message == "quota exhausted" && detail == "fixture detail"
+            } if code == "quota_exhausted" && message == "quota exhausted" => detail,
+            other => panic!("unexpected framework error: {other}"),
+        };
+        assert!(
+            !Path::new(&detail).exists(),
+            "framework temp directory leaked after an error: {detail}"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn unsafe_framework_id_is_rejected_before_package_resolution() {
+        let root = temp_root("unsafe-framework-id");
+        let art_dir = root.join("arts").join("fixture-art");
+        fs::create_dir_all(&art_dir).expect("create fixture art");
+        let error = execute_framework_art_in_root_with_timeout(
+            &fixture_tool(&art_dir),
+            "../outside",
+            json!({}),
+            &root,
+            Duration::from_secs(10),
+        )
+        .expect_err("unsafe framework id");
+        assert!(matches!(
+            error,
+            ToolRegistryError::FrameworkProcessProtocol { reason, .. }
+                if reason.contains("safe package id")
         ));
         fs::remove_dir_all(root).ok();
     }
@@ -597,6 +729,22 @@ $response = [ordered]@{ status = "error"; error = [ordered]@{ code = "quota_exha
             error,
             ToolRegistryError::FrameworkProcessTimeout { timeout_ms: 50, .. }
         ));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn process_drains_large_stdout_without_deadlocking() {
+        let root = temp_root("large-stdout");
+        let art_dir = write_fixture_package(&root, LARGE_OUTPUT_SCRIPT);
+        let result = execute_framework_art_in_root_with_timeout(
+            &fixture_tool(&art_dir),
+            "script",
+            json!({}),
+            &root,
+            Duration::from_secs(10),
+        )
+        .expect("large framework response");
+        assert_eq!(result["large"].as_str().map(str::len), Some(200_000));
         fs::remove_dir_all(root).ok();
     }
 }

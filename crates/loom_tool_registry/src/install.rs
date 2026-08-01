@@ -10,15 +10,26 @@
 //! Dependent arts (workflow `uses` / `dependencies.arts`) are returned for the
 //! caller to install recursively (wired with the store in phase 2).
 
+use std::ffi::OsStr;
 use std::io::{Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use loom_plugin_security::{
+    canonical_package_digest, verify_package_signature, TrustPolicy, TrustStore,
+};
+use loom_protocol::{
+    ArtRuntimeManifest, PackageSignature, PackageTrustStatus, PluginLockfile, PublisherIdentity,
+    ResolvedDependency,
+};
 
 use crate::framework::{read_dependencies, ArtBinary, FrameworkRegistry};
 use crate::{ToolDefinition, ToolExecution, ToolRegistry};
 
 const MANIFEST_NAME: &str = "manifest.json";
+const ART_LIFECYCLE_FILE: &str = "lifecycle.json";
+const ART_UNINSTALL_TOMBSTONE_PREFIX: &str = ".loom-delete-art-";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArtInstallError {
@@ -38,6 +49,8 @@ pub enum ArtInstallError {
     BinaryMissing { name: String },
     #[error("download of art binary `{name}` failed: {reason}")]
     BinaryDownloadFailed { name: String, reason: String },
+    #[error("remote art binary `{name}` must declare a sha256 digest")]
+    RemoteBinaryHashRequired { name: String },
     #[error("art binary `{name}` sha256 mismatch: expected {expected}, got {actual}")]
     BinaryHashMismatch {
         name: String,
@@ -65,6 +78,50 @@ pub struct ArtInstallReport {
     pub binaries: Vec<String>,
     /// Dependent art ids to install next (from the manifest's dependencies).
     pub dependent_arts: Vec<String>,
+    pub trust_status: PackageTrustStatus,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtPackageSecurityMetadata {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    publisher: Option<PublisherIdentity>,
+    #[serde(default)]
+    signature: Option<PackageSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtActivationState {
+    active: ArtVersionPointer,
+    previous: Option<ArtVersionPointer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtVersionPointer {
+    path: String,
+    version: String,
+    digest: String,
+    lockfile: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtLifecycleJournal {
+    old_activation: Option<ArtActivationState>,
+    next_activation: ArtActivationState,
+    target: String,
+}
+
+fn read_art_package_security(tool: &ToolDefinition) -> ArtPackageSecurityMetadata {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("packageSecurity"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// Reject ids that aren't safe as a single directory name (mirrors
@@ -77,6 +134,27 @@ fn is_safe_art_id(id: &str) -> bool {
         && id != "."
         && id != ".."
         && !id.contains("..")
+}
+
+fn is_safe_art_reference(reference: &str) -> bool {
+    if let Some((publisher, id)) = reference.split_once('/') {
+        !publisher.contains('/')
+            && loom_protocol::is_safe_publisher_id(publisher)
+            && is_safe_art_id(id)
+    } else {
+        is_safe_art_id(reference)
+    }
+}
+
+fn art_root_for_reference(control_plane_root: &Path, reference: &str) -> Option<PathBuf> {
+    if !is_safe_art_reference(reference) {
+        return None;
+    }
+    let arts = control_plane_root.join("arts");
+    reference
+        .split_once('/')
+        .map(|(publisher, id)| arts.join(publisher).join(id))
+        .or_else(|| Some(arts.join(reference)))
 }
 
 /// Read the `manifest.json` (a `ToolDefinition`) from an art package zip without
@@ -152,7 +230,22 @@ fn rewrite_artloom_compat_execution_paths(
     }
 }
 
-fn record_art_package_directory(metadata: &mut Option<serde_json::Value>, art_dir: &Path) {
+struct ArtPackagePaths<'a> {
+    qualified_id: &'a str,
+    art_dir: &'a Path,
+    state_dir: &'a Path,
+    cache_dir: &'a Path,
+    output_dir: &'a Path,
+    lockfile: &'a Path,
+    version: &'a str,
+    digest: &'a str,
+    trust_status: &'a PackageTrustStatus,
+}
+
+fn record_art_package_directory(
+    metadata: &mut Option<serde_json::Value>,
+    paths: ArtPackagePaths<'_>,
+) {
     let root = metadata.get_or_insert_with(|| serde_json::json!({}));
     if !root.is_object() {
         *root = serde_json::json!({});
@@ -161,13 +254,227 @@ fn record_art_package_directory(metadata: &mut Option<serde_json::Value>, art_di
         object.insert(
             "artPackage".to_owned(),
             serde_json::json!({
-                "dir": art_dir.to_string_lossy().to_string()
+                "qualifiedId": paths.qualified_id,
+                "dir": paths.art_dir.to_string_lossy().to_string(),
+                "stateDir": paths.state_dir.to_string_lossy().to_string(),
+                "cacheDir": paths.cache_dir.to_string_lossy().to_string(),
+                "outputDir": paths.output_dir.to_string_lossy().to_string(),
+                "lockfile": paths.lockfile.to_string_lossy().to_string(),
+                "version": paths.version,
+                "digest": paths.digest,
+                "trustStatus": paths.trust_status
             }),
         );
+        let compat = object
+            .entry("artloomCompat".to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+        if !compat.is_object() {
+            *compat = serde_json::json!({});
+        }
+        if let Some(compat) = compat.as_object_mut() {
+            // Package-installed Arts are Loom-owned and Hook-visible. Never let
+            // an untrusted package claim the sync-owned `artloom-compat` source.
+            compat.insert(
+                "source".to_owned(),
+                serde_json::Value::String("loom-local".to_owned()),
+            );
+        }
     }
 }
 
-/// Install an art package from zip bytes into `<control_plane_root>/arts/<id>/`.
+fn qualified_art_id(tool: &ToolDefinition) -> String {
+    tool.publisher_identity()
+        .map(|publisher| format!("{}/{}", publisher.id, tool.id))
+        .unwrap_or_else(|| tool.id.clone())
+}
+
+fn art_root_for_tool(control_plane_root: &Path, tool: &ToolDefinition) -> PathBuf {
+    let arts_root = control_plane_root.join("arts");
+    match tool.publisher_identity() {
+        Some(publisher) => arts_root.join(publisher.id).join(&tool.id),
+        None => arts_root.join(&tool.id),
+    }
+}
+
+fn migrate_art_namespace(
+    control_plane_root: &Path,
+    tool: &ToolDefinition,
+    target: &Path,
+) -> Result<(), ArtInstallError> {
+    if tool.publisher_identity().is_none() || target.exists() {
+        return Ok(());
+    }
+    let legacy = control_plane_root.join("arts").join(&tool.id);
+    if !legacy.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(legacy, target)?;
+    Ok(())
+}
+
+fn migrate_legacy_art_layout(
+    control_plane_root: &Path,
+    art_root: &Path,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(), ArtInstallError> {
+    if art_root.join("active.json").is_file() || !art_root.join(MANIFEST_NAME).is_file() {
+        return Ok(());
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let legacy = control_plane_root.join(format!(".loom-art-legacy-{nonce}"));
+    std::fs::rename(art_root, &legacy)?;
+    let result = (|| {
+        let tool: ToolDefinition =
+            serde_json::from_slice(&std::fs::read(legacy.join(MANIFEST_NAME))?)?;
+        let security = read_art_package_security(&tool);
+        let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        let trust_status = verify_package_signature(
+            &legacy,
+            security.publisher.as_ref(),
+            security.signature.as_ref(),
+            &trust_store,
+        )
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        TrustPolicy::from_env()
+            .enforce(trust_status)
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        let digest = canonical_package_digest(
+            &legacy,
+            security
+                .signature
+                .as_ref()
+                .map(|signature| signature.file.as_str()),
+        )
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        let version = security.version.unwrap_or_else(|| "0.0.0".to_owned());
+        let relative = Path::new("versions").join(format!(
+            "{}-{}",
+            sanitize_version_for_path(&version),
+            &digest[..12]
+        ));
+        let target = art_root.join(&relative);
+        std::fs::create_dir_all(target.parent().expect("legacy Art version parent"))?;
+        std::fs::rename(&legacy, &target)?;
+        let locks_dir = art_root.join("locks");
+        for directory in [
+            art_root.join("state"),
+            art_root.join("cache"),
+            art_root.join("outputs"),
+            locks_dir.clone(),
+        ] {
+            std::fs::create_dir_all(directory)?;
+        }
+        let lockfile = locks_dir.join(format!("{digest}.json"));
+        let dependencies = read_dependencies(&tool);
+        let framework = dependencies.framework.as_deref().ok_or_else(|| {
+            ArtInstallError::InvalidPackage("legacy Art has no framework dependency".to_owned())
+        })?;
+        write_art_lockfile(
+            &lockfile,
+            &qualified_art_id(&tool),
+            &version,
+            framework,
+            framework_registry,
+            &dependencies.binaries,
+            &target,
+        )?;
+        set_tree_readonly(&target, true)?;
+        write_art_activation(
+            &art_root.join("active.json"),
+            &ArtActivationState {
+                active: ArtVersionPointer {
+                    path: relative.to_string_lossy().replace('\\', "/"),
+                    version,
+                    digest,
+                    lockfile: lockfile.to_string_lossy().to_string(),
+                },
+                previous: None,
+            },
+        )
+    })();
+    if result.is_err() {
+        let migrated = std::fs::read_dir(art_root.join("versions"))
+            .ok()
+            .and_then(|mut entries| entries.next())
+            .and_then(Result::ok)
+            .map(|entry| entry.path());
+        if let Some(migrated) = migrated {
+            let _ = std::fs::rename(migrated, &legacy);
+        }
+        let _ = std::fs::remove_dir_all(art_root);
+        if legacy.exists() {
+            let _ = std::fs::rename(&legacy, art_root);
+        }
+    }
+    result
+}
+
+fn set_tree_readonly(path: &Path, readonly: bool) -> Result<(), ArtInstallError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            set_tree_readonly(&entry?.path(), readonly)?;
+        }
+    }
+    let metadata = std::fs::metadata(path)?;
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = permissions.mode();
+        permissions.set_mode(if readonly {
+            mode & !0o222
+        } else {
+            mode | 0o200
+        });
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+fn uninstall_tombstone_path(live: &Path, prefix: &str) -> Result<PathBuf, ArtInstallError> {
+    let parent = live.parent().ok_or_else(|| {
+        ArtInstallError::InvalidPackage("Art package root has no parent".to_owned())
+    })?;
+    let name = live.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+        ArtInstallError::InvalidPackage("Art package root has no UTF-8 name".to_owned())
+    })?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(parent.join(format!("{prefix}{name}--{nonce}")))
+}
+
+fn uninstall_tombstone_original_name(path: &Path, prefix: &str) -> Option<String> {
+    let name = path.file_name()?.to_str()?.strip_prefix(prefix)?;
+    let (original, nonce) = name.rsplit_once("--")?;
+    (!original.is_empty()
+        && nonce.bytes().all(|byte| byte.is_ascii_digit())
+        && is_safe_art_id(original))
+    .then(|| original.to_owned())
+}
+
+fn remove_tree(path: &Path) -> Result<(), ArtInstallError> {
+    if path.exists() {
+        set_tree_readonly(path, false)?;
+        std::fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
+/// Install an art package into an immutable publisher-scoped version directory.
 pub fn install_art_from_zip(
     zip_bytes: &[u8],
     control_plane_root: &Path,
@@ -199,60 +506,800 @@ pub fn install_art_from_zip(
             reason: "ready".to_owned(),
         });
     }
-
-    // Extract every entry into the art dir (fresh — clear any prior install).
-    let art_dir = control_plane_root.join("arts").join(&tool.id);
-    if art_dir.exists() {
-        std::fs::remove_dir_all(&art_dir)?;
+    if let Some(requirement) = deps.framework_version.as_deref() {
+        let requirement = semver::VersionReq::parse(requirement).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "invalid frameworkVersion requirement `{requirement}`: {error}"
+            ))
+        })?;
+        let installed_version = framework_registry
+            .statuses()
+            .into_iter()
+            .find(|status| status.qualified_id == framework || status.id == framework)
+            .and_then(|status| status.version)
+            .ok_or_else(|| ArtInstallError::FrameworkNotReady {
+                art_id: tool.id.clone(),
+                framework: framework.clone(),
+                reason: "versioned".to_owned(),
+            })?;
+        let installed_version = semver::Version::parse(&installed_version).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "installed framework version `{installed_version}` is invalid: {error}"
+            ))
+        })?;
+        if !requirement.matches(&installed_version) {
+            return Err(ArtInstallError::FrameworkNotReady {
+                art_id: tool.id.clone(),
+                framework: framework.clone(),
+                reason: format!(
+                    "compatible: requires {requirement}, installed {installed_version}"
+                ),
+            });
+        }
     }
-    std::fs::create_dir_all(&art_dir)?;
 
-    let mut archive = zip::ZipArchive::new(Cursor::new(zip_bytes))?;
-    let mut installed_files = Vec::new();
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index)?;
-        let Some(enclosed) = entry.enclosed_name() else {
-            return Err(ArtInstallError::InvalidPackage(format!(
-                "unsafe path in zip: {}",
-                entry.name()
-            )));
+    let arts_root = control_plane_root.join("arts");
+    std::fs::create_dir_all(&arts_root)?;
+    let art_root = art_root_for_tool(control_plane_root, &tool);
+    migrate_art_namespace(control_plane_root, &tool, &art_root)?;
+    migrate_legacy_art_layout(control_plane_root, &art_root, framework_registry)?;
+    let qualified_id = qualified_art_id(&tool);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let staging = control_plane_root.join(format!(".loom-art-{}-{nonce}", tool.id));
+    let result = (|| {
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging)?;
+        }
+        std::fs::create_dir_all(&staging)?;
+        let installed_files = crate::secure_zip::extract_zip_securely(zip_bytes, &staging)
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+
+        let security = read_art_package_security(&tool);
+        let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        let trust_status = verify_package_signature(
+            &staging,
+            security.publisher.as_ref(),
+            security.signature.as_ref(),
+            &trust_store,
+        )
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        TrustPolicy::from_env()
+            .enforce(trust_status.clone())
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+
+        // Resolve declared third-party binaries before activation. Bundled
+        // files are verified in staging; downloads cannot alter the active Art.
+        let binaries = resolve_binaries(&deps.binaries, &staging, &installed_files)?;
+        let digest = canonical_package_digest(
+            &staging,
+            security
+                .signature
+                .as_ref()
+                .map(|signature| signature.file.as_str()),
+        )
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        let version = security.version.as_deref().unwrap_or("0.0.0");
+        let active_relative = Path::new("versions").join(format!(
+            "{}-{}",
+            sanitize_version_for_path(version),
+            &digest[..12]
+        ));
+        let art_dir = art_root.join(&active_relative);
+        std::fs::create_dir_all(art_dir.parent().expect("Art version parent"))?;
+        let target_created = if art_dir.exists() {
+            std::fs::remove_dir_all(&staging)?;
+            false
+        } else {
+            std::fs::rename(&staging, &art_dir)?;
+            true
         };
-        let out_path = art_dir.join(&enclosed);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path)?;
+
+        let state_dir = art_root.join("state");
+        let cache_dir = art_root.join("cache");
+        let output_dir = art_root.join("outputs");
+        let locks_dir = art_root.join("locks");
+        for directory in [&state_dir, &cache_dir, &output_dir, &locks_dir] {
+            std::fs::create_dir_all(directory)?;
+        }
+        let lockfile = locks_dir.join(format!("{digest}.json"));
+        write_art_lockfile(
+            &lockfile,
+            &qualified_id,
+            version,
+            &framework,
+            framework_registry,
+            &deps.binaries,
+            &art_dir,
+        )?;
+        set_tree_readonly(&art_dir, true)?;
+
+        let active_path = art_root.join("active.json");
+        let old_activation = read_art_activation(&active_path);
+        let active_text = active_relative.to_string_lossy().replace('\\', "/");
+        let active = ArtVersionPointer {
+            path: active_text,
+            version: version.to_owned(),
+            digest: digest.clone(),
+            lockfile: lockfile.to_string_lossy().to_string(),
+        };
+        let previous = old_activation
+            .as_ref()
+            .and_then(|activation| {
+                (activation.active.path != active.path).then(|| activation.active.clone())
+            })
+            .or_else(|| {
+                old_activation
+                    .as_ref()
+                    .and_then(|activation| activation.previous.clone())
+            });
+        let activation = ArtActivationState { active, previous };
+        write_art_lifecycle(
+            &art_root,
+            &ArtLifecycleJournal {
+                old_activation: old_activation.clone(),
+                next_activation: activation.clone(),
+                target: active_relative.to_string_lossy().replace('\\', "/"),
+            },
+        )?;
+        if let Err(error) = write_art_activation(&active_path, &activation) {
+            clear_art_lifecycle(&art_root);
+            if target_created {
+                let _ = remove_tree(&art_dir);
+            }
+            return Err(error);
+        }
+
+        rewrite_execution_paths(&mut tool.execution, &art_dir);
+        rewrite_artloom_compat_execution_paths(&mut tool.metadata, &art_dir);
+        record_art_package_directory(
+            &mut tool.metadata,
+            ArtPackagePaths {
+                qualified_id: &qualified_id,
+                art_dir: &art_dir,
+                state_dir: &state_dir,
+                cache_dir: &cache_dir,
+                output_dir: &output_dir,
+                lockfile: &lockfile,
+                version,
+                digest: &digest,
+                trust_status: &trust_status,
+            },
+        );
+        let tool_id = tool.id.clone();
+        if let Err(error) = tool_registry.save_tool(tool) {
+            if let Some(old_activation) = old_activation {
+                let _ = write_art_activation(&active_path, &old_activation);
+            } else {
+                let _ = std::fs::remove_file(&active_path);
+            }
+            if target_created {
+                let _ = remove_tree(&art_dir);
+            }
+            clear_art_lifecycle(&art_root);
+            return Err(ArtInstallError::Registry(error.to_string()));
+        }
+        let _ = prune_art_versions(&art_root, &activation);
+        clear_art_lifecycle(&art_root);
+
+        Ok(ArtInstallReport {
+            tool_id,
+            framework,
+            art_dir,
+            installed_files,
+            binaries,
+            dependent_arts: deps.arts,
+            trust_status,
+        })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+fn art_history_limit() -> usize {
+    std::env::var("LOOM_PLUGIN_VERSION_HISTORY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(2)
+}
+
+fn prune_art_versions(
+    art_root: &Path,
+    activation: &ArtActivationState,
+) -> Result<(), ArtInstallError> {
+    let versions_root = art_root.join("versions");
+    if !versions_root.is_dir() {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(&versions_root)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        std::cmp::Reverse(
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        )
+    });
+    let active = art_root.join(&activation.active.path);
+    let previous = activation
+        .previous
+        .as_ref()
+        .map(|pointer| art_root.join(&pointer.path));
+    let mut extra_retained = 0usize;
+    for entry in entries {
+        let path = entry.path();
+        let pinned = path == active || previous.as_ref().is_some_and(|previous| *previous == path);
+        if pinned || extra_retained < art_history_limit().saturating_sub(2) {
+            if !pinned {
+                extra_retained += 1;
+            }
             continue;
         }
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf)?;
-        std::fs::write(&out_path, &buf)?;
-        installed_files.push(enclosed.to_string_lossy().to_string());
+        remove_tree(&path)?;
     }
+    Ok(())
+}
 
-    // Resolve declared third-party binaries (portable exes): those already
-    // bundled in the zip are verified in place; those with only a download url
-    // are fetched into the art dir. Both are sha256-checked when a hash is given.
-    let binaries = resolve_binaries(&deps.binaries, &art_dir, &installed_files)?;
+fn read_art_activation(path: &Path) -> Option<ArtActivationState> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
 
-    // Rewrite bundled binary/script paths into the art dir, then register.
-    rewrite_execution_paths(&mut tool.execution, &art_dir);
-    rewrite_artloom_compat_execution_paths(&mut tool.metadata, &art_dir);
-    record_art_package_directory(&mut tool.metadata, &art_dir);
-    let tool_id = tool.id.clone();
-    tool_registry
-        .save_tool(tool)
+fn write_art_activation(
+    path: &Path,
+    activation: &ArtActivationState,
+) -> Result<(), ArtInstallError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    let mut bytes = serde_json::to_vec_pretty(activation)?;
+    bytes.push(b'\n');
+    std::fs::write(&temporary, bytes)?;
+    crate::replace_registry_file(&temporary, path)?;
+    Ok(())
+}
+
+fn write_art_lifecycle(
+    art_root: &Path,
+    journal: &ArtLifecycleJournal,
+) -> Result<(), ArtInstallError> {
+    let path = art_root.join(ART_LIFECYCLE_FILE);
+    let temporary = path.with_extension("json.tmp");
+    let mut bytes = serde_json::to_vec_pretty(journal)?;
+    bytes.push(b'\n');
+    std::fs::write(&temporary, bytes)?;
+    crate::replace_registry_file(&temporary, &path)?;
+    Ok(())
+}
+
+fn clear_art_lifecycle(art_root: &Path) {
+    let _ = std::fs::remove_file(art_root.join(ART_LIFECYCLE_FILE));
+}
+
+fn is_safe_art_version_path(value: &str) -> bool {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return false;
+    }
+    let mut components = path.components();
+    matches!(
+        (components.next(), components.next(), components.next()),
+        (Some(Component::Normal(root)), Some(Component::Normal(_)), None)
+            if root == OsStr::new("versions")
+    )
+}
+
+fn art_activation_is_safe(activation: &ArtActivationState) -> bool {
+    is_safe_art_version_path(&activation.active.path)
+        && activation
+            .previous
+            .as_ref()
+            .map(|pointer| is_safe_art_version_path(&pointer.path))
+            .unwrap_or(true)
+}
+
+fn art_lifecycle_journal_is_safe(journal: &ArtLifecycleJournal) -> bool {
+    is_safe_art_version_path(&journal.target)
+        && art_activation_is_safe(&journal.next_activation)
+        && journal
+            .old_activation
+            .as_ref()
+            .map(art_activation_is_safe)
+            .unwrap_or(true)
+}
+
+pub fn recover_art_lifecycle(control_plane_root: &Path) -> Result<(), ArtInstallError> {
+    let arts_root = control_plane_root.join("arts");
+    if !arts_root.is_dir() {
+        return Ok(());
+    }
+    let mut roots = Vec::new();
+    for first in std::fs::read_dir(&arts_root)? {
+        let first = first?.path();
+        if !first.is_dir() {
+            continue;
+        }
+        if first.join(ART_LIFECYCLE_FILE).is_file() {
+            roots.push(first.clone());
+        }
+        for second in std::fs::read_dir(&first).into_iter().flatten().flatten() {
+            let second = second.path();
+            if second.is_dir() && second.join(ART_LIFECYCLE_FILE).is_file() {
+                roots.push(second);
+            }
+        }
+    }
+    for art_root in roots {
+        let journal_path = art_root.join(ART_LIFECYCLE_FILE);
+        let journal: ArtLifecycleJournal =
+            match serde_json::from_slice(&std::fs::read(&journal_path)?) {
+                Ok(journal) => journal,
+                Err(_) => {
+                    let _ = std::fs::rename(&journal_path, journal_path.with_extension("corrupt"));
+                    continue;
+                }
+            };
+        if !art_lifecycle_journal_is_safe(&journal) {
+            let _ = std::fs::rename(&journal_path, journal_path.with_extension("corrupt"));
+            continue;
+        }
+        let activation_path = art_root.join("active.json");
+        let current = read_art_activation(&activation_path);
+        if current.as_ref() != Some(&journal.next_activation) {
+            if let Some(old) = &journal.old_activation {
+                write_art_activation(&activation_path, old)?;
+            } else {
+                let _ = std::fs::remove_file(&activation_path);
+            }
+            let target = art_root.join(&journal.target);
+            if target.exists() {
+                let _ = remove_tree(&target);
+            }
+        }
+        let _ = std::fs::remove_file(journal_path);
+    }
+    Ok(())
+}
+
+pub fn recover_art_uninstall_tombstones(control_plane_root: &Path) -> Result<(), ArtInstallError> {
+    let arts_root = control_plane_root.join("arts");
+    if !arts_root.is_dir() {
+        return Ok(());
+    }
+    let mut parents = vec![arts_root.clone()];
+    for entry in std::fs::read_dir(&arts_root)? {
+        let path = entry?.path();
+        if path.is_dir()
+            && !path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.starts_with(ART_UNINSTALL_TOMBSTONE_PREFIX))
+        {
+            parents.push(path);
+        }
+    }
+    let registry = ToolRegistry::new(control_plane_root.join("tools"));
+    for parent in parents {
+        for entry in std::fs::read_dir(&parent)? {
+            let tombstone = entry?.path();
+            if !tombstone.is_dir() {
+                continue;
+            }
+            let Some(original_name) =
+                uninstall_tombstone_original_name(&tombstone, ART_UNINSTALL_TOMBSTONE_PREFIX)
+            else {
+                continue;
+            };
+            let reference = if parent == arts_root {
+                original_name.clone()
+            } else {
+                let Some(publisher) = parent.file_name().and_then(OsStr::to_str) else {
+                    continue;
+                };
+                format!("{publisher}/{original_name}")
+            };
+            if !is_safe_art_reference(&reference) {
+                continue;
+            }
+            let installed = registry
+                .get_tool(&reference)
+                .map_err(|error| ArtInstallError::Registry(error.to_string()))?
+                .is_some();
+            let live = parent.join(&original_name);
+            if installed && !live.exists() {
+                std::fs::rename(&tombstone, &live)?;
+            } else {
+                remove_tree(&tombstone)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn resolve_active_art_package(control_plane_root: &Path, art_id: &str) -> Option<PathBuf> {
+    let art_root = art_root_for_reference(control_plane_root, art_id)?;
+    let activation = read_art_activation(&art_root.join("active.json"))?;
+    if !is_safe_art_version_path(&activation.active.path) {
+        return None;
+    }
+    let relative = Path::new(&activation.active.path);
+    let active = art_root.join(relative);
+    active.join(MANIFEST_NAME).is_file().then_some(active)
+}
+
+pub fn verify_art_package_integrity(
+    control_plane_root: &Path,
+    tool: &ToolDefinition,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(), ArtInstallError> {
+    let art_root = art_root_for_tool(control_plane_root, tool);
+    let activation = read_art_activation(&art_root.join("active.json")).ok_or_else(|| {
+        ArtInstallError::InvalidPackage(format!("Art `{}` has no activation state", tool.id))
+    })?;
+    if !art_activation_is_safe(&activation) {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art activation state contains an unsafe version path".to_owned(),
+        ));
+    }
+    let active_dir = art_root.join(&activation.active.path);
+    let package_tool: ToolDefinition =
+        serde_json::from_slice(&std::fs::read(active_dir.join(MANIFEST_NAME))?)?;
+    if package_tool.qualified_id() != tool.qualified_id() {
+        return Err(ArtInstallError::InvalidPackage(
+            "active Art manifest identity does not match the registry".to_owned(),
+        ));
+    }
+    let security = read_art_package_security(&package_tool);
+    let expected_version = security.version.as_deref().unwrap_or("0.0.0");
+    if activation.active.version != expected_version {
+        return Err(ArtInstallError::InvalidPackage(
+            "active Art version does not match its manifest".to_owned(),
+        ));
+    }
+    let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let trust_status = verify_package_signature(
+        &active_dir,
+        security.publisher.as_ref(),
+        security.signature.as_ref(),
+        &trust_store,
+    )
+    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    TrustPolicy::from_env()
+        .enforce(trust_status)
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let digest = canonical_package_digest(
+        &active_dir,
+        security
+            .signature
+            .as_ref()
+            .map(|signature| signature.file.as_str()),
+    )
+    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    if digest != activation.active.digest || !activation.active.path.ends_with(&digest[..12]) {
+        return Err(ArtInstallError::InvalidPackage(
+            "active Art digest does not match its immutable version pointer".to_owned(),
+        ));
+    }
+    verify_art_lockfile(
+        Path::new(&activation.active.lockfile),
+        &art_root,
+        &active_dir,
+        &package_tool,
+        framework_registry,
+    )
+}
+
+pub fn rollback_art_package(
+    control_plane_root: &Path,
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+) -> Result<ToolDefinition, ArtInstallError> {
+    let current = tool_registry
+        .get_tool(art_id)
+        .map_err(|error| ArtInstallError::Registry(error.to_string()))?
+        .ok_or_else(|| {
+            ArtInstallError::InvalidPackage(format!("Art `{art_id}` is not installed"))
+        })?;
+    let art_root = art_root_for_tool(control_plane_root, &current);
+    let active_path = art_root.join("active.json");
+    let activation = read_art_activation(&active_path)
+        .ok_or_else(|| ArtInstallError::InvalidPackage("Art has no activation state".to_owned()))?;
+    if !art_activation_is_safe(&activation) {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art activation state contains an unsafe version path".to_owned(),
+        ));
+    }
+    let previous = activation.previous.clone().ok_or_else(|| {
+        ArtInstallError::InvalidPackage("Art has no previous version to roll back".to_owned())
+    })?;
+    let previous_dir = art_root.join(&previous.path);
+    if !previous_dir.join(MANIFEST_NAME).is_file() {
+        return Err(ArtInstallError::InvalidPackage(
+            "previous Art package is missing".to_owned(),
+        ));
+    }
+    let mut tool: ToolDefinition =
+        serde_json::from_slice(&std::fs::read(previous_dir.join(MANIFEST_NAME))?)?;
+    let security = read_art_package_security(&tool);
+    let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let trust_status = verify_package_signature(
+        &previous_dir,
+        security.publisher.as_ref(),
+        security.signature.as_ref(),
+        &trust_store,
+    )
+    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    TrustPolicy::from_env()
+        .enforce(trust_status.clone())
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let digest = canonical_package_digest(
+        &previous_dir,
+        security
+            .signature
+            .as_ref()
+            .map(|signature| signature.file.as_str()),
+    )
+    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    if digest != previous.digest || !previous.path.ends_with(&digest[..12]) {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "previous Art package digest does not match its immutable version pointer: expected {}, got {digest}",
+            previous.digest,
+        )));
+    }
+    verify_art_lockfile(
+        Path::new(&previous.lockfile),
+        &art_root,
+        &previous_dir,
+        &tool,
+        framework_registry,
+    )?;
+    let state_dir = art_root.join("state");
+    let cache_dir = art_root.join("cache");
+    let output_dir = art_root.join("outputs");
+    let qualified_id = qualified_art_id(&tool);
+    rewrite_execution_paths(&mut tool.execution, &previous_dir);
+    rewrite_artloom_compat_execution_paths(&mut tool.metadata, &previous_dir);
+    record_art_package_directory(
+        &mut tool.metadata,
+        ArtPackagePaths {
+            qualified_id: &qualified_id,
+            art_dir: &previous_dir,
+            state_dir: &state_dir,
+            cache_dir: &cache_dir,
+            output_dir: &output_dir,
+            lockfile: Path::new(&previous.lockfile),
+            version: &previous.version,
+            digest: &previous.digest,
+            trust_status: &trust_status,
+        },
+    );
+    let next = ArtActivationState {
+        active: previous,
+        previous: Some(activation.active.clone()),
+    };
+    write_art_lifecycle(
+        &art_root,
+        &ArtLifecycleJournal {
+            old_activation: Some(activation.clone()),
+            next_activation: next.clone(),
+            target: next.active.path.clone(),
+        },
+    )?;
+    write_art_activation(&active_path, &next)?;
+    if let Err(error) = tool_registry.save_tool(tool.clone()) {
+        let _ = write_art_activation(&active_path, &activation);
+        clear_art_lifecycle(&art_root);
+        return Err(ArtInstallError::Registry(error.to_string()));
+    }
+    clear_art_lifecycle(&art_root);
+    Ok(tool)
+}
+
+fn verify_art_lockfile(
+    lockfile_path: &Path,
+    art_root: &Path,
+    art_dir: &Path,
+    tool: &ToolDefinition,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(), ArtInstallError> {
+    let canonical_root = std::fs::canonicalize(art_root)?;
+    let canonical_lockfile = std::fs::canonicalize(lockfile_path)?;
+    if !canonical_lockfile.starts_with(&canonical_root) {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art lockfile escapes the Art package root".to_owned(),
+        ));
+    }
+    let lockfile: PluginLockfile = serde_json::from_slice(&std::fs::read(&canonical_lockfile)?)?;
+    let security = read_art_package_security(tool);
+    let expected_version = security.version.as_deref().unwrap_or("0.0.0");
+    if lockfile.schema_version != loom_protocol::PLUGIN_LOCKFILE_SCHEMA_VERSION
+        || (lockfile.package_id != tool.qualified_id() && lockfile.package_id != tool.id)
+        || lockfile.package_version != expected_version
+    {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art lockfile identity, version, or schema version is invalid".to_owned(),
+        ));
+    }
+    for dependency in lockfile.resolved {
+        match dependency.kind.as_str() {
+            "framework" => {
+                let status = framework_registry
+                    .statuses()
+                    .into_iter()
+                    .find(|status| status.qualified_id == dependency.id)
+                    .ok_or_else(|| ArtInstallError::FrameworkNotReady {
+                        art_id: tool.id.clone(),
+                        framework: dependency.id.clone(),
+                        reason: "locked".to_owned(),
+                    })?;
+                if status.version.as_deref() != Some(dependency.version.as_str()) {
+                    return Err(ArtInstallError::InvalidPackage(format!(
+                        "locked framework `{}` version is no longer active",
+                        dependency.id
+                    )));
+                }
+                let runtime_dir = status.runtime_dir.ok_or_else(|| {
+                    ArtInstallError::InvalidPackage(format!(
+                        "locked framework `{}` has no runtime directory",
+                        dependency.id
+                    ))
+                })?;
+                let actual = canonical_package_digest(&runtime_dir, None)
+                    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+                if actual != dependency.sha256 {
+                    return Err(ArtInstallError::InvalidPackage(format!(
+                        "locked framework `{}` digest mismatch",
+                        dependency.id
+                    )));
+                }
+            }
+            "binary" => {
+                let relative = Path::new(&dependency.id);
+                if relative.is_absolute()
+                    || relative.components().any(|component| {
+                        matches!(
+                            component,
+                            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                        )
+                    })
+                {
+                    return Err(ArtInstallError::InvalidPackage(format!(
+                        "locked binary path `{}` is invalid",
+                        dependency.id
+                    )));
+                }
+                let actual = sha256_hex(&std::fs::read(art_dir.join(relative))?);
+                if actual != dependency.sha256 {
+                    return Err(ArtInstallError::InvalidPackage(format!(
+                        "locked binary `{}` digest mismatch",
+                        dependency.id
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+pub fn uninstall_art_package(
+    control_plane_root: &Path,
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+) -> Result<(), ArtInstallError> {
+    if !is_safe_art_reference(art_id) {
+        return Err(ArtInstallError::InvalidArtId(art_id.to_owned()));
+    }
+    let tool = tool_registry
+        .get_tool(art_id)
         .map_err(|error| ArtInstallError::Registry(error.to_string()))?;
+    let art_root = tool
+        .as_ref()
+        .map(|tool| art_root_for_tool(control_plane_root, tool))
+        .or_else(|| art_root_for_reference(control_plane_root, art_id))
+        .ok_or_else(|| ArtInstallError::InvalidArtId(art_id.to_owned()))?;
+    let tombstone = if art_root.exists() {
+        let tombstone = uninstall_tombstone_path(&art_root, ART_UNINSTALL_TOMBSTONE_PREFIX)?;
+        std::fs::rename(&art_root, &tombstone)?;
+        Some(tombstone)
+    } else {
+        None
+    };
+    if let Err(error) = tool_registry.delete_tool(art_id) {
+        if let Some(tombstone) = &tombstone {
+            let _ = std::fs::rename(tombstone, &art_root);
+        }
+        return Err(ArtInstallError::Registry(error.to_string()));
+    }
+    if let Some(tombstone) = tombstone {
+        remove_tree(&tombstone)?;
+    }
+    Ok(())
+}
 
-    Ok(ArtInstallReport {
-        tool_id,
-        framework,
-        art_dir,
-        installed_files,
-        binaries,
-        dependent_arts: deps.arts,
-    })
+fn write_art_lockfile(
+    path: &Path,
+    art_id: &str,
+    art_version: &str,
+    framework_id: &str,
+    framework_registry: &FrameworkRegistry,
+    binaries: &[ArtBinary],
+    art_dir: &Path,
+) -> Result<(), ArtInstallError> {
+    let framework = framework_registry
+        .statuses()
+        .into_iter()
+        .find(|status| status.qualified_id == framework_id || status.id == framework_id)
+        .ok_or_else(|| ArtInstallError::FrameworkNotReady {
+            art_id: art_id.to_owned(),
+            framework: framework_id.to_owned(),
+            reason: "missing status".to_owned(),
+        })?;
+    let framework_dir =
+        framework
+            .runtime_dir
+            .ok_or_else(|| ArtInstallError::FrameworkNotReady {
+                art_id: art_id.to_owned(),
+                framework: framework_id.to_owned(),
+                reason: "missing runtime directory".to_owned(),
+            })?;
+    let framework_digest = canonical_package_digest(&framework_dir, None)
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let mut resolved = vec![ResolvedDependency {
+        kind: "framework".to_owned(),
+        id: framework.qualified_id,
+        version: framework.version.unwrap_or_else(|| "0.0.0".to_owned()),
+        sha256: framework_digest,
+    }];
+    for binary in binaries {
+        let bytes = std::fs::read(art_dir.join(binary.name.replace('\\', "/")))?;
+        resolved.push(ResolvedDependency {
+            kind: "binary".to_owned(),
+            id: binary.name.clone(),
+            version: "pinned".to_owned(),
+            sha256: sha256_hex(&bytes),
+        });
+    }
+    let lockfile = PluginLockfile {
+        schema_version: loom_protocol::PLUGIN_LOCKFILE_SCHEMA_VERSION,
+        package_id: art_id.to_owned(),
+        package_version: art_version.to_owned(),
+        resolved,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&lockfile)?;
+    bytes.push(b'\n');
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn sanitize_version_for_path(version: &str) -> String {
+    let sanitized = version
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "unknown".to_owned()
+    } else {
+        sanitized
+    }
 }
 
 /// Hex-encode a byte slice (lowercase).
@@ -295,30 +1342,38 @@ fn verify_binary_hash(
 
 /// Download a portable third-party binary into `dest`, verifying sha256 if given.
 fn download_binary(binary: &ArtBinary, dest: &Path) -> Result<(), ArtInstallError> {
+    if binary
+        .sha256
+        .as_deref()
+        .is_none_or(|digest| digest.trim().is_empty())
+    {
+        return Err(ArtInstallError::RemoteBinaryHashRequired {
+            name: binary.name.clone(),
+        });
+    }
     let url = binary
         .url
         .as_deref()
         .ok_or_else(|| ArtInstallError::BinaryMissing {
             name: binary.name.clone(),
         })?;
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("Loom/0.1 Art Binary Fetch")
-        // Bypass any (possibly dead) system proxy; the store is typically local.
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
+    let policy = crate::network_policy::OutboundPolicy {
+        allow_http_loopback: true,
+        ..crate::network_policy::OutboundPolicy::default()
+    };
+    let client = crate::network_policy::secure_client(
+        "Loom/0.1 Art Binary Fetch",
+        std::time::Duration::from_secs(120),
+        policy.clone(),
+    )
+    .map_err(|error| ArtInstallError::BinaryDownloadFailed {
+        name: binary.name.clone(),
+        reason: error,
+    })?;
+    let bytes = crate::network_policy::get_bounded(&client, url, &policy, 128 * 1024 * 1024)
         .map_err(|error| ArtInstallError::BinaryDownloadFailed {
             name: binary.name.clone(),
-            reason: error.to_string(),
-        })?;
-    let bytes = client
-        .get(url)
-        .send()
-        .and_then(|response| response.error_for_status())
-        .and_then(|response| response.bytes())
-        .map_err(|error| ArtInstallError::BinaryDownloadFailed {
-            name: binary.name.clone(),
-            reason: error.to_string(),
+            reason: error,
         })?;
     verify_binary_hash(&binary.name, &bytes, &binary.sha256)?;
     if let Some(parent) = dest.parent() {
@@ -339,6 +1394,22 @@ fn resolve_binaries(
     let mut resolved = Vec::new();
     for binary in binaries {
         let rel = binary.name.replace('\\', "/");
+        let path = Path::new(&rel);
+        if rel.trim().is_empty()
+            || rel.contains(':')
+            || path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "art binary path must stay inside the package: {}",
+                binary.name
+            )));
+        }
         let bundled = installed_files
             .iter()
             .any(|file| file.replace('\\', "/") == rel);
@@ -443,6 +1514,31 @@ pub fn package_art_to_zip(
     Ok(buf)
 }
 
+/// Build a newly-authored Art package without requiring a pre-existing package
+/// directory. The resulting ZIP is consumed by the same secure installer as
+/// imported packages, so authoring cannot bypass validation or activation.
+pub fn build_authored_art_package_zip(
+    tool: &ToolDefinition,
+    runtime: Option<&ArtRuntimeManifest>,
+) -> Result<Vec<u8>, ArtInstallError> {
+    use std::io::Write;
+    tool.validate()
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let mut bytes = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        writer.start_file(MANIFEST_NAME, options)?;
+        writer.write_all(&serde_json::to_vec_pretty(tool)?)?;
+        if let Some(runtime) = runtime {
+            writer.start_file("art.runtime.json", options)?;
+            writer.write_all(&serde_json::to_vec_pretty(runtime)?)?;
+        }
+        writer.finish()?;
+    }
+    Ok(bytes)
+}
+
 fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
     writer: &mut zip::ZipWriter<W>,
     base: &Path,
@@ -505,6 +1601,58 @@ mod tests {
             writer.finish().unwrap();
         }
         buf
+    }
+
+    fn signed_art_zip(
+        id: &str,
+        version: &str,
+        publisher: &str,
+        payload: &[u8],
+        key: &loom_plugin_security::SigningKeyDocument,
+    ) -> Vec<u8> {
+        let package_root = temp_root();
+        let package = package_root.join("signed-art");
+        std::fs::create_dir_all(package.join("bin")).expect("package directory");
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": "Signed Art",
+            "description": "signed rollback fixture",
+            "enabled": true,
+            "execution": { "type": "cli_wrapper", "command": "bin/tool.exe", "args": [] },
+            "metadata": {
+                "packageSecurity": {
+                    "version": version,
+                    "publisher": { "id": publisher, "keyId": key.key_id.clone() },
+                    "signature": {
+                        "algorithm": "ed25519",
+                        "keyId": key.key_id.clone(),
+                        "file": "signature.json"
+                    }
+                }
+            }
+        });
+        std::fs::write(
+            package.join(MANIFEST_NAME),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .expect("manifest");
+        std::fs::write(package.join("bin/tool.exe"), payload).expect("payload");
+        loom_plugin_security::sign_package(&package, "signature.json", key).expect("sign Art");
+
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options = SimpleFileOptions::default();
+            for relative in [MANIFEST_NAME, "bin/tool.exe", "signature.json"] {
+                writer.start_file(relative, options).unwrap();
+                writer
+                    .write_all(&std::fs::read(package.join(relative)).unwrap())
+                    .unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        std::fs::remove_dir_all(package_root).ok();
+        bytes
     }
 
     fn install_test_framework(framework: &FrameworkRegistry, id: &str) {
@@ -620,6 +1768,10 @@ mod tests {
 
         // Registered tool's command now points into the art dir.
         let saved = registry.get_tool("pingo-art").unwrap().unwrap();
+        assert_eq!(
+            saved.metadata.as_ref().unwrap()["artloomCompat"]["source"],
+            "loom-local"
+        );
         if let ToolExecution::CliWrapper { command, .. } = &saved.execution {
             assert!(
                 command.contains("pingo-art"),
@@ -630,6 +1782,66 @@ mod tests {
             panic!("expected cli_wrapper");
         }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn publisher_namespace_keeps_same_art_id_in_separate_roots() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let package = |publisher: &str, marker: &'static [u8]| {
+            let manifest = serde_json::json!({
+                "id": "shared-art",
+                "name": publisher,
+                "description": "publisher scoped",
+                "enabled": true,
+                "execution": {
+                    "type": "cli_wrapper",
+                    "command": "bin/tool.exe",
+                    "args": []
+                },
+                "metadata": {
+                    "packageSecurity": {
+                        "version": "0.1.0",
+                        "publisher": { "id": publisher, "name": publisher }
+                    }
+                }
+            });
+            build_zip(
+                &serde_json::to_string(&manifest).expect("serialize Art manifest"),
+                &[("bin/tool.exe", marker)],
+            )
+        };
+        let alpha = install_art_from_zip(
+            &package("publisher.alpha", b"alpha"),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install alpha Art");
+        let beta = install_art_from_zip(
+            &package("publisher.beta", b"beta"),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install beta Art");
+
+        assert_ne!(alpha.art_dir, beta.art_dir);
+        assert!(alpha.art_dir.starts_with(root.join("arts/publisher.alpha")));
+        assert!(beta.art_dir.starts_with(root.join("arts/publisher.beta")));
+        assert!(matches!(
+            registry.get_tool("shared-art"),
+            Err(crate::ToolRegistryError::AmbiguousToolId { .. })
+        ));
+        uninstall_art_package(&root, "publisher.alpha/shared-art", &registry)
+            .expect("uninstall alpha");
+        assert!(registry
+            .get_tool("publisher.beta/shared-art")
+            .expect("get beta")
+            .is_some());
+        remove_tree(&root).ok();
     }
 
     #[test]
@@ -703,6 +1915,46 @@ mod tests {
         let zip = build_zip(manifest, &[]);
         let err = install_art_from_zip(&zip, &root, &framework, &registry).unwrap_err();
         assert!(matches!(err, ArtInstallError::BinaryMissing { .. }));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rejects_remote_binary_without_sha256_before_downloading() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+
+        let manifest = r#"{"id":"pingo-unpinned","name":"Pingo","description":"c","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/pingo.exe","args":["{{output}}"]},
+            "metadata":{"dependencies":{"binaries":[{"name":"bin/pingo.exe","url":"http://127.0.0.1:1/pingo.exe"}]}}}"#;
+        let zip = build_zip(manifest, &[]);
+        let err = install_art_from_zip(&zip, &root, &framework, &registry).unwrap_err();
+        assert!(matches!(
+            err,
+            ArtInstallError::RemoteBinaryHashRequired { .. }
+        ));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rejects_binary_path_that_escapes_the_art_package() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+
+        let manifest = r#"{"id":"pingo-escape","name":"Pingo","description":"c","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/pingo.exe","args":["{{output}}"]},
+            "metadata":{"dependencies":{"binaries":[{"name":"../escape.exe","url":"http://127.0.0.1:1/escape.exe"}]}}}"#;
+        let zip = build_zip(manifest, &[]);
+        let err = install_art_from_zip(&zip, &root, &framework, &registry).unwrap_err();
+        assert!(matches!(
+            err,
+            ArtInstallError::InvalidPackage(reason)
+                if reason.contains("must stay inside the package")
+        ));
+        assert!(!root.join("escape.exe").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -903,6 +2155,323 @@ mod tests {
             .and_then(serde_json::Value::as_str);
         assert_eq!(compat_art_path, Some(expected.as_str()));
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_upgrade_rollback_and_integrity_verification_roundtrip() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"rollback-art","name":"Rollback","description":"d","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/tool.exe","args":[]},
+            "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#;
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"version-one")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install first Art");
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"version-two")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install second Art");
+        let current = registry.get_tool("rollback-art").unwrap().unwrap();
+        verify_art_package_integrity(&root, &current, &framework).expect("verify current Art");
+
+        let rolled_back = rollback_art_package(&root, "rollback-art", &registry, &framework)
+            .expect("rollback Art");
+        verify_art_package_integrity(&root, &rolled_back, &framework)
+            .expect("verify rolled-back Art");
+        let active = resolve_active_art_package(&root, "rollback-art").expect("active Art");
+        assert_eq!(
+            std::fs::read(active.join("bin/tool.exe")).unwrap(),
+            b"version-one"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_integrity_and_rollback_reject_revoked_publisher_versions() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let key = loom_plugin_security::generate_signing_key("art-release-key");
+        framework
+            .trust_publisher(loom_protocol::PublisherTrustRecord {
+                publisher_id: "publisher.art".to_owned(),
+                key_id: key.key_id.clone(),
+                public_key: key.public_key.clone(),
+                revoked: false,
+            })
+            .expect("trust publisher");
+        for (version, payload) in [("1.0.0", b"one".as_slice()), ("2.0.0", b"two".as_slice())] {
+            install_art_from_zip(
+                &signed_art_zip("signed-art", version, "publisher.art", payload, &key),
+                &root,
+                &framework,
+                &registry,
+            )
+            .unwrap_or_else(|error| panic!("install {version}: {error}"));
+        }
+        framework
+            .revoke_publisher("publisher.art", &key.key_id)
+            .expect("revoke publisher");
+        let tool = registry
+            .get_tool("publisher.art/signed-art")
+            .expect("read tool")
+            .expect("installed tool");
+        assert!(verify_art_package_integrity(&root, &tool, &framework).is_err());
+        assert!(
+            rollback_art_package(&root, "publisher.art/signed-art", &registry, &framework,)
+                .is_err()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_integrity_verification_rejects_package_and_lockfile_tampering() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"tamper-art","name":"Tamper","description":"d","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/tool.exe","args":[]}}"#;
+        let report = install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"original")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install Art");
+        let tool = registry.get_tool("tamper-art").unwrap().unwrap();
+        set_tree_readonly(&report.art_dir, false).expect("unlock test package");
+        std::fs::write(report.art_dir.join("bin/tool.exe"), b"tampered").unwrap();
+        assert!(verify_art_package_integrity(&root, &tool, &framework).is_err());
+
+        std::fs::write(report.art_dir.join("bin/tool.exe"), b"original").unwrap();
+        let art_root = root.join("arts/tamper-art");
+        let activation = read_art_activation(&art_root.join("active.json")).unwrap();
+        let mut lock: PluginLockfile = serde_json::from_slice(
+            &std::fs::read(&activation.active.lockfile).expect("read Art lockfile"),
+        )
+        .unwrap();
+        let original_version = lock.package_version.clone();
+        lock.package_version = "9.9.9".to_owned();
+        std::fs::write(
+            &activation.active.lockfile,
+            serde_json::to_vec_pretty(&lock).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_art_package_integrity(&root, &tool, &framework).is_err());
+
+        lock.package_version = original_version;
+        lock.schema_version = u32::MAX;
+        std::fs::write(
+            &activation.active.lockfile,
+            serde_json::to_vec_pretty(&lock).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_art_package_integrity(&root, &tool, &framework).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_recovery_restores_activation_and_rejects_unsafe_journal_paths() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"recover-art","name":"Recover","description":"d","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/tool.exe","args":[]}}"#;
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"original")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install Art");
+        let art_root = root.join("arts/recover-art");
+        let active_path = art_root.join("active.json");
+        let old = read_art_activation(&active_path).unwrap();
+        let orphan_relative = "versions/interrupted-orphan".to_owned();
+        let orphan = art_root.join(&orphan_relative);
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("partial.bin"), b"partial").unwrap();
+        let mut next_pointer = old.active.clone();
+        next_pointer.path = orphan_relative.clone();
+        write_art_lifecycle(
+            &art_root,
+            &ArtLifecycleJournal {
+                old_activation: Some(old.clone()),
+                next_activation: ArtActivationState {
+                    active: next_pointer,
+                    previous: Some(old.active.clone()),
+                },
+                target: orphan_relative,
+            },
+        )
+        .unwrap();
+        recover_art_lifecycle(&root).expect("recover interrupted Art");
+        assert_eq!(read_art_activation(&active_path), Some(old));
+        assert!(!orphan.exists());
+
+        let outside = root.join("outside.txt");
+        std::fs::write(&outside, b"keep").unwrap();
+        let unsafe_journal = serde_json::json!({
+            "oldActivation": null,
+            "nextActivation": {
+                "active": {
+                    "path": "../../outside.txt",
+                    "version": "0.0.0",
+                    "digest": "deadbeef",
+                    "lockfile": "outside.json"
+                },
+                "previous": null
+            },
+            "target": "../../outside.txt"
+        });
+        std::fs::write(
+            art_root.join(ART_LIFECYCLE_FILE),
+            serde_json::to_vec(&unsafe_journal).unwrap(),
+        )
+        .unwrap();
+        recover_art_lifecycle(&root).expect("quarantine unsafe journal");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+        assert!(art_root.join("lifecycle.corrupt").is_file());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_rollback_rejects_unsafe_previous_pointer() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"unsafe-rollback-art","name":"Unsafe","description":"d","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/tool.exe","args":[]}}"#;
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"one")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .unwrap();
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"two")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .unwrap();
+        let art_root = root.join("arts/unsafe-rollback-art");
+        let active_path = art_root.join("active.json");
+        let mut activation = read_art_activation(&active_path).unwrap();
+        activation.previous.as_mut().unwrap().path = "../../outside".to_owned();
+        write_art_activation(&active_path, &activation).unwrap();
+        let error = rollback_art_package(&root, "unsafe-rollback-art", &registry, &framework)
+            .expect_err("unsafe previous pointer must be rejected");
+        assert!(matches!(error, ArtInstallError::InvalidPackage(_)));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_version_retention_keeps_active_previous_and_writable_state() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        for (version, payload) in [
+            ("1.0.0", b"one".as_slice()),
+            ("2.0.0", b"two".as_slice()),
+            ("3.0.0", b"three".as_slice()),
+            ("4.0.0", b"four".as_slice()),
+            ("5.0.0", b"five".as_slice()),
+        ] {
+            let manifest = serde_json::json!({
+                "id": "retained-art",
+                "name": "Retained",
+                "description": "retention",
+                "enabled": true,
+                "execution": { "type": "cli_wrapper", "command": "bin/tool.exe", "args": [] },
+                "metadata": { "packageSecurity": { "version": version } }
+            });
+            install_art_from_zip(
+                &build_zip(&manifest.to_string(), &[("bin/tool.exe", payload)]),
+                &root,
+                &framework,
+                &registry,
+            )
+            .unwrap_or_else(|error| panic!("install {version}: {error}"));
+        }
+        let art_root = root.join("arts/retained-art");
+        let activation = read_art_activation(&art_root.join("active.json")).expect("activation");
+        let versions = std::fs::read_dir(art_root.join("versions"))
+            .expect("versions")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert!(versions.len() <= art_history_limit());
+        assert!(art_root.join(&activation.active.path).is_dir());
+        assert!(art_root
+            .join(activation.previous.expect("previous version").path)
+            .is_dir());
+        assert!(
+            std::fs::metadata(art_root.join(&activation.active.path).join("bin/tool.exe"))
+                .expect("code metadata")
+                .permissions()
+                .readonly()
+        );
+        for writable in ["state", "cache", "outputs"] {
+            assert!(art_root.join(writable).is_dir());
+            assert!(
+                !std::fs::metadata(art_root.join(writable))
+                    .expect("state metadata")
+                    .permissions()
+                    .readonly(),
+                "{writable} must remain writable"
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_uninstall_tombstone_recovery_restores_or_finishes_from_registry_state() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "cli_wrapper");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"recover-uninstall-art","name":"Recover","description":"d","enabled":true,
+            "execution":{"type":"cli_wrapper","command":"bin/tool.exe","args":[]}}"#;
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"payload")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install Art");
+        let live = root.join("arts/recover-uninstall-art");
+        let interrupted = uninstall_tombstone_path(&live, ART_UNINSTALL_TOMBSTONE_PREFIX).unwrap();
+        std::fs::rename(&live, &interrupted).expect("simulate pre-registry crash");
+        recover_art_uninstall_tombstones(&root).expect("restore tombstone");
+        assert!(live.is_dir());
+        assert!(!interrupted.exists());
+
+        let committed = uninstall_tombstone_path(&live, ART_UNINSTALL_TOMBSTONE_PREFIX).unwrap();
+        std::fs::rename(&live, &committed).expect("simulate committed uninstall");
+        registry
+            .delete_tool("recover-uninstall-art")
+            .expect("commit registry removal");
+        recover_art_uninstall_tombstones(&root).expect("finish tombstone deletion");
+        assert!(!live.exists());
+        assert!(!committed.exists());
         std::fs::remove_dir_all(&root).ok();
     }
 }

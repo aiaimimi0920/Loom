@@ -3,7 +3,15 @@
   "name": "Cloud API Framework",
   "description": "Executes cloud API backed Art packages in an isolated process boundary.",
   "version": "0.1.0",
+  "publisher": {
+    "id": "neuro.official",
+    "name": "Neuro"
+  },
+  "hostCompatibility": {
+    "minimum": ">=0.1.0"
+  },
   "protocolVersion": "loom.framework.v1",
+  "supportedProtocolVersions": ["loom.framework.v1"],
   "platforms": ["windows-x64"],
   "entry": {
     "kind": "process",
@@ -11,6 +19,41 @@
     "args": ["--stdio"]
   },
   "permissions": ["network.connect", "file.read", "file.write"],
+  "permissionPolicy": {
+    "network": { "domains": [], "allowLocalhost": false, "allowPrivateNetworks": false },
+    "filesystem": { "read": ["inputs", "packageResources"], "write": ["outputs", "cache"] }
+  },
+  "resources": {
+    "timeoutSeconds": 120,
+    "memoryMiB": 512,
+    "maxProcesses": 4,
+    "stdoutMiB": 8,
+    "stderrMiB": 8
+  },
+  "healthCheck": {
+    "command": "self_test",
+    "timeoutSeconds": 15
+  },
+  "authoringSchema": {
+    "schemaVersion": 1,
+    "title": "Cloud API Art",
+    "description": "Create an Art backed by an HTTPS endpoint.",
+    "fields": [
+      { "id": "endpoint", "label": "Endpoint", "type": "string", "required": true, "placeholder": "https://api.example.com/v1/process" },
+      { "id": "method", "label": "Method", "type": "enum", "default": "POST", "options": [
+        { "value": "POST", "label": "POST" },
+        { "value": "PUT", "label": "PUT" }
+      ] },
+      { "id": "headers", "label": "Headers", "type": "json" },
+      { "id": "body", "label": "Body template", "type": "json" }
+    ],
+    "inputs": [
+      { "name": "image", "label": "Image", "type": "image", "executionType": "image_path", "required": true }
+    ],
+    "outputs": [
+      { "name": "result", "label": "Result", "type": "image", "executionType": "image_path" }
+    ]
+  },
   "artExecution": {
     "requestSchema": "loom.art.execute.v1",
     "responseSchema": "loom.art.result.v1"

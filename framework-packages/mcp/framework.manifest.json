@@ -3,7 +3,15 @@
   "name": "MCP Framework",
   "description": "Executes MCP-backed Art packages in an isolated process boundary.",
   "version": "0.1.0",
+  "publisher": {
+    "id": "neuro.official",
+    "name": "Neuro"
+  },
+  "hostCompatibility": {
+    "minimum": ">=0.1.0"
+  },
   "protocolVersion": "loom.framework.v1",
+  "supportedProtocolVersions": ["loom.framework.v1"],
   "platforms": ["windows-x64"],
   "entry": {
     "kind": "process",
@@ -11,6 +19,38 @@
     "args": ["--stdio"]
   },
   "permissions": ["process.spawn", "network.connect", "file.read", "file.write"],
+  "permissionPolicy": {
+    "network": { "domains": [], "allowLocalhost": true, "allowPrivateNetworks": false },
+    "filesystem": { "read": ["inputs", "packageResources"], "write": ["outputs", "cache"] },
+    "process": { "spawn": true, "maxProcesses": 4 }
+  },
+  "resources": {
+    "timeoutSeconds": 120,
+    "memoryMiB": 512,
+    "maxProcesses": 4,
+    "stdoutMiB": 8,
+    "stderrMiB": 8
+  },
+  "healthCheck": {
+    "command": "self_test",
+    "timeoutSeconds": 15
+  },
+  "authoringSchema": {
+    "schemaVersion": 1,
+    "title": "MCP Art",
+    "description": "Create an Art backed by a configured MCP tool.",
+    "fields": [
+      { "id": "serverId", "label": "MCP server ID", "type": "string", "required": true },
+      { "id": "toolName", "label": "MCP tool name", "type": "string", "required": true },
+      { "id": "arguments", "label": "Default arguments", "type": "json" }
+    ],
+    "inputs": [
+      { "name": "input", "label": "Input", "type": "string", "executionType": "string" }
+    ],
+    "outputs": [
+      { "name": "result", "label": "Result", "type": "string", "executionType": "string" }
+    ]
+  },
   "artExecution": {
     "requestSchema": "loom.art.execute.v1",
     "responseSchema": "loom.art.result.v1"

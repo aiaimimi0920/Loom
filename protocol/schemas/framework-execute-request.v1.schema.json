@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/framework-execute-request.v1.schema.json",
+  "title": "Loom framework execute request v1",
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "frameworkId",
+    "artId",
+    "artDir",
+    "inputs",
+    "params",
+    "disabledParams",
+    "context"
+  ],
+  "properties": {
+    "protocolVersion": { "const": "loom.framework.v1" },
+    "supportedProtocolVersions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "frameworkId": { "type": "string", "minLength": 1 },
+    "artId": { "type": "string", "minLength": 1 },
+    "artDir": { "type": "string", "minLength": 1 },
+    "inputs": {},
+    "params": {},
+    "disabledParams": { "type": "array", "items": { "type": "string" } },
+    "context": {
+      "type": "object",
+      "required": ["requestId", "cacheDir", "tempDir"],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1 },
+        "cacheDir": { "type": "string", "minLength": 1 },
+        "tempDir": { "type": "string", "minLength": 1 },
+        "stateDir": { "type": "string" },
+        "outputDir": { "type": "string" },
+        "hostVersion": { "type": "string" },
+        "frameworkVersion": { "type": "string" },
+        "artVersion": { "type": "string" },
+        "grantedPermissions": { "type": "object" },
+        "credentials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "value"],
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" },
+              "expiresAt": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

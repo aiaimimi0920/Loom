@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/framework-authoring.v1.schema.json",
+  "title": "Loom framework authoring schema v1",
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "schemaVersion": { "const": 1, "default": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "type"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "label": { "type": "string" },
+          "type": { "enum": ["string", "number", "boolean", "enum", "path", "secret", "json"] },
+          "required": { "type": "boolean", "default": false },
+          "default": {},
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["value", "label"],
+              "properties": {
+                "value": {},
+                "label": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "placeholder": { "type": "string" },
+          "minimum": { "type": "number" },
+          "maximum": { "type": "number" },
+          "step": { "type": "number" },
+          "secret": { "type": "boolean", "default": false }
+        },
+        "additionalProperties": false
+      }
+    },
+    "inputs": { "$ref": "#/$defs/ports" },
+    "outputs": { "$ref": "#/$defs/ports" }
+  },
+  "$defs": {
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "label", "type", "executionType"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "label": { "type": "string" },
+          "type": { "type": "string" },
+          "executionType": { "type": "string" },
+          "required": { "type": "boolean", "default": false },
+          "exposePort": { "type": "boolean", "default": false }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

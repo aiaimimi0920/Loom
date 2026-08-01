@@ -1,15 +1,14 @@
 [package]
-name = "loom_sandbox"
+name = "loom_protocol"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Loom safe execution contracts"
+description = "Stable public protocol contracts for Loom framework and Art packages"
 
 [dependencies]
-loom_core.workspace = true
-loom_process.workspace = true
-loom_protocol.workspace = true
+semver.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true

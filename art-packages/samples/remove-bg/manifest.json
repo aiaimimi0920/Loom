@@ -25,8 +25,16 @@
   ],
   "params": [],
   "metadata": {
+    "packageSecurity": {
+      "version": "0.1.0",
+      "publisher": {
+        "id": "neuro.official",
+        "name": "Neuro"
+      }
+    },
     "dependencies": {
-      "framework": "cloud_api"
+      "framework": "cloud_api",
+      "frameworkVersion": "^0.1"
     },
     "capabilities": {
       "preview": "image",

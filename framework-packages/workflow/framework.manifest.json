@@ -3,7 +3,15 @@
   "name": "Workflow Framework",
   "description": "Composes other Art packages through an isolated workflow process boundary.",
   "version": "0.1.0",
+  "publisher": {
+    "id": "neuro.official",
+    "name": "Neuro"
+  },
+  "hostCompatibility": {
+    "minimum": ">=0.1.0"
+  },
   "protocolVersion": "loom.framework.v1",
+  "supportedProtocolVersions": ["loom.framework.v1"],
   "platforms": ["windows-x64"],
   "entry": {
     "kind": "process",
@@ -11,6 +19,35 @@
     "args": ["--stdio"]
   },
   "permissions": ["process.spawn", "file.read", "file.write"],
+  "permissionPolicy": {
+    "filesystem": { "read": ["inputs", "packageResources", "state"], "write": ["outputs", "cache", "state"] },
+    "process": { "spawn": true, "maxProcesses": 4 }
+  },
+  "resources": {
+    "timeoutSeconds": 120,
+    "memoryMiB": 512,
+    "maxProcesses": 4,
+    "stdoutMiB": 8,
+    "stderrMiB": 8
+  },
+  "healthCheck": {
+    "command": "self_test",
+    "timeoutSeconds": 15
+  },
+  "authoringSchema": {
+    "schemaVersion": 1,
+    "title": "Workflow Art",
+    "description": "Create an Art backed by a saved Loom workflow.",
+    "fields": [
+      { "id": "workflowId", "label": "Workflow ID", "type": "string", "required": true }
+    ],
+    "inputs": [
+      { "name": "input", "label": "Input", "type": "image", "executionType": "image_buffer", "required": true }
+    ],
+    "outputs": [
+      { "name": "result", "label": "Result", "type": "image", "executionType": "image_buffer" }
+    ]
+  },
   "artExecution": {
     "requestSchema": "loom.art.execute.v1",
     "responseSchema": "loom.art.result.v1"
