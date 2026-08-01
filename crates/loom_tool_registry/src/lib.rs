@@ -1090,8 +1090,8 @@ fn python_framework_package_dirs(runtime_root: &Path) -> Vec<PathBuf> {
 fn canonical_process_path(path: PathBuf) -> PathBuf {
     use std::os::windows::ffi::OsStrExt;
 
-    const WINDOWS_DIRECTORY_PATH_LIMIT: usize = 248;
-    if path.as_os_str().encode_wide().count() < WINDOWS_DIRECTORY_PATH_LIMIT {
+    const WINDOWS_LEGACY_PATH_LIMIT: usize = 260;
+    if path.as_os_str().encode_wide().count() < WINDOWS_LEGACY_PATH_LIMIT {
         return path;
     }
     fs::canonicalize(&path).unwrap_or(path)
