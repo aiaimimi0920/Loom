@@ -82,6 +82,27 @@ Out of scope for this phase:
 - [ ] Task 9: Update documentation and remove default-build/resource leakage.
 - [ ] Task 10: Build final Loom and Hook releases.
 
+## Task 1 RED evidence
+
+Command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\tests\Test-ArtPluginBoundaryContract.ps1
+```
+
+Observed exit code: `1`
+
+Observed failure:
+
+```text
+Optional Art frameworks must not be installed by default.
+```
+
+This is the expected RED result: the current `framework.rs` still declares
+`BUILT_IN_FRAMEWORKS`, so the source-contract guard correctly rejects the
+pre-pluginized host implementation.
+
 ## Acceptance checklist
 
 - [ ] Default Loom release contains no optional Art framework runtime package.
@@ -108,4 +129,3 @@ Out of scope for this phase:
 - Current Color Transfer is implemented as `python_art` with Hook-facing
   shader compatibility metadata. Treat "shader" as UI/capability behavior
   unless product requirements promote it into a seventh framework ID.
-
