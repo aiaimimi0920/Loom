@@ -226,6 +226,22 @@ $packageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
 Assert-True -Condition (Test-Path -LiteralPath $packageFullPath -PathType Container) -Message "Package directory is missing: $packageFullPath"
 $layout = Get-LoomReleaseLayout -PackageDir $packageFullPath
 
+$forbiddenOptionalPayloadPrefixes = @(
+    "framework-packages/",
+    "art-packages/samples/",
+    "resources/script-arts/",
+    "resources/workflow-arts/",
+    "framework-runtimes/"
+)
+$packageFiles = Get-ChildItem -LiteralPath $packageFullPath -Recurse -File | ForEach-Object {
+    $_.FullName.Substring($packageFullPath.Length).TrimStart('\', '/').Replace('\', '/')
+}
+foreach ($relativePath in $packageFiles) {
+    foreach ($forbiddenPrefix in $forbiddenOptionalPayloadPrefixes) {
+        Assert-True -Condition (-not $relativePath.StartsWith($forbiddenPrefix, [System.StringComparison]::OrdinalIgnoreCase)) -Message "Default Loom release must not contain optional plugin payload: $relativePath"
+    }
+}
+
 $manifestPath = Join-Path $packageFullPath "manifest.json"
 Assert-True -Condition (Test-Path -LiteralPath $manifestPath -PathType Leaf) -Message "Missing manifest.json."
 $manifest = $layout.manifest
@@ -290,6 +306,7 @@ $smokeStatus = "not-run"
 $hookCanvasSmokeStatus = "not-run"
 $hookErrorPreviewSmokeStatus = "not-run"
 $frameworkArtStoreHookSmokeStatus = "not-run"
+$pluginBoundarySmokeStatus = "not-run"
 if ($RunSmoke) {
     $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $smokePath -PathType Leaf) -Message "Missing standalone smoke script: $smokePath"
@@ -355,6 +372,23 @@ if ($RunSmoke) {
         throw "Framework art-store Hook smoke failed: $($frameworkArtStoreHookSmokeOutput -join [Environment]::NewLine)"
     }
     $frameworkArtStoreHookSmokeStatus = "passed"
+
+    $pluginBoundarySmokePath = Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $pluginBoundarySmokePath -PathType Leaf) -Message "Missing plugin boundary smoke script: $pluginBoundarySmokePath"
+    $pluginBoundaryEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\plugin-boundary"
+    $pluginBoundarySmokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $pluginBoundarySmokePath,
+        "-DaemonExecutable", (Join-Path $packageFullPath "runtime\loom-daemon.exe"),
+        "-FrameworkArtifactRoot", (Join-Path $repoRoot ".loom-art-store-data\frameworks"),
+        "-EvidenceRoot", $pluginBoundaryEvidenceRoot
+    )
+    $pluginBoundarySmokeOutput = @($pluginBoundarySmokeResult.output)
+    if ([int]$pluginBoundarySmokeResult.exitCode -ne 0) {
+        throw "Plugin Art boundary smoke failed: $($pluginBoundarySmokeOutput -join [Environment]::NewLine)"
+    }
+    $pluginBoundarySmokeStatus = "passed"
 }
 
 $result = [ordered]@{
@@ -368,5 +402,6 @@ $result = [ordered]@{
     hookCanvasSmoke = $hookCanvasSmokeStatus
     hookErrorPreviewSmoke = $hookErrorPreviewSmokeStatus
     frameworkArtStoreHookSmoke = $frameworkArtStoreHookSmokeStatus
+    pluginBoundarySmoke = $pluginBoundarySmokeStatus
 }
 Write-Output ($result | ConvertTo-Json -Depth 10)

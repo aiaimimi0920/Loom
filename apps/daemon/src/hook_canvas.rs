@@ -117,6 +117,10 @@ pub(crate) struct HookCanvasResultCandidate {
     pub title: Option<String>,
     pub image_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_page_url: Option<String>,
@@ -702,13 +706,18 @@ fn node_nested_value<'a>(node: &'a Value, container: &str, key: &str) -> Option<
         .or_else(|| node_data(node)?.get(container)?.get(key))
 }
 
-fn node_image_search_metadata(node: &Value) -> Option<&Value> {
-    node_value(node, "loomMetadata").and_then(|metadata| metadata.get("imageSearch"))
+fn node_art_result_metadata(node: &Value) -> Option<&Value> {
+    node_value(node, "loomMetadata").and_then(|metadata| {
+        metadata
+            .get("candidates")
+            .or_else(|| metadata.get("imageSearch"))
+    })
 }
 
 fn node_image_search_candidates(node: &Value) -> Vec<HookCanvasResultCandidate> {
-    node_image_search_metadata(node)
-        .and_then(|metadata| metadata.get("candidates"))
+    let metadata = node_art_result_metadata(node);
+    let items = metadata
+        .and_then(|metadata| metadata.get("items").or_else(|| metadata.get("candidates")))
         .and_then(Value::as_array)
         .map(|items| {
             items
@@ -719,6 +728,14 @@ fn node_image_search_candidates(node: &Value) -> Vec<HookCanvasResultCandidate> 
                         index: item.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
                         title: item.get("title").and_then(Value::as_str).map(str::to_owned),
                         image_url,
+                        thumbnail: item
+                            .get("thumbnail")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        preview: item
+                            .get("preview")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         thumbnail_url: item
                             .get("thumbnailUrl")
                             .and_then(Value::as_str)
@@ -733,11 +750,12 @@ fn node_image_search_candidates(node: &Value) -> Vec<HookCanvasResultCandidate> 
                 })
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    items
 }
 
 fn node_selected_result_index(node: &Value, params: &Value) -> Option<usize> {
-    node_image_search_metadata(node)
+    node_art_result_metadata(node)
         .and_then(|metadata| metadata.get("selectedIndex"))
         .and_then(Value::as_u64)
         .map(|value| value as usize)

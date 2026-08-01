@@ -55,17 +55,17 @@ Key current source anchors:
 ## Non-negotiable acceptance criteria
 
 - [ ] A default Loom release contains no optional Art framework runtime package.
-- [ ] A fresh control-plane root starts with zero installed optional frameworks.
-- [ ] Installing an Art without its framework returns a named `framework_not_ready` error.
-- [ ] A framework can be installed from a package ZIP, listed, readiness-probed, disabled, re-enabled, upgraded, and uninstalled.
-- [ ] An Art can be installed from a package ZIP, listed through Loom, instantiated by Hook, executed once, disabled, re-enabled, upgraded, and uninstalled.
-- [ ] Installing a new third-party Art package does not require modifying Loom source.
-- [ ] Installing a new third-party Art package does not require modifying Hook source.
-- [ ] Installing a new third-party framework package does not require modifying Loom source outside stable host APIs.
-- [ ] Hook renders ports, parameters, candidate images, image previews, error details, and exports through generic capability/result contracts.
-- [ ] No production Hook code branches on the six sample Art IDs.
-- [ ] No production Loom host code branches on the six sample Art IDs except test fixtures, compatibility smoke fixtures, or migration docs.
-- [ ] The six existing proof Arts are available only through packages after this phase.
+- [x] A fresh control-plane root starts with zero installed optional frameworks.
+- [x] Installing an Art without its framework returns a named `framework_not_ready` error.
+- [x] A framework can be installed from a package ZIP, listed, readiness-probed, disabled, re-enabled, upgraded, and uninstalled.
+- [x] An Art can be installed from a package ZIP, listed through Loom, instantiated by Hook, executed once, disabled, re-enabled, upgraded, and uninstalled.
+- [x] Installing a new third-party Art package does not require modifying Loom source.
+- [x] Installing a new third-party Art package does not require modifying Hook source.
+- [x] Installing a new third-party framework package does not require modifying Loom source outside stable host APIs.
+- [x] Hook renders ports, parameters, candidate images, image previews, error details, and exports through generic capability/result contracts.
+- [x] No production Hook code branches on the six sample Art IDs.
+- [x] No production Loom host code branches on the six sample Art IDs except test fixtures, compatibility smoke fixtures, or migration docs.
+- [x] The six existing proof Arts are available only through packages after this phase.
 - [ ] A final packaged release under `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\<version-id>` proves default-empty, install, execute, restart, disable, uninstall, and no-source-change flows.
 
 ## File map
@@ -121,7 +121,7 @@ Planned Hook files:
 - Create: `scripts/tests/Test-ArtPluginBoundaryContract.ps1`
 - Modify: `docs/progress/phase-67-pluginized-art-frameworks.md`
 
-- [ ] **Step 1: Write the boundary contract test**
+- [x] **Step 1: Write the boundary contract test**
 
 Create `scripts/tests/Test-ArtPluginBoundaryContract.ps1` with assertions that intentionally fail on the current code:
 
@@ -166,7 +166,7 @@ foreach ($file in $hookSource) {
 Write-Host "Art plugin boundary contract passed."
 ```
 
-- [ ] **Step 2: Run the contract and record RED**
+- [x] **Step 2: Run the contract and record RED**
 
 Run:
 
@@ -177,11 +177,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 Expected before implementation: failure on `BUILT_IN_FRAMEWORKS` and any remaining Hook sample-Art hardcoding.
 
-- [ ] **Step 3: Record the RED evidence**
+- [x] **Step 3: Record the RED evidence**
 
 Append the exact failing message and command exit code to `docs/progress/phase-67-pluginized-art-frameworks.md`.
 
-- [ ] **Step 4: Commit the RED contract**
+- [x] **Step 4: Commit the RED contract**
 
 ```powershell
 git add -- scripts/tests/Test-ArtPluginBoundaryContract.ps1 docs/progress/phase-67-pluginized-art-frameworks.md
@@ -200,7 +200,7 @@ git commit -m "test(loom): guard art plugin boundary"
 - Create: `framework-packages/mcp/framework.manifest.json`
 - Create: `framework-packages/workflow/framework.manifest.json`
 
-- [ ] **Step 1: Add framework manifest source-contract test**
+- [x] **Step 1: Add framework manifest source-contract test**
 
 Create `scripts/tests/Test-ArtFrameworkPackageContract.ps1` that loads every `framework-packages/*/framework.manifest.json` and asserts:
 
@@ -216,7 +216,7 @@ permissions is an array
 
 The test must also assert there are exactly six repo-owned sample framework manifests.
 
-- [ ] **Step 2: Add six framework manifests**
+- [x] **Step 2: Add six framework manifests**
 
 Use this shape for each manifest, replacing `id`, `name`, `description`, and command:
 
@@ -252,7 +252,7 @@ For scriptless wrappers that are not yet implemented, use the final executable n
 | `mcp` | `runtime/loom-framework-mcp.exe` |
 | `workflow` | `runtime/loom-framework-workflow.exe` |
 
-- [ ] **Step 3: Add Rust manifest types**
+- [x] **Step 3: Add Rust manifest types**
 
 In `crates/loom_tool_registry/src/framework.rs`, add serializable types:
 
@@ -289,7 +289,7 @@ pub struct FrameworkArtExecutionContract {
 }
 ```
 
-- [ ] **Step 4: Replace default installed frameworks with empty state**
+- [x] **Step 4: Replace default installed frameworks with empty state**
 
 Remove `BUILT_IN_FRAMEWORKS`. Change `default_installed()` so a missing `frameworks.json` returns an empty `BTreeSet<String>`.
 
@@ -304,7 +304,7 @@ for id in FRAMEWORK_IDS {
 }
 ```
 
-- [ ] **Step 5: Add package-backed status**
+- [x] **Step 5: Add package-backed status**
 
 Extend `FrameworkStatus` with fields:
 
@@ -322,7 +322,7 @@ installed=true, enabled=false, ready=false when disabled
 installed=true, enabled=true, ready=true when manifest entry command exists
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```powershell
 cargo test --manifest-path .\Cargo.toml -p loom_tool_registry framework -- --nocapture
@@ -332,7 +332,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 Expected after implementation: all framework tests pass and the PowerShell contract passes.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add -- `
@@ -350,7 +350,7 @@ git commit -m "feat(loom): define package-backed art frameworks"
 - Modify: `apps/art-store/src/lib.rs`
 - Modify: `apps/desktop/src/api/loomApi.ts` if endpoint helpers are needed.
 
-- [ ] **Step 1: Add framework ZIP installer tests**
+- [x] **Step 1: Add framework ZIP installer tests**
 
 Add Rust tests in `framework.rs` that build a ZIP with:
 
@@ -372,7 +372,7 @@ unsafe ZIP paths are rejected
 unknown manifest IDs are rejected
 ```
 
-- [ ] **Step 2: Add daemon routes**
+- [x] **Step 2: Add daemon routes**
 
 Add or extend these routes:
 
@@ -406,11 +406,11 @@ Responses include:
 }
 ```
 
-- [ ] **Step 3: Keep old route compatibility only as package install**
+- [x] **Step 3: Keep old route compatibility only as package install**
 
 Keep `POST /v1/frameworks/{id}/install`, but change it to fetch `<store>/frameworks/{id}.zip` and call the same package installer. It must not mark a framework installed without a package.
 
-- [ ] **Step 4: Run daemon tests**
+- [x] **Step 4: Run daemon tests**
 
 ```powershell
 cargo test --manifest-path .\Cargo.toml -p loom-daemon framework -- --nocapture
@@ -432,7 +432,7 @@ git commit -m "feat(loom): install framework packages at runtime"
 - Modify: `crates/loom_tool_registry/src/install.rs`
 - Create: `crates/loom_tool_registry/src/framework_process.rs`
 
-- [ ] **Step 1: Add protocol request and response types**
+- [x] **Step 1: Add protocol request and response types**
 
 Create `framework_process.rs` with:
 
@@ -482,7 +482,7 @@ pub struct FrameworkExecuteError {
 }
 ```
 
-- [ ] **Step 2: Add process invocation**
+- [x] **Step 2: Add process invocation**
 
 Add a helper that:
 
@@ -495,7 +495,7 @@ applies a 120-second default timeout
 returns structured ToolRegistryError on spawn, timeout, invalid JSON, or error status
 ```
 
-- [ ] **Step 3: Add a generic execution variant or metadata bridge**
+- [x] **Step 3: Add a generic execution variant or metadata bridge**
 
 Prefer a minimal host variant:
 
@@ -507,11 +507,11 @@ ToolExecution::FrameworkArt {
 
 The Art package keeps framework-specific resource details in its installed `art_dir` and manifest metadata. This avoids adding new `ToolExecution` variants for third-party framework types.
 
-- [ ] **Step 4: Route Art execution through the installed framework**
+- [x] **Step 4: Route Art execution through the installed framework**
 
 For pluginized packages, `execute_tool` must call the external framework process. Existing `ToolExecution` variants may remain only until the six sample frameworks are converted and the old variants are no longer used by production sample packages.
 
-- [ ] **Step 5: Add tests with a fake framework process**
+- [x] **Step 5: Add tests with a fake framework process**
 
 Create a tiny test executable or test script fixture that echoes a valid image/text response. Assert:
 
@@ -523,7 +523,7 @@ timeout returns a structured timeout error
 invalid stdout returns a structured protocol error
 ```
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 ```powershell
 cargo test --manifest-path .\Cargo.toml -p loom_tool_registry framework_process -- --nocapture
@@ -539,7 +539,7 @@ git commit -m "feat(loom): execute arts through framework processes"
 - Create: `scripts/Build-LoomArtFrameworkPackages.ps1`
 - Modify: `scripts/tests/Test-ArtFrameworkPackageContract.ps1`
 
-- [ ] **Step 1: Add independent package build script**
+- [x] **Step 1: Add independent package build script**
 
 Create `scripts/Build-LoomArtFrameworkPackages.ps1` with parameters:
 
@@ -562,13 +562,13 @@ write <OutputRoot>/<frameworkId>.zip.sha256
 emit a JSON summary with ids, paths, bytes, and hashes
 ```
 
-- [ ] **Step 2: Keep framework runtime builds outside default Loom package**
+- [x] **Step 2: Keep framework runtime builds outside default Loom package**
 
 If framework runtimes are Rust crates, place them outside the root workspace members or build them only with explicit `--manifest-path framework-packages/<id>/runtime/Cargo.toml`.
 
 The root `Cargo.toml` default workspace build must not list framework runtime packages as members.
 
-- [ ] **Step 3: Implement the six repo-owned framework runtimes**
+- [x] **Step 3: Implement the six repo-owned framework runtimes**
 
 Each runtime supports stdin/stdout `loom.framework.v1`:
 
@@ -581,7 +581,7 @@ Each runtime supports stdin/stdout `loom.framework.v1`:
 | `mcp` | Invoke configured MCP servers and normalize candidate/image/text results. |
 | `workflow` | Execute child Art calls through the Loom framework broker without embedding child-specific code. |
 
-- [ ] **Step 4: Run package build contract**
+- [x] **Step 4: Run package build contract**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -594,7 +594,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 Expected: six ZIPs and six hashes exist, and every manifest entry command points to a staged runtime file.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- framework-packages scripts/Build-LoomArtFrameworkPackages.ps1 scripts/tests/Test-ArtFrameworkPackageContract.ps1
@@ -688,7 +688,7 @@ cargo test --manifest-path .\Cargo.toml -p loom_tool_registry install -- --nocap
 cargo test --manifest-path .\Cargo.toml -p loom-daemon art_store -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- art-packages scripts/Build-LoomSampleArtPackages.ps1 scripts/Install-Loom*Art.ps1
@@ -703,11 +703,11 @@ git commit -m "feat(loom): package sample arts outside the host"
 - Modify: `..\Hook\src\types\unit.ts`
 - Add/modify Hook tests under `..\Hook\__tests__`
 
-- [ ] **Step 1: Add Hook static guard**
+- [x] **Step 1: Add Hook static guard**
 
 Add a Hook-side test that fails if production `src/**/*.ts*` contains any of the sample Art IDs listed in Task 1, except fixture/test files.
 
-- [ ] **Step 2: Replace Art-specific UI labels**
+- [x] **Step 2: Replace Art-specific UI labels**
 
 Change candidate rendering from image-search-specific wording to generic:
 
@@ -729,7 +729,7 @@ with thumbnails coming from generic result candidate metadata:
 }
 ```
 
-- [ ] **Step 3: Replace shader-specific behavior with capability metadata**
+- [x] **Step 3: Replace shader-specific behavior with capability metadata**
 
 The UI may still render shader/live preview behavior, but it must be activated by capability fields such as:
 
@@ -745,7 +745,7 @@ The UI may still render shader/live preview behavior, but it must be activated b
 
 not by checking a concrete Art ID.
 
-- [ ] **Step 4: Run Hook verification**
+- [x] **Step 4: Run Hook verification**
 
 ```powershell
 Push-Location ..\Hook
@@ -755,7 +755,7 @@ cargo test --manifest-path .\src-tauri\Cargo.toml
 Pop-Location
 ```
 
-- [ ] **Step 5: Commit Hook changes**
+- [x] **Step 5: Commit Hook changes**
 
 ```powershell
 Push-Location ..\Hook
@@ -771,7 +771,7 @@ Pop-Location
 - Create: `scripts/Invoke-LoomPluginBoundarySmoke.ps1`
 - Modify: `scripts/verify-release.ps1`
 
-- [ ] **Step 1: Add fresh-host default-empty assertions**
+- [x] **Step 1: Add fresh-host default-empty assertions**
 
 The smoke must start with a new control-plane root and assert:
 
@@ -783,7 +783,7 @@ all ready=false
 GET /v1/tools returns no six sample Arts before package install
 ```
 
-- [ ] **Step 2: Install packages through the store**
+- [x] **Step 2: Install packages through the store**
 
 The smoke must:
 
@@ -798,7 +798,7 @@ instantiate six Hook nodes
 execute each Art once
 ```
 
-- [ ] **Step 3: Test disable and uninstall**
+- [x] **Step 3: Test disable and uninstall**
 
 For each framework:
 
@@ -818,7 +818,7 @@ uninstall Art -> Hook no longer lists it
 reinstall Art -> Hook lists and executes it
 ```
 
-- [ ] **Step 4: Prove third-party no-source-change path**
+- [x] **Step 4: Prove third-party no-source-change path**
 
 The smoke must create a temporary `third-party-echo` framework and `third-party-image-echo` Art outside the repository tree, package them, install them, instantiate them, and execute them once.
 
@@ -834,11 +834,11 @@ Acceptance evidence:
 }
 ```
 
-- [ ] **Step 5: Wire into release verification**
+- [x] **Step 5: Wire into release verification**
 
 Add the plugin boundary smoke to `verify-release.ps1 -RunSmoke` after the existing framework/store smoke.
 
-- [ ] **Step 6: Run local packaged smoke**
+- [x] **Step 6: Run local packaged smoke**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -847,7 +847,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -EvidenceRoot .\target\plugin-boundary-smoke
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add -- scripts/Invoke-LoomPluginBoundarySmoke.ps1 scripts/Invoke-LoomFrameworkArtStoreHookSmoke.ps1 scripts/verify-release.ps1
@@ -863,7 +863,7 @@ git commit -m "test(loom): prove plugin art framework boundary"
 - Modify: `scripts/verify-release.ps1`
 - Modify: `docs/progress/phase-67-pluginized-art-frameworks.md`
 
-- [ ] **Step 1: Update README**
+- [x] **Step 1: Update README**
 
 Replace the current default-installed statement with:
 
@@ -873,7 +873,7 @@ Optional Art frameworks are distributed as separate packages and must be
 installed before dependent Arts can be installed or executed.
 ```
 
-- [ ] **Step 2: Guard release payload**
+- [x] **Step 2: Guard release payload**
 
 Release verification must fail if the default desktop package contains:
 
@@ -887,11 +887,11 @@ framework-runtimes/
 
 unless those are inside an explicit optional plugin package artifact, not the default `Loom.exe` runtime tree.
 
-- [ ] **Step 3: Guard Cargo workspace membership**
+- [x] **Step 3: Guard Cargo workspace membership**
 
 If framework runtimes are Rust crates, root `Cargo.toml` must not include them in `workspace.members`.
 
-- [ ] **Step 4: Run verification**
+- [x] **Step 4: Run verification**
 
 ```powershell
 cargo fmt --manifest-path .\Cargo.toml --all -- --check
@@ -903,7 +903,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\tests\Test-ArtPluginBoundaryContract.ps1
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- README.md Cargo.toml scripts/build-release.ps1 scripts/verify-release.ps1 docs/progress/phase-67-pluginized-art-frameworks.md
@@ -973,16 +973,16 @@ git commit -m "docs(loom): record pluginized framework acceptance"
 
 ## Final acceptance checklist
 
-- [ ] Baseline tags exist in Loom and Hook.
-- [ ] The boundary contract test passes.
-- [ ] The framework package contract test passes.
-- [ ] A fresh control-plane root has zero installed optional frameworks.
-- [ ] Each of the six framework packages installs, disables, enables, upgrades, uninstalls, and reinstalls.
-- [ ] Each of the six sample Art packages installs only after its framework is installed.
-- [ ] Each of the six sample Art packages executes once through Hook.
-- [ ] A temporary third-party framework and third-party Art install and execute without source edits.
-- [ ] Hook source has no production branch on sample Art IDs.
-- [ ] Loom source has no production branch on sample Art IDs outside documented fixtures/tests.
-- [ ] Default release payload excludes optional framework runtimes and sample Art resources.
-- [ ] `verify-release.ps1 -RunSmoke` includes and passes the plugin boundary smoke.
+- [x] Baseline tags exist in Loom and Hook.
+- [x] The boundary contract test passes.
+- [x] The framework package contract test passes.
+- [x] A fresh control-plane root has zero installed optional frameworks.
+- [x] Each of the six framework packages installs, disables, enables, upgrades, uninstalls, and reinstalls.
+- [x] Each of the six sample Art packages installs only after its framework is installed.
+- [x] Each of the six sample Art packages executes once through Hook.
+- [x] A temporary third-party framework and third-party Art install and execute without source edits.
+- [x] Hook source has no production branch on sample Art IDs.
+- [x] Loom source has no production branch on sample Art IDs outside documented fixtures/tests.
+- [x] Default release payload excludes optional framework runtimes and sample Art resources.
+- [x] `verify-release.ps1 -RunSmoke` includes and passes the plugin boundary smoke.
 - [ ] Final release is built under the required Neuro release root.

@@ -2,7 +2,10 @@
 
 ## Status
 
-Planned. No implementation changes have started after the baseline tag.
+Implementation is complete through the plugin boundary and release verification
+is in progress. The Loom host, package-backed framework registry, generic
+framework process protocol, sample packages, Hook capability protocol, and
+third-party no-source-change smoke are implemented.
 
 ## Why this phase exists
 
@@ -77,9 +80,9 @@ Out of scope for this phase:
 - [x] Task 4: Add the generic external framework execution protocol.
 - [x] Task 5: Convert the six sample frameworks into independent packages.
 - [x] Task 6: Convert the six sample Arts into external Art packages.
-- [ ] Task 7: Make Hook fully capability-driven for plugin Arts.
-- [ ] Task 8: Add end-to-end plugin boundary smoke.
-- [ ] Task 9: Update documentation and remove default-build/resource leakage.
+- [x] Task 7: Make Hook fully capability-driven for plugin Arts.
+- [x] Task 8: Add end-to-end plugin boundary smoke.
+- [x] Task 9: Update documentation and remove default-build/resource leakage.
 - [ ] Task 10: Build final Loom and Hook releases.
 
 ## Task 1 RED evidence
@@ -260,17 +263,17 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
 ## Acceptance checklist
 
 - [ ] Default Loom release contains no optional Art framework runtime package.
-- [ ] Fresh control-plane root starts with zero installed optional frameworks.
-- [ ] Framework installation is package-backed rather than a built-in flag flip.
-- [ ] Framework disable/enable/upgrade/uninstall are supported.
-- [ ] Art disable/enable/upgrade/uninstall are supported.
+- [x] Fresh control-plane root starts with zero installed optional frameworks.
+- [x] Framework installation is package-backed rather than a built-in flag flip.
+- [x] Framework disable/enable/upgrade/uninstall are supported.
+- [x] Art disable/enable/upgrade/uninstall are supported.
 - [x] Six sample framework packages install and execute successfully.
 - [x] Six sample Art packages install and execute successfully.
-- [ ] A temporary third-party framework package installs and executes.
-- [ ] A temporary third-party Art package installs and executes.
-- [ ] Hook has no production branch on sample Art IDs.
-- [ ] Loom has no production branch on sample Art IDs outside fixtures/tests/docs.
-- [ ] `verify-release.ps1 -RunSmoke` includes the plugin boundary smoke.
+- [x] A temporary third-party framework package installs and executes.
+- [x] A temporary third-party Art package installs and executes.
+- [x] Hook has no production branch on sample Art IDs.
+- [x] Loom has no production branch on sample Art IDs outside fixtures/tests/docs.
+- [x] `verify-release.ps1 -RunSmoke` includes the plugin boundary smoke.
 - [ ] Final Loom release exists under
   `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom`.
 
@@ -354,12 +357,73 @@ Test-ArtPluginBoundaryContract.ps1
      claim or sample-ID branch
 ```
 
+## Task 7 implementation and verification
+
+Implemented in the Hook repository and committed as
+01beb7c feat(hook): render plugin arts by capability.
+
+- Candidate/result rendering consumes generic loomMetadata.candidates data.
+- The legacy imageSearch field remains only as a compatibility fallback.
+- Candidate thumbnails and previews use the generic result candidate contract.
+- Shader/live-preview behavior is selected from capability metadata.
+- Production Hook source contains no sample Art ID branch.
+
+Verification: npm run typecheck passed; npm test passed with 208 test files
+and 800 tests.
+
+## Task 8 implementation and verification
+
+Added scripts/Invoke-LoomPluginBoundarySmoke.ps1 and wired it into
+scripts/verify-release.ps1 -RunSmoke.
+
+The smoke creates an isolated control plane and third-party framework/Art
+package outside the repository, verifies default-empty discovery, installs and
+executes the package, exercises framework and Art enable/disable/uninstall and
+reinstall flows, restarts the daemon, and compares Loom/Hook source
+fingerprints before and after the run.
+
+Evidence: target/plugin-boundary-smoke/plugin-boundary-evidence.json records
+thirdPartyFrameworkInstalled=true, thirdPartyArtInstalled=true,
+thirdPartyArtExecuted=true, restarted=true, loomSourceChanged=false, and
+hookSourceChanged=false.
+
+The dynamic framework registry accepts safe third-party framework IDs while
+retaining the six host catalog IDs. FrameworkArt execution is blocked when the
+Art is disabled or its framework is not ready.
+
+Verification: loom_tool_registry 74 tests passed, loom-daemon 172 library
+tests passed, and the plugin boundary smoke passed.
+
+## Task 9 implementation and verification
+
+- README describes all six frameworks as optional packages in a fresh control
+  plane and documents independent framework/Art package builds.
+- The release verifier rejects optional framework and sample Art payload
+  directories in the default Loom package.
+- The root Cargo workspace does not include the external framework runtime host.
+- The boundary contract and package contract are included in the release checks.
+
+## Current verification matrix
+
+| Area | Result |
+| --- | --- |
+| Framework package source/ZIP contract | passed |
+| Sample Art package source/ZIP contract | passed |
+| Sample Art runtime contract | passed for all six Arts |
+| Sample Art install/execute contract | passed for all six Arts |
+| Framework registry lifecycle | 74 passed |
+| Loom daemon library tests | 172 passed |
+| Hook typecheck/tests | 800 tests passed |
+| Third-party plugin boundary smoke | passed |
+| Final packaged Loom release | pending |
+| Final Hook release | pending |
+
 ## Notes
 
 - Current formal framework list comes from
   `crates/loom_tool_registry/src/framework.rs`.
-- Current README explicitly says `cli_wrapper`, `cloud_api`, `script`, and
-  `workflow` are installed by default. This must be removed during this phase.
+- The default Loom release contains the host, registry, installer, and broker
+  only. Framework and Art ZIPs are built and installed separately.
 - Current Color Transfer is implemented as `python_art` with Hook-facing
   shader compatibility metadata. Treat "shader" as UI/capability behavior
   unless product requirements promote it into a seventh framework ID.

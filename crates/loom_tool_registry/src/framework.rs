@@ -154,7 +154,7 @@ fn framework_name(id: &str) -> &'static str {
         "python_art" => "Python Art 框架",
         "mcp" => "MCP 框架",
         "workflow" => "工作流框架",
-        _ => "未知框架",
+        _ => "第三方 Art 框架",
     }
 }
 
@@ -166,7 +166,7 @@ fn framework_description(id: &str) -> &'static str {
         "python_art" => "运行 Python Art，需要 Python 运行时。",
         "mcp" => "通过 MCP 服务器调用工具。",
         "workflow" => "把一条工作流封装成单一节点执行。",
-        _ => "",
+        _ => "由外部插件包提供的 Art 执行框架。",
     }
 }
 
@@ -190,7 +190,7 @@ pub fn framework_ready(id: &str) -> (bool, String) {
 /// lives at `<runtime_root>/<id>/`.
 pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, String) {
     if !is_valid_framework(id) {
-        return (false, "未知框架".to_owned());
+        return (false, "框架 ID 无效".to_owned());
     }
 
     let Some(root) = runtime_root else {
@@ -365,9 +365,15 @@ impl FrameworkRegistry {
         framework_ready_in(id, Some(&runtime_root))
     }
 
-    /// Full status for all 6 frameworks (installed + readiness probe).
+    /// Full status for the host catalog plus any installed third-party
+    /// framework packages.
     pub fn statuses(&self) -> Vec<FrameworkStatus> {
-        FRAMEWORK_IDS.iter().map(|&id| self.status_of(id)).collect()
+        let mut ids = FRAMEWORK_IDS
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect::<BTreeSet<_>>();
+        ids.extend(self.installed_ids());
+        ids.into_iter().map(|id| self.status_of(&id)).collect()
     }
 
     /// Install a framework package from the configured store. The package
@@ -742,7 +748,13 @@ fn unpack_runtime_zip(
 }
 
 fn is_valid_framework(id: &str) -> bool {
-    FRAMEWORK_IDS.contains(&id)
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && !id.starts_with('.')
+        && !id.ends_with('.')
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -770,14 +782,19 @@ pub enum FrameworkError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_root() -> PathBuf {
         let base = std::env::temp_dir().join(format!(
-            "loom-frameworks-test-{}",
+            "loom-frameworks-test-{}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&base).unwrap();
         base
@@ -822,6 +839,33 @@ mod tests {
 
         registry.uninstall("mcp").expect("uninstall mcp");
         assert!(!registry.is_installed("mcp"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn third_party_framework_package_is_dynamic_and_lifecycle_managed() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let id = "third-party-echo";
+        let installed = registry
+            .install_framework_package_from_zip(&fake_framework_package_zip(id))
+            .expect("install third-party framework");
+
+        assert_eq!(installed.id, id);
+        assert!(installed.installed);
+        assert!(installed.ready);
+        assert!(registry.statuses().iter().any(|status| status.id == id));
+
+        let disabled = registry.disable(id).expect("disable third-party framework");
+        assert!(!disabled.ready);
+        let enabled = registry.enable(id).expect("enable third-party framework");
+        assert!(enabled.ready);
+        let removed = registry
+            .uninstall(id)
+            .expect("uninstall third-party framework");
+        assert!(!removed.installed);
+        assert!(!registry.installed_ids().contains(id));
+
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -911,7 +955,7 @@ mod tests {
             "python_art" => "runtime/loom-framework-python-art.exe",
             "mcp" => "runtime/loom-framework-mcp.exe",
             "workflow" => "runtime/loom-framework-workflow.exe",
-            other => panic!("unknown test framework: {other}"),
+            _ => "runtime/loom-framework-third-party.exe",
         };
         let manifest = serde_json::json!({
             "id": id,

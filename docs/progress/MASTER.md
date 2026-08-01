@@ -122,7 +122,7 @@ separate projects.
   [details](./phase-65-script-image-blend-art.md)
 - [x] Phase 66: Image blend and compress workflow Art (12/12 tasks)
   [details](./phase-66-image-blend-compress-workflow-art.md)
-- [ ] Phase 67: Pluginized Art frameworks (6/10 tasks)
+- [ ] Phase 67: Pluginized Art frameworks (9/10 tasks; release build pending)
   [details](./phase-67-pluginized-art-frameworks.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
@@ -400,11 +400,13 @@ Latest completed phases:
   `python_art` runtime precedence drift in `loom_tool_registry`, adds desktop
   API regression tests for framework and store routes, and generates parent
   release `20260729-installable-frameworks-art-store`.
-- Phase 67 is planned. It will convert the current six framework proof line
-  from host-owned/default-installed execution kinds into package-backed,
-  independently built Art framework packages plus package-backed Art nodes.
-  The rollback tags are `框架修改前的最后一个版本` in both the Loom and Hook
-  repositories.
+- Phase 67 implementation is complete through the plugin boundary. Loom now
+  supports package-backed optional frameworks, dynamic third-party framework
+  IDs, generic external framework process execution, and package-backed Arts.
+  Hook consumes generic capability/result metadata without sample Art ID
+  branches. The third-party no-source-change smoke and release verifier guard
+  pass; final Loom and Hook release artifacts are still pending.
+  Rollback tags remain `框架修改前的最后一个版本` in both repositories.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local

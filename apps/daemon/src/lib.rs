@@ -1958,6 +1958,7 @@ fn route(
             mcp_servers,
             tool_registry,
             workflow_store,
+            framework_registry,
         ),
         ("GET", "/v1/artloom-compat/arts") => list_artloom_compat_arts("list_arts", tool_registry),
         ("GET", "/v1/artloom-compat/arts/enabled") => {
@@ -3602,7 +3603,9 @@ fn tool_readiness(
     };
     let framework_id = loom_tool_registry::framework::framework_id_for_execution(&tool.execution);
     let installed = framework_registry.is_installed(framework_id);
-    let (ready, detail) = if installed {
+    let (ready, detail) = if !tool.enabled {
+        (false, "Art 已禁用".to_owned())
+    } else if installed {
         framework_registry.readiness(framework_id)
     } else {
         (false, "框架未安装".to_owned())
@@ -3613,6 +3616,7 @@ fn tool_readiness(
             "toolId": id,
             "framework": framework_id,
             "frameworkInstalled": installed,
+            "toolEnabled": tool.enabled,
             "ready": ready,
             "detail": detail,
         }))?,
@@ -5614,6 +5618,7 @@ fn execute_registered_tool(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
+    framework_registry: &FrameworkRegistry,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
     let request = match serde_json::from_str::<ExecuteToolRequest>(request_body) {
@@ -5634,6 +5639,30 @@ fn execute_registered_tool(
         }
         Err(error) => return tool_registry_error_response(error),
     };
+    if let ToolExecution::FrameworkArt { framework } = &tool.execution {
+        if !tool.enabled {
+            return structured_error(
+                409,
+                json!({
+                    "code": "art_disabled",
+                    "message": format!("Art {tool_id} 已禁用"),
+                    "artId": tool_id,
+                }),
+            );
+        }
+        let (ready, detail) = framework_registry.readiness(framework);
+        if !ready {
+            return structured_error(
+                409,
+                json!({
+                    "code": "framework_not_ready",
+                    "message": format!("Art {tool_id} 的框架 {framework} 不可运行：{detail}"),
+                    "framework": framework,
+                    "artId": tool_id,
+                }),
+            );
+        }
+    }
     let servers = mcp_servers
         .lock()
         .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
@@ -7595,10 +7624,17 @@ fn hook_canvas_set_image_search_metadata(node: &mut Value, metadata: Value) -> b
     if !loom_metadata.is_object() {
         *loom_metadata = json!({});
     }
-    loom_metadata
-        .as_object_mut()
-        .expect("loomMetadata object")
-        .insert("imageSearch".to_owned(), metadata);
+    let generic_metadata = json!({
+        "kind": "image.candidates",
+        "items": metadata
+            .get("candidates")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "selectedIndex": metadata.get("selectedIndex").cloned().unwrap_or(Value::Null),
+    });
+    let object = loom_metadata.as_object_mut().expect("loomMetadata object");
+    object.insert("candidates".to_owned(), generic_metadata);
+    object.insert("imageSearch".to_owned(), metadata);
     true
 }
 
@@ -7877,11 +7913,13 @@ fn clear_hook_canvas_runtime_result_candidates(node_id: &str) {
 fn extract_hook_canvas_result_candidates(
     execution_result: &Value,
 ) -> Option<(Vec<hook_canvas::HookCanvasResultCandidate>, Option<usize>)> {
-    let image_search = execution_result
-        .get("loomMetadata")
-        .and_then(|metadata| metadata.get("imageSearch"))?;
-    let candidates = image_search
+    let loom_metadata = execution_result.get("loomMetadata")?;
+    let metadata = loom_metadata
         .get("candidates")
+        .or_else(|| loom_metadata.get("imageSearch"))?;
+    let candidates = metadata
+        .get("items")
+        .or_else(|| metadata.get("candidates"))
         .and_then(Value::as_array)
         .map(|items| {
             items
@@ -7892,6 +7930,14 @@ fn extract_hook_canvas_result_candidates(
                         index: item.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
                         title: item.get("title").and_then(Value::as_str).map(str::to_owned),
                         image_url,
+                        thumbnail: item
+                            .get("thumbnail")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        preview: item
+                            .get("preview")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         thumbnail_url: item
                             .get("thumbnailUrl")
                             .and_then(Value::as_str)
@@ -7907,7 +7953,7 @@ fn extract_hook_canvas_result_candidates(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let selected_result_index = image_search
+    let selected_result_index = metadata
         .get("selectedIndex")
         .and_then(Value::as_u64)
         .map(|value| value as usize);
@@ -7926,6 +7972,8 @@ fn hook_canvas_image_search_metadata_value(
                     "index": candidate.index,
                     "title": candidate.title,
                     "imageUrl": candidate.image_url,
+                    "thumbnail": candidate.thumbnail,
+                    "preview": candidate.preview,
                     "thumbnailUrl": candidate.thumbnail_url,
                     "sourcePageUrl": candidate.source_page_url,
                     "width": candidate.width,
@@ -7946,9 +7994,20 @@ fn attach_ahrp_image_search_metadata(response: &mut Value, metadata: Value) {
     let Some(data) = response.get_mut("data").and_then(Value::as_object_mut) else {
         return;
     };
+    let generic_metadata = json!({
+        "kind": "image.candidates",
+        "items": metadata
+            .get("candidates")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "selectedIndex": metadata.get("selectedIndex").cloned().unwrap_or(Value::Null),
+    });
     data.insert(
         "loomMetadata".to_owned(),
-        json!({ "imageSearch": metadata }),
+        json!({
+            "candidates": generic_metadata,
+            "imageSearch": metadata,
+        }),
     );
 }
 
@@ -16494,6 +16553,17 @@ nodes:
         assert_eq!(
             response["data"]["loomMetadata"]["imageSearch"]["candidates"][1]["imageUrl"],
             alternate_image_fixture.url("/fixture-b.png"),
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["candidates"]["kind"], "image.candidates",
+            "response={response}"
+        );
+        assert_eq!(
+            response["data"]["loomMetadata"]["candidates"]["items"]
+                .as_array()
+                .map(Vec::len),
+            Some(2),
             "response={response}"
         );
 
