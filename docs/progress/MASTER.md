@@ -122,7 +122,7 @@ separate projects.
   [details](./phase-65-script-image-blend-art.md)
 - [x] Phase 66: Image blend and compress workflow Art (12/12 tasks)
   [details](./phase-66-image-blend-compress-workflow-art.md)
-- [ ] Phase 67: Pluginized Art frameworks (0/10 tasks)
+- [ ] Phase 67: Pluginized Art frameworks (6/10 tasks)
   [details](./phase-67-pluginized-art-frameworks.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)

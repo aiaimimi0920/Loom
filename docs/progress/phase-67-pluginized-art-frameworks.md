@@ -71,12 +71,12 @@ Out of scope for this phase:
 
 ## Progress checklist
 
-- [ ] Task 1: Add source-contract guards before runtime changes.
+- [x] Task 1: Add source-contract guards before runtime changes.
 - [x] Task 2: Define framework package manifests and explicit installed state.
 - [x] Task 3: Implement framework package install, disable, upgrade, and uninstall.
 - [x] Task 4: Add the generic external framework execution protocol.
 - [x] Task 5: Convert the six sample frameworks into independent packages.
-- [ ] Task 6: Convert the six sample Arts into external Art packages.
+- [x] Task 6: Convert the six sample Arts into external Art packages.
 - [ ] Task 7: Make Hook fully capability-driven for plugin Arts.
 - [ ] Task 8: Add end-to-end plugin boundary smoke.
 - [ ] Task 9: Update documentation and remove default-build/resource leakage.
@@ -264,8 +264,8 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
 - [ ] Framework installation is package-backed rather than a built-in flag flip.
 - [ ] Framework disable/enable/upgrade/uninstall are supported.
 - [ ] Art disable/enable/upgrade/uninstall are supported.
-- [ ] Six sample framework packages install and execute successfully.
-- [ ] Six sample Art packages install and execute successfully.
+- [x] Six sample framework packages install and execute successfully.
+- [x] Six sample Art packages install and execute successfully.
 - [ ] A temporary third-party framework package installs and executes.
 - [ ] A temporary third-party Art package installs and executes.
 - [ ] Hook has no production branch on sample Art IDs.
@@ -327,6 +327,8 @@ Added:
 The legacy per-Art installers are now thin wrappers over the generic package
 installer. They no longer generate legacy `cli_wrapper`, `cloud_api`,
 `script`, `python_art`, `mcp`, or `workflow` definitions in Loom's registry.
+
+Task 6 was committed as `86a1c51 feat(loom): package sample arts outside host`.
 
 Fresh verification:
 

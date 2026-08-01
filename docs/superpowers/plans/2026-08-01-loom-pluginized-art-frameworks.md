@@ -418,7 +418,7 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon framework -- --nocapture
 
 Expected: daemon route tests prove install, disable, enable, upgrade, uninstall, and missing package errors.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add -- crates/loom_tool_registry/src/framework.rs apps/daemon/src/lib.rs apps/art-store/src/lib.rs apps/desktop/src/api/loomApi.ts
