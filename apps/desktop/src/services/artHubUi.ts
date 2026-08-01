@@ -36,6 +36,11 @@ export function frameworkIdentity(framework: LoomFramework): string {
   return framework.qualifiedId || framework.id;
 }
 
+export function frameworkFilterLabel(framework: LoomFramework): string {
+  const label = framework.name.trim().replace(/\s*框架\s*$/u, "").trim();
+  return /^python\s*art$/iu.test(label) ? "Python" : label || framework.id;
+}
+
 export function artFrameworkReference(tool: LoomToolDefinition): string | null {
   const metadata = asRecord(tool.metadata);
   const dependencies = asRecord(metadata?.dependencies);

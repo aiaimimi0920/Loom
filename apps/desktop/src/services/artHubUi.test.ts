@@ -5,11 +5,13 @@ import {
   artFrameworkReference,
   artWorkspaceItems,
   filterToolsByFrameworks,
+  frameworkFilterLabel,
   nextArtWorkspaceIndex,
 } from "./artHubUi.ts";
 import type { LoomFramework, LoomToolDefinition } from "./loomApi.ts";
 
 const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 
 test("exposes one Art navigation entry instead of separate registry and framework pages", () => {
   assert.match(appSource, /id: "registry", label: "Art", eyebrow: ""/);
@@ -23,12 +25,14 @@ test("keeps the Art workspace compact without a descriptive hero", () => {
   assert.doesNotMatch(appSource, /Art 运行与注册中心/);
   assert.doesNotMatch(appSource, /Layer 2 · Art runtime/);
   assert.doesNotMatch(appSource, /Art 状态摘要/);
+  assert.doesNotMatch(appSource, /Art \/ 工具注册表/);
+  assert.doesNotMatch(appSource, /查看注册表 JSON/);
 });
 
 test("keeps only Chinese registry store and security labels in the Art workspace", () => {
   assert.deepEqual(artWorkspaceItems.map((item) => item.id), ["registry", "store", "security"]);
   assert.equal(artWorkspaceItems.some((item) => "eyebrow" in item), false);
-  assert.match(appSource, /role="tablist" aria-label="Art 工作区"/);
+  assert.match(appSource, /role="tablist"\s+aria-label="Art 工作区"/);
   for (const item of artWorkspaceItems) {
     assert.match(appSource, new RegExp(`id="art-panel-${item.id}"`));
     assert.match(appSource, new RegExp(`aria-labelledby="art-tab-${item.id}"`));
@@ -39,10 +43,17 @@ test("keeps only Chinese registry store and security labels in the Art workspace
 });
 
 test("keeps framework filtering and management inside the registry", () => {
-  assert.match(appSource, /<fieldset className="framework-filter" aria-label="按框架筛选 Art">/);
+  assert.match(appSource, /<div className="framework-filter" role="group" aria-label="按框架筛选 Art">/);
+  assert.match(appSource, /activeWorkspace === "registry" \? \(\s*<FrameworkFilter/);
+  assert.doesNotMatch(appSource, /<legend>框架<\/legend>/);
   assert.match(appSource, /checked=\{checked\}/);
   assert.match(appSource, /visibleTools\.map/);
   assert.match(appSource, /<summary>管理框架<\/summary>/);
+  assert.match(styleSource, /\.framework-filter \{[\s\S]*?overflow-x: auto;/);
+  assert.match(styleSource, /\.framework-filter__option \{[\s\S]*?flex: 0 0 auto;/);
+  const filterRule = styleSource.match(/\.framework-filter \{([^}]*)\}/);
+  assert.ok(filterRule);
+  assert.doesNotMatch(filterRule[1], /flex-wrap/);
 });
 
 test("moves Art workspace focus with arrow, Home, and End keys", () => {
@@ -55,15 +66,22 @@ test("moves Art workspace focus with arrow, Home, and End keys", () => {
   assert.equal(nextArtWorkspaceIndex("ArrowRight", 0, 0), null);
 });
 
-const framework = (id: string, qualifiedId?: string): LoomFramework => ({
+const framework = (id: string, qualifiedId?: string, name = qualifiedId || id): LoomFramework => ({
   id,
   qualifiedId,
-  name: qualifiedId || id,
+  name,
   description: "",
   installed: true,
   enabled: true,
   ready: true,
   readyDetail: "ready",
+});
+
+test("uses compact framework filter labels", () => {
+  assert.equal(frameworkFilterLabel(framework("cli_wrapper", undefined, "命令行框架")), "命令行");
+  assert.equal(frameworkFilterLabel(framework("cloud_api", undefined, "云 API 框架")), "云 API");
+  assert.equal(frameworkFilterLabel(framework("python_art", undefined, "Python Art 框架")), "Python");
+  assert.equal(frameworkFilterLabel(framework("custom", undefined, "自定义框架")), "自定义");
 });
 
 test("resolves authored, official, and third-party Art framework references", () => {

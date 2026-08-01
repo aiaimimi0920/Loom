@@ -510,6 +510,10 @@ button {
   gap: 14px;
 }
 
+.art-hub__navigation {
+  min-width: 0;
+}
+
 .art-hub__tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -517,6 +521,10 @@ button {
   border-radius: 12px;
   background: #111614;
   padding: 4px;
+}
+
+.art-hub__tabs--with-filter {
+  border-radius: 12px 12px 0 0;
 }
 
 .art-hub__tab {
@@ -540,6 +548,7 @@ button {
 .art-hub__tab span {
   font-size: 0.95rem;
   font-weight: 900;
+  white-space: nowrap;
 }
 
 .art-hub__tab:hover {
@@ -601,35 +610,32 @@ button {
 }
 
 .framework-filter {
-  min-width: 0;
-  margin: 0;
-  border: 1px solid rgba(17, 22, 20, 0.14);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.48);
-  padding: 12px;
-}
-
-.framework-filter legend {
-  padding: 0 6px;
-  font-weight: 900;
-}
-
-.framework-filter__options {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
   gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: rgba(255, 255, 255, 0.48);
+  padding: 8px;
+  scrollbar-width: thin;
 }
 
 .framework-filter__option {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
   border: 1px solid rgba(17, 22, 20, 0.14);
   border-radius: 8px;
   background: rgba(17, 22, 20, 0.05);
-  padding: 9px 11px;
+  padding: 8px 10px;
   cursor: pointer;
   font-weight: 800;
+  white-space: nowrap;
 }
 
 .framework-filter__option--checked {
@@ -2280,14 +2286,6 @@ code {
   .settings-field-grid,
   .shortcut-row {
     grid-template-columns: 1fr;
-  }
-
-  .art-hub__tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .art-hub__tab:nth-child(2n) {
-    border-right: 0;
   }
 
   .art-hub__surface {

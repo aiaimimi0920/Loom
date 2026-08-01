@@ -99,6 +99,7 @@ import { createLatestRequestGate } from "./services/latestRequest";
 import {
   artWorkspaceItems,
   filterToolsByFrameworks,
+  frameworkFilterLabel,
   frameworkIdentity,
   nextArtWorkspaceIndex,
   type ArtWorkspaceId,
@@ -2839,6 +2840,7 @@ function RegistryPanel({
   frameworkBusyId,
   frameworkError,
   onToggleFramework,
+  selectedFrameworkIds,
   reloadFrameworks,
   baseUrl,
   refresh,
@@ -2851,6 +2853,7 @@ function RegistryPanel({
   frameworkBusyId: string | null;
   frameworkError: string | null;
   onToggleFramework: (framework: LoomFramework) => Promise<void>;
+  selectedFrameworkIds: ReadonlySet<string> | null;
   reloadFrameworks: () => Promise<void>;
   baseUrl: string;
   refresh: () => Promise<void>;
@@ -2872,27 +2875,10 @@ function RegistryPanel({
   const [compatArts, setCompatArts] = useState<ArtLoomCompatArt[]>([]);
   const [pythonEngineSummary, setPythonEngineSummary] = useState<string>("Not probed");
   const [shaderArtId, setShaderArtId] = useState("");
-  const [selectedFrameworkIds, setSelectedFrameworkIds] = useState<Set<string> | null>(null);
-  const frameworkIds = useMemo(
-    () => [...new Set(frameworks.map((framework) => frameworkIdentity(framework)))],
-    [frameworks],
-  );
   const visibleTools = useMemo(
     () => filterToolsByFrameworks(tools, frameworks, selectedFrameworkIds),
     [frameworks, selectedFrameworkIds, tools],
   );
-
-  const toggleFrameworkFilter = (frameworkId: string) => {
-    setSelectedFrameworkIds((current) => {
-      const next = current === null ? new Set(frameworkIds) : new Set(current);
-      if (next.has(frameworkId)) {
-        next.delete(frameworkId);
-      } else {
-        next.add(frameworkId);
-      }
-      return next.size === frameworkIds.length ? null : next;
-    });
-  };
 
   const importPythonArt = async (art: LoomPythonArt) => {
     const toolId = `python-art-${art.art_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -3432,39 +3418,9 @@ function RegistryPanel({
 
   return (
     <section className="content-grid">
-      <div className="main-board">
-        <p className="section-kicker">注册表</p>
-        <h2>Art / 工具注册表</h2>
-        <button className="ghost-button" type="button" onClick={() => openExternal(`${baseUrl}/v1/tools`)}>
-          查看注册表 JSON
-        </button>
-        {registryMessage ? (
-          <p className={registryMessage.kind === "error" ? "error-text" : "success-text"}>{registryMessage.text}</p>
-        ) : null}
-      </div>
-      <fieldset className="framework-filter" aria-label="按框架筛选 Art">
-        <legend>框架</legend>
-        <div className="framework-filter__options">
-          {frameworks.map((framework) => {
-            const identity = frameworkIdentity(framework);
-            const checked = selectedFrameworkIds === null || selectedFrameworkIds.has(identity);
-            return (
-              <label
-                className={checked ? "framework-filter__option framework-filter__option--checked" : "framework-filter__option"}
-                key={identity}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleFrameworkFilter(identity)}
-                />
-                <span>{framework.name}</span>
-              </label>
-            );
-          })}
-          {frameworks.length === 0 ? <span className="muted-line">暂无框架</span> : null}
-        </div>
-      </fieldset>
+      {registryMessage ? (
+        <p className={registryMessage.kind === "error" ? "error-text" : "success-text"}>{registryMessage.text}</p>
+      ) : null}
       <div className="section-heading-row">
         <div>
           <p className="section-kicker">Art 注册表卡片</p>
@@ -4161,6 +4117,39 @@ function ArtStoreCard({
   );
 }
 
+function FrameworkFilter({
+  frameworks,
+  selectedFrameworkIds,
+  onToggle,
+}: {
+  frameworks: LoomFramework[];
+  selectedFrameworkIds: ReadonlySet<string> | null;
+  onToggle: (frameworkId: string) => void;
+}) {
+  return (
+    <div className="framework-filter" role="group" aria-label="按框架筛选 Art">
+      {frameworks.map((framework) => {
+        const identity = frameworkIdentity(framework);
+        const checked = selectedFrameworkIds === null || selectedFrameworkIds.has(identity);
+        return (
+          <label
+            className={checked ? "framework-filter__option framework-filter__option--checked" : "framework-filter__option"}
+            key={identity}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => onToggle(identity)}
+            />
+            <span>{frameworkFilterLabel(framework)}</span>
+          </label>
+        );
+      })}
+      {frameworks.length === 0 ? <span className="muted-line">暂无框架</span> : null}
+    </div>
+  );
+}
+
 function ArtPanel({
   tools,
   pythonArts,
@@ -4181,8 +4170,25 @@ function ArtPanel({
   const [frameworkBusyId, setFrameworkBusyId] = useState<string | null>(null);
   const [frameworkError, setFrameworkError] = useState<string | null>(null);
   const [snapshotRefreshError, setSnapshotRefreshError] = useState<string | null>(null);
+  const [selectedFrameworkIds, setSelectedFrameworkIds] = useState<Set<string> | null>(null);
   const frameworkLoadVersion = useRef(0);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const frameworkIds = useMemo(
+    () => [...new Set(frameworks.map((framework) => frameworkIdentity(framework)))],
+    [frameworks],
+  );
+
+  const toggleFrameworkFilter = (frameworkId: string) => {
+    setSelectedFrameworkIds((current) => {
+      const next = current === null ? new Set(frameworkIds) : new Set(current);
+      if (next.has(frameworkId)) {
+        next.delete(frameworkId);
+      } else {
+        next.add(frameworkId);
+      }
+      return next.size === frameworkIds.length ? null : next;
+    });
+  };
 
   const loadFrameworks = useCallback(async () => {
     const version = ++frameworkLoadVersion.current;
@@ -4251,29 +4257,42 @@ function ArtPanel({
 
   return (
     <section className="art-hub" aria-label="Art">
-      <div className="art-hub__tabs" role="tablist" aria-label="Art 工作区">
-        {artWorkspaceItems.map((item, index) => {
-          const active = activeWorkspace === item.id;
-          return (
-            <button
-              key={item.id}
-              ref={(element) => {
-                tabRefs.current[index] = element;
-              }}
-              id={`art-tab-${item.id}`}
-              className={active ? "art-hub__tab art-hub__tab--active" : "art-hub__tab"}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-controls={`art-panel-${item.id}`}
-              tabIndex={active ? 0 : -1}
-              onClick={() => setActiveWorkspace(item.id)}
-              onKeyDown={(event) => selectAdjacentWorkspace(event, index)}
-            >
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+      <div className="art-hub__navigation">
+        <div
+          className={activeWorkspace === "registry" ? "art-hub__tabs art-hub__tabs--with-filter" : "art-hub__tabs"}
+          role="tablist"
+          aria-label="Art 工作区"
+        >
+          {artWorkspaceItems.map((item, index) => {
+            const active = activeWorkspace === item.id;
+            return (
+              <button
+                key={item.id}
+                ref={(element) => {
+                  tabRefs.current[index] = element;
+                }}
+                id={`art-tab-${item.id}`}
+                className={active ? "art-hub__tab art-hub__tab--active" : "art-hub__tab"}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls={`art-panel-${item.id}`}
+                tabIndex={active ? 0 : -1}
+                onClick={() => setActiveWorkspace(item.id)}
+                onKeyDown={(event) => selectAdjacentWorkspace(event, index)}
+              >
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        {activeWorkspace === "registry" ? (
+          <FrameworkFilter
+            frameworks={frameworks}
+            selectedFrameworkIds={selectedFrameworkIds}
+            onToggle={toggleFrameworkFilter}
+          />
+        ) : null}
       </div>
 
       {frameworkError ? (
@@ -4310,6 +4329,7 @@ function ArtPanel({
           frameworkBusyId={frameworkBusyId}
           frameworkError={frameworkError}
           onToggleFramework={toggleFramework}
+          selectedFrameworkIds={selectedFrameworkIds}
           reloadFrameworks={loadFrameworks}
           baseUrl={baseUrl}
           refresh={refresh}
