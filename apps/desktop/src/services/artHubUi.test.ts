@@ -42,18 +42,31 @@ test("keeps only Chinese registry store and security labels in the Art workspace
   assert.doesNotMatch(appSource, /执行框架/);
 });
 
-test("keeps framework filtering and management inside the registry", () => {
+test("keeps framework filtering beside a modal management trigger", () => {
   assert.match(appSource, /<div className="framework-filter" role="group" aria-label="按框架筛选 Art">/);
   assert.match(appSource, /activeWorkspace === "registry" \? \(\s*<FrameworkFilter/);
   assert.doesNotMatch(appSource, /<legend>框架<\/legend>/);
   assert.match(appSource, /checked=\{checked\}/);
   assert.match(appSource, /visibleTools\.map/);
-  assert.match(appSource, /<summary>管理框架<\/summary>/);
-  assert.match(styleSource, /\.framework-filter \{[\s\S]*?overflow-x: auto;/);
+  assert.match(appSource, /className="ghost-button framework-filter__manage"/);
+  assert.doesNotMatch(appSource, /<summary>管理框架<\/summary>/);
+  assert.match(styleSource, /\.framework-filter__options \{[\s\S]*?overflow-x: auto;/);
   assert.match(styleSource, /\.framework-filter__option \{[\s\S]*?flex: 0 0 auto;/);
-  const filterRule = styleSource.match(/\.framework-filter \{([^}]*)\}/);
+  const filterRule = styleSource.match(/\.framework-filter__options \{([^}]*)\}/);
   assert.ok(filterRule);
   assert.doesNotMatch(filterRule[1], /flex-wrap/);
+});
+
+test("opens an accessible framework management dialog with version and package update actions", () => {
+  assert.match(appSource, /role="dialog"\s+aria-modal="true"\s+aria-labelledby="framework-dialog-title"/);
+  assert.match(appSource, /<th scope="col">框架<\/th>/);
+  assert.match(appSource, /<th scope="col">版本<\/th>/);
+  assert.match(appSource, /<th scope="col">安装<\/th>/);
+  assert.match(appSource, /<th scope="col">更新<\/th>/);
+  assert.match(appSource, /accept="\.zip,application\/zip"/);
+  assert.match(appSource, /upgradeFrameworkPackage\(baseUrl, identity, zipBase64\)/);
+  assert.match(appSource, /event\.key === "Escape"/);
+  assert.match(styleSource, /\.framework-dialog-backdrop \{[\s\S]*?position: fixed;/);
 });
 
 test("moves Art workspace focus with arrow, Home, and End keys", () => {

@@ -53,6 +53,7 @@ import {
   listFrameworks,
   installFramework,
   uninstallFramework,
+  upgradeFrameworkPackage,
   listPluginTrust,
   trustPluginPublisher,
   revokePluginPublisher,
@@ -2837,9 +2838,6 @@ function RegistryPanel({
   mcpServers,
   workflows,
   frameworks,
-  frameworkBusyId,
-  frameworkError,
-  onToggleFramework,
   selectedFrameworkIds,
   reloadFrameworks,
   baseUrl,
@@ -2850,9 +2848,6 @@ function RegistryPanel({
   mcpServers: LoomMcpServer[];
   workflows: LoomWorkflowMetadata[];
   frameworks: LoomFramework[];
-  frameworkBusyId: string | null;
-  frameworkError: string | null;
-  onToggleFramework: (framework: LoomFramework) => Promise<void>;
   selectedFrameworkIds: ReadonlySet<string> | null;
   reloadFrameworks: () => Promise<void>;
   baseUrl: string;
@@ -3459,15 +3454,6 @@ function RegistryPanel({
           </article>
         )}
       </div>
-      <details className="framework-management">
-        <summary>管理框架</summary>
-        <FrameworksPanel
-          frameworks={frameworks}
-          busyId={frameworkBusyId}
-          error={frameworkError}
-          onToggle={onToggleFramework}
-        />
-      </details>
       <div className="card-grid">
         <article className="glass-card control-card">
           <div className="control-card__head">
@@ -3760,87 +3746,6 @@ function frameworkPermissionSummary(framework: LoomFramework): string[] {
   return [...permissions];
 }
 
-function frameworkResourceSummary(framework: LoomFramework): string[] {
-  const resources = framework.resources;
-  if (!resources) return [];
-  return [
-    resources.timeoutSeconds ? `超时 ${resources.timeoutSeconds}s` : null,
-    resources.memoryMiB ? `内存 ${resources.memoryMiB} MiB` : null,
-    resources.maxProcesses ? `进程 ${resources.maxProcesses}` : null,
-    resources.stdoutMiB ? `stdout ${resources.stdoutMiB} MiB` : null,
-    resources.stderrMiB ? `stderr ${resources.stderrMiB} MiB` : null,
-  ].filter((value): value is string => Boolean(value));
-}
-
-function FrameworksPanel({
-  frameworks,
-  busyId,
-  error,
-  onToggle,
-}: {
-  frameworks: LoomFramework[];
-  busyId: string | null;
-  error: string | null;
-  onToggle: (framework: LoomFramework) => Promise<void>;
-}) {
-  return (
-    <div className="card-grid framework-management__grid">
-        {frameworks.map((framework) => {
-          const identity = frameworkIdentity(framework);
-          const permissions = frameworkPermissionSummary(framework);
-          const resources = frameworkResourceSummary(framework);
-          return (
-            <article className="glass-card control-card" key={identity}>
-              <div className="control-card__head">
-                <div>
-                  <p className="card-kicker">{framework.installed ? "已安装" : "未安装"}</p>
-                  <h3>{framework.name}</h3>
-                </div>
-                <span className={framework.ready ? "mini-chip mini-chip--ok" : "mini-chip"}>
-                  {framework.ready ? "就绪" : framework.installed ? "未就绪" : "未安装"}
-                </span>
-              </div>
-              <p>{framework.description}</p>
-              <p className="mono-line">{identity}</p>
-              <p className="muted-line">
-                发布者: {framework.publisher?.name || framework.publisher?.id || "未声明"} · 信任: {framework.trustStatus || "未知"}
-              </p>
-              <p className="mono-line">{framework.readyDetail}</p>
-              <div>
-                <p className="card-kicker">权限审阅</p>
-                {permissions.length ? permissions.map((permission) => (
-                  <span className="mini-chip" key={`${identity}-${permission}`} style={{ marginRight: 6, marginBottom: 6 }}>
-                    {permission}
-                  </span>
-                )) : <span className="mini-chip">未声明额外权限</span>}
-              </div>
-              {resources.length ? (
-                <p className="muted-line">资源上限: {resources.join(" · ")}</p>
-              ) : null}
-              <button
-                className={framework.installed ? "ghost-button" : "signal-button"}
-                type="button"
-                onClick={() => void onToggle(framework)}
-                disabled={busyId === identity}
-              >
-                {busyId === identity
-                  ? "处理中"
-                  : framework.installed
-                    ? "卸载"
-                    : "安装"}
-              </button>
-            </article>
-          );
-        })}
-        {frameworks.length === 0 && !error ? (
-          <article className="glass-card empty-card">
-            <h3>加载中…</h3>
-          </article>
-        ) : null}
-    </div>
-  );
-}
-
 function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   const [publishers, setPublishers] = useState<LoomPublisherTrustRecord[]>([]);
   const [credentials, setCredentials] = useState<LoomCredentialSummary[]>([]);
@@ -4121,31 +4026,209 @@ function FrameworkFilter({
   frameworks,
   selectedFrameworkIds,
   onToggle,
+  onManage,
+  manageButtonRef,
 }: {
   frameworks: LoomFramework[];
   selectedFrameworkIds: ReadonlySet<string> | null;
   onToggle: (frameworkId: string) => void;
+  onManage: () => void;
+  manageButtonRef: (element: HTMLButtonElement | null) => void;
 }) {
   return (
     <div className="framework-filter" role="group" aria-label="按框架筛选 Art">
-      {frameworks.map((framework) => {
-        const identity = frameworkIdentity(framework);
-        const checked = selectedFrameworkIds === null || selectedFrameworkIds.has(identity);
-        return (
-          <label
-            className={checked ? "framework-filter__option framework-filter__option--checked" : "framework-filter__option"}
-            key={identity}
-          >
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={() => onToggle(identity)}
-            />
-            <span>{frameworkFilterLabel(framework)}</span>
-          </label>
-        );
-      })}
-      {frameworks.length === 0 ? <span className="muted-line">暂无框架</span> : null}
+      <div className="framework-filter__options">
+        {frameworks.map((framework) => {
+          const identity = frameworkIdentity(framework);
+          const checked = selectedFrameworkIds === null || selectedFrameworkIds.has(identity);
+          return (
+            <label
+              className={checked ? "framework-filter__option framework-filter__option--checked" : "framework-filter__option"}
+              key={identity}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => onToggle(identity)}
+              />
+              <span>{frameworkFilterLabel(framework)}</span>
+            </label>
+          );
+        })}
+        {frameworks.length === 0 ? <span className="muted-line">暂无框架</span> : null}
+      </div>
+      <button
+        className="ghost-button framework-filter__manage"
+        type="button"
+        ref={manageButtonRef}
+        onClick={onManage}
+      >
+        管理框架
+      </button>
+    </div>
+  );
+}
+
+type FrameworkBusyAction = "toggle" | "upgrade" | null;
+
+function readFrameworkPackageBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("无法读取框架更新包。"));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const separator = result.indexOf(",");
+      if (separator < 0 || !result.slice(separator + 1)) {
+        reject(new Error("框架更新包内容为空。"));
+        return;
+      }
+      resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function FrameworkManagementDialog({
+  open,
+  frameworks,
+  busyId,
+  busyAction,
+  error,
+  message,
+  onClose,
+  onToggle,
+  onUpgrade,
+}: {
+  open: boolean;
+  frameworks: LoomFramework[];
+  busyId: string | null;
+  busyAction: FrameworkBusyAction;
+  error: string | null;
+  message: StudioMessage | null;
+  onClose: () => void;
+  onToggle: (framework: LoomFramework) => Promise<void>;
+  onUpgrade: (framework: LoomFramework, file: File) => Promise<void>;
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  useEffect(() => {
+    if (!open) return;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])',
+      )];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, open]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="framework-dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="framework-dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="framework-dialog-title"
+      >
+        <header className="framework-dialog__header">
+          <h2 id="framework-dialog-title">管理框架</h2>
+          <button className="ghost-button" type="button" ref={closeButtonRef} onClick={onClose}>
+            关闭
+          </button>
+        </header>
+        {error ? <p className="error-text">{error}</p> : null}
+        {message ? (
+          <p className={message.kind === "error" ? "error-text" : "success-text"}>{message.text}</p>
+        ) : null}
+        <div className="framework-dialog__table-wrap">
+          <table className="framework-dialog__table">
+            <thead>
+              <tr>
+                <th scope="col">框架</th>
+                <th scope="col">版本</th>
+                <th scope="col">安装</th>
+                <th scope="col">更新</th>
+              </tr>
+            </thead>
+            <tbody>
+              {frameworks.map((framework) => {
+                const identity = frameworkIdentity(framework);
+                const rowBusy = busyId === identity;
+                const toggleBusy = rowBusy && busyAction === "toggle";
+                const upgradeBusy = rowBusy && busyAction === "upgrade";
+                return (
+                  <tr key={identity}>
+                    <th scope="row">{frameworkFilterLabel(framework)}</th>
+                    <td>{framework.version || "—"}</td>
+                    <td>
+                      <button
+                        className={framework.installed ? "ghost-button" : "signal-button"}
+                        type="button"
+                        disabled={rowBusy}
+                        onClick={() => void onToggle(framework)}
+                      >
+                        {toggleBusy ? "处理中" : framework.installed ? "卸载" : "安装"}
+                      </button>
+                    </td>
+                    <td>
+                      <input
+                        hidden
+                        ref={(element) => {
+                          fileInputRefs.current[identity] = element;
+                        }}
+                        type="file"
+                        accept=".zip,application/zip"
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = "";
+                          if (file) void onUpgrade(framework, file);
+                        }}
+                      />
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        disabled={!framework.installed || rowBusy}
+                        onClick={() => fileInputRefs.current[identity]?.click()}
+                      >
+                        {upgradeBusy ? "更新中" : "更新"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {frameworks.length === 0 && !error ? <p className="muted-line">加载中…</p> : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -4168,10 +4251,14 @@ function ArtPanel({
   const [activeWorkspace, setActiveWorkspace] = useState<ArtWorkspaceId>("registry");
   const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
   const [frameworkBusyId, setFrameworkBusyId] = useState<string | null>(null);
+  const [frameworkBusyAction, setFrameworkBusyAction] = useState<FrameworkBusyAction>(null);
   const [frameworkError, setFrameworkError] = useState<string | null>(null);
+  const [frameworkManagementMessage, setFrameworkManagementMessage] = useState<StudioMessage | null>(null);
+  const [frameworkDialogOpen, setFrameworkDialogOpen] = useState(false);
   const [snapshotRefreshError, setSnapshotRefreshError] = useState<string | null>(null);
   const [selectedFrameworkIds, setSelectedFrameworkIds] = useState<Set<string> | null>(null);
   const frameworkLoadVersion = useRef(0);
+  const frameworkManageButtonRef = useRef<HTMLButtonElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const frameworkIds = useMemo(
     () => [...new Set(frameworks.map((framework) => frameworkIdentity(framework)))],
@@ -4231,7 +4318,9 @@ function ArtPanel({
     const review = permissions.length ? `\n\n权限审阅:\n- ${permissions.join("\n- ")}` : "";
     if (!window.confirm(`${action}框架 ${identity}？${review}`)) return;
     setFrameworkBusyId(identity);
+    setFrameworkBusyAction("toggle");
     setFrameworkError(null);
+    setFrameworkManagementMessage(null);
     try {
       if (framework.installed) {
         await uninstallFramework(baseUrl, identity);
@@ -4239,12 +4328,44 @@ function ArtPanel({
         await installFramework(baseUrl, identity);
       }
       await synchronizeArtState();
+      setFrameworkManagementMessage({ kind: "info", text: `已${action} ${frameworkFilterLabel(framework)}。` });
     } catch (error) {
-      setFrameworkError(error instanceof Error ? error.message : "框架操作失败。");
+      const detail = error instanceof Error ? error.message : "框架操作失败。";
+      setFrameworkError(detail);
     } finally {
       setFrameworkBusyId(null);
+      setFrameworkBusyAction(null);
     }
   };
+
+  const upgradeFramework = async (framework: LoomFramework, file: File) => {
+    if (!framework.installed) return;
+    const identity = frameworkIdentity(framework);
+    setFrameworkBusyId(identity);
+    setFrameworkBusyAction("upgrade");
+    setFrameworkError(null);
+    setFrameworkManagementMessage(null);
+    try {
+      const zipBase64 = await readFrameworkPackageBase64(file);
+      await upgradeFrameworkPackage(baseUrl, identity, zipBase64);
+      await synchronizeArtState();
+      setFrameworkManagementMessage({
+        kind: "info",
+        text: `已更新 ${frameworkFilterLabel(framework)}。`,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "框架更新失败。";
+      setFrameworkError(detail);
+    } finally {
+      setFrameworkBusyId(null);
+      setFrameworkBusyAction(null);
+    }
+  };
+
+  const closeFrameworkDialog = useCallback(() => {
+    setFrameworkDialogOpen(false);
+    window.setTimeout(() => frameworkManageButtonRef.current?.focus(), 0);
+  }, []);
 
   const selectAdjacentWorkspace = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const nextIndex = nextArtWorkspaceIndex(event.key, index, artWorkspaceItems.length);
@@ -4291,6 +4412,13 @@ function ArtPanel({
             frameworks={frameworks}
             selectedFrameworkIds={selectedFrameworkIds}
             onToggle={toggleFrameworkFilter}
+            onManage={() => {
+              setFrameworkManagementMessage(null);
+              setFrameworkDialogOpen(true);
+            }}
+            manageButtonRef={(element) => {
+              frameworkManageButtonRef.current = element;
+            }}
           />
         ) : null}
       </div>
@@ -4326,9 +4454,6 @@ function ArtPanel({
           mcpServers={mcpServers}
           workflows={workflows}
           frameworks={frameworks}
-          frameworkBusyId={frameworkBusyId}
-          frameworkError={frameworkError}
-          onToggleFramework={toggleFramework}
           selectedFrameworkIds={selectedFrameworkIds}
           reloadFrameworks={loadFrameworks}
           baseUrl={baseUrl}
@@ -4353,6 +4478,17 @@ function ArtPanel({
       >
         <PluginSecurityPanel baseUrl={baseUrl} />
       </div>
+      <FrameworkManagementDialog
+        open={frameworkDialogOpen}
+        frameworks={frameworks}
+        busyId={frameworkBusyId}
+        busyAction={frameworkBusyAction}
+        error={frameworkError}
+        message={frameworkManagementMessage}
+        onClose={closeFrameworkDialog}
+        onToggle={toggleFramework}
+        onUpgrade={upgradeFramework}
+      />
     </section>
   );
 }

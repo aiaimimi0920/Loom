@@ -614,13 +614,22 @@ button {
   align-items: center;
   min-width: 0;
   gap: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   border: 1px solid rgba(17, 22, 20, 0.14);
   border-top: 0;
   border-radius: 0 0 12px 12px;
   background: rgba(255, 255, 255, 0.48);
   padding: 8px;
+  scrollbar-width: thin;
+}
+
+.framework-filter__options {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: thin;
 }
 
@@ -655,20 +664,89 @@ button {
   outline-offset: 2px;
 }
 
-.framework-management {
-  border: 1px solid rgba(17, 22, 20, 0.14);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.38);
-  padding: 12px;
+.framework-filter__manage {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
-.framework-management summary {
-  cursor: pointer;
+.framework-dialog-backdrop {
+  position: fixed;
+  z-index: 200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 13, 0.72);
+  padding: 16px;
+}
+
+.framework-dialog {
+  display: grid;
+  width: min(880px, 100%);
+  max-height: calc(100vh - 32px);
+  min-height: 0;
+  gap: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(217, 255, 56, 0.34);
+  border-radius: 14px;
+  background: #f2f4ec;
+  color: #111614;
+  padding: 16px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+}
+
+.framework-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.framework-dialog__header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.framework-dialog__table-wrap {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-radius: 10px;
+}
+
+.framework-dialog__table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.framework-dialog__table th,
+.framework-dialog__table td {
+  border-bottom: 1px solid rgba(17, 22, 20, 0.11);
+  padding: 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.framework-dialog__table thead th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: #e5e8dd;
+  font-size: 0.78rem;
+}
+
+.framework-dialog__table tbody th {
   font-weight: 900;
 }
 
-.framework-management__grid {
-  margin-top: 12px;
+.framework-dialog__table tbody tr:last-child th,
+.framework-dialog__table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.framework-dialog__table button {
+  min-width: 76px;
 }
 
 .flow-strip,
