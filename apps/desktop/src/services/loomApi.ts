@@ -95,6 +95,14 @@ export interface LoomToolDefinition {
   metadata?: unknown;
 }
 
+export interface LoomArtRuntimeManifest {
+  protocolVersion: "loom.art.runtime.v1" | string;
+  entry: {
+    command: string;
+    args?: string[];
+  };
+}
+
 export interface LoomToolsResponse {
   tools?: LoomToolDefinition[];
 }
@@ -883,9 +891,75 @@ export async function saveHookCanvasWorkflow(
   );
 }
 
-// One art execution framework's install/readiness status.
+export interface LoomFrameworkPublisher {
+  id: string;
+  name?: string | null;
+  website?: string | null;
+  keyId?: string | null;
+}
+
+export interface LoomFrameworkAuthoringOption {
+  value: unknown;
+  label: string;
+}
+
+export interface LoomFrameworkAuthoringField {
+  id: string;
+  label: string;
+  type: "string" | "number" | "boolean" | "enum" | "path" | "secret" | "json" | string;
+  required?: boolean;
+  default?: unknown;
+  options?: LoomFrameworkAuthoringOption[];
+  placeholder?: string | null;
+  minimum?: number | null;
+  maximum?: number | null;
+  step?: number | null;
+  secret?: boolean;
+}
+
+export interface LoomFrameworkAuthoringPort {
+  name: string;
+  label: string;
+  type: string;
+  executionType: string;
+  required?: boolean;
+  exposePort?: boolean;
+}
+
+export interface LoomFrameworkAuthoringSchema {
+  schemaVersion: number;
+  title: string;
+  description?: string | null;
+  fields?: LoomFrameworkAuthoringField[];
+  inputs?: LoomFrameworkAuthoringPort[];
+  outputs?: LoomFrameworkAuthoringPort[];
+}
+
+export interface LoomFrameworkPermissionPolicy {
+  network?: {
+    domains?: string[];
+    allowLocalhost?: boolean;
+    allowPrivateNetworks?: boolean;
+  };
+  filesystem?: { read?: string[]; write?: string[] };
+  process?: { spawn?: boolean; maxProcesses?: number | null };
+  gpu?: boolean;
+  clipboard?: boolean;
+  credentials?: string[];
+}
+
+export interface LoomFrameworkResourceLimits {
+  timeoutSeconds?: number | null;
+  memoryMiB?: number | null;
+  maxProcesses?: number | null;
+  stdoutMiB?: number | null;
+  stderrMiB?: number | null;
+}
+
+// One Art execution framework's package, authoring, and readiness status.
 export interface LoomFramework {
   id: string;
+  qualifiedId?: string;
   name: string;
   description: string;
   installed: boolean;
@@ -894,6 +968,12 @@ export interface LoomFramework {
   readyDetail: string;
   version?: string | null;
   runtimeDir?: string | null;
+  publisher?: LoomFrameworkPublisher | null;
+  trustStatus?: "trusted" | "verified" | "unsigned" | "invalid" | "revoked" | string;
+  declaredPermissions?: string[];
+  permissionPolicy?: LoomFrameworkPermissionPolicy;
+  resources?: LoomFrameworkResourceLimits;
+  authoringSchema?: LoomFrameworkAuthoringSchema | null;
 }
 
 interface LoomFrameworksResponse {
@@ -968,6 +1048,94 @@ export async function upgradeFrameworkPackage(
   return response.framework ?? null;
 }
 
+export interface LoomPublisherTrustRecord {
+  publisherId: string;
+  keyId: string;
+  publicKey: string;
+  revoked: boolean;
+}
+
+interface LoomPluginTrustStore {
+  schemaVersion?: number;
+  publishers?: LoomPublisherTrustRecord[];
+}
+
+export async function listPluginTrust(baseUrl: string): Promise<LoomPublisherTrustRecord[]> {
+  const response = await getJson<LoomPluginTrustStore>(baseUrl, "/v1/plugin-trust");
+  return Array.isArray(response.publishers) ? response.publishers : [];
+}
+
+export async function trustPluginPublisher(
+  baseUrl: string,
+  record: Omit<LoomPublisherTrustRecord, "revoked"> & { revoked?: boolean },
+): Promise<LoomPublisherTrustRecord[]> {
+  const response = await postJson<LoomPluginTrustStore>(baseUrl, "/v1/plugin-trust/publishers", {
+    ...record,
+    revoked: record.revoked ?? false,
+  });
+  return Array.isArray(response.publishers) ? response.publishers : [];
+}
+
+export async function revokePluginPublisher(
+  baseUrl: string,
+  publisherId: string,
+  keyId: string,
+): Promise<LoomPublisherTrustRecord[]> {
+  const response = await postJson<LoomPluginTrustStore>(baseUrl, "/v1/plugin-trust/revoke", {
+    publisherId,
+    keyId,
+  });
+  return Array.isArray(response.publishers) ? response.publishers : [];
+}
+
+export interface LoomCredentialScope {
+  frameworkId?: string;
+  artId?: string;
+}
+
+export interface LoomCredentialSummary {
+  name: string;
+  scope: LoomCredentialScope;
+  expiresAt?: string | null;
+  protection: string;
+}
+
+export interface LoomCredentialInput {
+  name: string;
+  value: string;
+  scope?: LoomCredentialScope;
+  expiresAt?: string | null;
+}
+
+interface LoomCredentialsResponse {
+  credentials?: LoomCredentialSummary[];
+}
+
+interface LoomCredentialResponse {
+  credential?: LoomCredentialSummary;
+}
+
+export async function listPluginCredentials(baseUrl: string): Promise<LoomCredentialSummary[]> {
+  const response = await getJson<LoomCredentialsResponse>(baseUrl, "/v1/plugin-credentials");
+  return Array.isArray(response.credentials) ? response.credentials : [];
+}
+
+export async function savePluginCredential(
+  baseUrl: string,
+  input: LoomCredentialInput,
+): Promise<LoomCredentialSummary | null> {
+  const response = await postJson<LoomCredentialResponse>(baseUrl, "/v1/plugin-credentials", input);
+  return response.credential ?? null;
+}
+
+export async function deletePluginCredential(
+  baseUrl: string,
+  name: string,
+  scope: LoomCredentialScope = {},
+): Promise<void> {
+  await postJson(baseUrl, "/v1/plugin-credentials/delete", { name, scope });
+}
+
 // A remote art-store catalog entry.
 export interface ArtStoreEntry {
   id: string;
@@ -999,6 +1167,18 @@ export async function installArtFromStore(
 
 export async function installArtPackage(baseUrl: string, zipBase64: string): Promise<void> {
   await postJson(baseUrl, "/v1/arts/install", { zipBase64 });
+}
+
+export async function createAuthoredArtPackage(
+  baseUrl: string,
+  tool: LoomToolDefinition,
+  runtime?: LoomArtRuntimeManifest,
+): Promise<LoomToolDefinition | null> {
+  const response = await postJson<{ tool?: LoomToolDefinition }>(baseUrl, "/v1/arts/create", {
+    tool,
+    runtime,
+  });
+  return response.tool ?? null;
 }
 
 export async function publishArt(baseUrl: string, artId: string, store?: string): Promise<void> {

@@ -35,7 +35,14 @@ use loom_hook_bridge::{
 };
 use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::{McpServerConfig, StdioMcpClient};
+use loom_protocol::{
+    is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest, PublisherTrustRecord,
+};
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
+use loom_tool_registry::credentials::{CredentialInput, CredentialScope, CredentialStore};
+use loom_tool_registry::network_policy::{
+    get_bounded, secure_client, validate_outbound_url, OutboundPolicy,
+};
 use loom_tool_registry::{
     execute_tool, framework::FrameworkRegistry, ToolDefinition, ToolExecution, ToolRegistry,
     ToolRegistryError, WorkflowExecutionBindings,
@@ -44,6 +51,7 @@ use loom_workflow_runtime::{execute_tool_with_workflows, WorkflowRuntimeError};
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest as _, Sha256};
 
 mod brain_plan;
 mod hook_canvas;
@@ -59,6 +67,10 @@ use request_executor::{
 
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+// Framework ZIPs may bundle standalone runtimes such as embedded Python. The
+// JSON API carries ZIP bytes as base64, so package routes need a larger bounded
+// limit while ordinary daemon routes retain the conservative 1 MiB ceiling.
+const MAX_PACKAGE_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PYTHON_SOURCE_BYTES: u64 = 512 * 1024;
 const MAX_ART_JSON_BYTES: u64 = 512 * 1024;
 const CAPABILITY_BRAIN_PLAN: &str = "brain.plan";
@@ -66,6 +78,9 @@ const CAPABILITY_TEA_TICKET_DECOMPOSE: &str = "tea.ticket.decompose.v1";
 const CAPABILITY_TEA_TICKET_EXECUTE: &str = "tea.ticket.execute.v1";
 const CAPABILITY_TEA_TICKET_REVIEW: &str = "tea.ticket.review.v1";
 const DEFAULT_MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0/servers";
+const MAX_REGISTRY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ART_STORE_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ART_STORE_PACKAGE_BYTES: usize = 128 * 1024 * 1024;
 
 fn invokable_capability_ids() -> [&'static str; 4] {
     [
@@ -1185,9 +1200,26 @@ fn request_exceeds_size_limit(request: &[u8]) -> bool {
 
     let header_text = String::from_utf8_lossy(&request[..header_end]);
     let content_length = content_length(&header_text);
+    let body_limit = request_body_size_limit(&header_text);
     let body_start = header_end + 4;
-    content_length > MAX_HTTP_BODY_BYTES
-        || request.len().saturating_sub(body_start) > MAX_HTTP_BODY_BYTES
+    content_length > body_limit || request.len().saturating_sub(body_start) > body_limit
+}
+
+fn request_body_size_limit(headers: &str) -> usize {
+    let mut request_line = headers
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    let method = request_line.next().unwrap_or_default();
+    let path = request_line.next().unwrap_or_default();
+    let is_package_install = matches!(path, "/v1/frameworks/install" | "/v1/arts/install");
+    let is_framework_upgrade = path.starts_with("/v1/frameworks/") && path.ends_with("/upgrade");
+    if method.eq_ignore_ascii_case("POST") && (is_package_install || is_framework_upgrade) {
+        MAX_PACKAGE_HTTP_BODY_BYTES
+    } else {
+        MAX_HTTP_BODY_BYTES
+    }
 }
 
 fn request_has_full_body(request: &[u8]) -> bool {
@@ -1871,6 +1903,33 @@ fn route(
         ),
         ("GET", "/v1/tools") => list_tools(tool_registry),
         ("GET", "/v1/frameworks") => list_frameworks(framework_registry),
+        ("GET", "/v1/doctor/frameworks") => framework_doctor(framework_registry),
+        ("GET", "/v1/doctor/arts") => {
+            art_doctor(tool_registry, framework_registry, control_plane_root)
+        }
+        ("GET", path) if path.split('?').next() == Some("/v1/support-bundle") => support_bundle(
+            path,
+            hook_settings,
+            run_store,
+            run_store_status,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+        ),
+        ("GET", "/v1/plugin-trust") => list_plugin_trust(framework_registry),
+        ("POST", "/v1/plugin-trust/publishers") => {
+            trust_plugin_publisher(&request.body, framework_registry)
+        }
+        ("POST", "/v1/plugin-trust/revoke") => {
+            revoke_plugin_publisher(&request.body, framework_registry)
+        }
+        ("GET", "/v1/plugin-credentials") => list_plugin_credentials(control_plane_root),
+        ("POST", "/v1/plugin-credentials") => {
+            save_plugin_credential(&request.body, control_plane_root)
+        }
+        ("POST", "/v1/plugin-credentials/delete") => {
+            delete_plugin_credential(&request.body, control_plane_root)
+        }
         ("POST", "/v1/frameworks/install") => {
             install_framework_package(&request.body, framework_registry)
         }
@@ -1881,6 +1940,36 @@ fn route(
             control_plane_root,
             hook_bridge,
         ),
+        ("POST", "/v1/arts/create") => create_authored_art(
+            &request.body,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+        ),
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/rollback").is_some() =>
+        {
+            rollback_art(
+                &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/rollback")
+                    .expect("checked path"),
+                tool_registry,
+                framework_registry,
+                control_plane_root,
+                hook_bridge,
+            )
+        }
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/uninstall").is_some() =>
+        {
+            uninstall_art(
+                &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/uninstall")
+                    .expect("checked path"),
+                tool_registry,
+                control_plane_root,
+                hook_bridge,
+            )
+        }
         ("GET", path) if path.split('?').next() == Some("/v1/arts/store/catalog") => {
             fetch_art_store_catalog(path)
         }
@@ -1891,9 +1980,12 @@ fn route(
             control_plane_root,
             hook_bridge,
         ),
-        ("GET", path) if path_id_with_suffix(path, "/v1/arts/", "/package").is_some() => {
+        ("GET", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/package").is_some() =>
+        {
             package_art(
-                path_id_with_suffix(path, "/v1/arts/", "/package").expect("checked path"),
+                &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/package")
+                    .expect("checked path"),
                 tool_registry,
                 control_plane_root,
             )
@@ -1901,64 +1993,99 @@ fn route(
         ("POST", "/v1/arts/store/publish") => {
             publish_art_to_store(&request.body, tool_registry, control_plane_root)
         }
-        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/install").is_some() => {
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/install")
+                .is_some() =>
+        {
             install_framework(
-                path_id_with_suffix(path, "/v1/frameworks/", "/install").expect("checked path"),
+                &decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/install")
+                    .expect("checked path"),
                 framework_registry,
             )
         }
-        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/enable").is_some() => {
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/enable")
+                .is_some() =>
+        {
             set_framework_enabled(
-                path_id_with_suffix(path, "/v1/frameworks/", "/enable").expect("checked path"),
+                &decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/enable")
+                    .expect("checked path"),
                 true,
                 framework_registry,
             )
         }
-        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/disable").is_some() => {
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/disable")
+                .is_some() =>
+        {
             set_framework_enabled(
-                path_id_with_suffix(path, "/v1/frameworks/", "/disable").expect("checked path"),
+                &decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/disable")
+                    .expect("checked path"),
                 false,
                 framework_registry,
             )
         }
-        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/upgrade").is_some() => {
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/upgrade")
+                .is_some() =>
+        {
             upgrade_framework_package(
-                path_id_with_suffix(path, "/v1/frameworks/", "/upgrade").expect("checked path"),
+                &decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/upgrade")
+                    .expect("checked path"),
                 &request.body,
                 framework_registry,
             )
         }
-        ("POST", path) if path_id_with_suffix(path, "/v1/frameworks/", "/uninstall").is_some() => {
-            uninstall_framework(
-                path_id_with_suffix(path, "/v1/frameworks/", "/uninstall").expect("checked path"),
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/rollback")
+                .is_some() =>
+        {
+            rollback_framework(
+                &decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/rollback")
+                    .expect("checked path"),
                 framework_registry,
             )
         }
-        ("GET", path) if path_id_with_suffix(path, "/v1/tools/", "/readiness").is_some() => {
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/uninstall")
+                .is_some() =>
+        {
+            uninstall_framework(
+                &decoded_package_path_id_with_suffix(path, "/v1/frameworks/", "/uninstall")
+                    .expect("checked path"),
+                framework_registry,
+            )
+        }
+        ("GET", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/tools/", "/readiness").is_some() =>
+        {
             tool_readiness(
-                path_id_with_suffix(path, "/v1/tools/", "/readiness").expect("checked path"),
+                &decoded_package_path_id_with_suffix(path, "/v1/tools/", "/readiness")
+                    .expect("checked path"),
                 tool_registry,
                 framework_registry,
             )
         }
-        ("PUT", path) if path_id(path, "/v1/tools/").is_some() => put_tool(
-            path_id(path, "/v1/tools/").expect("checked path"),
+        ("PUT", path) if decoded_package_path_id(path, "/v1/tools/").is_some() => put_tool(
+            &decoded_package_path_id(path, "/v1/tools/").expect("checked path"),
             &request.body,
             tool_registry,
             hook_bridge,
         ),
-        ("DELETE", path) if path_id(path, "/v1/tools/").is_some() => delete_tool(
-            path_id(path, "/v1/tools/").expect("checked path"),
+        ("DELETE", path) if decoded_package_path_id(path, "/v1/tools/").is_some() => delete_tool(
+            &decoded_package_path_id(path, "/v1/tools/").expect("checked path"),
             tool_registry,
             hook_bridge,
         ),
         ("POST", path) if tool_execute_path_id(path).is_some() => execute_registered_tool(
-            tool_execute_path_id(path).expect("checked path"),
+            &tool_execute_path_id(path).expect("checked path"),
             &request.body,
             mcp_servers,
             tool_registry,
             workflow_store,
             framework_registry,
+            run_store,
+            control_plane_root,
         ),
         ("GET", "/v1/artloom-compat/arts") => list_artloom_compat_arts("list_arts", tool_registry),
         ("GET", "/v1/artloom-compat/arts/enabled") => {
@@ -2097,6 +2224,9 @@ fn route(
             mcp_servers,
             tool_registry,
             workflow_store,
+            framework_registry,
+            control_plane_root,
+            run_store,
         ),
         ("GET", "/v1/artloom-compat/system/autostart") => {
             get_artloom_compat_autostart(artloom_settings)
@@ -2211,10 +2341,17 @@ fn route(
             artloom_settings,
             shared_images,
             ocr_provider,
+            framework_registry,
+            control_plane_root,
+            run_store,
         ),
         ("POST", "/v1/hook-bridge/stop") => stop_hook_bridge(hook_bridge),
         ("POST", "/v1/runs") => start_tea_run(&request.body, run_store),
         ("POST", "/v1/invoke") => invoke_capability(&request.body, run_store, brain_planner),
+        ("GET", path) if execution_diagnostics_path_id(path).is_some() => execution_diagnostics(
+            execution_diagnostics_path_id(path).expect("checked path"),
+            run_store,
+        ),
         ("GET", path) if run_events_path_id(path).is_some() => {
             get_run_events(run_events_path_id(path).expect("checked path"), run_store)
         }
@@ -2305,9 +2442,41 @@ fn path_id_with_suffix<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
-fn tool_execute_path_id(path: &str) -> Option<&str> {
-    let id = path.strip_prefix("/v1/tools/")?.strip_suffix("/execute")?;
-    (!id.is_empty() && !id.contains('/')).then_some(id)
+fn decoded_package_path_id(path: &str, prefix: &str) -> Option<String> {
+    let encoded = path.strip_prefix(prefix)?;
+    decode_package_route_id(encoded)
+}
+
+fn decoded_package_path_id_with_suffix(path: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let encoded = path.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    decode_package_route_id(encoded)
+}
+
+fn decode_package_route_id(encoded: &str) -> Option<String> {
+    if encoded.is_empty() || encoded.contains('/') || encoded.contains('?') {
+        return None;
+    }
+    let decoded = percent_decode(encoded);
+    if let Some((publisher, id)) = decoded.split_once('/') {
+        if publisher.contains('/')
+            || !loom_protocol::is_safe_publisher_id(publisher)
+            || !loom_protocol::is_safe_package_id(id)
+        {
+            return None;
+        }
+    } else if decoded.is_empty()
+        || decoded.contains(['/', '\\', ':'])
+        || decoded == "."
+        || decoded == ".."
+        || decoded.contains("..")
+    {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn tool_execute_path_id(path: &str) -> Option<String> {
+    decoded_package_path_id_with_suffix(path, "/v1/tools/", "/execute")
 }
 
 fn query_value(path: &str, name: &str) -> Option<String> {
@@ -2816,13 +2985,15 @@ fn fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
     let limit = query_value(path, "limit").and_then(|value| value.parse::<u32>().ok());
     let url = build_mcp_registry_url(endpoint, search.as_deref(), limit, cursor.as_deref());
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("Loom/0.1 MCP Registry Client")
-        .timeout(Duration::from_secs(20))
-        .build()
-        .context("build MCP Registry client")?;
-    let response = match client.get(&url).send() {
-        Ok(response) => response,
+    let policy = user_configured_outbound_policy();
+    let client = secure_client(
+        "Loom/0.1 MCP Registry Client",
+        Duration::from_secs(20),
+        policy.clone(),
+    )
+    .map_err(|error| anyhow::anyhow!("build MCP Registry client: {error}"))?;
+    let bytes = match get_bounded(&client, &url, &policy, MAX_REGISTRY_RESPONSE_BYTES) {
+        Ok(bytes) => bytes,
         Err(error) => {
             return structured_error(
                 502,
@@ -2834,19 +3005,7 @@ fn fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
             );
         }
     };
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().unwrap_or_default();
-        return structured_error(
-            502,
-            json!({
-                "code": "mcp_registry_error",
-                "message": format!("MCP Registry returned HTTP {status}: {body}"),
-                "url": url,
-            }),
-        );
-    }
-    let value = match response.json::<Value>() {
+    let value = match serde_json::from_slice::<Value>(&bytes) {
         Ok(value) => value,
         Err(error) => {
             return structured_error(
@@ -3136,6 +3295,75 @@ struct InstallArtRequest {
     zip_base64: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAuthoredArtRequest {
+    tool: ToolDefinition,
+    #[serde(default)]
+    runtime: Option<ArtRuntimeManifest>,
+}
+
+fn create_authored_art(
+    body: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request: CreateAuthoredArtRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    if matches!(&request.tool.execution, ToolExecution::FrameworkArt { .. })
+        && request.runtime.is_none()
+    {
+        return invalid_request("framework_art authoring requires an art runtime manifest");
+    }
+    let qualified_id = request.tool.qualified_id();
+    let zip = match loom_tool_registry::install::build_authored_art_package_zip(
+        &request.tool,
+        request.runtime.as_ref(),
+    ) {
+        Ok(zip) => zip,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    match loom_tool_registry::install::install_art_from_zip(
+        &zip,
+        control_plane_root,
+        framework_registry,
+        tool_registry,
+    ) {
+        Ok(report) => {
+            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            let tool = tool_registry
+                .get_tool(&qualified_id)
+                .ok()
+                .flatten()
+                .unwrap_or(request.tool);
+            Ok((
+                200,
+                serde_json::to_string(&json!({ "report": report, "tool": tool }))?,
+            ))
+        }
+        Err(loom_tool_registry::install::ArtInstallError::FrameworkNotReady {
+            art_id,
+            framework,
+            reason,
+        }) => structured_error(
+            409,
+            json!({
+                "code": "framework_not_ready",
+                "message": format!("art `{art_id}` requires framework `{framework}` ({reason})"),
+                "framework": framework,
+            }),
+        ),
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "art_create_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
 // Install an art package (zip) into the registry: extracts to <root>/arts/<id>/,
 // checks the framework is ready, and registers the ToolDefinition.
 fn install_art(
@@ -3185,6 +3413,55 @@ fn install_art(
     }
 }
 
+fn rollback_art(
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    match loom_tool_registry::install::rollback_art_package(
+        control_plane_root,
+        art_id,
+        tool_registry,
+        framework_registry,
+    ) {
+        Ok(tool) => {
+            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            Ok((200, serde_json::to_string(&json!({ "tool": tool }))?))
+        }
+        Err(error) => structured_error(
+            409,
+            json!({ "code": "art_rollback_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn uninstall_art(
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    match loom_tool_registry::install::uninstall_art_package(
+        control_plane_root,
+        art_id,
+        tool_registry,
+    ) {
+        Ok(()) => {
+            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            Ok((
+                200,
+                serde_json::to_string(&json!({ "artId": art_id, "uninstalled": true }))?,
+            ))
+        }
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "art_uninstall_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
 // Resolve the remote art store base URL: explicit `?store=`/`store` field wins,
 // else the LOOM_ART_STORE_URL env var.
 fn resolve_art_store_url(explicit: Option<&str>) -> Option<String> {
@@ -3200,13 +3477,23 @@ fn resolve_art_store_url(explicit: Option<&str>) -> Option<String> {
         })
 }
 
+fn user_configured_outbound_policy() -> OutboundPolicy {
+    OutboundPolicy {
+        // Local registry/store fixtures are a supported development mode. Only
+        // literal loopback hosts may use HTTP; all other destinations require
+        // HTTPS and public addresses.
+        allow_http_loopback: true,
+        ..OutboundPolicy::default()
+    }
+}
+
 fn art_store_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .no_proxy()
-        .user_agent("Loom/0.1 Art Store Client")
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("build art store client")
+    secure_client(
+        "Loom/0.1 Art Store Client",
+        Duration::from_secs(30),
+        user_configured_outbound_policy(),
+    )
+    .map_err(|error| anyhow::anyhow!("build art store client: {error}"))
 }
 
 // Proxy the remote art store catalog (GET {store}/catalog).
@@ -3219,11 +3506,15 @@ fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
     };
     let url = format!("{}/catalog", store.trim_end_matches('/'));
     let client = art_store_client()?;
-    match client.get(&url).send().and_then(|r| r.error_for_status()) {
-        Ok(response) => {
-            let body = response.text().unwrap_or_default();
-            Ok((200, body))
-        }
+    let policy = user_configured_outbound_policy();
+    match get_bounded(&client, &url, &policy, MAX_ART_STORE_CATALOG_BYTES) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(body) => Ok((200, body)),
+            Err(error) => structured_error(
+                502,
+                json!({ "code": "art_store_invalid_response", "message": error.to_string(), "url": url }),
+            ),
+        },
         Err(error) => structured_error(
             502,
             json!({ "code": "art_store_unavailable", "message": format!("获取 art 商店目录失败：{error}"), "url": url }),
@@ -3237,6 +3528,73 @@ struct InstallFromStoreRequest {
     art_id: String,
     #[serde(default)]
     store: Option<String>,
+    /// Optional caller-provided root package digest. Dependencies use the
+    /// store's adjacent `.sha256` sidecar.
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn normalize_sha256(value: &str) -> Option<String> {
+    let digest = value.split_whitespace().next()?.trim().to_ascii_lowercase();
+    (digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(digest)
+}
+
+fn fetch_art_store_package(
+    client: &reqwest::blocking::Client,
+    policy: &OutboundPolicy,
+    store: &str,
+    id: &str,
+    expected_sha256: Option<&str>,
+) -> std::result::Result<Vec<u8>, loom_tool_registry::install::ArtInstallError> {
+    if !is_safe_package_id(id) {
+        return Err(loom_tool_registry::install::ArtInstallError::InvalidArtId(
+            id.to_owned(),
+        ));
+    }
+    let url = format!("{store}/arts/{id}.zip");
+    let expected = if let Some(expected) = expected_sha256 {
+        normalize_sha256(expected)
+    } else {
+        let sidecar_url = format!("{url}.sha256");
+        let sidecar = get_bounded(client, &sidecar_url, policy, 4096).map_err(|error| {
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "fetch digest for `{id}` from store: {error}"
+            ))
+        })?;
+        std::str::from_utf8(&sidecar)
+            .ok()
+            .and_then(normalize_sha256)
+    }
+    .ok_or_else(|| {
+        loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+            "store package `{id}` must provide a valid sha256 digest"
+        ))
+    })?;
+    let bytes =
+        get_bounded(client, &url, policy, MAX_ART_STORE_PACKAGE_BYTES).map_err(|error| {
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "fetch `{id}` from store: {error}"
+            ))
+        })?;
+    let actual = sha256_bytes(&bytes);
+    if actual != expected {
+        return Err(
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "store package `{id}` sha256 mismatch: expected {expected}, got {actual}"
+            )),
+        );
+    }
+    Ok(bytes)
 }
 
 // Install an art (and its dependents) from the remote store: fetch the root art
@@ -3268,26 +3626,16 @@ fn install_art_from_store(
             )
         }
     };
-    let fetch_zip =
-        |id: &str| -> std::result::Result<Vec<u8>, loom_tool_registry::install::ArtInstallError> {
-            let url = format!("{store}/arts/{}.zip", id);
-            let response = client
-                .get(&url)
-                .send()
-                .and_then(|r| r.error_for_status())
-                .map_err(|error| {
-                    loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
-                        "fetch `{id}` from store: {error}"
-                    ))
-                })?;
-            response.bytes().map(|b| b.to_vec()).map_err(|error| {
-                loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
-                    "read `{id}` bytes: {error}"
-                ))
-            })
-        };
+    let policy = user_configured_outbound_policy();
+    let fetch_zip = |id: &str| fetch_art_store_package(&client, &policy, &store, id, None);
 
-    let root_zip = match fetch_zip(&request.art_id) {
+    let root_zip = match fetch_art_store_package(
+        &client,
+        &policy,
+        &store,
+        &request.art_id,
+        request.sha256.as_deref(),
+    ) {
         Ok(bytes) => bytes,
         Err(error) => {
             return structured_error(
@@ -3343,7 +3691,7 @@ fn package_art(
         }
         Err(error) => return tool_registry_error_response(error),
     };
-    let art_dir = control_plane_root.join("arts").join(id);
+    let art_dir = installed_art_package_dir(&tool, control_plane_root);
     match loom_tool_registry::install::package_art_to_zip(&tool, &art_dir) {
         Ok(bytes) => {
             use base64::Engine as _;
@@ -3361,6 +3709,17 @@ fn package_art(
             json!({ "code": "art_package_failed", "message": error.to_string() }),
         ),
     }
+}
+
+fn installed_art_package_dir(tool: &ToolDefinition, control_plane_root: &Path) -> PathBuf {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .and_then(|package| package.get("dir"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| control_plane_root.join("arts").join(&tool.id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3398,7 +3757,7 @@ fn publish_art_to_store(
         }
         Err(error) => return tool_registry_error_response(error),
     };
-    let art_dir = control_plane_root.join("arts").join(&request.art_id);
+    let art_dir = installed_art_package_dir(&tool, control_plane_root);
     let zip = match loom_tool_registry::install::package_art_to_zip(&tool, &art_dir) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -3418,17 +3777,32 @@ fn publish_art_to_store(
             )
         }
     };
+    let policy = user_configured_outbound_policy();
+    let parsed_url = match reqwest::Url::parse(&url) {
+        Ok(url) => url,
+        Err(error) => return invalid_request(format!("invalid art store URL: {error}")),
+    };
+    if let Err(error) = validate_outbound_url(&parsed_url, &policy) {
+        return structured_error(
+            403,
+            json!({ "code": "art_store_security_policy", "message": error }),
+        );
+    }
+    let digest = sha256_bytes(&zip);
     match client
-        .post(&url)
+        .post(parsed_url)
         .header("Content-Type", "application/zip")
         .header("X-Art-Id", &request.art_id)
+        .header("X-Art-Sha256", &digest)
         .body(zip)
         .send()
         .and_then(|r| r.error_for_status())
     {
         Ok(_) => Ok((
             200,
-            serde_json::to_string(&json!({ "artId": request.art_id, "published": true }))?,
+            serde_json::to_string(
+                &json!({ "artId": request.art_id, "sha256": digest, "published": true }),
+            )?,
         )),
         Err(error) => structured_error(
             502,
@@ -3445,6 +3819,431 @@ fn list_frameworks(framework_registry: &FrameworkRegistry) -> Result<(u16, Strin
     ))
 }
 
+fn framework_doctor(framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    let permission_mode = loom_tool_registry::framework::plugin_permission_mode();
+    let permission_mode_label = match permission_mode.as_ref() {
+        Ok(loom_tool_registry::framework::PluginPermissionMode::Audit) => "audit",
+        Ok(loom_tool_registry::framework::PluginPermissionMode::Strict) => "strict",
+        Err(_) => "invalid",
+    };
+    let permission_mode_error = permission_mode.err();
+    let frameworks = framework_registry
+        .statuses()
+        .into_iter()
+        .map(|status| {
+            let permission_findings =
+                loom_tool_registry::framework::unsupported_permission_findings_for(
+                    &status.declared_permissions,
+                    &status.permission_policy,
+                );
+            json!({
+                "id": status.id,
+                "qualifiedId": status.qualified_id,
+                "version": status.version,
+                "installed": status.installed,
+                "enabled": status.enabled,
+                "ready": status.ready,
+                "detail": status.ready_detail,
+                "publisher": status.publisher,
+                "trustStatus": status.trust_status,
+                "declaredPermissions": status.declared_permissions,
+                "permissions": status.permission_policy,
+                "permissionFindings": permission_findings,
+                "strictCompatible": permission_findings.is_empty(),
+                "resources": status.resources,
+                "authoringSchemaAvailable": status.authoring_schema.is_some(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let unhealthy = frameworks
+        .iter()
+        .filter(|framework| {
+            framework["installed"].as_bool().unwrap_or(false)
+                && framework["enabled"].as_bool().unwrap_or(false)
+                && !framework["ready"].as_bool().unwrap_or(false)
+        })
+        .count();
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "status": if unhealthy == 0 { "ok" } else { "degraded" },
+            "unhealthy": unhealthy,
+            "permissionMode": permission_mode_label,
+            "permissionModeError": permission_mode_error,
+            "enforcementMatrix": loom_tool_registry::framework::permission_enforcement_matrix(),
+            "frameworks": frameworks,
+        }))?,
+    ))
+}
+
+fn art_doctor(
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let tools = match tool_registry.list_tools() {
+        Ok(tools) => tools,
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let arts = tools
+        .into_iter()
+        .map(|tool| {
+            let framework = framework_id_for_tool(&tool);
+            let (framework_ready, framework_detail) = framework_registry.readiness(&framework);
+            let package = tool
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("artPackage"));
+            let integrity = package.map(|_| {
+                loom_tool_registry::install::verify_art_package_integrity(
+                    control_plane_root,
+                    &tool,
+                    framework_registry,
+                )
+                .map_err(|error| error.to_string())
+            });
+            let package_valid = integrity.as_ref().is_none_or(|result| result.is_ok());
+            let package_detail = integrity.and_then(Result::err);
+            json!({
+                "id": tool.id,
+                "qualifiedId": tool.qualified_id(),
+                "publisher": tool.publisher_identity(),
+                "enabled": tool.enabled,
+                "frameworkId": framework,
+                "frameworkReady": framework_ready,
+                "frameworkDetail": framework_detail,
+                "version": package.and_then(|package| package.get("version")).cloned(),
+                "packageHash": package.and_then(|package| package.get("digest")).cloned(),
+                "trustStatus": package.and_then(|package| package.get("trustStatus")).cloned(),
+                "lockfileValid": package.is_some() && package_valid,
+                "packageDetail": package_detail,
+                "ready": tool.enabled && framework_ready && package_valid,
+            })
+        })
+        .collect::<Vec<_>>();
+    let unhealthy = arts
+        .iter()
+        .filter(|art| !art["ready"].as_bool().unwrap_or(false))
+        .count();
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "status": if unhealthy == 0 { "ok" } else { "degraded" },
+            "unhealthy": unhealthy,
+            "arts": arts,
+        }))?,
+    ))
+}
+
+fn support_bundle(
+    path: &str,
+    hook_settings: &HookSettings,
+    run_store: &SharedRunStore,
+    run_store_status: RunStoreStatus,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let selected_run = if let Some(run_id) = query_value(path, "runId") {
+        let store = match lock_run_store(run_store) {
+            Ok(store) => store,
+            Err(error) => return run_store_failed(error),
+        };
+        let Some(run) = store.get_run(&run_id).map_err(anyhow::Error::from)? else {
+            return run_not_found(&run_id);
+        };
+        let events = store
+            .get_events(&run_id)
+            .map_err(anyhow::Error::from)?
+            .unwrap_or_default();
+        Some(json!({ "run": run, "events": events }))
+    } else {
+        None
+    };
+    let trust = framework_registry.trust_store().ok();
+    let credential_summaries = CredentialStore::new(control_plane_root)
+        .summaries()
+        .unwrap_or_default();
+    let tools = tool_registry
+        .list_tools()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "id": tool.id,
+                "qualifiedId": tool.qualified_id(),
+                "publisher": tool.publisher_identity(),
+                "enabled": tool.enabled,
+                "frameworkId": framework_id_for_tool(&tool),
+                "package": tool.metadata.as_ref().and_then(|metadata| metadata.get("artPackage")).map(|package| json!({
+                    "version": package.get("version").cloned(),
+                    "digest": package.get("digest").cloned(),
+                    "trustStatus": package.get("trustStatus").cloned(),
+                })),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut bundle = json!({
+        "schemaVersion": 1,
+        "generatedAtUnixMs": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
+        "daemon": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "pid": std::process::id(),
+            "modules": module_statuses(),
+            "hooks": hook_settings.summary(),
+            "runStore": run_store_status,
+        },
+        "frameworks": framework_registry.statuses(),
+        "arts": tools,
+        "trust": {
+            "publisherKeyCount": trust.as_ref().map(|store| store.publishers.len()).unwrap_or_default(),
+            "revokedKeyCount": trust.as_ref().map(|store| store.publishers.iter().filter(|record| record.revoked).count()).unwrap_or_default(),
+        },
+        "credentials": {
+            "count": credential_summaries.len(),
+            "scopes": credential_summaries.into_iter().map(|credential| credential.scope).collect::<Vec<_>>(),
+        },
+        "selectedExecution": selected_run,
+    });
+    redact_json(&mut bundle);
+    Ok((200, serde_json::to_string(&bundle)?))
+}
+
+fn execution_diagnostics(run_id: &str, run_store: &SharedRunStore) -> Result<(u16, String)> {
+    let store = match lock_run_store(run_store) {
+        Ok(store) => store,
+        Err(error) => return run_store_failed(error),
+    };
+    let Some(run) = store.get_run(run_id).map_err(anyhow::Error::from)? else {
+        return run_not_found(run_id);
+    };
+    let events = store
+        .get_events(run_id)
+        .map_err(anyhow::Error::from)?
+        .unwrap_or_default();
+    drop(store);
+    let mut response = json!({ "execution": run, "events": events });
+    redact_json(&mut response);
+    Ok((200, serde_json::to_string(&response)?))
+}
+
+fn redact_json(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
+                if normalized.contains("password")
+                    || normalized.contains("secret")
+                    || normalized.contains("authorization")
+                    || normalized.contains("accesstoken")
+                    || normalized.contains("refreshtoken")
+                    || normalized.contains("privatekey")
+                    || normalized.contains("bearer")
+                    || normalized.contains("cookie")
+                    || normalized == "token"
+                    || normalized.ends_with("token")
+                    || normalized == "apikey"
+                    || normalized == "credentialvalue"
+                {
+                    *value = Value::String("[REDACTED]".to_owned());
+                } else {
+                    redact_json(value);
+                }
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(redact_json),
+        Value::String(text) => {
+            let lowercase = text.trim_start().to_ascii_lowercase();
+            if lowercase.starts_with("bearer ")
+                || lowercase.starts_with("basic ")
+                || text.contains("-----BEGIN PRIVATE KEY-----")
+                || text.contains("-----BEGIN OPENSSH PRIVATE KEY-----")
+            {
+                *text = "[REDACTED]".to_owned();
+                return;
+            }
+            if let Ok(mut url) = reqwest::Url::parse(text) {
+                if matches!(url.scheme(), "http" | "https")
+                    && (url.query().is_some()
+                        || url.fragment().is_some()
+                        || !url.username().is_empty()
+                        || url.password().is_some())
+                {
+                    url.set_query(None);
+                    url.set_fragment(None);
+                    if !url.username().is_empty() {
+                        let _ = url.set_username("[REDACTED]");
+                    }
+                    if url.password().is_some() {
+                        let _ = url.set_password(Some("[REDACTED]"));
+                    }
+                    *text = url.to_string();
+                }
+            }
+            if text.len() > 4096 {
+                text.truncate(4096);
+                text.push_str(" [truncated]");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn list_plugin_trust(framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    match framework_registry.trust_store() {
+        Ok(store) => Ok((200, serde_json::to_string(&store)?)),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "plugin_trust_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn trust_plugin_publisher(
+    body: &str,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let record: PublisherTrustRecord = match serde_json::from_str(body) {
+        Ok(record) => record,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({ "code": "invalid_publisher_trust", "message": error.to_string() }),
+            )
+        }
+    };
+    let public_key = match BASE64.decode(record.public_key.as_bytes()) {
+        Ok(public_key) => public_key,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({ "code": "invalid_publisher_key", "message": error.to_string() }),
+            )
+        }
+    };
+    if !is_safe_publisher_id(&record.publisher_id)
+        || !is_safe_package_id(&record.key_id)
+        || public_key.len() != 32
+    {
+        return structured_error(
+            400,
+            json!({
+                "code": "invalid_publisher_trust",
+                "message": "publisherId/keyId must be safe IDs and publicKey must be a 32-byte Ed25519 key"
+            }),
+        );
+    }
+    match framework_registry.trust_publisher(record) {
+        Ok(()) => list_plugin_trust(framework_registry),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "plugin_trust_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RevokePublisherRequest {
+    publisher_id: String,
+    key_id: String,
+}
+
+fn revoke_plugin_publisher(
+    body: &str,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let request: RevokePublisherRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({ "code": "invalid_publisher_revoke", "message": error.to_string() }),
+            )
+        }
+    };
+    match framework_registry.revoke_publisher(&request.publisher_id, &request.key_id) {
+        Ok(true) => list_plugin_trust(framework_registry),
+        Ok(false) => structured_error(
+            404,
+            json!({ "code": "publisher_key_not_found", "message": "publisher key was not found" }),
+        ),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "plugin_trust_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn list_plugin_credentials(control_plane_root: &Path) -> Result<(u16, String)> {
+    match CredentialStore::new(control_plane_root).summaries() {
+        Ok(credentials) => Ok((
+            200,
+            serde_json::to_string(&json!({ "credentials": credentials }))?,
+        )),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "credential_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn save_plugin_credential(body: &str, control_plane_root: &Path) -> Result<(u16, String)> {
+    let input: CredentialInput = match serde_json::from_str(body) {
+        Ok(input) => input,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({ "code": "invalid_credential", "message": error.to_string() }),
+            )
+        }
+    };
+    match CredentialStore::new(control_plane_root).upsert(input) {
+        Ok(credential) => Ok((
+            200,
+            serde_json::to_string(&json!({ "credential": credential }))?,
+        )),
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "credential_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteCredentialRequest {
+    name: String,
+    #[serde(default)]
+    scope: CredentialScope,
+}
+
+fn delete_plugin_credential(body: &str, control_plane_root: &Path) -> Result<(u16, String)> {
+    let request: DeleteCredentialRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({ "code": "invalid_credential_delete", "message": error.to_string() }),
+            )
+        }
+    };
+    match CredentialStore::new(control_plane_root).delete(&request.name, &request.scope) {
+        Ok(true) => Ok((
+            200,
+            serde_json::to_string(&json!({ "deleted": true, "name": request.name }))?,
+        )),
+        Ok(false) => structured_error(
+            404,
+            json!({ "code": "credential_not_found", "message": "credential was not found" }),
+        ),
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "credential_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
 fn install_framework(id: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
     match framework_registry.install(id) {
         Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
@@ -3456,6 +4255,13 @@ fn uninstall_framework(id: &str, framework_registry: &FrameworkRegistry) -> Resu
     match framework_registry.uninstall(id) {
         Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
         Err(error) => framework_error_response(error, "framework_uninstall_failed", id),
+    }
+}
+
+fn rollback_framework(id: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    match framework_registry.rollback(id) {
+        Ok(status) => Ok((200, serde_json::to_string(&json!({ "framework": status }))?)),
+        Err(error) => framework_error_response(error, "framework_rollback_failed", id),
     }
 }
 
@@ -3562,6 +4368,13 @@ fn framework_error_response(
             json!({
                 "code": "framework_not_installed",
                 "message": format!("框架 `{framework_id}` 未安装")
+            }),
+        ),
+        FrameworkError::NoRollback { id } => structured_error(
+            409,
+            json!({
+                "code": "framework_rollback_unavailable",
+                "message": format!("框架 `{id}` 没有可回滚版本")
             }),
         ),
         FrameworkError::InvalidPackage {
@@ -5590,26 +6403,163 @@ fn collect_python_arts() -> Vec<Value> {
 
 fn python_arts_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    if let Ok(configured_dir) = std::env::var("LOOM_PYTHON_ARTS_DIR") {
+        let configured_dir = configured_dir.trim();
+        if !configured_dir.is_empty() {
+            dirs.push(PathBuf::from(configured_dir));
+        }
+    }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
     {
         dirs.push(exe_dir.join("python").join("Arts"));
     }
-    if let Ok(current_dir) = std::env::current_dir() {
-        dirs.push(current_dir.join("python").join("Arts"));
-        dirs.push(
-            current_dir
-                .join("Loom")
-                .join("resources")
-                .join("python")
-                .join("Arts"),
-        );
-    }
-    for ancestor in PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors() {
-        dirs.push(ancestor.join("resources").join("python").join("Arts"));
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(current_dir) = std::env::current_dir() {
+            dirs.push(current_dir.join("python").join("Arts"));
+            dirs.push(
+                current_dir
+                    .join("Loom")
+                    .join("resources")
+                    .join("python")
+                    .join("Arts"),
+            );
+        }
+        for ancestor in PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors() {
+            dirs.push(ancestor.join("resources").join("python").join("Arts"));
+        }
     }
     dirs
+}
+
+fn framework_id_for_tool(tool: &ToolDefinition) -> String {
+    match &tool.execution {
+        ToolExecution::FrameworkArt { framework } => framework.clone(),
+        execution => {
+            loom_tool_registry::framework::framework_id_for_execution(execution).to_owned()
+        }
+    }
+}
+
+fn external_tool_run(run_id: &str, tool: &ToolDefinition, arguments: &Value) -> Value {
+    let package = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"));
+    let argument_keys = arguments
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    json!({
+        "id": run_id,
+        "capability": "art.execute",
+        "status": "running",
+        "toolId": &tool.id,
+        "qualifiedId": tool.qualified_id(),
+        "frameworkId": framework_id_for_tool(tool),
+        "package": package.map(|package| json!({
+            "version": package.get("version").cloned(),
+            "digest": package.get("digest").cloned(),
+            "trustStatus": package.get("trustStatus").cloned(),
+        })),
+        "inputSummary": {
+            "keys": argument_keys,
+            "jsonBytes": serde_json::to_vec(arguments).map(|bytes| bytes.len()).unwrap_or_default(),
+        },
+    })
+}
+
+fn record_compat_art_execution(
+    run_store: &SharedRunStore,
+    tool_registry: &ToolRegistry,
+    surface: &str,
+    external_request_id: &str,
+    art_id: &str,
+    started_at: Instant,
+    result: &mut HookBridgeWebSocketTextResult,
+) {
+    let run_id = loom_core::RunId::new().to_string();
+    let mut response = serde_json::from_str::<Value>(&result.response).unwrap_or(Value::Null);
+    let success = response
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+        || response
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status.eq_ignore_ascii_case("success"));
+    if let Some(object) = response.as_object_mut() {
+        object.insert("executionId".to_owned(), Value::String(run_id.clone()));
+        if let Ok(serialized) = serde_json::to_string(&response) {
+            result.response = serialized;
+        }
+    }
+    let duration_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let tool = tool_registry.get_tool(art_id).ok().flatten();
+    let qualified_id = tool
+        .as_ref()
+        .map(ToolDefinition::qualified_id)
+        .unwrap_or_else(|| art_id.to_owned());
+    let framework_id = tool.as_ref().map(framework_id_for_tool);
+    let package = tool
+        .as_ref()
+        .and_then(|tool| tool.metadata.as_ref())
+        .and_then(|metadata| metadata.get("artPackage"));
+    let status = if success { "succeeded" } else { "failed" };
+    let run = json!({
+        "id": run_id,
+        "capability": "art.execute",
+        "status": status,
+        "surface": surface,
+        "externalRequestId": external_request_id,
+        "toolId": art_id,
+        "qualifiedId": qualified_id,
+        "frameworkId": framework_id,
+        "package": package.map(|package| json!({
+            "version": package.get("version").cloned(),
+            "digest": package.get("digest").cloned(),
+            "trustStatus": package.get("trustStatus").cloned(),
+        })),
+        "durationMs": duration_ms,
+        "outputSummary": {
+            "jsonBytes": result.response.len(),
+            "responseStatus": response.get("status").or_else(|| response.get("type")).cloned(),
+        },
+        "error": (!success).then(|| json!({ "code": "hook_bridge_execution_failed" })),
+    });
+    let started = RunEventDraft::new(
+        "external_tool_started",
+        json!({
+            "surface": surface,
+            "externalRequestId": external_request_id,
+            "toolId": art_id,
+            "qualifiedId": qualified_id,
+            "status": "running",
+        }),
+    );
+    let finished = RunEventDraft::new(
+        if success {
+            "external_tool_completed"
+        } else {
+            "external_tool_failed"
+        },
+        json!({
+            "surface": surface,
+            "externalRequestId": external_request_id,
+            "toolId": art_id,
+            "qualifiedId": qualified_id,
+            "status": status,
+            "durationMs": duration_ms,
+        }),
+    );
+    let (Ok(started), Ok(finished)) = (started, finished) else {
+        return;
+    };
+    if let Ok(mut store) = run_store.lock() {
+        let _ = store.insert_run(run, vec![started, finished]);
+    }
 }
 
 fn execute_registered_tool(
@@ -5619,6 +6569,8 @@ fn execute_registered_tool(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     framework_registry: &FrameworkRegistry,
+    run_store: &SharedRunStore,
+    control_plane_root: &Path,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
     let request = match serde_json::from_str::<ExecuteToolRequest>(request_body) {
@@ -5639,6 +6591,27 @@ fn execute_registered_tool(
         }
         Err(error) => return tool_registry_error_response(error),
     };
+    if tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .is_some()
+    {
+        if let Err(error) = loom_tool_registry::install::verify_art_package_integrity(
+            control_plane_root,
+            &tool,
+            framework_registry,
+        ) {
+            return structured_error(
+                409,
+                json!({
+                    "code": "art_package_integrity_failed",
+                    "message": error.to_string(),
+                    "artId": tool.qualified_id(),
+                }),
+            );
+        }
+    }
     if let ToolExecution::FrameworkArt { framework } = &tool.execution {
         if !tool.enabled {
             return structured_error(
@@ -5669,6 +6642,26 @@ fn execute_registered_tool(
         .values()
         .cloned()
         .collect::<Vec<_>>();
+    let run_id = loom_core::RunId::new().to_string();
+    let started_at = Instant::now();
+    let mut run = external_tool_run(&run_id, &tool, &request.arguments);
+    let started_event = RunEventDraft::new(
+        "external_tool_started",
+        json!({
+            "toolId": &tool.id,
+            "qualifiedId": tool.qualified_id(),
+            "frameworkId": framework_id_for_tool(&tool),
+            "status": "running",
+        }),
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    {
+        let mut store =
+            lock_run_store(run_store).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        store
+            .insert_run(run.clone(), vec![started_event])
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
     let result = match execute_tool_with_workflows(
         &tool,
         &servers,
@@ -5677,13 +6670,65 @@ fn execute_registered_tool(
         request.arguments,
     ) {
         Ok(result) => result,
-        Err(error) => return workflow_runtime_error_response(error),
+        Err(error) => {
+            run["status"] = json!("failed");
+            run["durationMs"] =
+                json!(started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            run["error"] = json!({
+                "code": "tool_execution_failed",
+                "message": truncate_diagnostic(error.to_string(), 512),
+            });
+            let failed = RunEventDraft::new(
+                "external_tool_failed",
+                json!({
+                    "toolId": &tool.id,
+                    "qualifiedId": tool.qualified_id(),
+                    "status": "failed",
+                    "durationMs": run["durationMs"],
+                    "error": { "code": "tool_execution_failed" },
+                }),
+            )
+            .map_err(|event_error| anyhow::anyhow!(event_error.to_string()))?;
+            let mut store = lock_run_store(run_store)
+                .map_err(|store_error| anyhow::anyhow!(store_error.to_string()))?;
+            store
+                .transition_run(run, failed)
+                .map_err(|store_error| anyhow::anyhow!(store_error.to_string()))?;
+            return workflow_runtime_error_response(error);
+        }
     };
+    let duration_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    run["status"] = json!("succeeded");
+    run["durationMs"] = json!(duration_ms);
+    run["outputSummary"] = json!({
+        "jsonBytes": serde_json::to_vec(&result).map(|bytes| bytes.len()).unwrap_or_default(),
+        "diagnostics": result.pointer("/_loomExecution/diagnostics").cloned(),
+        "events": result.pointer("/_loomExecution/events").cloned(),
+    });
+    let completed = RunEventDraft::new(
+        "external_tool_completed",
+        json!({
+            "toolId": &tool.id,
+            "qualifiedId": tool.qualified_id(),
+            "status": "succeeded",
+            "durationMs": duration_ms,
+            "diagnostics": result.pointer("/_loomExecution/diagnostics").cloned(),
+        }),
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    {
+        let mut store =
+            lock_run_store(run_store).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        store
+            .transition_run(run, completed)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
 
     Ok((
         200,
         serde_json::to_string(&json!({
             "toolId": tool_id,
+            "executionId": run_id,
             "status": "succeeded",
             "result": result,
         }))?,
@@ -7161,6 +8206,9 @@ fn artloom_compat_execute_art_node(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    run_store: &SharedRunStore,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
     let request: ArtLoomCompatExecuteArtNodeRequest = match serde_json::from_str(request_body) {
@@ -7175,7 +8223,8 @@ fn artloom_compat_execute_art_node(
     if art_id.is_empty() {
         return invalid_request("execute_art_node requires art_id");
     }
-    let result = execute_hook_bridge_art_node(
+    let started = Instant::now();
+    let mut result = execute_hook_bridge_art_node(
         node_id,
         art_id,
         request.input_base64,
@@ -7183,6 +8232,17 @@ fn artloom_compat_execute_art_node(
         mcp_servers,
         tool_registry,
         workflow_store,
+        framework_registry,
+        control_plane_root,
+    );
+    record_compat_art_execution(
+        run_store,
+        tool_registry,
+        "artloom_compat_http",
+        node_id,
+        art_id,
+        started,
+        &mut result,
     );
     let mut response = serde_json::from_str::<Value>(&result.response)
         .unwrap_or_else(|_| json!({ "type": "error", "data": { "message": result.response } }));
@@ -8178,6 +9238,9 @@ fn start_hook_bridge(
     artloom_settings: &SharedArtLoomCompatSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    run_store: &SharedRunStore,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
     let request = match serde_json::from_str::<StartHookBridgeRequest>(request_body) {
@@ -8230,6 +9293,9 @@ fn start_hook_bridge(
     let worker_artloom_settings = Arc::clone(artloom_settings);
     let worker_shared_images = Arc::clone(shared_images);
     let worker_ocr_provider = Arc::clone(ocr_provider);
+    let worker_framework_registry = framework_registry.clone();
+    let worker_control_plane_root = control_plane_root.to_path_buf();
+    let worker_run_store = Arc::clone(run_store);
     let workflow_root = runtime.workflow_root.clone();
     let worker = thread::spawn(move || {
         run_hook_bridge_websocket_server(
@@ -8243,7 +9309,10 @@ fn start_hook_bridge(
             worker_artloom_settings,
             worker_shared_images,
             worker_ocr_provider,
+            worker_framework_registry,
+            worker_control_plane_root,
             workflow_root,
+            worker_run_store,
         );
     });
     runtime.shutdown_tx = Some(shutdown_tx);
@@ -8301,7 +9370,10 @@ fn run_hook_bridge_websocket_server(
     artloom_settings: SharedArtLoomCompatSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
+    framework_registry: FrameworkRegistry,
+    control_plane_root: PathBuf,
     workflow_root: PathBuf,
+    run_store: SharedRunStore,
 ) {
     loop {
         if shutdown_rx.try_recv().is_ok() {
@@ -8318,7 +9390,10 @@ fn run_hook_bridge_websocket_server(
                 let artloom_settings = Arc::clone(&artloom_settings);
                 let shared_images = Arc::clone(&shared_images);
                 let ocr_provider = Arc::clone(&ocr_provider);
+                let framework_registry = framework_registry.clone();
+                let control_plane_root = control_plane_root.clone();
                 let workflow_root = workflow_root.clone();
+                let run_store = Arc::clone(&run_store);
                 thread::spawn(move || {
                     handle_hook_bridge_websocket_connection(
                         stream,
@@ -8330,7 +9405,10 @@ fn run_hook_bridge_websocket_server(
                         artloom_settings,
                         shared_images,
                         ocr_provider,
+                        framework_registry,
+                        control_plane_root,
                         workflow_root,
+                        run_store,
                     );
                 });
             }
@@ -8352,7 +9430,10 @@ fn handle_hook_bridge_websocket_connection(
     artloom_settings: SharedArtLoomCompatSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
+    framework_registry: FrameworkRegistry,
+    control_plane_root: PathBuf,
     workflow_root: PathBuf,
+    run_store: SharedRunStore,
 ) {
     let _ = stream.set_nonblocking(false);
     let Ok(mut websocket) = tungstenite::accept(stream) else {
@@ -8388,7 +9469,10 @@ fn handle_hook_bridge_websocket_connection(
                     &artloom_settings,
                     &shared_images,
                     &ocr_provider,
+                    &framework_registry,
+                    &control_plane_root,
                     &workflow_root,
+                    &run_store,
                 );
                 if result.subscription_channels.is_some() && subscription_rx.is_none() {
                     let (rx, guard) = register_hook_bridge_subscription(
@@ -8471,7 +9555,10 @@ fn handle_hook_bridge_websocket_text(
     artloom_settings: &SharedArtLoomCompatSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
     workflow_root: &Path,
+    run_store: &SharedRunStore,
 ) -> HookBridgeWebSocketTextResult {
     let request = match parse_request(text) {
         Ok(request) => request,
@@ -8531,7 +9618,8 @@ fn handle_hook_bridge_websocket_text(
         params,
     } = request
     {
-        return execute_hook_bridge_art_node(
+        let started = Instant::now();
+        let mut result = execute_hook_bridge_art_node(
             &node_id,
             &art_id,
             input_base64,
@@ -8539,7 +9627,19 @@ fn handle_hook_bridge_websocket_text(
             mcp_servers,
             tool_registry,
             workflow_store,
+            framework_registry,
+            control_plane_root,
         );
+        record_compat_art_execution(
+            run_store,
+            tool_registry,
+            "hook_bridge_websocket",
+            &node_id,
+            &art_id,
+            started,
+            &mut result,
+        );
+        return result;
     }
     if let HookBridgeRequest::Process {
         request_id,
@@ -8550,7 +9650,8 @@ fn handle_hook_bridge_websocket_text(
         disabled_params,
     } = request
     {
-        return execute_hook_bridge_ahrp_process(
+        let started = Instant::now();
+        let mut result = execute_hook_bridge_ahrp_process(
             &request_id,
             &art_id,
             input,
@@ -8561,7 +9662,19 @@ fn handle_hook_bridge_websocket_text(
             tool_registry,
             workflow_store,
             shared_images,
+            framework_registry,
+            control_plane_root,
         );
+        record_compat_art_execution(
+            run_store,
+            tool_registry,
+            "ahrp_websocket",
+            &request_id,
+            &art_id,
+            started,
+            &mut result,
+        );
+        return result;
     }
     if let HookBridgeRequest::OverwriteWorkflow {
         workflow_id,
@@ -8899,6 +10012,8 @@ fn execute_hook_bridge_art_node(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
 ) -> HookBridgeWebSocketTextResult {
     let started = Instant::now();
     set_hook_canvas_runtime_status(node_id, "processing", None);
@@ -8921,6 +10036,24 @@ fn execute_hook_bridge_art_node(
             );
         }
     };
+    if tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .is_some()
+    {
+        if let Err(error) = loom_tool_registry::install::verify_art_package_integrity(
+            control_plane_root,
+            &tool,
+            framework_registry,
+        ) {
+            let message = format!("Art package integrity verification failed: {error}");
+            set_hook_canvas_runtime_status(node_id, "error", Some(message.clone()));
+            return HookBridgeWebSocketTextResult::response(
+                execute_art_node_error_response(message).to_string(),
+            );
+        }
+    }
 
     let servers = match mcp_servers.lock() {
         Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
@@ -9346,6 +10479,8 @@ fn execute_hook_bridge_ahrp_process(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     shared_images: &SharedImageStoreHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
 ) -> HookBridgeWebSocketTextResult {
     let started = Instant::now();
     let matched_node_id = resolve_hook_runtime_node_id(art_id, &params);
@@ -9402,6 +10537,26 @@ fn execute_hook_bridge_ahrp_process(
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
+    if tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .is_some()
+    {
+        if let Err(error) = loom_tool_registry::install::verify_art_package_integrity(
+            control_plane_root,
+            &tool,
+            framework_registry,
+        ) {
+            let response = ahrp_error_response(
+                request_id,
+                "IntegrityError",
+                format!("Art package integrity verification failed: {error}"),
+            );
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            return HookBridgeWebSocketTextResult::response(response.to_string());
+        }
+    }
 
     let servers = match mcp_servers.lock() {
         Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
@@ -9752,6 +10907,14 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "tool_id": id,
             }),
         ),
+        ToolRegistryError::AmbiguousToolId { id } => structured_error(
+            409,
+            json!({
+                "code": "ambiguous_tool_id",
+                "message": format!("tool id `{id}` matches multiple publishers; use qualifiedId"),
+                "tool_id": id,
+            }),
+        ),
         ToolRegistryError::UnsupportedExecution { id, execution_type } => structured_error(
             400,
             json!({
@@ -9954,6 +11117,19 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
             json!({
                 "code": "cloud_api_error",
                 "message": source.to_string(),
+                "tool_id": id,
+                "endpoint": endpoint,
+            }),
+        ),
+        ToolRegistryError::CloudSecurity {
+            id,
+            endpoint,
+            reason,
+        } => structured_error(
+            403,
+            json!({
+                "code": "cloud_api_security_policy",
+                "message": reason,
                 "tool_id": id,
                 "endpoint": endpoint,
             }),
@@ -10796,6 +11972,11 @@ fn run_path_id(path: &str) -> Option<&str> {
     (!run_id.is_empty() && !run_id.contains('/')).then_some(run_id)
 }
 
+fn execution_diagnostics_path_id(path: &str) -> Option<&str> {
+    let run_id = path.strip_prefix("/v1/diagnostics/executions/")?;
+    (!run_id.is_empty() && !run_id.contains('/')).then_some(run_id)
+}
+
 fn run_events_path_id(path: &str) -> Option<&str> {
     let run_id = path.strip_prefix("/v1/runs/")?.strip_suffix("/events")?;
     (!run_id.is_empty() && !run_id.contains('/')).then_some(run_id)
@@ -10964,6 +12145,30 @@ mod tests {
         bytes
     }
 
+    fn art_package_zip(id: &str, version: &str, payload: &[u8]) -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": "Daemon package Art",
+            "description": "daemon package integrity fixture",
+            "enabled": true,
+            "execution": { "type": "cli_wrapper", "command": "bin/tool.exe", "args": [] },
+            "metadata": { "packageSecurity": { "version": version } }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file("manifest.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file("bin/tool.exe", options).unwrap();
+            writer.write_all(payload).unwrap();
+            writer.finish().unwrap();
+        }
+        bytes
+    }
+
     #[test]
     fn framework_package_routes_cover_install_upgrade_disable_enable_uninstall() {
         let root = unique_temp_dir("framework-package-routes");
@@ -11019,6 +12224,418 @@ mod tests {
         assert!(!root.join("frameworks").join("script").exists());
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn framework_doctor_reports_permission_mode_and_enforcement_matrix() {
+        let root = unique_temp_dir("framework-permission-doctor");
+        let registry = FrameworkRegistry::new(&root);
+        registry
+            .install_framework_package_from_zip(&framework_package_zip("script", "1.0.0"))
+            .expect("install framework");
+        let (status, body) = framework_doctor(&registry).expect("framework doctor");
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["permissionMode"], "audit");
+        assert_eq!(body["enforcementMatrix"]["processTree"], "enforced");
+        assert_eq!(
+            body["enforcementMatrix"]["directNetwork"],
+            "not-os-enforced"
+        );
+        let script = body["frameworks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|framework| framework["id"] == "script")
+            .expect("script status");
+        assert_eq!(script["strictCompatible"], true);
+        assert!(script["declaredPermissions"].is_array());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn authored_art_handlers_cover_create_package_rollback_and_uninstall() {
+        let root = unique_temp_dir("authored-art-handlers");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("script", "1.0.0"))
+            .expect("install script framework");
+        let request = |version: &str| {
+            serde_json::to_string(&json!({
+                "tool": {
+                    "id": "authored-art",
+                    "name": "Authored Art",
+                    "description": "daemon authoring route fixture",
+                    "enabled": true,
+                    "execution": { "type": "framework_art", "framework": "script" },
+                    "metadata": {
+                        "dependencies": { "framework": "script" },
+                        "packageSecurity": { "version": version }
+                    }
+                },
+                "runtime": {
+                    "protocolVersion": "loom.art.runtime.v1",
+                    "entry": { "command": "runtime.cmd", "args": [] }
+                }
+            }))
+            .unwrap()
+        };
+        let (status, first) = create_authored_art(
+            &request("1.0.0"),
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("create v1");
+        assert_eq!(status, 200, "body={first}");
+        let (status, second) = create_authored_art(
+            &request("2.0.0"),
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("create v2");
+        assert_eq!(status, 200, "body={second}");
+
+        let (status, package) = package_art("authored-art", &runtime.tool_registry, &root)
+            .expect("package authored Art");
+        assert_eq!(status, 200);
+        let package: Value = serde_json::from_str(&package).unwrap();
+        assert!(package["zipBase64"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("data:application/zip;base64,")));
+
+        let (status, rollback) = rollback_art(
+            "authored-art",
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("rollback authored Art");
+        assert_eq!(status, 200, "body={rollback}");
+        let rollback: Value = serde_json::from_str(&rollback).unwrap();
+        assert_eq!(
+            rollback["tool"]["metadata"]["packageSecurity"]["version"],
+            "1.0.0"
+        );
+
+        let (status, body) = uninstall_art(
+            "authored-art",
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("uninstall authored Art");
+        assert_eq!(status, 200, "body={body}");
+        assert!(runtime
+            .tool_registry
+            .get_tool("authored-art")
+            .unwrap()
+            .is_none());
+        assert!(!root.join("arts/authored-art").exists());
+        drop(runtime);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn package_routes_decode_publisher_qualified_ids_without_accepting_raw_slashes() {
+        assert_eq!(
+            decoded_package_path_id_with_suffix(
+                "/v1/frameworks/publisher.alpha%2Fshared-framework/rollback",
+                "/v1/frameworks/",
+                "/rollback",
+            )
+            .as_deref(),
+            Some("publisher.alpha/shared-framework")
+        );
+        assert_eq!(
+            decoded_package_path_id_with_suffix(
+                "/v1/arts/publisher.alpha%2Fshared-art/uninstall",
+                "/v1/arts/",
+                "/uninstall",
+            )
+            .as_deref(),
+            Some("publisher.alpha/shared-art")
+        );
+        assert_eq!(
+            tool_execute_path_id("/v1/tools/publisher.alpha%2Fshared-art/execute").as_deref(),
+            Some("publisher.alpha/shared-art")
+        );
+        assert!(decoded_package_path_id_with_suffix(
+            "/v1/arts/publisher.alpha/shared-art/uninstall",
+            "/v1/arts/",
+            "/uninstall",
+        )
+        .is_none());
+        assert!(decoded_package_path_id_with_suffix(
+            "/v1/arts/%2e%2e%2Fescape/uninstall",
+            "/v1/arts/",
+            "/uninstall",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn diagnostics_and_support_bundle_redact_secrets_and_require_existing_runs() {
+        let root = unique_temp_dir("support-bundle-redaction");
+        let mut store = InMemoryRunEvidenceStore::default();
+        store
+            .insert_run(
+                json!({
+                    "id": "run-support",
+                    "capability": "art.execute",
+                    "status": "succeeded",
+                    "token": "top-secret-token",
+                    "privateKey": "private-key-value",
+                    "headers": { "Authorization": "Bearer header-secret" },
+                    "message": "Bearer free-form-secret",
+                    "url": "https://user:password@example.test/path?api_key=query-secret#fragment-secret"
+                }),
+                vec![RunEventDraft::new(
+                    "external_tool_completed",
+                    json!({
+                        "status": "succeeded",
+                        "refresh_token": "event-secret"
+                    }),
+                )
+                .unwrap()],
+            )
+            .unwrap();
+        let run_store: SharedRunStore = Arc::new(Mutex::new(Box::new(store)));
+        let run_store_status = run_store.lock().unwrap().status();
+        let tools = ToolRegistry::new(root.join("tools"));
+        let frameworks = FrameworkRegistry::new(&root);
+
+        let (status, body) = support_bundle(
+            "/v1/support-bundle?runId=run-support",
+            &HookSettings::default(),
+            &run_store,
+            run_store_status,
+            &tools,
+            &frameworks,
+            &root,
+        )
+        .expect("support bundle");
+        assert_eq!(status, 200);
+        for secret in [
+            "top-secret-token",
+            "private-key-value",
+            "header-secret",
+            "free-form-secret",
+            "query-secret",
+            "fragment-secret",
+            "event-secret",
+            "password",
+        ] {
+            assert!(
+                !body.contains(secret),
+                "support bundle leaked {secret}: {body}"
+            );
+        }
+        assert!(body.contains("[REDACTED]"));
+
+        let (status, diagnostics) =
+            execution_diagnostics("run-support", &run_store).expect("diagnostics");
+        assert_eq!(status, 200);
+        assert!(!diagnostics.contains("top-secret-token"));
+        assert!(!diagnostics.contains("event-secret"));
+
+        let (status, missing) = support_bundle(
+            "/v1/support-bundle?runId=missing-run",
+            &HookSettings::default(),
+            &run_store,
+            run_store_status,
+            &tools,
+            &frameworks,
+            &root,
+        )
+        .expect("missing support run response");
+        assert_eq!(status, 404);
+        assert!(missing.contains("run_not_found"));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn hook_bridge_and_ahrp_executions_create_durable_run_evidence() {
+        let root = unique_temp_dir("hook-execution-evidence");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let hook_response = run_hook_bridge_text(
+            &runtime,
+            r#"{"method":"art_loom/execute_art_node","params":{"node_id":"missing-node","art_id":"missing-art","params":{}}}"#,
+        );
+        let hook_run_id = hook_response["executionId"]
+            .as_str()
+            .expect("Hook execution id");
+        let store = runtime.run_store.lock().expect("run store");
+        let hook_run = store
+            .get_run(hook_run_id)
+            .expect("read Hook run")
+            .expect("Hook run");
+        assert_eq!(hook_run["capability"], "art.execute");
+        assert_eq!(hook_run["surface"], "hook_bridge_websocket");
+        assert_eq!(hook_run["status"], "failed");
+        let hook_events = store
+            .get_events(hook_run_id)
+            .expect("Hook events")
+            .expect("stored Hook events");
+        assert_eq!(hook_events[0]["kind"], "external_tool_started");
+        assert_eq!(hook_events[1]["kind"], "external_tool_failed");
+        drop(store);
+
+        let ahrp_response = run_hook_bridge_text(
+            &runtime,
+            r#"{"method":"art/process","params":{"request_id":"ahrp-missing","art_id":"missing-art","input":{"type":"base64","data":"data:image/png;base64,AA==","width":1,"height":1,"format":"rgba8"},"params":{},"input_images":{},"disabled_params":[]}}"#,
+        );
+        let ahrp_run_id = ahrp_response["executionId"]
+            .as_str()
+            .expect("AHRP execution id");
+        let store = runtime.run_store.lock().expect("run store");
+        let ahrp_run = store
+            .get_run(ahrp_run_id)
+            .expect("read AHRP run")
+            .expect("AHRP run");
+        assert_eq!(ahrp_run["surface"], "ahrp_websocket");
+        assert_eq!(ahrp_run["externalRequestId"], "ahrp-missing");
+        assert_eq!(ahrp_run["status"], "failed");
+        drop(store);
+
+        drop(runtime);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn hook_bridge_and_ahrp_reject_tampered_art_packages_before_execution() {
+        let root = unique_temp_dir("hook-art-package-integrity");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("cli_wrapper", "1.0.0"))
+            .expect("install framework");
+        loom_tool_registry::install::install_art_from_zip(
+            &art_package_zip("integrity-art", "1.0.0", b"never-executed"),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Art");
+        let activation_path = root.join("arts/integrity-art/active.json");
+        let mut activation: Value =
+            serde_json::from_slice(&fs::read(&activation_path).expect("activation")).unwrap();
+        activation["active"]["digest"] = Value::String("0".repeat(64));
+        fs::write(
+            &activation_path,
+            serde_json::to_vec_pretty(&activation).unwrap(),
+        )
+        .expect("tamper activation");
+
+        let hook_response = run_hook_bridge_text(
+            &runtime,
+            r#"{"method":"art_loom/execute_art_node","params":{"node_id":"integrity-node","art_id":"integrity-art","params":{}}}"#,
+        );
+        assert!(hook_response
+            .to_string()
+            .contains("integrity verification failed"));
+        let hook_run_id = hook_response["executionId"].as_str().expect("Hook run id");
+        {
+            let store = runtime.run_store.lock().expect("run store");
+            assert_eq!(
+                store.get_run(hook_run_id).unwrap().unwrap()["status"],
+                "failed"
+            );
+            let events = store.get_events(hook_run_id).unwrap().unwrap();
+            assert_eq!(events.last().unwrap()["kind"], "external_tool_failed");
+        }
+
+        let ahrp_response = run_hook_bridge_text(
+            &runtime,
+            r#"{"method":"art/process","params":{"request_id":"ahrp-integrity","art_id":"integrity-art","input":{"type":"base64","data":"data:image/png;base64,AA==","width":1,"height":1,"format":"rgba8"},"params":{},"input_images":{},"disabled_params":[]}}"#,
+        );
+        assert_eq!(ahrp_response["status"], "IntegrityError");
+        assert!(ahrp_response["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("integrity verification failed")));
+        let ahrp_run_id = ahrp_response["executionId"].as_str().expect("AHRP run id");
+        let store = runtime.run_store.lock().expect("run store");
+        assert_eq!(
+            store.get_run(ahrp_run_id).unwrap().unwrap()["status"],
+            "failed"
+        );
+        let events = store.get_events(ahrp_run_id).unwrap().unwrap();
+        assert_eq!(events.last().unwrap()["kind"], "external_tool_failed");
+        drop(store);
+
+        drop(runtime);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plugin_trust_routes_add_list_and_revoke_publishers() {
+        let root = unique_temp_dir("plugin-trust-routes");
+        let registry = FrameworkRegistry::new(&root);
+        let public_key = BASE64.encode([7u8; 32]);
+        let add_body = serde_json::to_string(&json!({
+            "publisherId": "example.vendor",
+            "keyId": "example-key",
+            "publicKey": public_key,
+            "revoked": false
+        }))
+        .expect("add body");
+        let (status, body) = trust_plugin_publisher(&add_body, &registry).expect("trust");
+        assert_eq!(status, 200);
+        assert!(body.contains("example.vendor"));
+
+        let (status, body) = list_plugin_trust(&registry).expect("list");
+        assert_eq!(status, 200);
+        assert!(body.contains("example-key"));
+
+        let revoke_body = serde_json::to_string(&json!({
+            "publisherId": "example.vendor",
+            "keyId": "example-key"
+        }))
+        .expect("revoke body");
+        let (status, body) = revoke_plugin_publisher(&revoke_body, &registry).expect("revoke");
+        assert_eq!(status, 200);
+        assert!(body.contains("\"revoked\":true"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_credential_routes_never_return_secret_values() {
+        let root = unique_temp_dir("plugin-credential-routes");
+        let body = serde_json::to_string(&json!({
+            "name": "api_key",
+            "value": "top-secret",
+            "scope": {
+                "frameworkId": "cloud_api",
+                "artId": "example-art"
+            }
+        }))
+        .expect("credential body");
+        let (status, response) = save_plugin_credential(&body, &root).expect("save");
+        assert_eq!(status, 200);
+        assert!(!response.contains("top-secret"));
+
+        let (status, response) = list_plugin_credentials(&root).expect("list");
+        assert_eq!(status, 200);
+        assert!(response.contains("api_key"));
+        assert!(!response.contains("top-secret"));
+
+        let delete = serde_json::to_string(&json!({
+            "name": "api_key",
+            "scope": {
+                "frameworkId": "cloud_api",
+                "artId": "example-art"
+            }
+        }))
+        .expect("delete body");
+        let (status, _) = delete_plugin_credential(&delete, &root).expect("delete");
+        assert_eq!(status, 200);
+        let _ = fs::remove_dir_all(root);
     }
 
     // Regression: ArtLoom sends cloud_api `headers` as an object (with a
@@ -11455,6 +13072,9 @@ mod tests {
                 &runtime.artloom_settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
+                &runtime.framework_registry,
+                &runtime.control_plane_root,
+                &runtime.run_store,
             ),
             200,
         )
@@ -11483,7 +13103,10 @@ mod tests {
             &runtime.artloom_settings,
             &runtime.shared_images,
             &runtime.ocr_provider,
+            &runtime.framework_registry,
+            &runtime.control_plane_root,
             &workflow_root,
+            &runtime.run_store,
         );
         serde_json::from_str(&result.response).expect("hook bridge json response")
     }
@@ -15043,6 +16666,9 @@ nodes:
                 &runtime.artloom_settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
+                &runtime.framework_registry,
+                &runtime.control_plane_root,
+                &runtime.run_store,
             ),
             200,
         );
@@ -15065,6 +16691,9 @@ nodes:
                 &runtime.artloom_settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
+                &runtime.framework_registry,
+                &runtime.control_plane_root,
+                &runtime.run_store,
             ),
             409,
         );
@@ -15100,6 +16729,9 @@ nodes:
                 &runtime.artloom_settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
+                &runtime.framework_registry,
+                &runtime.control_plane_root,
+                &runtime.run_store,
             ),
             200,
         );
@@ -15232,6 +16864,9 @@ nodes:
                 &runtime.artloom_settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
+                &runtime.framework_registry,
+                &runtime.control_plane_root,
+                &runtime.run_store,
             ),
             200,
         );
@@ -15433,6 +17068,9 @@ nodes:
                 &runtime.artloom_settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
+                &runtime.framework_registry,
+                &runtime.control_plane_root,
+                &runtime.run_store,
             ),
             200,
         );
@@ -20703,6 +22341,32 @@ PY
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
+    }
+
+    #[test]
+    fn package_install_routes_have_a_larger_but_bounded_body_limit() {
+        let package_size = 9 * 1024 * 1024;
+        for path in [
+            "/v1/frameworks/install",
+            "/v1/frameworks/third-party/upgrade",
+            "/v1/arts/install",
+        ] {
+            let request = format!("POST {path} HTTP/1.1\r\nContent-Length: {package_size}\r\n\r\n");
+            assert!(
+                !request_exceeds_size_limit(request.as_bytes()),
+                "package route rejected its bounded package body: {path}"
+            );
+        }
+
+        let ordinary_request =
+            format!("POST /v1/invoke HTTP/1.1\r\nContent-Length: {package_size}\r\n\r\n");
+        assert!(request_exceeds_size_limit(ordinary_request.as_bytes()));
+
+        let oversized_package = MAX_PACKAGE_HTTP_BODY_BYTES + 1;
+        let oversized_request = format!(
+            "POST /v1/frameworks/install HTTP/1.1\r\nContent-Length: {oversized_package}\r\n\r\n"
+        );
+        assert!(request_exceeds_size_limit(oversized_request.as_bytes()));
     }
 
     fn http_get(port: u16, path: &str) -> String {

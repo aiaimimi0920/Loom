@@ -6,10 +6,16 @@ import {
   fetchArtStoreCatalog,
   installArtFromStore,
   installFramework,
+  listPluginCredentials,
+  listPluginTrust,
   listFrameworks,
   readLoomSnapshot,
+  revokePluginPublisher,
+  savePluginCredential,
   saveHookCanvasWorkflow,
+  trustPluginPublisher,
   updateArtLoomWorkflowNode,
+  deletePluginCredential,
   uninstallFramework,
   waitForLoomOnline,
   type ConnectionState,
@@ -387,28 +393,123 @@ test("framework helpers call the framework management routes", async (context) =
       });
     }
 
+    if (method === "POST" && path === "/v1/frameworks/publisher.alpha%2Fshared/install") {
+      return Response.json({
+        framework: {
+          id: "shared",
+          qualifiedId: "publisher.alpha/shared",
+          name: "Shared Framework",
+          description: "Publisher qualified fixture",
+          installed: true,
+          ready: true,
+          readyDetail: "ready",
+        },
+      });
+    }
+
     throw new Error(`Unexpected framework path: ${method} ${path}`);
   }) as typeof fetch;
 
   const frameworks = await listFrameworks("http://127.0.0.1:18771");
   const installed = await installFramework("http://127.0.0.1:18771", "python_art");
   const uninstalled = await uninstallFramework("http://127.0.0.1:18771", "python_art");
+  const qualified = await installFramework(
+    "http://127.0.0.1:18771",
+    "publisher.alpha/shared",
+  );
 
   assert.equal(frameworks.length, 1);
   assert.equal(frameworks[0]?.id, "python_art");
   assert.equal(installed?.installed, true);
   assert.equal(installed?.ready, true);
   assert.equal(uninstalled?.installed, false);
+  assert.equal(qualified?.qualifiedId, "publisher.alpha/shared");
   assert.deepEqual(
     seen.map((entry) => `${entry.method} ${entry.path}`),
     [
       "GET /v1/frameworks",
       "POST /v1/frameworks/python_art/install",
       "POST /v1/frameworks/python_art/uninstall",
+      "POST /v1/frameworks/publisher.alpha%2Fshared/install",
     ],
   );
   assert.equal(seen[1]?.body, "{}");
   assert.equal(seen[2]?.body, "{}");
+  assert.equal(seen[3]?.body, "{}");
+});
+
+test("plugin trust and credential helpers preserve qualified scopes and write-only values", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const seen: Array<{ method: string; path: string; body: Record<string, unknown> | null }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const path = new URL(value).pathname;
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const body = typeof init?.body === "string"
+      ? JSON.parse(init.body) as Record<string, unknown>
+      : null;
+    seen.push({ method, path, body });
+    if (path === "/v1/plugin-trust") {
+      return Response.json({ publishers: [] });
+    }
+    if (path === "/v1/plugin-trust/publishers") {
+      return Response.json({ publishers: [{ ...body, revoked: false }] });
+    }
+    if (path === "/v1/plugin-trust/revoke") {
+      return Response.json({
+        publishers: [{ publisherId: body?.publisherId, keyId: body?.keyId, publicKey: "key", revoked: true }],
+      });
+    }
+    if (method === "GET" && path === "/v1/plugin-credentials") {
+      return Response.json({ credentials: [] });
+    }
+    if (method === "POST" && path === "/v1/plugin-credentials") {
+      return Response.json({
+        credential: { name: body?.name, scope: body?.scope, protection: "dpapi" },
+      });
+    }
+    if (path === "/v1/plugin-credentials/delete") {
+      return Response.json({ deleted: true });
+    }
+    throw new Error(`Unexpected plugin security route: ${method} ${path}`);
+  }) as typeof fetch;
+
+  assert.deepEqual(await listPluginTrust("http://127.0.0.1:18773"), []);
+  const trusted = await trustPluginPublisher("http://127.0.0.1:18773", {
+    publisherId: "publisher.alpha",
+    keyId: "release-key",
+    publicKey: "base64-key",
+  });
+  assert.equal(trusted[0]?.publisherId, "publisher.alpha");
+  const revoked = await revokePluginPublisher(
+    "http://127.0.0.1:18773",
+    "publisher.alpha",
+    "release-key",
+  );
+  assert.equal(revoked[0]?.revoked, true);
+  assert.deepEqual(await listPluginCredentials("http://127.0.0.1:18773"), []);
+  const credential = await savePluginCredential("http://127.0.0.1:18773", {
+    name: "api_key",
+    value: "write-only-secret",
+    scope: { frameworkId: "publisher.alpha/shared-framework", artId: "publisher.alpha/shared-art" },
+  });
+  assert.equal(credential?.name, "api_key");
+  assert.equal("value" in (credential ?? {}), false);
+  await deletePluginCredential(
+    "http://127.0.0.1:18773",
+    "api_key",
+    { frameworkId: "publisher.alpha/shared-framework", artId: "publisher.alpha/shared-art" },
+  );
+
+  const saveRequest = seen.find((entry) => entry.path === "/v1/plugin-credentials" && entry.method === "POST");
+  assert.equal(saveRequest?.body?.value, "write-only-secret");
+  assert.deepEqual(saveRequest?.body?.scope, {
+    frameworkId: "publisher.alpha/shared-framework",
+    artId: "publisher.alpha/shared-art",
+  });
 });
 
 test("art store helpers call catalog and install routes", async (context) => {

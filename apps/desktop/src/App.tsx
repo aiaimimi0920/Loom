@@ -21,6 +21,7 @@ import {
   buildMcpPackageInstallPlan,
   checkPythonArtJsonNearby,
   checkMcpPackageInstalled,
+  createAuthoredArtPackage,
   deleteMcpServer,
   deleteToolDefinition,
   deleteWorkflowBundle,
@@ -52,9 +53,18 @@ import {
   listFrameworks,
   installFramework,
   uninstallFramework,
+  listPluginTrust,
+  trustPluginPublisher,
+  revokePluginPublisher,
+  listPluginCredentials,
+  savePluginCredential,
+  deletePluginCredential,
   fetchArtStoreCatalog,
   installArtFromStore,
   type LoomFramework,
+  type LoomFrameworkAuthoringField,
+  type LoomPublisherTrustRecord,
+  type LoomCredentialSummary,
   type ArtStoreEntry,
   syncArtLoomCompatArts,
   testMcpConnection,
@@ -63,6 +73,10 @@ import {
   updateArtLoomCompatShortcut,
   waitForLoomOnline,
 } from "./services/loomApi";
+import {
+  buildAuthoredArtPackage,
+  defaultAuthoringValues,
+} from "./services/artAuthoring";
 import {
   MCP_MARKET_CATEGORIES,
   MCP_MARKET_SERVERS,
@@ -246,14 +260,7 @@ interface GraphNodeDraft {
   withText: string;
 }
 
-type ArtWizardMode =
-  | "cli_wrapper"
-  | "cloud_api"
-  | "script"
-  | "mcp"
-  | "python_art"
-  | "workflow"
-  | "native_image";
+type ArtWizardMode = string;
 
 interface ArtWizardModeDescriptor {
   id: ArtWizardMode;
@@ -307,8 +314,8 @@ const artWizardModes: ArtWizardModeDescriptor[] = [
   },
 ];
 
-const artModeById = (mode: ArtWizardMode) =>
-  artWizardModes.find((item) => item.id === mode) ?? artWizardModes[0];
+const artModeById = (mode: ArtWizardMode, modes = artWizardModes) =>
+  modes.find((item) => item.id === mode) ?? modes[0] ?? artWizardModes[0];
 
 const workflowToolId = (workflowId: string) => {
   const normalized = workflowId.trim().replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
@@ -1213,6 +1220,7 @@ function EnabledChip({ enabled }: { enabled?: boolean }) {
 
 interface ArtWizardSubmitDraft {
   mode: ArtWizardMode;
+  frameworkValues: Record<string, unknown>;
   toolId: string;
   name: string;
   description: string;
@@ -1331,6 +1339,11 @@ const defaultWizardPorts = (mode: ArtWizardMode) => {
         inputs: [createPortDraft("input", { name: "image", label: "图像", type: "image", executionType: "image_path" })],
         outputs: [createPortDraft("output", { name: "result", label: "结果", type: "image", executionType: "image_path" })],
       };
+    default:
+      return {
+        inputs: [createPortDraft("input")],
+        outputs: [createPortDraft("output")],
+      };
   }
 };
 
@@ -1353,8 +1366,72 @@ const toolPortFromDraft = (port: ArtWizardPortDraft, direction: "input" | "outpu
   return next;
 };
 
+function FrameworkAuthoringFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: LoomFrameworkAuthoringField;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  if (field.type === "boolean") {
+    return (
+      <label className="checkbox-line">
+        <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
+        <span>{field.label}{field.required ? " *" : ""}</span>
+      </label>
+    );
+  }
+  if (field.type === "enum") {
+    return (
+      <label className="field-label">
+        {field.label}{field.required ? " *" : ""}
+        <select className="studio-input" value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
+          <option value="">请选择</option>
+          {(field.options ?? []).map((option) => (
+            <option key={`${field.id}-${String(option.value)}`} value={String(option.value)}>{option.label}</option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  if (field.type === "json") {
+    return (
+      <label className="field-label">
+        {field.label}{field.required ? " *" : ""}
+        <textarea
+          className="studio-textarea studio-textarea--compact"
+          value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2)}
+          placeholder={field.placeholder || "{}"}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </label>
+    );
+  }
+  return (
+    <label className="field-label">
+      {field.label}{field.required ? " *" : ""}
+      <input
+        className="studio-input"
+        type={field.secret || field.type === "secret" ? "password" : field.type === "number" ? "number" : "text"}
+        value={typeof value === "number" || typeof value === "string" ? value : ""}
+        min={field.minimum ?? undefined}
+        max={field.maximum ?? undefined}
+        step={field.step ?? undefined}
+        placeholder={field.placeholder ?? undefined}
+        onChange={(event) => onChange(field.type === "number" ? Number(event.target.value) : event.target.value)}
+      />
+      {field.secret || field.type === "secret" ? (
+        <small>填写凭据名称；实际密钥由 Loom 凭据代理注入，不写入 Art 包。</small>
+      ) : null}
+    </label>
+  );
+}
+
 function AddArtWizard({
   baseUrl,
+  frameworks,
   mcpServers,
   pythonArts,
   workflows,
@@ -1362,6 +1439,7 @@ function AddArtWizard({
   onCreate,
 }: {
   baseUrl: string;
+  frameworks: LoomFramework[];
   mcpServers: LoomMcpServer[];
   pythonArts: LoomPythonArt[];
   workflows: LoomWorkflowMetadata[];
@@ -1369,6 +1447,7 @@ function AddArtWizard({
   onCreate: (draft: ArtWizardSubmitDraft) => Promise<void>;
 }) {
   const [mode, setMode] = useState<ArtWizardMode>("mcp");
+  const [frameworkValues, setFrameworkValues] = useState<Record<string, unknown>>({});
   const [toolId, setToolId] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -1395,7 +1474,24 @@ function AddArtWizard({
   const [mcpTools, setMcpTools] = useState<unknown[]>([]);
   const [selectedMcpSchemaToolName, setSelectedMcpSchemaToolName] = useState("");
   const [mcpDiscoveryBusy, setMcpDiscoveryBusy] = useState(false);
-  const selectedMode = artModeById(mode);
+  const availableModes = useMemo<ArtWizardModeDescriptor[]>(() => {
+    const dynamic = frameworks
+      .filter((framework) => framework.installed && framework.enabled && framework.authoringSchema)
+      .map((framework) => ({
+        id: framework.qualifiedId || framework.id,
+        title: framework.authoringSchema?.title || framework.name,
+        subtitle: framework.authoringSchema?.description || framework.description,
+        executionLabel: framework.qualifiedId || framework.id,
+      }));
+    if (!dynamic.length) return artWizardModes;
+    const native = artWizardModes.find((item) => item.id === "native_image");
+    return native ? [...dynamic, native] : dynamic;
+  }, [frameworks]);
+  const selectedMode = artModeById(mode, availableModes);
+  const selectedFramework = frameworks.find(
+    (framework) => (framework.qualifiedId || framework.id) === mode,
+  );
+  const selectedAuthoringSchema = selectedFramework?.authoringSchema ?? null;
 
   useEffect(() => {
     if (!mcpServerId && mcpServers[0]) setMcpServerId(mcpServers[0].id);
@@ -1410,12 +1506,30 @@ function AddArtWizard({
   }, [workflowId, workflows]);
 
   useEffect(() => {
+    if (!availableModes.some((item) => item.id === mode) && availableModes[0]) {
+      setMode(availableModes[0].id);
+    }
+  }, [availableModes, mode]);
+
+  useEffect(() => {
     const defaults = defaultWizardPorts(mode);
-    setInputPorts(defaults.inputs);
-    setOutputPorts(defaults.outputs);
+    const schema = selectedFramework?.authoringSchema;
+    setInputPorts(schema?.inputs?.map((port) => createPortDraft("input", {
+      name: port.name,
+      label: port.label,
+      type: port.type,
+      executionType: port.executionType,
+    })) ?? defaults.inputs);
+    setOutputPorts(schema?.outputs?.map((port) => createPortDraft("output", {
+      name: port.name,
+      label: port.label,
+      type: port.type,
+      executionType: port.executionType,
+    })) ?? defaults.outputs);
+    setFrameworkValues(defaultAuthoringValues(schema?.fields));
     setWizardMessage(null);
     setShaderMode(false);
-  }, [mode]);
+  }, [mode, selectedFramework]);
 
   const mcpToolLabel = (tool: unknown) => {
     if (tool && typeof tool === "object" && !Array.isArray(tool)) {
@@ -1524,6 +1638,7 @@ function AddArtWizard({
   const submit = async () => {
     await onCreate({
       mode,
+      frameworkValues,
       toolId,
       name,
       description,
@@ -1557,7 +1672,7 @@ function AddArtWizard({
       </div>
 
       <div className="art-mode-grid">
-        {artWizardModes.map((item) => (
+        {availableModes.map((item) => (
           <button
             className={mode === item.id ? "art-mode-card art-mode-card--active" : "art-mode-card"}
             type="button"
@@ -1586,7 +1701,7 @@ function AddArtWizard({
               className="studio-input"
               value={toolId}
               onChange={(event) => setToolId(event.target.value)}
-              placeholder={`${mode}-my-art`}
+              placeholder={`${selectedFramework?.id || mode}-my-art`}
             />
           </label>
           <label className="field-label">
@@ -1617,7 +1732,23 @@ function AddArtWizard({
             </div>
           </div>
 
-          {mode === "cli_wrapper" || mode === "native_image" ? (
+          {selectedAuthoringSchema ? (
+            <>
+              {(selectedAuthoringSchema.fields ?? []).map((field) => (
+                <FrameworkAuthoringFieldInput
+                  key={field.id}
+                  field={field}
+                  value={frameworkValues[field.id]}
+                  onChange={(value) => setFrameworkValues((current) => ({ ...current, [field.id]: value }))}
+                />
+              ))}
+              <p className="tiny-text">
+                表单由已安装框架 {selectedFramework?.qualifiedId || selectedFramework?.id} 的 authoring schema 提供。
+              </p>
+            </>
+          ) : null}
+
+          {!selectedAuthoringSchema && (mode === "cli_wrapper" || mode === "native_image") ? (
             <>
               <label className="field-label">
                 {mode === "native_image" ? "图像工具命令" : "命令"}
@@ -1667,7 +1798,7 @@ function AddArtWizard({
             </>
           ) : null}
 
-          {mode === "cloud_api" ? (
+          {!selectedAuthoringSchema && mode === "cloud_api" ? (
             <>
               <label className="field-label">
                 Endpoint URL
@@ -1735,7 +1866,7 @@ function AddArtWizard({
             </>
           ) : null}
 
-          {mode === "script" ? (
+          {!selectedAuthoringSchema && mode === "script" ? (
             <>
               <label className="field-label">
                 Python 脚本路径
@@ -1757,7 +1888,7 @@ function AddArtWizard({
             </>
           ) : null}
 
-          {mode === "mcp" ? (
+          {!selectedAuthoringSchema && mode === "mcp" ? (
             <>
               <label className="field-label">
                 MCP 服务
@@ -1816,7 +1947,7 @@ function AddArtWizard({
             </>
           ) : null}
 
-          {mode === "python_art" ? (
+          {!selectedAuthoringSchema && mode === "python_art" ? (
             <label className="field-label">
               已安装 Python Art
               <select
@@ -1832,7 +1963,7 @@ function AddArtWizard({
             </label>
           ) : null}
 
-          {mode === "workflow" ? (
+          {!selectedAuthoringSchema && mode === "workflow" ? (
             <label className="field-label">
               已保存工作流
               <select
@@ -2726,6 +2857,21 @@ function RegistryPanel({
   const [compatArts, setCompatArts] = useState<ArtLoomCompatArt[]>([]);
   const [pythonEngineSummary, setPythonEngineSummary] = useState<string>("Not probed");
   const [shaderArtId, setShaderArtId] = useState("");
+  const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listFrameworks(baseUrl)
+      .then((items) => {
+        if (!cancelled) setFrameworks(items);
+      })
+      .catch(() => {
+        if (!cancelled) setFrameworks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl]);
 
   const importPythonArt = async (art: LoomPythonArt) => {
     const toolId = `python-art-${art.art_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -3081,12 +3227,58 @@ function RegistryPanel({
   };
 
   const createArtToolFromWizard = async (draft: ArtWizardSubmitDraft) => {
-    const modeInfo = artModeById(draft.mode);
+    const selectedFramework = frameworks.find(
+      (framework) => (framework.qualifiedId || framework.id) === draft.mode,
+    );
+    const modeInfo = artModeById(draft.mode, selectedFramework ? [{
+      id: draft.mode,
+      title: selectedFramework.authoringSchema?.title || selectedFramework.name,
+      subtitle: selectedFramework.authoringSchema?.description || selectedFramework.description,
+      executionLabel: selectedFramework.qualifiedId || selectedFramework.id,
+    }] : artWizardModes);
     const selectedPythonArt = pythonArts.find((art) => art.art_id === draft.pythonArtId);
     const selectedWorkflow = workflows.find((workflow) => workflow.id === draft.workflowId);
     const derivedName = draft.name.trim() || selectedPythonArt?.label || selectedWorkflow?.name || modeInfo.title;
     const toolId = normalizeToolId(draft.toolId || `${draft.mode}-${derivedName}`);
     const description = draft.description.trim() || modeInfo.subtitle;
+    if (selectedFramework?.authoringSchema) {
+      setBusyWizard(true);
+      try {
+        const authored = buildAuthoredArtPackage(selectedFramework, {
+          id: toolId,
+          name: derivedName,
+          description,
+          values: draft.frameworkValues,
+          inputs: draft.inputPorts.map((port) => ({
+            name: port.name,
+            label: port.label,
+            type: port.type,
+            executionType: port.executionType,
+          })),
+          outputs: draft.outputPorts.map((port) => ({
+            name: port.name,
+            label: port.label,
+            type: port.type,
+            executionType: port.executionType,
+          })),
+        });
+        await createAuthoredArtPackage(baseUrl, authored.tool, authored.runtime);
+        setRegistryMessage({
+          kind: "info",
+          text: `已通过 ${selectedFramework.name} 的 authoring schema 创建并安装 Art ${derivedName}。`,
+        });
+        await refresh();
+        setFrameworks(await listFrameworks(baseUrl));
+      } catch (error) {
+        setRegistryMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : "无法创建框架 Art 包。",
+        });
+      } finally {
+        setBusyWizard(false);
+      }
+      return;
+    }
     let execution: LoomToolExecution;
     const fallbackPorts = defaultWizardPorts(draft.mode);
     const inputs = (draft.inputPorts.length ? draft.inputPorts : fallbackPorts.inputs)
@@ -3184,6 +3376,10 @@ function RegistryPanel({
           ],
         };
         break;
+      }
+      default: {
+        setRegistryMessage({ kind: "error", text: `框架 ${draft.mode} 没有可用的 authoring schema。` });
+        return;
       }
     }
 
@@ -3316,6 +3512,7 @@ function RegistryPanel({
       </div>
       <AddArtWizard
         baseUrl={baseUrl}
+        frameworks={frameworks}
         mcpServers={mcpServers}
         pythonArts={pythonArts}
         workflows={workflows}
@@ -3529,35 +3726,89 @@ function RegistryPanel({
   );
 }
 
+function frameworkIdentity(framework: LoomFramework): string {
+  return framework.qualifiedId || framework.id;
+}
+
+function frameworkPermissionSummary(framework: LoomFramework): string[] {
+  const policy = framework.permissionPolicy;
+  const permissions = new Set(framework.declaredPermissions ?? []);
+  if (policy?.network?.domains?.length) {
+    permissions.add(`网络域名: ${policy.network.domains.join(", ")}`);
+  }
+  if (policy?.network?.allowLocalhost) permissions.add("网络: localhost");
+  if (policy?.network?.allowPrivateNetworks) permissions.add("网络: private networks");
+  if (policy?.filesystem?.read?.length) {
+    permissions.add(`文件读取: ${policy.filesystem.read.join(", ")}`);
+  }
+  if (policy?.filesystem?.write?.length) {
+    permissions.add(`文件写入: ${policy.filesystem.write.join(", ")}`);
+  }
+  if (policy?.process?.spawn) {
+    permissions.add(`子进程: 最多 ${policy.process.maxProcesses ?? framework.resources?.maxProcesses ?? "未声明"}`);
+  }
+  if (policy?.gpu) permissions.add("GPU");
+  if (policy?.clipboard) permissions.add("剪贴板");
+  if (policy?.credentials?.length) {
+    permissions.add(`凭据: ${policy.credentials.join(", ")}`);
+  }
+  return [...permissions];
+}
+
+function frameworkResourceSummary(framework: LoomFramework): string[] {
+  const resources = framework.resources;
+  if (!resources) return [];
+  return [
+    resources.timeoutSeconds ? `超时 ${resources.timeoutSeconds}s` : null,
+    resources.memoryMiB ? `内存 ${resources.memoryMiB} MiB` : null,
+    resources.maxProcesses ? `进程 ${resources.maxProcesses}` : null,
+    resources.stdoutMiB ? `stdout ${resources.stdoutMiB} MiB` : null,
+    resources.stderrMiB ? `stderr ${resources.stderrMiB} MiB` : null,
+  ].filter((value): value is string => Boolean(value));
+}
+
 function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
   const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const loadVersion = useRef(0);
 
   const load = useCallback(() => {
+    const version = ++loadVersion.current;
     void listFrameworks(baseUrl)
       .then((list) => {
+        if (version !== loadVersion.current) return;
         setFrameworks(list);
         setError(null);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "无法读取框架列表。"));
+      .catch((err) => {
+        if (version === loadVersion.current) {
+          setError(err instanceof Error ? err.message : "无法读取框架列表。");
+        }
+      });
   }, [baseUrl]);
 
   useEffect(() => {
     load();
+    return () => {
+      loadVersion.current += 1;
+    };
   }, [load]);
 
   const toggle = async (framework: LoomFramework) => {
-    setBusyId(framework.id);
+    const identity = frameworkIdentity(framework);
+    const permissions = frameworkPermissionSummary(framework);
+    const action = framework.installed ? "卸载" : "安装";
+    const review = permissions.length ? `\n\n权限审阅:\n- ${permissions.join("\n- ")}` : "";
+    if (!window.confirm(`${action}框架 ${identity}？${review}`)) return;
+    setBusyId(identity);
     try {
-      const updated = framework.installed
-        ? await uninstallFramework(baseUrl, framework.id)
-        : await installFramework(baseUrl, framework.id);
-      if (updated) {
-        setFrameworks((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      if (framework.installed) {
+        await uninstallFramework(baseUrl, identity);
       } else {
-        load();
+        await installFramework(baseUrl, identity);
       }
+      load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败。");
     } finally {
@@ -3571,46 +3822,254 @@ function FrameworksPanel({ baseUrl }: { baseUrl: string }) {
         <p className="section-kicker">框架</p>
         <h2>执行框架</h2>
         <p className="muted-line">
-          框架是 art 的执行能力底座。装了框架，才能安装并运行属于该框架的 art。
+          框架是 art 的执行能力底座。包使用 publisher/id 作为唯一身份；安装或卸载前请审阅签名、权限和资源上限。
         </p>
         {error ? <p className="error-text">{error}</p> : null}
       </div>
       <div className="card-grid">
-        {frameworks.map((framework) => (
-          <article className="glass-card control-card" key={framework.id}>
-            <div className="control-card__head">
-              <div>
-                <p className="card-kicker">{framework.installed ? "已安装" : "未安装"}</p>
-                <h3>{framework.name}</h3>
+        {frameworks.map((framework) => {
+          const identity = frameworkIdentity(framework);
+          const permissions = frameworkPermissionSummary(framework);
+          const resources = frameworkResourceSummary(framework);
+          return (
+            <article className="glass-card control-card" key={identity}>
+              <div className="control-card__head">
+                <div>
+                  <p className="card-kicker">{framework.installed ? "已安装" : "未安装"}</p>
+                  <h3>{framework.name}</h3>
+                </div>
+                <span className={framework.ready ? "mini-chip mini-chip--ok" : "mini-chip"}>
+                  {framework.ready ? "就绪" : framework.installed ? "未就绪" : "未安装"}
+                </span>
               </div>
-              <span className={framework.ready ? "mini-chip mini-chip--ok" : "mini-chip"}>
-                {framework.ready ? "就绪" : framework.installed ? "未就绪" : "未安装"}
-              </span>
-            </div>
-            <p>{framework.description}</p>
-            <p className="mono-line">{framework.readyDetail}</p>
-            <button
-              className={framework.installed ? "ghost-button" : "signal-button"}
-              type="button"
-              onClick={() => toggle(framework)}
-              disabled={busyId === framework.id}
-            >
-              {busyId === framework.id
-                ? "处理中"
-                : framework.installed
-                  ? "卸载"
-                  : "安装"}
-            </button>
-          </article>
-        ))}
+              <p>{framework.description}</p>
+              <p className="mono-line">{identity}</p>
+              <p className="muted-line">
+                发布者: {framework.publisher?.name || framework.publisher?.id || "未声明"} · 信任: {framework.trustStatus || "unknown"}
+              </p>
+              <p className="mono-line">{framework.readyDetail}</p>
+              <div>
+                <p className="card-kicker">权限审阅</p>
+                {permissions.length ? permissions.map((permission) => (
+                  <span className="mini-chip" key={`${identity}-${permission}`} style={{ marginRight: 6, marginBottom: 6 }}>
+                    {permission}
+                  </span>
+                )) : <span className="mini-chip">未声明额外权限</span>}
+              </div>
+              {resources.length ? (
+                <p className="muted-line">资源上限: {resources.join(" · ")}</p>
+              ) : null}
+              <button
+                className={framework.installed ? "ghost-button" : "signal-button"}
+                type="button"
+                onClick={() => toggle(framework)}
+                disabled={busyId === identity}
+              >
+                {busyId === identity
+                  ? "处理中"
+                  : framework.installed
+                    ? "卸载"
+                    : "安装"}
+              </button>
+            </article>
+          );
+        })}
         {frameworks.length === 0 && !error ? (
           <article className="glass-card empty-card">
             <h3>加载中…</h3>
           </article>
         ) : null}
       </div>
+      <PluginSecurityPanel baseUrl={baseUrl} />
       <ArtStoreCard baseUrl={baseUrl} onInstalled={load} />
     </section>
+  );
+}
+
+function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
+  const [publishers, setPublishers] = useState<LoomPublisherTrustRecord[]>([]);
+  const [credentials, setCredentials] = useState<LoomCredentialSummary[]>([]);
+  const [publisherId, setPublisherId] = useState("");
+  const [keyId, setKeyId] = useState("");
+  const [publicKey, setPublicKey] = useState("");
+  const [credentialName, setCredentialName] = useState("");
+  const [credentialValue, setCredentialValue] = useState("");
+  const [credentialFramework, setCredentialFramework] = useState("");
+  const [credentialArt, setCredentialArt] = useState("");
+  const [credentialExpiresAt, setCredentialExpiresAt] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const loadVersion = useRef(0);
+
+  const load = useCallback(async () => {
+    const version = ++loadVersion.current;
+    try {
+      const [trust, summaries] = await Promise.all([
+        listPluginTrust(baseUrl),
+        listPluginCredentials(baseUrl),
+      ]);
+      if (version !== loadVersion.current) return;
+      setPublishers(trust);
+      setCredentials(summaries);
+      setMessage(null);
+    } catch (err) {
+      if (version === loadVersion.current) {
+        setMessage({ ok: false, text: err instanceof Error ? err.message : "无法读取插件安全状态。" });
+      }
+    }
+  }, [baseUrl]);
+
+  useEffect(() => {
+    void load();
+    return () => {
+      loadVersion.current += 1;
+    };
+  }, [load]);
+
+  const addPublisher = async () => {
+    const normalizedPublisherId = publisherId.trim();
+    const normalizedKeyId = keyId.trim();
+    const normalizedPublicKey = publicKey.trim();
+    if (!window.confirm(`信任发布者密钥 ${normalizedPublisherId}/${normalizedKeyId}？`)) return;
+    setBusy("publisher");
+    setMessage(null);
+    try {
+      const trust = await trustPluginPublisher(baseUrl, {
+        publisherId: normalizedPublisherId,
+        keyId: normalizedKeyId,
+        publicKey: normalizedPublicKey,
+      });
+      setPublishers(trust);
+      setPublisherId("");
+      setKeyId("");
+      setPublicKey("");
+      setMessage({ ok: true, text: `已信任 ${normalizedPublisherId}/${normalizedKeyId}。` });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "添加信任失败。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const revokePublisher = async (publisher: LoomPublisherTrustRecord) => {
+    const id = `${publisher.publisherId}/${publisher.keyId}`;
+    if (!window.confirm(`吊销发布者密钥 ${id}？已安装包会在下次完整性检查时被拒绝。`)) return;
+    setBusy(id);
+    setMessage(null);
+    try {
+      setPublishers(await revokePluginPublisher(baseUrl, publisher.publisherId, publisher.keyId));
+      setMessage({ ok: true, text: `已吊销 ${id}。` });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "吊销失败。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveCredential = async () => {
+    const normalizedName = credentialName.trim();
+    setBusy("credential");
+    setMessage(null);
+    try {
+      await savePluginCredential(baseUrl, {
+        name: normalizedName,
+        value: credentialValue,
+        scope: {
+          ...(credentialFramework.trim() ? { frameworkId: credentialFramework.trim() } : {}),
+          ...(credentialArt.trim() ? { artId: credentialArt.trim() } : {}),
+        },
+        ...(credentialExpiresAt.trim() ? { expiresAt: credentialExpiresAt.trim() } : {}),
+      });
+      setCredentialValue("");
+      setCredentials(await listPluginCredentials(baseUrl));
+      setCredentialName(normalizedName);
+      setMessage({ ok: true, text: `已保存凭据 ${normalizedName}；值已从界面清除。` });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "保存凭据失败。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeCredential = async (credential: LoomCredentialSummary) => {
+    const id = `${credential.name}:${credential.scope.frameworkId || "*"}:${credential.scope.artId || "*"}`;
+    if (!window.confirm(`删除凭据 ${credential.name}（framework=${credential.scope.frameworkId || "*"}, art=${credential.scope.artId || "*"}）？`)) return;
+    setBusy(id);
+    setMessage(null);
+    try {
+      await deletePluginCredential(baseUrl, credential.name, credential.scope);
+      setCredentials(await listPluginCredentials(baseUrl));
+      setMessage({ ok: true, text: `已删除凭据 ${credential.name}。` });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : "删除凭据失败。" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="main-board">
+      <p className="section-kicker">插件安全</p>
+      <h3>发布者信任与作用域凭据</h3>
+      <p className="muted-line">
+        Verified 只表示签名有效，Trusted 才表示密钥已被本机信任。凭据值只写入、不回读，按 framework/art 作用域授予。
+      </p>
+      {message ? <p className={message.ok ? "success-text" : "error-text"}>{message.text}</p> : null}
+      <div className="card-grid">
+        <article className="glass-card control-card">
+          <div className="control-card__head">
+            <div><p className="card-kicker">信任库</p><h3>添加发布者密钥</h3></div>
+            <span className="mini-chip">{publishers.length} keys</span>
+          </div>
+          <input aria-label="发布者 ID" className="hook-canvas-param-expose__value" placeholder="publisherId" value={publisherId} onChange={(event) => setPublisherId(event.target.value)} />
+          <input aria-label="发布者密钥 ID" className="hook-canvas-param-expose__value" placeholder="keyId" value={keyId} onChange={(event) => setKeyId(event.target.value)} />
+          <textarea aria-label="Ed25519 发布者公钥" className="hook-canvas-param-expose__value" placeholder="Ed25519 publicKey (base64)" value={publicKey} onChange={(event) => setPublicKey(event.target.value)} />
+          <button className="signal-button" type="button" disabled={busy !== null || !publisherId.trim() || !keyId.trim() || !publicKey.trim()} onClick={() => void addPublisher()}>
+            {busy === "publisher" ? "保存中" : "信任发布者"}
+          </button>
+          {publishers.map((publisher) => {
+            const id = `${publisher.publisherId}/${publisher.keyId}`;
+            return (
+              <div key={id} style={{ marginTop: 12 }}>
+                <p className="mono-line">{id}</p>
+                <span className={publisher.revoked ? "mini-chip" : "mini-chip mini-chip--ok"}>{publisher.revoked ? "revoked" : "trusted"}</span>
+                {!publisher.revoked ? (
+                  <button className="ghost-button" type="button" disabled={busy !== null} onClick={() => void revokePublisher(publisher)} style={{ marginLeft: 8 }}>
+                    {busy === id ? "吊销中" : "吊销"}
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </article>
+        <article className="glass-card control-card">
+          <div className="control-card__head">
+            <div><p className="card-kicker">凭据 Broker</p><h3>保存作用域凭据</h3></div>
+            <span className="mini-chip">{credentials.length} credentials</span>
+          </div>
+          <input aria-label="凭据名称" className="hook-canvas-param-expose__value" placeholder="name" value={credentialName} onChange={(event) => setCredentialName(event.target.value)} />
+          <input aria-label="凭据值" className="hook-canvas-param-expose__value" type="password" autoComplete="new-password" placeholder="write-only value" value={credentialValue} onChange={(event) => setCredentialValue(event.target.value)} />
+          <input aria-label="凭据框架作用域" className="hook-canvas-param-expose__value" placeholder="frameworkId（可选，支持 publisher/id）" value={credentialFramework} onChange={(event) => setCredentialFramework(event.target.value)} />
+          <input aria-label="凭据 Art 作用域" className="hook-canvas-param-expose__value" placeholder="artId（可选，支持 publisher/id）" value={credentialArt} onChange={(event) => setCredentialArt(event.target.value)} />
+          <input aria-label="凭据过期时间" className="hook-canvas-param-expose__value" placeholder="expiresAt RFC3339（可选）" value={credentialExpiresAt} onChange={(event) => setCredentialExpiresAt(event.target.value)} />
+          <button className="signal-button" type="button" disabled={busy !== null || !credentialName.trim() || !credentialValue} onClick={() => void saveCredential()}>
+            {busy === "credential" ? "保存中" : "保存凭据"}
+          </button>
+          {credentials.map((credential) => {
+            const id = `${credential.name}:${credential.scope.frameworkId || "*"}:${credential.scope.artId || "*"}`;
+            return (
+              <div key={id} style={{ marginTop: 12 }}>
+                <p className="mono-line">{credential.name} · framework={credential.scope.frameworkId || "*"} · art={credential.scope.artId || "*"}</p>
+                <p className="muted-line">{credential.protection}{credential.expiresAt ? ` · expires ${credential.expiresAt}` : ""}</p>
+                <button className="ghost-button" type="button" disabled={busy !== null} onClick={() => void removeCredential(credential)}>
+                  {busy === id ? "删除中" : "删除"}
+                </button>
+              </div>
+            );
+          })}
+        </article>
+      </div>
+    </div>
   );
 }
 
