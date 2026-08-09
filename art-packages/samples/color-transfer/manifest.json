@@ -1,11 +1,11 @@
 {
   "id": "custom-1770131241684",
   "name": "颜色迁移",
-  "description": "通过可插拔 Python Art 框架把参考图的颜色特征迁移到输入图。",
+  "description": "基于 OkLab LUT 的 GPU Shader 色彩迁移与实时调色。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
-    "framework": "python_art"
+    "framework": "process"
   },
   "inputs": [
     {
@@ -35,33 +35,247 @@
       "id": "strength",
       "label": "迁移强度",
       "widget": "slider",
-      "default": 50,
+      "default": 100,
       "min": 0,
       "max": 100,
       "step": 1,
-      "data_type": "number"
+      "data_type": "number",
+      "group": "基础"
+    },
+    {
+      "id": "gamma",
+      "label": "伽马",
+      "widget": "slider",
+      "default": 1,
+      "min": 0.1,
+      "max": 3,
+      "step": 0.1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "exposure",
+      "label": "曝光",
+      "widget": "slider",
+      "default": 0,
+      "min": -4,
+      "max": 4,
+      "step": 0.1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "contrast",
+      "label": "对比度",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "highlights",
+      "label": "高光",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "shadows",
+      "label": "阴影",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "whites",
+      "label": "白色色阶",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "blacks",
+      "label": "黑色色阶",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "曝光 / 对比"
+    },
+    {
+      "id": "temperature",
+      "label": "色温",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "色彩"
+    },
+    {
+      "id": "tint",
+      "label": "色偏",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "色彩"
+    },
+    {
+      "id": "saturation",
+      "label": "饱和度",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "色彩"
+    },
+    {
+      "id": "vibrance",
+      "label": "自然饱和度",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "色彩"
+    },
+    {
+      "id": "hue",
+      "label": "色相偏移",
+      "widget": "slider",
+      "default": 0,
+      "min": 0,
+      "max": 360,
+      "step": 1,
+      "data_type": "number",
+      "group": "色彩"
+    },
+    {
+      "id": "split_h_hue",
+      "label": "高光色相",
+      "widget": "slider",
+      "default": 30,
+      "min": 0,
+      "max": 360,
+      "step": 1,
+      "data_type": "number",
+      "group": "分离色调 / 高级"
+    },
+    {
+      "id": "split_h_sat",
+      "label": "高光饱和度",
+      "widget": "slider",
+      "default": 0,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "分离色调 / 高级"
+    },
+    {
+      "id": "split_s_hue",
+      "label": "阴影色相",
+      "widget": "slider",
+      "default": 210,
+      "min": 0,
+      "max": 360,
+      "step": 1,
+      "data_type": "number",
+      "group": "分离色调 / 高级"
+    },
+    {
+      "id": "split_s_sat",
+      "label": "阴影饱和度",
+      "widget": "slider",
+      "default": 0,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "分离色调 / 高级"
+    },
+    {
+      "id": "split_balance",
+      "label": "分离色调平衡",
+      "widget": "slider",
+      "default": 0,
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "data_type": "number",
+      "group": "分离色调 / 高级"
+    },
+    {
+      "id": "skin_protection",
+      "label": "肤色保护",
+      "widget": "checkbox",
+      "default": false,
+      "data_type": "boolean",
+      "group": "基础"
     }
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "0.1.0",
+      "version": "0.1.4",
       "publisher": {
         "id": "neuro.official",
-        "name": "Neuro"
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/custom-1770131241684",
+      "englishName": "custom-1770131241684",
+      "globalId": "NA20260802004"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "颜色迁移",
+        "en-US": "Color Transfer"
+      },
+      "descriptions": {
+        "zh-CN": "基于 OkLab LUT 的 GPU Shader 色彩迁移与实时调色。",
+        "en-US": "GPU shader color transfer and live grading with an OkLab LUT."
       }
     },
     "dependencies": {
-      "framework": "python_art",
+      "framework": "process",
       "frameworkVersion": "^0.1"
     },
     "capabilities": {
-      "preview": "image",
+      "preview": "shader",
+      "requiresLiveInputs": true,
       "exports": ["image/png"],
       "parameters": "dynamic"
     },
     "python": {
-      "module": "Pillow",
-      "runtimeMode": "package-adapter"
+      "runtimeMode": "shader-lut",
+      "algorithm": "oklab-statistical-transfer-shader"
     }
   }
 }

@@ -8,7 +8,6 @@ export interface HookBridgeWorkflowSyncOptions {
   websocketUrl?: string;
   refresh: () => Promise<unknown> | unknown;
   invalidateHookCanvas: () => void;
-  openHookWorkflow: () => void;
   debounceMs?: number;
 }
 
@@ -33,22 +32,17 @@ export function startHookBridgeWorkflowSync(
   const client = options.client ?? createHookBridgeBrowserClient({ url: options.websocketUrl });
   const debounceMs = Math.max(0, options.debounceMs ?? 50);
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingOpen = false;
   let disposed = false;
 
-  const scheduleRefresh = (openWorkflow: boolean) => {
+  const scheduleRefresh = () => {
     if (disposed) return;
-    pendingOpen = pendingOpen || openWorkflow;
     if (pendingTimer !== null) clearTimeout(pendingTimer);
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
-      const shouldOpen = pendingOpen;
-      pendingOpen = false;
       void Promise.resolve()
         .then(() => options.refresh())
         .then(() => {
           options.invalidateHookCanvas();
-          if (shouldOpen && !disposed) options.openHookWorkflow();
         })
         .catch(() => {
           options.invalidateHookCanvas();
@@ -56,20 +50,16 @@ export function startHookBridgeWorkflowSync(
     }, debounceMs);
   };
 
-  const stopInstantiate = client.subscribe("art_hook/instantiate", () => {
-    scheduleRefresh(true);
-  });
-
   const stopWorkflowUpdated = client.subscribe("art_loom/workflow_updated", (payload) => {
     const workflowId = workflowIdFromPayload(payload);
     if (workflowId !== undefined && !isHookLiveWorkflowId(workflowId)) {
       return;
     }
-    scheduleRefresh(false);
+    scheduleRefresh();
   });
 
   const stopArtsUpdated = client.subscribe("art_loom/arts_updated", () => {
-    scheduleRefresh(false);
+    scheduleRefresh();
   });
 
   return {
@@ -77,10 +67,8 @@ export function startHookBridgeWorkflowSync(
       disposed = true;
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       pendingTimer = null;
-      pendingOpen = false;
       stopArtsUpdated();
       stopWorkflowUpdated();
-      stopInstantiate();
       client.dispose();
     },
   };

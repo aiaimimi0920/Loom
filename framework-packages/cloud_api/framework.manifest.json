@@ -1,6 +1,6 @@
 {
   "id": "cloud_api",
-  "name": "Cloud API Framework",
+  "name": "云端",
   "description": "Executes cloud API backed Art packages in an isolated process boundary.",
   "version": "0.1.0",
   "publisher": {
@@ -36,7 +36,7 @@
   },
   "authoringSchema": {
     "schemaVersion": 1,
-    "title": "Cloud API Art",
+    "title": "云端 Art",
     "description": "Create an Art backed by an HTTPS endpoint.",
     "fields": [
       { "id": "endpoint", "label": "Endpoint", "type": "string", "required": true, "placeholder": "https://api.example.com/v1/process" },

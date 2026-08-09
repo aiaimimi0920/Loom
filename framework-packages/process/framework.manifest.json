@@ -1,0 +1,59 @@
+{
+  "id": "process",
+  "name": "脚本",
+  "description": "Executes command, script, and Python-backed Art packages through one local process boundary.",
+  "version": "0.1.2",
+  "publisher": {
+    "id": "neuro.official",
+    "name": "Neuro"
+  },
+  "hostCompatibility": {
+    "minimum": ">=0.1.0"
+  },
+  "protocolVersion": "loom.framework.v1",
+  "supportedProtocolVersions": ["loom.framework.v1"],
+  "platforms": ["windows-x64"],
+  "entry": {
+    "kind": "process",
+    "command": "runtime/loom-framework-process.exe",
+    "args": ["--stdio"]
+  },
+  "permissions": ["process.spawn", "file.read", "file.write"],
+  "permissionPolicy": {
+    "filesystem": { "read": ["inputs", "packageResources"], "write": ["outputs", "cache", "state"] },
+    "process": { "spawn": true, "maxProcesses": 4 }
+  },
+  "resources": {
+    "timeoutSeconds": 120,
+    "memoryMiB": 512,
+    "maxProcesses": 4,
+    "stdoutMiB": 64,
+    "stderrMiB": 8
+  },
+  "healthCheck": {
+    "command": "self_test",
+    "timeoutSeconds": 15
+  },
+  "dependencies": [
+    { "kind": "runtime", "id": "loom.runtime.python", "version": "^3.12" }
+  ],
+  "authoringSchema": {
+    "schemaVersion": 1,
+    "title": "脚本 Art",
+    "description": "Create an Art backed by a packaged command, script, or Python entry.",
+    "fields": [
+      { "id": "runtimeCommand", "label": "Runtime command", "type": "string", "required": true },
+      { "id": "runtimeArgs", "label": "Runtime arguments", "type": "string" }
+    ],
+    "inputs": [
+      { "name": "input", "label": "Input", "type": "image", "executionType": "image_buffer", "required": true }
+    ],
+    "outputs": [
+      { "name": "result", "label": "Result", "type": "image", "executionType": "image_buffer" }
+    ]
+  },
+  "artExecution": {
+    "requestSchema": "loom.art.execute.v1",
+    "responseSchema": "loom.art.result.v1"
+  }
+}

@@ -72,6 +72,10 @@ pub struct TrustStore {
     pub schema_version: u32,
     #[serde(default)]
     pub publishers: Vec<PublisherTrustRecord>,
+    #[serde(default)]
+    pub policy: TrustPolicy,
+    #[serde(default)]
+    pub trusted_publishers: Vec<String>,
 }
 
 impl Default for TrustStore {
@@ -79,6 +83,8 @@ impl Default for TrustStore {
         Self {
             schema_version: TRUST_STORE_SCHEMA_VERSION,
             publishers: Vec::new(),
+            policy: TrustPolicy::default(),
+            trusted_publishers: Vec::new(),
         }
     }
 }
@@ -139,6 +145,36 @@ impl TrustStore {
         };
         record.revoked = true;
         true
+    }
+
+    pub fn set_policy(&mut self, policy: TrustPolicy) {
+        self.policy = policy;
+    }
+
+    pub fn trust_publisher_id(&mut self, publisher_id: impl Into<String>) {
+        let publisher_id = publisher_id.into();
+        if !self
+            .trusted_publishers
+            .iter()
+            .any(|existing| existing == &publisher_id)
+        {
+            self.trusted_publishers.push(publisher_id);
+            self.trusted_publishers.sort();
+        }
+    }
+
+    pub fn untrust_publisher_id(&mut self, publisher_id: &str) -> bool {
+        let before_ids = self.trusted_publishers.len();
+        self.trusted_publishers
+            .retain(|existing| existing != publisher_id);
+        let before_keys = self.publishers.len();
+        self.publishers
+            .retain(|record| record.publisher_id != publisher_id);
+        before_ids != self.trusted_publishers.len() || before_keys != self.publishers.len()
+    }
+
+    pub fn effective_policy(&self) -> TrustPolicy {
+        TrustPolicy::from_env_override().unwrap_or(self.policy)
     }
 }
 
@@ -338,7 +374,8 @@ fn restrict_trust_path_permissions(_path: &Path, _directory: bool) -> std::io::R
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TrustPolicy {
     #[default]
     AllowUnsigned,
@@ -347,17 +384,22 @@ pub enum TrustPolicy {
 }
 
 impl TrustPolicy {
-    pub fn from_env() -> Self {
+    pub fn from_env_override() -> Option<Self> {
         match std::env::var("LOOM_PLUGIN_TRUST_POLICY")
-            .unwrap_or_default()
+            .ok()?
             .trim()
             .to_ascii_lowercase()
             .as_str()
         {
-            "require-signed" | "require_signed" => Self::RequireSigned,
-            "require-trusted" | "require_trusted" => Self::RequireTrusted,
-            _ => Self::AllowUnsigned,
+            "allow-unsigned" | "allow_unsigned" => Some(Self::AllowUnsigned),
+            "require-signed" | "require_signed" => Some(Self::RequireSigned),
+            "require-trusted" | "require_trusted" => Some(Self::RequireTrusted),
+            _ => None,
         }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_env_override().unwrap_or_default()
     }
 
     pub fn enforce(self, status: PackageTrustStatus) -> Result<(), PluginSecurityError> {
@@ -441,6 +483,20 @@ pub fn sign_package(
     bytes.push(b'\n');
     fs::write(output, bytes)?;
     Ok(document)
+}
+
+pub fn sign_message(
+    key: &SigningKeyDocument,
+    message: &[u8],
+) -> Result<String, PluginSecurityError> {
+    let signing_key = decode_signing_key(&key.private_key)?;
+    let public_key = BASE64.encode(signing_key.verifying_key().to_bytes());
+    if public_key != key.public_key {
+        return Err(PluginSecurityError::InvalidKey(
+            "private/public key mismatch".to_owned(),
+        ));
+    }
+    Ok(BASE64.encode(signing_key.sign(message).to_bytes()))
 }
 
 pub fn verify_package_signature(
@@ -687,9 +743,14 @@ mod tests {
             public_key: "public-key".to_owned(),
             revoked: false,
         });
+        trust.set_policy(TrustPolicy::RequireTrusted);
+        trust.trust_publisher_id("publisher.atomic");
         trust.write_atomic(&path).expect("replace trust store");
 
-        assert_eq!(TrustStore::load(&path).expect("load replaced store"), trust);
+        let loaded = TrustStore::load(&path).expect("load replaced store");
+        assert_eq!(loaded, trust);
+        assert_eq!(loaded.policy, TrustPolicy::RequireTrusted);
+        assert_eq!(loaded.trusted_publishers, ["publisher.atomic"]);
         assert_eq!(
             fs::read_dir(&root)
                 .expect("list trust root")

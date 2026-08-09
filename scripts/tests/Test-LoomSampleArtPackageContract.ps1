@@ -16,17 +16,40 @@ function Assert-True {
     }
 }
 
+function Assert-ArtIdentityMetadata {
+    param(
+        [object]$Manifest,
+        [string]$Context
+    )
+
+    $publisher = $Manifest.metadata.packageSecurity.publisher
+    $publisherId = [string]$publisher.id
+    $publisherName = [string]$publisher.name
+    $publisherIcon = [string]$publisher.icon
+    $art = $Manifest.metadata.art
+    $localization = $Manifest.metadata.localization
+
+    Assert-True (-not [string]::IsNullOrWhiteSpace($publisherId)) "Art publisher id is required: $Context"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($publisherName)) "Art publisher name is required: $Context"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($publisherIcon)) "Art publisher icon is required: $Context"
+    Assert-True ([string]$art.qualifiedId -eq "$publisherId/$($Manifest.id)") "Art qualified id must equal publisher id plus Art id: $Context"
+    Assert-True ([string]$art.englishName -eq [string]$Manifest.id) "Art published English name must equal its technical Art id: $Context"
+    Assert-True ([string]$art.globalId -match '^NA\d{11}$') "Art global id must use NA followed by 11 digits: $Context"
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$localization.names.'zh-CN')) "Art zh-CN name is required: $Context"
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$localization.names.'en-US')) "Art en-US name is required: $Context"
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$localization.descriptions.'zh-CN')) "Art zh-CN description is required: $Context"
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$localization.descriptions.'en-US')) "Art en-US description is required: $Context"
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $packagesRoot = Join-Path $repoRoot "art-packages\samples"
 $buildScript = Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"
 $expected = [ordered]@{
-    "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "cli_wrapper" }
-    "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api" }
-    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp" }
-    "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "python_art" }
-    "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "script" }
-    "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow" }
+    "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "process"; globalId = "NA20260802001"; version = "0.1.2" }
+    "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; globalId = "NA20260802002"; version = "0.1.1" }
+    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; globalId = "NA20260802003"; version = "0.2.1" }
+    "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; globalId = "NA20260802004"; version = "0.1.4" }
 }
 
 Assert-True (Test-Path -LiteralPath $packagesRoot -PathType Container) "Sample Art package source directory is required: $packagesRoot"
@@ -34,6 +57,7 @@ Assert-True (Test-Path -LiteralPath $buildScript -PathType Leaf) "Independent sa
 
 $sourceDirectories = @(Get-ChildItem -LiteralPath $packagesRoot -Directory)
 Assert-True ($sourceDirectories.Count -eq $expected.Count) "Expected exactly $($expected.Count) sample Art source directories, found $($sourceDirectories.Count)."
+$seenSourceGlobalIds = @{}
 
 foreach ($entry in $expected.GetEnumerator()) {
     $sourceDirectory = Join-Path $packagesRoot $entry.Key
@@ -52,9 +76,61 @@ foreach ($entry in $expected.GetEnumerator()) {
     Assert-True ([string]$manifest.id -eq $entry.Value.id) "Sample Art id mismatch: $manifestPath"
     Assert-True ([string]$manifest.execution.framework -eq $entry.Value.framework) "Sample Art framework mismatch: $manifestPath"
     Assert-True ([string]$manifest.metadata.dependencies.framework -eq $entry.Value.framework) "Sample Art framework dependency mismatch: $manifestPath"
+    Assert-True ([string]$manifest.metadata.packageSecurity.version -eq $entry.Value.version) "Sample Art package version mismatch: $manifestPath"
+    Assert-ArtIdentityMetadata -Manifest $manifest -Context $manifestPath
+    $sourceGlobalId = [string]$manifest.metadata.art.globalId
+    Assert-True ($sourceGlobalId -eq $entry.Value.globalId) "Sample Art global id mismatch: $manifestPath"
+    Assert-True (-not $seenSourceGlobalIds.ContainsKey($sourceGlobalId)) "Duplicate sample Art global id: $sourceGlobalId"
+    $seenSourceGlobalIds[$sourceGlobalId] = $true
     Assert-True (($null -ne $manifest.inputs -and @($manifest.inputs).Count -gt 0) -or ($null -ne $manifest.params -and @($manifest.params).Count -gt 0)) "Sample Art inputs or params are required: $manifestPath"
     Assert-True ($null -ne $manifest.outputs -and @($manifest.outputs).Count -gt 0) "Sample Art outputs are required: $manifestPath"
-
+    if ($entry.Key -eq "image-search") {
+        $secret = @($manifest.params | Where-Object { [string]$_.id -eq "brave_api_key" }) | Select-Object -First 1
+        Assert-True ($null -ne $secret -and [bool]$secret.required -and [string]$secret.type -eq "secret") "Image search must declare a required Brave API Key secret parameter."
+        Assert-True ([string]$manifest.metadata.mcp.command -eq "npx") "Image search must launch its MCP server through npx."
+        Assert-True ([string]$manifest.metadata.mcp.toolName -eq "brave_image_search") "Image search must call brave_image_search."
+        Assert-True ([string]$manifest.metadata.mcp.credentialEnv.BRAVE_API_KEY -eq "brave_api_key") "Image search must map the Art secret to BRAVE_API_KEY."
+        $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceDirectory "runtime\main.ps1")
+        Assert-True ($runtimeSource -match 'frameworkData\.mcp\.result') "Image search runtime must consume the real MCP result."
+        Assert-True ($runtimeSource -notmatch 'New-PlaceholderImage') "Image search runtime must not generate placeholder results."
+    }
+    if ($entry.Key -eq "color-transfer") {
+        $expectedParameterIds = @(
+            "strength", "gamma", "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+            "temperature", "tint", "saturation", "vibrance", "hue", "split_h_hue", "split_h_sat",
+            "split_s_hue", "split_s_sat", "split_balance", "skin_protection"
+        )
+        $actualParameterIds = @($manifest.params | ForEach-Object { [string]$_.id })
+        Assert-True ($actualParameterIds.Count -eq $expectedParameterIds.Count) "Color Transfer must expose all 19 RBF-era parameters."
+        foreach ($parameterId in $expectedParameterIds) {
+            Assert-True ($actualParameterIds -contains $parameterId) "Color Transfer parameter is missing: $parameterId"
+        }
+        $strength = @($manifest.params | Where-Object { [string]$_.id -eq "strength" })[0]
+        $gamma = @($manifest.params | Where-Object { [string]$_.id -eq "gamma" })[0]
+        $splitHighlightHue = @($manifest.params | Where-Object { [string]$_.id -eq "split_h_hue" })[0]
+        $splitHighlightSaturation = @($manifest.params | Where-Object { [string]$_.id -eq "split_h_sat" })[0]
+        $splitShadowHue = @($manifest.params | Where-Object { [string]$_.id -eq "split_s_hue" })[0]
+        $skinProtection = @($manifest.params | Where-Object { [string]$_.id -eq "skin_protection" })[0]
+        Assert-True ([double]$strength.default -eq 100 -and [double]$strength.min -eq 0 -and [double]$strength.max -eq 100) "Color Transfer strength contract regressed."
+        Assert-True ([double]$gamma.default -eq 1 -and [double]$gamma.min -eq 0.1 -and [double]$gamma.max -eq 3 -and [double]$gamma.step -eq 0.1) "Color Transfer gamma contract regressed."
+        Assert-True ([double]$splitHighlightHue.max -eq 360 -and [double]$splitHighlightHue.default -eq 30) "Color Transfer highlight hue contract regressed."
+        Assert-True ([double]$splitHighlightSaturation.max -eq 100) "Color Transfer highlight saturation contract regressed."
+        Assert-True ([double]$splitShadowHue.default -eq 210) "Color Transfer shadow hue default regressed."
+        Assert-True ([string]$skinProtection.widget -eq "checkbox" -and [string]$skinProtection.data_type -eq "boolean") "Color Transfer skin protection contract regressed."
+        Assert-True ([string]$manifest.metadata.capabilities.preview -eq "shader") "Color Transfer must advertise shader preview."
+        Assert-True ([bool]$manifest.metadata.capabilities.requiresLiveInputs) "Color Transfer shader must require live input/reference images."
+        Assert-True ([string]$manifest.metadata.capabilities.parameters -eq "dynamic") "Color Transfer parameters must be declared as dynamic shader uniforms."
+        $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceDirectory "runtime\main.py")
+        Assert-True ($runtimeSource -match 'oklab-statistical-transfer') "Color Transfer runtime must use the restored OkLab transfer pipeline."
+        Assert-True ($runtimeSource -match 'shader_output') "Color Transfer runtime must expose the LUT shader output path."
+        Assert-True ($runtimeSource -notmatch '"mix_ratio"') "Color Transfer must not retain the obsolete mix_ratio parameter alias."
+        $fragmentShader = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceDirectory "runtime\color_transfer.frag")
+        Assert-True ($fragmentShader -match 'uniform sampler2D u_lut') "Color Transfer fragment shader must consume the generated LUT texture."
+        foreach ($parameterId in $expectedParameterIds) {
+            Assert-True ($runtimeSource -match [regex]::Escape($parameterId)) "Color Transfer runtime does not consume parameter: $parameterId"
+            Assert-True ($fragmentShader -match [regex]::Escape("u_$parameterId")) "Color Transfer shader does not expose uniform: $parameterId"
+        }
+    }
     $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath | ConvertFrom-Json
     Assert-True ([string]$runtime.protocolVersion -eq "loom.art.runtime.v1") "Sample Art runtime protocol is invalid: $runtimePath"
     Assert-True ($null -ne $runtime.entry) "Sample Art runtime entry is required: $runtimePath"
@@ -84,6 +160,11 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
     $expectedZipNames = @($expected.Values | ForEach-Object { "$($_.id).zip" })
     $zipFiles = @(Get-ChildItem -LiteralPath $artifactRootPath -Filter *.zip -File | Where-Object { $expectedZipNames -contains $_.Name })
     Assert-True ($zipFiles.Count -eq $expected.Count) "Expected all $($expected.Count) sample Art ZIPs, found $($zipFiles.Count)."
+    $seenZipGlobalIds = @{}
+    $certificationPath = Join-Path (Split-Path -Parent $artifactRootPath) "official-art-certifications.json"
+    Assert-True (Test-Path -LiteralPath $certificationPath -PathType Leaf) "Official Art certification index is required: $certificationPath"
+    $certificationIndex = Get-Content -Raw -Encoding UTF8 -LiteralPath $certificationPath | ConvertFrom-Json
+    Assert-True ([int]$certificationIndex.schemaVersion -eq 1) "Official Art certification schema version must be 1."
 
     foreach ($entry in $expected.GetEnumerator()) {
         $zipPath = Join-Path $artifactRootPath "$($entry.Value.id).zip"
@@ -93,6 +174,9 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
 
         $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
         try {
+            Assert-True (-not @($archive.Entries | Where-Object {
+                $_.FullName -match '(^|/)__pycache__/' -or $_.FullName -match '\.pyc$'
+            }).Count) "Sample Art ZIP must not contain Python cache artifacts: $zipPath"
             $manifestEntry = $archive.Entries | Where-Object { $_.FullName -eq "manifest.json" } | Select-Object -First 1
             $runtimeEntry = $archive.Entries | Where-Object { $_.FullName -eq "art.runtime.json" } | Select-Object -First 1
             Assert-True ($null -ne $manifestEntry) "Sample Art ZIP lacks manifest.json: $zipPath"
@@ -108,7 +192,36 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
             Assert-True ([string]$zipManifest.execution.type -eq "framework_art") "Sample Art ZIP execution type is invalid: $zipPath"
             Assert-True ([string]$zipManifest.id -eq $entry.Value.id) "Sample Art ZIP id mismatch: $zipPath"
             Assert-True ([string]$zipManifest.metadata.dependencies.framework -eq $entry.Value.framework) "Sample Art ZIP framework dependency mismatch: $zipPath"
-
+            Assert-True ([string]$zipManifest.metadata.packageSecurity.version -eq $entry.Value.version) "Sample Art ZIP package version mismatch: $zipPath"
+            Assert-ArtIdentityMetadata -Manifest $zipManifest -Context $zipPath
+            $qualifiedId = [string]$zipManifest.metadata.art.qualifiedId
+            $certifiedArt = $certificationIndex.certifications.PSObject.Properties[$qualifiedId]
+            Assert-True ($null -ne $certifiedArt) "Official Art certification is missing: $qualifiedId"
+            $certifiedVersion = $certifiedArt.Value.PSObject.Properties[[string]$entry.Value.version]
+            Assert-True ($null -ne $certifiedVersion) "Official Art version certification is missing: $qualifiedId@$($entry.Value.version)"
+            $actualDigest = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Assert-True ([string]$certifiedVersion.Value -eq $actualDigest) "Official Art certification digest mismatch: $qualifiedId@$($entry.Value.version)"
+            $zipGlobalId = [string]$zipManifest.metadata.art.globalId
+            Assert-True ($zipGlobalId -eq $entry.Value.globalId) "Sample Art ZIP global id mismatch: $zipPath"
+            Assert-True (-not $seenZipGlobalIds.ContainsKey($zipGlobalId)) "Duplicate packaged Art global id: $zipGlobalId"
+            $seenZipGlobalIds[$zipGlobalId] = $true
+            if ($entry.Key -eq "image-search") {
+                $zipSecret = @($zipManifest.params | Where-Object { [string]$_.id -eq "brave_api_key" }) | Select-Object -First 1
+                Assert-True ($null -ne $zipSecret -and [bool]$zipSecret.required -and [string]$zipSecret.type -eq "secret") "Packaged image search must retain its Brave API Key parameter."
+                Assert-True ([string]$zipManifest.metadata.mcp.toolName -eq "brave_image_search") "Packaged image search MCP tool is invalid."
+                Assert-True ([string]$zipManifest.metadata.mcp.credentialEnv.BRAVE_API_KEY -eq "brave_api_key") "Packaged image search credential mapping is invalid."
+            }
+            if ($entry.Key -eq "color-transfer") {
+                $packagedParameterIds = @($zipManifest.params | ForEach-Object { [string]$_.id })
+                Assert-True ($packagedParameterIds.Count -eq 19) "Packaged Color Transfer Art must retain all 19 RBF-era parameters."
+                foreach ($parameterId in @(
+                    "strength", "gamma", "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+                    "temperature", "tint", "saturation", "vibrance", "hue", "split_h_hue", "split_h_sat",
+                    "split_s_hue", "split_s_sat", "split_balance", "skin_protection"
+                )) {
+                    Assert-True ($packagedParameterIds -contains $parameterId) "Packaged Color Transfer parameter is missing: $parameterId"
+                }
+            }
             $runtimeReader = [System.IO.StreamReader]::new($runtimeEntry.Open())
             try {
                 $zipRuntime = $runtimeReader.ReadToEnd() | ConvertFrom-Json

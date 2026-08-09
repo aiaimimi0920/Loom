@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("image-compress", "remove-bg", "image-search", "color-transfer", "image-blend", "image-blend-compress")]
+    [ValidateSet("image-compress", "remove-bg", "image-search", "color-transfer")]
     [string]$PackageName,
     [string]$BaseUrl = "http://127.0.0.1:8765",
     [string]$StoreRoot,

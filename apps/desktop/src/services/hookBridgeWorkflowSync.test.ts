@@ -54,38 +54,22 @@ function createSync(
     invalidateHookCanvas: () => {
       events.push("invalidate");
     },
-    openHookWorkflow: () => {
-      events.push("open");
-    },
     debounceMs: 1,
   });
 }
 
-test("subscribes to instantiate, workflow_updated, and arts_updated channels", () => {
+test("subscribes only to Loom update channels and leaves Hook instantiation delivery to Hook", () => {
   const client = new FakeHookBridgeClient();
 
   const handle = createSync(client, []);
 
   assert.deepEqual(Array.from(client.handlers.keys()).sort(), [
-    "art_hook/instantiate",
     "art_loom/arts_updated",
     "art_loom/workflow_updated",
   ]);
 
   handle.dispose();
   assert.equal(client.disposed, true);
-});
-
-test("instantiate refreshes, invalidates, and opens the Hook workflow", async () => {
-  const client = new FakeHookBridgeClient();
-  const events: string[] = [];
-  const handle = createSync(client, events);
-
-  client.emit("art_hook/instantiate", { workflow_id: HOOK_LIVE_WORKFLOW_ID });
-  await waitForDebounce();
-
-  assert.deepEqual(events, ["refresh", "invalidate", "open"]);
-  handle.dispose();
 });
 
 test("workflow and Art updates refresh without forced navigation", async () => {
@@ -109,10 +93,9 @@ test("events inside one debounce window produce one refresh and invalidation", a
 
   client.emit("art_loom/arts_updated", {});
   client.emit("art_loom/workflow_updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
-  client.emit("art_hook/instantiate", { workflow_id: HOOK_LIVE_WORKFLOW_ID });
   await waitForDebounce();
 
-  assert.deepEqual(events, ["refresh", "invalidate", "open"]);
+  assert.deepEqual(events, ["refresh", "invalidate"]);
   handle.dispose();
 });
 

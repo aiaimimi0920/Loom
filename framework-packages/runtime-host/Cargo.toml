@@ -8,6 +8,7 @@ description = "External process host for independently packaged Loom Art framewo
 [workspace]
 
 [dependencies]
+loom_mcp = { path = "../../crates/loom_mcp" }
 loom_protocol = { path = "../../crates/loom_protocol" }
 loom_process = { path = "../../crates/loom_process" }
 serde = { version = "1", features = ["derive"] }

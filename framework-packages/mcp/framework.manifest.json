@@ -1,8 +1,8 @@
 {
   "id": "mcp",
-  "name": "MCP Framework",
+  "name": "MCP",
   "description": "Executes MCP-backed Art packages in an isolated process boundary.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": {
     "id": "neuro.official",
     "name": "Neuro"

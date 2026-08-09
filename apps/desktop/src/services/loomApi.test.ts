@@ -3,20 +3,35 @@ import test from "node:test";
 
 import {
   artLoomExecuteArtNodeErrorMessage,
+  autoUpdateArts,
+  bootstrapPackagedArts,
   fetchArtStoreCatalog,
+  getArtManagement,
+  getPublisherIdentity,
   installArtFromStore,
   installFramework,
   listPluginCredentials,
   listPluginTrust,
   listFrameworks,
+  publishArt,
   readLoomSnapshot,
   revokePluginPublisher,
+  revealPluginCredential,
+  revealPublisherPrivateKey,
+  rotatePublisherIdentity,
   savePluginCredential,
+  saveArtManagementSettings,
   saveHookCanvasWorkflow,
+  setPluginTrustPolicy,
+  trustPluginUser,
   trustPluginPublisher,
+  untrustPluginUser,
+  updateArtToVersion,
   updateArtLoomWorkflowNode,
   deletePluginCredential,
   uninstallFramework,
+  uninstallArtPackage,
+  registerPublisherIdentity,
   waitForLoomOnline,
   type ConnectionState,
   type LoomSnapshot,
@@ -66,6 +81,75 @@ test("waits through transient offline snapshots until the daemon is online", asy
   assert.ok(snapshot);
   assert.equal(snapshot.connectionState, "online");
   assert.deepEqual(sleeps, [100, 100]);
+});
+
+test("Art management helpers use dedicated settings and version routes", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const seen: Array<{ method: string; pathname: string; body: string }> = [];
+  const management = {
+    artId: "neuro.official/sample",
+    name: "Sample",
+    description: "",
+    locallyAuthored: false,
+    canEditIdentity: false,
+    currentVersion: "1.0.0",
+    highestVersion: "1.1.0",
+    autoUpdate: true,
+    installedVersions: [],
+    availableVersions: ["1.0.0", "1.1.0"],
+    parameters: [],
+    defaults: {},
+    valueBindings: {},
+    credentialBindings: {},
+    availableCredentials: [],
+    updateAvailable: true,
+  };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(value);
+    seen.push({
+      method: String(init?.method ?? "GET").toUpperCase(),
+      pathname: url.pathname,
+      body: String(init?.body ?? ""),
+    });
+    return new Response(JSON.stringify(url.pathname === "/v1/arts/auto-update"
+      ? { updated: [], errors: [] }
+      : management), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const artId = "neuro.official/sample";
+  await getArtManagement("http://127.0.0.1:18772", artId);
+  await saveArtManagementSettings("http://127.0.0.1:18772", artId, {
+    autoUpdate: false,
+    defaults: { strength: 0.8 },
+    valueBindings: { count: "image_search_count" },
+    credentialBindings: { apiKey: "cloudflare_key" },
+    secretValues: { privateToken: "write-only-value" },
+  });
+  await updateArtToVersion("http://127.0.0.1:18772", artId, "1.1.0");
+  await autoUpdateArts("http://127.0.0.1:18772");
+
+  assert.deepEqual(seen.map(({ method, pathname }) => `${method} ${pathname}`), [
+    "GET /v1/arts/neuro.official%2Fsample/management",
+    "PUT /v1/arts/neuro.official%2Fsample/settings",
+    "POST /v1/arts/neuro.official%2Fsample/update",
+    "POST /v1/arts/auto-update",
+  ]);
+  assert.deepEqual(JSON.parse(seen[1]?.body ?? "{}"), {
+    autoUpdate: false,
+    defaults: { strength: 0.8 },
+    valueBindings: { count: "image_search_count" },
+    credentialBindings: { apiKey: "cloudflare_key" },
+    secretValues: { privateToken: "write-only-value" },
+  });
+  assert.equal("privateToken" in JSON.parse(seen[1]?.body ?? "{}").defaults, false);
+  assert.equal(seen[2]?.body, JSON.stringify({ version: "1.1.0" }));
 });
 
 test("readiness timeout bounds a stalled snapshot attempt", async () => {
@@ -328,6 +412,30 @@ test("artLoomExecuteArtNodeErrorMessage ignores success responses", () => {
   );
 });
 
+test("Art package uninstall uses the publisher-qualified package route", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  let seenMethod = "";
+  let seenPath = "";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    seenMethod = String(init?.method ?? "GET").toUpperCase();
+    seenPath = new URL(value).pathname;
+    return new Response(JSON.stringify({ artId: "publisher.test/sample-art", uninstalled: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  await uninstallArtPackage("http://127.0.0.1:18770", "publisher.test/sample-art");
+
+  assert.equal(seenMethod, "POST");
+  assert.equal(seenPath, "/v1/arts/publisher.test%2Fsample-art/uninstall");
+});
+
 test("framework helpers call the framework management routes", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => {
@@ -347,8 +455,8 @@ test("framework helpers call the framework management routes", async (context) =
       return new Response(JSON.stringify({
         frameworks: [
           {
-            id: "python_art",
-            qualifiedId: "neuro.official/python_art",
+            id: "process",
+            qualifiedId: "neuro.official/process",
             name: "Python Art 框架",
             description: "运行 Python Art，需要 Python 运行时。",
             installed: false,
@@ -357,8 +465,8 @@ test("framework helpers call the framework management routes", async (context) =
             readyDetail: "未安装",
           },
           {
-            id: "python_art",
-            qualifiedId: "neuro.official/python_art",
+            id: "process",
+            qualifiedId: "neuro.official/process",
             name: "Python Art 框架",
             description: "运行 Python Art，需要 Python 运行时。",
             installed: true,
@@ -374,10 +482,10 @@ test("framework helpers call the framework management routes", async (context) =
       });
     }
 
-    if (method === "POST" && path === "/v1/frameworks/python_art/install") {
+    if (method === "POST" && path === "/v1/frameworks/process/install") {
       return new Response(JSON.stringify({
         framework: {
-          id: "python_art",
+          id: "process",
           name: "Python Art 框架",
           description: "运行 Python Art，需要 Python 运行时。",
           installed: true,
@@ -390,10 +498,10 @@ test("framework helpers call the framework management routes", async (context) =
       });
     }
 
-    if (method === "POST" && path === "/v1/frameworks/python_art/uninstall") {
+    if (method === "POST" && path === "/v1/frameworks/process/uninstall") {
       return new Response(JSON.stringify({
         framework: {
-          id: "python_art",
+          id: "process",
           name: "Python Art 框架",
           description: "运行 Python Art，需要 Python 运行时。",
           installed: false,
@@ -424,15 +532,15 @@ test("framework helpers call the framework management routes", async (context) =
   }) as typeof fetch;
 
   const frameworks = await listFrameworks("http://127.0.0.1:18771");
-  const installed = await installFramework("http://127.0.0.1:18771", "python_art");
-  const uninstalled = await uninstallFramework("http://127.0.0.1:18771", "python_art");
+  const installed = await installFramework("http://127.0.0.1:18771", "process");
+  const uninstalled = await uninstallFramework("http://127.0.0.1:18771", "process");
   const qualified = await installFramework(
     "http://127.0.0.1:18771",
     "publisher.alpha/shared",
   );
 
   assert.equal(frameworks.length, 1);
-  assert.equal(frameworks[0]?.id, "python_art");
+  assert.equal(frameworks[0]?.id, "process");
   assert.equal(frameworks[0]?.installed, true);
   assert.equal(installed?.installed, true);
   assert.equal(installed?.ready, true);
@@ -442,14 +550,24 @@ test("framework helpers call the framework management routes", async (context) =
     seen.map((entry) => `${entry.method} ${entry.path}`),
     [
       "GET /v1/frameworks",
-      "POST /v1/frameworks/python_art/install",
-      "POST /v1/frameworks/python_art/uninstall",
+      "POST /v1/frameworks/process/install",
+      "POST /v1/frameworks/process/uninstall",
       "POST /v1/frameworks/publisher.alpha%2Fshared/install",
     ],
   );
   assert.equal(seen[1]?.body, "{}");
   assert.equal(seen[2]?.body, "{}");
   assert.equal(seen[3]?.body, "{}");
+});
+
+test("browser mode leaves packaged Art bootstrap to the desktop host", async () => {
+  assert.deepEqual(await bootstrapPackagedArts("http://127.0.0.1:18770"), {
+    available: false,
+    applied: false,
+    catalogHash: null,
+    frameworkIds: [],
+    artIds: [],
+  });
 });
 
 test("framework install surfaces the daemon error message in browser mode", async (context) => {
@@ -461,12 +579,12 @@ test("framework install surfaces the daemon error message in browser mode", asyn
   globalThis.fetch = (async () => Response.json({
     error: {
       code: "framework_install_failed",
-      message: "framework `python_art` has no available package source",
+      message: "framework `process` has no available package source",
     },
   }, { status: 500 })) as typeof fetch;
 
   await assert.rejects(
-    installFramework("http://127.0.0.1:18771", "python_art"),
+    installFramework("http://127.0.0.1:18771", "process"),
     /HTTP 500.*no available package source/,
   );
 });
@@ -530,7 +648,7 @@ test("Tauri framework installs use the packaged fallback command without direct 
   let fetchCalls = 0;
   globals.fetch = (async () => {
     fetchCalls += 1;
-    return Response.json({ framework: { id: "python_art", installed: true } });
+    return Response.json({ framework: { id: "process", installed: true } });
   }) as typeof fetch;
   Reflect.set(globals, "window", globals);
   Reflect.set(globals, "isTauri", true);
@@ -543,8 +661,8 @@ test("Tauri framework installs use the packaged fallback command without direct 
       if (args.id === "cloud_api") {
         return { framework: { id: "cloud_api", installed: true, ready: true } };
       }
-      assert.equal(args.id, "python_art");
-      throw "framework `python_art` package checksum mismatch";
+      assert.equal(args.id, "process");
+      throw "framework `process` package checksum mismatch";
     },
   });
 
@@ -553,7 +671,7 @@ test("Tauri framework installs use the packaged fallback command without direct 
   assert.equal(installed?.ready, true);
 
   await assert.rejects(
-    installFramework("http://127.0.0.1:18771", "python_art"),
+    installFramework("http://127.0.0.1:18771", "process"),
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /checksum mismatch/);
@@ -564,7 +682,7 @@ test("Tauri framework installs use the packaged fallback command without direct 
   assert.equal(fetchCalls, 0);
 });
 
-test("plugin trust and credential helpers preserve qualified scopes and write-only values", async (context) => {
+test("plugin trust credentials and publisher identity helpers preserve their contracts", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => {
     globalThis.fetch = originalFetch;
@@ -589,41 +707,108 @@ test("plugin trust and credential helpers preserve qualified scopes and write-on
         publishers: [{ publisherId: body?.publisherId, keyId: body?.keyId, publicKey: "key", revoked: true }],
       });
     }
+    if (path === "/v1/plugin-trust/policy") {
+      return Response.json({ publishers: [], policy: body?.policy, trustedPublishers: [] });
+    }
+    if (path === "/v1/plugin-trust/users") {
+      return Response.json({ publishers: [], policy: "require_trusted", trustedPublishers: [body?.userId] });
+    }
+    if (path === "/v1/plugin-trust/users/remove") {
+      return Response.json({ publishers: [], policy: "require_trusted", trustedPublishers: [] });
+    }
     if (method === "GET" && path === "/v1/plugin-credentials") {
       return Response.json({ credentials: [] });
     }
     if (method === "POST" && path === "/v1/plugin-credentials") {
       return Response.json({
-        credential: { name: body?.name, scope: body?.scope, protection: "dpapi" },
+        credential: { name: body?.name, valueType: body?.valueType, scope: body?.scope, protection: "dpapi" },
       });
     }
     if (path === "/v1/plugin-credentials/delete") {
       return Response.json({ deleted: true });
     }
+    if (path === "/v1/plugin-credentials/reveal") {
+      return Response.json({
+        credential: {
+          name: body?.name,
+          value: "revealed-secret",
+          valueType: "string",
+          scope: body?.scope,
+          protection: "dpapi",
+        },
+      });
+    }
+    if (method === "GET" && path === "/v1/publisher-identity") {
+      return Response.json({
+        identity: {
+          schemaVersion: 1,
+          userId: "L0000000000",
+          currentKeyId: "key-1",
+          publicKey: "public-key",
+        },
+        hasPrivateKey: true,
+      });
+    }
+    if (path === "/v1/publisher-identity/register" || path === "/v1/publisher-identity/rotate") {
+      return Response.json({
+        identity: {
+          schemaVersion: 1,
+          userId: "L0000000000",
+          currentKeyId: path.endsWith("rotate") ? "key-2" : "key-1",
+          publicKey: "public-key",
+        },
+        hasPrivateKey: true,
+      });
+    }
+    if (path === "/v1/publisher-identity/private-key") {
+      return Response.json({ keyId: "key-1", privateKey: "private-key", publicKey: "public-key" });
+    }
     throw new Error(`Unexpected plugin security route: ${method} ${path}`);
   }) as typeof fetch;
 
-  assert.deepEqual(await listPluginTrust("http://127.0.0.1:18773"), []);
+  assert.deepEqual(await listPluginTrust("http://127.0.0.1:18773"), {
+    schemaVersion: undefined,
+    publishers: [],
+    policy: "allow_unsigned",
+    trustedPublishers: [],
+  });
   const trusted = await trustPluginPublisher("http://127.0.0.1:18773", {
     publisherId: "publisher.alpha",
     keyId: "release-key",
     publicKey: "base64-key",
   });
-  assert.equal(trusted[0]?.publisherId, "publisher.alpha");
+  assert.equal(trusted.publishers[0]?.publisherId, "publisher.alpha");
   const revoked = await revokePluginPublisher(
     "http://127.0.0.1:18773",
     "publisher.alpha",
     "release-key",
   );
-  assert.equal(revoked[0]?.revoked, true);
+  assert.equal(revoked.publishers[0]?.revoked, true);
+  assert.equal((await setPluginTrustPolicy("http://127.0.0.1:18773", "require_signed")).policy, "require_signed");
+  assert.deepEqual(
+    (await trustPluginUser("http://127.0.0.1:18773", "L0000000000")).trustedPublishers,
+    ["L0000000000"],
+  );
+  assert.deepEqual(
+    (await untrustPluginUser("http://127.0.0.1:18773", "L0000000000")).trustedPublishers,
+    [],
+  );
   assert.deepEqual(await listPluginCredentials("http://127.0.0.1:18773"), []);
   const credential = await savePluginCredential("http://127.0.0.1:18773", {
     name: "api_key",
     value: "write-only-secret",
+    valueType: "string",
     scope: { frameworkId: "publisher.alpha/shared-framework", artId: "publisher.alpha/shared-art" },
   });
   assert.equal(credential?.name, "api_key");
   assert.equal("value" in (credential ?? {}), false);
+  assert.equal(
+    (await revealPluginCredential("http://127.0.0.1:18773", "api_key", {
+      frameworkId: "publisher.alpha/shared-framework",
+      artId: "publisher.alpha/shared-art",
+    }))?.value,
+    "revealed-secret",
+  );
   await deletePluginCredential(
     "http://127.0.0.1:18773",
     "api_key",
@@ -632,13 +817,26 @@ test("plugin trust and credential helpers preserve qualified scopes and write-on
 
   const saveRequest = seen.find((entry) => entry.path === "/v1/plugin-credentials" && entry.method === "POST");
   assert.equal(saveRequest?.body?.value, "write-only-secret");
+  assert.equal(saveRequest?.body?.valueType, "string");
   assert.deepEqual(saveRequest?.body?.scope, {
     frameworkId: "publisher.alpha/shared-framework",
     artId: "publisher.alpha/shared-art",
   });
+  assert.deepEqual(await getPublisherIdentity("http://127.0.0.1:18773"), {
+    identity: {
+      schemaVersion: 1,
+      userId: "L0000000000",
+      currentKeyId: "key-1",
+      publicKey: "public-key",
+    },
+    hasPrivateKey: true,
+  });
+  assert.equal((await registerPublisherIdentity("http://127.0.0.1:18773")).identity?.currentKeyId, "key-1");
+  assert.equal((await rotatePublisherIdentity("http://127.0.0.1:18773")).identity?.currentKeyId, "key-2");
+  assert.equal((await revealPublisherPrivateKey("http://127.0.0.1:18773")).privateKey, "private-key");
 });
 
-test("art store helpers call catalog and install routes", async (context) => {
+test("art store helpers preserve certification and call install and publish routes", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => {
     globalThis.fetch = originalFetch;
@@ -660,7 +858,8 @@ test("art store helpers call catalog and install routes", async (context) => {
             id: "loom_echo",
             name: "Loom Echo",
             description: "Fixture art",
-            framework: "python_art",
+            framework: "process",
+            official: true,
           },
         ],
       }), {
@@ -671,7 +870,19 @@ test("art store helpers call catalog and install routes", async (context) => {
 
     if (method === "POST" && url.pathname === "/v1/arts/store/install") {
       return new Response(JSON.stringify({
-        reports: [{ toolId: "loom_echo", framework: "python_art" }],
+        reports: [{ toolId: "loom_echo", framework: "process" }],
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (method === "POST" && url.pathname === "/v1/arts/store/publish") {
+      return new Response(JSON.stringify({
+        artId: "local-art",
+        globalId: "NA40000000001",
+        sha256: "a".repeat(64),
+        published: true,
       }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -690,18 +901,30 @@ test("art store helpers call catalog and install routes", async (context) => {
     "loom_echo",
     "http://127.0.0.1:8790",
   );
+  const published = await publishArt(
+    "http://127.0.0.1:18772",
+    "local-art",
+    "http://127.0.0.1:8790",
+  );
 
   assert.equal(catalog.length, 1);
-  assert.equal(catalog[0]?.framework, "python_art");
+  assert.equal(catalog[0]?.framework, "process");
+  assert.equal(catalog[0]?.official, true);
+  assert.equal(published.globalId, "NA40000000001");
   assert.deepEqual(
     seen.map((entry) => `${entry.method} ${entry.pathWithQuery}`),
     [
       "GET /v1/arts/store/catalog?store=http%3A%2F%2F127.0.0.1%3A8790",
       "POST /v1/arts/store/install",
+      "POST /v1/arts/store/publish",
     ],
   );
   assert.equal(
     seen[1]?.body,
     JSON.stringify({ artId: "loom_echo", store: "http://127.0.0.1:8790" }),
+  );
+  assert.equal(
+    seen[2]?.body,
+    JSON.stringify({ artId: "local-art", store: "http://127.0.0.1:8790" }),
   );
 });

@@ -52,6 +52,17 @@ does not become safe merely because it was installed before revocation.
 
 ## Runtime policy
 
+The desktop persists the selected Art install policy in `plugin-trust.json`:
+
+- `allow_unsigned`: unsigned, verified, and trusted Art packages are accepted.
+- `require_signed`: Art packages must have a valid signature.
+- `require_trusted`: the signature must also match a platform user in the local
+  trusted-user list.
+
+`LOOM_PLUGIN_TRUST_POLICY` remains an operator override. It also controls
+framework package enforcement, which is intentionally separate from the
+desktop's Art-only policy selection.
+
 ```text
 LOOM_PLUGIN_TRUST_POLICY=allow-unsigned   # compatibility default
 LOOM_PLUGIN_TRUST_POLICY=require-signed

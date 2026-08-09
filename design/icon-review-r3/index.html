@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Loom 程序图标评审 R3</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter,"Segoe UI",system-ui,sans-serif; background: #06080d; color: #f4f7ef; }
+    * { box-sizing: border-box; }
+    body { min-width: 940px; margin: 0; background: linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px),#06080d; background-size: 32px 32px; }
+    button { font: inherit; }
+    .shell { width: min(1440px,calc(100% - 64px)); margin: 0 auto; padding: 38px 0 54px; }
+    .header { display: flex; align-items: end; justify-content: space-between; gap: 32px; border-bottom: 1px solid rgba(255,255,255,.14); padding-bottom: 22px; }
+    .eyebrow { margin: 0 0 8px; color: #d9ff38; font-size: 12px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(32px,4vw,58px); line-height: .96; letter-spacing: -.045em; }
+    .header__tools { display: flex; align-items: center; gap: 10px; }
+    .tool-button { border: 1px solid rgba(255,255,255,.2); border-radius: 8px; padding: 10px 14px; background: rgba(255,255,255,.05); color: #f4f7ef; font-size: 13px; font-weight: 850; cursor: pointer; }
+    .tool-button:hover,.tool-button[aria-pressed="true"] { border-color: #d9ff38; background: rgba(217,255,56,.1); color: #d9ff38; }
+    .principle { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin: 18px 0 22px; border-left: 3px solid #ffe600; padding: 12px 15px; background: rgba(255,230,0,.055); color: rgba(244,247,239,.72); font-size: 13px; }
+    .principle a { color: #7ee2a1; font-weight: 850; text-decoration: none; }
+    .grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 18px; }
+    .candidate { display: grid; grid-template-rows: auto auto auto 1fr auto; min-width: 0; border: 1px solid rgba(255,255,255,.14); border-radius: 14px; background: rgba(13,17,23,.97); overflow: hidden; transition: border-color 140ms ease,box-shadow 140ms ease; }
+    .candidate[data-selected="true"] { border-color: #d9ff38; box-shadow: 0 0 0 1px rgba(217,255,56,.2); }
+    .candidate__head { min-height: 76px; display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(255,255,255,.1); padding: 18px; }
+    .candidate__index { color: #d9ff38; font: 900 12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.02em; }
+    .tag { border: 1px solid rgba(34,197,94,.38); border-radius: 999px; padding: 5px 8px; color: #7ee2a1; font-size: 11px; font-weight: 900; white-space: nowrap; }
+    .hero { display: grid; min-height: 292px; place-items: center; background: radial-gradient(circle,rgba(34,197,94,.06),transparent 58%),#080b10; }
+    .hero img { width: 228px; height: 228px; }
+    .sizes { display: flex; align-items: end; justify-content: center; gap: 18px; border-top: 1px solid rgba(255,255,255,.09); border-bottom: 1px solid rgba(255,255,255,.09); padding: 16px; background: #0b0f15; }
+    .sample { display: grid; gap: 7px; place-items: center; color: rgba(244,247,239,.44); font: 10px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .frame { display: grid; width: 72px; height: 72px; place-items: center; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: #e8ece8; }
+    .frame--dark { background: #06080d; }
+    .s64 img { width: 64px; height: 64px; }.s32 img { width: 32px; height: 32px; }.s16 img { width: 16px; height: 16px; }
+    .description { min-height: 104px; margin: 0; padding: 17px 18px 8px; color: rgba(244,247,239,.64); font-size: 13px; line-height: 1.65; }
+    .action { margin: 12px 18px 18px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; padding: 10px 12px; background: rgba(255,255,255,.04); color: #f4f7ef; font-weight: 850; cursor: pointer; }
+    .action:hover { border-color: rgba(217,255,56,.54); background: rgba(217,255,56,.08); }
+    .candidate[data-selected="true"] .action { border-color: #d9ff38; background: #d9ff38; color: #111614; }
+    .output { min-height: 44px; margin-top: 18px; border-left: 3px solid #d9ff38; padding: 11px 14px; background: rgba(217,255,56,.06); color: rgba(244,247,239,.72); font-size: 13px; }
+    body.blind .semantic-copy { visibility: hidden; }
+    body.blind .candidate__head { justify-content: center; }
+    body.blind .candidate__index { font-size: 16px; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div><p class="eyebrow">Loom / App Icon Review / R3</p><h1>直观操作符号</h1></div>
+      <div class="header__tools"><button class="tool-button" id="blindToggle" type="button" aria-pressed="false">隐藏说明，盲看图标</button></div>
+    </header>
+    <div class="principle"><span>本轮只保留熟悉符号：命令执行、控制滑杆、工具汇聚。无辉光、无细线、无抽象编织隐喻。</span><span><a href="../icon-review-r1/index.html">R1</a>　<a href="../icon-review-r2/index.html">R2</a></span></div>
+    <section class="grid" aria-label="Loom 图标 R3 候选">
+      <article class="candidate" data-candidate="G" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION G</span><div class="semantic-copy"><h2>AI 命令台</h2></div></div><span class="tag semantic-copy">执行</span></header>
+        <div class="hero"><img src="loom-icon-g-ai-console.svg" alt="候选 G，AI 命令台图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-g-ai-console.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame frame--dark"><img src="loom-icon-g-ai-console.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-g-ai-console.svg" alt="" /></span>16PX</span></div>
+        <p class="description semantic-copy">用最熟悉的命令提示符表达“启动、执行、调度”。绿色箭头是操作，黄色光标是当前任务。用途最直观，但略偏终端工具。</p>
+        <button class="action" type="button">标记候选 G</button>
+      </article>
+      <article class="candidate" data-candidate="H" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION H</span><div class="semantic-copy"><h2>AI 控制台</h2></div></div><span class="tag semantic-copy">控制</span></header>
+        <div class="hero"><img src="loom-icon-h-control-deck.svg" alt="候选 H，AI 控制台滑杆图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-h-control-deck.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame frame--dark"><img src="loom-icon-h-control-deck.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-h-control-deck.svg" alt="" /></span>16PX</span></div>
+        <p class="description semantic-copy">三组滑杆直接表达“统一控制、调整和编排”。结构在 16px 下最稳定，普通用户也熟悉，但可能被理解成音频或系统设置。</p>
+        <button class="action" type="button">标记候选 H</button>
+      </article>
+      <article class="candidate" data-candidate="I" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION I</span><div class="semantic-copy"><h2>工具中台</h2></div></div><span class="tag semantic-copy">汇聚</span></header>
+        <div class="hero"><img src="loom-icon-i-tool-hub.svg" alt="候选 I，工具汇聚中台图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-i-tool-hub.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame frame--dark"><img src="loom-icon-i-tool-hub.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-i-tool-hub.svg" alt="" /></span>16PX</span></div>
+        <p class="description semantic-copy">黄色大核心代表用户控制面，三个绿色端口代表 Art、智能体和外部工具。比上一轮中枢图形更少、更粗，但仍可能被看成网络节点。</p>
+        <button class="action" type="button">标记候选 I</button>
+      </article>
+    </section>
+    <div class="output" id="output">建议先点击“隐藏说明，盲看图标”。如果不看文字仍能猜出图标用途，才说明方向成立。</div>
+  </main>
+  <script>
+    const cards = Array.from(document.querySelectorAll(".candidate"));
+    const output = document.querySelector("#output");
+    const blindToggle = document.querySelector("#blindToggle");
+    blindToggle.addEventListener("click", () => {
+      const blind = !document.body.classList.contains("blind");
+      document.body.classList.toggle("blind", blind);
+      blindToggle.setAttribute("aria-pressed", String(blind));
+      blindToggle.textContent = blind ? "显示图标说明" : "隐藏说明，盲看图标";
+    });
+    cards.forEach((card) => card.querySelector(".action").addEventListener("click", () => {
+      const selected = card.dataset.selected !== "true";
+      cards.forEach((item) => { item.dataset.selected = "false"; item.querySelector(".action").textContent = `标记候选 ${item.dataset.candidate}`; });
+      if (selected) { card.dataset.selected = "true"; card.querySelector(".action").textContent = `已标记候选 ${card.dataset.candidate}`; output.textContent = `当前临时标记：候选 ${card.dataset.candidate}。你可以直接告诉我采用、修改或继续推翻这个方向。`; }
+      else { output.textContent = "当前未标记候选。建议继续使用盲看模式检查 16px 辨识度。"; }
+    }));
+  </script>
+</body>
+</html>

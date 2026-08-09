@@ -76,6 +76,9 @@ fn main() -> Result<()> {
         .with_brain_planner_from_env()?
         .with_request_executor_from_env()?
         .with_sqlite_run_store(default_run_store_path());
+    if let Ok(value) = std::env::var("LOOM_BUNDLED_ART_SHA256_ALLOWLIST") {
+        config = config.with_bundled_art_sha256_allowlist(value.split(','))?;
+    }
     if let Ok(token) = std::env::var("LOOM_DAEMON_TOKEN") {
         config = config.with_bearer_token(token);
     }

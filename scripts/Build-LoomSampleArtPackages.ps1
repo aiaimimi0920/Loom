@@ -43,7 +43,15 @@ function Copy-DirectoryContents {
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
     foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
-        Copy-Item -LiteralPath $entry.FullName -Destination $Destination -Recurse -Force
+        if ($entry.Name -eq "__pycache__" -or $entry.Extension -eq ".pyc") {
+            continue
+        }
+        if ($entry.PSIsContainer) {
+            Copy-DirectoryContents -Source $entry.FullName -Destination (Join-Path $Destination $entry.Name)
+        }
+        else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $Destination -Force
+        }
     }
 }
 
@@ -71,9 +79,7 @@ $packageNames = @(
     "image-compress",
     "remove-bg",
     "image-search",
-    "color-transfer",
-    "image-blend",
-    "image-blend-compress"
+    "color-transfer"
 )
 
 if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
@@ -91,6 +97,7 @@ if (Test-Path -LiteralPath $stagingRoot) {
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
 $summary = @()
+$officialCertifications = [ordered]@{}
 try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -150,15 +157,35 @@ try {
         $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Write-Utf8NoBomFile -Path $hashPath -Content "$hash  $artId.zip`n"
 
+        $version = [string]$manifest.metadata.packageSecurity.version
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "Sample Art package version is empty: $manifestPath"
+        }
+        $publisherId = ""
+        $publisherProperty = $manifest.metadata.packageSecurity.PSObject.Properties["publisher"]
+        if ($null -ne $publisherProperty -and $null -ne $publisherProperty.Value) {
+            $publisherId = [string]$publisherProperty.Value.id
+        }
+        $qualifiedId = if ([string]::IsNullOrWhiteSpace($publisherId)) {
+            $artId
+        }
+        else {
+            "$publisherId/$artId"
+        }
+        if (-not $officialCertifications.Contains($qualifiedId)) {
+            $officialCertifications[$qualifiedId] = [ordered]@{}
+        }
+        $officialCertifications[$qualifiedId][$version] = $hash
+
         $summary += [ordered]@{
             source = $packageName
             id = $artId
             framework = $framework
-            version = $Configuration
-            manifest = $manifestPath
-            zip = $zipPath
+            manifest = "art-packages/samples/$packageName/manifest.json"
+            zip = "$artId.zip"
             bytes = (Get-Item -LiteralPath $zipPath).Length
             sha256 = $hash
+            official = $true
         }
     }
 }
@@ -174,5 +201,13 @@ Write-Utf8NoBomFile -Path $summaryPath -Content (([ordered]@{
     configuration = $Configuration
     packages = $summary
 } | ConvertTo-Json -Depth 30) + "`n")
+
+if ((Split-Path -Leaf $outputRootPath) -ieq "arts") {
+    $certificationPath = Join-Path (Split-Path -Parent $outputRootPath) "official-art-certifications.json"
+    Write-Utf8NoBomFile -Path $certificationPath -Content (([ordered]@{
+        schemaVersion = 1
+        certifications = $officialCertifications
+    } | ConvertTo-Json -Depth 30) + "`n")
+}
 
 Write-Host "Built $($summary.Count) independent sample Art packages under $outputRootPath"

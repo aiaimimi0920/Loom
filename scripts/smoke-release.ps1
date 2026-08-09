@@ -1098,111 +1098,6 @@ function Test-LoomReleaseRealOcr {
     }
 }
 
-function Test-LoomHookBridgeScriptArtNode {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art_loom/execute_art_node"
-            params = [ordered]@{
-                node_id = "release-node-script"
-                art_id = "fixture-script-art"
-                input_base64 = $imageData
-                params = [ordered]@{}
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "success" ([string]$response.type) "Loom script Art node response type mismatch."
-        Assert-Equal $true ([bool]$response.data.success) "Loom script Art node success flag mismatch."
-        Assert-Equal "release-node-script" ([string]$response.data.node_id) "Loom script Art node id mismatch."
-        $outputData = [string]$response.data.output_base64
-        Assert-Equal $imageData $outputData "Loom script Art node output data mismatch."
-
-        return [ordered]@{
-            type = [string]$response.type
-            success = [bool]$response.data.success
-            nodeId = [string]$response.data.node_id
-            outputType = "base64"
-            outputLength = [int]$outputData.Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomPackagedPythonScriptTool {
-    param(
-        [string]$BaseUrl,
-        [string]$PackageDir,
-        [string]$TempRoot
-    )
-
-    $packagedPython = Join-Path $PackageDir "runtime\bin\python-embed\python.exe"
-    $packagedLauncher = Join-Path $PackageDir "runtime\python\Launcher.py"
-    Assert-PathExists $packagedPython
-    Assert-PathExists $packagedLauncher
-
-    $fixturePythonScript = Join-Path $TempRoot "fixture-python-script.py"
-    $fixturePythonSource = @'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-arguments = payload.get("arguments", {})
-response = {
-    "content": [
-        {
-            "type": "text",
-            "text": "python saw " + str(arguments.get("text", "")),
-        }
-    ],
-    "pythonExecutable": sys.executable,
-}
-print(json.dumps(response, ensure_ascii=False))
-'@
-    [System.IO.File]::WriteAllText($fixturePythonScript, $fixturePythonSource, [System.Text.UTF8Encoding]::new($false))
-
-    $savedPythonTool = Invoke-JsonPut -Uri "$BaseUrl/v1/tools/fixture-python-script" -Body @{
-        id = "fixture-python-script"
-        name = "Fixture Python Script"
-        description = "Release smoke Python script backed by packaged Python"
-        enabled = $true
-        execution = @{
-            type = "script"
-            path = $fixturePythonScript
-        }
-    }
-    Assert-Equal "fixture-python-script" $savedPythonTool.tool.id "Loom Python script tool save id mismatch."
-    Assert-Equal "script" $savedPythonTool.tool.execution.type "Loom Python script execution type mismatch."
-
-    $executedPythonTool = Invoke-JsonPost -Uri "$BaseUrl/v1/tools/fixture-python-script/execute" -Body @{
-        arguments = @{
-            text = "release embedded python"
-        }
-    }
-    Assert-Equal "succeeded" $executedPythonTool.status "Loom Python script tool execution status mismatch."
-    Assert-Equal "python saw release embedded python" ([string]$executedPythonTool.result.content[0].text) "Loom Python script tool content mismatch."
-
-    $actualPython = [System.IO.Path]::GetFullPath([string]$executedPythonTool.result.pythonExecutable)
-    $expectedPython = [System.IO.Path]::GetFullPath($packagedPython)
-    Assert-Equal $expectedPython $actualPython "Loom Python script did not use packaged embedded Python."
-
-    return [ordered]@{
-        text = [string]$executedPythonTool.result.content[0].text
-        pythonExecutable = $actualPython
-        packagedPython = $true
-    }
-}
-
 function Test-LoomPythonArtCatalog {
     param(
         [string]$BaseUrl,
@@ -1210,11 +1105,13 @@ function Test-LoomPythonArtCatalog {
         [string]$FixtureRoot
     )
 
-    $packagedPython = Join-Path $PackageDir "runtime\bin\python-embed\python.exe"
-    $packagedArtsRoot = Join-Path $PackageDir "runtime\python\Arts"
-    Assert-PathExists $packagedPython
-    if (Test-Path -LiteralPath $packagedArtsRoot) {
-        throw "Default Loom release unexpectedly contains packaged Python Arts: $packagedArtsRoot"
+    $legacyPythonRuntime = Join-Path $PackageDir "runtime\bin\python-embed"
+    $legacyPythonRoot = Join-Path $PackageDir "runtime\python"
+    if (Test-Path -LiteralPath $legacyPythonRuntime) {
+        throw "Default Loom release unexpectedly contains legacy host Python runtime: $legacyPythonRuntime"
+    }
+    if (Test-Path -LiteralPath $legacyPythonRoot) {
+        throw "Default Loom release unexpectedly contains legacy host Python resources: $legacyPythonRoot"
     }
 
     $catalog = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts"
@@ -1257,26 +1154,6 @@ def main(args):
         throw "Explicit Python Art fixture was not discovered."
     }
 
-    $savedPythonArtTool = Invoke-JsonPut -Uri "$BaseUrl/v1/tools/fixture-python-art" -Body @{
-        id = "fixture-python-art"
-        name = "Fixture Python Art"
-        description = "Release smoke explicitly provisioned Python Art"
-        enabled = $true
-        execution = @{
-            type = "python_art"
-            artId = "loom_echo"
-            artPath = [string]$loomEcho.path
-        }
-    }
-    Assert-Equal "fixture-python-art" $savedPythonArtTool.tool.id "Loom Python Art tool save id mismatch."
-    $executedPythonArtTool = Invoke-JsonPost -Uri "$BaseUrl/v1/tools/fixture-python-art/execute" -Body @{
-        arguments = @{ text = "release installed python art" }
-    }
-    Assert-Equal "succeeded" $executedPythonArtTool.status "Loom Python Art tool execution status mismatch."
-    Assert-Equal "python art saw release installed python art" ([string]$executedPythonArtTool.result.content[0].text) "Loom Python Art tool content mismatch."
-    $actualPython = [System.IO.Path]::GetFullPath([string]$executedPythonArtTool.result.pythonExecutable)
-    $expectedPython = [System.IO.Path]::GetFullPath($packagedPython)
-    Assert-Equal $expectedPython $actualPython "Loom Python Art did not use packaged embedded Python."
 
     return [ordered]@{
         count = [int]$catalogArts.Count
@@ -1298,9 +1175,8 @@ function Test-LoomArtLoomRegistryCompat {
         description = "Release smoke native Loom tool preserved across ArtLoom sync"
         enabled = $true
         execution = @{
-            type = "cli_wrapper"
-            command = "echo"
-            args = @("native")
+            type = "workflow"
+            workflowId = "fixture-native-workflow"
         }
     }
     Assert-Equal "fixture-native-tool" ([string]$native.tool.id) "Loom native tool save mismatch before ArtLoom sync."
@@ -1310,27 +1186,26 @@ function Test-LoomArtLoomRegistryCompat {
             @{
                 id = "fixture-artloom-compat"
                 name = "Fixture ArtLoom Compat"
-                description = "Release smoke old art_registry compatibility aliases"
+                description = "Release smoke Art registry compatibility aliases"
                 iconColor = "#52c41a"
                 enabled = $true
                 autoProcess = $true
                 defaults = @{
                     seed = 1234
                 }
-                execution_type = "cli_wrapper"
                 execution = @{
-                    command = "echo"
-                    args = "{{inputs.image.path}} --out {{outputs.result.path}}"
-                    outputs = @(
-                        @{
-                            name = "result"
-                            type = "image"
-                        }
-                    )
+                    type = "framework_art"
+                    framework = "process"
                 }
                 inputs = @(
                     @{
                         name = "image"
+                        type = "image"
+                    }
+                )
+                outputs = @(
+                    @{
+                        name = "result"
                         type = "image"
                     }
                 )
@@ -1356,9 +1231,9 @@ function Test-LoomArtLoomRegistryCompat {
     $listedIds = @($listed.arts | ForEach-Object { [string]$_.id })
     Assert-Contains "fixture-artloom-compat" ($listedIds -join ",") "Loom ArtLoom list_arts did not include fixture."
     $listedArt = @($listed.arts)[0]
-    Assert-Equal "cli_wrapper" ([string]$listedArt.execution_type) "Loom ArtLoom list_arts execution_type mismatch."
-    Assert-Equal "{{inputs.image.path}} --out {{outputs.result.path}}" ([string]$listedArt.execution.args) "Loom ArtLoom list_arts legacy execution args mismatch."
-    Assert-Equal "result" ([string]@($listedArt.execution.outputs)[0].name) "Loom ArtLoom list_arts legacy execution outputs mismatch."
+    Assert-Equal "framework_art" ([string]$listedArt.execution_type) "Loom ArtLoom list_arts execution_type mismatch."
+    Assert-Equal "process" ([string]$listedArt.execution.framework) "Loom ArtLoom list_arts process framework mismatch."
+    Assert-Equal "result" ([string]@($listedArt.outputs)[0].name) "Loom ArtLoom list_arts outputs mismatch."
     Assert-Equal $true ([bool]$listedArt.auto_process) "Loom ArtLoom list_arts auto_process mismatch."
     Assert-Equal 1234 ([int]$listedArt.defaults.seed) "Loom ArtLoom list_arts independent defaults mismatch."
 
@@ -1380,8 +1255,8 @@ function Test-LoomArtLoomRegistryCompat {
     Assert-Equal "#52c41a" ([string]$userArt.iconColor) "Loom ArtLoom get_user_arts iconColor mismatch."
     Assert-Equal 0 ([int]$userArt.downloads) "Loom ArtLoom get_user_arts downloads mismatch."
     Assert-Equal $true ([bool]$userArt.owned) "Loom ArtLoom get_user_arts owned mismatch."
-    Assert-Equal "cli_wrapper" ([string]$userArt.executionType) "Loom ArtLoom get_user_arts executionType mismatch."
-    Assert-Equal "{{inputs.image.path}} --out {{outputs.result.path}}" ([string]$userArt.execution.args) "Loom ArtLoom get_user_arts legacy execution args mismatch."
+    Assert-Equal "framework_art" ([string]$userArt.executionType) "Loom ArtLoom get_user_arts executionType mismatch."
+    Assert-Equal "process" ([string]$userArt.execution.framework) "Loom ArtLoom get_user_arts process framework mismatch."
     $autoProcess = Get-JsonPropertyOrNull -Object $userArt -Name "autoProcess"
     if ($null -eq $autoProcess) {
         throw "Loom ArtLoom get_user_arts autoProcess field missing."
@@ -1433,14 +1308,14 @@ function Test-LoomArtLoomRegistryCompat {
     return [ordered]@{
         listCommand = [string]$listed.compatCommand
         listExecutionType = [string]$listedArt.execution_type
-        listLegacyArgs = [string]$listedArt.execution.args
+        listFramework = [string]$listedArt.execution.framework
         listAutoProcess = [bool]$listedArt.auto_process
         listDefaultSeed = [int]$listedArt.defaults.seed
         getCommand = [string]$loaded.compatCommand
         userArtsCommand = [string]$userArts.compatCommand
         userArtsCategory = [string]$userArt.category
         userArtsExecutionType = [string]$userArt.executionType
-        userArtsLegacyArgs = [string]$userArt.execution.args
+        userArtsFramework = [string]$userArt.execution.framework
         userArtsAutoProcess = [bool]$autoProcess
         userArtsInput = [string]$userArtInputs[0].name
         userArtsOutput = [string]$userArtOutputs[0].name
@@ -1613,157 +1488,6 @@ function Test-LoomArtLoomSharedMemoryCompat {
     }
 }
 
-function Test-LoomPythonEngineCompat {
-    param(
-        [string]$BaseUrl,
-        [string]$ArtPath
-    )
-
-    $status = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts/engine/status"
-    Assert-Equal "python_engine_status" ([string]$status.compatCommand) "Loom python_engine_status compat command mismatch."
-    Assert-Equal $true ([bool]$status.available) "Loom python_engine_status should be available in packaged release."
-
-    $prefetch = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/shader/prefetch" -Body @{
-        artId = "loom_echo"
-        artPath = $ArtPath
-        params = @{
-            output_mode = "shader"
-            mode = "shader"
-        }
-    }
-    Assert-Equal "prefetch_shader" ([string]$prefetch.compatCommand) "Loom prefetch_shader compat command mismatch."
-    Assert-Equal "text" ([string]$prefetch.result.content[0].type) "Loom prefetch_shader result content type mismatch."
-
-    return [ordered]@{
-        statusCommand = [string]$status.compatCommand
-        prefetchCommand = [string]$prefetch.compatCommand
-        available = [bool]$status.available
-        installedArtCount = [int]$status.installedArtCount
-        resultType = [string]$prefetch.result.content[0].type
-    }
-}
-
-function Test-LoomPythonDirectCompat {
-    param(
-        [string]$BaseUrl,
-        [string]$TempRoot,
-        [string]$ArtPath
-    )
-
-    $executed = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/execute-art" -Body @{
-        artId = "loom_echo"
-        artPath = $ArtPath
-        params = @{
-            text = "release direct python art"
-        }
-    }
-    Assert-Equal "execute_python_art" ([string]$executed.compatCommand) "Loom execute_python_art compat command mismatch."
-    Assert-Equal 200 ([int]$executed.status) "Loom execute_python_art status mismatch."
-    Assert-Equal "python art saw release direct python art" ([string]$executed.data.content[0].text) "Loom execute_python_art content mismatch."
-
-    $imageArtDir = Join-Path $TempRoot "python-process-image-art"
-    New-Item -ItemType Directory -Force -Path $imageArtDir | Out-Null
-    $imageArtSource = @'
-import shutil
-
-def main(args):
-    shutil.copyfile(args["input_path"], args["output_path"])
-    return {"copied": True}
-'@
-    [System.IO.File]::WriteAllText(
-        (Join-Path $imageArtDir "main.py"),
-        $imageArtSource,
-        [System.Text.UTF8Encoding]::new($false)
-    )
-
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    $processed = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/process-image" -Body @{
-        artId = "copy_image"
-        artPath = $imageArtDir
-        inputBase64 = $imageData
-        params = @{}
-    }
-    Assert-Equal "python_process_image" ([string]$processed.compatCommand) "Loom python_process_image compat command mismatch."
-    Assert-Equal $true ([bool]$processed.success) "Loom python_process_image success mismatch."
-    $outputData = [string]$processed.output_base64
-    if (-not $outputData.StartsWith("data:image/png;base64,", [System.StringComparison]::Ordinal)) {
-        throw "Loom python_process_image output must be a PNG data URL."
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$processed.output_path)) {
-        throw "Loom python_process_image output_path missing."
-    }
-
-    return [ordered]@{
-        executeCommand = [string]$executed.compatCommand
-        executeStatus = [int]$executed.status
-        executeText = [string]$executed.data.content[0].text
-        processCommand = [string]$processed.compatCommand
-        processSuccess = [bool]$processed.success
-        processOutputLength = [int]$outputData.Length
-    }
-}
-
-function Test-LoomArtLoomPythonSourceCompat {
-    param(
-        [string]$BaseUrl,
-        [string]$TempRoot
-    )
-
-    $sourceDir = Join-Path $TempRoot "artloom-python-source-compat"
-    New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
-    $sourcePath = Join-Path $sourceDir "source_alias_fixture.py"
-    $artJsonPath = Join-Path $sourceDir "art.json"
-    $source = @'
-def main(args):
-    return {"text": args.get("text", "compat")}
-'@
-    [System.IO.File]::WriteAllText($sourcePath, $source, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($artJsonPath, @'
-{
-  "art_id": "source_alias_fixture",
-  "label": "Source Alias Fixture",
-  "description": "Release smoke ArtLoom command-name source alias fixture"
-}
-'@, [System.Text.UTF8Encoding]::new($false))
-
-    $installed = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/python/installed-arts"
-    Assert-Equal "list_installed_arts" ([string]$installed.compatCommand) "Loom list_installed_arts compat command mismatch."
-    if ($null -eq $installed.arts) {
-        throw "Loom list_installed_arts must return an arts array."
-    }
-
-    $read = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/read-python-file" -Body @{
-        filePath = $sourcePath
-    }
-    Assert-Equal "read_python_file" ([string]$read.compatCommand) "Loom read_python_file compat command mismatch."
-    Assert-Contains 'args.get("text"' ([string]$read.content) "Loom read_python_file did not return fixture code."
-    Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.filePath) -Message "Loom read_python_file filePath mismatch."
-
-    $nearby = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/check-art-json-nearby" -Body @{
-        pythonPath = $sourcePath
-    }
-    Assert-Equal "check_art_json_nearby" ([string]$nearby.compatCommand) "Loom check_art_json_nearby compat command mismatch."
-    Assert-Equal $true ([bool]$nearby.found) "Loom check_art_json_nearby found mismatch."
-    Assert-Equal "source_alias_fixture" ([string]$nearby.artJson.art_id) "Loom check_art_json_nearby art id mismatch."
-
-    $artJson = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/python/read-art-json" -Body @{
-        artPath = $sourceDir
-    }
-    Assert-Equal "read_art_json" ([string]$artJson.compatCommand) "Loom read_art_json compat command mismatch."
-    Assert-Equal "Source Alias Fixture" ([string]$artJson.artJson.label) "Loom read_art_json label mismatch."
-
-    return [ordered]@{
-        listCommand = [string]$installed.compatCommand
-        installedCount = @($installed.arts).Count
-        readCommand = [string]$read.compatCommand
-        readBytes = [int]$read.bytes
-        nearbyCommand = [string]$nearby.compatCommand
-        nearbyFound = [bool]$nearby.found
-        readArtJsonCommand = [string]$artJson.compatCommand
-        artId = [string]$artJson.artJson.art_id
-    }
-}
-
 function Test-LoomPythonArtSourceImport {
     param(
         [string]$BaseUrl,
@@ -1821,6 +1545,7 @@ print(json.dumps(response, ensure_ascii=False))
         path = $sourcePath
     }
     Assert-Contains 'args.get("text"' ([string]$read.content) "Loom Python source read did not return fixture code."
+    Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.path) -Message "Loom Python source path mismatch."
 
     # POST /v1/python-arts/source/check-art-json
     $nearby = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/source/check-art-json" -Body @{
@@ -1843,128 +1568,12 @@ print(json.dumps(response, ensure_ascii=False))
     Assert-Equal "strength" ([string]$inferred.inputs[1].name) "Loom Python source inferred variable input mismatch."
     Assert-Equal "text" ([string]$inferred.outputs[0].name) "Loom Python source inferred output mismatch."
 
-    $savedSourceTool = Invoke-JsonPut -Uri "$BaseUrl/v1/tools/fixture-python-source-import" -Body @{
-        id = "fixture-python-source-import"
-        name = "Fixture Python Source Import"
-        description = "Release smoke source-imported Python script tool"
-        enabled = $true
-        execution = @{
-            type = "script"
-            path = $sourcePath
-        }
-        inputs = @($inferred.inputs)
-        outputs = @($inferred.outputs)
-    }
-    Assert-Equal "fixture-python-source-import" $savedSourceTool.tool.id "Loom source-imported tool save id mismatch."
-    Assert-Equal "script" $savedSourceTool.tool.execution.type "Loom source-imported tool execution type mismatch."
-
-    $executedSourceTool = Invoke-JsonPost -Uri "$BaseUrl/v1/tools/fixture-python-source-import/execute" -Body @{
-        arguments = @{
-            text = "release source helper"
-            strength = 0.5
-        }
-    }
-    Assert-Equal "succeeded" $executedSourceTool.status "Loom source-imported script execution status mismatch."
-    Assert-Equal "source import saw release source helper" ([string]$executedSourceTool.result.content[0].text) "Loom source-imported script execution content mismatch."
-
     return [ordered]@{
         sourcePath = [string]$read.path
         nearbyArtJsonFound = [bool]$nearby.found
         nearbyArtJsonLabel = [string]$nearby.artJson.label
         inferredInputs = @($inferred.inputs).Count
         inferredOutputs = @($inferred.outputs).Count
-        scriptToolExecution = [string]$executedSourceTool.result.content[0].text
-    }
-}
-
-function Test-LoomHookBridgeScriptAhrpProcess {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art/process"
-            params = [ordered]@{
-                request_id = "release-script-ahrp-process"
-                art_id = "fixture-script-art"
-                input = [ordered]@{
-                    type = "base64"
-                    data = $imageData
-                    width = 1
-                    height = 1
-                    format = "rgba8"
-                }
-                params = [ordered]@{}
-                disabled_params = @()
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "release-script-ahrp-process" ([string]$response.request_id) "Loom script AHRP request id mismatch."
-        Assert-Equal "Success" ([string]$response.status) "Loom script AHRP status mismatch."
-        Assert-Equal "result" ([string]$response.data.type) "Loom script AHRP data type mismatch."
-        Assert-Equal "base64" ([string]$response.data.output.type) "Loom script AHRP output type mismatch."
-        Assert-Equal $imageData ([string]$response.data.output.data) "Loom script AHRP output data mismatch."
-        Assert-Equal 1 ([int]$response.data.output.width) "Loom script AHRP output width mismatch."
-        Assert-Equal 1 ([int]$response.data.output.height) "Loom script AHRP output height mismatch."
-
-        return [ordered]@{
-            requestId = [string]$response.request_id
-            status = [string]$response.status
-            outputType = [string]$response.data.output.type
-            width = [int]$response.data.output.width
-            height = [int]$response.data.output.height
-            outputLength = [int]([string]$response.data.output.data).Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeScriptShaderArt {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $expectedShader = "void fragment() { COLOR = vec4(1.0); }"
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art_loom/execute_art_node"
-            params = [ordered]@{
-                node_id = "release-node-shader"
-                art_id = "fixture-script-shader"
-                params = [ordered]@{
-                    mode = "shader"
-                }
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "success" ([string]$response.type) "Loom script shader response type mismatch."
-        Assert-Equal $true ([bool]$response.data.success) "Loom script shader success flag mismatch."
-        Assert-Equal "release-node-shader" ([string]$response.data.node_id) "Loom script shader node id mismatch."
-        Assert-Equal $expectedShader ([string]$response.data.output_text) "Loom script shader output text mismatch."
-
-        return [ordered]@{
-            type = [string]$response.type
-            success = [bool]$response.data.success
-            nodeId = [string]$response.data.node_id
-            outputText = [string]$response.data.output_text
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
     }
 }
 
@@ -2152,7 +1761,9 @@ function Test-LoomHookBridgeWorkflowArtNode {
         Assert-Equal $true ([bool]$response.data.success) "Loom workflow Art node success flag mismatch."
         Assert-Equal "release-node-workflow" ([string]$response.data.node_id) "Loom workflow Art node id mismatch."
         $outputData = [string]$response.data.output_base64
-        Assert-Equal $imageData $outputData "Loom workflow Art node output data mismatch."
+        if ([string]::IsNullOrWhiteSpace($outputData) -or $outputData -eq $imageData) {
+            throw "Loom workflow Art node must return a transformed image."
+        }
 
         return [ordered]@{
             type = [string]$response.type
@@ -2200,7 +1811,10 @@ function Test-LoomHookBridgeWorkflowAhrpProcess {
         Assert-Equal "Success" ([string]$response.status) "Loom workflow AHRP status mismatch."
         Assert-Equal "result" ([string]$response.data.type) "Loom workflow AHRP data type mismatch."
         Assert-Equal "base64" ([string]$response.data.output.type) "Loom workflow AHRP output type mismatch."
-        Assert-Equal $imageData ([string]$response.data.output.data) "Loom workflow AHRP output data mismatch."
+        $outputData = [string]$response.data.output.data
+        if ([string]::IsNullOrWhiteSpace($outputData) -or $outputData -eq $imageData) {
+            throw "Loom workflow AHRP must return a transformed image."
+        }
         Assert-Equal 1 ([int]$response.data.output.width) "Loom workflow AHRP output width mismatch."
         Assert-Equal 1 ([int]$response.data.output.height) "Loom workflow AHRP output height mismatch."
 
@@ -2210,7 +1824,7 @@ function Test-LoomHookBridgeWorkflowAhrpProcess {
             outputType = [string]$response.data.output.type
             width = [int]$response.data.output.width
             height = [int]$response.data.output.height
-            outputLength = [int]([string]$response.data.output.data).Length
+            outputLength = [int]$outputData.Length
         }
     } finally {
         Close-LoomHookBridgeWebSocket -Client $client
@@ -3258,53 +2872,6 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         Assert-Equal $false ([bool]$mcpPackageInstallPlan.sideEffect) "Loom MCP package install plan must be side-effect free."
         Assert-Contains "pip" (($mcpPackageInstallPlan.command | ForEach-Object { [string]$_ }) -join " ") "Loom MCP package install plan should include pip command."
 
-        $fixtureScriptArt = Join-Path $tempRoot "fixture-script-art.ps1"
-        $fixtureScriptSource = @'
-$ErrorActionPreference = "Stop"
-$payload = $args[0] | ConvertFrom-Json
-$arguments = $payload.arguments
-if ($arguments.mode -eq "shader") {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "text"
-                text = "void fragment() { COLOR = vec4(1.0); }"
-            }
-        )
-    }
-} elseif ($arguments.input_base64) {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "image"
-                data = [string]$arguments.input_base64
-                mimeType = "image/png"
-            }
-        )
-    }
-} elseif ($arguments.input -and $arguments.input.data) {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "image"
-                data = [string]$arguments.input.data
-                mimeType = "image/png"
-            }
-        )
-    }
-} else {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "text"
-                text = "script saw $($arguments.text)"
-            }
-        )
-    }
-}
-        [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
-'@
-        [System.IO.File]::WriteAllText($fixtureScriptArt, $fixtureScriptSource, [System.Text.UTF8Encoding]::new($false))
 
         $cloudFixtureDir = Join-Path $tempRoot "cloud-api-fixture"
         $cloudPort = Get-LoomSmokePort
@@ -3355,8 +2922,8 @@ if ($arguments.mode -eq "shader") {
             description = "Release smoke deletable registry tool"
             enabled = $true
             execution = @{
-                type = "script"
-                path = $fixtureScriptArt
+                type = "workflow"
+                workflowId = "fixture-delete-workflow"
             }
         }
         Assert-Equal "fixture-delete-tool" $savedDeleteTool.tool.id "Loom delete tool save id mismatch."
@@ -3384,30 +2951,7 @@ if ($arguments.mode -eq "shader") {
         Assert-Equal "succeeded" $executedMcpTool.status "Loom MCP-backed tool execution status mismatch."
         Assert-Equal "release mcp runtime" ([string]$executedMcpTool.result.content[0].text) "Loom MCP-backed tool execution content mismatch."
 
-        $savedScriptTool = Invoke-JsonPut -Uri "$baseUrl/v1/tools/fixture-script-art" -Body @{
-            id = "fixture-script-art"
-            name = "Fixture Script Art"
-            description = "Release smoke script-backed image Art"
-            enabled = $true
-            execution = @{
-                type = "script"
-                path = $fixtureScriptArt
-            }
-        }
-        Assert-Equal "fixture-script-art" $savedScriptTool.tool.id "Loom script-backed tool save id mismatch."
-        Assert-Equal "script" $savedScriptTool.tool.execution.type "Loom script-backed execution type mismatch."
-        $executedScriptTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/fixture-script-art/execute" -Body @{
-            arguments = @{
-                text = "release script runtime"
-            }
-        }
-        Assert-Equal "succeeded" $executedScriptTool.status "Loom script-backed tool execution status mismatch."
-        Assert-Equal "script saw release script runtime" ([string]$executedScriptTool.result.content[0].text) "Loom script-backed tool execution content mismatch."
 
-        $pythonToolExecution = Test-LoomPackagedPythonScriptTool `
-            -BaseUrl $baseUrl `
-            -PackageDir $PackageDir `
-            -TempRoot $tempRoot
         $pythonArtCatalog = Test-LoomPythonArtCatalog `
             -BaseUrl $baseUrl `
             -PackageDir $PackageDir `
@@ -3415,26 +2959,9 @@ if ($arguments.mode -eq "shader") {
         $artLoomRegistryCompat = Test-LoomArtLoomRegistryCompat -BaseUrl $baseUrl
         $artLoomNativeProcessArt = Test-LoomArtLoomNativeProcessArtCompat -BaseUrl $baseUrl
         $artLoomSystemCompat = Test-LoomArtLoomSystemCompat -BaseUrl $baseUrl
-        $pythonEngineCompat = Test-LoomPythonEngineCompat `
-            -BaseUrl $baseUrl `
-            -ArtPath ([string]$pythonArtCatalog.installedArtPath)
-        $pythonDirectCompat = Test-LoomPythonDirectCompat `
-            -BaseUrl $baseUrl `
-            -TempRoot $tempRoot `
-            -ArtPath ([string]$pythonArtCatalog.installedArtPath)
         $pythonArtSourceImport = Test-LoomPythonArtSourceImport `
             -BaseUrl $baseUrl `
             -TempRoot $tempRoot
-        $artLoomPythonSourceCompat = Test-LoomArtLoomPythonSourceCompat `
-            -BaseUrl $baseUrl `
-            -TempRoot $tempRoot
-        $pythonArtToolExecution = Invoke-JsonPost -Uri "$baseUrl/v1/tools/fixture-python-art/execute" -Body @{
-            arguments = @{
-                text = "release installed python art"
-            }
-        }
-        Assert-Equal "succeeded" $pythonArtToolExecution.status "Loom Python Art repeated execution status mismatch."
-        Assert-Equal "python art saw release installed python art" ([string]$pythonArtToolExecution.result.content[0].text) "Loom Python Art repeated execution content mismatch."
 
         $savedCloudTextTool = Invoke-JsonPut -Uri "$baseUrl/v1/tools/fixture-cloud-text" -Body @{
             id = "fixture-cloud-text"
@@ -3489,25 +3016,11 @@ if ($arguments.mode -eq "shader") {
         Assert-Equal "cloud_api" $savedCloudMultipartArtTool.tool.execution.type "Loom cloud multipart Art execution type mismatch."
         Assert-Equal "multipart/form-data" ([string]$savedCloudMultipartArtTool.tool.execution.contentType) "Loom cloud multipart contentType save mismatch."
 
-        $savedScriptShaderTool = Invoke-JsonPut -Uri "$baseUrl/v1/tools/fixture-script-shader" -Body @{
-            id = "fixture-script-shader"
-            name = "Fixture Script Shader"
-            description = "Release smoke script-backed shader Art"
-            enabled = $true
-            execution = @{
-                type = "script"
-                path = $fixtureScriptArt
-            }
-        }
-        Assert-Equal "fixture-script-shader" $savedScriptShaderTool.tool.id "Loom script shader tool save id mismatch."
-
         $workflowYaml = @"
 name: Release Workflow Runtime
 nodes:
   - id: image
-    uses: fixture-script-art
-    with:
-      text: release workflow runtime
+    uses: core.image.invert
 "@
         $savedWorkflow = Invoke-JsonPut -Uri "$baseUrl/v1/workflows/release-workflow" -Body @{
             data = $workflowYaml
@@ -3526,9 +3039,7 @@ nodes:
 name: Delete Workflow Runtime
 nodes:
   - id: image
-    uses: fixture-script-art
-    with:
-      text: delete workflow runtime
+    uses: core.image.invert
 "@
         $savedDeleteWorkflow = Invoke-JsonPut -Uri "$baseUrl/v1/workflows/fixture-delete-workflow" -Body @{
             data = $deleteWorkflowYaml
@@ -3539,12 +3050,15 @@ nodes:
         Assert-Equal $true ([bool]$deletedWorkflow.deleted) "Loom workflow deletion mismatch."
         $artLoomWorkflowStoreCompat = Test-LoomArtLoomWorkflowStoreCompat -BaseUrl $baseUrl
 
+        $workflowInput = New-LoomNativeImageSmokePngDataUrl
         $executedWorkflowTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/release-workflow-tool/execute" -Body @{
-            arguments = @{}
+            arguments = @{ input_base64 = $workflowInput }
         }
         Assert-Equal "succeeded" $executedWorkflowTool.status "Loom workflow-backed tool execution status mismatch."
-        Assert-Equal "text" ([string]$executedWorkflowTool.result.content[0].type) "Loom workflow-backed tool content type mismatch."
-        Assert-Equal "script saw release workflow runtime" ([string]$executedWorkflowTool.result.content[0].text) "Loom workflow-backed tool execution content mismatch."
+        Assert-Equal "image" ([string]$executedWorkflowTool.result.content[0].type) "Loom workflow-backed tool content type mismatch."
+        if ([string]::IsNullOrWhiteSpace([string]$executedWorkflowTool.result.content[0].data)) {
+            throw "Loom workflow-backed image output missing."
+        }
 
         $imageHelperConvert = Test-LoomImageHelperConvert -BaseUrl $baseUrl
         $sharedMemoryCompat = Test-LoomArtLoomSharedMemoryCompat -BaseUrl $baseUrl
@@ -3595,9 +3109,6 @@ nodes:
         $nativeImageFilter = Test-LoomHookBridgeNativeImageFilter -Port ([int]$hookBridgeStarted.port)
         $sharedImageAhrpProcess = Test-LoomHookBridgeSharedImageAhrpProcess -Port ([int]$hookBridgeStarted.port) -BaseUrl $baseUrl
         $ocrImage = Test-LoomHookBridgeOcrImage -Port ([int]$hookBridgeStarted.port)
-        $scriptArtNode = Test-LoomHookBridgeScriptArtNode -Port ([int]$hookBridgeStarted.port)
-        $scriptAhrpProcess = Test-LoomHookBridgeScriptAhrpProcess -Port ([int]$hookBridgeStarted.port)
-        $scriptShaderArt = Test-LoomHookBridgeScriptShaderArt -Port ([int]$hookBridgeStarted.port)
         $cloudArtNode = Test-LoomHookBridgeCloudArtNode -Port ([int]$hookBridgeStarted.port)
         $cloudAhrpProcess = Test-LoomHookBridgeCloudAhrpProcess -Port ([int]$hookBridgeStarted.port)
         $cloudMultipartArtNode = Test-LoomHookBridgeCloudMultipartArtNode -Port ([int]$hookBridgeStarted.port) -FixtureOutputDir $cloudFixtureDir
@@ -3767,11 +3278,7 @@ nodes:
                 hookBridgeRuntimePort = [int]$hookBridgeStarted.port
                 hookBridgeMethods = $hookBridgeMethods
                 mcpToolExecution = [string]$executedMcpTool.result.content[0].text
-                scriptToolExecution = [string]$executedScriptTool.result.content[0].text
-                pythonToolExecution = $pythonToolExecution
                 pythonArtCatalog = $pythonArtCatalog
-                pythonEngineCompat = $pythonEngineCompat
-                pythonDirectCompat = $pythonDirectCompat
                 mcpDirectCompat = $mcpDirectCompat
                 artLoomMcpServerStoreCompat = $artLoomMcpServerStoreCompat
                 artLoomRegistryCompat = $artLoomRegistryCompat
@@ -3779,8 +3286,6 @@ nodes:
                 artLoomSystemCompat = $artLoomSystemCompat
                 artLoomWorkflowStoreCompat = $artLoomWorkflowStoreCompat
                 pythonArtSourceImport = $pythonArtSourceImport
-                artLoomPythonSourceCompat = $artLoomPythonSourceCompat
-                pythonArtToolExecution = [string]$pythonArtToolExecution.result.content[0].text
                 managementCrud = [ordered]@{
                     mcpServerDeleted = [bool]$deletedMcpServer.deleted
                     toolDeleted = [bool]$deletedTool.deleted
@@ -3800,7 +3305,7 @@ nodes:
                     packageInstallSideEffect = [bool]$mcpPackageInstallPlan.sideEffect
                 }
                 cloudToolExecution = [string]$executedCloudTool.result.content[0].text
-                workflowToolExecution = [string]$executedWorkflowTool.result.content[0].text
+                workflowToolExecution = [string]$executedWorkflowTool.result.content[0].type
                 websocketHandshake = [ordered]@{
                     type = [string]$websocketHandshake.type
                     serverVersion = [string]$websocketHandshake.data.server_version
@@ -3825,9 +3330,6 @@ nodes:
                 imageHelperConvert = $imageHelperConvert
                 ocrImage = $ocrImage
                 realOcrImage = $realOcrImage
-                scriptArtNode = $scriptArtNode
-                scriptAhrpProcess = $scriptAhrpProcess
-                scriptShaderArt = $scriptShaderArt
                 cloudArtNode = $cloudArtNode
                 cloudAhrpProcess = $cloudAhrpProcess
                 cloudMultipartArtNode = $cloudMultipartArtNode

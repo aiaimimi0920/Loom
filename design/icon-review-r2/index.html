@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Loom 程序图标评审 R2</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; background: #06080d; color: #f4f7ef; }
+    * { box-sizing: border-box; }
+    body { min-width: 940px; margin: 0; background: linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px),#06080d; background-size: 32px 32px; }
+    button { font: inherit; }
+    .shell { width: min(1440px,calc(100% - 64px)); margin: 0 auto; padding: 38px 0 54px; }
+    .header { display: flex; align-items: end; justify-content: space-between; gap: 32px; border-bottom: 1px solid rgba(255,255,255,.14); padding-bottom: 22px; }
+    .eyebrow { margin: 0 0 8px; color: #d9ff38; font-size: 12px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(32px,4vw,58px); line-height: .96; letter-spacing: -.045em; }
+    .header__copy { max-width: 560px; margin: 0; color: rgba(244,247,239,.63); font-size: 14px; line-height: 1.65; text-align: right; }
+    .principle { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 24px; margin: 18px 0 22px; border-left: 3px solid #ffe600; padding: 12px 15px; background: rgba(255,230,0,.055); color: rgba(244,247,239,.72); font-size: 13px; }
+    .principle strong { color: #ffe600; }
+    .principle a { color: #7ee2a1; font-weight: 850; text-decoration: none; }
+    .grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 18px; }
+    .candidate { display: grid; grid-template-rows: auto auto auto 1fr auto; min-width: 0; border: 1px solid rgba(255,255,255,.14); border-radius: 14px; background: rgba(13,17,23,.97); overflow: hidden; transition: border-color 140ms ease,box-shadow 140ms ease; }
+    .candidate[data-selected="true"] { border-color: #d9ff38; box-shadow: 0 0 0 1px rgba(217,255,56,.2); }
+    .candidate__head { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(255,255,255,.1); padding: 18px; }
+    .candidate__index { color: #d9ff38; font: 900 12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.02em; }
+    .tag { border: 1px solid rgba(34,197,94,.38); border-radius: 999px; padding: 5px 8px; color: #7ee2a1; font-size: 11px; font-weight: 900; white-space: nowrap; }
+    .hero { display: grid; min-height: 292px; place-items: center; background: radial-gradient(circle,rgba(34,197,94,.09),transparent 58%),#080b10; }
+    .hero img { width: 228px; height: 228px; }
+    .sizes { display: flex; align-items: end; justify-content: center; gap: 18px; border-top: 1px solid rgba(255,255,255,.09); border-bottom: 1px solid rgba(255,255,255,.09); padding: 16px; background: #0b0f15; }
+    .sample { display: grid; gap: 7px; place-items: center; color: rgba(244,247,239,.44); font: 10px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .frame { display: grid; width: 72px; height: 72px; place-items: center; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: #06080d; }
+    .s64 img { width: 64px; height: 64px; }.s32 img { width: 32px; height: 32px; }.s16 img { width: 16px; height: 16px; }
+    .description { margin: 0; padding: 17px 18px 8px; color: rgba(244,247,239,.64); font-size: 13px; line-height: 1.65; }
+    .action { margin: 12px 18px 18px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; padding: 10px 12px; background: rgba(255,255,255,.04); color: #f4f7ef; font-weight: 850; cursor: pointer; }
+    .action:hover { border-color: rgba(217,255,56,.54); background: rgba(217,255,56,.08); }
+    .candidate[data-selected="true"] .action { border-color: #d9ff38; background: #d9ff38; color: #111614; }
+    .output { min-height: 44px; margin-top: 18px; border-left: 3px solid #d9ff38; padding: 11px 14px; background: rgba(217,255,56,.06); color: rgba(244,247,239,.72); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div><p class="eyebrow">Loom / App Icon Review / R2</p><h1>个人 AI 中台方向</h1></div>
+      <p class="header__copy">这一轮不再把 Loom 只理解为“织机”，而是表达本地常驻、能力汇聚、工作流编排和个人控制。黄色代表用户与当前决策核心，绿色代表 Art、智能体、Hook、MCP 与执行通道。</p>
+    </header>
+    <div class="principle"><span><strong>设计约束：</strong>透明底、粗圆角、三绿一黄、单一黄色焦点；避免机器人、大脑、聊天气泡、云朵和通用星光。</span><a href="../icon-review-r1/index.html">查看 R1 编织方向 →</a></div>
+
+    <section class="grid" aria-label="Loom 图标 R2 候选">
+      <article class="candidate" data-candidate="D" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION D</span><h2>个人中枢</h2></div><span class="tag">推荐</span></header>
+        <div class="hero"><img src="loom-icon-d-personal-core.svg" alt="候选 D，个人 AI 中枢图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-d-personal-core.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame"><img src="loom-icon-d-personal-core.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-d-personal-core.svg" alt="" /></span>16PX</span></div>
+        <p class="description">三条绿色执行轨道汇入黄色个人核心，表达 Loom 将多种 AI 能力统一到用户可控的本地中枢。小尺寸只保留三向结构与黄色核心，辨识度最稳定。</p>
+        <button class="action" type="button">标记候选 D</button>
+      </article>
+
+      <article class="candidate" data-candidate="E" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION E</span><h2>操作工作台</h2></div><span class="tag">结构化</span></header>
+        <div class="hero"><img src="loom-icon-e-operation-deck.svg" alt="候选 E，个人 AI 操作工作台图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-e-operation-deck.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame"><img src="loom-icon-e-operation-deck.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-e-operation-deck.svg" alt="" /></span>16PX</span></div>
+        <p class="description">三层绿色执行面代表智能体、工作流与工具，黄色控制脊柱将它们统一成一个操作工作台。更强调任务排布和执行层次，但可能被理解为服务栈。</p>
+        <button class="action" type="button">标记候选 E</button>
+      </article>
+
+      <article class="candidate" data-candidate="F" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION F</span><h2>编排环</h2></div><span class="tag">极简</span></header>
+        <div class="hero"><img src="loom-icon-f-orchestration-ring.svg" alt="候选 F，模块化编排环图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-f-orchestration-ring.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame"><img src="loom-icon-f-orchestration-ring.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-f-orchestration-ring.svg" alt="" /></span>16PX</span></div>
+        <p class="description">分段绿色轨道表示可插拔能力，黄色段表示当前激活控制点，中心绿色菱形表示本地运行核心。最简洁，但需要注意避免被误解成刷新或加载状态。</p>
+        <button class="action" type="button">标记候选 F</button>
+      </article>
+    </section>
+    <div class="output" id="output">点击任一候选进行临时标记；最终采用前还可以混合 R1 与 R2 的结构继续迭代。</div>
+  </main>
+  <script>
+    const cards = Array.from(document.querySelectorAll(".candidate"));
+    const output = document.querySelector("#output");
+    cards.forEach((card) => card.querySelector("button").addEventListener("click", () => {
+      const selected = card.dataset.selected !== "true";
+      cards.forEach((item) => { item.dataset.selected = "false"; item.querySelector("button").textContent = `标记候选 ${item.dataset.candidate}`; });
+      if (selected) { card.dataset.selected = "true"; card.querySelector("button").textContent = `已标记候选 ${card.dataset.candidate}`; output.textContent = `当前临时标记：候选 ${card.dataset.candidate}。你可以直接告诉我保留哪个结构，或把两个候选的元素组合。`; }
+      else { output.textContent = "当前未标记候选。请继续对比三个图标在 64px、32px 和 16px 下的表现。"; }
+    }));
+  </script>
+</body>
+</html>

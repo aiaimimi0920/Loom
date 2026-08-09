@@ -137,25 +137,6 @@ export interface LoomPythonNearbyArtJsonResponse extends LoomPythonArtJsonRespon
   pythonPath?: string;
 }
 
-export interface ArtLoomInstalledPythonArtsResponse {
-  compatCommand?: string;
-  arts?: LoomPythonArt[];
-  count?: number;
-}
-
-export interface ArtLoomReadPythonFileResponse extends LoomPythonSourceReadResponse {
-  compatCommand?: string;
-  filePath?: string;
-}
-
-export interface ArtLoomReadArtJsonResponse extends LoomPythonArtJsonResponse {
-  compatCommand?: string;
-}
-
-export interface ArtLoomCheckArtJsonNearbyResponse extends LoomPythonNearbyArtJsonResponse {
-  compatCommand?: string;
-}
-
 export interface LoomPythonPortDefinition {
   name: string;
   label?: string;
@@ -225,6 +206,27 @@ export interface LoomHookBridgeStatus {
   methods?: string[];
 }
 
+export type LoomDeviceKind = "computer" | "tablet" | "phone" | "other";
+export type LoomDeviceApproval = "approved" | "pending";
+
+export interface LoomManagedDevice {
+  id: string;
+  name: string;
+  kind: LoomDeviceKind;
+  address: string;
+  approval: LoomDeviceApproval;
+  createdAt: number;
+  lastSeenAt?: number | null;
+  isLocal?: boolean;
+  enabled?: boolean;
+}
+
+export interface LoomDevicesResponse {
+  devices: LoomManagedDevice[];
+  pending: LoomManagedDevice[];
+  connectedClients: number;
+}
+
 export interface ArtLoomInstantiateWorkflowResponse {
   compatCommand?: string;
   type?: string;
@@ -284,11 +286,17 @@ export interface ArtLoomCompatSettings {
   system: {
     auto_check_updates: boolean;
     enable_run_log: boolean;
+    loom_log_level: string;
+    hook_log_level: string;
     run_as_admin: boolean;
     record_screenshot_history: boolean;
     history_retention: string;
-    enable_proxy: boolean;
   };
+  network: {
+    loom: ArtLoomProxySettings;
+    hook: ArtLoomProxySettings;
+  };
+  hook_cache: ArtLoomHookCacheSettings;
   engine: {
     comfyui_url: string;
     python_interpreter: string;
@@ -302,6 +310,19 @@ export interface ArtLoomCompatSettings {
     key: string;
   }>;
   shortcuts: Record<string, ArtLoomShortcutConfig>;
+}
+
+export interface ArtLoomHookCacheSettings {
+  recycle_bin_max_entries: number;
+  recycle_bin_retention_days: number;
+  temp_cache_max_bytes: number;
+  temp_cache_retention_days: number;
+}
+
+export interface ArtLoomProxySettings {
+  mode: "system" | "custom" | "disabled";
+  protocol: "http" | "https" | "socks5";
+  address: string;
 }
 
 export interface ArtLoomAppPaths {
@@ -391,23 +412,6 @@ export interface ArtLoomNativeProcessArtResponse {
   processing_time_ms?: number;
 }
 
-export interface ArtLoomPythonExecuteArtResponse {
-  compatCommand?: string;
-  request_id?: string;
-  status?: number;
-  data?: unknown;
-  error?: unknown;
-}
-
-export interface ArtLoomPythonProcessImageResponse {
-  compatCommand?: string;
-  success?: boolean;
-  output_base64?: string | null;
-  output_path?: string | null;
-  processing_time_ms?: number;
-  error?: string | null;
-}
-
 export interface PythonEngineStatus {
   compatCommand?: string;
   available?: boolean;
@@ -458,10 +462,21 @@ export const DEFAULT_ARTLOOM_COMPAT_SETTINGS: ArtLoomCompatSettings = {
   system: {
     auto_check_updates: true,
     enable_run_log: true,
+    loom_log_level: "info",
+    hook_log_level: "info",
     run_as_admin: false,
     record_screenshot_history: true,
     history_retention: "7d",
-    enable_proxy: false,
+  },
+  network: {
+    loom: { mode: "system", protocol: "http", address: "" },
+    hook: { mode: "system", protocol: "http", address: "" },
+  },
+  hook_cache: {
+    recycle_bin_max_entries: 15,
+    recycle_bin_retention_days: 0,
+    temp_cache_max_bytes: 256 * 1024 * 1024,
+    temp_cache_retention_days: 7,
   },
   engine: {
     comfyui_url: "http://127.0.0.1:8188",
@@ -822,6 +837,52 @@ export async function stopHookBridge(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise
   return await postJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/stop", {});
 }
 
+export async function listManagedDevices(
+  baseUrl = DEFAULT_LOOM_DAEMON_URL,
+): Promise<LoomDevicesResponse> {
+  return await getJson<LoomDevicesResponse>(baseUrl, "/v1/devices");
+}
+
+export async function addManagedDevice(
+  baseUrl: string,
+  input: { name: string; kind: LoomDeviceKind; address: string },
+): Promise<LoomDevicesResponse> {
+  return await postJson<LoomDevicesResponse>(baseUrl, "/v1/devices", input);
+}
+
+export async function approveManagedDevice(
+  baseUrl: string,
+  deviceId: string,
+): Promise<LoomDevicesResponse> {
+  return await postJson<LoomDevicesResponse>(
+    baseUrl,
+    `/v1/devices/${encodeURIComponent(deviceId)}/approve`,
+    {},
+  );
+}
+
+export async function updateManagedDevice(
+  baseUrl: string,
+  deviceId: string,
+  input: { name: string; kind: LoomDeviceKind; address: string; enabled: boolean },
+): Promise<LoomDevicesResponse> {
+  return await putJson<LoomDevicesResponse>(
+    baseUrl,
+    `/v1/devices/${encodeURIComponent(deviceId)}`,
+    input,
+  );
+}
+
+export async function removeManagedDevice(
+  baseUrl: string,
+  deviceId: string,
+): Promise<LoomDevicesResponse> {
+  return await deleteJson<LoomDevicesResponse>(
+    baseUrl,
+    `/v1/devices/${encodeURIComponent(deviceId)}`,
+  );
+}
+
 export async function readArtHookSession(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise<ArtHookSessionSnapshot> {
   return await getJson<ArtHookSessionSnapshot>(baseUrl, "/v1/hook-bridge/session");
 }
@@ -1035,6 +1096,31 @@ export async function installFramework(baseUrl: string, id: string): Promise<Loo
   return response.framework ?? null;
 }
 
+export interface LoomPackagedArtBootstrapResult {
+  available: boolean;
+  applied: boolean;
+  catalogHash?: string | null;
+  frameworkIds: string[];
+  artIds: string[];
+}
+
+export async function bootstrapPackagedArts(
+  baseUrl: string,
+): Promise<LoomPackagedArtBootstrapResult> {
+  if (!isTauri()) {
+    return {
+      available: false,
+      applied: false,
+      catalogHash: null,
+      frameworkIds: [],
+      artIds: [],
+    };
+  }
+  return await invokeJsonViaTauri<LoomPackagedArtBootstrapResult>("bootstrap_packaged_arts", {
+    baseUrl,
+  });
+}
+
 export async function uninstallFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {
   const response = await postJson<LoomFrameworkResponse>(
     baseUrl,
@@ -1092,37 +1178,83 @@ export interface LoomPublisherTrustRecord {
   revoked: boolean;
 }
 
-interface LoomPluginTrustStore {
+export type LoomPluginTrustPolicy = "allow_unsigned" | "require_signed" | "require_trusted";
+
+export interface LoomPluginTrustStore {
   schemaVersion?: number;
-  publishers?: LoomPublisherTrustRecord[];
+  publishers: LoomPublisherTrustRecord[];
+  policy: LoomPluginTrustPolicy;
+  trustedPublishers: string[];
 }
 
-export async function listPluginTrust(baseUrl: string): Promise<LoomPublisherTrustRecord[]> {
+function normalizePluginTrustStore(response: Partial<LoomPluginTrustStore>): LoomPluginTrustStore {
+  return {
+    schemaVersion: response.schemaVersion,
+    publishers: Array.isArray(response.publishers) ? response.publishers : [],
+    policy: response.policy ?? "allow_unsigned",
+    trustedPublishers: Array.isArray(response.trustedPublishers) ? response.trustedPublishers : [],
+  };
+}
+
+export async function listPluginTrust(baseUrl: string): Promise<LoomPluginTrustStore> {
   const response = await getJson<LoomPluginTrustStore>(baseUrl, "/v1/plugin-trust");
-  return Array.isArray(response.publishers) ? response.publishers : [];
+  return normalizePluginTrustStore(response);
 }
 
 export async function trustPluginPublisher(
   baseUrl: string,
   record: Omit<LoomPublisherTrustRecord, "revoked"> & { revoked?: boolean },
-): Promise<LoomPublisherTrustRecord[]> {
+): Promise<LoomPluginTrustStore> {
   const response = await postJson<LoomPluginTrustStore>(baseUrl, "/v1/plugin-trust/publishers", {
     ...record,
     revoked: record.revoked ?? false,
   });
-  return Array.isArray(response.publishers) ? response.publishers : [];
+  return normalizePluginTrustStore(response);
 }
 
 export async function revokePluginPublisher(
   baseUrl: string,
   publisherId: string,
   keyId: string,
-): Promise<LoomPublisherTrustRecord[]> {
+): Promise<LoomPluginTrustStore> {
   const response = await postJson<LoomPluginTrustStore>(baseUrl, "/v1/plugin-trust/revoke", {
     publisherId,
     keyId,
   });
-  return Array.isArray(response.publishers) ? response.publishers : [];
+  return normalizePluginTrustStore(response);
+}
+
+export async function setPluginTrustPolicy(
+  baseUrl: string,
+  policy: LoomPluginTrustPolicy,
+): Promise<LoomPluginTrustStore> {
+  return normalizePluginTrustStore(await postJson<LoomPluginTrustStore>(
+    baseUrl,
+    "/v1/plugin-trust/policy",
+    { policy },
+  ));
+}
+
+export async function trustPluginUser(
+  baseUrl: string,
+  userId: string,
+): Promise<LoomPluginTrustStore> {
+  return normalizePluginTrustStore(await postJson<LoomPluginTrustStore>(
+    baseUrl,
+    "/v1/plugin-trust/users",
+    { userId },
+  ));
+}
+
+export async function untrustPluginUser(
+  baseUrl: string,
+  userId: string,
+): Promise<LoomPluginTrustStore> {
+  return normalizePluginTrustStore(await postJson<LoomPluginTrustStore>(
+    baseUrl,
+    "/v1/plugin-trust/users/remove",
+    { userId },
+  ));
 }
 
 export interface LoomCredentialScope {
@@ -1130,16 +1262,24 @@ export interface LoomCredentialScope {
   artId?: string;
 }
 
+export type LoomCredentialValueType = "string" | "number" | "integer" | "boolean" | "json";
+
 export interface LoomCredentialSummary {
   name: string;
+  valueType: LoomCredentialValueType;
   scope: LoomCredentialScope;
   expiresAt?: string | null;
   protection: string;
 }
 
+export interface LoomCredentialDetails extends LoomCredentialSummary {
+  value: string;
+}
+
 export interface LoomCredentialInput {
   name: string;
   value: string;
+  valueType: LoomCredentialValueType;
   scope?: LoomCredentialScope;
   expiresAt?: string | null;
 }
@@ -1173,12 +1313,66 @@ export async function deletePluginCredential(
   await postJson(baseUrl, "/v1/plugin-credentials/delete", { name, scope });
 }
 
+export async function revealPluginCredential(
+  baseUrl: string,
+  name: string,
+  scope: LoomCredentialScope = {},
+): Promise<LoomCredentialDetails | null> {
+  const response = await postJson<{ credential?: LoomCredentialDetails }>(
+    baseUrl,
+    "/v1/plugin-credentials/reveal",
+    { name, scope },
+  );
+  return response.credential ?? null;
+}
+
+export interface LoomPublisherIdentity {
+  schemaVersion: number;
+  userId: string;
+  currentKeyId: string;
+  publicKey: string;
+}
+
+export interface LoomPublisherIdentityState {
+  identity: LoomPublisherIdentity | null;
+  hasPrivateKey: boolean;
+}
+
+export async function getPublisherIdentity(baseUrl: string): Promise<LoomPublisherIdentityState> {
+  const response = await getJson<Partial<LoomPublisherIdentityState>>(baseUrl, "/v1/publisher-identity");
+  return {
+    identity: response.identity ?? null,
+    hasPrivateKey: response.hasPrivateKey === true,
+  };
+}
+
+export async function registerPublisherIdentity(baseUrl: string): Promise<LoomPublisherIdentityState> {
+  return await postJson<LoomPublisherIdentityState>(baseUrl, "/v1/publisher-identity/register", {});
+}
+
+export async function rotatePublisherIdentity(baseUrl: string): Promise<LoomPublisherIdentityState> {
+  return await postJson<LoomPublisherIdentityState>(baseUrl, "/v1/publisher-identity/rotate", {});
+}
+
+export async function revealPublisherPrivateKey(baseUrl: string): Promise<{
+  keyId: string;
+  privateKey: string;
+  publicKey: string;
+}> {
+  return await postJson(baseUrl, "/v1/publisher-identity/private-key", {});
+}
+
 // A remote art-store catalog entry.
 export interface ArtStoreEntry {
   id: string;
+  qualifiedId?: string;
+  globalId?: string;
   name?: string;
   description?: string;
   framework?: string;
+  latestVersion?: string;
+  versions?: Array<{ version: string; sha256?: string }>;
+  official?: boolean;
 }
 
 interface ArtStoreCatalogResponse {
@@ -1198,8 +1392,97 @@ export async function installArtFromStore(
   baseUrl: string,
   artId: string,
   store?: string,
+  version?: string,
 ): Promise<void> {
-  await postJson(baseUrl, "/v1/arts/store/install", { artId, store });
+  await postJson(baseUrl, "/v1/arts/store/install", { artId, store, version });
+}
+
+export interface LoomArtManagementParameter {
+  id: string;
+  label: string;
+  parameterType: string;
+  required: boolean;
+  secret: boolean;
+  default?: unknown;
+  options?: unknown;
+  minimum?: unknown;
+  maximum?: unknown;
+  step?: unknown;
+}
+
+export interface LoomArtInstalledVersion {
+  version: string;
+  digest: string;
+  active: boolean;
+}
+
+export interface LoomArtManagement {
+  artId: string;
+  name: string;
+  description: string;
+  locallyAuthored: boolean;
+  canEditIdentity: boolean;
+  currentVersion: string;
+  highestVersion: string;
+  autoUpdate: boolean;
+  installedVersions: LoomArtInstalledVersion[];
+  availableVersions: string[];
+  parameters: LoomArtManagementParameter[];
+  defaults: Record<string, unknown>;
+  valueBindings: Record<string, string>;
+  credentialBindings: Record<string, string>;
+  availableCredentials: LoomCredentialSummary[];
+  updateAvailable: boolean;
+}
+
+export interface LoomArtManagementSettingsInput {
+  name?: string;
+  description?: string;
+  autoUpdate: boolean;
+  defaults: Record<string, unknown>;
+  valueBindings: Record<string, string>;
+  credentialBindings: Record<string, string>;
+  secretValues?: Record<string, string>;
+}
+
+export async function getArtManagement(
+  baseUrl: string,
+  artId: string,
+): Promise<LoomArtManagement> {
+  return await getJson<LoomArtManagement>(
+    baseUrl,
+    `/v1/arts/${encodeURIComponent(artId)}/management`,
+  );
+}
+
+export async function saveArtManagementSettings(
+  baseUrl: string,
+  artId: string,
+  input: LoomArtManagementSettingsInput,
+): Promise<LoomArtManagement> {
+  return await putJson<LoomArtManagement>(
+    baseUrl,
+    `/v1/arts/${encodeURIComponent(artId)}/settings`,
+    input,
+  );
+}
+
+export async function updateArtToVersion(
+  baseUrl: string,
+  artId: string,
+  version: string,
+): Promise<LoomArtManagement> {
+  return await postJson<LoomArtManagement>(
+    baseUrl,
+    `/v1/arts/${encodeURIComponent(artId)}/update`,
+    { version },
+  );
+}
+
+export async function autoUpdateArts(
+  baseUrl: string,
+): Promise<{ updated?: unknown[]; errors?: unknown[] }> {
+  return await postJson(baseUrl, "/v1/arts/auto-update", {});
 }
 
 export async function installArtPackage(baseUrl: string, zipBase64: string): Promise<void> {
@@ -1210,16 +1493,28 @@ export async function createAuthoredArtPackage(
   baseUrl: string,
   tool: LoomToolDefinition,
   runtime?: LoomArtRuntimeManifest,
+  options?: {
+    files?: Array<{ path: string; content: string }>;
+    sourceDirectory?: string;
+    sourceDirectoryTarget?: string;
+  },
 ): Promise<LoomToolDefinition | null> {
   const response = await postJson<{ tool?: LoomToolDefinition }>(baseUrl, "/v1/arts/create", {
     tool,
     runtime,
+    files: options?.files ?? [],
+    sourceDirectory: options?.sourceDirectory,
+    sourceDirectoryTarget: options?.sourceDirectoryTarget,
   });
   return response.tool ?? null;
 }
 
-export async function publishArt(baseUrl: string, artId: string, store?: string): Promise<void> {
-  await postJson(baseUrl, "/v1/arts/store/publish", { artId, store });
+export async function publishArt(
+  baseUrl: string,
+  artId: string,
+  store?: string,
+): Promise<{ artId: string; globalId: string; sha256: string; published: boolean }> {
+  return await postJson(baseUrl, "/v1/arts/store/publish", { artId, store });
 }
 
 export async function deleteCanvasWorkflow(baseUrl: string, workflowId: string): Promise<void> {
@@ -1317,6 +1612,10 @@ export async function deleteToolDefinition(baseUrl: string, toolId: string): Pro
   await deleteJson(baseUrl, `/v1/tools/${encodeURIComponent(toolId)}`);
 }
 
+export async function uninstallArtPackage(baseUrl: string, artIdentity: string): Promise<void> {
+  await postJson(baseUrl, `/v1/arts/${encodeURIComponent(artIdentity)}/uninstall`, {});
+}
+
 export async function listArtLoomCompatArts(baseUrl: string): Promise<ArtLoomCompatArtsResponse> {
   return await getJson<ArtLoomCompatArtsResponse>(baseUrl, "/v1/artloom-compat/arts");
 }
@@ -1383,33 +1682,6 @@ export async function nativeProcessArt(
     baseUrl,
     "/v1/artloom-compat/native/process-art",
     { artId, inputBase64, params },
-  );
-}
-
-export async function executePythonArt(
-  baseUrl: string,
-  artId: string,
-  params: Record<string, unknown> = {},
-  artPath?: string,
-): Promise<ArtLoomPythonExecuteArtResponse> {
-  return await postJson<ArtLoomPythonExecuteArtResponse>(
-    baseUrl,
-    "/v1/artloom-compat/python/execute-art",
-    { artId, params, artPath },
-  );
-}
-
-export async function pythonProcessImage(
-  baseUrl: string,
-  artId: string,
-  inputBase64: string,
-  params: Record<string, unknown> = {},
-  artPath?: string,
-): Promise<ArtLoomPythonProcessImageResponse> {
-  return await postJson<ArtLoomPythonProcessImageResponse>(
-    baseUrl,
-    "/v1/artloom-compat/python/process-image",
-    { artId, inputBase64, params, artPath },
   );
 }
 
@@ -1660,39 +1932,11 @@ export async function readPythonArtSource(
   return await postJson<LoomPythonSourceReadResponse>(baseUrl, "/v1/python-arts/source/read", { path });
 }
 
-export async function listArtLoomInstalledPythonArts(
-  baseUrl: string,
-): Promise<ArtLoomInstalledPythonArtsResponse> {
-  return await getJson<ArtLoomInstalledPythonArtsResponse>(baseUrl, "/v1/artloom-compat/python/installed-arts");
-}
-
-export async function readArtLoomPythonFile(
-  baseUrl: string,
-  filePath: string,
-): Promise<ArtLoomReadPythonFileResponse> {
-  return await postJson<ArtLoomReadPythonFileResponse>(
-    baseUrl,
-    "/v1/artloom-compat/python/read-python-file",
-    { filePath },
-  );
-}
-
 export async function readPythonArtJson(
   baseUrl: string,
   artPath: string,
 ): Promise<LoomPythonArtJsonResponse> {
   return await postJson<LoomPythonArtJsonResponse>(baseUrl, "/v1/python-arts/source/read-art-json", { artPath });
-}
-
-export async function readArtLoomArtJson(
-  baseUrl: string,
-  artPath: string,
-): Promise<ArtLoomReadArtJsonResponse> {
-  return await postJson<ArtLoomReadArtJsonResponse>(
-    baseUrl,
-    "/v1/artloom-compat/python/read-art-json",
-    { artPath },
-  );
 }
 
 export async function checkPythonArtJsonNearby(
@@ -1702,17 +1946,6 @@ export async function checkPythonArtJsonNearby(
   return await postJson<LoomPythonNearbyArtJsonResponse>(
     baseUrl,
     "/v1/python-arts/source/check-art-json",
-    { pythonPath },
-  );
-}
-
-export async function checkArtLoomArtJsonNearby(
-  baseUrl: string,
-  pythonPath: string,
-): Promise<ArtLoomCheckArtJsonNearbyResponse> {
-  return await postJson<ArtLoomCheckArtJsonNearbyResponse>(
-    baseUrl,
-    "/v1/artloom-compat/python/check-art-json-nearby",
     { pythonPath },
   );
 }

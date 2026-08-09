@@ -2,16 +2,11 @@
 param(
     [string]$BaseUrl = "http://127.0.0.1:8765",
     [string]$ArtId = "custom-image-search",
-    [string]$ArtName = "",
-    [string]$ServerId = "package-image-search",
-    [string]$ServerName = "Package Image Search",
-    [string]$BraveApiKey = "",
     [string]$StoreRoot,
     [string]$StoreUrl = "http://127.0.0.1:8790",
     [ValidateSet("store", "upload")][string]$InstallMode = "upload",
     [switch]$SkipInstall,
-    [switch]$SkipPublish,
-    [switch]$SkipServerConfig
+    [switch]$SkipPublish
 )
 
 $ErrorActionPreference = "Stop"

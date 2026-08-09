@@ -1573,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn handler_answers_get_user_arts_with_legacy_frontend_cards() {
+    fn handler_answers_get_user_arts_with_frontend_cards() {
         let root = temp_root("get-user-arts");
         let result = handle_request(
             HookBridgeRequest::GetUserArts,
@@ -1586,8 +1586,8 @@ mod tests {
                     "description": "ArtLoom registry alias fixture",
                     "icon": "#52c41a",
                     "enabled": true,
-                    "execution_type": "cli_wrapper",
-                    "execution": { "type": "cli_wrapper", "command": "echo", "args": ["ok"] },
+                    "execution_type": "framework_art",
+                    "execution": { "type": "framework_art", "framework": "process" },
                     "autoProcess": true,
                     "inputs": [{ "name": "image", "type": "image" }],
                     "outputs": [{ "name": "result", "type": "image" }],
@@ -1612,7 +1612,7 @@ mod tests {
         assert_eq!(result.response["data"][0]["iconColor"], "#52c41a");
         assert_eq!(result.response["data"][0]["downloads"], 0);
         assert_eq!(result.response["data"][0]["owned"], true);
-        assert_eq!(result.response["data"][0]["executionType"], "cli_wrapper");
+        assert_eq!(result.response["data"][0]["executionType"], "framework_art");
         assert_eq!(result.response["data"][0]["autoProcess"], true);
         assert_eq!(result.response["data"][0]["inputs"][0]["name"], "image");
         assert_eq!(result.response["data"][0]["outputs"][0]["name"], "result");
@@ -1623,28 +1623,27 @@ mod tests {
     }
 
     #[test]
-    fn handler_answers_get_user_arts_from_daemon_legacy_metadata() {
-        let root = temp_root("get-user-arts-legacy-metadata");
+    fn handler_answers_get_user_arts_from_daemon_compat_metadata() {
+        let root = temp_root("get-user-arts-compat-metadata");
         let result = handle_request(
             HookBridgeRequest::GetUserArts,
             HookBridgeRuntimeInput::new(
                 vec![serde_json::json!({
-                    "id": "script-art",
-                    "name": "Script Art",
+                    "id": "process-art",
+                    "name": "Process Art",
                     "description": "Daemon normalized tool with ArtLoom metadata",
                     "enabled": true,
-                    "execution_type": "python_art",
+                    "execution_type": "framework_art",
                     "execution": {
-                        "type": "python_art",
-                        "artId": "script-art",
-                        "artPath": "C:/Arts/script-art"
+                        "type": "framework_art",
+                        "framework": "process"
                     },
                     "metadata": {
                         "artloomCompat": {
                             "icon": "#fa8c16",
-                            "executionType": "script",
+                            "executionType": "framework_art",
                             "execution": {
-                                "artPath": "C:/Arts/script-art",
+                                "framework": "process",
                                 "outputs": [{ "name": "result", "type": "image" }]
                             },
                             "autoProcess": true
@@ -1660,10 +1659,10 @@ mod tests {
 
         assert_eq!(result.response["type"], "success");
         assert_eq!(result.response["data"][0]["iconColor"], "#fa8c16");
-        assert_eq!(result.response["data"][0]["executionType"], "script");
+        assert_eq!(result.response["data"][0]["executionType"], "framework_art");
         assert_eq!(
-            result.response["data"][0]["execution"]["artPath"],
-            "C:/Arts/script-art"
+            result.response["data"][0]["execution"]["framework"],
+            "process"
         );
         assert_eq!(result.response["data"][0]["outputs"][0]["name"], "result");
         assert_eq!(result.response["data"][0]["autoProcess"], true);

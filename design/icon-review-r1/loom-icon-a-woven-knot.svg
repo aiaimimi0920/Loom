@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon A - Woven knot</title>
+  <desc id="desc">Four rounded corner threads rotate into a compact woven knot.</desc>
+  <defs>
+    <filter id="greenGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.13  0 0 0 0 0.77  0 0 0 0 0.37  0 0 0 0.66 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="yellowGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 1  0 0 0 0 0.9  0 0 0 0 0  0 0 0 0.7 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="76">
+    <path d="M352 246h278v174" stroke="#22C55E" filter="url(#greenGlow)"/>
+    <path d="M778 352v278H604" stroke="#22C55E" filter="url(#greenGlow)"/>
+    <path d="M672 778H394V604" stroke="#FFE600" filter="url(#yellowGlow)"/>
+    <path d="M246 672V394h174" stroke="#22C55E" filter="url(#greenGlow)"/>
+  </g>
+</svg>

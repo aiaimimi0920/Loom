@@ -1,7 +1,7 @@
 {
   "id": "custom-remove-bg-cloud",
   "name": "移除背景",
-  "description": "通过可插拔云 API 框架执行背景移除；本地包带有确定性的离线适配器用于安装和 smoke 验证。",
+  "description": "通过云端执行背景移除；本地包带有确定性的离线适配器用于安装和 smoke 验证。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -26,10 +26,27 @@
   "params": [],
   "metadata": {
     "packageSecurity": {
-      "version": "0.1.0",
+      "version": "0.1.1",
       "publisher": {
         "id": "neuro.official",
-        "name": "Neuro"
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/custom-remove-bg-cloud",
+      "englishName": "custom-remove-bg-cloud",
+      "globalId": "NA20260802002"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "移除背景",
+        "en-US": "Remove Background"
+      },
+      "descriptions": {
+        "zh-CN": "通过云端执行背景移除；本地包带有确定性的离线适配器用于安装和 smoke 验证。",
+        "en-US": "Removes image backgrounds through the cloud API."
       }
     },
     "dependencies": {

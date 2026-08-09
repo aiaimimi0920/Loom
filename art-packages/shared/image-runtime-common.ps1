@@ -276,6 +276,31 @@ function New-ImageOutput {
     }
 }
 
+function New-ImagePathOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowNull()][hashtable]$Extra
+    )
+
+    $bitmap = [System.Drawing.Bitmap]::new($Path)
+    try {
+        $output = [ordered]@{
+            output_path = $Path
+            width = $bitmap.Width
+            height = $bitmap.Height
+        }
+        if ($null -ne $Extra) {
+            foreach ($key in $Extra.Keys) {
+                $output[$key] = $Extra[$key]
+            }
+        }
+        return $output
+    }
+    finally {
+        $bitmap.Dispose()
+    }
+}
+
 function New-PlaceholderImage {
     param(
         [Parameter(Mandatory = $true)][string]$Path,

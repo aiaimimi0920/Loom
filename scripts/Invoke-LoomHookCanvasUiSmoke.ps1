@@ -530,9 +530,17 @@ try {
     $daemonPid = [int]$sibling.processId
     Wait-ForDaemon -BaseUrl $daemonUrl -ProcessId $daemonPid -ExpectedExecutablePath $daemonExe | Out-Null
 
-    $bridgeStart = Invoke-JsonPost -Uri "$daemonUrl/v1/hook-bridge/start" -Body @{ port = $bridgePort }
-    Assert-True ([bool]$bridgeStart.running) "Isolated Hook Bridge did not start."
-    $bridgeStatus = $null
+    $bridgeStatus = Invoke-JsonGet -Uri "$daemonUrl/v1/hook-bridge/status"
+    if ([bool]$bridgeStatus.running -and [int]$bridgeStatus.port -ne $bridgePort) {
+        $stoppedBridge = Invoke-JsonPost -Uri "$daemonUrl/v1/hook-bridge/stop" -Body @{}
+        Assert-Equal $false ([bool]$stoppedBridge.running) "Isolated Hook Bridge did not stop before changing ports."
+        $bridgeStatus = $stoppedBridge
+    }
+    if (-not [bool]$bridgeStatus.running) {
+        $bridgeStatus = Invoke-JsonPost -Uri "$daemonUrl/v1/hook-bridge/start" -Body @{ port = $bridgePort }
+    }
+    Assert-True ([bool]$bridgeStatus.running) "Isolated Hook Bridge did not start."
+    Assert-Equal $bridgePort ([int]$bridgeStatus.port) "Isolated Hook Bridge port mismatch."
     $bridgeDeadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $bridgeDeadline) {
         $bridgeStatus = Invoke-JsonGet -Uri "$daemonUrl/v1/hook-bridge/status"
@@ -561,22 +569,15 @@ try {
     Assert-Equal $true ([bool]$initialUi.failedArtThumbnailFailureVisible) "Hook thumbnail must show execution failure for failed-art."
     Assert-Equal $false ([bool]$initialUi.yamlVisible) "YAML editor is visible before opening advanced information."
     Assert-Equal $false ([bool]$initialUi.advancedOpen) "Advanced technical information must be collapsed by default."
-    Assert-Equal $true ([bool]$initialUi.fullCanvasVisible) "Clicking the thumbnail did not open the full visual canvas."
-    Assert-Equal $true ([bool]$initialUi.failedArtExecutionFailureVisible) "Hook full canvas must show execution failure for failed-art."
-    $initialFailedArtNode = @($initialUi.fullCanvasNodes | Where-Object { [string]$_.nodeId -eq "failed-art" })[0]
-    Assert-True ($null -ne $initialFailedArtNode) "Missing failed-art full canvas node presentation."
-    Assert-Equal $false ([bool]$initialFailedArtNode.hasImage) "failed-art full canvas must not render an image preview."
-    Assert-Equal $quotaExceededErrorMessage ([string]$initialFailedArtNode.placeholderDetailText) "failed-art full canvas must show the Hook failure reason."
+    $initialFailedArtNode = @($initialUi.thumbnailNodes | Where-Object { [string]$_.nodeId -eq "failed-art" })[0]
+    Assert-True ($null -ne $initialFailedArtNode) "Missing failed-art thumbnail node presentation."
+    Assert-Equal $false ([bool]$initialFailedArtNode.hasImage) "failed-art thumbnail must not render an image preview."
+    Assert-Equal $quotaExceededErrorMessage ([string]$initialFailedArtNode.placeholderDetailText) "failed-art thumbnail must show the Hook failure reason."
 
     Write-HookFixture -AppDataRoot $appDataRoot -NodeCount 4
-    $instantiate = Invoke-JsonPost -Uri "$daemonUrl/v1/artloom-compat/ipc/instantiate-workflow" -Body @{
-        nodes = @(@{ id = "capture" }, @{ id = "failed-art" }, @{ id = "missing" }, @{ id = "extra" })
-        edges = @(@{ source = "capture"; target = "failed-art" })
-        mode = "reference"
-        workflowId = "hook-live"
-    }
-    Assert-Equal "success" ([string]$instantiate.type) "Hook instantiate broadcast failed."
-    Write-JsonFile -Path (Join-Path $runDir "instantiate.json") -Value $instantiate
+    $refreshBroadcast = Invoke-JsonPost -Uri "$daemonUrl/v1/artloom-compat/arts/broadcast-updated" -Body @{}
+    Assert-Equal $true ([bool]$refreshBroadcast.broadcasted) "Hook canvas refresh broadcast failed."
+    Write-JsonFile -Path (Join-Path $runDir "refresh-broadcast.json") -Value $refreshBroadcast
 
     $updatedUi = Wait-ForHookCanvasUi `
         -InspectorPath $inspectorPath `
@@ -588,11 +589,10 @@ try {
     Assert-Equal 4 ([int]$updatedUi.thumbnailNodeCount) "Hook canvas did not refresh to the updated node count."
     Assert-True ([string]$updatedUi.revision -ne [string]$initialUi.revision) "Hook canvas revision did not change after the bridge update."
     Assert-Equal $true ([bool]$updatedUi.failedArtThumbnailFailureVisible) "Updated Hook thumbnail must keep the failed-art execution failure presentation."
-    Assert-Equal $true ([bool]$updatedUi.failedArtExecutionFailureVisible) "Updated Hook full canvas must keep the failed-art execution failure presentation."
-    $updatedFailedArtNode = @($updatedUi.fullCanvasNodes | Where-Object { [string]$_.nodeId -eq "failed-art" })[0]
-    Assert-True ($null -ne $updatedFailedArtNode) "Missing updated failed-art full canvas node presentation."
-    Assert-Equal $false ([bool]$updatedFailedArtNode.hasImage) "Updated failed-art full canvas must not render an image preview."
-    Assert-Equal $quotaExceededErrorMessage ([string]$updatedFailedArtNode.placeholderDetailText) "Updated failed-art full canvas must keep the Hook failure reason."
+    $updatedFailedArtNode = @($updatedUi.thumbnailNodes | Where-Object { [string]$_.nodeId -eq "failed-art" })[0]
+    Assert-True ($null -ne $updatedFailedArtNode) "Missing updated failed-art thumbnail node presentation."
+    Assert-Equal $false ([bool]$updatedFailedArtNode.hasImage) "Updated failed-art thumbnail must not render an image preview."
+    Assert-Equal $quotaExceededErrorMessage ([string]$updatedFailedArtNode.placeholderDetailText) "Updated failed-art thumbnail must keep the Hook failure reason."
     Write-JsonFile -Path (Join-Path $runDir "processes-during.json") -Value @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)
 }
 catch {

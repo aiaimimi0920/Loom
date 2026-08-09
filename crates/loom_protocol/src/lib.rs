@@ -179,13 +179,28 @@ pub struct PermissionPolicy {
 pub struct ResourceLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "memoryMiB",
+        alias = "memoryMib",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub memory_mib: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_processes: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "stdoutMiB",
+        alias = "stdoutMib",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stdout_mib: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "stderrMiB",
+        alias = "stderrMib",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stderr_mib: Option<u64>,
 }
 
@@ -718,5 +733,24 @@ mod tests {
         assert_eq!(parsed.entry.process_model, "per_execution");
         assert!(!parsed.permission_policy.process.spawn);
         assert!(parsed.publisher.is_none());
+    }
+
+    #[test]
+    fn resource_limits_use_manifest_mib_spelling() {
+        let limits: ResourceLimits = serde_json::from_value(serde_json::json!({
+            "timeoutSeconds": 120,
+            "memoryMiB": 512,
+            "maxProcesses": 4,
+            "stdoutMiB": 64,
+            "stderrMiB": 8
+        }))
+        .expect("resource limits");
+        assert_eq!(limits.stdout_mib, Some(64));
+        assert_eq!(limits.stderr_mib, Some(8));
+        assert_eq!(limits.memory_mib, Some(512));
+        let serialized = serde_json::to_value(limits).expect("serialize resource limits");
+        assert_eq!(serialized["stdoutMiB"], 64);
+        assert_eq!(serialized["stderrMiB"], 8);
+        assert_eq!(serialized["memoryMiB"], 512);
     }
 }

@@ -1,5 +1,10 @@
 # Phase 67: Pluginized Art frameworks
 
+> Historical phase record. The current architecture supersedes the six-ID
+> catalog below with four packages: `process`, `cloud_api`, `mcp`, and
+> `workflow`. Former command, script, and Python Art packages are republished as
+> `framework_art` packages owned by `process`; no old execution IDs are retained.
+
 ## Status
 
 Phase complete after a post-completion release audit. The Loom host,
@@ -461,6 +466,24 @@ Final release verification:
 - default payload contains no optional framework or sample Art package directories.
 - standalone, Hook canvas, failed-preview, all-framework art-store/Hook, and third-party plugin boundary smokes passed.
 - Hook typecheck passed.
+
+## 2026-08-02 desktop sample-Art catalog follow-up
+
+The original phase deliberately proved a default-empty control plane. The
+desktop product requirement was later changed so the registry should immediately
+show the six repo-owned demonstration Arts instead of legacy compatibility
+cards. The plugin boundary remains unchanged:
+
+- the four frameworks and six Arts are still independent ZIP packages;
+- release builds now publish both `packages/frameworks` and `packages/arts`;
+- the Tauri host validates ZIP SHA-256 sidecars and installs the catalog through
+  `/v1/frameworks/*` and `/v1/arts/install`;
+- the catalog hash is applied once per writable control plane, so user deletion
+  is not undone on every restart;
+- React renders the resulting `/v1/tools` records through the generic Art card
+  component and contains no branch on any of the six sample Art IDs;
+- the old ArtLoom registry alias and Python engine compatibility cards were
+  removed from the Art page.
 - Hook test suite passed: 208 test files and 800 tests.
 
 ## Post-completion audit and hardening

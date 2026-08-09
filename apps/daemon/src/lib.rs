@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Write};
@@ -35,11 +35,19 @@ use loom_hook_bridge::{
 };
 use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::{McpServerConfig, StdioMcpClient};
+use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
     is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest, PublisherTrustRecord,
 };
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
-use loom_tool_registry::credentials::{CredentialInput, CredentialScope, CredentialStore};
+use loom_tool_registry::art_settings::{
+    apply_settings_metadata, art_is_locally_authored, art_parameter_definitions,
+    credential_value_type_matches_parameter, validate_parameter_value, ArtParameterDefinition,
+    ArtSettingsStore, ArtUpdateSource, ArtUserSettings,
+};
+use loom_tool_registry::credentials::{
+    CredentialInput, CredentialScope, CredentialStore, CredentialValueType,
+};
 use loom_tool_registry::network_policy::{
     get_bounded, secure_client, validate_outbound_url, OutboundPolicy,
 };
@@ -47,7 +55,10 @@ use loom_tool_registry::{
     execute_tool, framework::FrameworkRegistry, ToolDefinition, ToolExecution, ToolRegistry,
     ToolRegistryError, WorkflowExecutionBindings,
 };
-use loom_workflow_runtime::{execute_tool_with_workflows, WorkflowRuntimeError};
+use loom_workflow_runtime::{
+    execute_tool_with_workflows, execute_tool_with_workflows_and_preview, workflow_node_tool_ids,
+    WorkflowRuntimeError,
+};
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -81,6 +92,11 @@ const DEFAULT_MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotoc
 const MAX_REGISTRY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ART_STORE_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ART_STORE_PACKAGE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PUBLISHER_DIRECTORY_BYTES: usize = 256 * 1024;
+const MAX_BUNDLED_ART_SHA256_ALLOWLIST_ENTRIES: usize = 4096;
+const PUBLISHER_IDENTITY_FILE: &str = "publisher-identity.json";
+const PUBLISHER_PRIVATE_KEY_CREDENTIAL: &str = "loom-publisher-signing-key";
+const DEFAULT_TEST_PUBLISHER_ID: &str = "L0000000000";
 
 fn invokable_capability_ids() -> [&'static str; 4] {
     [
@@ -106,6 +122,7 @@ pub fn daemon_help_text() -> &'static str {
         "  LOOM_DAEMON_WORKERS  Request worker threads [default: 4]\n",
         "  LOOM_DAEMON_QUEUE_CAPACITY  Queued requests [default: 32]\n",
         "  LOOM_DAEMON_TOKEN    Bearer token; required for non-loopback binds\n",
+        "  LOOM_BUNDLED_ART_SHA256_ALLOWLIST  Comma-separated packaged Art digests supplied by Loom desktop\n",
         "  LOOM_CAPABILITY_MANIFEST_DIR  Directory for loom.json discovery manifest\n",
         "  LOOM_RUN_STORE_PATH  SQLite run evidence path [default: <control-plane>\\runs\\loom-runs.sqlite3]\n",
         "  LOOM_MCP_REGISTRY_ENDPOINT  MCP Registry endpoint override\n",
@@ -148,12 +165,6 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /v1/python-arts\n",
         "  GET  /v1/python-arts/{artId}\n",
         "  GET  /v1/python-arts/engine/status\n",
-        "  POST /v1/artloom-compat/python/execute-art\n",
-        "  POST /v1/artloom-compat/python/process-image\n",
-        "  GET  /v1/artloom-compat/python/installed-arts\n",
-        "  POST /v1/artloom-compat/python/read-art-json\n",
-        "  POST /v1/artloom-compat/python/read-python-file\n",
-        "  POST /v1/artloom-compat/python/check-art-json-nearby\n",
         "  POST /v1/python-arts/shader/prefetch\n",
         "  POST /v1/python-arts/source/read\n",
         "  POST /v1/python-arts/source/read-art-json\n",
@@ -176,6 +187,7 @@ pub fn daemon_help_text() -> &'static str {
         "  POST /v1/hook-bridge/stop\n",
         "  GET  /v1/artloom-compat/settings\n",
         "  PUT  /v1/artloom-compat/settings\n",
+        "  POST /v1/artloom-compat/hook/cache-control\n",
         "  GET  /v1/artloom-compat/shortcuts\n",
         "  PUT  /v1/artloom-compat/shortcuts/{shortcutId}\n",
         "  GET  /v1/artloom-compat/app-paths\n",
@@ -220,6 +232,7 @@ pub struct DaemonConfig {
     brain_planner: BrainPlannerConfig,
     run_store: RunStoreConfig,
     request_executor: RequestExecutorConfig,
+    bundled_art_sha256_allowlist: BTreeSet<String>,
 }
 
 impl DaemonConfig {
@@ -239,6 +252,7 @@ impl DaemonConfig {
             brain_planner: BrainPlannerConfig::LocalTemplate,
             run_store: RunStoreConfig::Memory,
             request_executor: RequestExecutorConfig::Inline,
+            bundled_art_sha256_allowlist: BTreeSet::new(),
         }
     }
 
@@ -307,6 +321,31 @@ impl DaemonConfig {
         self.run_store = RunStoreConfig::Sqlite(path.into());
         self
     }
+
+    pub fn with_bundled_art_sha256_allowlist<I, S>(mut self, values: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut allowlist = BTreeSet::new();
+        for value in values {
+            let value = value.as_ref().trim();
+            if value.is_empty() {
+                continue;
+            }
+            if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                anyhow::bail!("invalid bundled Art SHA-256 allowlist entry `{value}`");
+            }
+            allowlist.insert(value.to_ascii_lowercase());
+            if allowlist.len() > MAX_BUNDLED_ART_SHA256_ALLOWLIST_ENTRIES {
+                anyhow::bail!(
+                    "bundled Art SHA-256 allowlist exceeds {MAX_BUNDLED_ART_SHA256_ALLOWLIST_ENTRIES} entries"
+                );
+            }
+        }
+        self.bundled_art_sha256_allowlist = allowlist;
+        Ok(self)
+    }
 }
 
 #[must_use]
@@ -337,7 +376,9 @@ struct DaemonRuntime {
     framework_registry: FrameworkRegistry,
     // Control-plane root, for the art install dir (<root>/arts/<id>/).
     control_plane_root: PathBuf,
+    bundled_art_sha256_allowlist: BTreeSet<String>,
     hook_bridge: SharedHookBridgeRuntime,
+    device_registry: SharedDeviceRegistryStore,
     artloom_settings: SharedArtLoomCompatSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
@@ -427,8 +468,13 @@ impl LoomDaemon {
             canvas_workflow_root: control_plane_root.join("canvas-workflows"),
             framework_registry: FrameworkRegistry::new(&control_plane_root),
             control_plane_root: control_plane_root.to_path_buf(),
+            bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
             hook_bridge: Arc::new(Mutex::new(HookBridgeRuntime::new(
                 control_plane_root.join("workflows"),
+            ))),
+            device_registry: Arc::new(Mutex::new(DeviceRegistryStore::new(
+                control_plane_root.join("settings").join("devices.json"),
+                local_addr,
             ))),
             artloom_settings: Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
                 control_plane_root
@@ -594,6 +640,7 @@ fn route_with_runtime(
         &runtime.tool_registry,
         &runtime.workflow_store,
         &runtime.hook_bridge,
+        &runtime.device_registry,
         &runtime.artloom_settings,
         &runtime.shared_images,
         &runtime.ocr_provider,
@@ -603,6 +650,7 @@ fn route_with_runtime(
         &runtime.canvas_workflow_root,
         &runtime.framework_registry,
         &runtime.control_plane_root,
+        &runtime.bundled_art_sha256_allowlist,
     )
 }
 
@@ -1612,32 +1660,6 @@ struct PythonInferPortsRequest {
 struct PythonShaderPrefetchRequest {
     #[serde(default, alias = "art_id")]
     art_id: String,
-    #[serde(default, alias = "art_path")]
-    art_path: Option<String>,
-    #[serde(default)]
-    params: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ArtLoomCompatPythonExecuteArtRequest {
-    #[serde(default, alias = "art_id")]
-    art_id: String,
-    #[serde(default, alias = "art_path")]
-    art_path: Option<String>,
-    #[serde(default)]
-    params: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ArtLoomCompatPythonProcessImageRequest {
-    #[serde(default, alias = "art_id")]
-    art_id: String,
-    #[serde(default, alias = "art_path")]
-    art_path: Option<String>,
-    #[serde(default, alias = "input_base64")]
-    input_base64: String,
     #[serde(default)]
     params: Value,
 }
@@ -1777,10 +1799,83 @@ struct ArtLoomGeneralSettings {
 struct ArtLoomSystemPreferences {
     auto_check_updates: bool,
     enable_run_log: bool,
+    #[serde(default = "default_artloom_log_level")]
+    loom_log_level: String,
+    #[serde(default = "default_artloom_log_level")]
+    hook_log_level: String,
     run_as_admin: bool,
     record_screenshot_history: bool,
     history_retention: String,
-    enable_proxy: bool,
+}
+
+fn default_artloom_log_level() -> String {
+    "info".to_owned()
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ArtLoomProxySettings {
+    mode: String,
+    protocol: String,
+    address: String,
+}
+
+impl Default for ArtLoomProxySettings {
+    fn default() -> Self {
+        Self {
+            mode: "system".to_owned(),
+            protocol: "http".to_owned(),
+            address: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+struct ArtLoomNetworkSettings {
+    #[serde(default)]
+    loom: ArtLoomProxySettings,
+    #[serde(default)]
+    hook: ArtLoomProxySettings,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ArtLoomHookCacheSettings {
+    recycle_bin_max_entries: u32,
+    recycle_bin_retention_days: u32,
+    temp_cache_max_bytes: u64,
+    temp_cache_retention_days: u32,
+}
+
+impl Default for ArtLoomHookCacheSettings {
+    fn default() -> Self {
+        Self {
+            recycle_bin_max_entries: 15,
+            // The existing Hook recycle bin never expired by age. Keep that
+            // behavior until the user explicitly chooses a retention period.
+            recycle_bin_retention_days: 0,
+            temp_cache_max_bytes: 256 * 1024 * 1024,
+            temp_cache_retention_days: 7,
+        }
+    }
+}
+
+impl ArtLoomHookCacheSettings {
+    fn validate(&self) -> std::result::Result<(), String> {
+        if self.recycle_bin_max_entries > 500 {
+            return Err("回收站上限必须为无限或不超过 500 项".to_owned());
+        }
+        if self.recycle_bin_retention_days > 3650 {
+            return Err("回收站自动清理周期不能超过 3650 天".to_owned());
+        }
+        if self.temp_cache_max_bytes != 0
+            && !(32 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&self.temp_cache_max_bytes)
+        {
+            return Err("临时缓存上限必须为无限制或介于 32 MB 到 16 GB 之间".to_owned());
+        }
+        if self.temp_cache_retention_days > 3650 {
+            return Err("临时缓存自动清理周期不能超过 3650 天".to_owned());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1803,6 +1898,10 @@ struct ArtLoomQuickBinding {
 struct ArtLoomCompatSettings {
     general: ArtLoomGeneralSettings,
     system: ArtLoomSystemPreferences,
+    #[serde(default)]
+    network: ArtLoomNetworkSettings,
+    #[serde(default)]
+    hook_cache: ArtLoomHookCacheSettings,
     engine: ArtLoomEngineSettings,
     #[serde(default)]
     quick_bindings: Vec<ArtLoomQuickBinding>,
@@ -1827,11 +1926,14 @@ impl Default for ArtLoomCompatSettings {
             system: ArtLoomSystemPreferences {
                 auto_check_updates: true,
                 enable_run_log: true,
+                loom_log_level: default_artloom_log_level(),
+                hook_log_level: default_artloom_log_level(),
                 run_as_admin: false,
                 record_screenshot_history: true,
                 history_retention: "7d".to_owned(),
-                enable_proxy: false,
             },
+            network: ArtLoomNetworkSettings::default(),
+            hook_cache: ArtLoomHookCacheSettings::default(),
             engine: ArtLoomEngineSettings {
                 comfyui_url: "http://127.0.0.1:8188".to_owned(),
                 python_interpreter: "python.exe".to_owned(),
@@ -1983,6 +2085,128 @@ struct HookBridgeSubscriber {
     channels: Vec<String>,
 }
 
+type SharedDeviceRegistryStore = Arc<Mutex<DeviceRegistryStore>>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ManagedDeviceKind {
+    Computer,
+    Tablet,
+    Phone,
+    Other,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedDevice {
+    id: String,
+    name: String,
+    kind: ManagedDeviceKind,
+    address: String,
+    approval: String,
+    created_at: u64,
+    last_seen_at: Option<u64>,
+    #[serde(default)]
+    is_local: bool,
+    #[serde(default = "default_managed_device_enabled")]
+    enabled: bool,
+}
+
+fn default_managed_device_enabled() -> bool {
+    true
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceRegistryDocument {
+    devices: Vec<ManagedDevice>,
+}
+
+struct DeviceRegistryStore {
+    path: PathBuf,
+    devices: BTreeMap<String, ManagedDevice>,
+}
+
+impl DeviceRegistryStore {
+    fn new(path: PathBuf, local_addr: SocketAddr) -> Self {
+        let mut devices: BTreeMap<String, ManagedDevice> = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<DeviceRegistryDocument>(&bytes).ok())
+            .map(|document| {
+                document
+                    .devices
+                    .into_iter()
+                    .map(|device| (device.id.clone(), device))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let local_id = "device-000-local".to_owned();
+        let created_at = devices
+            .get(&local_id)
+            .map(|device| device.created_at)
+            .unwrap_or(now);
+        let local_name = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .ok()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Loom 主机".to_owned());
+        devices.insert(
+            local_id.clone(),
+            ManagedDevice {
+                id: local_id,
+                name: local_name,
+                kind: ManagedDeviceKind::Computer,
+                address: local_addr.to_string(),
+                approval: "approved".to_owned(),
+                created_at,
+                last_seen_at: Some(now),
+                is_local: true,
+                enabled: true,
+            },
+        );
+        let store = Self { path, devices };
+        if let Err(error) = store.persist() {
+            eprintln!("loom device registry could not persist the local host: {error:#}");
+        }
+        store
+    }
+
+    fn persist(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("create device registry directory `{}`", parent.display())
+            })?;
+        }
+        let document = DeviceRegistryDocument {
+            devices: self.devices.values().cloned().collect(),
+        };
+        fs::write(&self.path, serde_json::to_vec_pretty(&document)?)
+            .with_context(|| format!("write device registry `{}`", self.path.display()))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedDeviceInput {
+    name: String,
+    kind: ManagedDeviceKind,
+    address: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedDeviceUpdate {
+    name: String,
+    kind: ManagedDeviceKind,
+    address: String,
+    enabled: bool,
+}
+
 fn route(
     request: &ParsedHttpRequest,
     hook_settings: &HookSettings,
@@ -1996,6 +2220,7 @@ fn route(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     hook_bridge: &SharedHookBridgeRuntime,
+    device_registry: &SharedDeviceRegistryStore,
     artloom_settings: &SharedArtLoomCompatSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
@@ -2005,6 +2230,7 @@ fn route(
     canvas_workflow_root: &Path,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
+    bundled_art_sha256_allowlist: &BTreeSet<String>,
 ) -> Result<(u16, String)> {
     if let Some(token) = auth_token {
         let requires_auth = request.path != "/health";
@@ -2132,12 +2358,32 @@ fn route(
         ("POST", "/v1/plugin-trust/revoke") => {
             revoke_plugin_publisher(&request.body, framework_registry)
         }
+        ("POST", "/v1/plugin-trust/policy") => {
+            set_plugin_trust_policy(&request.body, framework_registry)
+        }
+        ("POST", "/v1/plugin-trust/users") => trust_plugin_user(&request.body, framework_registry),
+        ("POST", "/v1/plugin-trust/users/remove") => {
+            untrust_plugin_user(&request.body, framework_registry)
+        }
+        ("GET", "/v1/publisher-identity") => list_publisher_identity(control_plane_root),
+        ("POST", "/v1/publisher-identity/register") => {
+            register_publisher_identity(&request.body, control_plane_root)
+        }
+        ("POST", "/v1/publisher-identity/rotate") => {
+            rotate_publisher_identity(&request.body, control_plane_root)
+        }
+        ("POST", "/v1/publisher-identity/private-key") => {
+            reveal_publisher_private_key(control_plane_root)
+        }
         ("GET", "/v1/plugin-credentials") => list_plugin_credentials(control_plane_root),
         ("POST", "/v1/plugin-credentials") => {
             save_plugin_credential(&request.body, control_plane_root)
         }
         ("POST", "/v1/plugin-credentials/delete") => {
             delete_plugin_credential(&request.body, control_plane_root)
+        }
+        ("POST", "/v1/plugin-credentials/reveal") => {
+            reveal_plugin_credential(&request.body, control_plane_root)
         }
         ("POST", "/v1/frameworks/install") => {
             install_framework_package(&request.body, framework_registry)
@@ -2148,9 +2394,51 @@ fn route(
             framework_registry,
             control_plane_root,
             hook_bridge,
+            bundled_art_sha256_allowlist,
         ),
         ("POST", "/v1/arts/create") => create_authored_art(
             &request.body,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+        ),
+        ("GET", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/management").is_some() =>
+        {
+            get_art_management(
+                &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/management")
+                    .expect("checked path"),
+                tool_registry,
+                control_plane_root,
+            )
+        }
+        ("PUT", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/settings").is_some() =>
+        {
+            put_art_management_settings(
+                &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/settings")
+                    .expect("checked path"),
+                &request.body,
+                tool_registry,
+                control_plane_root,
+                hook_bridge,
+            )
+        }
+        ("POST", path)
+            if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/update").is_some() =>
+        {
+            update_art_version(
+                &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/update")
+                    .expect("checked path"),
+                &request.body,
+                tool_registry,
+                framework_registry,
+                control_plane_root,
+                hook_bridge,
+            )
+        }
+        ("POST", "/v1/arts/auto-update") => auto_update_arts(
             tool_registry,
             framework_registry,
             control_plane_root,
@@ -2296,12 +2584,14 @@ fn route(
             run_store,
             control_plane_root,
         ),
-        ("GET", "/v1/artloom-compat/arts") => list_artloom_compat_arts("list_arts", tool_registry),
+        ("GET", "/v1/artloom-compat/arts") => {
+            list_artloom_compat_arts("list_arts", tool_registry, workflow_store)
+        }
         ("GET", "/v1/artloom-compat/arts/enabled") => {
-            list_enabled_artloom_compat_arts(tool_registry)
+            list_enabled_artloom_compat_arts(tool_registry, workflow_store)
         }
         ("GET", "/v1/artloom-compat/user-arts") => {
-            list_artloom_compat_arts("get_user_arts", tool_registry)
+            list_artloom_compat_arts("get_user_arts", tool_registry, workflow_store)
         }
         ("POST", "/v1/artloom-compat/arts/sync") => {
             sync_artloom_compat_arts(&request.body, tool_registry, hook_bridge)
@@ -2316,6 +2606,7 @@ fn route(
             get_artloom_compat_art(
                 path_id(path, "/v1/artloom-compat/arts/").expect("checked path"),
                 tool_registry,
+                workflow_store,
             )
         }
         ("POST", path)
@@ -2351,26 +2642,10 @@ fn route(
                 hook_bridge,
             )
         }
-        ("GET", "/v1/python-arts/engine/status") => python_engine_status(),
-        ("POST", "/v1/artloom-compat/python/execute-art") => {
-            artloom_compat_execute_python_art(&request.body)
+        ("GET", "/v1/python-arts/engine/status") => python_engine_status(framework_registry),
+        ("POST", "/v1/python-arts/shader/prefetch") => {
+            prefetch_python_art_shader(&request.body, tool_registry, workflow_store)
         }
-        ("POST", "/v1/artloom-compat/python/process-image") => {
-            artloom_compat_python_process_image(&request.body)
-        }
-        ("GET", "/v1/artloom-compat/python/installed-arts") => {
-            list_artloom_compat_installed_python_arts()
-        }
-        ("POST", "/v1/artloom-compat/python/read-art-json") => {
-            artloom_compat_read_art_json(&request.body)
-        }
-        ("POST", "/v1/artloom-compat/python/read-python-file") => {
-            artloom_compat_read_python_file(&request.body)
-        }
-        ("POST", "/v1/artloom-compat/python/check-art-json-nearby") => {
-            artloom_compat_check_art_json_nearby(&request.body)
-        }
-        ("POST", "/v1/python-arts/shader/prefetch") => prefetch_python_art_shader(&request.body),
         ("GET", "/v1/python-arts") => list_python_arts(),
         ("GET", path) if path_id(path, "/v1/python-arts/").is_some() => {
             get_python_art(path_id(path, "/v1/python-arts/").expect("checked path"))
@@ -2410,7 +2685,10 @@ fn route(
         ),
         ("GET", "/v1/artloom-compat/settings") => get_artloom_compat_settings(artloom_settings),
         ("PUT", "/v1/artloom-compat/settings") => {
-            put_artloom_compat_settings(&request.body, artloom_settings)
+            put_artloom_compat_settings(&request.body, artloom_settings, hook_bridge)
+        }
+        ("POST", "/v1/artloom-compat/hook/cache-control") => {
+            broadcast_hook_cache_control(&request.body, hook_bridge)
         }
         ("GET", "/v1/artloom-compat/shortcuts") => get_artloom_compat_shortcuts(artloom_settings),
         ("PUT", path) if path_id(path, "/v1/artloom-compat/shortcuts/").is_some() => {
@@ -2507,6 +2785,31 @@ fn route(
             workflow_store,
         ),
         ("GET", "/v1/hook-bridge/status") => hook_bridge_status(hook_bridge),
+        ("GET", "/v1/devices") => list_managed_devices(device_registry, hook_bridge),
+        ("POST", "/v1/devices") => {
+            add_managed_device(&request.body, "approved", device_registry, hook_bridge)
+        }
+        ("POST", "/v1/devices/requests") => {
+            add_managed_device(&request.body, "pending", device_registry, hook_bridge)
+        }
+        ("PUT", path) if path_id(path, "/v1/devices/").is_some() => update_managed_device(
+            path_id(path, "/v1/devices/").expect("checked path"),
+            &request.body,
+            device_registry,
+            hook_bridge,
+        ),
+        ("POST", path) if path_id_with_suffix(path, "/v1/devices/", "/approve").is_some() => {
+            approve_managed_device(
+                path_id_with_suffix(path, "/v1/devices/", "/approve").expect("checked path"),
+                device_registry,
+                hook_bridge,
+            )
+        }
+        ("DELETE", path) if path_id(path, "/v1/devices/").is_some() => remove_managed_device(
+            path_id(path, "/v1/devices/").expect("checked path"),
+            device_registry,
+            hook_bridge,
+        ),
         ("GET", "/v1/hook-bridge/session") => hook_bridge_session(hook_bridge),
         ("GET", "/v1/hook-bridge/canvas") => hook_canvas_snapshot(),
         ("GET", "/v1/hook-bridge/canvas/workflows") => list_canvas_workflows(canvas_workflow_root),
@@ -2587,6 +2890,205 @@ fn route(
             }),
         ),
     }
+}
+
+fn managed_devices_response(
+    device_registry: &SharedDeviceRegistryStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let connected_clients = hook_bridge
+        .lock()
+        .map_err(|_| anyhow::anyhow!("hook bridge state is unavailable"))?
+        .connected_clients
+        .load(Ordering::SeqCst);
+    let store = device_registry
+        .lock()
+        .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+    let mut devices = Vec::new();
+    let mut pending = Vec::new();
+    for device in store.devices.values().cloned() {
+        if device.approval == "pending" {
+            pending.push(device);
+        } else {
+            devices.push(device);
+        }
+    }
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "devices": devices,
+            "pending": pending,
+            "connectedClients": connected_clients,
+        }))?,
+    ))
+}
+
+fn list_managed_devices(
+    device_registry: &SharedDeviceRegistryStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    managed_devices_response(device_registry, hook_bridge)
+}
+
+fn add_managed_device(
+    body: &str,
+    approval: &str,
+    device_registry: &SharedDeviceRegistryStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let input = match serde_json::from_str::<ManagedDeviceInput>(body) {
+        Ok(input) => input,
+        Err(error) => return invalid_request(format!("invalid device payload: {error}")),
+    };
+    let name = input.name.trim();
+    let address = input.address.trim();
+    if name.is_empty() || name.len() > 80 {
+        return invalid_request("device name must contain 1 to 80 characters");
+    }
+    if address.is_empty() || address.len() > 240 {
+        return invalid_request("device address must contain 1 to 240 characters");
+    }
+
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let id = format!(
+        "device-{created_at:x}-{:x}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            & 0xfffff
+    );
+    {
+        let mut store = device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        store.devices.insert(
+            id.clone(),
+            ManagedDevice {
+                id,
+                name: name.to_owned(),
+                kind: input.kind,
+                address: address.to_owned(),
+                approval: approval.to_owned(),
+                created_at,
+                last_seen_at: None,
+                is_local: false,
+                enabled: true,
+            },
+        );
+        if let Err(error) = store.persist() {
+            store
+                .devices
+                .retain(|_, device| device.created_at != created_at);
+            return Err(error);
+        }
+    }
+    managed_devices_response(device_registry, hook_bridge)
+}
+
+fn approve_managed_device(
+    device_id: &str,
+    device_registry: &SharedDeviceRegistryStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    {
+        let mut store = device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        let Some(device) = store.devices.get_mut(device_id) else {
+            return structured_error(
+                404,
+                json!({"code": "device_not_found", "message": "device was not found"}),
+            );
+        };
+        let previous = device.approval.clone();
+        device.approval = "approved".to_owned();
+        if let Err(error) = store.persist() {
+            if let Some(device) = store.devices.get_mut(device_id) {
+                device.approval = previous;
+            }
+            return Err(error);
+        }
+    }
+    managed_devices_response(device_registry, hook_bridge)
+}
+
+fn update_managed_device(
+    device_id: &str,
+    body: &str,
+    device_registry: &SharedDeviceRegistryStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let input = match serde_json::from_str::<ManagedDeviceUpdate>(body) {
+        Ok(input) => input,
+        Err(error) => return invalid_request(format!("invalid device update: {error}")),
+    };
+    let name = input.name.trim();
+    let address = input.address.trim();
+    if name.is_empty() || name.len() > 80 {
+        return invalid_request("device name must contain 1 to 80 characters");
+    }
+    if address.is_empty() || address.len() > 240 {
+        return invalid_request("device address must contain 1 to 240 characters");
+    }
+    {
+        let mut store = device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        let Some(previous) = store.devices.get(device_id).cloned() else {
+            return structured_error(
+                404,
+                json!({"code": "device_not_found", "message": "device was not found"}),
+            );
+        };
+        if previous.is_local {
+            return invalid_request("the Loom host device cannot be edited or disabled");
+        }
+        if let Some(device) = store.devices.get_mut(device_id) {
+            device.name = name.to_owned();
+            device.kind = input.kind;
+            device.address = address.to_owned();
+            device.enabled = input.enabled;
+        }
+        if let Err(error) = store.persist() {
+            store.devices.insert(device_id.to_owned(), previous);
+            return Err(error);
+        }
+    }
+    managed_devices_response(device_registry, hook_bridge)
+}
+
+fn remove_managed_device(
+    device_id: &str,
+    device_registry: &SharedDeviceRegistryStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    {
+        let mut store = device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        if store
+            .devices
+            .get(device_id)
+            .is_some_and(|device| device.is_local)
+        {
+            return invalid_request("the Loom host device cannot be removed");
+        }
+        let Some(removed) = store.devices.remove(device_id) else {
+            return structured_error(
+                404,
+                json!({"code": "device_not_found", "message": "device was not found"}),
+            );
+        };
+        if let Err(error) = store.persist() {
+            store.devices.insert(device_id.to_owned(), removed);
+            return Err(error);
+        }
+    }
+    managed_devices_response(device_registry, hook_bridge)
 }
 
 fn configuration_claim(
@@ -3502,6 +4004,8 @@ fn list_tools(tool_registry: &ToolRegistry) -> Result<(u16, String)> {
 struct InstallArtRequest {
     /// The art package zip, base64-encoded (data URL or raw base64).
     zip_base64: String,
+    #[serde(default)]
+    bundled_catalog: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3510,6 +4014,108 @@ struct CreateAuthoredArtRequest {
     tool: ToolDefinition,
     #[serde(default)]
     runtime: Option<ArtRuntimeManifest>,
+    #[serde(default)]
+    files: Vec<CreateAuthoredArtFile>,
+    #[serde(default)]
+    source_directory: Option<String>,
+    #[serde(default)]
+    source_directory_target: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAuthoredArtFile {
+    path: String,
+    content: String,
+}
+
+fn collect_authored_art_files(
+    request: &CreateAuthoredArtRequest,
+) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
+    const MAX_AUTHORED_FILES: usize = 4096;
+    const MAX_AUTHORED_BYTES: u64 = 32 * 1024 * 1024;
+
+    let mut files = request
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.content.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    let mut total_bytes = files
+        .iter()
+        .map(|(_, content)| content.len() as u64)
+        .sum::<u64>();
+    let Some(source_directory) = request
+        .source_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        if files.len() > MAX_AUTHORED_FILES || total_bytes > MAX_AUTHORED_BYTES {
+            return Err("authored Art resources exceed the package limits".to_owned());
+        }
+        return Ok(files);
+    };
+
+    let source_root = fs::canonicalize(source_directory)
+        .map_err(|error| format!("cannot resolve authored Art source directory: {error}"))?;
+    if !source_root.is_dir() {
+        return Err("authored Art sourceDirectory must be a directory".to_owned());
+    }
+    let target = request
+        .source_directory_target
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("runtime/plugin")
+        .replace('\\', "/");
+    if target.starts_with('/')
+        || target.contains(':')
+        || target
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "..")
+    {
+        return Err("authored Art sourceDirectoryTarget must be a safe relative path".to_owned());
+    }
+
+    let mut pending = vec![source_root.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("cannot read authored Art source directory: {error}"))?
+        {
+            let entry =
+                entry.map_err(|error| format!("cannot read authored Art source: {error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("cannot inspect authored Art source: {error}"))?;
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "authored Art source cannot contain symbolic links: {}",
+                    entry.path().display()
+                ));
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&source_root)
+                .map_err(|error| format!("cannot relativize authored Art source: {error}"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let content = fs::read(entry.path())
+                .map_err(|error| format!("cannot read authored Art source file: {error}"))?;
+            total_bytes = total_bytes.saturating_add(content.len() as u64);
+            files.push((format!("{target}/{relative}"), content));
+            if files.len() > MAX_AUTHORED_FILES || total_bytes > MAX_AUTHORED_BYTES {
+                return Err("authored Art resources exceed the package limits".to_owned());
+            }
+        }
+    }
+    Ok(files)
 }
 
 fn create_authored_art(
@@ -3528,15 +4134,20 @@ fn create_authored_art(
     {
         return invalid_request("framework_art authoring requires an art runtime manifest");
     }
+    let files = match collect_authored_art_files(&request) {
+        Ok(files) => files,
+        Err(error) => return invalid_request(error),
+    };
     let qualified_id = request.tool.qualified_id();
     let zip = match loom_tool_registry::install::build_authored_art_package_zip(
         &request.tool,
         request.runtime.as_ref(),
+        &files,
     ) {
         Ok(zip) => zip,
         Err(error) => return invalid_request(error.to_string()),
     };
-    match loom_tool_registry::install::install_art_from_zip(
+    match loom_tool_registry::install::install_authored_art_from_zip(
         &zip,
         control_plane_root,
         framework_registry,
@@ -3581,6 +4192,7 @@ fn install_art(
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
+    bundled_art_sha256_allowlist: &BTreeSet<String>,
 ) -> Result<(u16, String)> {
     let request = match serde_json::from_str::<InstallArtRequest>(body) {
         Ok(request) => request,
@@ -3590,12 +4202,32 @@ fn install_art(
         Ok(bytes) => bytes,
         Err(error) => return invalid_request(format!("decode art package: {error}")),
     };
-    match loom_tool_registry::install::install_art_from_zip(
-        &zip_bytes,
-        control_plane_root,
-        framework_registry,
-        tool_registry,
-    ) {
+    let result = if request.bundled_catalog {
+        let package_sha256 = sha256_bytes(&zip_bytes);
+        if !bundled_art_sha256_allowlist.contains(&package_sha256) {
+            return structured_error(
+                403,
+                json!({
+                    "code": "bundled_art_not_allowlisted",
+                    "message": "bundled Art package digest is not authorized by the daemon launch catalog",
+                }),
+            );
+        }
+        loom_tool_registry::install::install_bundled_art_from_zip(
+            &zip_bytes,
+            control_plane_root,
+            framework_registry,
+            tool_registry,
+        )
+    } else {
+        loom_tool_registry::install::install_art_from_zip(
+            &zip_bytes,
+            control_plane_root,
+            framework_registry,
+            tool_registry,
+        )
+    };
+    match result {
         Ok(report) => {
             let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "report": report }))?))
@@ -3658,6 +4290,7 @@ fn uninstall_art(
         tool_registry,
     ) {
         Ok(()) => {
+            let _ = ArtSettingsStore::new(control_plane_root).delete(art_id);
             let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
             Ok((
                 200,
@@ -3668,6 +4301,736 @@ fn uninstall_art(
             400,
             json!({ "code": "art_uninstall_failed", "message": error.to_string() }),
         ),
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtManagementParameter {
+    id: String,
+    label: String,
+    parameter_type: String,
+    required: bool,
+    secret: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimum: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PutArtManagementSettingsRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    auto_update: Option<bool>,
+    #[serde(default)]
+    defaults: Option<BTreeMap<String, Value>>,
+    #[serde(default)]
+    value_bindings: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    credential_bindings: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    secret_values: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateArtVersionRequest {
+    version: String,
+}
+
+fn get_art_management(
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    match build_art_management_response(art_id, tool_registry, control_plane_root) {
+        Ok(response) => Ok((200, serde_json::to_string(&response)?)),
+        Err((status, code, message)) => {
+            structured_error(status, json!({ "code": code, "message": message }))
+        }
+    }
+}
+
+fn build_art_management_response(
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
+) -> std::result::Result<Value, (u16, &'static str, String)> {
+    let tool = tool_registry
+        .get_tool(art_id)
+        .map_err(|error| (500, "tool_registry", error.to_string()))?
+        .ok_or_else(|| (404, "tool_not_found", format!("Art `{art_id}` 不存在")))?;
+    let identity = tool.qualified_id();
+    let mut settings = ArtSettingsStore::new(control_plane_root)
+        .get(&identity)
+        .map_err(|error| (500, "art_settings", error.to_string()))?;
+    let secret_parameters = art_secret_parameter_ids(&tool);
+    settings
+        .defaults
+        .retain(|id, _| !secret_parameters.contains(id));
+    let installed_versions = loom_tool_registry::install::list_installed_art_versions(
+        control_plane_root,
+        &identity,
+        tool_registry,
+    )
+    .unwrap_or_else(|_| {
+        vec![loom_tool_registry::install::ArtInstalledVersion {
+            version: art_version_from_tool(&tool),
+            digest: String::new(),
+            active: true,
+        }]
+    });
+    let current_version = installed_versions
+        .iter()
+        .find(|version| version.active)
+        .map(|version| version.version.clone())
+        .unwrap_or_else(|| art_version_from_tool(&tool));
+    let source = effective_art_update_source(&tool, &settings);
+    let remote_entry = source.as_ref().and_then(|source| {
+        fetch_remote_art_store_catalog(&source.store)
+            .ok()?
+            .arts
+            .into_iter()
+            .find(|entry| remote_art_entry_matches(entry, source))
+    });
+    let mut available_versions = installed_versions
+        .iter()
+        .map(|version| version.version.clone())
+        .collect::<Vec<_>>();
+    if let Some(entry) = &remote_entry {
+        available_versions.extend(entry.versions.iter().map(|version| version.version.clone()));
+        if !entry.latest_version.is_empty() {
+            available_versions.push(entry.latest_version.clone());
+        }
+    }
+    sort_versions(&mut available_versions);
+    available_versions.dedup();
+    let highest_version = available_versions
+        .last()
+        .cloned()
+        .unwrap_or_else(|| current_version.clone());
+    let available_credentials = CredentialStore::new(control_plane_root)
+        .summaries()
+        .map_err(|error| (500, "credential_store", error.to_string()))?
+        .into_iter()
+        .filter(|credential| {
+            credential.scope.framework_id.is_none()
+                && credential
+                    .scope
+                    .art_id
+                    .as_deref()
+                    .is_none_or(|art_id| art_id == identity.as_str())
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "artId": identity,
+        "name": tool.name,
+        "description": tool.description,
+        "locallyAuthored": art_is_locally_authored(&tool),
+        "canEditIdentity": art_is_locally_authored(&tool),
+        "currentVersion": current_version,
+        "highestVersion": highest_version,
+        "autoUpdate": settings.auto_update,
+        "installedVersions": installed_versions,
+        "availableVersions": available_versions,
+        "parameters": art_management_parameters(&tool),
+        "defaults": settings.defaults,
+        "valueBindings": settings.value_bindings,
+        "credentialBindings": settings.credential_bindings,
+        "availableCredentials": available_credentials,
+        "updateAvailable": version_is_newer(&highest_version, &current_version),
+    }))
+}
+
+fn put_art_management_settings(
+    art_id: &str,
+    body: &str,
+    tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request: PutArtManagementSettingsRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let mut tool = match tool_registry.get_tool(art_id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({ "code": "tool_not_found", "message": format!("Art `{art_id}` 不存在") }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let identity = tool.qualified_id();
+    let locally_authored = art_is_locally_authored(&tool);
+    if !locally_authored
+        && (request
+            .name
+            .as_deref()
+            .is_some_and(|name| name.trim() != tool.name)
+            || request
+                .description
+                .as_deref()
+                .is_some_and(|description| description != tool.description))
+    {
+        return structured_error(
+            403,
+            json!({
+                "code": "art_identity_read_only",
+                "message": "其他发布者的 Art 名称和描述不可修改",
+            }),
+        );
+    }
+    let store = ArtSettingsStore::new(control_plane_root);
+    let mut settings = match store.get(&identity) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "art_settings", "message": error.to_string() }),
+            )
+        }
+    };
+    let previous_bindings = settings.credential_bindings.clone();
+    if settings.source.is_none() {
+        settings.source = effective_art_update_source(&tool, &settings);
+    }
+    if let Some(auto_update) = request.auto_update {
+        settings.auto_update = auto_update;
+    }
+    let secret_parameters = art_secret_parameter_ids(&tool);
+    settings
+        .defaults
+        .retain(|id, _| !secret_parameters.contains(id));
+    if let Some(defaults) = request.defaults {
+        if let Some(secret) = defaults
+            .keys()
+            .find(|id| secret_parameters.contains(id.as_str()))
+        {
+            return invalid_request(format!(
+                "机密参数 `{secret}` 必须引用机密或使用专用机密输入，不能保存到普通默认值"
+            ));
+        }
+        settings.defaults = defaults;
+    }
+    if let Some(bindings) = request.value_bindings {
+        settings.value_bindings = bindings;
+    }
+    if let Some(bindings) = request.credential_bindings {
+        settings.credential_bindings = bindings;
+    }
+    for (alias, value) in &request.secret_values {
+        if !secret_parameters.contains(alias) {
+            return invalid_request(format!("Art 不包含机密参数 `{alias}`"));
+        }
+        if value.trim().is_empty() {
+            return invalid_request(format!("机密参数 `{alias}` 的值不能为空"));
+        }
+    }
+    let pending_art_credentials = request
+        .secret_values
+        .keys()
+        .map(|alias| manual_art_credential_name(&identity, alias))
+        .collect::<BTreeSet<_>>();
+    for (alias, credential) in request
+        .secret_values
+        .keys()
+        .map(|alias| (alias.clone(), manual_art_credential_name(&identity, alias)))
+    {
+        settings.credential_bindings.insert(alias, credential);
+    }
+    if locally_authored {
+        if let Some(name) = request.name {
+            let name = name.trim();
+            if name.is_empty() {
+                return invalid_request("Art 名称不能为空");
+            }
+            settings.name = Some(name.to_owned());
+        }
+        if let Some(description) = request.description {
+            settings.description = Some(description);
+        }
+    }
+    if let Err(message) = validate_art_management_settings(
+        &tool,
+        &settings,
+        control_plane_root,
+        &pending_art_credentials,
+    ) {
+        return invalid_request(message);
+    }
+    let credential_store = CredentialStore::new(control_plane_root);
+    for (alias, value) in request.secret_values {
+        let name = manual_art_credential_name(&identity, &alias);
+        if let Err(error) = credential_store.upsert(CredentialInput {
+            name,
+            value,
+            value_type: CredentialValueType::String,
+            scope: CredentialScope {
+                framework_id: None,
+                art_id: Some(identity.clone()),
+            },
+            expires_at: None,
+        }) {
+            return structured_error(
+                400,
+                json!({ "code": "credential_store_failed", "message": error.to_string() }),
+            );
+        }
+    }
+    if let Err(error) = store.save(&identity, settings.clone()) {
+        return structured_error(
+            500,
+            json!({ "code": "art_settings", "message": error.to_string() }),
+        );
+    }
+    apply_settings_metadata(&mut tool, &settings);
+    if let Err(error) = tool_registry.save_tool(tool) {
+        return tool_registry_error_response(error);
+    }
+    for parameter_id in &secret_parameters {
+        let old_name = previous_bindings.get(parameter_id);
+        let expected_name = manual_art_credential_name(&identity, parameter_id);
+        if old_name.is_some_and(|name| name == &expected_name)
+            && settings.credential_bindings.get(parameter_id) != Some(&expected_name)
+        {
+            let _ = credential_store.delete(
+                &expected_name,
+                &CredentialScope {
+                    framework_id: None,
+                    art_id: Some(identity.clone()),
+                },
+            );
+        }
+    }
+    let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+    get_art_management(&identity, tool_registry, control_plane_root)
+}
+
+fn validate_art_management_settings(
+    tool: &ToolDefinition,
+    settings: &ArtUserSettings,
+    control_plane_root: &Path,
+    pending_credentials: &BTreeSet<String>,
+) -> std::result::Result<(), String> {
+    let parameters = art_parameter_definitions(tool);
+    let parameter_ids = parameters
+        .iter()
+        .map(|parameter| parameter.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(unknown) = settings
+        .defaults
+        .keys()
+        .chain(settings.value_bindings.keys())
+        .chain(settings.credential_bindings.keys())
+        .find(|id| !parameter_ids.contains(id.as_str()))
+    {
+        return Err(format!("Art 不包含参数 `{unknown}`"));
+    }
+    if let Some(overlap) = settings
+        .defaults
+        .keys()
+        .find(|id| settings.value_bindings.contains_key(*id))
+    {
+        return Err(format!("参数 `{overlap}` 不能同时保存默认值和全局值引用"));
+    }
+    for parameter in &parameters {
+        if parameter.secret {
+            if settings.defaults.contains_key(&parameter.id) {
+                return Err(format!(
+                    "机密参数 `{}` 不能保存到普通默认值",
+                    parameter.label
+                ));
+            }
+            if settings.value_bindings.contains_key(&parameter.id) {
+                return Err(format!("机密参数 `{}` 必须使用机密引用", parameter.label));
+            }
+        } else if settings.credential_bindings.contains_key(&parameter.id) {
+            return Err(format!("普通参数 `{}` 必须使用全局值引用", parameter.label));
+        }
+        if let Some(value) = settings.defaults.get(&parameter.id) {
+            validate_parameter_value(parameter, value)?;
+        }
+    }
+
+    let resolved_values = CredentialStore::new(control_plane_root)
+        .global_values_for_bindings(&settings.value_bindings)
+        .map_err(|error| error.to_string())?;
+    for (id, resolved) in &resolved_values {
+        let parameter = parameters
+            .iter()
+            .find(|parameter| parameter.id == *id)
+            .ok_or_else(|| format!("Art 不包含参数 `{id}`"))?;
+        if !credential_value_type_matches_parameter(parameter, resolved.value_type) {
+            return Err(format!(
+                "全局值 `{}` 的类型与参数 `{}` 不匹配",
+                settings
+                    .value_bindings
+                    .get(id)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                parameter.label
+            ));
+        }
+        validate_parameter_value(parameter, &resolved.value)?;
+    }
+
+    for parameter in &parameters {
+        if parameter.required {
+            if parameter.secret {
+                if !settings.credential_bindings.contains_key(&parameter.id) {
+                    return Err(format!("必须为 `{}` 引用机密或直接填写", parameter.label));
+                }
+                continue;
+            }
+            if settings.value_bindings.contains_key(&parameter.id) {
+                continue;
+            }
+            let value = settings
+                .defaults
+                .get(&parameter.id)
+                .or(parameter.default.as_ref());
+            if !value.is_some_and(art_setting_value_present) {
+                return Err(format!("必须填写参数 `{}`", parameter.label));
+            }
+        }
+    }
+    let identity = tool.qualified_id();
+    let available_credentials = CredentialStore::new(control_plane_root)
+        .summaries()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|credential| {
+            credential.scope.framework_id.is_none()
+                && credential
+                    .scope
+                    .art_id
+                    .as_deref()
+                    .is_none_or(|art_id| art_id == identity.as_str())
+        })
+        .collect::<Vec<_>>();
+    for (alias, credential_name) in &settings.credential_bindings {
+        let parameter = parameters
+            .iter()
+            .find(|parameter| parameter.id == *alias)
+            .ok_or_else(|| format!("Art 不包含参数 `{alias}`"))?;
+        if !parameter.secret {
+            return Err(format!("普通参数 `{}` 不能使用机密引用", parameter.label));
+        }
+        if pending_credentials.contains(credential_name) {
+            continue;
+        }
+        let credential = available_credentials
+            .iter()
+            .filter(|credential| credential.name == *credential_name)
+            .max_by_key(|credential| usize::from(credential.scope.art_id.is_some()))
+            .ok_or_else(|| format!("机密 `{credential_name}` 不存在或不适用于当前 Art"))?;
+        if credential.value_type != CredentialValueType::String {
+            return Err(format!("机密 `{credential_name}` 必须是文本类型"));
+        }
+    }
+    Ok(())
+}
+
+fn art_management_parameter(parameter: ArtParameterDefinition) -> ArtManagementParameter {
+    ArtManagementParameter {
+        id: parameter.id,
+        label: parameter.label,
+        parameter_type: parameter.parameter_type,
+        required: parameter.required,
+        secret: parameter.secret,
+        default: parameter.default,
+        options: parameter.options,
+        minimum: parameter.minimum,
+        maximum: parameter.maximum,
+        step: parameter.step,
+    }
+}
+
+fn manual_art_credential_name(art_id: &str, alias: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(art_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(alias.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("loom-art-secret-{}", &digest[..24])
+}
+
+fn update_art_version(
+    art_id: &str,
+    body: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request: UpdateArtVersionRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    if semver::Version::parse(request.version.trim()).is_err() {
+        return invalid_request("目标版本必须是有效的 SemVer");
+    }
+    let tool = match tool_registry.get_tool(art_id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({ "code": "tool_not_found", "message": format!("Art `{art_id}` 不存在") }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let identity = tool.qualified_id();
+    let settings_store = ArtSettingsStore::new(control_plane_root);
+    let settings = match settings_store.get(&identity) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "art_settings", "message": error.to_string() }),
+            )
+        }
+    };
+    let target = request.version.trim().to_owned();
+    let source = effective_art_update_source(&tool, &settings);
+    let remote = source.as_ref().and_then(|source| {
+        let catalog = fetch_remote_art_store_catalog(&source.store).ok()?;
+        let entry = catalog
+            .arts
+            .into_iter()
+            .find(|entry| remote_art_entry_matches(entry, source))?;
+        entry
+            .versions
+            .into_iter()
+            .find(|version| version.version == target)
+            .map(|version| (source.clone(), version.sha256))
+    });
+    let result = if let Some((source, sha256)) = remote {
+        install_art_from_store_request(
+            &InstallFromStoreRequest {
+                art_id: source.art_id,
+                version: Some(target.clone()),
+                store: Some(source.store),
+                sha256: (!sha256.is_empty()).then_some(sha256),
+            },
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            Some(&identity),
+        )
+        .map(|_| ())
+    } else {
+        loom_tool_registry::install::activate_art_version(
+            control_plane_root,
+            &identity,
+            &target,
+            tool_registry,
+            framework_registry,
+        )
+        .map(|_| ())
+    };
+    if let Err(error) = result {
+        return structured_error(
+            409,
+            json!({ "code": "art_update_failed", "message": error.to_string() }),
+        );
+    }
+    if let Ok(Some(mut active)) = tool_registry.get_tool(&identity) {
+        apply_settings_metadata(&mut active, &settings);
+        if let Err(error) = tool_registry.save_tool(active) {
+            return tool_registry_error_response(error);
+        }
+    }
+    let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+    get_art_management(&identity, tool_registry, control_plane_root)
+}
+
+fn auto_update_arts(
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let mut stored_settings = match ArtSettingsStore::new(control_plane_root).list() {
+        Ok(settings) => settings,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "art_settings", "message": error.to_string() }),
+            )
+        }
+    };
+    let mut updated = Vec::new();
+    let mut errors = Vec::new();
+    let tools = match tool_registry.list_tools() {
+        Ok(tools) => tools,
+        Err(error) => return tool_registry_error_response(error),
+    };
+    for tool in tools {
+        let identity = tool.qualified_id();
+        let settings = stored_settings.remove(&identity).unwrap_or_default();
+        if !settings.auto_update {
+            continue;
+        }
+        let Some(source) = effective_art_update_source(&tool, &settings) else {
+            continue;
+        };
+        let current = art_version_from_tool(&tool);
+        let remote = match fetch_remote_art_store_catalog(&source.store) {
+            Ok(catalog) => catalog
+                .arts
+                .into_iter()
+                .find(|entry| remote_art_entry_matches(entry, &source)),
+            Err(error) => {
+                errors.push(json!({ "artId": identity, "message": error }));
+                continue;
+            }
+        };
+        let Some(remote) = remote else {
+            continue;
+        };
+        if !version_is_newer(&remote.latest_version, &current) {
+            continue;
+        }
+        let digest = remote
+            .versions
+            .iter()
+            .find(|version| version.version == remote.latest_version)
+            .map(|version| version.sha256.clone())
+            .filter(|digest| !digest.is_empty());
+        let request = InstallFromStoreRequest {
+            art_id: source.art_id,
+            version: Some(remote.latest_version.clone()),
+            store: Some(source.store),
+            sha256: digest,
+        };
+        match install_art_from_store_request(
+            &request,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            Some(&identity),
+        ) {
+            Ok(_) => updated.push(json!({
+                "artId": identity,
+                "from": current,
+                "to": remote.latest_version,
+            })),
+            Err(error) => errors.push(json!({ "artId": identity, "message": error.to_string() })),
+        }
+    }
+    if !updated.is_empty() {
+        let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+    }
+    Ok((
+        200,
+        serde_json::to_string(&json!({ "updated": updated, "errors": errors }))?,
+    ))
+}
+
+fn art_management_parameters(tool: &ToolDefinition) -> Vec<ArtManagementParameter> {
+    art_parameter_definitions(tool)
+        .into_iter()
+        .map(art_management_parameter)
+        .collect()
+}
+
+fn art_secret_parameter_ids(tool: &ToolDefinition) -> std::collections::BTreeSet<String> {
+    art_management_parameters(tool)
+        .into_iter()
+        .filter(|parameter| parameter.secret)
+        .map(|parameter| parameter.id)
+        .collect()
+}
+
+fn art_setting_value_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.trim().is_empty(),
+        _ => true,
+    }
+}
+
+fn art_version_from_tool(tool: &ToolDefinition) -> String {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .and_then(|package| package.get("version"))
+        .or_else(|| {
+            tool.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("packageSecurity"))
+                .and_then(|security| security.get("version"))
+        })
+        .and_then(Value::as_str)
+        .unwrap_or("0.0.0")
+        .to_owned()
+}
+
+fn effective_art_update_source(
+    tool: &ToolDefinition,
+    settings: &ArtUserSettings,
+) -> Option<ArtUpdateSource> {
+    if let Some(mut source) = settings.source.clone() {
+        source
+            .qualified_id
+            .get_or_insert_with(|| tool.qualified_id());
+        return Some(source);
+    }
+    if tool.publisher_identity().is_none() {
+        return None;
+    }
+    resolve_art_store_url(None).map(|store| ArtUpdateSource {
+        store,
+        art_id: tool.id.clone(),
+        qualified_id: Some(tool.qualified_id()),
+    })
+}
+
+fn remote_art_entry_matches(entry: &RemoteArtStoreEntry, source: &ArtUpdateSource) -> bool {
+    let remote_identity = if entry.qualified_id.trim().is_empty() {
+        entry.id.as_str()
+    } else {
+        entry.qualified_id.as_str()
+    };
+    entry.id == source.art_id
+        && source
+            .qualified_id
+            .as_deref()
+            .is_none_or(|identity| identity == remote_identity)
+}
+
+fn sort_versions(versions: &mut [String]) {
+    versions.sort_by(|left, right| {
+        match (semver::Version::parse(left), semver::Version::parse(right)) {
+            (Ok(left), Ok(right)) => left.cmp(&right),
+            _ => left.cmp(right),
+        }
+    });
+}
+
+fn version_is_newer(candidate: &str, current: &str) -> bool {
+    match (
+        semver::Version::parse(candidate),
+        semver::Version::parse(current),
+    ) {
+        (Ok(candidate), Ok(current)) => candidate > current,
+        _ => candidate > current,
     }
 }
 
@@ -3705,6 +5068,318 @@ fn art_store_client() -> Result<reqwest::blocking::Client> {
     .map_err(|error| anyhow::anyhow!("build art store client: {error}"))
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteArtStoreCatalog {
+    #[serde(default)]
+    arts: Vec<RemoteArtStoreEntry>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteArtStoreEntry {
+    id: String,
+    #[serde(default)]
+    qualified_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    global_id: Option<String>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    framework: String,
+    #[serde(default)]
+    latest_version: String,
+    #[serde(default)]
+    versions: Vec<RemoteArtStoreVersion>,
+    #[serde(default)]
+    official: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteArtStoreVersion {
+    version: String,
+    #[serde(default)]
+    sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RemotePublisherKeyStatus {
+    Active,
+    Retired,
+    Revoked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePublisherKey {
+    key_id: String,
+    public_key: String,
+    status: RemotePublisherKeyStatus,
+    #[serde(default)]
+    created_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePublisher {
+    user_id: String,
+    #[serde(default)]
+    keys: Vec<RemotePublisherKey>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePublisherResponse {
+    publisher: RemotePublisher,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalPublisherIdentity {
+    #[serde(default = "publisher_identity_schema_version")]
+    schema_version: u32,
+    user_id: String,
+    current_key_id: String,
+    public_key: String,
+}
+
+const fn publisher_identity_schema_version() -> u32 {
+    1
+}
+
+fn publisher_identity_path(control_plane_root: &Path) -> PathBuf {
+    control_plane_root.join(PUBLISHER_IDENTITY_FILE)
+}
+
+fn load_publisher_identity(
+    control_plane_root: &Path,
+) -> std::result::Result<Option<LocalPublisherIdentity>, String> {
+    let path = publisher_identity_path(control_plane_root);
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| format!("用户签名身份无效：{error}")),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("无法读取用户签名身份：{error}")),
+    }
+}
+
+fn save_publisher_identity(
+    control_plane_root: &Path,
+    identity: &LocalPublisherIdentity,
+) -> std::result::Result<(), String> {
+    fs::create_dir_all(control_plane_root).map_err(|error| error.to_string())?;
+    let path = publisher_identity_path(control_plane_root);
+    let temporary = control_plane_root.join(format!(".{PUBLISHER_IDENTITY_FILE}.tmp"));
+    let mut bytes = serde_json::to_vec_pretty(identity).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+    if path.is_file() {
+        fs::remove_file(&path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn save_current_signing_key(
+    control_plane_root: &Path,
+    key: &SigningKeyDocument,
+) -> std::result::Result<(), String> {
+    let value = serde_json::to_string(key).map_err(|error| error.to_string())?;
+    CredentialStore::new(control_plane_root)
+        .upsert(CredentialInput {
+            name: PUBLISHER_PRIVATE_KEY_CREDENTIAL.to_owned(),
+            value,
+            value_type: CredentialValueType::Json,
+            scope: CredentialScope::default(),
+            expires_at: None,
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn load_current_signing_key(
+    control_plane_root: &Path,
+) -> std::result::Result<Option<SigningKeyDocument>, String> {
+    let details = CredentialStore::new(control_plane_root)
+        .reveal(
+            PUBLISHER_PRIVATE_KEY_CREDENTIAL,
+            &CredentialScope::default(),
+        )
+        .map_err(|error| error.to_string())?;
+    details
+        .map(|details| {
+            serde_json::from_str(&details.value)
+                .map_err(|error| format!("用户私钥记录无效：{error}"))
+        })
+        .transpose()
+}
+
+fn publisher_key_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("key-{nanos}")
+}
+
+fn ensure_local_publisher_identity(
+    control_plane_root: &Path,
+) -> std::result::Result<(LocalPublisherIdentity, SigningKeyDocument), String> {
+    let stored_identity = load_publisher_identity(control_plane_root)?;
+    let stored_key = load_current_signing_key(control_plane_root)?;
+    if let (Some(mut identity), Some(key)) = (stored_identity, stored_key) {
+        if key.key_id == identity.current_key_id && key.public_key == identity.public_key {
+            if identity.user_id != DEFAULT_TEST_PUBLISHER_ID {
+                identity.user_id = DEFAULT_TEST_PUBLISHER_ID.to_owned();
+                save_publisher_identity(control_plane_root, &identity)?;
+            }
+            return Ok((identity, key));
+        }
+    }
+
+    let key = generate_signing_key(publisher_key_id());
+    let identity = LocalPublisherIdentity {
+        schema_version: publisher_identity_schema_version(),
+        user_id: DEFAULT_TEST_PUBLISHER_ID.to_owned(),
+        current_key_id: key.key_id.clone(),
+        public_key: key.public_key.clone(),
+    };
+    save_current_signing_key(control_plane_root, &key)?;
+    save_publisher_identity(control_plane_root, &identity)?;
+    Ok((identity, key))
+}
+
+fn reset_local_publisher_identity(
+    control_plane_root: &Path,
+    identity: &LocalPublisherIdentity,
+) -> std::result::Result<(LocalPublisherIdentity, SigningKeyDocument), String> {
+    let key = generate_signing_key(publisher_key_id());
+    let next_identity = LocalPublisherIdentity {
+        schema_version: publisher_identity_schema_version(),
+        user_id: identity.user_id.clone(),
+        current_key_id: key.key_id.clone(),
+        public_key: key.public_key.clone(),
+    };
+    save_current_signing_key(control_plane_root, &key)?;
+    save_publisher_identity(control_plane_root, &next_identity)?;
+    Ok((next_identity, key))
+}
+
+fn fetch_remote_publisher(
+    store: &str,
+    user_id: &str,
+) -> std::result::Result<RemotePublisher, String> {
+    if !is_platform_publisher_id(user_id) {
+        return Err("用户 ID 格式无效".to_owned());
+    }
+    let url = format!("{}/publishers/{user_id}", store.trim_end_matches('/'));
+    let client = art_store_client().map_err(|error| error.to_string())?;
+    let policy = user_configured_outbound_policy();
+    let bytes = get_bounded(&client, &url, &policy, MAX_PUBLISHER_DIRECTORY_BYTES)
+        .map_err(|error| format!("获取发布者信息失败：{error}"))?;
+    let response: RemotePublisherResponse =
+        serde_json::from_slice(&bytes).map_err(|error| format!("发布者信息无效：{error}"))?;
+    if response.publisher.user_id != user_id {
+        return Err("发布者信息中的用户 ID 不匹配".to_owned());
+    }
+    Ok(response.publisher)
+}
+
+fn sync_trusted_publisher_from_store(
+    store: &str,
+    user_id: &str,
+    framework_registry: &FrameworkRegistry,
+) -> std::result::Result<(), String> {
+    let publisher = fetch_remote_publisher(store, user_id)?;
+    if publisher.keys.is_empty() {
+        return Err("该用户没有可验证的公钥".to_owned());
+    }
+    let records = publisher.keys.into_iter().map(|key| PublisherTrustRecord {
+        publisher_id: user_id.to_owned(),
+        key_id: key.key_id,
+        public_key: key.public_key,
+        revoked: key.status == RemotePublisherKeyStatus::Revoked,
+    });
+    framework_registry
+        .trust_publisher_directory(user_id, records)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn post_art_store_json<T: Serialize, R: serde::de::DeserializeOwned>(
+    store: &str,
+    path: &str,
+    payload: &T,
+) -> std::result::Result<R, String> {
+    let url = format!("{}{}", store.trim_end_matches('/'), path);
+    let parsed_url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+    let policy = user_configured_outbound_policy();
+    validate_outbound_url(&parsed_url, &policy)?;
+    let client = art_store_client().map_err(|error| error.to_string())?;
+    let mut response = client
+        .post(parsed_url)
+        .json(payload)
+        .send()
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take((MAX_PUBLISHER_DIRECTORY_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_PUBLISHER_DIRECTORY_BYTES {
+        return Err("Art 商店返回的发布者信息过大".to_owned());
+    }
+    if !status.is_success() {
+        let message = String::from_utf8_lossy(&bytes);
+        return Err(format!("Art 商店返回 HTTP {status}: {message}"));
+    }
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn ensure_remote_publisher_registered(
+    store: &str,
+    identity: &LocalPublisherIdentity,
+    key: &SigningKeyDocument,
+) -> std::result::Result<RemotePublisher, String> {
+    let response: RemotePublisherResponse = post_art_store_json(
+        store,
+        "/publishers/register",
+        &json!({
+            "userId": identity.user_id,
+            "keyId": key.key_id,
+            "publicKey": key.public_key
+        }),
+    )?;
+    if response.publisher.user_id != identity.user_id
+        || !response.publisher.keys.iter().any(|remote| {
+            remote.key_id == key.key_id
+                && remote.public_key == key.public_key
+                && remote.status == RemotePublisherKeyStatus::Active
+        })
+    {
+        return Err("Art 商店返回了无效的用户身份".to_owned());
+    }
+    Ok(response.publisher)
+}
+
+fn fetch_remote_art_store_catalog(
+    store: &str,
+) -> std::result::Result<RemoteArtStoreCatalog, String> {
+    let url = format!("{}/catalog", store.trim_end_matches('/'));
+    let client = art_store_client().map_err(|error| error.to_string())?;
+    let policy = user_configured_outbound_policy();
+    let bytes = get_bounded(&client, &url, &policy, MAX_ART_STORE_CATALOG_BYTES)
+        .map_err(|error| format!("获取 art 商店目录失败：{error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("art 商店目录无效：{error}"))
+}
+
 // Proxy the remote art store catalog (GET {store}/catalog).
 fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
     let Some(store) = resolve_art_store_url(query_value(path, "store").as_deref()) else {
@@ -3713,20 +5388,11 @@ fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
             json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址（LOOM_ART_STORE_URL 或 ?store=）" }),
         );
     };
-    let url = format!("{}/catalog", store.trim_end_matches('/'));
-    let client = art_store_client()?;
-    let policy = user_configured_outbound_policy();
-    match get_bounded(&client, &url, &policy, MAX_ART_STORE_CATALOG_BYTES) {
-        Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(body) => Ok((200, body)),
-            Err(error) => structured_error(
-                502,
-                json!({ "code": "art_store_invalid_response", "message": error.to_string(), "url": url }),
-            ),
-        },
+    match fetch_remote_art_store_catalog(&store) {
+        Ok(catalog) => Ok((200, serde_json::to_string(&catalog)?)),
         Err(error) => structured_error(
             502,
-            json!({ "code": "art_store_unavailable", "message": format!("获取 art 商店目录失败：{error}"), "url": url }),
+            json!({ "code": "art_store_unavailable", "message": error, "url": store }),
         ),
     }
 }
@@ -3735,6 +5401,8 @@ fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
 #[serde(rename_all = "camelCase")]
 struct InstallFromStoreRequest {
     art_id: String,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default)]
     store: Option<String>,
     /// Optional caller-provided root package digest. Dependencies use the
@@ -3763,6 +5431,7 @@ fn fetch_art_store_package(
     policy: &OutboundPolicy,
     store: &str,
     id: &str,
+    version: Option<&str>,
     expected_sha256: Option<&str>,
 ) -> std::result::Result<Vec<u8>, loom_tool_registry::install::ArtInstallError> {
     if !is_safe_package_id(id) {
@@ -3770,7 +5439,16 @@ fn fetch_art_store_package(
             id.to_owned(),
         ));
     }
-    let url = format!("{store}/arts/{id}.zip");
+    if version.is_some_and(|version| semver::Version::parse(version).is_err()) {
+        return Err(
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "store package `{id}` target version is invalid"
+            )),
+        );
+    }
+    let url = version
+        .map(|version| format!("{store}/arts/{id}/{version}.zip"))
+        .unwrap_or_else(|| format!("{store}/arts/{id}.zip"));
     let expected = if let Some(expected) = expected_sha256 {
         normalize_sha256(expected)
     } else {
@@ -3819,46 +5497,12 @@ fn install_art_from_store(
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
-    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
-        return structured_error(
-            400,
-            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址" }),
-        );
-    };
-    let store = store.trim_end_matches('/').to_owned();
-    let client = match art_store_client() {
-        Ok(client) => client,
-        Err(error) => {
-            return structured_error(
-                500,
-                json!({ "code": "internal", "message": error.to_string() }),
-            )
-        }
-    };
-    let policy = user_configured_outbound_policy();
-    let fetch_zip = |id: &str| fetch_art_store_package(&client, &policy, &store, id, None);
-
-    let root_zip = match fetch_art_store_package(
-        &client,
-        &policy,
-        &store,
-        &request.art_id,
-        request.sha256.as_deref(),
-    ) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return structured_error(
-                502,
-                json!({ "code": "art_store_unavailable", "message": error.to_string() }),
-            )
-        }
-    };
-    match loom_tool_registry::install::install_art_recursive(
-        &root_zip,
-        control_plane_root,
-        framework_registry,
+    match install_art_from_store_request(
+        &request,
         tool_registry,
-        &fetch_zip,
+        framework_registry,
+        control_plane_root,
+        None,
     ) {
         Ok(reports) => {
             let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
@@ -3881,6 +5525,122 @@ fn install_art_from_store(
             json!({ "code": "art_install_failed", "message": error.to_string() }),
         ),
     }
+}
+
+fn install_art_from_store_request(
+    request: &InstallFromStoreRequest,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    expected_identity: Option<&str>,
+) -> std::result::Result<
+    Vec<loom_tool_registry::install::ArtInstallReport>,
+    loom_tool_registry::install::ArtInstallError,
+> {
+    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+        return Err(
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(
+                "未配置 art 商店地址".to_owned(),
+            ),
+        );
+    };
+    let store = store.trim_end_matches('/').to_owned();
+    let trust_store = framework_registry.trust_store().map_err(|error| {
+        loom_tool_registry::install::ArtInstallError::InvalidPackage(error.to_string())
+    })?;
+    if trust_store.effective_policy() == TrustPolicy::RequireTrusted {
+        for user_id in trust_store.trusted_publishers {
+            sync_trusted_publisher_from_store(&store, &user_id, framework_registry).map_err(
+                |error| {
+                    loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                        "刷新可信用户 `{user_id}` 的公钥失败：{error}"
+                    ))
+                },
+            )?;
+        }
+    }
+    let client = art_store_client().map_err(|error| {
+        loom_tool_registry::install::ArtInstallError::InvalidPackage(error.to_string())
+    })?;
+    let policy = user_configured_outbound_policy();
+    let fetch_zip = |id: &str| fetch_art_store_package(&client, &policy, &store, id, None, None);
+
+    let root_zip = fetch_art_store_package(
+        &client,
+        &policy,
+        &store,
+        &request.art_id,
+        request.version.as_deref(),
+        request.sha256.as_deref(),
+    )?;
+    let root_manifest = loom_tool_registry::install::read_manifest_from_zip(&root_zip)?;
+    if root_manifest.id != request.art_id {
+        return Err(
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "store package `{}` contains Art `{}`",
+                request.art_id, root_manifest.id
+            )),
+        );
+    }
+    let root_identity = root_manifest.qualified_id();
+    if expected_identity.is_some_and(|expected| expected != root_identity) {
+        return Err(
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "store package `{}` identity mismatch: expected {}, got {root_identity}",
+                request.art_id,
+                expected_identity.unwrap_or_default()
+            )),
+        );
+    }
+    let reports = loom_tool_registry::install::install_art_recursive(
+        &root_zip,
+        control_plane_root,
+        framework_registry,
+        tool_registry,
+        &fetch_zip,
+    )?;
+    let mut tool = tool_registry
+        .get_tool(&root_identity)
+        .map_err(|error| loom_tool_registry::install::ArtInstallError::Registry(error.to_string()))?
+        .ok_or_else(|| {
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
+                "installed Art `{}` was not registered",
+                root_identity
+            ))
+        })?;
+    let identity = tool.qualified_id();
+    let global_id = fetch_remote_art_store_catalog(&store)
+        .ok()
+        .and_then(|catalog| {
+            catalog.arts.into_iter().find(|entry| {
+                entry.id == request.art_id
+                    && (entry.qualified_id.trim().is_empty() || entry.qualified_id == root_identity)
+            })
+        })
+        .and_then(|entry| entry.global_id)
+        .filter(|global_id| is_platform_global_art_id(global_id));
+    let settings_store = ArtSettingsStore::new(control_plane_root);
+    let mut settings = settings_store.get(&identity).map_err(|error| {
+        loom_tool_registry::install::ArtInstallError::InvalidPackage(error.to_string())
+    })?;
+    settings.source = Some(ArtUpdateSource {
+        store,
+        art_id: request.art_id.clone(),
+        qualified_id: Some(identity.clone()),
+    });
+    settings_store
+        .save(&identity, settings.clone())
+        .map_err(|error| {
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(error.to_string())
+        })?;
+    apply_settings_metadata(&mut tool, &settings);
+    if let Some(global_id) = global_id.as_deref() {
+        apply_platform_global_art_id(&mut tool, global_id);
+    }
+    tool_registry.save_tool(tool).map_err(|error| {
+        loom_tool_registry::install::ArtInstallError::Registry(error.to_string())
+    })?;
+    Ok(reports)
 }
 
 // Package an installed art into a zip (manifest + its resource dir), returned as
@@ -3931,6 +5691,45 @@ fn installed_art_package_dir(tool: &ToolDefinition, control_plane_root: &Path) -
         .unwrap_or_else(|| control_plane_root.join("arts").join(&tool.id))
 }
 
+fn is_platform_global_art_id(value: &str) -> bool {
+    value.len() == 13
+        && value.starts_with("NA")
+        && value[2..].bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_platform_publisher_id(value: &str) -> bool {
+    (value.len() == 13
+        && value.starts_with("NU")
+        && value[2..].bytes().all(|byte| byte.is_ascii_digit()))
+        || (value.len() == 11
+            && value.starts_with('L')
+            && value[1..].bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn apply_platform_global_art_id(tool: &mut ToolDefinition, global_id: &str) {
+    if !is_platform_global_art_id(global_id) {
+        return;
+    }
+    let metadata = tool
+        .metadata
+        .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !metadata.is_object() {
+        *metadata = Value::Object(serde_json::Map::new());
+    }
+    let metadata = metadata
+        .as_object_mut()
+        .expect("Art metadata was normalized to an object");
+    let art = metadata
+        .entry("art".to_owned())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !art.is_object() {
+        *art = Value::Object(serde_json::Map::new());
+    }
+    art.as_object_mut()
+        .expect("Art identity metadata was normalized to an object")
+        .insert("globalId".to_owned(), Value::String(global_id.to_owned()));
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublishArtRequest {
@@ -3950,13 +5749,7 @@ fn publish_art_to_store(
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
-    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
-        return structured_error(
-            400,
-            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址" }),
-        );
-    };
-    let tool = match tool_registry.get_tool(&request.art_id) {
+    let mut tool = match tool_registry.get_tool(&request.art_id) {
         Ok(Some(tool)) => tool,
         Ok(None) => {
             return structured_error(
@@ -3966,8 +5759,43 @@ fn publish_art_to_store(
         }
         Err(error) => return tool_registry_error_response(error),
     };
+    if !art_is_locally_authored(&tool) {
+        return structured_error(
+            403,
+            json!({
+                "code": "art_publish_not_owned",
+                "message": "只能发布当前用户本地创建的 Art"
+            }),
+        );
+    }
+    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址" }),
+        );
+    };
+    let (identity, signing_key) = match ensure_local_publisher_identity(control_plane_root) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "publisher_identity_failed", "message": error }),
+            )
+        }
+    };
+    if let Err(error) = ensure_remote_publisher_registered(&store, &identity, &signing_key) {
+        return structured_error(
+            502,
+            json!({ "code": "publisher_registration_failed", "message": error }),
+        );
+    }
     let art_dir = installed_art_package_dir(&tool, control_plane_root);
-    let zip = match loom_tool_registry::install::package_art_to_zip(&tool, &art_dir) {
+    let zip = match loom_tool_registry::install::package_signed_art_to_zip(
+        &tool,
+        &art_dir,
+        &identity.user_id,
+        &signing_key,
+    ) {
         Ok(bytes) => bytes,
         Err(error) => {
             return structured_error(
@@ -3998,7 +5826,7 @@ fn publish_art_to_store(
         );
     }
     let digest = sha256_bytes(&zip);
-    match client
+    let response = match client
         .post(parsed_url)
         .header("Content-Type", "application/zip")
         .header("X-Art-Id", &request.art_id)
@@ -4007,17 +5835,74 @@ fn publish_art_to_store(
         .send()
         .and_then(|r| r.error_for_status())
     {
-        Ok(_) => Ok((
-            200,
-            serde_json::to_string(
-                &json!({ "artId": request.art_id, "sha256": digest, "published": true }),
-            )?,
-        )),
-        Err(error) => structured_error(
+        Ok(response) => response,
+        Err(error) => {
+            return structured_error(
+                502,
+                json!({ "code": "art_store_publish_failed", "message": format!("发布失败：{error}"), "url": url }),
+            )
+        }
+    };
+    let store_body = match response.text() {
+        Ok(body) => body,
+        Err(error) => {
+            return structured_error(
+                502,
+                json!({
+                    "code": "art_store_publish_contract_invalid",
+                    "message": format!("商店未返回有效的发布结果：{error}"),
+                    "url": url
+                }),
+            )
+        }
+    };
+    let store_response = match serde_json::from_str::<Value>(&store_body) {
+        Ok(response) => response,
+        Err(error) => {
+            return structured_error(
+                502,
+                json!({
+                    "code": "art_store_publish_contract_invalid",
+                    "message": format!("商店未返回有效的发布结果：{error}"),
+                    "url": url
+                }),
+            )
+        }
+    };
+    let Some(global_id) = store_response
+        .get("globalId")
+        .and_then(Value::as_str)
+        .filter(|value| is_platform_global_art_id(value))
+    else {
+        return structured_error(
             502,
-            json!({ "code": "art_store_publish_failed", "message": format!("发布失败：{error}"), "url": url }),
-        ),
+            json!({
+                "code": "art_store_global_id_missing",
+                "message": "商店发布成功，但没有返回有效的全局 Art 编号",
+                "url": url
+            }),
+        );
+    };
+    apply_platform_global_art_id(&mut tool, global_id);
+    if let Err(error) = tool_registry.save_tool(tool) {
+        return structured_error(
+            500,
+            json!({
+                "code": "art_global_id_persist_failed",
+                "message": format!("Art 已发布，但无法保存平台编号：{error}"),
+                "globalId": global_id
+            }),
+        );
     }
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "artId": request.art_id,
+            "globalId": global_id,
+            "sha256": digest,
+            "published": true
+        }))?,
+    ))
 }
 
 fn list_frameworks(framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
@@ -4384,6 +6269,244 @@ fn revoke_plugin_publisher(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrustPolicyRequest {
+    policy: TrustPolicy,
+}
+
+fn set_plugin_trust_policy(
+    body: &str,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let request: TrustPolicyRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    match framework_registry.set_trust_policy(request.policy) {
+        Ok(store) => Ok((200, serde_json::to_string(&store)?)),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "plugin_trust_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrustedUserRequest {
+    user_id: String,
+    #[serde(default)]
+    store: Option<String>,
+}
+
+fn trust_plugin_user(body: &str, framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    let request: TrustedUserRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let user_id = request.user_id.trim();
+    if !is_platform_publisher_id(user_id) {
+        return invalid_request("用户 ID 格式无效");
+    }
+    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "未配置 Art 商店地址" }),
+        );
+    };
+    if let Err(error) = sync_trusted_publisher_from_store(&store, user_id, framework_registry) {
+        return structured_error(
+            502,
+            json!({ "code": "publisher_directory_unavailable", "message": error }),
+        );
+    }
+    list_plugin_trust(framework_registry)
+}
+
+fn untrust_plugin_user(
+    body: &str,
+    framework_registry: &FrameworkRegistry,
+) -> Result<(u16, String)> {
+    let request: TrustedUserRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    match framework_registry.untrust_publisher(request.user_id.trim()) {
+        Ok(store) => Ok((200, serde_json::to_string(&store)?)),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "plugin_trust_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublisherIdentityRequest {
+    #[serde(default)]
+    store: Option<String>,
+}
+
+fn list_publisher_identity(control_plane_root: &Path) -> Result<(u16, String)> {
+    match ensure_local_publisher_identity(control_plane_root) {
+        Ok((identity, _)) => Ok((
+            200,
+            serde_json::to_string(&json!({
+                "identity": identity,
+                "hasPrivateKey": true
+            }))?,
+        )),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "publisher_identity_failed", "message": error }),
+        ),
+    }
+}
+
+fn register_publisher_identity(body: &str, control_plane_root: &Path) -> Result<(u16, String)> {
+    let request: PublisherIdentityRequest = if body.trim().is_empty() {
+        PublisherIdentityRequest::default()
+    } else {
+        match serde_json::from_str(body) {
+            Ok(request) => request,
+            Err(error) => return invalid_request(error.to_string()),
+        }
+    };
+    let (identity, key) = match ensure_local_publisher_identity(control_plane_root) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "publisher_identity_failed", "message": error }),
+            )
+        }
+    };
+    if let Some(store) = resolve_art_store_url(request.store.as_deref()) {
+        if let Err(error) = ensure_remote_publisher_registered(&store, &identity, &key) {
+            return structured_error(
+                502,
+                json!({ "code": "publisher_registration_failed", "message": error }),
+            );
+        }
+    }
+    list_publisher_identity(control_plane_root)
+}
+
+fn rotate_publisher_identity(body: &str, control_plane_root: &Path) -> Result<(u16, String)> {
+    let request: PublisherIdentityRequest = if body.trim().is_empty() {
+        PublisherIdentityRequest::default()
+    } else {
+        match serde_json::from_str(body) {
+            Ok(request) => request,
+            Err(error) => return invalid_request(error.to_string()),
+        }
+    };
+    let (identity, current_key) = match ensure_local_publisher_identity(control_plane_root) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "publisher_identity_failed", "message": error }),
+            )
+        }
+    };
+    let next_key = generate_signing_key(publisher_key_id());
+    if let Some(store) = resolve_art_store_url(request.store.as_deref()) {
+        if let Err(error) = ensure_remote_publisher_registered(&store, &identity, &current_key) {
+            return structured_error(
+                502,
+                json!({ "code": "publisher_registration_failed", "message": error }),
+            );
+        }
+        let message = format!(
+            "loom.publisher.rotate.v1\n{}\n{}\n{}\n{}",
+            identity.user_id, identity.current_key_id, next_key.key_id, next_key.public_key
+        );
+        let signature = match sign_message(&current_key, message.as_bytes()) {
+            Ok(signature) => signature,
+            Err(error) => {
+                return structured_error(
+                    500,
+                    json!({ "code": "publisher_rotation_sign_failed", "message": error.to_string() }),
+                )
+            }
+        };
+        let path = format!("/publishers/{}/rotate", identity.user_id);
+        let response: RemotePublisherResponse = match post_art_store_json(
+            &store,
+            &path,
+            &json!({
+                "currentKeyId": identity.current_key_id,
+                "newKeyId": next_key.key_id,
+                "newPublicKey": next_key.public_key,
+                "signature": signature
+            }),
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                return structured_error(
+                    502,
+                    json!({ "code": "publisher_rotation_failed", "message": error }),
+                );
+            }
+        };
+        if response.publisher.user_id != identity.user_id
+            || !response.publisher.keys.iter().any(|remote| {
+                remote.key_id == next_key.key_id
+                    && remote.public_key == next_key.public_key
+                    && remote.status == RemotePublisherKeyStatus::Active
+            })
+        {
+            return structured_error(
+                502,
+                json!({ "code": "publisher_rotation_invalid", "message": "Art 商店返回了无效的轮换结果" }),
+            );
+        }
+        let next_identity = LocalPublisherIdentity {
+            schema_version: publisher_identity_schema_version(),
+            user_id: identity.user_id,
+            current_key_id: next_key.key_id.clone(),
+            public_key: next_key.public_key.clone(),
+        };
+        if let Err(error) = save_current_signing_key(control_plane_root, &next_key)
+            .and_then(|()| save_publisher_identity(control_plane_root, &next_identity))
+        {
+            return structured_error(
+                500,
+                json!({ "code": "publisher_identity_persist_failed", "message": error }),
+            );
+        }
+    } else if let Err(error) = reset_local_publisher_identity(control_plane_root, &identity) {
+        return structured_error(
+            500,
+            json!({ "code": "publisher_identity_persist_failed", "message": error }),
+        );
+    }
+    list_publisher_identity(control_plane_root)
+}
+
+fn reveal_publisher_private_key(control_plane_root: &Path) -> Result<(u16, String)> {
+    match load_current_signing_key(control_plane_root) {
+        Ok(Some(key)) => Ok((
+            200,
+            serde_json::to_string(&json!({
+                "keyId": key.key_id,
+                "privateKey": key.private_key,
+                "publicKey": key.public_key
+            }))?,
+        )),
+        Ok(None) => structured_error(
+            404,
+            json!({ "code": "publisher_private_key_missing", "message": "当前用户私钥不可用" }),
+        ),
+        Err(error) => structured_error(
+            500,
+            json!({ "code": "publisher_private_key_failed", "message": error }),
+        ),
+    }
+}
+
 fn list_plugin_credentials(control_plane_root: &Path) -> Result<(u16, String)> {
     match CredentialStore::new(control_plane_root).summaries() {
         Ok(credentials) => Ok((
@@ -4443,6 +6566,38 @@ fn delete_plugin_credential(body: &str, control_plane_root: &Path) -> Result<(u1
             serde_json::to_string(&json!({ "deleted": true, "name": request.name }))?,
         )),
         Ok(false) => structured_error(
+            404,
+            json!({ "code": "credential_not_found", "message": "credential was not found" }),
+        ),
+        Err(error) => structured_error(
+            400,
+            json!({ "code": "credential_store_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn reveal_plugin_credential(body: &str, control_plane_root: &Path) -> Result<(u16, String)> {
+    let request: DeleteCredentialRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({ "code": "invalid_credential_reveal", "message": error.to_string() }),
+            )
+        }
+    };
+    if request.name.starts_with("loom-") {
+        return structured_error(
+            403,
+            json!({ "code": "credential_reserved", "message": "系统保留凭据不可通过该接口读取" }),
+        );
+    }
+    match CredentialStore::new(control_plane_root).reveal(&request.name, &request.scope) {
+        Ok(Some(credential)) => Ok((
+            200,
+            serde_json::to_string(&json!({ "credential": credential }))?,
+        )),
+        Ok(None) => structured_error(
             404,
             json!({ "code": "credential_not_found", "message": "credential was not found" }),
         ),
@@ -4698,14 +6853,16 @@ fn delete_tool(
 fn list_artloom_compat_arts(
     compat_command: &str,
     tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
 ) -> Result<(u16, String)> {
     let tools = match tool_registry.list_tools() {
         Ok(tools) => tools,
         Err(error) => return tool_registry_error_response(error),
     };
     let compat_tools: Vec<ToolDefinition> = tools
-        .into_iter()
-        .filter(is_artloom_compat_visible_tool)
+        .iter()
+        .filter(|tool| is_artloom_compat_visible_tool(tool))
+        .cloned()
         .collect();
     let arts: Vec<Value> = compat_tools
         .iter()
@@ -4713,7 +6870,7 @@ fn list_artloom_compat_arts(
             if compat_command == "get_user_arts" {
                 artloom_frontend_user_art_json(tool)
             } else {
-                artloom_compat_art_json(tool)
+                artloom_compat_art_json_for_hook(tool, &tools, workflow_store)
             }
         })
         .collect();
@@ -4728,16 +6885,23 @@ fn list_artloom_compat_arts(
     ))
 }
 
-fn list_enabled_artloom_compat_arts(tool_registry: &ToolRegistry) -> Result<(u16, String)> {
+fn list_enabled_artloom_compat_arts(
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+) -> Result<(u16, String)> {
     let tools = match tool_registry.list_tools() {
         Ok(tools) => tools,
         Err(error) => return tool_registry_error_response(error),
     };
     let compat_tools: Vec<ToolDefinition> = tools
-        .into_iter()
+        .iter()
         .filter(|tool| is_artloom_compat_visible_tool(tool) && tool.enabled)
+        .cloned()
         .collect();
-    let arts: Vec<Value> = compat_tools.iter().map(artloom_compat_art_json).collect();
+    let arts: Vec<Value> = compat_tools
+        .iter()
+        .map(|tool| artloom_compat_art_json_for_hook(tool, &tools, workflow_store))
+        .collect();
     let count = arts.len();
     Ok((
         200,
@@ -4903,7 +7067,11 @@ fn sync_artloom_compat_arts_value(
     }))
 }
 
-fn get_artloom_compat_art(art_id: &str, tool_registry: &ToolRegistry) -> Result<(u16, String)> {
+fn get_artloom_compat_art(
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+) -> Result<(u16, String)> {
     let tool = match get_artloom_tool(art_id, tool_registry) {
         Ok(tool) => tool,
         Err(response) => return response,
@@ -4912,7 +7080,11 @@ fn get_artloom_compat_art(art_id: &str, tool_registry: &ToolRegistry) -> Result<
         200,
         serde_json::to_string(&json!({
             "compatCommand": "get_art",
-            "art": artloom_compat_art_json(&tool),
+            "art": artloom_compat_art_json_for_hook(
+                &tool,
+                &tool_registry.list_tools().unwrap_or_default(),
+                workflow_store,
+            ),
             "tool": tool,
         }))?,
     ))
@@ -5018,6 +7190,186 @@ fn artloom_compat_art_json(tool: &ToolDefinition) -> Value {
         "defaults": artloom_compat_defaults_json(tool),
         "metadata": &tool.metadata,
     })
+}
+
+fn artloom_compat_art_json_for_hook(
+    tool: &ToolDefinition,
+    tools: &[ToolDefinition],
+    workflow_store: &WorkflowStore,
+) -> Value {
+    let mut art = artloom_compat_art_json(tool);
+    art["params"] = Value::Array(artloom_compat_hook_params(tool, tools, workflow_store));
+    if workflow_preview_tool(tool, tools, workflow_store).is_some_and(tool_supports_shader_preview)
+    {
+        if !art["metadata"].is_object() {
+            art["metadata"] = json!({});
+        }
+        if !art["metadata"]["capabilities"].is_object() {
+            art["metadata"]["capabilities"] = json!({});
+        }
+        art["metadata"]["capabilities"]["preview"] = json!("shader");
+        art["metadata"]["capabilities"]["requiresFormalExecution"] = json!(true);
+        let image_inputs = artloom_compat_image_input_names(tool);
+        if let Some(input) = image_inputs.first() {
+            art["metadata"]["capabilities"]["shaderInput"] = json!(input);
+        }
+        if let Some(reference) = image_inputs.get(1) {
+            art["metadata"]["capabilities"]["shaderReferenceInput"] = json!(reference);
+        }
+    }
+    art
+}
+
+fn artloom_compat_image_input_names(tool: &ToolDefinition) -> Vec<String> {
+    tool.inputs
+        .iter()
+        .filter_map(|input| {
+            let object = input.as_object()?;
+            let name = object
+                .get("name")
+                .or_else(|| object.get("id"))
+                .and_then(Value::as_str)?
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            let image_like = ["type", "data_type", "executionType", "execution_type"]
+                .iter()
+                .filter_map(|key| object.get(*key).and_then(Value::as_str))
+                .any(|value| value.to_ascii_lowercase().contains("image"))
+                || object.get("widget").and_then(Value::as_str) == Some("image_link");
+            image_like.then(|| name.to_owned())
+        })
+        .collect()
+}
+
+fn workflow_preview_tool<'a>(
+    tool: &ToolDefinition,
+    tools: &'a [ToolDefinition],
+    workflow_store: &WorkflowStore,
+) -> Option<&'a ToolDefinition> {
+    let ToolExecution::Workflow {
+        workflow_id,
+        workflow_bindings: Some(bindings),
+    } = &tool.execution
+    else {
+        return None;
+    };
+    let preview_node_id = bindings.preview_output.as_ref()?.node_id.as_str();
+    let node_tool_ids = workflow_node_tool_ids(workflow_store, workflow_id).ok()?;
+    let preview_tool_id = node_tool_ids.get(preview_node_id)?;
+    tools.iter().find(|candidate| {
+        candidate.id == *preview_tool_id || candidate.qualified_id() == *preview_tool_id
+    })
+}
+
+fn tool_supports_shader_preview(tool: &ToolDefinition) -> bool {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("capabilities"))
+        .is_some_and(|capabilities| {
+            capabilities.get("preview").and_then(Value::as_str) == Some("shader")
+                || capabilities.get("shader").and_then(Value::as_bool) == Some(true)
+        })
+}
+
+fn artloom_compat_hook_params(
+    tool: &ToolDefinition,
+    tools: &[ToolDefinition],
+    workflow_store: &WorkflowStore,
+) -> Vec<Value> {
+    let ToolExecution::Workflow {
+        workflow_id,
+        workflow_bindings: Some(bindings),
+    } = &tool.execution
+    else {
+        return tool.params.clone();
+    };
+    let Ok(node_tool_ids) = workflow_node_tool_ids(workflow_store, workflow_id) else {
+        return tool.params.clone();
+    };
+
+    tool.params
+        .iter()
+        .map(|param| {
+            let Some(param_id) = artloom_param_id(param) else {
+                return param.clone();
+            };
+            let Some(binding) = bindings.inputs.iter().find(|binding| {
+                binding.kind == "param" && binding.workflow_param.trim() == param_id
+            }) else {
+                return param.clone();
+            };
+            let Some(node_tool_id) = node_tool_ids.get(&binding.node_id) else {
+                return param.clone();
+            };
+            let Some(node_tool) = find_workflow_node_tool(tools, node_tool_id) else {
+                return param.clone();
+            };
+            let target = binding
+                .target
+                .strip_prefix("params.")
+                .or_else(|| binding.target.strip_prefix("with."))
+                .unwrap_or(&binding.target);
+            let Some(node_param) = node_tool
+                .params
+                .iter()
+                .find(|candidate| artloom_param_id(candidate) == Some(target))
+            else {
+                return param.clone();
+            };
+            merge_artloom_param_ui_schema(param, node_param)
+        })
+        .collect()
+}
+
+fn artloom_param_id(param: &Value) -> Option<&str> {
+    param
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| param.get("name").and_then(Value::as_str))
+}
+
+fn find_workflow_node_tool<'a>(
+    tools: &'a [ToolDefinition],
+    tool_id: &str,
+) -> Option<&'a ToolDefinition> {
+    if let Some(tool) = tools.iter().find(|tool| tool.qualified_id() == tool_id) {
+        return Some(tool);
+    }
+    let mut matches = tools.iter().filter(|tool| tool.id == tool_id);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn merge_artloom_param_ui_schema(param: &Value, source: &Value) -> Value {
+    const UI_SCHEMA_KEYS: &[&str] = &[
+        "widget",
+        "type",
+        "data_type",
+        "dataType",
+        "min",
+        "minimum",
+        "max",
+        "maximum",
+        "step",
+        "options",
+        "multiline",
+        "group",
+        "required",
+        "secret",
+    ];
+
+    let (Some(param), Some(source)) = (param.as_object(), source.as_object()) else {
+        return param.clone();
+    };
+    let mut merged = param.clone();
+    for key in UI_SCHEMA_KEYS {
+        if let Some(value) = source.get(*key) {
+            merged.insert((*key).to_owned(), value.clone());
+        }
+    }
+    Value::Object(merged)
 }
 
 fn artloom_frontend_user_art_json(tool: &ToolDefinition) -> Value {
@@ -5135,10 +7487,7 @@ fn artloom_frontend_outputs(tool: &ToolDefinition) -> Value {
 
 fn artloom_execution_type_name(execution: &ToolExecution) -> &'static str {
     match execution {
-        ToolExecution::CliWrapper { .. } => "cli_wrapper",
         ToolExecution::CloudApi { .. } => "cloud_api",
-        ToolExecution::Script { .. } => "script",
-        ToolExecution::PythonArt { .. } => "python_art",
         ToolExecution::Mcp { .. } => "mcp",
         ToolExecution::Workflow { .. } => "workflow",
         ToolExecution::FrameworkArt { .. } => "framework_art",
@@ -5225,67 +7574,6 @@ fn artloom_legacy_execution_type(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-}
-
-fn artloom_legacy_cli_args(args: Option<&Value>) -> Vec<String> {
-    match args {
-        Some(Value::Array(values)) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect(),
-        Some(Value::String(template)) => split_legacy_args_template(template),
-        _ => Vec::new(),
-    }
-}
-
-fn split_legacy_args_template(template: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-
-    for character in template.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-
-        if character == '\\' {
-            escaped = true;
-            continue;
-        }
-
-        if matches!(character, '"' | '\'') {
-            if quote == Some(character) {
-                quote = None;
-                continue;
-            }
-            if quote.is_none() {
-                quote = Some(character);
-                continue;
-            }
-        }
-
-        if quote.is_none() && character.is_whitespace() {
-            if !current.is_empty() {
-                args.push(std::mem::take(&mut current));
-            }
-            continue;
-        }
-
-        current.push(character);
-    }
-
-    if escaped {
-        current.push('\\');
-    }
-    if !current.is_empty() {
-        args.push(current);
-    }
-
-    args
 }
 
 // Convert an ArtLoom `headers` value into the JSON-string form the cloud_api
@@ -5399,12 +7687,6 @@ fn artloom_sync_execution_to_tool_execution(
             })?;
 
             match execution_type.as_str() {
-                "cli_wrapper" | "cli" => Ok(ToolExecution::CliWrapper {
-                    command: artloom_value_str(execution, &["command"])
-                        .unwrap_or_default()
-                        .to_owned(),
-                    args: artloom_legacy_cli_args(execution_object.get("args")),
-                }),
                 "cloud_api" => Ok(ToolExecution::CloudApi {
                     endpoint: artloom_value_str(execution, &["endpoint", "url"])
                         .unwrap_or_default()
@@ -5438,25 +7720,6 @@ fn artloom_sync_execution_to_tool_execution(
                             .unwrap_or_default()
                             .to_owned(),
                         workflow_bindings,
-                    })
-                }
-                "script" | "python" | "shader" => {
-                    let script_path = artloom_value_str(
-                        execution,
-                        &["path", "scriptPath", "script_path", "pythonPath", "python_path"],
-                    );
-                    if let Some(script_path) = script_path {
-                        return Ok(ToolExecution::Script {
-                            path: script_path.to_owned(),
-                        });
-                    }
-
-                    Ok(ToolExecution::PythonArt {
-                        art_id: artloom_value_str(execution, &["artId", "art_id"])
-                            .unwrap_or(tool_id)
-                            .to_owned(),
-                        art_path: artloom_value_str(execution, &["artPath", "art_path"])
-                            .map(str::to_owned),
                     })
                 }
                 other => Err(invalid_request(format!(
@@ -5647,15 +7910,31 @@ fn list_python_arts() -> Result<(u16, String)> {
     Ok((200, serde_json::to_string(&json!({ "arts": arts }))?))
 }
 
-fn list_artloom_compat_installed_python_arts() -> Result<(u16, String)> {
-    let arts = collect_python_arts();
-    let count = arts.len();
+fn python_engine_status(framework_registry: &FrameworkRegistry) -> Result<(u16, String)> {
+    let status = framework_registry
+        .statuses()
+        .into_iter()
+        .find(|status| status.id == "process");
+    let runtime_dir = status
+        .as_ref()
+        .and_then(|status| status.runtime_dir.clone());
+    let python = runtime_dir
+        .as_ref()
+        .map(|directory| directory.join("python-embed").join("python.exe"));
+    let available = status.as_ref().is_some_and(|status| status.ready)
+        && python.as_ref().is_some_and(|path| path.is_file());
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "list_installed_arts",
-            "arts": arts,
-            "count": count,
+            "available": available,
+            "frameworkId": "process",
+            "pythonExe": python.as_ref().map(|path| display_path(path)).unwrap_or_default(),
+            "launcherAvailable": false,
+            "artsDirs": python_arts_dirs()
+                .iter()
+                .map(|path| display_path(path))
+                .collect::<Vec<_>>(),
+            "installedArtCount": collect_python_arts().len(),
         }))?,
     ))
 }
@@ -5679,373 +7958,11 @@ fn get_python_art(art_id: &str) -> Result<(u16, String)> {
     )
 }
 
-fn python_engine_status() -> Result<(u16, String)> {
-    let python = resolve_mcp_package_python();
-    let launcher_path = resolve_python_launcher_path();
-    let arts_dirs = python_arts_dirs();
-    let available = launcher_path.as_ref().is_some_and(|path| path.is_file())
-        && Command::new(&python)
-            .arg("--version")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "python_engine_status",
-            "available": available,
-            "python_exe": python.to_string_lossy(),
-            "pythonExe": python.to_string_lossy(),
-            "launcher_path": launcher_path
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            "launcherPath": launcher_path.as_ref().map(|path| path.to_string_lossy().to_string()),
-            "launcherAvailable": launcher_path.as_ref().is_some_and(|path| path.is_file()),
-            "arts_dir": arts_dirs
-                .first()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            "artsDirs": arts_dirs
-                .iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect::<Vec<_>>(),
-            "installedArtCount": collect_python_arts().len(),
-        }))?,
-    ))
-}
-
-fn artloom_compat_execute_python_art(body: &str) -> Result<(u16, String)> {
-    let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: ArtLoomCompatPythonExecuteArtRequest = match serde_json::from_str(request_body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let art_id = request.art_id.trim();
-    if art_id.is_empty() {
-        return invalid_request("execute_python_art requires art_id");
-    }
-    let params = match request.params {
-        Value::Object(params) => Value::Object(params),
-        Value::Null => json!({}),
-        _ => return invalid_request("execute_python_art params must be a JSON object"),
-    };
-
-    match execute_python_art_raw(art_id, params, request.art_path.as_deref()) {
-        Ok(mut response) => {
-            if let Some(object) = response.as_object_mut() {
-                object.insert(
-                    "compatCommand".to_owned(),
-                    Value::String("execute_python_art".to_owned()),
-                );
-            }
-            Ok((200, serde_json::to_string(&response)?))
-        }
-        Err(message) => structured_error(
-            500,
-            json!({
-                "code": "python_art_execution_failed",
-                "message": message,
-                "compatCommand": "execute_python_art",
-                "art_id": art_id,
-            }),
-        ),
-    }
-}
-
-fn artloom_compat_python_process_image(body: &str) -> Result<(u16, String)> {
-    let started = Instant::now();
-    let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: ArtLoomCompatPythonProcessImageRequest = match serde_json::from_str(request_body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let art_id = request.art_id.trim();
-    if art_id.is_empty() {
-        return invalid_request("python_process_image requires art_id");
-    }
-    if request.input_base64.trim().is_empty() {
-        return invalid_request("python_process_image requires input_base64");
-    }
-    let mut params = match request.params {
-        Value::Object(params) => params,
-        Value::Null => serde_json::Map::new(),
-        _ => return invalid_request("python_process_image params must be a JSON object"),
-    };
-
-    let image_bytes = match loom_image_io::decode_data_url_bytes(&request.input_base64) {
-        Ok(bytes) => bytes,
-        Err(error) => return invalid_request(format!("Failed to decode Base64: {error}")),
-    };
-    let temp_dir = std::env::temp_dir().join("loom_artloom_python");
-    if let Err(error) = fs::create_dir_all(&temp_dir) {
-        return artloom_python_process_image_result(
-            false,
-            None,
-            None,
-            started.elapsed().as_millis(),
-            Some(format!("Failed to create temp directory: {error}")),
-        );
-    }
-    let request_id = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    );
-    let input_path = temp_dir.join(format!("{request_id}_input.png"));
-    let output_path = temp_dir.join(format!("{request_id}_output.png"));
-    if let Err(error) = fs::write(&input_path, image_bytes) {
-        return artloom_python_process_image_result(
-            false,
-            None,
-            None,
-            started.elapsed().as_millis(),
-            Some(format!("Failed to save input image: {error}")),
-        );
-    }
-
-    params.insert(
-        "input_path".to_owned(),
-        Value::String(input_path.to_string_lossy().to_string()),
-    );
-    params.insert(
-        "output_path".to_owned(),
-        Value::String(output_path.to_string_lossy().to_string()),
-    );
-
-    let execution =
-        execute_python_art_raw(art_id, Value::Object(params), request.art_path.as_deref());
-    let processing_time_ms = started.elapsed().as_millis();
-    let response = match execution {
-        Ok(response) if response.get("status").and_then(Value::as_i64) == Some(200) => {
-            if output_path.is_file() {
-                match loom_image_io::read_image_path_as_data_url(&output_path) {
-                    Ok(output_base64) => artloom_python_process_image_result(
-                        true,
-                        Some(output_base64),
-                        Some(output_path.to_string_lossy().to_string()),
-                        processing_time_ms,
-                        None,
-                    ),
-                    Err(error) => artloom_python_process_image_result(
-                        false,
-                        None,
-                        None,
-                        processing_time_ms,
-                        Some(format!("Failed to read output image: {error}")),
-                    ),
-                }
-            } else {
-                artloom_python_process_image_result(
-                    false,
-                    None,
-                    None,
-                    processing_time_ms,
-                    Some("Output image was not created by plugin".to_owned()),
-                )
-            }
-        }
-        Ok(response) => artloom_python_process_image_result(
-            false,
-            None,
-            None,
-            processing_time_ms,
-            Some(python_response_error_message(&response)),
-        ),
-        Err(error) => {
-            artloom_python_process_image_result(false, None, None, processing_time_ms, Some(error))
-        }
-    };
-    let _ = fs::remove_file(&input_path);
-    let _ = fs::remove_file(&output_path);
-    response
-}
-
-fn artloom_python_process_image_result(
-    success: bool,
-    output_base64: Option<String>,
-    output_path: Option<String>,
-    processing_time_ms: u128,
-    error: Option<String>,
+fn prefetch_python_art_shader(
+    body: &str,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
 ) -> Result<(u16, String)> {
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "python_process_image",
-            "success": success,
-            "output_base64": output_base64,
-            "output_path": output_path,
-            "processing_time_ms": u64::try_from(processing_time_ms).unwrap_or(u64::MAX),
-            "error": error,
-        }))?,
-    ))
-}
-
-fn python_response_error_message(response: &Value) -> String {
-    response
-        .get("error")
-        .and_then(|error| error.get("message"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| "Python Art execution failed".to_owned())
-}
-
-fn execute_python_art_raw(
-    art_id: &str,
-    params: Value,
-    art_path: Option<&str>,
-) -> std::result::Result<Value, String> {
-    let launcher_path =
-        resolve_python_launcher_path().ok_or_else(|| "Python Art launcher not found".to_owned())?;
-    let plugin_path = resolve_python_art_plugin_path(art_id, art_path)
-        .ok_or_else(|| format!("Python Art `{art_id}` was not found"))?;
-    let base_dir = launcher_path
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let request = json!({
-        "request_id": format!("loom-python-art-compat-{art_id}"),
-        "art_id": art_id,
-        "plugin_path": plugin_path.to_string_lossy(),
-        "params": params,
-    });
-    let output = Command::new(resolve_mcp_package_python())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(&launcher_path)
-        .arg(request.to_string())
-        .current_dir(base_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("Failed to spawn Python process: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stdout.is_empty() {
-        return Err(format!(
-            "Python process produced no output. Exit code: {:?}, stderr: {}",
-            output.status.code(),
-            stderr
-        ));
-    }
-    serde_json::from_str::<Value>(&stdout)
-        .map_err(|error| format!("Failed to parse Python response: {error}. Output: {stdout}"))
-}
-
-fn resolve_python_art_plugin_path(art_id: &str, art_path: Option<&str>) -> Option<PathBuf> {
-    if let Some(path) = art_path.map(str::trim).filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(path);
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
-    collect_python_arts().into_iter().find_map(|art| {
-        (art.get("art_id").and_then(Value::as_str) == Some(art_id))
-            .then(|| art.get("path").and_then(Value::as_str).map(PathBuf::from))
-            .flatten()
-    })
-}
-
-fn artloom_compat_read_python_file(body: &str) -> Result<(u16, String)> {
-    let request = match serde_json::from_str::<PythonSourceReadRequest>(body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let path = request.path.trim();
-    if path.is_empty() {
-        return invalid_request("filePath is required");
-    }
-    let (path, content) = match read_python_source_file(Path::new(path)) {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "read_python_file",
-            "filePath": display_path(&path),
-            "path": display_path(&path),
-            "content": content,
-            "bytes": content.len(),
-        }))?,
-    ))
-}
-
-fn artloom_compat_read_art_json(body: &str) -> Result<(u16, String)> {
-    let request = match serde_json::from_str::<PythonArtJsonReadRequest>(body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let art_path = request.art_path.trim();
-    if art_path.is_empty() {
-        return invalid_request("artPath is required");
-    }
-    let art_json_path = resolve_art_json_path(Path::new(art_path));
-    let (path, art_json) = match read_art_json_file(&art_json_path) {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "read_art_json",
-            "artJsonPath": display_path(&path),
-            "artJson": art_json,
-        }))?,
-    ))
-}
-
-fn artloom_compat_check_art_json_nearby(body: &str) -> Result<(u16, String)> {
-    let request = match serde_json::from_str::<PythonNearbyArtJsonRequest>(body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let python_path = request.python_path.trim();
-    if python_path.is_empty() {
-        return invalid_request("pythonPath is required");
-    }
-    let (python_path, _) = match read_python_source_file(Path::new(python_path)) {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    let Some(parent) = python_path.parent() else {
-        return invalid_request("pythonPath must have a parent directory");
-    };
-    let art_json_path = parent.join("art.json");
-    if !art_json_path.is_file() {
-        return Ok((
-            200,
-            serde_json::to_string(&json!({
-                "compatCommand": "check_art_json_nearby",
-                "found": false,
-                "pythonPath": display_path(&python_path),
-                "artJson": Value::Null,
-            }))?,
-        ));
-    }
-    let (path, art_json) = match read_art_json_file(&art_json_path) {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "check_art_json_nearby",
-            "found": true,
-            "pythonPath": display_path(&python_path),
-            "artJsonPath": display_path(&path),
-            "artJson": art_json,
-        }))?,
-    ))
-}
-
-fn prefetch_python_art_shader(body: &str) -> Result<(u16, String)> {
     let request: PythonShaderPrefetchRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
@@ -6070,21 +7987,23 @@ fn prefetch_python_art_shader(body: &str) -> Result<(u16, String)> {
         .entry("reference_path".to_owned())
         .or_insert_with(|| json!(""));
 
-    let tool = ToolDefinition::new(
-        format!("prefetch-shader-{art_id}"),
-        format!("Prefetch shader {art_id}"),
-        "ArtLoom prefetch_shader compatibility probe",
-        ToolExecution::PythonArt {
-            art_id: art_id.to_owned(),
-            art_path: request
-                .art_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
-        },
-    );
-    let result = match execute_tool(&tool, &[], Value::Object(params)) {
+    let tool = match tool_registry.get_tool(art_id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({
+                    "code": "art_not_found",
+                    "message": format!("Art `{art_id}` was not found"),
+                    "artId": art_id,
+                }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let tools = tool_registry.list_tools().unwrap_or_default();
+    let execution_tool = workflow_preview_tool(&tool, &tools, workflow_store).unwrap_or(&tool);
+    let result = match execute_tool(execution_tool, &[], Value::Object(params)) {
         Ok(result) => result,
         Err(error) => return tool_registry_error_response(error),
     };
@@ -6133,35 +8052,6 @@ fn unwrap_prefetch_shader_payload(result: Value) -> Value {
     } else {
         result
     }
-}
-
-fn resolve_python_launcher_path() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-    {
-        candidates.push(exe_dir.join("python").join("Launcher.py"));
-    }
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join("python").join("Launcher.py"));
-        candidates.push(
-            current_dir
-                .join("Loom")
-                .join("resources")
-                .join("python")
-                .join("Launcher.py"),
-        );
-    }
-    for ancestor in PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors() {
-        candidates.push(
-            ancestor
-                .join("resources")
-                .join("python")
-                .join("Launcher.py"),
-        );
-    }
-    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn read_python_art_source(body: &str) -> Result<(u16, String)> {
@@ -7367,22 +9257,88 @@ fn get_artloom_compat_settings(
 fn put_artloom_compat_settings(
     body: &str,
     settings_store: &SharedArtLoomCompatSettingsStore,
+    hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
     let settings: ArtLoomCompatSettings = match serde_json::from_str(body) {
         Ok(settings) => settings,
         Err(error) => return invalid_request(error.to_string()),
     };
+    if let Err(error) = settings.hook_cache.validate() {
+        return invalid_request(error);
+    }
     let mut store = settings_store
         .lock()
         .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
-    store.settings = settings.clone();
-    store.save()?;
+    let previous = std::mem::replace(&mut store.settings, settings.clone());
+    if let Err(error) = store.save() {
+        store.settings = previous;
+        return Err(error);
+    }
+    drop(store);
+    broadcast_hook_bridge_json(
+        hook_bridge,
+        json!({
+            "method": "art_hook/cache_control",
+            "params": {
+                "action": "settings",
+                "settings": settings.hook_cache.clone(),
+            }
+        }),
+    );
     Ok((
         200,
         serde_json::to_string(&json!({
             "compatCommand": "update_settings",
             "settings": settings,
             "saved": true,
+        }))?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HookCacheControlRequest {
+    action: String,
+}
+
+fn broadcast_hook_cache_control(
+    body: &str,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request: HookCacheControlRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let action = request.action.trim();
+    if !matches!(action, "clearRecycleBin" | "clearReferenceLibrary") {
+        return invalid_request("不支持的 Hook 缓存控制操作");
+    }
+    let broadcast = json!({
+        "method": "art_hook/cache_control",
+        "params": { "action": action },
+    });
+    let serialized = serde_json::to_string(&broadcast)?;
+    let hub = {
+        let runtime = hook_bridge
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
+        runtime.broadcast_hub.clone()
+    };
+    let delivered_clients = broadcast_hook_bridge_messages_with_count(&hub, &[serialized]);
+    if delivered_clients == 0 {
+        return structured_error(
+            409,
+            json!({
+                "code": "hook_client_not_connected",
+                "message": "Hook 当前未连接，无法修改正在使用的回收站或参考图。"
+            }),
+        );
+    }
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "action": action,
+            "deliveredClients": delivered_clients,
         }))?,
     ))
 }
@@ -7424,11 +9380,21 @@ fn put_artloom_compat_shortcut(
     let mut store = settings_store
         .lock()
         .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
-    store
+    let previous = store
         .settings
         .shortcuts
         .insert(shortcut.id.clone(), shortcut.clone());
-    store.save()?;
+    if let Err(error) = store.save() {
+        if let Some(previous) = previous {
+            store
+                .settings
+                .shortcuts
+                .insert(shortcut.id.clone(), previous);
+        } else {
+            store.settings.shortcuts.remove(&shortcut.id);
+        }
+        return Err(error);
+    }
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -7494,8 +9460,12 @@ fn set_artloom_compat_autostart_preference(
     let mut store = settings_store
         .lock()
         .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+    let previous = store.settings.general.auto_start;
     store.settings.general.auto_start = enabled;
-    store.save()?;
+    if let Err(error) = store.save() {
+        store.settings.general.auto_start = previous;
+        return Err(error);
+    }
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -7519,8 +9489,12 @@ fn set_artloom_compat_minimize_to_tray(
     let mut store = settings_store
         .lock()
         .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+    let previous = store.settings.general.minimize_to_tray;
     store.settings.general.minimize_to_tray = request.enabled;
-    store.save()?;
+    if let Err(error) = store.save() {
+        store.settings.general.minimize_to_tray = previous;
+        return Err(error);
+    }
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -8295,16 +10269,14 @@ fn artloom_compat_instantiate_workflow(
         request.workflow_id.clone(),
     );
     let serialized = serde_json::to_string(&broadcast)?;
-    let (hub, subscribed_clients) = {
+    let hub = {
         let runtime = hook_bridge
             .lock()
             .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
-        (
-            runtime.broadcast_hub.clone(),
-            runtime.broadcast_hub.subscriber_count(),
-        )
+        runtime.broadcast_hub.clone()
     };
-    if subscribed_clients == 0 {
+    let delivered_clients = broadcast_hook_bridge_messages_with_count(&hub, &[serialized]);
+    if delivered_clients == 0 {
         return structured_error(
             409,
             json!({
@@ -8314,8 +10286,6 @@ fn artloom_compat_instantiate_workflow(
             }),
         );
     }
-    broadcast_hook_bridge_messages(&hub, &[serialized]);
-
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -8323,7 +10293,8 @@ fn artloom_compat_instantiate_workflow(
             "type": "success",
             "method": "art_hook/instantiate",
             "broadcasted": true,
-            "subscribedClients": subscribed_clients,
+            "subscribedClients": delivered_clients,
+            "deliveredClients": delivered_clients,
             "params": broadcast.get("params").cloned().unwrap_or_else(|| json!({})),
         }))?,
     ))
@@ -8433,6 +10404,7 @@ fn artloom_compat_execute_art_node(
         return invalid_request("execute_art_node requires art_id");
     }
     let started = Instant::now();
+    let mut ignore_intermediate = |_| {};
     let mut result = execute_hook_bridge_art_node(
         node_id,
         art_id,
@@ -8443,6 +10415,7 @@ fn artloom_compat_execute_art_node(
         workflow_store,
         framework_registry,
         control_plane_root,
+        &mut ignore_intermediate,
     );
     record_compat_art_execution(
         run_store,
@@ -8749,8 +10722,9 @@ struct HookLiveWorkflowSnapshot {
     updated_at: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct HookCanvasRuntimeNodeState {
+    active_request_id: Option<String>,
     status: String,
     error_message: Option<String>,
     preview_data_url: Option<String>,
@@ -9110,19 +11084,49 @@ fn load_active_hook_canvas_document() -> Result<hook_canvas::HookCanvasDocument>
 
 fn set_hook_canvas_runtime_status(node_id: &str, status: &str, error_message: Option<String>) {
     if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses
-            .entry(node_id.to_owned())
-            .or_insert(HookCanvasRuntimeNodeState {
-                status: String::new(),
-                error_message: None,
-                preview_data_url: None,
-                preview_cache_token: None,
-                result_candidates: Vec::new(),
-                selected_result_index: None,
-            });
+        let state = statuses.entry(node_id.to_owned()).or_default();
         state.status = status.to_owned();
         state.error_message = error_message;
     }
+}
+
+fn begin_hook_canvas_runtime_request(node_id: &str, request_id: &str) {
+    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
+        let state = statuses.entry(node_id.to_owned()).or_default();
+        state.active_request_id = Some(request_id.to_owned());
+        state.status = "processing".to_owned();
+        state.error_message = None;
+    }
+}
+
+fn update_hook_canvas_runtime_request(
+    node_id: &str,
+    request_id: &str,
+    update: impl FnOnce(&mut HookCanvasRuntimeNodeState),
+) -> bool {
+    let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() else {
+        return false;
+    };
+    let Some(state) = statuses.get_mut(node_id) else {
+        return false;
+    };
+    if state.active_request_id.as_deref() != Some(request_id) {
+        return false;
+    }
+    update(state);
+    true
+}
+
+fn hook_canvas_runtime_request_is_current(node_id: &str, request_id: &str) -> bool {
+    hook_canvas_runtime_statuses()
+        .lock()
+        .ok()
+        .and_then(|statuses| {
+            statuses
+                .get(node_id)
+                .map(|state| state.active_request_id.as_deref() == Some(request_id))
+        })
+        .unwrap_or(false)
 }
 
 fn hook_canvas_preview_cache_token(data_url: &str) -> String {
@@ -9133,21 +11137,25 @@ fn hook_canvas_preview_cache_token(data_url: &str) -> String {
 
 fn set_hook_canvas_runtime_preview(node_id: &str, preview_data_url: Option<String>) {
     if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses
-            .entry(node_id.to_owned())
-            .or_insert(HookCanvasRuntimeNodeState {
-                status: String::new(),
-                error_message: None,
-                preview_data_url: None,
-                preview_cache_token: None,
-                result_candidates: Vec::new(),
-                selected_result_index: None,
-            });
+        let state = statuses.entry(node_id.to_owned()).or_default();
         state.preview_cache_token = preview_data_url
             .as_deref()
             .map(hook_canvas_preview_cache_token);
         state.preview_data_url = preview_data_url;
     }
+}
+
+fn set_hook_canvas_runtime_preview_for_request(
+    node_id: &str,
+    request_id: &str,
+    preview_data_url: Option<String>,
+) -> bool {
+    update_hook_canvas_runtime_request(node_id, request_id, |state| {
+        state.preview_cache_token = preview_data_url
+            .as_deref()
+            .map(hook_canvas_preview_cache_token);
+        state.preview_data_url = preview_data_url;
+    })
 }
 
 fn clear_hook_canvas_runtime_preview(node_id: &str) {
@@ -9160,19 +11168,22 @@ fn set_hook_canvas_runtime_result_candidates(
     selected_result_index: Option<usize>,
 ) {
     if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses
-            .entry(node_id.to_owned())
-            .or_insert(HookCanvasRuntimeNodeState {
-                status: String::new(),
-                error_message: None,
-                preview_data_url: None,
-                preview_cache_token: None,
-                result_candidates: Vec::new(),
-                selected_result_index: None,
-            });
+        let state = statuses.entry(node_id.to_owned()).or_default();
         state.result_candidates = candidates;
         state.selected_result_index = selected_result_index;
     }
+}
+
+fn set_hook_canvas_runtime_result_candidates_for_request(
+    node_id: &str,
+    request_id: &str,
+    candidates: Vec<hook_canvas::HookCanvasResultCandidate>,
+    selected_result_index: Option<usize>,
+) -> bool {
+    update_hook_canvas_runtime_request(node_id, request_id, |state| {
+        state.result_candidates = candidates;
+        state.selected_result_index = selected_result_index;
+    })
 }
 
 fn clear_hook_canvas_runtime_result_candidates(node_id: &str) {
@@ -9319,21 +11330,24 @@ fn finalize_execute_art_node_runtime_status(node_id: &str, response: &Value) {
     }
 }
 
-fn finalize_ahrp_runtime_status(node_id: Option<&str>, response: &Value) {
+fn finalize_ahrp_runtime_status(node_id: Option<&str>, request_id: &str, response: &Value) {
     let Some(node_id) = node_id else {
         return;
     };
-    match response.get("status").and_then(Value::as_str) {
-        Some("Success") => set_hook_canvas_runtime_status(node_id, "ready", None),
-        _ => set_hook_canvas_runtime_status(
-            node_id,
-            "error",
+    let succeeded = response.get("status").and_then(Value::as_str) == Some("Success");
+    let error_message = (!succeeded)
+        .then(|| {
             response
                 .get("error")
                 .and_then(Value::as_str)
-                .map(str::to_owned),
-        ),
-    }
+                .map(str::to_owned)
+        })
+        .flatten();
+    update_hook_canvas_runtime_request(node_id, request_id, |state| {
+        state.status = if succeeded { "ready" } else { "error" }.to_owned();
+        state.error_message = error_message;
+        state.active_request_id = None;
+    });
 }
 
 fn params_match_score(node_params: &Value, params: &BTreeMap<String, Value>) -> usize {
@@ -9670,7 +11684,13 @@ fn handle_hook_bridge_websocket_connection(
         };
         match message {
             tungstenite::Message::Text(text) => {
-                let result = handle_hook_bridge_websocket_text(
+                let mut intermediate_send_failed = false;
+                let mut emit_intermediate = |message: String| {
+                    if websocket.send(tungstenite::Message::Text(message)).is_err() {
+                        intermediate_send_failed = true;
+                    }
+                };
+                let result = handle_hook_bridge_websocket_text_with_intermediate(
                     &text,
                     &mcp_servers,
                     &tool_registry,
@@ -9682,7 +11702,11 @@ fn handle_hook_bridge_websocket_connection(
                     &control_plane_root,
                     &workflow_root,
                     &run_store,
+                    &mut emit_intermediate,
                 );
+                if intermediate_send_failed {
+                    break;
+                }
                 if result.subscription_channels.is_some() && subscription_rx.is_none() {
                     let (rx, guard) = register_hook_bridge_subscription(
                         &broadcast_hub,
@@ -9756,6 +11780,7 @@ enum AhrpOutputPreference {
     SharedMemory,
 }
 
+#[cfg(test)]
 fn handle_hook_bridge_websocket_text(
     text: &str,
     mcp_servers: &SharedMcpServerStore,
@@ -9768,6 +11793,37 @@ fn handle_hook_bridge_websocket_text(
     control_plane_root: &Path,
     workflow_root: &Path,
     run_store: &SharedRunStore,
+) -> HookBridgeWebSocketTextResult {
+    handle_hook_bridge_websocket_text_with_intermediate(
+        text,
+        mcp_servers,
+        tool_registry,
+        workflow_store,
+        artloom_settings,
+        shared_images,
+        ocr_provider,
+        framework_registry,
+        control_plane_root,
+        workflow_root,
+        run_store,
+        &mut |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_hook_bridge_websocket_text_with_intermediate(
+    text: &str,
+    mcp_servers: &SharedMcpServerStore,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+    artloom_settings: &SharedArtLoomCompatSettingsStore,
+    shared_images: &SharedImageStoreHandle,
+    ocr_provider: &OcrProviderHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    workflow_root: &Path,
+    run_store: &SharedRunStore,
+    emit_intermediate: &mut dyn FnMut(String),
 ) -> HookBridgeWebSocketTextResult {
     let request = match parse_request(text) {
         Ok(request) => request,
@@ -9838,7 +11894,9 @@ fn handle_hook_bridge_websocket_text(
             workflow_store,
             framework_registry,
             control_plane_root,
+            emit_intermediate,
         );
+        result.response = hook_bridge_response_with_phase(&result.response, "final");
         record_compat_art_execution(
             run_store,
             tool_registry,
@@ -9873,7 +11931,9 @@ fn handle_hook_bridge_websocket_text(
             shared_images,
             framework_registry,
             control_plane_root,
+            emit_intermediate,
         );
+        result.response = hook_bridge_response_with_phase(&result.response, "final");
         record_compat_art_execution(
             run_store,
             tool_registry,
@@ -9934,6 +11994,16 @@ fn handle_hook_bridge_websocket_text(
         broadcasts,
         subscription_channels,
     }
+}
+
+fn hook_bridge_response_with_phase(response: &str, phase: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(response) else {
+        return response.to_owned();
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert("phase".to_owned(), Value::String(phase.to_owned()));
+    }
+    value.to_string()
 }
 
 fn execute_hook_bridge_sync_user_arts(
@@ -10223,6 +12293,7 @@ fn execute_hook_bridge_art_node(
     workflow_store: &WorkflowStore,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
+    emit_intermediate: &mut dyn FnMut(String),
 ) -> HookBridgeWebSocketTextResult {
     let started = Instant::now();
     set_hook_canvas_runtime_status(node_id, "processing", None);
@@ -10310,12 +12381,29 @@ fn execute_hook_bridge_art_node(
         }
     }
 
-    let response = match execute_tool_with_workflows(
+    let mut preview_emitted = false;
+    let response = match execute_tool_with_workflows_and_preview(
         &tool,
         &servers,
         workflow_store,
         tool_registry,
         Value::Object(arguments),
+        |preview| {
+            let Some(output_base64) = extract_ahrp_base64_output(&preview) else {
+                return;
+            };
+            preview_emitted = true;
+            set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+            let response = execute_art_node_image_success_response(
+                node_id,
+                &output_base64,
+                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            );
+            emit_intermediate(hook_bridge_response_with_phase(
+                &response.to_string(),
+                "preview",
+            ));
+        },
     ) {
         Ok(result) => {
             let image_search_state = extract_hook_canvas_result_candidates(&result);
@@ -10338,7 +12426,9 @@ fn execute_hook_bridge_art_node(
                             Some(output_base64.as_str()),
                         );
                     }
-                    set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+                    if !preview_emitted {
+                        set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+                    }
                     execute_art_node_image_success_response(
                         node_id,
                         &output_base64,
@@ -10346,7 +12436,9 @@ fn execute_hook_bridge_art_node(
                     )
                 }
                 None => {
-                    clear_hook_canvas_runtime_preview(node_id);
+                    if !preview_emitted {
+                        clear_hook_canvas_runtime_preview(node_id);
+                    }
                     execute_art_node_success_response(
                         node_id,
                         result,
@@ -10356,7 +12448,9 @@ fn execute_hook_bridge_art_node(
             }
         }
         Err(error) => {
-            clear_hook_canvas_runtime_preview(node_id);
+            if !preview_emitted {
+                clear_hook_canvas_runtime_preview(node_id);
+            }
             clear_hook_canvas_runtime_result_candidates(node_id);
             execute_art_node_error_response(error.to_string())
         }
@@ -10365,21 +12459,32 @@ fn execute_hook_bridge_art_node(
         let _ = fs::remove_file(path);
     }
     finalize_execute_art_node_runtime_status(node_id, &response);
-    HookBridgeWebSocketTextResult::response(response.to_string())
+    HookBridgeWebSocketTextResult::response(hook_bridge_response_with_phase(
+        &response.to_string(),
+        "final",
+    ))
 }
 
 fn write_hook_bridge_cloud_input_file(input_base64: &str) -> Option<PathBuf> {
-    let bytes = loom_image_io::decode_data_url_bytes(input_base64).ok()?;
+    write_hook_bridge_input_file("cloud", input_base64).ok()
+}
+
+static HOOK_BRIDGE_INPUT_FILE_NONCE: AtomicUsize = AtomicUsize::new(1);
+
+fn write_hook_bridge_input_file(kind: &str, input_base64: &str) -> Result<PathBuf, String> {
+    let bytes =
+        loom_image_io::decode_data_url_bytes(input_base64).map_err(|error| error.to_string())?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .ok()?
+        .map_err(|error| error.to_string())?
         .as_nanos();
+    let nonce = HOOK_BRIDGE_INPUT_FILE_NONCE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "loom-cloud-input-{}-{timestamp}.png",
-        std::process::id()
+        "loom-{kind}-input-{}-{timestamp}-{nonce}.png",
+        std::process::id(),
     ));
-    fs::write(&path, bytes).ok()?;
-    Some(path)
+    fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    Ok(path)
 }
 
 fn execute_hook_bridge_native_art_node(
@@ -10677,6 +12782,75 @@ fn hook_bridge_argument_value_is_blank(value: &Value) -> bool {
     }
 }
 
+fn hook_bridge_image_data(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(value) if value.trim_start().starts_with("data:image/") => Some(value),
+        Value::Object(value) if value.get("type").and_then(Value::as_str) == Some("base64") => {
+            value.get("data").and_then(Value::as_str)
+        }
+        _ => None,
+    }
+}
+
+fn ahrp_uses_file_backed_image_inputs(execution: &ToolExecution) -> bool {
+    matches!(
+        execution,
+        ToolExecution::FrameworkArt { .. } | ToolExecution::Workflow { .. }
+    )
+}
+
+fn prepare_file_backed_ahrp_arguments(
+    arguments: &mut serde_json::Map<String, Value>,
+    input_images: std::collections::BTreeMap<String, Value>,
+    input_base64: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let mut temporary_input_files = Vec::new();
+    for (key, value) in input_images {
+        if key.trim().is_empty() || hook_bridge_argument_value_is_blank(&value) {
+            continue;
+        }
+        let value = if let Some(image_data) = hook_bridge_image_data(&value) {
+            let path = match write_hook_bridge_input_file("aux", image_data) {
+                Ok(path) => path,
+                Err(error) => {
+                    for path in temporary_input_files {
+                        let _ = fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
+            };
+            let path_value = Value::String(path.to_string_lossy().into_owned());
+            temporary_input_files.push(path);
+            path_value
+        } else {
+            value
+        };
+        arguments.insert(key, value);
+    }
+
+    let input_path = match write_hook_bridge_input_file("primary", input_base64) {
+        Ok(path) => path,
+        Err(error) => {
+            for path in temporary_input_files {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error);
+        }
+    };
+    let input_path_value = Value::String(input_path.to_string_lossy().into_owned());
+    arguments
+        .entry("input_base64".to_owned())
+        .or_insert_with(|| input_path_value.clone());
+    arguments
+        .entry("input".to_owned())
+        .or_insert_with(|| input_path_value.clone());
+    arguments
+        .entry("image".to_owned())
+        .or_insert_with(|| input_path_value.clone());
+    temporary_input_files.push(input_path);
+    Ok(temporary_input_files)
+}
+
 fn execute_hook_bridge_ahrp_process(
     request_id: &str,
     art_id: &str,
@@ -10690,16 +12864,17 @@ fn execute_hook_bridge_ahrp_process(
     shared_images: &SharedImageStoreHandle,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
+    emit_intermediate: &mut dyn FnMut(String),
 ) -> HookBridgeWebSocketTextResult {
     let started = Instant::now();
     let matched_node_id = resolve_hook_runtime_node_id(art_id, &params);
     if let Some(node_id) = matched_node_id.as_deref() {
-        set_hook_canvas_runtime_status(node_id, "processing", None);
+        begin_hook_canvas_runtime_request(node_id, request_id);
     }
     let prepared_input = match prepare_hook_bridge_ahrp_input(request_id, input, shared_images) {
         Ok(input) => input,
         Err(response) => {
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
@@ -10728,7 +12903,7 @@ fn execute_hook_bridge_ahrp_process(
                     shared_images,
                 );
                 if let Ok(response) = serde_json::from_str::<Value>(&result.response) {
-                    finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+                    finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
                 }
                 return result;
             }
@@ -10737,12 +12912,12 @@ fn execute_hook_bridge_ahrp_process(
                 "NotFound",
                 format!("Art definition not found: {art_id}"),
             );
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
         Err(error) => {
             let response = ahrp_error_response(request_id, "InternalError", error.to_string());
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
@@ -10762,7 +12937,7 @@ fn execute_hook_bridge_ahrp_process(
                 "IntegrityError",
                 format!("Art package integrity verification failed: {error}"),
             );
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     }
@@ -10772,7 +12947,7 @@ fn execute_hook_bridge_ahrp_process(
         Err(_) => {
             let response =
                 ahrp_error_response(request_id, "InternalError", "lock MCP server store");
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
@@ -10781,21 +12956,38 @@ fn execute_hook_bridge_ahrp_process(
     for (key, value) in filtered_params {
         arguments.insert(key, value);
     }
-    for (key, value) in input_images {
-        if key.trim().is_empty() || hook_bridge_argument_value_is_blank(&value) {
-            continue;
+    // Process-backed Arts receive file paths so large images are not duplicated
+    // through nested JSON/stdin boundaries. Cloud APIs use a path for multipart
+    // fields such as `{{inputs.input.path}}`.
+    let mut temporary_input_files = if ahrp_uses_file_backed_image_inputs(&tool.execution) {
+        match prepare_file_backed_ahrp_arguments(
+            &mut arguments,
+            input_images,
+            &prepared_input.input_base64,
+        ) {
+            Ok(paths) => paths,
+            Err(error) => {
+                let response = ahrp_error_response(
+                    request_id,
+                    "BadRequest",
+                    format!("Could not materialize Art image input: {error}"),
+                );
+                finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
+                return HookBridgeWebSocketTextResult::response(response.to_string());
+            }
         }
-        arguments.insert(key, value);
-    }
-    arguments
-        .entry("input_base64".to_owned())
-        .or_insert_with(|| Value::String(prepared_input.input_base64.clone()));
-    // For cloud APIs the input must be a real file path so multipart file fields
-    // (e.g. `{{inputs.input.path}}`) upload the actual image. Without this the
-    // template resolves to the raw AHRP input object and PhotoRoom-style APIs
-    // reject the call with "missing_image". Mirrors the HTTP execute_art_node
-    // path in `execute_hook_bridge_art_node`.
-    let mut temporary_input_files = Vec::new();
+    } else {
+        for (key, value) in input_images {
+            if key.trim().is_empty() || hook_bridge_argument_value_is_blank(&value) {
+                continue;
+            }
+            arguments.insert(key, value);
+        }
+        arguments
+            .entry("input_base64".to_owned())
+            .or_insert_with(|| Value::String(prepared_input.input_base64.clone()));
+        Vec::new()
+    };
     if matches!(&tool.execution, ToolExecution::CloudApi { .. }) {
         if let Some(input_path) = write_hook_bridge_cloud_input_file(&prepared_input.input_base64) {
             let temporary_input_file = input_path.clone();
@@ -10818,24 +13010,57 @@ fn execute_hook_bridge_ahrp_process(
             .or_insert(prepared_input.tool_input);
     }
 
-    let response = match execute_tool_with_workflows(
+    let mut preview_emitted = false;
+    let response = match execute_tool_with_workflows_and_preview(
         &tool,
         &servers,
         workflow_store,
         tool_registry,
         Value::Object(arguments),
+        |preview| {
+            let Some(output_base64) = extract_ahrp_base64_output(&preview) else {
+                return;
+            };
+            preview_emitted = true;
+            if let Some(node_id) = matched_node_id.as_deref() {
+                set_hook_canvas_runtime_preview_for_request(
+                    node_id,
+                    request_id,
+                    Some(output_base64.clone()),
+                );
+            }
+            let mut response = ahrp_process_output_response(
+                request_id,
+                &output_base64,
+                prepared_input.width,
+                prepared_input.height,
+                started.elapsed().as_millis(),
+                prepared_input.output_preference,
+                shared_images,
+            );
+            if let Some(object) = response.as_object_mut() {
+                object.insert("phase".to_owned(), Value::String("preview".to_owned()));
+            }
+            emit_intermediate(response.to_string());
+        },
     ) {
         Ok(result) => {
             let image_search_state = extract_hook_canvas_result_candidates(&result);
             if let Some(node_id) = matched_node_id.as_deref() {
                 if let Some((candidates, selected_result_index)) = image_search_state.clone() {
-                    set_hook_canvas_runtime_result_candidates(
+                    set_hook_canvas_runtime_result_candidates_for_request(
                         node_id,
+                        request_id,
                         candidates,
                         selected_result_index,
                     );
                 } else {
-                    clear_hook_canvas_runtime_result_candidates(node_id);
+                    set_hook_canvas_runtime_result_candidates_for_request(
+                        node_id,
+                        request_id,
+                        Vec::new(),
+                        None,
+                    );
                 }
             }
             match extract_ahrp_base64_output(&result) {
@@ -10844,14 +13069,22 @@ fn execute_hook_bridge_ahrp_process(
                         if let Some((candidates, selected_result_index)) =
                             image_search_state.as_ref()
                         {
-                            persist_hook_canvas_image_search_state(
+                            if hook_canvas_runtime_request_is_current(node_id, request_id) {
+                                persist_hook_canvas_image_search_state(
+                                    node_id,
+                                    candidates,
+                                    *selected_result_index,
+                                    Some(output.as_str()),
+                                );
+                            }
+                        }
+                        if !preview_emitted {
+                            set_hook_canvas_runtime_preview_for_request(
                                 node_id,
-                                candidates,
-                                *selected_result_index,
-                                Some(output.as_str()),
+                                request_id,
+                                Some(output.clone()),
                             );
                         }
-                        set_hook_canvas_runtime_preview(node_id, Some(output.clone()));
                     }
                     let mut response = ahrp_process_output_response(
                         request_id,
@@ -10875,7 +13108,9 @@ fn execute_hook_bridge_ahrp_process(
                 }
                 None => {
                     if let Some(node_id) = matched_node_id.as_deref() {
-                        clear_hook_canvas_runtime_preview(node_id);
+                        if !preview_emitted {
+                            set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
+                        }
                     }
                     let detail = extract_execution_text_content(&result)
                         .map(|text| text.trim().to_owned())
@@ -10899,8 +13134,15 @@ fn execute_hook_bridge_ahrp_process(
         }
         Err(error) => {
             if let Some(node_id) = matched_node_id.as_deref() {
-                clear_hook_canvas_runtime_preview(node_id);
-                clear_hook_canvas_runtime_result_candidates(node_id);
+                if !preview_emitted {
+                    set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
+                }
+                set_hook_canvas_runtime_result_candidates_for_request(
+                    node_id,
+                    request_id,
+                    Vec::new(),
+                    None,
+                );
             }
             ahrp_error_response(request_id, "EngineError", error.to_string())
         }
@@ -10908,7 +13150,7 @@ fn execute_hook_bridge_ahrp_process(
     for path in temporary_input_files {
         let _ = fs::remove_file(path);
     }
-    finalize_ahrp_runtime_status(matched_node_id.as_deref(), &response);
+    finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
     HookBridgeWebSocketTextResult::response(response.to_string())
 }
 
@@ -10932,7 +13174,11 @@ fn execute_hook_bridge_native_ahrp_process(
         match result.output_base64 {
             Some(output_base64) => {
                 if let Some(node_id) = matched_node_id {
-                    set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
+                    set_hook_canvas_runtime_preview_for_request(
+                        node_id,
+                        request_id,
+                        Some(output_base64.clone()),
+                    );
                 }
                 ahrp_process_output_response(
                     request_id,
@@ -10946,7 +13192,7 @@ fn execute_hook_bridge_native_ahrp_process(
             }
             None => {
                 if let Some(node_id) = matched_node_id {
-                    clear_hook_canvas_runtime_preview(node_id);
+                    set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
                 }
                 ahrp_error_response(
                     request_id,
@@ -10957,7 +13203,7 @@ fn execute_hook_bridge_native_ahrp_process(
         }
     } else {
         if let Some(node_id) = matched_node_id {
-            clear_hook_canvas_runtime_preview(node_id);
+            set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
         }
         ahrp_error_response(
             request_id,
@@ -11006,20 +13252,35 @@ fn drain_hook_bridge_broadcasts(
 }
 
 fn broadcast_hook_bridge_messages(hub: &HookBridgeBroadcastHub, broadcasts: &[String]) {
+    let _ = broadcast_hook_bridge_messages_with_count(hub, broadcasts);
+}
+
+fn broadcast_hook_bridge_messages_with_count(
+    hub: &HookBridgeBroadcastHub,
+    broadcasts: &[String],
+) -> usize {
     if broadcasts.is_empty() {
-        return;
+        return 0;
     }
     let Ok(mut subscribers) = hub.subscribers.lock() else {
-        return;
+        return 0;
     };
+    let mut delivered = 0;
     subscribers.retain(|subscriber| {
-        broadcasts.iter().all(|broadcast| {
+        let mut accepted = false;
+        let retained = broadcasts.iter().all(|broadcast| {
             if !subscriber_accepts_broadcast(subscriber, broadcast) {
                 return true;
             }
+            accepted = true;
             subscriber.tx.send(broadcast.clone()).is_ok()
-        })
+        });
+        if retained && accepted {
+            delivered += 1;
+        }
+        retained
     });
+    delivered
 }
 
 fn broadcast_hook_bridge_json(hook_bridge: &SharedHookBridgeRuntime, broadcast: Value) {
@@ -11116,6 +13377,14 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "tool_id": id,
             }),
         ),
+        ToolRegistryError::ParameterBinding { id, reason } => structured_error(
+            400,
+            json!({
+                "code": "art_parameter_binding_error",
+                "message": reason,
+                "tool_id": id,
+            }),
+        ),
         ToolRegistryError::AmbiguousToolId { id } => structured_error(
             409,
             json!({
@@ -11142,170 +13411,11 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "server_id": server_id,
             }),
         ),
-        ToolRegistryError::CliWrapperFailed { id, reason } => structured_error(
-            500,
-            json!({
-                "code": "cli_wrapper_failed",
-                "message": reason,
-                "tool_id": id,
-            }),
-        ),
         ToolRegistryError::Mcp(error) => structured_error(
             500,
             json!({
                 "code": "mcp_execution_error",
                 "message": error.to_string(),
-            }),
-        ),
-        ToolRegistryError::ScriptNotFound { id, path } => structured_error(
-            404,
-            json!({
-                "code": "script_not_found",
-                "message": format!("script `{path}` for tool `{id}` was not found"),
-                "tool_id": id,
-                "path": path,
-            }),
-        ),
-        ToolRegistryError::ScriptSpawn { id, path, source } => structured_error(
-            500,
-            json!({
-                "code": "script_execution_error",
-                "message": source.to_string(),
-                "tool_id": id,
-                "path": path,
-            }),
-        ),
-        ToolRegistryError::ScriptTimedOut {
-            id,
-            path,
-            timeout_ms,
-        } => structured_error(
-            500,
-            json!({
-                "code": "script_execution_timeout",
-                "message": format!("script timed out after {timeout_ms}ms"),
-                "tool_id": id,
-                "path": path,
-                "timeout_ms": timeout_ms,
-            }),
-        ),
-        ToolRegistryError::ScriptFailed {
-            id,
-            path,
-            code,
-            stderr,
-        } => structured_error(
-            500,
-            json!({
-                "code": "script_execution_error",
-                "message": format!("script exited with code {code:?}: {stderr}"),
-                "tool_id": id,
-                "path": path,
-                "exit_code": code,
-            }),
-        ),
-        ToolRegistryError::ScriptEmptyStdout { id, path } => structured_error(
-            500,
-            json!({
-                "code": "script_execution_error",
-                "message": "script returned no stdout",
-                "tool_id": id,
-                "path": path,
-            }),
-        ),
-        ToolRegistryError::ScriptJson {
-            id,
-            path,
-            source,
-            stdout,
-        } => structured_error(
-            500,
-            json!({
-                "code": "script_execution_error",
-                "message": format!("script returned invalid JSON: {source}"),
-                "tool_id": id,
-                "path": path,
-                "stdout": stdout,
-            }),
-        ),
-        ToolRegistryError::PythonArtNotFound { id, art_id } => structured_error(
-            404,
-            json!({
-                "code": "python_art_not_found",
-                "message": format!("Python Art `{art_id}` for tool `{id}` was not found"),
-                "tool_id": id,
-                "art_id": art_id,
-            }),
-        ),
-        ToolRegistryError::PythonArtLauncherNotFound { id } => structured_error(
-            500,
-            json!({
-                "code": "python_art_launcher_not_found",
-                "message": format!("Python Art launcher for tool `{id}` was not found"),
-                "tool_id": id,
-            }),
-        ),
-        ToolRegistryError::PythonArtSpawn { id, art_id, source } => structured_error(
-            500,
-            json!({
-                "code": "python_art_execution_error",
-                "message": source.to_string(),
-                "tool_id": id,
-                "art_id": art_id,
-            }),
-        ),
-        ToolRegistryError::PythonArtFailed {
-            id,
-            art_id,
-            code,
-            stderr,
-        } => structured_error(
-            500,
-            json!({
-                "code": "python_art_execution_error",
-                "message": format!("Python Art exited with code {code:?}: {stderr}"),
-                "tool_id": id,
-                "art_id": art_id,
-                "exit_code": code,
-            }),
-        ),
-        ToolRegistryError::PythonArtEmptyStdout { id, art_id } => structured_error(
-            500,
-            json!({
-                "code": "python_art_execution_error",
-                "message": "Python Art returned no stdout",
-                "tool_id": id,
-                "art_id": art_id,
-            }),
-        ),
-        ToolRegistryError::PythonArtJson {
-            id,
-            art_id,
-            source,
-            stdout,
-        } => structured_error(
-            500,
-            json!({
-                "code": "python_art_execution_error",
-                "message": format!("Python Art returned invalid JSON: {source}"),
-                "tool_id": id,
-                "art_id": art_id,
-                "stdout": stdout,
-            }),
-        ),
-        ToolRegistryError::PythonArtStatus {
-            id,
-            art_id,
-            status,
-            message,
-        } => structured_error(
-            500,
-            json!({
-                "code": "python_art_execution_error",
-                "message": message,
-                "tool_id": id,
-                "art_id": art_id,
-                "status": status,
             }),
         ),
         ToolRegistryError::CloudInvalidMethod { id, method } => structured_error(
@@ -12311,12 +14421,372 @@ mod tests {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn platform_global_art_ids_use_the_na_numeric_contract() {
+        assert!(is_platform_global_art_id("NA40000000000"));
+        assert!(!is_platform_global_art_id("local-art"));
+        assert!(!is_platform_global_art_id("NA123"));
+        assert!(!is_platform_global_art_id("NB40000000000"));
+        assert!(!is_platform_global_art_id("NA4000000000x"));
+    }
+
+    #[test]
+    fn publisher_ids_accept_the_default_test_contract() {
+        assert!(is_platform_publisher_id(DEFAULT_TEST_PUBLISHER_ID));
+        assert!(is_platform_publisher_id("NU10000000000"));
+        assert!(!is_platform_publisher_id("L000000000"));
+        assert!(!is_platform_publisher_id("L000000000x"));
+    }
+
+    #[test]
+    fn device_registry_bootstraps_one_protected_local_host() {
+        let root = unique_temp_dir("local-host-device");
+        let path = root.join("settings").join("devices.json");
+        let address = "127.0.0.1:18766".parse().expect("local address");
+        let store = DeviceRegistryStore::new(path.clone(), address);
+        let local = store
+            .devices
+            .get("device-000-local")
+            .expect("local host device");
+        assert!(local.is_local);
+        assert_eq!(local.address, "127.0.0.1:18766");
+        assert_eq!(local.approval, "approved");
+        drop(store);
+
+        let reloaded = DeviceRegistryStore::new(path, address);
+        assert_eq!(reloaded.devices.len(), 1);
+        let registry = Arc::new(Mutex::new(reloaded));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        let (status, _) = remove_managed_device("device-000-local", &registry, &hook_bridge)
+            .expect("protected local device response");
+        assert_eq!(status, 400);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn device_update_persists_enabled_state_and_removal() {
+        let root = unique_temp_dir("device-update");
+        let registry = Arc::new(Mutex::new(DeviceRegistryStore::new(
+            root.join("settings").join("devices.json"),
+            "127.0.0.1:18766".parse().expect("local address"),
+        )));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        add_managed_device(
+            r#"{"name":"iPad","kind":"tablet","address":"192.168.1.36"}"#,
+            "approved",
+            &registry,
+            &hook_bridge,
+        )
+        .expect("add remote device");
+        let remote_id = registry
+            .lock()
+            .expect("device registry")
+            .devices
+            .values()
+            .find(|device| !device.is_local)
+            .expect("remote device")
+            .id
+            .clone();
+        update_managed_device(
+            &remote_id,
+            r#"{"name":"Studio iPad","kind":"tablet","address":"192.168.1.37","enabled":false}"#,
+            &registry,
+            &hook_bridge,
+        )
+        .expect("disable remote device");
+        let updated = registry
+            .lock()
+            .expect("device registry")
+            .devices
+            .get(&remote_id)
+            .expect("updated remote device")
+            .clone();
+        assert_eq!(updated.name, "Studio iPad");
+        assert_eq!(updated.address, "192.168.1.37");
+        assert!(!updated.enabled);
+        remove_managed_device(&remote_id, &registry, &hook_bridge).expect("remove remote device");
+        assert_eq!(registry.lock().expect("device registry").devices.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hook_art_lists_restore_workflow_param_widget_schema_from_child_art() {
+        let root = unique_temp_dir("workflow-param-widget-schema");
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+
+        let mut child = ToolDefinition::new(
+            "color-transfer",
+            "颜色迁移",
+            "颜色迁移子节点",
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
+            },
+        );
+        child.params = vec![json!({
+            "id": "strength",
+            "label": "迁移强度",
+            "widget": "slider",
+            "data_type": "number",
+            "default": 100,
+            "min": 0,
+            "max": 100,
+            "step": 1,
+            "group": "基础"
+        })];
+        child.outputs = vec![json!({ "name": "output", "type": "image" })];
+        child.metadata = Some(json!({
+            "capabilities": { "preview": "shader" }
+        }));
+        tool_registry.save_tool(child).expect("save child Art");
+
+        workflow_store
+            .save_workflow(
+                "transfer-composite",
+                r#"name: Transfer Composite
+nodes:
+  - id: transfer
+    uses: color-transfer
+    with:
+      strength: 100
+"#,
+            )
+            .expect("save workflow");
+
+        let mut composite = ToolDefinition::new(
+            "transfer-composite-art",
+            "颜色迁移复合 Art",
+            "旧版复合 Art 参数元数据不完整",
+            ToolExecution::Workflow {
+                workflow_id: "transfer-composite".to_owned(),
+                workflow_bindings: Some(WorkflowExecutionBindings {
+                    inputs: vec![loom_tool_registry::WorkflowInputBinding {
+                        workflow_param: "strength".to_owned(),
+                        node_id: "transfer".to_owned(),
+                        target: "strength".to_owned(),
+                        kind: "param".to_owned(),
+                    }],
+                    primary_output: None,
+                    preview_output: Some(loom_tool_registry::WorkflowOutputBinding {
+                        node_id: "transfer".to_owned(),
+                        output: "output".to_owned(),
+                        kind: "node_result".to_owned(),
+                    }),
+                    preview_required_nodes: vec!["transfer".to_owned()],
+                    ..WorkflowExecutionBindings::default()
+                }),
+            },
+        );
+        composite.params = vec![json!({
+            "id": "strength",
+            "name": "strength",
+            "label": "迁移强度",
+            "widget": "number",
+            "type": "number",
+            "default": 35
+        })];
+        composite.inputs = vec![
+            json!({
+                "name": "input",
+                "label": "源图",
+                "type": "image",
+                "executionType": "image_buffer"
+            }),
+            json!({
+                "name": "input_2",
+                "label": "参考图",
+                "type": "image",
+                "executionType": "image_buffer"
+            }),
+        ];
+        composite.metadata = Some(json!({
+            "artloomCompat": {
+                "source": "loom-local",
+                "autoProcess": true
+            }
+        }));
+        tool_registry
+            .save_tool(composite)
+            .expect("save composite Art");
+
+        for (status, body) in [
+            list_artloom_compat_arts("list_arts", &tool_registry, &workflow_store)
+                .expect("list Hook Arts"),
+            list_enabled_artloom_compat_arts(&tool_registry, &workflow_store)
+                .expect("list enabled Hook Arts"),
+        ] {
+            assert_eq!(status, 200);
+            let response: Value = serde_json::from_str(&body).expect("parse Hook Art response");
+            let param = &response["arts"][0]["params"][0];
+            assert_eq!(param["id"], "strength");
+            assert_eq!(param["label"], "迁移强度");
+            assert_eq!(param["default"], 35);
+            assert_eq!(param["widget"], "slider");
+            assert_eq!(param["data_type"], "number");
+            assert_eq!(param["min"], 0);
+            assert_eq!(param["max"], 100);
+            assert_eq!(param["step"], 1);
+            assert_eq!(param["group"], "基础");
+            assert_eq!(
+                response["arts"][0]["metadata"]["capabilities"]["preview"],
+                "shader"
+            );
+            assert_eq!(
+                response["arts"][0]["metadata"]["capabilities"]["requiresFormalExecution"],
+                true
+            );
+            assert_eq!(
+                response["arts"][0]["metadata"]["capabilities"]["shaderInput"],
+                "input"
+            );
+            assert_eq!(
+                response["arts"][0]["metadata"]["capabilities"]["shaderReferenceInput"],
+                "input_2"
+            );
+        }
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn local_publisher_identity_is_created_and_reset_without_a_store() {
+        let root = unique_temp_dir("default-publisher-identity");
+        let (identity, key) = ensure_local_publisher_identity(&root).expect("create identity");
+        assert_eq!(identity.user_id, DEFAULT_TEST_PUBLISHER_ID);
+        assert_eq!(identity.current_key_id, key.key_id);
+        assert_eq!(identity.public_key, key.public_key);
+
+        let (reset_identity, reset_key) =
+            reset_local_publisher_identity(&root, &identity).expect("reset identity");
+        assert_eq!(reset_identity.user_id, DEFAULT_TEST_PUBLISHER_ID);
+        assert_ne!(reset_identity.current_key_id, identity.current_key_id);
+        assert_ne!(reset_identity.public_key, identity.public_key);
+        assert_eq!(reset_identity.current_key_id, reset_key.key_id);
+
+        let (reloaded_identity, reloaded_key) =
+            ensure_local_publisher_identity(&root).expect("reload identity");
+        assert_eq!(
+            reloaded_identity.current_key_id,
+            reset_identity.current_key_id
+        );
+        assert_eq!(reloaded_key.private_key, reset_key.private_key);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn remote_art_store_catalog_preserves_platform_global_ids() {
+        let catalog: RemoteArtStoreCatalog = serde_json::from_str(
+            r#"{"arts":[{"id":"sample-art","qualifiedId":"neuro.official/sample-art","globalId":"NA40000000000","official":true}]}"#,
+        )
+        .expect("catalog should deserialize");
+        assert_eq!(catalog.arts[0].global_id.as_deref(), Some("NA40000000000"));
+        assert!(catalog.arts[0].official);
+
+        let serialized = serde_json::to_value(catalog).expect("catalog should serialize");
+        assert_eq!(serialized["arts"][0]["globalId"], "NA40000000000");
+        assert_eq!(serialized["arts"][0]["official"], true);
+    }
+
+    #[test]
+    fn publish_route_rejects_arts_that_are_not_locally_authored() {
+        let root = unique_temp_dir("publish-ownership");
+        let tools = ToolRegistry::new(root.join("tools"));
+        let execution = || ToolExecution::CloudApi {
+            endpoint: "https://example.com".to_owned(),
+            method: "GET".to_owned(),
+            content_type: None,
+            headers: None,
+            body: None,
+        };
+
+        let mut third_party = ToolDefinition::new(
+            "third-party-art",
+            "Third Party",
+            "Published elsewhere",
+            execution(),
+        );
+        third_party.metadata = Some(json!({
+            "packageSecurity": {
+                "version": "1.0.0",
+                "publisher": { "id": "publisher.example", "name": "Publisher" }
+            }
+        }));
+        tools.save_tool(third_party).unwrap();
+
+        let (status, body) =
+            publish_art_to_store(r#"{"artId":"third-party-art"}"#, &tools, &root).unwrap();
+        assert_eq!(status, 403);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["error"]["code"],
+            "art_publish_not_owned"
+        );
+
+        let legacy = ToolDefinition::new(
+            "legacy-art",
+            "Legacy",
+            "No local authoring metadata",
+            execution(),
+        );
+        tools.save_tool(legacy).unwrap();
+        let (status, body) =
+            publish_art_to_store(r#"{"artId":"legacy-art"}"#, &tools, &root).unwrap();
+        assert_eq!(status, 403);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["error"]["code"],
+            "art_publish_not_owned"
+        );
+
+        let mut local = ToolDefinition::new("local-art", "Local", "Locally authored", execution());
+        local.metadata = Some(json!({
+            "packageSecurity": { "version": "0.1.0" },
+            "authoring": { "origin": "local", "owner": "local-user" }
+        }));
+        tools.save_tool(local).unwrap();
+        let (status, body) =
+            publish_art_to_store(r#"{"artId":"local-art"}"#, &tools, &root).unwrap();
+        assert_eq!(status, 400);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["error"]["code"],
+            "art_store_not_configured"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn platform_global_art_ids_are_applied_as_daemon_managed_metadata() {
+        let mut tool = ToolDefinition::new(
+            "local-art",
+            "Local Art",
+            "Locally authored",
+            ToolExecution::CloudApi {
+                endpoint: "https://example.com".to_owned(),
+                method: "GET".to_owned(),
+                content_type: None,
+                headers: None,
+                body: None,
+            },
+        );
+        apply_platform_global_art_id(&mut tool, "user-supplied");
+        assert!(tool
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("art"))
+            .is_none());
+
+        apply_platform_global_art_id(&mut tool, "NA40000000000");
+        assert_eq!(
+            tool.metadata.as_ref().and_then(|metadata| metadata
+                .get("art")
+                .and_then(|art| art.get("globalId"))
+                .and_then(Value::as_str)),
+            Some("NA40000000000")
+        );
+    }
+
     fn framework_package_zip(id: &str, version: &str) -> Vec<u8> {
         let command = match id {
-            "cli_wrapper" => "runtime/loom-framework-cli-wrapper.exe",
+            "process" => "runtime/loom-framework-process.exe",
             "cloud_api" => "runtime/loom-framework-cloud-api.exe",
-            "script" => "runtime/loom-framework-script.exe",
-            "python_art" => "runtime/loom-framework-python-art.exe",
             "mcp" => "runtime/loom-framework-mcp.exe",
             "workflow" => "runtime/loom-framework-workflow.exe",
             other => panic!("unsupported test framework: {other}"),
@@ -12360,8 +14830,11 @@ mod tests {
             "name": "Daemon package Art",
             "description": "daemon package integrity fixture",
             "enabled": true,
-            "execution": { "type": "cli_wrapper", "command": "bin/tool.exe", "args": [] },
-            "metadata": { "packageSecurity": { "version": version } }
+            "execution": { "type": "framework_art", "framework": "process" },
+            "metadata": {
+                "dependencies": { "framework": "process" },
+                "packageSecurity": { "version": version }
+            }
         });
         let mut bytes = Vec::new();
         {
@@ -12373,6 +14846,12 @@ mod tests {
                 .unwrap();
             writer.start_file("bin/tool.exe", options).unwrap();
             writer.write_all(payload).unwrap();
+            writer.start_file("art.runtime.json", options).unwrap();
+            writer
+                .write_all(
+                    br#"{"protocolVersion":"loom.art.runtime.v1","entry":{"command":"bin/tool.exe","args":[]}}"#,
+                )
+                .unwrap();
             writer.finish().unwrap();
         }
         bytes
@@ -12386,7 +14865,7 @@ mod tests {
         let install_body = serde_json::to_string(&json!({
             "zipBase64": format!(
                 "data:application/zip;base64,{}",
-                BASE64.encode(framework_package_zip("script", "1.0.0"))
+                BASE64.encode(framework_package_zip("process", "1.0.0"))
             )
         }))
         .expect("install body");
@@ -12397,14 +14876,14 @@ mod tests {
             "1.0.0"
         );
 
-        let (status, body) = set_framework_enabled("script", false, &registry).expect("disable");
+        let (status, body) = set_framework_enabled("process", false, &registry).expect("disable");
         assert_eq!(status, 200);
         assert_eq!(
             serde_json::from_str::<Value>(&body).expect("disable response")["framework"]["enabled"],
             false
         );
 
-        let (status, body) = set_framework_enabled("script", true, &registry).expect("enable");
+        let (status, body) = set_framework_enabled("process", true, &registry).expect("enable");
         assert_eq!(status, 200);
         assert_eq!(
             serde_json::from_str::<Value>(&body).expect("enable response")["framework"]["ready"],
@@ -12412,25 +14891,25 @@ mod tests {
         );
 
         let upgrade_body = serde_json::to_string(&json!({
-            "zipBase64": BASE64.encode(framework_package_zip("script", "2.0.0"))
+            "zipBase64": BASE64.encode(framework_package_zip("process", "2.0.0"))
         }))
         .expect("upgrade body");
         let (status, body) =
-            upgrade_framework_package("script", &upgrade_body, &registry).expect("upgrade");
+            upgrade_framework_package("process", &upgrade_body, &registry).expect("upgrade");
         assert_eq!(status, 200);
         assert_eq!(
             serde_json::from_str::<Value>(&body).expect("upgrade response")["framework"]["version"],
             "2.0.0"
         );
 
-        let (status, body) = uninstall_framework("script", &registry).expect("uninstall");
+        let (status, body) = uninstall_framework("process", &registry).expect("uninstall");
         assert_eq!(status, 200);
         assert_eq!(
             serde_json::from_str::<Value>(&body).expect("uninstall response")["framework"]
                 ["installed"],
             false
         );
-        assert!(!root.join("frameworks").join("script").exists());
+        assert!(!root.join("frameworks").join("process").exists());
 
         fs::remove_dir_all(&root).ok();
     }
@@ -12440,7 +14919,7 @@ mod tests {
         let root = unique_temp_dir("framework-permission-doctor");
         let registry = FrameworkRegistry::new(&root);
         registry
-            .install_framework_package_from_zip(&framework_package_zip("script", "1.0.0"))
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
             .expect("install framework");
         let (status, body) = framework_doctor(&registry).expect("framework doctor");
         assert_eq!(status, 200);
@@ -12451,25 +14930,112 @@ mod tests {
             body["enforcementMatrix"]["directNetwork"],
             "not-os-enforced"
         );
-        let script = body["frameworks"]
+        let process = body["frameworks"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|framework| framework["id"] == "script")
-            .expect("script status");
-        assert_eq!(script["strictCompatible"], true);
-        assert!(script["declaredPermissions"].is_array());
+            .find(|framework| framework["id"] == "process")
+            .expect("process status");
+        assert_eq!(process["strictCompatible"], true);
+        assert!(process["declaredPermissions"].is_array());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn bundled_catalog_art_install_preserves_strict_external_trust_policy() {
+        let root = unique_temp_dir("bundled-catalog-art-install");
+        let zip = art_package_zip("bundled-catalog-art", "1.0.0", b"bundled");
+        let package_sha256 = sha256_bytes(&zip);
+        let config = DaemonConfig::localhost(0)
+            .with_bundled_art_sha256_allowlist([package_sha256])
+            .expect("configure bundled Art allowlist");
+        let runtime = test_daemon_runtime_from_config(&root, config);
+        let mut trust = loom_plugin_security::TrustStore::default();
+        trust.set_policy(TrustPolicy::RequireTrusted);
+        trust
+            .write_atomic(&root.join("plugin-trust.json"))
+            .expect("write strict trust policy");
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
+        let encoded = format!("data:application/zip;base64,{}", BASE64.encode(&zip));
+
+        let external_body = serde_json::to_string(&json!({ "zipBase64": encoded.clone() }))
+            .expect("external install body");
+        let (status, body) = install_art(
+            &external_body,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+            &runtime.bundled_art_sha256_allowlist,
+        )
+        .expect("external install response");
+        assert_eq!(status, 400);
+        assert!(body.contains("trust policy rejected package status Unsigned"));
+
+        let forged_zip = art_package_zip("forged-bundled-art", "1.0.0", b"forged");
+        let forged_body = serde_json::to_string(&json!({
+            "zipBase64": format!("data:application/zip;base64,{}", BASE64.encode(forged_zip)),
+            "bundledCatalog": true,
+        }))
+        .expect("forged bundled install body");
+        let (status, body) = install_art(
+            &forged_body,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+            &runtime.bundled_art_sha256_allowlist,
+        )
+        .expect("forged bundled install response");
+        assert_eq!(status, 403);
+        assert!(body.contains("bundled_art_not_allowlisted"));
+
+        let bundled_body = serde_json::to_string(&json!({
+            "zipBase64": encoded,
+            "bundledCatalog": true,
+        }))
+        .expect("bundled install body");
+        let (status, body) = install_art(
+            &bundled_body,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+            &runtime.bundled_art_sha256_allowlist,
+        )
+        .expect("bundled install response");
+        assert_eq!(status, 200, "body={body}");
+        assert!(runtime
+            .tool_registry
+            .get_tool("bundled-catalog-art")
+            .unwrap()
+            .is_some());
+        drop(runtime);
         fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn authored_art_handlers_cover_create_package_rollback_and_uninstall() {
         let root = unique_temp_dir("authored-art-handlers");
+        let source_root = root.join("author-source");
+        fs::create_dir_all(source_root.join("nested")).expect("create authored source");
+        fs::write(source_root.join("main.py"), "print('authored source')\n")
+            .expect("write authored source");
+        fs::write(source_root.join("nested/helper.txt"), "helper\n")
+            .expect("write authored helper");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let mut trust = loom_plugin_security::TrustStore::default();
+        trust.set_policy(TrustPolicy::RequireSigned);
+        trust
+            .write_atomic(&root.join("plugin-trust.json"))
+            .expect("write strict authored Art trust policy");
         runtime
             .framework_registry
-            .install_framework_package_from_zip(&framework_package_zip("script", "1.0.0"))
-            .expect("install script framework");
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
         let request = |version: &str| {
             serde_json::to_string(&json!({
                 "tool": {
@@ -12477,16 +15043,22 @@ mod tests {
                     "name": "Authored Art",
                     "description": "daemon authoring route fixture",
                     "enabled": true,
-                    "execution": { "type": "framework_art", "framework": "script" },
+                    "execution": { "type": "framework_art", "framework": "process" },
                     "metadata": {
-                        "dependencies": { "framework": "script" },
+                        "dependencies": { "framework": "process" },
                         "packageSecurity": { "version": version }
                     }
                 },
                 "runtime": {
                     "protocolVersion": "loom.art.runtime.v1",
                     "entry": { "command": "runtime.cmd", "args": [] }
-                }
+                },
+                "files": [{
+                    "path": "runtime/adapter.txt",
+                    "content": "adapter"
+                }],
+                "sourceDirectory": source_root,
+                "sourceDirectoryTarget": "runtime/plugin"
             }))
             .unwrap()
         };
@@ -12499,6 +15071,19 @@ mod tests {
         )
         .expect("create v1");
         assert_eq!(status, 200, "body={first}");
+        let first_response: Value = serde_json::from_str(&first).expect("parse create response");
+        assert_eq!(first_response["report"]["trustStatus"], "unsigned");
+        let installed = runtime
+            .tool_registry
+            .get_tool("authored-art")
+            .expect("read authored Art")
+            .expect("authored Art registered");
+        loom_tool_registry::install::verify_art_package_integrity(
+            &root,
+            &installed,
+            &runtime.framework_registry,
+        )
+        .expect("verify locally authored Art under strict trust policy");
         let (status, second) = create_authored_art(
             &request("2.0.0"),
             &runtime.tool_registry,
@@ -12513,9 +15098,36 @@ mod tests {
             .expect("package authored Art");
         assert_eq!(status, 200);
         let package: Value = serde_json::from_str(&package).unwrap();
-        assert!(package["zipBase64"]
+        let zip_base64 = package["zipBase64"]
             .as_str()
-            .is_some_and(|value| value.starts_with("data:application/zip;base64,")));
+            .expect("authored package data URL");
+        assert!(zip_base64.starts_with("data:application/zip;base64,"));
+        let zip_bytes = loom_image_io::decode_data_url_bytes(zip_base64).expect("decode package");
+        let mut archive = zip::ZipArchive::new(Cursor::new(zip_bytes)).expect("open authored zip");
+        for expected in [
+            "manifest.json",
+            "art.runtime.json",
+            "runtime/adapter.txt",
+            "runtime/plugin/main.py",
+            "runtime/plugin/nested/helper.txt",
+        ] {
+            assert!(archive.by_name(expected).is_ok(), "missing {expected}");
+        }
+
+        let invalid_files = request("3.0.0").replace("runtime/adapter.txt", "../escape.txt");
+        let (status, body) = create_authored_art(
+            &invalid_files,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("reject unsafe authored file");
+        assert_eq!(status, 400, "body={body}");
+        assert!(
+            body.contains("invalid authored Art file path"),
+            "body={body}"
+        );
 
         let (status, rollback) = rollback_art(
             "authored-art",
@@ -12531,6 +15143,19 @@ mod tests {
             rollback["tool"]["metadata"]["packageSecurity"]["version"],
             "1.0.0"
         );
+
+        let (status, updated) = update_art_version(
+            "authored-art",
+            r#"{"version":"2.0.0"}"#,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("activate exact authored Art version");
+        assert_eq!(status, 200, "body={updated}");
+        let updated: Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated["currentVersion"], "2.0.0");
 
         let (status, body) = uninstall_art(
             "authored-art",
@@ -12548,6 +15173,268 @@ mod tests {
         assert!(!root.join("arts/authored-art").exists());
         drop(runtime);
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_management_enforces_ownership_defaults_and_global_secret_references() {
+        let root = unique_temp_dir("art-management-settings");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        CredentialStore::new(&root)
+            .upsert(CredentialInput {
+                name: "cloudflare_key".to_owned(),
+                value: "never-persist-this-plaintext".to_owned(),
+                value_type: CredentialValueType::String,
+                scope: CredentialScope::default(),
+                expires_at: None,
+            })
+            .expect("save global credential");
+        for (name, value, value_type) in [
+            ("default_query", "ready", CredentialValueType::String),
+            ("image_quality", "80", CredentialValueType::Integer),
+            ("feature_enabled", "true", CredentialValueType::Boolean),
+            (
+                "request_payload",
+                "{\"safe\":true}",
+                CredentialValueType::Json,
+            ),
+        ] {
+            CredentialStore::new(&root)
+                .upsert(CredentialInput {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                    value_type,
+                    scope: CredentialScope::default(),
+                    expires_at: None,
+                })
+                .expect("save typed global value");
+        }
+
+        let mut local = ToolDefinition::new(
+            "local-art",
+            "Local Art",
+            "local description",
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
+            },
+        );
+        local.params = vec![
+            json!({ "id": "required_text", "label": "Required", "type": "string", "required": true }),
+            json!({ "id": "quality", "label": "Quality", "data_type": "number", "default": 90 }),
+            json!({ "id": "enabled", "label": "Enabled", "type": "boolean" }),
+            json!({ "id": "payload", "label": "Payload", "type": "json" }),
+            json!({ "id": "api_token", "label": "API Token", "type": "secret", "required": true, "default": "manifest-secret" }),
+        ];
+        let art_dir = root
+            .join("arts")
+            .join("local-art")
+            .join("versions")
+            .join("0.1.0");
+        fs::create_dir_all(&art_dir).unwrap();
+        local.metadata = Some(json!({
+            "authoring": { "origin": "local", "owner": "local-user" },
+            "packageSecurity": { "version": "0.1.0" },
+            "artPackage": { "dir": art_dir, "version": "0.1.0" }
+        }));
+        runtime.tool_registry.save_tool(local).unwrap();
+
+        let (status, initial) = get_art_management("local-art", &runtime.tool_registry, &root)
+            .expect("read Art management");
+        assert_eq!(status, 200);
+        let initial: Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(initial["canEditIdentity"], true);
+        assert_eq!(initial["autoUpdate"], true);
+        assert_eq!(initial["currentVersion"], "0.1.0");
+        assert!(initial["availableCredentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|credential| credential["name"] == "image_quality"
+                && credential["valueType"] == "integer"));
+        let secret_parameter = initial["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["id"] == "api_token")
+            .unwrap();
+        assert!(secret_parameter.get("default").is_none());
+
+        let (status, secret_default) = put_art_management_settings(
+            "local-art",
+            r#"{"autoUpdate":false,"defaults":{"api_token":"plaintext"},"credentialBindings":{"api_token":"cloudflare_key"}}"#,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("reject secret default");
+        assert_eq!(status, 400, "body={secret_default}");
+
+        let (status, missing_required) = put_art_management_settings(
+            "local-art",
+            r#"{"autoUpdate":false,"defaults":{},"credentialBindings":{}}"#,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("reject missing required defaults");
+        assert_eq!(status, 400, "body={missing_required}");
+
+        let (status, wrong_type) = put_art_management_settings(
+            "local-art",
+            r#"{"autoUpdate":false,"defaults":{"required_text":"ready"},"valueBindings":{"quality":"cloudflare_key"},"credentialBindings":{"api_token":"cloudflare_key"}}"#,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("reject wrong typed global value");
+        assert_eq!(status, 400, "body={wrong_type}");
+
+        let body = serde_json::to_string(&json!({
+            "name": "Renamed Local Art",
+            "description": "updated",
+            "autoUpdate": false,
+            "defaults": {},
+            "valueBindings": {
+                "required_text": "default_query",
+                "quality": "image_quality",
+                "enabled": "feature_enabled",
+                "payload": "request_payload"
+            },
+            "credentialBindings": { "api_token": "cloudflare_key" }
+        }))
+        .unwrap();
+        let (status, saved) = put_art_management_settings(
+            "local-art",
+            &body,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("save Art management");
+        assert_eq!(status, 200, "body={saved}");
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["name"], "Renamed Local Art");
+        assert_eq!(saved["autoUpdate"], false);
+        assert!(saved["defaults"].as_object().unwrap().is_empty());
+        assert_eq!(saved["valueBindings"]["quality"], "image_quality");
+        assert_eq!(saved["credentialBindings"]["api_token"], "cloudflare_key");
+        let settings_text = fs::read_to_string(root.join("art-user-settings.json")).unwrap();
+        assert!(!settings_text.contains("never-persist-this-plaintext"));
+        assert!(!settings_text.contains("{\"safe\":true}"));
+        let prepared = loom_tool_registry::prepare_tool_arguments(
+            &runtime
+                .tool_registry
+                .get_tool("local-art")
+                .unwrap()
+                .unwrap(),
+            json!({ "params": {} }),
+        )
+        .unwrap();
+        assert_eq!(prepared["params"]["required_text"], "ready");
+        assert_eq!(prepared["params"]["quality"], 80);
+        assert_eq!(prepared["params"]["enabled"], true);
+        assert_eq!(prepared["params"]["payload"], json!({ "safe": true }));
+        let explicit = loom_tool_registry::prepare_tool_arguments(
+            &runtime
+                .tool_registry
+                .get_tool("local-art")
+                .unwrap()
+                .unwrap(),
+            json!({ "params": { "quality": 70 } }),
+        )
+        .unwrap();
+        assert_eq!(explicit["params"]["quality"], 70);
+
+        let manual_body = serde_json::to_string(&json!({
+            "autoUpdate": false,
+            "defaults": { "required_text": "ready", "quality": 75 },
+            "valueBindings": {},
+            "secretValues": { "api_token": "art-only-plaintext" }
+        }))
+        .unwrap();
+        let (status, manual_saved) = put_art_management_settings(
+            "local-art",
+            &manual_body,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("save Art-specific secret");
+        assert_eq!(status, 200, "body={manual_saved}");
+        let manual_saved: Value = serde_json::from_str(&manual_saved).unwrap();
+        let manual_name = manual_saved["credentialBindings"]["api_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(manual_name.starts_with("loom-art-secret-"));
+        assert!(manual_saved["availableCredentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|credential| credential["name"] == manual_name
+                && credential["scope"]["artId"] == "local-art"));
+        let settings_text = fs::read_to_string(root.join("art-user-settings.json")).unwrap();
+        let credentials_text = fs::read_to_string(root.join("plugin-credentials.json")).unwrap();
+        assert!(!settings_text.contains("art-only-plaintext"));
+        assert!(!credentials_text.contains("art-only-plaintext"));
+        let grants = CredentialStore::new(&root)
+            .grants_for_bindings(
+                "process",
+                "local-art",
+                &BTreeMap::from([("api_token".to_owned(), manual_name.clone())]),
+            )
+            .unwrap();
+        assert_eq!(grants[0].name, "api_token");
+        assert_eq!(grants[0].value, "art-only-plaintext");
+
+        let switch_to_global = serde_json::to_string(&json!({
+            "autoUpdate": false,
+            "defaults": { "required_text": "ready" },
+            "valueBindings": {},
+            "credentialBindings": { "api_token": "cloudflare_key" }
+        }))
+        .unwrap();
+        let (status, switched) = put_art_management_settings(
+            "local-art",
+            &switch_to_global,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("switch Art secret back to global reference");
+        assert_eq!(status, 200, "body={switched}");
+        assert!(!CredentialStore::new(&root)
+            .summaries()
+            .unwrap()
+            .iter()
+            .any(|credential| credential.name == manual_name));
+
+        let mut external = ToolDefinition::new(
+            "external-art",
+            "External Art",
+            "publisher owned",
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
+            },
+        );
+        external.metadata = Some(json!({
+            "packageSecurity": {
+                "version": "1.0.0",
+                "publisher": { "id": "publisher.test", "name": "Publisher" }
+            }
+        }));
+        runtime.tool_registry.save_tool(external).unwrap();
+        let (status, denied) = put_art_management_settings(
+            "publisher.test/external-art",
+            r#"{"name":"Takeover","autoUpdate":true,"defaults":{},"credentialBindings":{}}"#,
+            &runtime.tool_registry,
+            &root,
+            &runtime.hook_bridge,
+        )
+        .expect("deny publisher-owned identity edit");
+        assert_eq!(status, 403, "body={denied}");
+
+        drop(runtime);
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -12723,7 +15610,7 @@ mod tests {
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         runtime
             .framework_registry
-            .install_framework_package_from_zip(&framework_package_zip("cli_wrapper", "1.0.0"))
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
             .expect("install framework");
         loom_tool_registry::install::install_art_from_zip(
             &art_package_zip("integrity-art", "1.0.0", b"never-executed"),
@@ -12801,6 +15688,14 @@ mod tests {
         let (status, body) = list_plugin_trust(&registry).expect("list");
         assert_eq!(status, 200);
         assert!(body.contains("example-key"));
+        let (status, body) = set_plugin_trust_policy(r#"{"policy":"require_trusted"}"#, &registry)
+            .expect("set policy");
+        assert_eq!(status, 200);
+        assert!(body.contains("\"policy\":\"require_trusted\""));
+        assert_eq!(
+            registry.trust_store().unwrap().policy,
+            TrustPolicy::RequireTrusted
+        );
 
         let revoke_body = serde_json::to_string(&json!({
             "publisherId": "example.vendor",
@@ -12828,10 +15723,12 @@ mod tests {
         let (status, response) = save_plugin_credential(&body, &root).expect("save");
         assert_eq!(status, 200);
         assert!(!response.contains("top-secret"));
+        assert!(response.contains("\"valueType\":\"string\""));
 
         let (status, response) = list_plugin_credentials(&root).expect("list");
         assert_eq!(status, 200);
         assert!(response.contains("api_key"));
+        assert!(response.contains("\"valueType\":\"string\""));
         assert!(!response.contains("top-secret"));
 
         let delete = serde_json::to_string(&json!({
@@ -12842,6 +15739,9 @@ mod tests {
             }
         }))
         .expect("delete body");
+        let (status, response) = reveal_plugin_credential(&delete, &root).expect("reveal");
+        assert_eq!(status, 200);
+        assert!(response.contains("top-secret"));
         let (status, _) = delete_plugin_credential(&delete, &root).expect("delete");
         assert_eq!(status, 200);
         let _ = fs::remove_dir_all(root);
@@ -13191,8 +16091,13 @@ mod tests {
             canvas_workflow_root: control_plane_root.join("canvas-workflows"),
             framework_registry: FrameworkRegistry::new(&control_plane_root),
             control_plane_root: control_plane_root.to_path_buf(),
+            bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
             hook_bridge: Arc::new(Mutex::new(HookBridgeRuntime::new(
                 control_plane_root.join("workflows"),
+            ))),
+            device_registry: Arc::new(Mutex::new(DeviceRegistryStore::new(
+                control_plane_root.join("settings").join("devices.json"),
+                "127.0.0.1:0".parse().expect("test daemon address"),
             ))),
             artloom_settings: Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
                 control_plane_root
@@ -13318,6 +16223,197 @@ mod tests {
             &runtime.run_store,
         );
         serde_json::from_str(&result.response).expect("hook bridge json response")
+    }
+
+    fn run_hook_bridge_text_with_intermediate(
+        runtime: &DaemonRuntime,
+        request: &str,
+    ) -> (Vec<serde_json::Value>, serde_json::Value) {
+        let workflow_root = runtime
+            .hook_bridge
+            .lock()
+            .expect("lock hook bridge runtime for test")
+            .workflow_root
+            .clone();
+        let mut intermediate = Vec::new();
+        let result = handle_hook_bridge_websocket_text_with_intermediate(
+            request,
+            &runtime.mcp_servers,
+            &runtime.tool_registry,
+            &runtime.workflow_store,
+            &runtime.artloom_settings,
+            &runtime.shared_images,
+            &runtime.ocr_provider,
+            &runtime.framework_registry,
+            &runtime.control_plane_root,
+            &workflow_root,
+            &runtime.run_store,
+            &mut |message| {
+                intermediate
+                    .push(serde_json::from_str(&message).expect("intermediate hook bridge json"));
+            },
+        );
+        (
+            intermediate,
+            serde_json::from_str(&result.response).expect("hook bridge json response"),
+        )
+    }
+
+    #[test]
+    fn daemon_hook_bridge_streams_workflow_preview_before_formal_result() {
+        let root = unique_temp_dir("workflow-preview-stream");
+        let runtime = test_daemon_runtime(&root, None);
+        runtime
+            .workflow_store
+            .save_workflow(
+                "workflow-preview-stream",
+                r#"name: Workflow Preview Stream
+nodes:
+  - id: formal
+    uses: missing-formal-tool
+  - id: preview
+    uses: sticker
+"#,
+            )
+            .expect("save preview workflow");
+        runtime
+            .tool_registry
+            .save_tool(ToolDefinition::new(
+                "workflow-preview-stream-art",
+                "Workflow Preview Stream",
+                "Preview phase fixture",
+                ToolExecution::Workflow {
+                    workflow_id: "workflow-preview-stream".to_owned(),
+                    workflow_bindings: Some(WorkflowExecutionBindings {
+                        primary_output: Some(loom_tool_registry::WorkflowOutputBinding {
+                            node_id: "formal".to_owned(),
+                            output: "result".to_owned(),
+                            kind: "node_result".to_owned(),
+                        }),
+                        preview_output: Some(loom_tool_registry::WorkflowOutputBinding {
+                            node_id: "preview".to_owned(),
+                            output: "output_image".to_owned(),
+                            kind: "node_result".to_owned(),
+                        }),
+                        preview_required_nodes: vec!["preview".to_owned()],
+                        ..WorkflowExecutionBindings::default()
+                    }),
+                },
+            ))
+            .expect("save preview workflow Art");
+
+        let request = json!({
+            "method": "art/process",
+            "params": {
+                "request_id": "req-workflow-preview",
+                "art_id": "workflow-preview-stream-art",
+                "input": {
+                    "type": "base64",
+                    "data": test_png_base64(),
+                    "width": 1,
+                    "height": 1,
+                    "format": "rgba8"
+                },
+                "params": {},
+                "input_images": {},
+                "disabled_params": []
+            }
+        })
+        .to_string();
+        let (intermediate, final_response) =
+            run_hook_bridge_text_with_intermediate(&runtime, &request);
+
+        assert_eq!(
+            intermediate.len(),
+            1,
+            "final response without preview: {final_response}"
+        );
+        assert_eq!(intermediate[0]["phase"], "preview");
+        assert_eq!(intermediate[0]["request_id"], "req-workflow-preview");
+        assert_eq!(intermediate[0]["status"], "Success");
+        assert_eq!(final_response["phase"], "final");
+        assert_eq!(final_response["request_id"], "req-workflow-preview");
+        assert_eq!(final_response["status"], "EngineError");
+        fs::remove_dir_all(root).expect("cleanup preview workflow root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_returns_successful_formal_output_after_workflow_preview() {
+        let root = unique_temp_dir("workflow-preview-success");
+        let runtime = test_daemon_runtime(&root, None);
+        runtime
+            .workflow_store
+            .save_workflow(
+                "workflow-preview-success",
+                r#"name: Workflow Preview Success
+nodes:
+  - id: preview
+    uses: sticker
+  - id: formal
+    uses: sticker
+    needs:
+      - preview
+"#,
+            )
+            .expect("save successful preview workflow");
+        runtime
+            .tool_registry
+            .save_tool(ToolDefinition::new(
+                "workflow-preview-success-art",
+                "Workflow Preview Success",
+                "Successful preview and formal fixture",
+                ToolExecution::Workflow {
+                    workflow_id: "workflow-preview-success".to_owned(),
+                    workflow_bindings: Some(WorkflowExecutionBindings {
+                        primary_output: Some(loom_tool_registry::WorkflowOutputBinding {
+                            node_id: "formal".to_owned(),
+                            output: "output_image".to_owned(),
+                            kind: "node_result".to_owned(),
+                        }),
+                        preview_output: Some(loom_tool_registry::WorkflowOutputBinding {
+                            node_id: "preview".to_owned(),
+                            output: "output_image".to_owned(),
+                            kind: "node_result".to_owned(),
+                        }),
+                        preview_required_nodes: vec!["preview".to_owned()],
+                        ..WorkflowExecutionBindings::default()
+                    }),
+                },
+            ))
+            .expect("save successful preview Art");
+
+        let input_image = test_png_base64();
+        let request = json!({
+            "method": "art/process",
+            "params": {
+                "request_id": "req-workflow-preview-success",
+                "art_id": "workflow-preview-success-art",
+                "input": {
+                    "type": "base64",
+                    "data": input_image,
+                    "width": 1,
+                    "height": 1,
+                    "format": "rgba8"
+                },
+                "params": {},
+                "input_images": {},
+                "disabled_params": []
+            }
+        })
+        .to_string();
+        let (intermediate, final_response) =
+            run_hook_bridge_text_with_intermediate(&runtime, &request);
+
+        assert_eq!(intermediate.len(), 1, "final response: {final_response}");
+        assert_eq!(intermediate[0]["phase"], "preview");
+        assert_eq!(intermediate[0]["status"], "Success");
+        assert_eq!(intermediate[0]["data"]["output"]["data"], input_image);
+        assert_eq!(final_response["phase"], "final");
+        assert_eq!(final_response["request_id"], "req-workflow-preview-success");
+        assert_eq!(final_response["status"], "Success");
+        assert_eq!(final_response["data"]["output"]["data"], input_image);
+
+        fs::remove_dir_all(root).expect("cleanup successful preview workflow root");
     }
 
     fn expect_binary_route_response(
@@ -14740,182 +17836,6 @@ def run(args):
     }
 
     #[test]
-    fn daemon_exposes_artloom_python_source_command_aliases() {
-        let root = unique_temp_dir("artloom-python-source-aliases");
-        let art_json_path = root.join("art.json");
-        let source_path = root.join("fixture.py");
-        fs::write(
-            &art_json_path,
-            r#"{"art_id":"fixture_source_alias","label":"Fixture Source Alias"}"#,
-        )
-        .expect("write art json");
-        fs::write(&source_path, "def main(args):\n    return args\n").expect("write python source");
-
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let installed = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/python/installed-arts", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(installed["compatCommand"], "list_installed_arts");
-        assert!(installed["arts"].as_array().is_some());
-
-        let read_source = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/python/read-python-file",
-                    &[],
-                    Some(
-                        &serde_json::json!({
-                            "filePath": source_path,
-                        })
-                        .to_string(),
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(read_source["compatCommand"], "read_python_file");
-        assert!(read_source["content"]
-            .as_str()
-            .expect("source content")
-            .contains("def main"));
-
-        let nearby = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/python/check-art-json-nearby",
-                    &[],
-                    Some(
-                        &serde_json::json!({
-                            "pythonPath": source_path,
-                        })
-                        .to_string(),
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(nearby["compatCommand"], "check_art_json_nearby");
-        assert_eq!(nearby["found"], true);
-        assert_eq!(nearby["artJson"]["art_id"], "fixture_source_alias");
-
-        let art_json = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/python/read-art-json",
-                    &[],
-                    Some(
-                        &serde_json::json!({
-                            "artPath": root,
-                        })
-                        .to_string(),
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(art_json["compatCommand"], "read_art_json");
-        assert_eq!(art_json["artJson"]["label"], "Fixture Source Alias");
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup python source aliases root");
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_execute_python_art_command_alias() {
-        let root = unique_temp_dir("artloom-execute-python-art");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let response = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/python/execute-art",
-                    &[],
-                    Some(r#"{"artId":"loom_echo","params":{"text":"direct compat"}}"#),
-                ),
-            ),
-            200,
-        );
-
-        assert_eq!(response["compatCommand"], "execute_python_art");
-        assert_eq!(response["status"], 200, "response={response}");
-        assert_eq!(
-            response["data"]["content"][0]["text"],
-            "python art saw direct compat"
-        );
-        assert!(response["request_id"].as_str().is_some());
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup python art root");
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_python_process_image_command_alias() {
-        let root = unique_temp_dir("python-process-image");
-        let art_dir = root.join("Art_CopyImage");
-        fs::create_dir_all(&art_dir).expect("create python image art dir");
-        fs::write(
-            art_dir.join("main.py"),
-            r#"
-import shutil
-
-def main(args):
-    shutil.copyfile(args["input_path"], args["output_path"])
-    return {"copied": True}
-"#,
-        )
-        .expect("write python image art");
-
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let response = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/python/process-image",
-                    &[],
-                    Some(
-                        &serde_json::json!({
-                            "artId": "copy_image",
-                            "artPath": art_dir,
-                            "inputBase64": test_png_base64(),
-                            "params": {}
-                        })
-                        .to_string(),
-                    ),
-                ),
-            ),
-            200,
-        );
-
-        assert_eq!(response["compatCommand"], "python_process_image");
-        assert_eq!(response["success"], true, "response={response}");
-        assert!(response["output_base64"]
-            .as_str()
-            .expect("python process image output")
-            .starts_with("data:image/png;base64,"));
-        assert!(response["output_path"].as_str().is_some());
-        assert!(response["processing_time_ms"].as_u64().is_some());
-        assert!(response["error"].is_null());
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup python image art root");
-    }
-
-    #[test]
     fn unwrap_prefetch_shader_payload_promotes_text_wrapped_shader_json() {
         let wrapped = serde_json::json!({
             "content": [
@@ -14951,9 +17871,8 @@ def main(args):
                 "description": "Recover a valid tool array with trailing delimiters",
                 "enabled": true,
                 "execution": {
-                  "type": "cli_wrapper",
-                  "command": "echo",
-                  "args": ["ok"]
+                  "type": "framework_art",
+                  "framework": "process"
                 }
               }
             ]  }
@@ -15295,133 +18214,6 @@ def main(args):
     }
 
     #[test]
-    fn daemon_executes_script_backed_tool_contract() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-tool");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script",
-            &serde_json::json!({
-                "id": "fixture-script",
-                "name": "Fixture Script",
-                "description": "Execute fixture script",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script");
-        assert_eq!(saved_tool["tool"]["execution"]["type"], "script");
-
-        let executed = http_json_post(
-            address.port(),
-            "/v1/tools/fixture-script/execute",
-            r#"{"arguments":{"text":"hello script daemon"}}"#,
-        );
-        assert_eq!(executed["toolId"], "fixture-script");
-        assert_eq!(executed["status"], "succeeded");
-        assert_eq!(executed["result"]["content"][0]["type"], "text");
-        assert_eq!(
-            executed["result"]["content"][0]["text"],
-            "script saw hello script daemon"
-        );
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup script tool root");
-    }
-
-    #[test]
-    fn daemon_executes_workflow_backed_tool_contract() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("workflow-tool");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_script = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script",
-            &serde_json::json!({
-                "id": "fixture-script",
-                "name": "Fixture Script",
-                "description": "Execute fixture script",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_script["tool"]["id"], "fixture-script");
-
-        let workflow_yaml = r#"name: Runtime Flow
-nodes:
-  - id: prompt
-    uses: fixture-script
-    with:
-      text: hello workflow daemon
-"#;
-        let saved_workflow = http_json_put(
-            address.port(),
-            "/v1/workflows/runtime-flow",
-            &serde_json::json!({ "data": workflow_yaml }).to_string(),
-        );
-        assert_eq!(saved_workflow["workflow"]["id"], "runtime-flow");
-
-        let saved_workflow_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-workflow",
-            r#"{
-              "id": "fixture-workflow",
-              "name": "Fixture Workflow",
-              "description": "Execute fixture workflow",
-              "enabled": true,
-              "execution": {
-                "type": "workflow",
-                "workflowId": "runtime-flow"
-              }
-            }"#,
-        );
-        assert_eq!(saved_workflow_tool["tool"]["id"], "fixture-workflow");
-
-        let executed = http_json_post(
-            address.port(),
-            "/v1/tools/fixture-workflow/execute",
-            r#"{"arguments":{}}"#,
-        );
-        assert_eq!(executed["toolId"], "fixture-workflow");
-        assert_eq!(executed["status"], "succeeded");
-        assert_eq!(executed["result"]["content"][0]["type"], "text");
-        assert_eq!(
-            executed["result"]["content"][0]["text"],
-            "script saw hello workflow daemon"
-        );
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup workflow tool root");
-    }
-
-    #[test]
     fn daemon_executes_cloud_api_backed_tool_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
@@ -15469,66 +18261,6 @@ nodes:
         server.join().expect("server thread");
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup cloud tool root");
-    }
-
-    #[test]
-    fn daemon_tool_readiness_reports_downloaded_python_art_runtime() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("python-art-readiness");
-        mark_framework_installed(&root, "python_art");
-        provision_test_python_art_runtime(&root);
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let saved_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/tools/fixture-python-readiness",
-                    &[],
-                    Some(
-                        r#"{
-              "id": "fixture-python-readiness",
-              "name": "Fixture Python Readiness",
-              "description": "Report framework readiness from a downloaded runtime",
-              "enabled": true,
-              "execution": {
-                "type": "python_art",
-                "artId": "fixture_python_art",
-                "artPath": "python/Arts/FixturePythonReadiness"
-              }
-            }"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-python-readiness");
-
-        let readiness = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "GET",
-                    "/v1/tools/fixture-python-readiness/readiness",
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(readiness["toolId"], "fixture-python-readiness");
-        assert_eq!(readiness["framework"], "python_art");
-        assert_eq!(readiness["frameworkInstalled"], true);
-        assert_eq!(readiness["ready"], true, "response={readiness}");
-        let detail = readiness["detail"]
-            .as_str()
-            .expect("python_art readiness detail")
-            .replace('\\', "/");
-        assert!(detail.contains("python_art"), "response={readiness}");
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup python art readiness root");
     }
 
     #[test]
@@ -15586,6 +18318,66 @@ nodes:
         restore_env("APPDATA", previous_appdata);
         fs::remove_dir_all(appdata_root).expect("cleanup appdata root");
         fs::remove_dir_all(control_plane_root).expect("cleanup control plane");
+    }
+
+    #[test]
+    fn hook_canvas_runtime_ignores_stale_ahrp_request_updates() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hook_canvas_runtime_state();
+
+        begin_hook_canvas_runtime_request("node", "request-old");
+        assert!(set_hook_canvas_runtime_preview_for_request(
+            "node",
+            "request-old",
+            Some("data:image/png;base64,OLD".to_owned()),
+        ));
+
+        begin_hook_canvas_runtime_request("node", "request-new");
+        assert!(!set_hook_canvas_runtime_preview_for_request(
+            "node",
+            "request-old",
+            Some("data:image/png;base64,STALE".to_owned()),
+        ));
+        assert!(set_hook_canvas_runtime_preview_for_request(
+            "node",
+            "request-new",
+            Some("data:image/png;base64,NEW".to_owned()),
+        ));
+
+        finalize_ahrp_runtime_status(
+            Some("node"),
+            "request-old",
+            &json!({ "status": "EngineError", "error": "stale failure" }),
+        );
+        {
+            let states = hook_canvas_runtime_statuses()
+                .lock()
+                .expect("runtime states");
+            let state = states.get("node").expect("runtime node");
+            assert_eq!(state.active_request_id.as_deref(), Some("request-new"));
+            assert_eq!(state.status, "processing");
+            assert_eq!(
+                state.preview_data_url.as_deref(),
+                Some("data:image/png;base64,NEW")
+            );
+        }
+
+        finalize_ahrp_runtime_status(Some("node"), "request-new", &json!({ "status": "Success" }));
+        {
+            let states = hook_canvas_runtime_statuses()
+                .lock()
+                .expect("runtime states");
+            let state = states.get("node").expect("runtime node");
+            assert_eq!(state.active_request_id, None);
+            assert_eq!(state.status, "ready");
+        }
+        assert!(!set_hook_canvas_runtime_preview_for_request(
+            "node",
+            "request-new",
+            Some("data:image/png;base64,LATE".to_owned()),
+        ));
+
+        clear_hook_canvas_runtime_state();
     }
 
     #[test]
@@ -15806,170 +18598,6 @@ nodes:
         assert!(
             after_revision.contains("-rt-"),
             "expected runtime overlay revision suffix, got {after_revision}"
-        );
-
-        restore_env("APPDATA", previous_appdata);
-        clear_hook_canvas_runtime_state();
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup root");
-        fs::remove_dir_all(appdata).expect("cleanup appdata");
-    }
-
-    #[test]
-    fn daemon_hook_canvas_overrides_blank_live_art_preview_with_runtime_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
-        let root = unique_temp_dir("hook-canvas-runtime-preview");
-        let appdata = unique_temp_dir("hook-canvas-runtime-preview-appdata");
-        let previous_appdata = std::env::var("APPDATA").ok();
-        std::env::set_var("APPDATA", &appdata);
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        #[cfg(windows)]
-        let execution = ToolExecution::CliWrapper {
-            command: "powershell.exe".to_owned(),
-            args: vec![
-                "-NoProfile".to_owned(),
-                "-Command".to_owned(),
-                "Copy-Item -LiteralPath '{{input}}' -Destination '{{output}}' -Force".to_owned(),
-            ],
-        };
-        #[cfg(not(windows))]
-        let execution = ToolExecution::CliWrapper {
-            command: "sh".to_owned(),
-            args: vec![
-                "-c".to_owned(),
-                "cp \"$1\" \"$2\"".to_owned(),
-                "loom-cli-wrapper".to_owned(),
-                "{{input}}".to_owned(),
-                "{{output}}".to_owned(),
-            ],
-        };
-        let tool = ToolDefinition::new(
-            "fixture-image-compress-preview",
-            "Fixture Image Preview",
-            "Return image output for preview overlay tests.",
-            execution,
-        );
-        runtime
-            .tool_registry
-            .save_tool(tool)
-            .expect("save preview fixture tool");
-
-        let black_preview = {
-            let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(1, 1, vec![0, 0, 0, 255])
-                .expect("black preview image");
-            let mut png = Cursor::new(Vec::new());
-            DynamicImage::ImageRgba8(image)
-                .write_to(&mut png, ImageFormat::Png)
-                .expect("encode black preview");
-            format!("data:image/png;base64,{}", BASE64.encode(png.into_inner()))
-        };
-
-        let overwrite = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art_loom/overwrite_workflow",
-                "params": {
-                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
-                    "snapshot": {
-                        "name": "Hook Live",
-                        "nodes": [
-                            {
-                                "id": "capture",
-                                "type": "screenshot",
-                                "position": { "x": 20, "y": 30 },
-                                "measured": { "width": 80, "height": 80 },
-                                "data": {
-                                    "src": test_png_base64(),
-                                    "w": 80,
-                                    "h": 80
-                                }
-                            },
-                            {
-                                "id": "compress-art",
-                                "type": "art",
-                                "position": { "x": 160, "y": 40 },
-                                "measured": { "width": 90, "height": 90 },
-                                "data": {
-                                    "artId": "fixture-image-compress-preview",
-                                    "previewSrc": black_preview,
-                                    "params": { "level_num": 2 },
-                                    "w": 90,
-                                    "h": 90
-                                }
-                            }
-                        ],
-                        "edges": [
-                            {
-                                "id": "edge-1",
-                                "source": "capture",
-                                "target": "compress-art",
-                                "sourceHandle": "output",
-                                "targetHandle": "input"
-                            }
-                        ]
-                    }
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(overwrite["type"], "success", "response={overwrite}");
-
-        let before = expect_binary_route_response(
-            hook_canvas_preview_response("compress-art").expect("initial blank preview"),
-            200,
-            "image/png",
-        );
-        assert_ne!(
-            before,
-            test_png_bytes(),
-            "test requires the stored Hook preview to be blank or otherwise not equal to the real output image"
-        );
-
-        let success = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art/process",
-                "params": {
-                    "request_id": "req-runtime-preview",
-                    "art_id": "fixture-image-compress-preview",
-                    "input": {
-                        "type": "base64",
-                        "data": test_png_base64(),
-                        "width": 1,
-                        "height": 1,
-                        "format": "rgba8"
-                    },
-                    "params": {
-                        "level_num": 2
-                    },
-                    "disabled_params": []
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(success["status"], "Success", "response={success}");
-
-        let after_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
-        assert_eq!(after_snapshot["nodes"][1]["status"], "ready");
-        let preview_url = after_snapshot["nodes"][1]["previewUrl"]
-            .as_str()
-            .expect("preview url");
-        assert!(
-            preview_url.contains("?v="),
-            "runtime preview overlay should cache-bust preview urls: {preview_url}"
-        );
-
-        let after = expect_binary_route_response(
-            hook_canvas_preview_response("compress-art").expect("runtime preview"),
-            200,
-            "image/png",
-        );
-        assert_eq!(
-            after,
-            test_png_bytes(),
-            "successful runtime image output must override the blank Hook preview payload"
         );
 
         restore_env("APPDATA", previous_appdata);
@@ -16497,6 +19125,51 @@ nodes:
     }
 
     #[test]
+    fn hook_cache_settings_and_library_commands_use_the_hook_bridge_channel() {
+        let root = unique_temp_dir("hook-cache-control");
+        let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+            root.join("settings.json"),
+        )));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        let hub = hook_bridge
+            .lock()
+            .expect("hook bridge")
+            .broadcast_hub
+            .clone();
+        let (rx, _subscription) =
+            register_hook_bridge_subscription(&hub, vec!["art_hook/cache_control".to_owned()]);
+
+        let body = serde_json::to_string(&ArtLoomCompatSettings::default()).expect("settings body");
+        let (status, _) = put_artloom_compat_settings(&body, &settings_store, &hook_bridge)
+            .expect("save cache settings");
+        assert_eq!(status, 200);
+        let settings_event: Value = serde_json::from_str(
+            &rx.recv_timeout(Duration::from_secs(1))
+                .expect("settings event"),
+        )
+        .expect("settings json");
+        assert_eq!(settings_event["method"], "art_hook/cache_control");
+        assert_eq!(settings_event["params"]["action"], "settings");
+        assert_eq!(
+            settings_event["params"]["settings"]["recycle_bin_max_entries"],
+            15
+        );
+
+        let (status, _) =
+            broadcast_hook_cache_control(r#"{"action":"clearReferenceLibrary"}"#, &hook_bridge)
+                .expect("broadcast reference clear");
+        assert_eq!(status, 200);
+        let clear_event: Value = serde_json::from_str(
+            &rx.recv_timeout(Duration::from_secs(1))
+                .expect("clear event"),
+        )
+        .expect("clear json");
+        assert_eq!(clear_event["params"]["action"], "clearReferenceLibrary");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn daemon_exposes_artloom_registry_ipc_and_shared_memory_aliases() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-compat-aliases");
@@ -16509,15 +19182,14 @@ nodes:
                 "description": "ArtLoom registry alias fixture",
                 "iconColor": "#52c41a",
                 "enabled": true,
-                "execution_type": "cli_wrapper",
                 "execution": {
-                    "command": "echo",
-                    "args": "{{inputs.image.path}} --out {{outputs.result.path}}",
-                    "outputs": [{ "name": "result", "type": "image" }]
+                    "type": "framework_art",
+                    "framework": "process"
                 },
                 "autoProcess": true,
                 "defaults": { "seed": 1234 },
                 "inputs": [{ "name": "image", "type": "image" }],
+                "outputs": [{ "name": "result", "type": "image" }],
                 "params": [{ "id": "strength", "default": 0.1 }]
             }]
         })
@@ -16571,11 +19243,8 @@ nodes:
         assert_eq!(user_arts["arts"][0]["iconColor"], "#52c41a");
         assert_eq!(user_arts["arts"][0]["downloads"], 0);
         assert_eq!(user_arts["arts"][0]["owned"], true);
-        assert_eq!(user_arts["arts"][0]["executionType"], "cli_wrapper");
-        assert_eq!(
-            user_arts["arts"][0]["execution"]["args"],
-            "{{inputs.image.path}} --out {{outputs.result.path}}"
-        );
+        assert_eq!(user_arts["arts"][0]["executionType"], "framework_art");
+        assert_eq!(user_arts["arts"][0]["execution"]["framework"], "process");
         assert_eq!(user_arts["arts"][0]["autoProcess"], true);
         assert_eq!(user_arts["arts"][0]["inputs"][0]["name"], "image");
         assert_eq!(user_arts["arts"][0]["outputs"][0]["name"], "result");
@@ -16775,7 +19444,7 @@ nodes:
                 "label": "Compat Old",
                 "description": "old compat art",
                 "enabled": true,
-                "execution": { "type": "cli_wrapper", "command": "echo", "args": ["old"] },
+                "execution": { "type": "framework_art", "framework": "process" },
                 "params": [{ "id": "strength", "default": 0.1 }]
             }]
         })
@@ -16802,8 +19471,7 @@ nodes:
                 "description": "new compat art",
                 "icon": "#52c41a",
                 "enabled": true,
-                "execution_type": "cli_wrapper",
-                "execution": { "type": "cli_wrapper", "command": "echo", "args": ["new"] },
+                "execution": { "type": "framework_art", "framework": "process" },
                 "inputs": [
                     { "name": "prompt", "label": "Prompt", "type": "string", "execution_type": "string", "default": "hello" }
                 ],
@@ -16999,13 +19667,12 @@ nodes:
                 "description": "Old sync_user_arts payload without independent defaults",
                 "iconColor": "#52c41a",
                 "enabled": true,
-                "execution_type": "cli_wrapper",
                 "execution": {
-                    "command": "echo",
-                    "args": "{{inputs.prompt.value}}",
-                    "outputs": [{ "name": "result", "type": "text" }]
+                    "type": "framework_art",
+                    "framework": "process"
                 },
                 "inputs": [{ "name": "prompt", "type": "text" }],
+                "outputs": [{ "name": "result", "type": "text" }],
                 "params": [{ "id": "strength", "default": 0.2 }]
             }]
         })
@@ -17091,13 +19758,12 @@ nodes:
                     "description": "Synced from Hook",
                     "iconColor": "#52c41a",
                     "enabled": true,
-                    "execution_type": "cli_wrapper",
                     "execution": {
-                        "command": "echo",
-                        "args": "{{inputs.prompt.value}}",
-                        "outputs": [{ "name": "result", "type": "text" }]
+                        "type": "framework_art",
+                        "framework": "process"
                     },
                     "inputs": [{ "name": "prompt", "label": "Prompt", "type": "string" }],
+                    "outputs": [{ "name": "result", "type": "text" }],
                     "params": [{ "id": "strength", "default": 0.7 }]
                 }]
             }
@@ -17121,15 +19787,9 @@ nodes:
         assert_eq!(listed["data"].as_array().expect("arts").len(), 1);
         assert_eq!(listed["data"][0]["art_id"], "hook-art");
         assert_eq!(listed["data"][0]["icon"], "#52c41a");
-        assert_eq!(listed["data"][0]["execution_type"], "cli_wrapper");
-        assert_eq!(
-            listed["data"][0]["execution"]["args"],
-            "{{inputs.prompt.value}}"
-        );
-        assert_eq!(
-            listed["data"][0]["execution"]["outputs"][0]["name"],
-            "result"
-        );
+        assert_eq!(listed["data"][0]["execution_type"], "framework_art");
+        assert_eq!(listed["data"][0]["execution"]["framework"], "process");
+        assert_eq!(listed["data"][0]["outputs"][0]["name"], "result");
         assert_eq!(listed["data"][0]["inputs"][0]["name"], "prompt");
 
         socket
@@ -17168,252 +19828,6 @@ nodes:
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup hook sync root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_sync_user_arts_preserves_loom_local_compat_art_on_id_collision() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("hook-bridge-sync-loom-local-collision");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let art_id = "custom-1770146354922";
-        let local_command = root
-            .join("arts")
-            .join(art_id)
-            .join("bin")
-            .join("pingo.exe")
-            .to_string_lossy()
-            .to_string();
-        let local_tool: ToolDefinition = serde_json::from_value(json!({
-            "id": art_id,
-            "name": "图片压缩",
-            "description": "使用 Pingo 对 PNG/JPEG/WebP/APNG 图片执行本地压缩",
-            "enabled": true,
-            "execution": {
-                "type": "cli_wrapper",
-                "command": local_command,
-                "args": [
-                    "-s{{level_num}}",
-                    "-quality={{quality_num}}",
-                    "{{-lossless}}",
-                    "{{output}}"
-                ]
-            },
-            "outputs": [{
-                "name": "output",
-                "label": "output",
-                "type": "image",
-                "execution_type": "image_buffer"
-            }],
-            "params": [
-                {
-                    "id": "level_num",
-                    "label": "压缩级别",
-                    "widget": "slider",
-                    "default": 2,
-                    "min": 1,
-                    "max": 4,
-                    "step": 1,
-                    "data_type": "number"
-                },
-                {
-                    "id": "quality_num",
-                    "label": "质量",
-                    "widget": "slider",
-                    "default": 90,
-                    "min": 60,
-                    "max": 100,
-                    "step": 1,
-                    "data_type": "number"
-                },
-                {
-                    "id": "lossless",
-                    "label": "无损压缩",
-                    "widget": "checkbox",
-                    "default": false,
-                    "data_type": "bool"
-                }
-            ],
-            "metadata": {
-                "dependencies": {
-                    "framework": "cli_wrapper",
-                    "binaries": [{
-                        "name": "bin/pingo.exe",
-                        "sha256": "abc"
-                    }]
-                },
-                "artloomCompat": {
-                    "defaults": {},
-                    "executionType": "cli_wrapper",
-                    "icon": "#52c41a",
-                    "source": "loom-local",
-                    "execution": {
-                        "command": local_command,
-                        "args": "-s{{level_num}} -quality={{quality_num}} {{-lossless}} {{output}}",
-                        "outputs": [{
-                            "name": "output",
-                            "label": "output",
-                            "type": "image",
-                            "execution_type": "image_buffer"
-                        }],
-                        "sourceType": "installed"
-                    }
-                }
-            }
-        }))
-        .expect("local tool definition");
-        runtime
-            .tool_registry
-            .save_tool(local_tool)
-            .expect("save loom-local compat art");
-
-        let started = expect_json_result_response(
-            start_hook_bridge(
-                r#"{"port":0}"#,
-                &runtime.hook_bridge,
-                &runtime.mcp_servers,
-                &runtime.tool_registry,
-                &runtime.workflow_store,
-                &runtime.artloom_settings,
-                &runtime.shared_images,
-                &runtime.ocr_provider,
-                &runtime.framework_registry,
-                &runtime.control_plane_root,
-                &runtime.run_store,
-            ),
-            200,
-        );
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-        let request = serde_json::json!({
-            "method": "sync_user_arts",
-            "params": {
-                "arts": [{
-                    "id": art_id,
-                    "name": "图片压缩",
-                    "description": "",
-                    "enabled": true,
-                    "execution_type": "cli_wrapper",
-                    "execution": {
-                        "command": "\"C:\\Users\\vmjcv\\Downloads\\pingo-win64\\pingo.exe\"",
-                        "args": "-s{{level_num}} -quality={{quality_num}} {{-lossless}} {{output}}",
-                        "outputs": [{
-                            "captureMode": "explicit_path",
-                            "execution_type": "image_path",
-                            "filename": "{{input}}",
-                            "label": "output",
-                            "name": "output",
-                            "type": "image"
-                        }]
-                    },
-                    "outputs": [{
-                        "captureMode": "explicit_path",
-                        "execution_type": "image_path",
-                        "filename": "{{input}}",
-                        "label": "output",
-                        "name": "output",
-                        "type": "image"
-                    }],
-                    "params": [
-                        {
-                            "data_type": "number",
-                            "default": "2",
-                            "id": "level_num",
-                            "label": "level_num",
-                            "max": 9.0,
-                            "min": 1.0,
-                            "step": 1.0,
-                            "widget": "slider"
-                        },
-                        {
-                            "data_type": "number",
-                            "default": "90",
-                            "id": "quality_num",
-                            "label": "quality_num",
-                            "max": 100.0,
-                            "min": 60.0,
-                            "step": 1.0,
-                            "widget": "slider"
-                        },
-                        {
-                            "data_type": "string",
-                            "default": "-lossless",
-                            "id": "lossless",
-                            "label": "lossless",
-                            "widget": "text"
-                        }
-                    ]
-                }]
-            }
-        });
-        socket
-            .send(tungstenite::Message::Text(request.to_string()))
-            .expect("send colliding sync_user_arts");
-        let response = read_hook_bridge_json(&mut socket);
-        assert_eq!(response["type"], "success");
-        assert_eq!(response["data"]["compatCommand"], "sync_user_arts");
-        assert_eq!(response["data"]["sideEffect"], true);
-        assert_eq!(response["data"]["syncedCount"], 0);
-        assert_eq!(response["data"]["count"], 1);
-        assert_eq!(response["data"]["arts"][0]["id"], art_id);
-        assert_eq!(
-            response["data"]["arts"][0]["execution"]["command"],
-            local_command
-        );
-        assert_eq!(
-            response["data"]["arts"][0]["outputs"][0]["execution_type"],
-            "image_buffer"
-        );
-        assert_eq!(
-            response["data"]["arts"][0]["params"][2]["data_type"],
-            "bool"
-        );
-
-        let saved = runtime
-            .tool_registry
-            .get_tool(art_id)
-            .expect("get saved art")
-            .expect("art exists");
-        match saved.execution {
-            ToolExecution::CliWrapper { command, args } => {
-                assert_eq!(command, local_command);
-                assert_eq!(
-                    args,
-                    vec![
-                        "-s{{level_num}}".to_owned(),
-                        "-quality={{quality_num}}".to_owned(),
-                        "{{-lossless}}".to_owned(),
-                        "{{output}}".to_owned(),
-                    ]
-                );
-            }
-            other => panic!("expected cli_wrapper execution, got {other:?}"),
-        }
-        assert_eq!(saved.outputs[0]["execution_type"], "image_buffer");
-        assert_eq!(saved.params[2]["data_type"], "bool");
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"list_arts"}"#.to_owned(),
-            ))
-            .expect("send list_arts");
-        let listed = read_hook_bridge_json(&mut socket);
-        assert_eq!(listed["type"], "arts");
-        assert_eq!(listed["data"].as_array().expect("arts").len(), 1);
-        assert_eq!(listed["data"][0]["art_id"], art_id);
-        assert_eq!(listed["data"][0]["execution"]["command"], local_command);
-        assert_eq!(
-            listed["data"][0]["outputs"][0]["execution_type"],
-            "image_buffer"
-        );
-
-        drop(socket);
-        let stopped = expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
-        assert_eq!(stopped["running"], false);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup hook sync collision root");
     }
 
     #[test]
@@ -17465,6 +19879,47 @@ nodes:
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup Hook Bridge fanout root");
+    }
+
+    #[test]
+    fn instantiate_workflow_rejects_non_hook_subscribers_instead_of_reporting_false_success() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("artloom-ipc-no-hook-subscriber");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+        let mut unrelated_subscriber = connect_hook_bridge_websocket(bridge_port);
+        unrelated_subscriber
+            .send(tungstenite::Message::Text(
+                r#"{"method":"subscribe","params":{"channels":["art_loom/arts_updated"]}}"#
+                    .to_owned(),
+            ))
+            .expect("send unrelated subscribe");
+        let subscribe_response = read_hook_bridge_json(&mut unrelated_subscriber);
+        assert_eq!(subscribe_response["type"], "success");
+
+        let rejected = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/artloom-compat/ipc/instantiate-workflow",
+                    &[],
+                    Some(
+                        r#"{"nodes":[{"id":"orphan"}],"edges":[],"mode":"reference","workflowId":"no-hook"}"#,
+                    ),
+                ),
+            ),
+            409,
+        );
+        assert_eq!(rejected["error"]["code"], "no_art_hook_client");
+
+        drop(unrelated_subscriber);
+        let stopped = stop_test_hook_bridge(&runtime);
+        assert_eq!(stopped["running"], false);
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup no Hook subscriber root");
     }
 
     #[test]
@@ -17592,7 +20047,7 @@ nodes:
                     "/v1/tools/native-tool",
                     &[],
                     Some(
-                        r#"{"id":"native-tool","name":"Native Tool","description":"broadcast fixture","enabled":true,"execution":{"type":"cli_wrapper","command":"echo","args":["native"]}}"#,
+                        r#"{"id":"native-tool","name":"Native Tool","description":"broadcast fixture","enabled":true,"execution":{"type":"framework_art","framework":"process"}}"#,
                     ),
                 ),
             ),
@@ -17608,7 +20063,7 @@ nodes:
                 "label": "Compat Art",
                 "description": "broadcast compat fixture",
                 "enabled": true,
-                "execution": { "type": "cli_wrapper", "command": "echo", "args": ["ok"] },
+                "execution": { "type": "framework_art", "framework": "process" },
                 "params": [{ "id": "strength", "default": 0.1 }]
             }]
         })
@@ -17719,7 +20174,7 @@ nodes:
                     "/v1/tools/filter-art",
                     &[],
                     Some(
-                        r#"{"id":"filter-art","name":"Filter Art","description":"channel filter fixture","enabled":true,"execution":{"type":"cli_wrapper","command":"echo","args":["ok"]},"params":[{"id":"strength","default":0.1}]}"#,
+                        r#"{"id":"filter-art","name":"Filter Art","description":"channel filter fixture","enabled":true,"execution":{"type":"framework_art","framework":"process"},"params":[{"id":"strength","default":0.1}]}"#,
                     ),
                 ),
             ),
@@ -18696,170 +21151,6 @@ nodes:
     }
 
     #[test]
-    fn daemon_hook_bridge_executes_cli_wrapper_art_node_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("cli-wrapper-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let image_data = test_png_base64();
-
-        #[cfg(windows)]
-        let execution = serde_json::json!({
-            "type": "cli_wrapper",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "Copy-Item -LiteralPath '{{input}}' -Destination '{{output}}' -Force"
-            ]
-        });
-        #[cfg(not(windows))]
-        let execution = serde_json::json!({
-            "type": "cli_wrapper",
-            "command": "sh",
-            "args": [
-                "-c",
-                "cp \"$1\" \"$2\"",
-                "loom-cli-wrapper",
-                "{{input}}",
-                "{{output}}"
-            ]
-        });
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-cli-wrapper-art",
-            &serde_json::json!({
-                "id": "fixture-cli-wrapper-art",
-                "name": "Fixture CLI Wrapper Art",
-                "description": "Execute fixture cli_wrapper Art through Hook bridge",
-                "enabled": true,
-                "execution": execution
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-cli-wrapper-art");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-cli-wrapper",
-                        "art_id": "fixture-cli-wrapper-art",
-                        "input_base64": image_data,
-                        "params": {}
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send cli_wrapper execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-cli-wrapper");
-        assert_eq!(response["data"]["output_base64"], image_data);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup cli wrapper art node root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_python_art_art_node_text_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let previous_runtime_root = std::env::var("LOOM_FRAMEWORK_RUNTIMES_DIR").ok();
-        let root = unique_temp_dir("python-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        mark_framework_installed(&root, "python_art");
-        let runtime_root = provision_test_python_art_runtime(&root);
-        let art_path = write_daemon_python_art_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-python-art-node",
-            &serde_json::json!({
-                "id": "fixture-python-art-node",
-                "name": "Fixture Python Art Node",
-                "description": "Execute fixture python_art through Hook bridge",
-                "enabled": true,
-                "execution": {
-                    "type": "python_art",
-                    "artId": "fixture_python_art",
-                    "artPath": art_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-python-art-node");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-python-art",
-                        "art_id": "fixture-python-art-node",
-                        "params": {
-                            "text": "hook python art"
-                        }
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send python_art execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-python-art");
-        assert_eq!(
-            response["data"]["output_text"],
-            "python art saw hook python art"
-        );
-        assert!(
-            runtime_root
-                .join("python-embed")
-                .join("python.exe")
-                .is_file(),
-            "python_art runtime marker missing"
-        );
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        restore_env("LOOM_FRAMEWORK_RUNTIMES_DIR", previous_runtime_root);
-        fs::remove_dir_all(root).expect("cleanup python art node root");
-    }
-
-    #[test]
     fn daemon_hook_bridge_executes_native_art_node_without_registry_tool() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("native-art-node");
@@ -19102,6 +21393,41 @@ nodes:
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup image helper base64 root");
+    }
+
+    #[test]
+    fn ahrp_file_backed_arguments_keep_large_images_out_of_framework_stdin() {
+        let image = test_png_base64();
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("strength".to_owned(), json!(37));
+        let input_images = std::collections::BTreeMap::from([
+            ("reference".to_owned(), Value::String(image.clone())),
+            ("empty".to_owned(), Value::String(String::new())),
+        ]);
+
+        let temporary_files =
+            prepare_file_backed_ahrp_arguments(&mut arguments, input_images, &image)
+                .expect("materialize AHRP images");
+
+        assert_eq!(temporary_files.len(), 2);
+        assert_eq!(arguments["input"], arguments["input_base64"]);
+        assert_eq!(arguments["image"], arguments["input"]);
+        assert!(arguments.get("empty").is_none());
+        for key in ["input", "reference"] {
+            let path = PathBuf::from(arguments[key].as_str().expect("file-backed image path"));
+            assert!(path.is_file(), "missing materialized image for {key}");
+            assert_eq!(
+                fs::read(path).expect("read materialized image"),
+                loom_image_io::decode_data_url_bytes(&image).expect("decode fixture")
+            );
+        }
+        let serialized = Value::Object(arguments).to_string();
+        assert!(!serialized.contains("data:image/"));
+        assert!(serialized.len() < 1024);
+
+        for path in temporary_files {
+            fs::remove_file(path).expect("cleanup materialized image");
+        }
     }
 
     #[test]
@@ -19412,906 +21738,6 @@ nodes:
         server.join().expect("server thread");
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup shared memory ahrp process root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_script_art_node_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let image_data = test_png_base64();
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-art",
-            &serde_json::json!({
-                "id": "fixture-script-art",
-                "name": "Fixture Script Art",
-                "description": "Execute fixture script Art through Hook bridge",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script-art");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-script",
-                        "art_id": "fixture-script-art",
-                        "input_base64": image_data,
-                        "params": {}
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send script execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-script");
-        assert_eq!(response["data"]["output_base64"], image_data);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup script art node root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_script_image_blend_art_node() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-image-blend-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = workspace_image_blend_script_path();
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let input_image = test_color_png_base64([240, 60, 0, 255]);
-        let reference_image = test_color_png_base64([40, 160, 200, 255]);
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-image-blend",
-            &serde_json::json!({
-                "id": "fixture-script-image-blend",
-                "name": "Fixture Script Image Blend",
-                "description": "Blend two images through script",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                },
-                "inputs": [
-                    { "name": "input", "label": "源图", "type": "image", "execution_type": "image_buffer" },
-                    { "name": "reference", "label": "参考图", "type": "image", "execution_type": "image_buffer" }
-                ],
-                "outputs": [
-                    { "name": "output", "label": "结果", "type": "image", "execution_type": "image_buffer" }
-                ],
-                "params": [
-                    { "id": "reference", "label": "参考图", "widget": "image_link", "default": "", "data_type": "image_path", "disabled": false },
-                    { "id": "mix_ratio", "label": "混合比例", "widget": "slider", "default": 25, "min": 0, "max": 100, "step": 1, "data_type": "number", "disabled": false }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script-image-blend");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-script-blend",
-                        "art_id": "fixture-script-image-blend",
-                        "input_base64": input_image,
-                        "params": {
-                            "reference": reference_image,
-                            "mix_ratio": 25
-                        }
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send script image blend execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-script-blend");
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            response["data"]["output_base64"]
-                .as_str()
-                .expect("blend output_base64"),
-        )
-        .expect("decode script image blend output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-        assert_eq!(output.data, vec![190, 85, 50, 255]);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup script image blend art node root");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn daemon_hook_bridge_executes_script_image_blend_art_node_with_large_payload_and_valid_images()
-    {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-image-blend-art-node-large-images");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = workspace_image_blend_script_path();
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let input_image = test_color_png_base64([240, 60, 0, 255]);
-        let reference_image = test_color_png_base64([40, 160, 200, 255]);
-        let debug_padding = "x".repeat(40_000);
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-image-blend-large-images",
-            &serde_json::json!({
-                "id": "fixture-script-image-blend-large-images",
-                "name": "Fixture Script Image Blend Large Images",
-                "description": "Blend two large images through script",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                },
-                "inputs": [
-                    { "name": "input", "label": "源图", "type": "image", "execution_type": "image_buffer" },
-                    { "name": "reference", "label": "参考图", "type": "image", "execution_type": "image_buffer", "exposePort": true }
-                ],
-                "outputs": [
-                    { "name": "output", "label": "结果", "type": "image", "execution_type": "image_buffer" }
-                ],
-                "params": [
-                    { "id": "reference", "label": "参考图", "widget": "image_link", "default": "", "data_type": "image_path", "disabled": false },
-                    { "id": "mix_ratio", "label": "混合比例", "widget": "slider", "default": 50, "min": 0, "max": 100, "step": 1, "data_type": "number", "disabled": false }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(
-            saved_tool["tool"]["id"],
-            "fixture-script-image-blend-large-images"
-        );
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-script-blend-large",
-                        "art_id": "fixture-script-image-blend-large-images",
-                        "input_base64": input_image,
-                        "params": {
-                            "reference": reference_image,
-                            "mix_ratio": 50,
-                            "debug_padding": debug_padding
-                        }
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send large payload script blend execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-script-blend-large");
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            response["data"]["output_base64"]
-                .as_str()
-                .expect("large payload blend output_base64"),
-        )
-        .expect("decode large payload script image blend output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup large valid image blend art node root");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn daemon_hook_bridge_executes_script_art_node_with_large_payload() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-art-node-large-payload");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let image_data = format!("data:image/png;base64,{}", "A".repeat(40_000));
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-art-large-payload",
-            &serde_json::json!({
-                "id": "fixture-script-art-large-payload",
-                "name": "Fixture Script Art Large Payload",
-                "description": "Execute fixture script Art through Hook bridge with a large payload",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script-art-large-payload");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-script-large",
-                        "art_id": "fixture-script-art-large-payload",
-                        "input_base64": image_data,
-                        "params": {}
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send script execute art node with large payload");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-script-large");
-        let output = response["data"]["output_base64"]
-            .as_str()
-            .expect("large payload output_base64");
-        assert!(output.starts_with("data:image/png;base64,"));
-        assert_eq!(output.len(), "data:image/png;base64,".len() + 40_000);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup large payload script art node root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_script_ahrp_process_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let image_data = test_png_base64();
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-process",
-            &serde_json::json!({
-                "id": "fixture-script-process",
-                "name": "Fixture Script Process",
-                "description": "Execute fixture script through AHRP process",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script-process");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-script-process",
-                        "art_id": "fixture-script-process",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {},
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send script ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-script-process",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success");
-        assert_eq!(response["data"]["type"], "result");
-        assert_eq!(response["data"]["output"]["type"], "base64");
-        assert_eq!(response["data"]["output"]["data"], image_data);
-        assert_eq!(response["data"]["output"]["width"], 1);
-        assert_eq!(response["data"]["output"]["height"], 1);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup script ahrp process root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_process_uses_explicit_auxiliary_input_images_for_script_blend() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-ahrp-process-image-blend");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = workspace_image_blend_script_path();
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let input_image = test_color_png_base64([240, 60, 0, 255]);
-        let reference_image = test_color_png_base64([40, 160, 200, 255]);
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-process-blend",
-            &serde_json::json!({
-                "id": "fixture-script-process-blend",
-                "name": "Fixture Script Process Blend",
-                "description": "Execute image blend script through the real art/process route",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                },
-                "inputs": [
-                    { "name": "input", "label": "源图", "type": "image", "execution_type": "image_buffer" },
-                    { "name": "reference", "label": "参考图", "type": "image", "execution_type": "image_buffer", "exposePort": true }
-                ],
-                "outputs": [
-                    { "name": "output", "label": "结果", "type": "image", "execution_type": "image_buffer" }
-                ],
-                "params": [
-                    { "id": "reference", "label": "参考图", "widget": "image_link", "default": "", "data_type": "image_path", "disabled": false },
-                    { "id": "mix_ratio", "label": "混合比例", "widget": "slider", "default": 25, "min": 0, "max": 100, "step": 1, "data_type": "number", "disabled": false }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script-process-blend");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-script-process-blend",
-                        "art_id": "fixture-script-process-blend",
-                        "input": {
-                            "type": "base64",
-                            "data": input_image,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {
-                            "reference": "",
-                            "mix_ratio": 25
-                        },
-                        "input_images": {
-                            "reference": reference_image
-                        },
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send script blend ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-script-process-blend",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success");
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            response["data"]["output"]["data"]
-                .as_str()
-                .expect("script blend process output data"),
-        )
-        .expect("decode script blend process output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-        assert_eq!(output.data, vec![190, 85, 50, 255]);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup script blend ahrp process root");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn daemon_hook_bridge_process_executes_image_blend_compress_workflow_art() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("image-blend-compress-workflow-ahrp");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let workflow_yaml =
-            fs::read_to_string(workspace_image_blend_compress_resource("workflow.yaml"))
-                .expect("read image blend compress workflow");
-        let workflow_manifest =
-            fs::read_to_string(workspace_image_blend_compress_resource("manifest.json"))
-                .expect("read image blend compress manifest");
-        let blend_script = workspace_image_blend_script_path();
-        let (compress_script, compress_evidence) = write_daemon_cli_image_copy_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let input_image = test_color_png_base64([240, 60, 0, 255]);
-        let reference_image = test_color_png_base64([40, 160, 200, 255]);
-
-        let saved_blend = http_json_put(
-            address.port(),
-            "/v1/tools/custom-image-blend-script",
-            &serde_json::json!({
-                "id": "custom-image-blend-script",
-                "name": "Fixture Image Blend",
-                "description": "Production image blend script child",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": blend_script.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_blend["tool"]["id"], "custom-image-blend-script");
-        let saved_compress = http_json_put(
-            address.port(),
-            "/v1/tools/custom-1770146354922",
-            &serde_json::json!({
-                "id": "custom-1770146354922",
-                "name": "Fixture Image Compress",
-                "description": "Deterministic cli_wrapper child",
-                "enabled": true,
-                "execution": {
-                    "type": "cli_wrapper",
-                    "command": "powershell.exe",
-                    "args": [
-                        "-NoProfile",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-File",
-                        compress_script.display().to_string(),
-                        "-InputPath",
-                        "{{input}}",
-                        "-OutputPath",
-                        "{{output}}",
-                        "-Quality",
-                        "{{quality_num}}",
-                        "-EvidencePath",
-                        compress_evidence.display().to_string()
-                    ]
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_compress["tool"]["id"], "custom-1770146354922");
-        let saved_workflow = http_json_put(
-            address.port(),
-            "/v1/workflows/image-blend-compress-workflow",
-            &serde_json::json!({ "data": workflow_yaml }).to_string(),
-        );
-        assert_eq!(
-            saved_workflow["workflow"]["id"],
-            "image-blend-compress-workflow"
-        );
-        let saved_workflow_art = http_json_put(
-            address.port(),
-            "/v1/tools/custom-image-blend-compress-workflow",
-            &workflow_manifest,
-        );
-        assert_eq!(
-            saved_workflow_art["tool"]["id"],
-            "custom-image-blend-compress-workflow"
-        );
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-image-blend-compress-workflow",
-                        "art_id": "custom-image-blend-compress-workflow",
-                        "input": {
-                            "type": "base64",
-                            "data": input_image,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {
-                            "mix_ratio": 25,
-                            "quality_num": 73
-                        },
-                        "input_images": {
-                            "reference": reference_image
-                        },
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send image blend compress workflow process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-image-blend-compress-workflow",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success", "response={response}");
-        assert_eq!(response["data"]["output"]["type"], "base64");
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            response["data"]["output"]["data"]
-                .as_str()
-                .expect("workflow process output data"),
-        )
-        .expect("decode workflow process output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-        assert_eq!(output.data, vec![190, 85, 50, 255]);
-        assert_eq!(
-            fs::read_to_string(&compress_evidence).expect("read compression evidence"),
-            "73"
-        );
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup image blend compress workflow root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_workflow_art_node_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("workflow-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let image_data = test_png_base64();
-
-        let saved_script = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-art",
-            &serde_json::json!({
-                "id": "fixture-script-art",
-                "name": "Fixture Script Art",
-                "description": "Execute fixture script Art through workflow",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_script["tool"]["id"], "fixture-script-art");
-        let workflow_yaml = r#"name: Workflow Art
-nodes:
-  - id: image
-    uses: fixture-script-art
-"#;
-        let saved_workflow = http_json_put(
-            address.port(),
-            "/v1/workflows/runtime-art-flow",
-            &serde_json::json!({ "data": workflow_yaml }).to_string(),
-        );
-        assert_eq!(saved_workflow["workflow"]["id"], "runtime-art-flow");
-        let saved_workflow_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-workflow-art",
-            r#"{
-              "id": "fixture-workflow-art",
-              "name": "Fixture Workflow Art",
-              "description": "Execute fixture workflow Art",
-              "enabled": true,
-              "execution": {
-                "type": "workflow",
-                "workflowId": "runtime-art-flow"
-              }
-            }"#,
-        );
-        assert_eq!(saved_workflow_tool["tool"]["id"], "fixture-workflow-art");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-workflow",
-                        "art_id": "fixture-workflow-art",
-                        "input_base64": image_data,
-                        "params": {}
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send workflow execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-workflow");
-        assert_eq!(response["data"]["output_base64"], image_data);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup workflow art node root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_workflow_ahrp_process_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("workflow-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let image_data = test_png_base64();
-
-        let saved_script = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-process",
-            &serde_json::json!({
-                "id": "fixture-script-process",
-                "name": "Fixture Script Process",
-                "description": "Execute fixture script through workflow",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_script["tool"]["id"], "fixture-script-process");
-        let workflow_yaml = r#"name: Workflow AHRP
-nodes:
-  - id: image
-    uses: fixture-script-process
-"#;
-        let saved_workflow = http_json_put(
-            address.port(),
-            "/v1/workflows/runtime-ahrp-flow",
-            &serde_json::json!({ "data": workflow_yaml }).to_string(),
-        );
-        assert_eq!(saved_workflow["workflow"]["id"], "runtime-ahrp-flow");
-        let saved_workflow_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-workflow-process",
-            r#"{
-              "id": "fixture-workflow-process",
-              "name": "Fixture Workflow Process",
-              "description": "Execute fixture workflow through AHRP process",
-              "enabled": true,
-              "execution": {
-                "type": "workflow",
-                "workflowId": "runtime-ahrp-flow"
-              }
-            }"#,
-        );
-        assert_eq!(
-            saved_workflow_tool["tool"]["id"],
-            "fixture-workflow-process"
-        );
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-workflow-process",
-                        "art_id": "fixture-workflow-process",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {},
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send workflow ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-workflow-process",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success");
-        assert_eq!(response["data"]["type"], "result");
-        assert_eq!(response["data"]["output"]["type"], "base64");
-        assert_eq!(response["data"]["output"]["data"], image_data);
-        assert_eq!(response["data"]["output"]["width"], 1);
-        assert_eq!(response["data"]["output"]["height"], 1);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup workflow ahrp process root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_script_shader_text_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("script-shader");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let script_path = write_daemon_script_fixture(&root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-script-shader",
-            &serde_json::json!({
-                "id": "fixture-script-shader",
-                "name": "Fixture Script Shader",
-                "description": "Return shader code through script",
-                "enabled": true,
-                "execution": {
-                    "type": "script",
-                    "path": script_path.display().to_string()
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-script-shader");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"art_loom/execute_art_node","params":{"node_id":"node-shader","art_id":"fixture-script-shader","params":{"mode":"shader"}}}"#.to_owned(),
-            ))
-            .expect("send script shader art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-shader");
-        assert_eq!(
-            response["data"]["output_text"],
-            "void fragment() { COLOR = vec4(1.0); }"
-        );
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup script shader root");
     }
 
     #[test]
@@ -20661,9 +22087,6 @@ nodes:
         format!("data:image/png;base64,{}", BASE64.encode(test_png_bytes()))
     }
 
-    fn test_color_png_base64(rgba: [u8; 4]) -> String {
-        loom_image_io::rgba8_to_png_data_url(1, 1, &rgba).expect("encode colored test png")
-    }
     fn fixture_image_base64() -> String {
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
             .to_owned()
@@ -20704,303 +22127,6 @@ nodes:
                     .then_some(path)
             })
             .expect("locate Loom/resources/ocr")
-    }
-
-    fn workspace_image_blend_script_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let script = candidate
-                    .join("resources")
-                    .join("script-arts")
-                    .join("image-blend")
-                    .join("main.ps1");
-                script.exists().then_some(script)
-            })
-            .expect("locate Loom/resources/script-arts/image-blend/main.ps1")
-    }
-
-    fn workspace_image_blend_compress_resource(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let path = candidate
-                    .join("resources")
-                    .join("workflow-arts")
-                    .join("image-blend-compress")
-                    .join(name);
-                path.exists().then_some(path)
-            })
-            .unwrap_or_else(|| panic!("locate image-blend-compress resource `{name}`"))
-    }
-
-    #[cfg(windows)]
-    fn write_daemon_cli_image_copy_fixture(root: &Path) -> (PathBuf, PathBuf) {
-        let script_path = root.join("fixture-compress.ps1");
-        let evidence_path = root.join("compress-evidence.txt");
-        let source = r#"
-param(
-    [Parameter(Mandatory = $true)][string]$InputPath,
-    [Parameter(Mandatory = $true)][string]$OutputPath,
-    [Parameter(Mandatory = $true)][int]$Quality,
-    [Parameter(Mandatory = $true)][string]$EvidencePath
-)
-$ErrorActionPreference = "Stop"
-Copy-Item -LiteralPath $InputPath -Destination $OutputPath -Force
-[System.IO.File]::WriteAllText(
-    $EvidencePath,
-    [string]$Quality,
-    [System.Text.UTF8Encoding]::new($false)
-)
-"#;
-        fs::write(&script_path, source).expect("write daemon CLI image copy fixture");
-        (script_path, evidence_path)
-    }
-
-    fn workspace_python_embed_resources() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let path = candidate.join("resources").join("python-embed");
-                path.join("python.exe").exists().then_some(path)
-            })
-            .expect("locate Loom/resources/python-embed")
-    }
-
-    fn workspace_python_resources() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let path = candidate.join("resources").join("python");
-                path.join("Launcher.py").exists().then_some(path)
-            })
-            .expect("locate Loom/resources/python")
-    }
-
-    fn copy_dir_recursive(source: &Path, destination: &Path) {
-        fs::create_dir_all(destination).expect("create recursive copy destination");
-        for entry in fs::read_dir(source).expect("read recursive copy source") {
-            let entry = entry.expect("read recursive copy entry");
-            let source_path = entry.path();
-            let destination_path = destination.join(entry.file_name());
-            if source_path.is_dir() {
-                copy_dir_recursive(&source_path, &destination_path);
-            } else {
-                if let Some(parent) = destination_path.parent() {
-                    fs::create_dir_all(parent).expect("create recursive copy parent");
-                }
-                fs::copy(&source_path, &destination_path).expect("copy recursive file");
-            }
-        }
-    }
-
-    fn mark_framework_installed(root: &Path, id: &str) {
-        let mut ids = vec![
-            "cli_wrapper".to_owned(),
-            "cloud_api".to_owned(),
-            "script".to_owned(),
-            "workflow".to_owned(),
-        ];
-        if !ids.iter().any(|candidate| candidate == id) {
-            ids.push(id.to_owned());
-        }
-        let registry = FrameworkRegistry::new(root);
-        for framework_id in ids {
-            install_test_framework_package(&registry, &framework_id);
-        }
-    }
-
-    fn install_test_framework_package(registry: &FrameworkRegistry, id: &str) {
-        registry
-            .install_framework_package_from_zip(&framework_package_zip(id, "0.1.0"))
-            .expect("install daemon test framework");
-    }
-
-    fn provision_test_python_art_runtime(root: &Path) -> PathBuf {
-        let runtime_root = root.join("frameworks").join("python_art");
-        let python_embed_root = runtime_root.join("python-embed");
-        let python_root = runtime_root.join("python");
-        copy_dir_recursive(&workspace_python_embed_resources(), &python_embed_root);
-        fs::create_dir_all(&python_root).expect("create python_art runtime python dir");
-        fs::copy(
-            workspace_python_resources().join("Launcher.py"),
-            python_root.join("Launcher.py"),
-        )
-        .expect("copy python_art launcher");
-        runtime_root
-    }
-
-    fn write_daemon_python_art_fixture(root: &Path) -> PathBuf {
-        let art_dir = root.join("fixture-python-art");
-        fs::create_dir_all(&art_dir).expect("create python art fixture dir");
-        fs::write(
-            art_dir.join("art.json"),
-            r#"{
-  "art_id": "fixture_python_art",
-  "label": "Fixture Python Art",
-  "description": "Python Art fixture for daemon Hook bridge tests.",
-  "version": "1.0.0",
-  "execution": {
-    "engine": "python",
-    "entry": "main.py"
-  },
-  "signature": {
-    "inputs": [
-      {
-        "id": "text",
-        "label": "Text",
-        "type": "String"
-      }
-    ],
-    "outputs": [
-      {
-        "id": "text",
-        "label": "Text",
-        "type": "String"
-      }
-    ]
-  },
-  "variables": []
-}
-"#,
-        )
-        .expect("write python art fixture art.json");
-        fs::write(
-            art_dir.join("main.py"),
-            r#"#!/usr/bin/env python3
-import sys
-
-
-def main(args):
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"python art saw {args.get('text', '')}",
-            }
-        ],
-        "pythonExecutable": sys.executable,
-    }
-"#,
-        )
-        .expect("write python art fixture main.py");
-        art_dir
-    }
-
-    fn write_daemon_script_fixture(root: &Path) -> PathBuf {
-        #[cfg(windows)]
-        {
-            let script_path = root.join("fixture-script-art.ps1");
-            let source = r#"
-$ErrorActionPreference = "Stop"
-$payload = $args[0] | ConvertFrom-Json
-$arguments = $payload.arguments
-if ($arguments.mode -eq "shader") {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "text"
-                text = "void fragment() { COLOR = vec4(1.0); }"
-            }
-        )
-    }
-} elseif ($arguments.input_base64) {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "image"
-                data = [string]$arguments.input_base64
-                mimeType = "image/png"
-            }
-        )
-    }
-} elseif ($arguments.input -and $arguments.input.data) {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "image"
-                data = [string]$arguments.input.data
-                mimeType = "image/png"
-            }
-        )
-    }
-} else {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "text"
-                text = "script saw $($arguments.text)"
-            }
-        )
-    }
-}
-[Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
-"#;
-            fs::write(&script_path, source).expect("write PowerShell daemon script fixture");
-            script_path
-        }
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let script_path = root.join("fixture-script-art.sh");
-            let source = r#"#!/usr/bin/env sh
-python3 - "$1" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-arguments = payload.get("arguments", {})
-if arguments.get("mode") == "shader":
-    response = {
-        "content": [
-            {
-                "type": "text",
-                "text": "void fragment() { COLOR = vec4(1.0); }",
-            }
-        ]
-    }
-elif arguments.get("input_base64"):
-    response = {
-        "content": [
-            {
-                "type": "image",
-                "data": arguments["input_base64"],
-                "mimeType": "image/png",
-            }
-        ]
-    }
-elif arguments.get("input", {}).get("data"):
-    response = {
-        "content": [
-            {
-                "type": "image",
-                "data": arguments["input"]["data"],
-                "mimeType": "image/png",
-            }
-        ]
-    }
-else:
-    response = {
-        "content": [
-            {
-                "type": "text",
-                "text": "script saw " + str(arguments.get("text", "")),
-            }
-        ]
-    }
-print(json.dumps(response))
-PY
-"#;
-            fs::write(&script_path, source).expect("write shell daemon script fixture");
-            let mut permissions = fs::metadata(&script_path)
-                .expect("daemon script fixture metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&script_path, permissions)
-                .expect("make daemon shell fixture executable");
-            script_path
-        }
     }
 
     struct GatewayBrainPlanFixture {

@@ -1,4 +1,5 @@
 import type { LoomToolDefinition } from "./loomApi";
+import { artPackageIdentity } from "./artHubUi.ts";
 
 export type WorkflowPortType = "image" | "file" | "int" | "float" | "string" | "boolean";
 
@@ -72,6 +73,17 @@ export interface WorkflowOutputBinding {
 export interface WorkflowExecutionBindings {
   inputs: WorkflowInputBinding[];
   primaryOutput?: WorkflowOutputBinding;
+  previewOutput?: WorkflowOutputBinding;
+  previewRequiredNodes?: string[];
+}
+
+export interface WorkflowPreviewNodeOption {
+  nodeId: string;
+  label: string;
+  outputs: Array<{
+    name: string;
+    label: string;
+  }>;
 }
 
 export interface WorkflowInterfacePort {
@@ -83,6 +95,16 @@ export interface WorkflowInterfacePort {
   bindingNodeId?: string;
   bindingTarget?: string;
   bindingKind?: WorkflowBindingKind;
+  widget?: string;
+  dataType?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: unknown[];
+  multiline?: boolean;
+  group?: string;
+  required?: boolean;
+  secret?: boolean;
 }
 
 export interface WorkflowInterfaceInference {
@@ -90,6 +112,27 @@ export interface WorkflowInterfaceInference {
   outputs: WorkflowInterfacePort[];
   bindings: WorkflowExecutionBindings;
   warnings: string[];
+}
+
+export interface WorkflowParamBindingCandidate {
+  key: string;
+  nodeId: string;
+  nodeLabel: string;
+  target: string;
+  paramLabel: string;
+  type: string;
+  executionType: string;
+  defaultValue: string;
+  widget?: string;
+  dataType?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: unknown[];
+  multiline?: boolean;
+  group?: string;
+  required?: boolean;
+  secret?: boolean;
 }
 
 export interface ToolInputDefinition {
@@ -113,6 +156,11 @@ export interface ToolParamDefinition {
   min?: number;
   max?: number;
   step?: number;
+  options?: unknown[];
+  multiline?: boolean;
+  group?: string;
+  required?: boolean;
+  secret?: boolean;
   disabled?: boolean;
 }
 
@@ -629,6 +677,8 @@ const optionalNumber = (value: unknown) => (typeof value === "number" ? value : 
 
 const optionalBoolean = (value: unknown) => (typeof value === "boolean" ? value : undefined);
 
+const optionalArray = (value: unknown) => (Array.isArray(value) ? value : undefined);
+
 export const normalizeToolInputs = (tool: LoomToolDefinition): ToolInputDefinition[] => {
   if (!Array.isArray(tool.inputs)) return [];
   return tool.inputs.filter(isRecord).map((input) => ({
@@ -655,6 +705,11 @@ export const normalizeToolParams = (tool: LoomToolDefinition): ToolParamDefiniti
     min: optionalNumber(param.min),
     max: optionalNumber(param.max),
     step: optionalNumber(param.step),
+    options: optionalArray(param.options),
+    multiline: optionalBoolean(param.multiline),
+    group: optionalString(param.group),
+    required: optionalBoolean(param.required),
+    secret: optionalBoolean(param.secret),
     disabled: optionalBoolean(param.disabled),
   }));
 };
@@ -670,6 +725,32 @@ const normalizeToolOutputs = (tool: LoomToolDefinition): ToolOutputDefinition[] 
   }));
 };
 
+export function collectWorkflowPreviewNodeOptions(
+  workflow: WorkflowGraphLite,
+  tools: LoomToolDefinition[],
+): WorkflowPreviewNodeOption[] {
+  const toolMap = toolDefinitionsByIdentity(tools);
+  return workflow.nodes.map((node) => {
+    const tool = toolMap.get(node.uses);
+    const outputs = tool
+      ? normalizeToolOutputs(tool).flatMap((output) => {
+          const normalized = normalizeOutputType(output);
+          const name = output.name?.trim();
+          const imageLike = normalized.type === "image" || normalized.executionType.startsWith("image_");
+          if (!name || !imageLike) return [];
+          return [{ name, label: output.label?.trim() || name }];
+        })
+      : node.uses === "sticker"
+        ? [{ name: "output_image", label: "图像" }]
+        : [];
+    return {
+      nodeId: node.id,
+      label: toolLabel(tool, node.id),
+      outputs,
+    };
+  });
+}
+
 const toolLabel = (tool: LoomToolDefinition | undefined, fallback: string) => {
   if (!tool) return fallback;
   const label = isRecord(tool) ? optionalString(tool.label) : undefined;
@@ -678,7 +759,9 @@ const toolLabel = (tool: LoomToolDefinition | undefined, fallback: string) => {
 
 export const mapParamUiType = (param: ToolParamDefinition) => {
   const dataType = param.dataType || param.data_type;
-  if (param.widget === "slider" || param.widget === "number" || dataType === "number") {
+  if (param.widget === "slider" || param.widget === "number" || ["number", "integer", "int", "float"].includes(dataType || "")) {
+    if (dataType === "integer" || dataType === "int") return "int";
+    if (dataType === "float" || (typeof param.step === "number" && !Number.isInteger(param.step))) return "float";
     return typeof param.default === "number" && Number.isInteger(param.default) ? "int" : "float";
   }
   if (param.widget === "checkbox" || dataType === "bool" || dataType === "boolean") return "boolean";
@@ -691,6 +774,61 @@ export const mapParamExecutionType = (param: ToolParamDefinition, uiType: string
 
 export const normalizeInputExecutionType = (input: ToolInputDefinition, uiType: string) =>
   input.executionType || input.execution_type || (uiType === "image" ? "image_path" : "string");
+
+export function toolDefinitionsByIdentity(
+  tools: LoomToolDefinition[],
+): Map<string, LoomToolDefinition> {
+  const toolMap = new Map<string, LoomToolDefinition>();
+  for (const tool of tools) {
+    toolMap.set(tool.id, tool);
+    const qualifiedId = artPackageIdentity(tool);
+    if (qualifiedId) toolMap.set(qualifiedId, tool);
+  }
+  return toolMap;
+}
+
+export function collectWorkflowParamBindingCandidates(
+  workflow: WorkflowGraphLite,
+  tools: LoomToolDefinition[],
+): WorkflowParamBindingCandidate[] {
+  const toolMap = toolDefinitionsByIdentity(tools);
+  return workflow.nodes.flatMap((node) => {
+    const tool = toolMap.get(node.uses);
+    if (!tool) return [];
+    const nodeLabel = toolLabel(tool, node.id);
+    return normalizeToolParams(tool).flatMap((param) => {
+      const target = param.id || param.name;
+      if (!target || param.disabled) return [];
+      const type = mapParamUiType(param);
+      const configuredDefault = node.with[target];
+      const defaultValue = isConfigured(configuredDefault)
+        ? configuredDefault
+        : param.default === undefined
+          ? ""
+          : String(param.default);
+      return [{
+        key: `${encodeURIComponent(node.id)}::${encodeURIComponent(target)}`,
+        nodeId: node.id,
+        nodeLabel,
+        target,
+        paramLabel: param.label || target,
+        type,
+        executionType: mapParamExecutionType(param, type),
+        defaultValue,
+        widget: param.widget,
+        dataType: param.dataType || param.data_type,
+        min: param.min,
+        max: param.max,
+        step: param.step,
+        options: param.options,
+        multiline: param.multiline,
+        group: param.group,
+        required: param.required,
+        secret: param.secret,
+      }];
+    });
+  });
+}
 
 const normalizeOutputType = (output?: ToolOutputDefinition) => {
   const type = output?.type === "text" ? "string" : output?.type || "string";
@@ -705,7 +843,7 @@ export function inferWorkflowArtInterface(
   workflow: WorkflowGraphLite,
   tools: LoomToolDefinition[],
 ): WorkflowInterfaceInference {
-  const toolMap = new Map(tools.map((tool) => [tool.id, tool]));
+  const toolMap = toolDefinitionsByIdentity(tools);
   const incomingNodeIds = new Set(workflow.nodes.flatMap((node) => node.needs));
   const usedNames = new Set<string>();
   const inputs: WorkflowInterfacePort[] = [];
@@ -775,6 +913,16 @@ export function inferWorkflowArtInterface(
         bindingNodeId: node.id,
         bindingTarget: target,
         bindingKind: "param",
+        widget: param.widget,
+        dataType: param.dataType || param.data_type,
+        min: param.min,
+        max: param.max,
+        step: param.step,
+        options: param.options,
+        multiline: param.multiline,
+        group: param.group,
+        required: param.required,
+        secret: param.secret,
       });
       bindings.inputs.push({ workflowParam, nodeId: node.id, target, kind: "param" });
     }

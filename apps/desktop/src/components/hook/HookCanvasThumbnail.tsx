@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   buildSubWorkflowYaml,
+  buildHookWorkflowInstantiationGraph,
   buildWorkflowArtBundle,
   connectedNodeIds,
   edgeEndpoints,
@@ -22,9 +23,9 @@ import {
 } from "../../services/hookCanvas.ts";
 import {
   deleteCanvasWorkflow,
+  instantiateArtLoomWorkflow,
   renameCanvasWorkflow,
   saveHookCanvasWorkflow,
-  saveToolDefinition,
   saveWorkflowBundle,
   type LoomToolDefinition,
 } from "../../services/loomApi.ts";
@@ -32,6 +33,7 @@ import {
   mapParamExecutionType,
   mapParamUiType,
   normalizeToolParams,
+  toolDefinitionsByIdentity,
   type ToolParamDefinition,
 } from "../../services/workflowStudio.ts";
 import { HookCanvasNode } from "./HookCanvasNode.tsx";
@@ -94,7 +96,13 @@ interface HookCanvasThumbnailProps {
   baseUrl: string;
   error: string | null;
   tools?: LoomToolDefinition[];
-  onOpenWorkflow?: (selectedNodeId?: string) => void;
+  onCreateWorkflowArt?: (request: WorkflowArtCreationRequest) => void;
+}
+
+export interface WorkflowArtCreationRequest {
+  workflowId: string;
+  workflowName: string;
+  tool: LoomToolDefinition;
 }
 
 export function HookCanvasThumbnail({
@@ -102,7 +110,7 @@ export function HookCanvasThumbnail({
   baseUrl,
   error,
   tools = [],
-  onOpenWorkflow,
+  onCreateWorkflowArt,
 }: HookCanvasThumbnailProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -118,6 +126,7 @@ export function HookCanvasThumbnail({
   // Rename dialog: holds the draft name while the二级 dialog is open, or null.
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [workflowBusyAction, setWorkflowBusyAction] = useState<"desktop" | "art" | null>(null);
   const [artMessage, setArtMessage] = useState<{ ok: boolean; text: string } | null>(null);
   // Parameter exposure: which "<workflowNodeId>::<target>" keys are exposed as
   // workflow inputs, and the current value of every parameter (exposed → its
@@ -211,7 +220,7 @@ export function HookCanvasThumbnail({
   // Per-node exposable parameters, derived from each Art node's registered tool
   // schema (artId → tool). Pure screenshot nodes have no params and are skipped.
   const toolMap = useMemo(
-    () => new Map(tools.map((tool) => [tool.id, tool])),
+    () => toolDefinitionsByIdentity(tools),
     [tools],
   );
   const paramGroups = useMemo<NodeParamGroup[]>(() => {
@@ -562,12 +571,39 @@ export function HookCanvasThumbnail({
     }
   };
 
-  // Wrap the whole saved workflow into a reusable "type: workflow" Loom tool.
-  // Image inputs come from the topology; the user's exposed params become extra
-  // tool input ports, and unexposed params are baked into the YAML `with`. Reuses
-  // the ToolExecution::Workflow mechanism (see App.tsx::wrapWorkflowAsTool).
+  const addWorkflowToDesktop = async () => {
+    if (isLive || !hasNodes) return;
+    setWorkflowBusy(true);
+    setWorkflowBusyAction("desktop");
+    setArtMessage(null);
+    try {
+      const graph = buildHookWorkflowInstantiationGraph(activeSnapshot, baseUrl);
+      await instantiateArtLoomWorkflow(baseUrl, {
+        ...graph,
+        mode: "reference",
+        workflowId: selectedWorkflow,
+      });
+      setArtMessage({ ok: true, text: `已添加到桌面：${currentWorkflowName}` });
+    } catch (error) {
+      setArtMessage({
+        ok: false,
+        text: error instanceof Error ? error.message : "添加到桌面失败。",
+      });
+    } finally {
+      setWorkflowBusy(false);
+      setWorkflowBusyAction(null);
+    }
+  };
+
+  // Prepare the saved workflow for the standard Art creation dialog. Constants
+  // are persisted first; the dialog receives the generated ports, parameters,
+  // bindings and identity as editable defaults instead of registering directly.
   const addWorkflowAsArt = async () => {
     if (isLive) return;
+    if (!onCreateWorkflowArt) {
+      setArtMessage({ ok: false, text: "Art 创建界面暂不可用。" });
+      return;
+    }
     if (!workflowInterface.inputs.length) {
       setArtMessage({ ok: false, text: "该工作流没有可用的输入图像，无法封装为 Art。" });
       return;
@@ -579,6 +615,17 @@ export function HookCanvasThumbnail({
         label: `${group.label} / ${row.label}`,
         uiType: mapParamUiType(row.param),
         executionType: mapParamExecutionType(row.param, mapParamUiType(row.param)),
+        widget: row.param.widget,
+        dataType: row.param.dataType || row.param.data_type,
+        defaultValue: row.param.default,
+        min: row.param.min,
+        max: row.param.max,
+        step: row.param.step,
+        options: row.param.options,
+        multiline: row.param.multiline,
+        group: row.param.group,
+        required: row.param.required,
+        secret: row.param.secret,
       })),
     );
     const { yaml, tool } = buildWorkflowArtBundle({
@@ -590,14 +637,17 @@ export function HookCanvasThumbnail({
       values: paramValues,
     });
     setWorkflowBusy(true);
+    setWorkflowBusyAction("art");
     setArtMessage(null);
     try {
-      // Overwrite the workflow YAML first so the baked constants (unexposed
-      // params) take effect, then register the tool that references it.
+      // Persist baked constants before opening the creator. The final Art is
+      // created only after the user reviews and submits the prefilled form.
       await saveWorkflowBundle(baseUrl, { id: selectedWorkflow }, yaml);
-      await saveToolDefinition(baseUrl, tool);
-      const exposedCount = tool.inputs?.length ?? 0;
-      setArtMessage({ ok: true, text: `已添加为 Art：${tool.id}（${exposedCount} 个输入）` });
+      onCreateWorkflowArt({
+        workflowId: selectedWorkflow,
+        workflowName: currentWorkflowName,
+        tool,
+      });
     } catch (error) {
       setArtMessage({
         ok: false,
@@ -605,6 +655,7 @@ export function HookCanvasThumbnail({
       });
     } finally {
       setWorkflowBusy(false);
+      setWorkflowBusyAction(null);
     }
   };
 
@@ -653,32 +704,19 @@ export function HookCanvasThumbnail({
               删除
             </button>
           </div>
-        ) : (
-          <div className="hook-canvas-workflow-actions">
-            <button
-              className="ghost-button"
-              type="button"
-              data-testid="hook-canvas-open-workflow"
-              onClick={() => onOpenWorkflow?.(selectedNodeId ?? undefined)}
-              disabled={!hasNodes}
-            >
-              打开可视化工作流
-            </button>
-            <button
-              className="signal-button"
-              type="button"
-              onClick={saveAsWorkflow}
-              disabled={saving || !selectedNodeId || !highlighted.size}
-            >
-              {saving ? "保存中" : "保存为工作流"}
-            </button>
-            {saveMessage ? (
-              <span className={saveMessage.ok ? "success-text" : "error-text"}>{saveMessage.text}</span>
-            ) : null}
-          </div>
-        )}
+        ) : null}
         {hasNodes ? (
           <div className="hook-canvas-toolbar__controls">
+            {isLive ? (
+              <button
+                className="signal-button hook-canvas-save-workflow"
+                type="button"
+                onClick={saveAsWorkflow}
+                disabled={saving || !selectedNodeId || !highlighted.size}
+              >
+                {saving ? "保存中" : "保存为工作流"}
+              </button>
+            ) : null}
             <label className="hook-canvas-zoom">
               <span className="hook-canvas-zoom__label">缩放</span>
               <input
@@ -701,6 +739,9 @@ export function HookCanvasThumbnail({
             >
               {showMinimap ? "隐藏缩略图" : "显示缩略图"}
             </button>
+            {isLive && saveMessage ? (
+              <span className={saveMessage.ok ? "success-text" : "error-text"}>{saveMessage.text}</span>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -846,12 +887,20 @@ export function HookCanvasThumbnail({
             <p className="hook-canvas-workflow-io__title">工作流接口</p>
             <div className="hook-canvas-workflow-io__action">
               <button
-                className="signal-button"
+                className="ghost-button"
                 type="button"
-                onClick={addWorkflowAsArt}
+                onClick={() => void addWorkflowToDesktop()}
                 disabled={workflowBusy}
               >
-                {workflowBusy ? "处理中" : "添加为 Art"}
+                {workflowBusyAction === "desktop" ? "添加中" : "添加到桌面"}
+              </button>
+              <button
+                className="signal-button"
+                type="button"
+                onClick={() => void addWorkflowAsArt()}
+                disabled={workflowBusy}
+              >
+                {workflowBusyAction === "art" ? "处理中" : "添加为 Art"}
               </button>
               {artMessage ? (
                 <span className={artMessage.ok ? "success-text" : "error-text"}>

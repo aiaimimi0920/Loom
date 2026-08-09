@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon B - Warp and weft</title>
+  <desc id="desc">Three vertical warp threads crossed by one flowing yellow weft.</desc>
+  <defs>
+    <filter id="greenGlow" x="-70%" y="-40%" width="240%" height="180%">
+      <feGaussianBlur stdDeviation="15" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.13  0 0 0 0 0.77  0 0 0 0 0.37  0 0 0 0.62 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="yellowGlow" x="-35%" y="-80%" width="170%" height="260%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 1  0 0 0 0 0.9  0 0 0 0 0  0 0 0 0.68 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M330 244v536M512 244v536M694 244v536" stroke="#22C55E" stroke-width="72" filter="url(#greenGlow)"/>
+    <path d="M226 512c86-154 190-154 286 0s200 154 286 0" stroke="#FFE600" stroke-width="76" filter="url(#yellowGlow)"/>
+  </g>
+</svg>

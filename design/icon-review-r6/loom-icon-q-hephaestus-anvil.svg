@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon Q - Anvil of Hephaestus</title>
+  <desc id="desc">A strong anvil silhouette representing tools, making, transformation, and execution.</desc>
+  <rect x="96" y="96" width="832" height="832" rx="184" fill="#0D161C"/>
+  <rect x="118" y="118" width="788" height="788" rx="162" fill="none" stroke="#223238" stroke-width="28"/>
+  <path d="M196 330h632c-38 96-130 148-270 158v108h106l96 194H264l96-194h106V488H318L196 330Z" fill="#22C55E"/>
+  <path d="m690 206 30 66 72 8-54 48 16 70-64-36-64 36 16-70-54-48 72-8 30-66Z" fill="#FFE600"/>
+</svg>

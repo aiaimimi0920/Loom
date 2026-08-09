@@ -50,9 +50,7 @@ $forbiddenArtIds = @(
     "custom-1770146354922",
     "custom-remove-bg-cloud",
     "custom-image-search",
-    "custom-1770131241684",
-    "custom-image-blend-script",
-    "custom-image-blend-compress-workflow"
+    "custom-1770131241684"
 )
 
 foreach ($file in $hookSource) {

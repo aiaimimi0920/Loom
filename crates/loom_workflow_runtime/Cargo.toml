@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Loom saved workflow Art runtime"
 
 [dependencies]
+loom_image_io.workspace = true
 loom_mcp.workspace = true
 loom_native_image.workspace = true
 loom_tool_registry.workspace = true
@@ -16,6 +17,3 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-loom_image_io.workspace = true

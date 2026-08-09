@@ -1,7 +1,8 @@
 //! Art execution frameworks treated as first-class, installable capabilities.
 //! Each Art belongs to exactly one framework and can only run when that
-//! framework is installed and ready. Loom publishes six repo-owned framework
-//! packages, but safe third-party framework IDs are also supported.
+//! framework is installed and ready. Loom publishes four repo-owned framework
+//! packages, but safe third-party framework IDs are also supported. Command,
+//! script, and Python Arts share the package-backed `process` framework.
 //!
 //! Unified model (per product decision): all frameworks share the same
 //! package-backed installed/ready state. No optional framework is compiled or
@@ -47,17 +48,10 @@ const FRAMEWORK_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// `<control-plane>/frameworks/<id>/`.
 const FRAMEWORK_PACKAGES_DIR: &str = "frameworks";
 
-/// The six repo-owned framework package IDs. This is a catalog, not a closed
+/// The four repo-owned framework package IDs. This is a catalog, not a closed
 /// allowlist; third-party packages may use any ID accepted by
 /// `is_valid_framework`.
-pub const FRAMEWORK_IDS: [&str; 6] = [
-    "cli_wrapper",
-    "cloud_api",
-    "script",
-    "python_art",
-    "mcp",
-    "workflow",
-];
+pub const FRAMEWORK_IDS: [&str; 4] = ["process", "cloud_api", "mcp", "workflow"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -232,10 +226,7 @@ fn enforce_framework_permission_mode(
 /// `execution_type_name`, exposed for readiness checks).
 pub fn framework_id_for_execution(execution: &ToolExecution) -> &str {
     match execution {
-        ToolExecution::CliWrapper { .. } => "cli_wrapper",
         ToolExecution::CloudApi { .. } => "cloud_api",
-        ToolExecution::Script { .. } => "script",
-        ToolExecution::PythonArt { .. } => "python_art",
         ToolExecution::Mcp { .. } => "mcp",
         ToolExecution::Workflow { .. } => "workflow",
         ToolExecution::FrameworkArt { framework } => framework,
@@ -285,22 +276,18 @@ pub fn read_dependencies(tool: &ToolDefinition) -> ArtDependencies {
 
 fn framework_name(id: &str) -> &'static str {
     match id {
-        "cli_wrapper" => "命令行框架",
-        "cloud_api" => "云 API 框架",
-        "script" => "脚本框架",
-        "python_art" => "Python Art 框架",
-        "mcp" => "MCP 框架",
-        "workflow" => "工作流框架",
+        "process" => "脚本",
+        "cloud_api" => "云端",
+        "mcp" => "MCP",
+        "workflow" => "流程",
         _ => "第三方 Art 框架",
     }
 }
 
 fn framework_description(id: &str) -> &'static str {
     match id {
-        "cli_wrapper" => "调用本地命令行工具（如图像压缩器）处理图像。",
+        "process" => "通过统一的本地进程边界运行命令、脚本或 Python Art。",
         "cloud_api" => "调用云端 HTTP API 处理图像。",
-        "script" => "运行脚本进程处理图像。",
-        "python_art" => "运行 Python Art，需要 Python 运行时。",
         "mcp" => "通过 MCP 服务器调用工具。",
         "workflow" => "把一条工作流封装成单一节点执行。",
         _ => "由外部插件包提供的 Art 执行框架。",
@@ -798,6 +785,36 @@ impl FrameworkRegistry {
             store.write_atomic(&self.trust_store_path())?;
         }
         Ok(changed)
+    }
+
+    pub fn set_trust_policy(&self, policy: TrustPolicy) -> Result<TrustStore, FrameworkError> {
+        let mut store = self.trust_store()?;
+        store.set_policy(policy);
+        store.write_atomic(&self.trust_store_path())?;
+        Ok(store)
+    }
+
+    pub fn trust_publisher_directory(
+        &self,
+        publisher_id: &str,
+        records: impl IntoIterator<Item = PublisherTrustRecord>,
+    ) -> Result<TrustStore, FrameworkError> {
+        let mut store = self.trust_store()?;
+        store.untrust_publisher_id(publisher_id);
+        store.trust_publisher_id(publisher_id.to_owned());
+        for record in records {
+            store.trust(record);
+        }
+        store.write_atomic(&self.trust_store_path())?;
+        Ok(store)
+    }
+
+    pub fn untrust_publisher(&self, publisher_id: &str) -> Result<TrustStore, FrameworkError> {
+        let mut store = self.trust_store()?;
+        if store.untrust_publisher_id(publisher_id) {
+            store.write_atomic(&self.trust_store_path())?;
+        }
+        Ok(store)
     }
 
     /// The set of installed framework ids. A persisted state entry is not
@@ -2108,6 +2125,14 @@ mod tests {
     }
 
     #[test]
+    fn official_framework_names_match_ui_vocabulary() {
+        assert_eq!(framework_name("cloud_api"), "云端");
+        assert_eq!(framework_name("mcp"), "MCP");
+        assert_eq!(framework_name("process"), "脚本");
+        assert_eq!(framework_name("workflow"), "流程");
+    }
+
+    #[test]
     fn starts_with_no_frameworks_installed() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
@@ -2125,7 +2150,7 @@ mod tests {
         }
         // All optional frameworks, including the former built-in kinds, are
         // absent from a fresh control plane.
-        assert!(!installed.contains("python_art"));
+        assert!(!installed.contains("process"));
         assert!(!installed.contains("mcp"));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -2177,11 +2202,11 @@ mod tests {
     }
 
     #[test]
-    fn statuses_cover_all_six_frameworks() {
+    fn statuses_cover_all_four_frameworks() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         let statuses = registry.statuses();
-        assert_eq!(statuses.len(), 6);
+        assert_eq!(statuses.len(), 4);
         for id in FRAMEWORK_IDS {
             let status = statuses.iter().find(|status| status.id == id).unwrap();
             assert!(!status.installed, "{id} should not be installed by default");
@@ -2243,25 +2268,25 @@ mod tests {
         let registry = FrameworkRegistry::new(&root);
         registry
             .write_installed(&BTreeMap::from([(
-                "script".to_owned(),
+                "process".to_owned(),
                 FrameworkInstallationState {
                     version: String::new(),
                     enabled: true,
                 },
             )]))
-            .expect("write legacy script alias");
+            .expect("write legacy process alias");
 
         registry
             .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
-                "script",
+                "process",
                 "0.1.0",
                 Some("neuro.official"),
             ))
-            .expect("install qualified script framework");
+            .expect("install qualified process framework");
 
         let states = registry.installation_states();
-        assert!(!states.contains_key("script"));
-        assert!(states.contains_key("neuro.official/script"));
+        assert!(!states.contains_key("process"));
+        assert!(states.contains_key("neuro.official/process"));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -2292,28 +2317,28 @@ mod tests {
         let root = temp_root();
         let catalog = root.join("catalog");
         std::fs::create_dir_all(&catalog).expect("catalog directory");
-        let package_path = catalog.join("script.zip");
+        let package_path = catalog.join("process.zip");
         let package = b"independent-framework-package";
         std::fs::write(&package_path, package).expect("framework package");
         let hash = format!("{:x}", Sha256::digest(package));
         std::fs::write(
             package_path.with_extension("zip.sha256"),
-            format!("{hash}  script.zip\n"),
+            format!("{hash}  process.zip\n"),
         )
         .expect("framework checksum");
 
         assert_eq!(
-            read_framework_package_from_catalog("script", &package_path)
+            read_framework_package_from_catalog("process", &package_path)
                 .expect("verified local framework package"),
             package
         );
 
         std::fs::write(
             package_path.with_extension("zip.sha256"),
-            format!("{}  script.zip\n", "0".repeat(64)),
+            format!("{}  process.zip\n", "0".repeat(64)),
         )
         .expect("tampered framework checksum");
-        let error = read_framework_package_from_catalog("script", &package_path)
+        let error = read_framework_package_from_catalog("process", &package_path)
             .expect_err("checksum mismatch must fail");
         assert!(error.to_string().contains("checksum mismatch"));
         std::fs::remove_dir_all(&root).ok();
@@ -2326,9 +2351,8 @@ mod tests {
             name: "A".to_owned(),
             description: "d".to_owned(),
             enabled: true,
-            execution: ToolExecution::CliWrapper {
-                command: "pingo".to_owned(),
-                args: vec![],
+            execution: ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
             },
             inputs: vec![],
             outputs: vec![],
@@ -2336,7 +2360,7 @@ mod tests {
             metadata: None,
         };
         let deps = read_dependencies(&tool);
-        assert_eq!(deps.framework.as_deref(), Some("cli_wrapper"));
+        assert_eq!(deps.framework.as_deref(), Some("process"));
         assert!(deps.binaries.is_empty());
     }
 
@@ -2347,23 +2371,22 @@ mod tests {
             name: "B".to_owned(),
             description: "d".to_owned(),
             enabled: true,
-            execution: ToolExecution::CliWrapper {
-                command: "pingo".to_owned(),
-                args: vec![],
+            execution: ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
             },
             inputs: vec![],
             outputs: vec![],
             params: vec![],
             metadata: Some(serde_json::json!({
                 "dependencies": {
-                    "framework": "cli_wrapper",
+                    "framework": "process",
                     "binaries": [{ "name": "pingo.exe", "sha256": "abc" }],
                     "arts": ["dep-art-1"]
                 }
             })),
         };
         let deps = read_dependencies(&tool);
-        assert_eq!(deps.framework.as_deref(), Some("cli_wrapper"));
+        assert_eq!(deps.framework.as_deref(), Some("process"));
         assert_eq!(deps.binaries.len(), 1);
         assert_eq!(deps.binaries[0].name, "pingo.exe");
         assert_eq!(deps.arts, vec!["dep-art-1"]);
@@ -2384,10 +2407,8 @@ mod tests {
     ) -> Vec<u8> {
         use std::io::Write;
         let command = match id {
-            "cli_wrapper" => "runtime/loom-framework-cli-wrapper.exe",
+            "process" => "runtime/loom-framework-process.exe",
             "cloud_api" => "runtime/loom-framework-cloud-api.exe",
-            "script" => "runtime/loom-framework-script.exe",
-            "python_art" => "runtime/loom-framework-python-art.exe",
             "mcp" => "runtime/loom-framework-mcp.exe",
             "workflow" => "runtime/loom-framework-workflow.exe",
             _ => "runtime/loom-framework-third-party.exe",
@@ -2422,7 +2443,7 @@ mod tests {
                 .unwrap();
             writer.start_file(command, opts).unwrap();
             writer.write_all(b"MZ-fake-framework").unwrap();
-            if id == "python_art" {
+            if id == "process" {
                 writer.start_file("python-embed/python.exe", opts).unwrap();
                 writer.write_all(b"MZ-fake-python").unwrap();
             }
@@ -2532,24 +2553,24 @@ mod tests {
         let registry = FrameworkRegistry::new(&root);
 
         let first = registry
-            .install_with_runtime_fetcher("script", &|_id| {
-                Ok(fake_framework_package_zip_with_version("script", "0.1.0"))
+            .install_with_runtime_fetcher("process", &|_id| {
+                Ok(fake_framework_package_zip_with_version("process", "0.1.0"))
             })
             .expect("install first package");
         assert_eq!(first.version.as_deref(), Some("0.1.0"));
         assert!(registry
-            .runtime_dir("script")
+            .runtime_dir("process")
             .join(FRAMEWORK_MANIFEST_FILE)
             .is_file());
 
         let second = registry
-            .install_with_runtime_fetcher("script", &|_id| {
-                Ok(fake_framework_package_zip_with_version("script", "0.2.0"))
+            .install_with_runtime_fetcher("process", &|_id| {
+                Ok(fake_framework_package_zip_with_version("process", "0.2.0"))
             })
             .expect("upgrade package");
         assert_eq!(second.version.as_deref(), Some("0.2.0"));
         assert!(second.ready);
-        let rolled_back = registry.rollback("script").expect("rollback package");
+        let rolled_back = registry.rollback("process").expect("rollback package");
         assert_eq!(rolled_back.version.as_deref(), Some("0.1.0"));
         assert!(rolled_back.ready);
 
@@ -2598,26 +2619,26 @@ mod tests {
         let unsigned = FrameworkRegistry::new(&unsigned_root);
         unsigned
             .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
-                "script", "1.0.0",
+                "process", "1.0.0",
             ))
             .expect("install unsigned v1");
         unsigned
             .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
-                "script", "2.0.0",
+                "process", "2.0.0",
             ))
             .expect("install unsigned v2");
-        let activation = unsigned.activation("script").expect("activation");
+        let activation = unsigned.activation("process").expect("activation");
         let previous = unsigned_root
             .join(FRAMEWORK_PACKAGES_DIR)
-            .join("script")
+            .join("process")
             .join(activation.previous.expect("previous"));
         set_framework_tree_readonly(&previous, false).expect("unlock previous");
         std::fs::write(
-            previous.join("runtime/loom-framework-script.exe"),
+            previous.join("runtime/loom-framework-process.exe"),
             b"tampered",
         )
         .expect("tamper previous runtime");
-        assert!(unsigned.rollback("script").is_err());
+        assert!(unsigned.rollback("process").is_err());
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&unsigned_root).ok();
     }
@@ -2627,16 +2648,16 @@ mod tests {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         registry
-            .install_framework_package_from_zip(&fake_framework_package_zip("script"))
+            .install_framework_package_from_zip(&fake_framework_package_zip("process"))
             .expect("install package");
 
-        let disabled = registry.disable("script").expect("disable package");
+        let disabled = registry.disable("process").expect("disable package");
         assert!(disabled.installed);
         assert!(!disabled.enabled);
         assert!(!disabled.ready);
         assert_eq!(disabled.ready_detail, "已禁用");
 
-        let enabled = registry.enable("script").expect("enable package");
+        let enabled = registry.enable("process").expect("enable package");
         assert!(enabled.installed);
         assert!(enabled.enabled);
         assert!(enabled.ready);
@@ -2665,62 +2686,59 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    // Build a complete package zip for python_art. The package manifest and
+    // Build a complete package zip for process. The package manifest and
     // process entry are required even when the package also carries Python.
     fn fake_python_runtime_zip() -> Vec<u8> {
-        fake_framework_package_zip("python_art")
+        fake_framework_package_zip("process")
     }
 
     #[test]
-    fn install_python_art_downloads_runtime_and_marks_installed() {
+    fn install_process_downloads_runtime_and_marks_installed() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
-        // python_art is NOT installed by default and requires its package.
-        assert!(!registry.is_installed("python_art"));
+        // process is NOT installed by default and requires its package.
+        assert!(!registry.is_installed("process"));
 
         let status = registry
-            .install_with_runtime_fetcher("python_art", &|_id| Ok(fake_python_runtime_zip()))
-            .expect("install python_art with runtime");
+            .install_with_runtime_fetcher("process", &|_id| Ok(fake_python_runtime_zip()))
+            .expect("install process with runtime");
         assert!(status.installed);
         assert!(status.ready, "package entry present => ready");
-        assert!(registry.is_installed("python_art"));
+        assert!(registry.is_installed("process"));
         // The package landed in the active immutable version directory.
         assert!(registry
-            .runtime_dir("python_art")
+            .runtime_dir("process")
             .join("python-embed/python.exe")
             .is_file());
 
         // Uninstall reclaims the runtime dir.
-        registry.uninstall("python_art").expect("uninstall");
-        assert!(!registry.is_installed("python_art"));
-        assert!(!root
-            .join(FRAMEWORK_PACKAGES_DIR)
-            .join("python_art")
-            .exists());
+        registry.uninstall("process").expect("uninstall");
+        assert!(!registry.is_installed("process"));
+        assert!(!root.join(FRAMEWORK_PACKAGES_DIR).join("process").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn python_art_readiness_reports_framework_package_detail() {
+    fn process_readiness_reports_framework_package_detail() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         let status = registry
-            .install_with_runtime_fetcher("python_art", &|_id| Ok(fake_python_runtime_zip()))
-            .expect("install python_art with runtime");
+            .install_with_runtime_fetcher("process", &|_id| Ok(fake_python_runtime_zip()))
+            .expect("install process with runtime");
         let ready_detail = status.ready_detail.replace('\\', "/");
         assert!(status.ready, "status={status:?}");
         assert!(
-            ready_detail.contains("python_art test framework"),
+            ready_detail.contains("process test framework"),
             "status={status:?}"
         );
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn install_python_art_download_failure_leaves_it_uninstalled() {
+    fn install_process_download_failure_leaves_it_uninstalled() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
-        let result = registry.install_with_runtime_fetcher("python_art", &|id| {
+        let result = registry.install_with_runtime_fetcher("process", &|id| {
             Err(FrameworkError::RuntimeDownloadFailed {
                 id: id.to_owned(),
                 reason: "network down".to_owned(),
@@ -2728,7 +2746,7 @@ mod tests {
         });
         assert!(result.is_err(), "download failure must error");
         assert!(
-            !registry.is_installed("python_art"),
+            !registry.is_installed("process"),
             "must not be marked installed on failure"
         );
         std::fs::remove_dir_all(&root).ok();
@@ -2739,17 +2757,17 @@ mod tests {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         registry
-            .install_framework_package_from_zip(&fake_framework_package_zip("script"))
+            .install_framework_package_from_zip(&fake_framework_package_zip("process"))
             .expect("install framework");
-        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("script");
-        let old = registry.activation("script").expect("activation");
+        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
+        let old = registry.activation("process").expect("activation");
         let orphan_relative = "versions/interrupted-orphan".to_owned();
         let orphan = package_root.join(&orphan_relative);
         std::fs::create_dir_all(&orphan).expect("orphan target");
         std::fs::write(orphan.join("partial.bin"), b"partial").expect("partial payload");
         registry
             .write_lifecycle_journal(
-                "script",
+                "process",
                 &FrameworkLifecycleJournal {
                     old_activation: Some(old.clone()),
                     next_activation: FrameworkActivationState {
@@ -2762,7 +2780,7 @@ mod tests {
             .expect("write lifecycle journal");
 
         let recovered = FrameworkRegistry::new(&root);
-        assert_eq!(recovered.activation("script"), Some(old));
+        assert_eq!(recovered.activation("process"), Some(old));
         assert!(!orphan.exists());
         assert!(!package_root.join(FRAMEWORK_LIFECYCLE_FILE).exists());
         std::fs::remove_dir_all(&root).ok();
@@ -2771,7 +2789,7 @@ mod tests {
     #[test]
     fn framework_recovery_quarantines_unsafe_journal_paths() {
         let root = temp_root();
-        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("script");
+        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
         std::fs::create_dir_all(&package_root).expect("package root");
         let outside = root.join("outside.txt");
         std::fs::write(&outside, b"keep").expect("outside sentinel");
@@ -2797,11 +2815,11 @@ mod tests {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         registry
-            .install_framework_package_from_zip(&fake_framework_package_zip("script"))
+            .install_framework_package_from_zip(&fake_framework_package_zip("process"))
             .expect("install framework");
         let locks = root
             .join(FRAMEWORK_PACKAGES_DIR)
-            .join("script")
+            .join("process")
             .join("locks");
         let lockfile = std::fs::read_dir(&locks)
             .expect("locks")
@@ -2814,7 +2832,7 @@ mod tests {
         lock.package_id = "other-framework".to_owned();
         std::fs::write(&lockfile, serde_json::to_vec_pretty(&lock).unwrap()).unwrap();
 
-        let (ready, detail) = registry.readiness("script");
+        let (ready, detail) = registry.readiness("process");
         assert!(!ready);
         assert!(detail.contains("锁文件"), "detail={detail}");
         std::fs::remove_dir_all(&root).ok();
@@ -2827,12 +2845,12 @@ mod tests {
         for version in ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0"] {
             registry
                 .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
-                    "script", version,
+                    "process", version,
                 ))
                 .unwrap_or_else(|error| panic!("install {version}: {error}"));
         }
-        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("script");
-        let activation = registry.activation("script").expect("activation");
+        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
+        let activation = registry.activation("process").expect("activation");
         let versions = std::fs::read_dir(package_root.join(FRAMEWORK_VERSIONS_DIR))
             .expect("versions")
             .filter_map(Result::ok)
@@ -2852,15 +2870,15 @@ mod tests {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
         registry
-            .install_framework_package_from_zip(&fake_framework_package_zip("script"))
+            .install_framework_package_from_zip(&fake_framework_package_zip("process"))
             .expect("install framework");
-        let live = root.join(FRAMEWORK_PACKAGES_DIR).join("script");
+        let live = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
         let interrupted = uninstall_tombstone_path(&live, FRAMEWORK_UNINSTALL_TOMBSTONE_PREFIX)
             .expect("tombstone path");
         std::fs::rename(&live, &interrupted).expect("simulate pre-state crash");
 
         let recovered = FrameworkRegistry::new(&root);
-        assert!(recovered.is_installed("script"));
+        assert!(recovered.is_installed("process"));
         assert!(live.is_dir());
         assert!(!interrupted.exists());
 
@@ -2871,7 +2889,7 @@ mod tests {
             .write_installed(&BTreeMap::new())
             .expect("commit registry removal");
         let finished = FrameworkRegistry::new(&root);
-        assert!(!finished.is_installed("script"));
+        assert!(!finished.is_installed("process"));
         assert!(!live.exists());
         assert!(!committed.exists());
         std::fs::remove_dir_all(&root).ok();

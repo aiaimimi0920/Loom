@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -5,11 +6,22 @@ use std::path::{Path, PathBuf};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
-use loom_protocol::{is_safe_package_id, CredentialGrant};
+use loom_protocol::{is_safe_package_id, is_safe_publisher_id, CredentialGrant};
 use serde::{Deserialize, Serialize};
 
 const CREDENTIALS_FILE: &str = "plugin-credentials.json";
-const CREDENTIAL_STORE_SCHEMA_VERSION: u32 = 1;
+const CREDENTIAL_STORE_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialValueType {
+    #[default]
+    String,
+    Number,
+    Integer,
+    Boolean,
+    Json,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +38,8 @@ pub struct CredentialInput {
     pub name: String,
     pub value: String,
     #[serde(default)]
+    pub value_type: CredentialValueType,
+    #[serde(default)]
     pub scope: CredentialScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
@@ -35,6 +49,21 @@ pub struct CredentialInput {
 #[serde(rename_all = "camelCase")]
 pub struct CredentialSummary {
     pub name: String,
+    #[serde(default)]
+    pub value_type: CredentialValueType,
+    pub scope: CredentialScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    pub protection: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialDetails {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub value_type: CredentialValueType,
     pub scope: CredentialScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
@@ -47,6 +76,8 @@ struct StoredCredential {
     name: String,
     protected_value: String,
     protection: String,
+    #[serde(default)]
+    value_type: CredentialValueType,
     #[serde(default)]
     scope: CredentialScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,8 +114,21 @@ pub enum CredentialError {
     UnsafeScope(String),
     #[error("credential value is empty")]
     EmptyValue,
+    #[error("credential value is invalid for type `{value_type:?}`: {reason}")]
+    InvalidValue {
+        value_type: CredentialValueType,
+        reason: String,
+    },
     #[error("credential expiration is invalid: {0}")]
     InvalidExpiration(String),
+    #[error("credential `{credential}` referenced by Art field `{alias}` is missing, expired, or outside its scope")]
+    MissingBinding { alias: String, credential: String },
+    #[error("credential `{credential}` referenced by secret Art field `{alias}` must be a string, got `{actual:?}`")]
+    NonStringSecretBinding {
+        alias: String,
+        credential: String,
+        actual: CredentialValueType,
+    },
     #[error("credential protection failed: {0}")]
     Protection(String),
     #[error("io error: {0}")]
@@ -98,6 +142,12 @@ pub enum CredentialError {
 #[derive(Clone, Debug)]
 pub struct CredentialStore {
     path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedCredentialValue {
+    pub value_type: CredentialValueType,
+    pub value: serde_json::Value,
 }
 
 impl CredentialStore {
@@ -114,6 +164,7 @@ impl CredentialStore {
             .into_iter()
             .map(|credential| CredentialSummary {
                 name: credential.name,
+                value_type: credential.value_type,
                 scope: credential.scope,
                 expires_at: credential.expires_at,
                 protection: credential.protection,
@@ -129,14 +180,43 @@ impl CredentialStore {
         Ok(summaries)
     }
 
+    pub fn reveal(
+        &self,
+        name: &str,
+        scope: &CredentialScope,
+    ) -> Result<Option<CredentialDetails>, CredentialError> {
+        let Some(credential) = self
+            .read_file()?
+            .credentials
+            .into_iter()
+            .find(|credential| credential.name == name && &credential.scope == scope)
+        else {
+            return Ok(None);
+        };
+        let bytes = unprotect_value(&credential.protected_value, &credential.protection)?;
+        let value = String::from_utf8(bytes)
+            .map_err(|error| CredentialError::Protection(error.to_string()))?;
+        Ok(Some(CredentialDetails {
+            name: credential.name,
+            value,
+            value_type: credential.value_type,
+            scope: credential.scope,
+            expires_at: credential.expires_at,
+            protection: credential.protection,
+        }))
+    }
+
     pub fn upsert(&self, input: CredentialInput) -> Result<CredentialSummary, CredentialError> {
         validate_input(&input)?;
-        let (protected_value, protection) = protect_value(input.value.as_bytes())?;
+        let canonical_value = canonicalize_value(input.value_type, &input.value)?;
+        let (protected_value, protection) = protect_value(canonical_value.as_bytes())?;
         let mut file = self.read_file()?;
+        file.schema_version = CREDENTIAL_STORE_SCHEMA_VERSION;
         file.credentials
             .retain(|credential| credential.name != input.name || credential.scope != input.scope);
         let summary = CredentialSummary {
             name: input.name.clone(),
+            value_type: input.value_type,
             scope: input.scope.clone(),
             expires_at: input.expires_at.clone(),
             protection: protection.clone(),
@@ -145,6 +225,7 @@ impl CredentialStore {
             name: input.name,
             protected_value,
             protection,
+            value_type: input.value_type,
             scope: input.scope,
             expires_at: input.expires_at,
         });
@@ -159,6 +240,7 @@ impl CredentialStore {
             .retain(|credential| credential.name != name || &credential.scope != scope);
         let changed = file.credentials.len() != before;
         if changed {
+            file.schema_version = CREDENTIAL_STORE_SCHEMA_VERSION;
             self.write_file(&file)?;
         }
         Ok(changed)
@@ -196,14 +278,109 @@ impl CredentialStore {
                 continue;
             }
             let bytes = unprotect_value(&credential.protected_value, &credential.protection)?;
+            let value = String::from_utf8(bytes)
+                .map_err(|error| CredentialError::Protection(error.to_string()))?;
             grants.push(CredentialGrant {
                 name: credential.name,
-                value: String::from_utf8(bytes)
-                    .map_err(|error| CredentialError::Protection(error.to_string()))?,
+                value,
                 expires_at: credential.expires_at,
             });
         }
         Ok(grants)
+    }
+
+    pub fn grants_for_bindings(
+        &self,
+        framework_id: &str,
+        art_id: &str,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<Vec<CredentialGrant>, CredentialError> {
+        let now = Utc::now();
+        let credentials = self.read_file()?.credentials;
+        let mut grants = Vec::with_capacity(bindings.len());
+        for (alias, credential_name) in bindings {
+            let credential = credentials
+                .iter()
+                .filter(|credential| {
+                    credential.name == *credential_name
+                        && credential
+                            .scope
+                            .framework_id
+                            .as_deref()
+                            .is_none_or(|scope| scope == framework_id)
+                        && credential
+                            .scope
+                            .art_id
+                            .as_deref()
+                            .is_none_or(|scope| scope == art_id)
+                        && !credential
+                            .expires_at
+                            .as_deref()
+                            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                            .is_some_and(|expires| expires.with_timezone(&Utc) <= now)
+                })
+                .max_by_key(|credential| {
+                    usize::from(credential.scope.framework_id.is_some())
+                        + usize::from(credential.scope.art_id.is_some())
+                })
+                .ok_or_else(|| CredentialError::MissingBinding {
+                    alias: alias.clone(),
+                    credential: credential_name.clone(),
+                })?;
+            if credential.value_type != CredentialValueType::String {
+                return Err(CredentialError::NonStringSecretBinding {
+                    alias: alias.clone(),
+                    credential: credential_name.clone(),
+                    actual: credential.value_type,
+                });
+            }
+            let bytes = unprotect_value(&credential.protected_value, &credential.protection)?;
+            grants.push(CredentialGrant {
+                name: alias.clone(),
+                value: String::from_utf8(bytes)
+                    .map_err(|error| CredentialError::Protection(error.to_string()))?,
+                expires_at: credential.expires_at.clone(),
+            });
+        }
+        Ok(grants)
+    }
+
+    pub fn global_values_for_bindings(
+        &self,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, ResolvedCredentialValue>, CredentialError> {
+        let now = Utc::now();
+        let credentials = self.read_file()?.credentials;
+        let mut values = BTreeMap::new();
+        for (alias, credential_name) in bindings {
+            let credential = credentials
+                .iter()
+                .find(|credential| {
+                    credential.name == *credential_name
+                        && credential.scope.framework_id.is_none()
+                        && credential.scope.art_id.is_none()
+                        && !credential
+                            .expires_at
+                            .as_deref()
+                            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                            .is_some_and(|expires| expires.with_timezone(&Utc) <= now)
+                })
+                .ok_or_else(|| CredentialError::MissingBinding {
+                    alias: alias.clone(),
+                    credential: credential_name.clone(),
+                })?;
+            let bytes = unprotect_value(&credential.protected_value, &credential.protection)?;
+            let raw = String::from_utf8(bytes)
+                .map_err(|error| CredentialError::Protection(error.to_string()))?;
+            values.insert(
+                alias.clone(),
+                ResolvedCredentialValue {
+                    value_type: credential.value_type,
+                    value: decode_canonical_value(credential.value_type, &raw)?,
+                },
+            );
+        }
+        Ok(values)
     }
 
     fn read_file(&self) -> Result<CredentialFile, CredentialError> {
@@ -292,18 +469,79 @@ fn validate_input(input: &CredentialInput) -> Result<(), CredentialError> {
     .into_iter()
     .flatten()
     {
-        if !is_safe_package_id(scope) {
+        if !is_safe_scope_reference(scope) {
             return Err(CredentialError::UnsafeScope(scope.to_owned()));
         }
     }
     if input.value.is_empty() {
         return Err(CredentialError::EmptyValue);
     }
+    canonicalize_value(input.value_type, &input.value)?;
     if let Some(expires_at) = &input.expires_at {
         DateTime::parse_from_rfc3339(expires_at)
             .map_err(|error| CredentialError::InvalidExpiration(error.to_string()))?;
     }
     Ok(())
+}
+
+fn canonicalize_value(
+    value_type: CredentialValueType,
+    raw: &str,
+) -> Result<String, CredentialError> {
+    if raw.is_empty() {
+        return Err(CredentialError::EmptyValue);
+    }
+    match value_type {
+        CredentialValueType::String => Ok(raw.to_owned()),
+        CredentialValueType::Number => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(serde_json::Value::Number(value)) => Ok(value.to_string()),
+            Ok(_) => Err(invalid_value(value_type, "expected a JSON number")),
+            Err(error) => Err(invalid_value(value_type, error.to_string())),
+        },
+        CredentialValueType::Integer => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(serde_json::Value::Number(value)) if value.is_i64() || value.is_u64() => {
+                Ok(value.to_string())
+            }
+            Ok(_) => Err(invalid_value(value_type, "expected a JSON integer")),
+            Err(error) => Err(invalid_value(value_type, error.to_string())),
+        },
+        CredentialValueType::Boolean => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(serde_json::Value::Bool(value)) => Ok(value.to_string()),
+            Ok(_) => Err(invalid_value(value_type, "expected true or false")),
+            Err(error) => Err(invalid_value(value_type, error.to_string())),
+        },
+        CredentialValueType::Json => serde_json::from_str::<serde_json::Value>(raw)
+            .and_then(|value| serde_json::to_string(&value))
+            .map_err(|error| invalid_value(value_type, error.to_string())),
+    }
+}
+
+fn decode_canonical_value(
+    value_type: CredentialValueType,
+    raw: &str,
+) -> Result<serde_json::Value, CredentialError> {
+    match value_type {
+        CredentialValueType::String => Ok(serde_json::Value::String(raw.to_owned())),
+        _ => {
+            serde_json::from_str(raw).map_err(|error| invalid_value(value_type, error.to_string()))
+        }
+    }
+}
+
+fn invalid_value(value_type: CredentialValueType, reason: impl Into<String>) -> CredentialError {
+    CredentialError::InvalidValue {
+        value_type,
+        reason: reason.into(),
+    }
+}
+
+fn is_safe_scope_reference(value: &str) -> bool {
+    value
+        .split_once('/')
+        .map(|(publisher, id)| {
+            !id.contains('/') && is_safe_publisher_id(publisher) && is_safe_package_id(id)
+        })
+        .unwrap_or_else(|| is_safe_package_id(value))
 }
 
 #[cfg(windows)]
@@ -504,6 +742,7 @@ mod tests {
             .upsert(CredentialInput {
                 name: "api_key".to_owned(),
                 value: "secret-value".to_owned(),
+                value_type: CredentialValueType::String,
                 scope: CredentialScope {
                     framework_id: Some("cloud_api".to_owned()),
                     art_id: Some("example-art".to_owned()),
@@ -513,9 +752,16 @@ mod tests {
             .expect("upsert");
         let summaries = store.summaries().expect("summaries");
         assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].value_type, CredentialValueType::String);
         assert!(!serde_json::to_string(&summaries)
             .unwrap()
             .contains("secret-value"));
+        let revealed = store
+            .reveal("api_key", &summaries[0].scope)
+            .expect("reveal")
+            .expect("stored credential");
+        assert_eq!(revealed.value, "secret-value");
+        assert_eq!(revealed.value_type, CredentialValueType::String);
         assert!(store
             .grants_for("cloud_api", "other-art", &["api_key".to_owned()])
             .unwrap()
@@ -554,6 +800,191 @@ mod tests {
                 0o600
             );
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn global_credentials_can_be_reused_under_art_specific_aliases() {
+        let root = temp_root();
+        let store = CredentialStore::new(&root);
+        store
+            .upsert(CredentialInput {
+                name: "cloudflare_key".to_owned(),
+                value: "global-secret".to_owned(),
+                value_type: CredentialValueType::String,
+                scope: CredentialScope::default(),
+                expires_at: None,
+            })
+            .unwrap();
+        let bindings = BTreeMap::from([("api_token".to_owned(), "cloudflare_key".to_owned())]);
+        for art_id in ["art-a", "art-b"] {
+            let grants = store
+                .grants_for_bindings("cloud_api", art_id, &bindings)
+                .unwrap();
+            assert_eq!(grants.len(), 1);
+            assert_eq!(grants[0].name, "api_token");
+            assert_eq!(grants[0].value, "global-secret");
+        }
+        let missing = store
+            .grants_for_bindings(
+                "cloud_api",
+                "art-a",
+                &BTreeMap::from([("token".to_owned(), "missing".to_owned())]),
+            )
+            .unwrap_err();
+        assert!(matches!(missing, CredentialError::MissingBinding { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn credential_scopes_accept_publisher_qualified_package_ids() {
+        let root = temp_root();
+        let store = CredentialStore::new(&root);
+        store
+            .upsert(CredentialInput {
+                name: "art_secret".to_owned(),
+                value: "secret-value".to_owned(),
+                value_type: CredentialValueType::String,
+                scope: CredentialScope {
+                    framework_id: Some("neuro.official/mcp".to_owned()),
+                    art_id: Some("neuro.official/custom-image-search".to_owned()),
+                },
+                expires_at: None,
+            })
+            .expect("qualified scope");
+        let grants = store
+            .grants_for_bindings(
+                "neuro.official/mcp",
+                "neuro.official/custom-image-search",
+                &BTreeMap::from([("brave_api_key".to_owned(), "art_secret".to_owned())]),
+            )
+            .expect("qualified grants");
+        assert_eq!(grants[0].value, "secret-value");
+        assert!(!is_safe_scope_reference("publisher/art/extra"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_global_values_are_canonicalized_and_resolved_without_disclosure() {
+        let root = temp_root();
+        let store = CredentialStore::new(&root);
+        for (name, value, value_type) in [
+            ("ratio", "3.500", CredentialValueType::Number),
+            ("count", "3", CredentialValueType::Integer),
+            ("enabled", "true", CredentialValueType::Boolean),
+            (
+                "payload",
+                "{ \"b\": 2, \"a\": 1 }",
+                CredentialValueType::Json,
+            ),
+        ] {
+            store
+                .upsert(CredentialInput {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                    value_type,
+                    scope: CredentialScope::default(),
+                    expires_at: None,
+                })
+                .unwrap();
+        }
+        let values = store
+            .global_values_for_bindings(&BTreeMap::from([
+                ("quality".to_owned(), "ratio".to_owned()),
+                ("count".to_owned(), "count".to_owned()),
+                ("enabled".to_owned(), "enabled".to_owned()),
+                ("config".to_owned(), "payload".to_owned()),
+            ]))
+            .unwrap();
+        assert_eq!(values["quality"].value, serde_json::json!(3.5));
+        assert_eq!(values["count"].value, serde_json::json!(3));
+        assert_eq!(values["enabled"].value, serde_json::json!(true));
+        assert_eq!(
+            values["config"].value,
+            serde_json::json!({ "a": 1, "b": 2 })
+        );
+        let serialized = fs::read_to_string(root.join(CREDENTIALS_FILE)).unwrap();
+        assert!(!serialized.contains("3.500"));
+        assert!(!serde_json::to_string(&store.summaries().unwrap())
+            .unwrap()
+            .contains("\"a\":1"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_values_reject_invalid_inputs_and_non_string_secret_bindings() {
+        let root = temp_root();
+        let store = CredentialStore::new(&root);
+        for (name, value, value_type) in [
+            ("integer", "1.5", CredentialValueType::Integer),
+            ("boolean", "yes", CredentialValueType::Boolean),
+            ("json", "{", CredentialValueType::Json),
+        ] {
+            assert!(matches!(
+                store.upsert(CredentialInput {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                    value_type,
+                    scope: CredentialScope::default(),
+                    expires_at: None,
+                }),
+                Err(CredentialError::InvalidValue { .. })
+            ));
+        }
+        store
+            .upsert(CredentialInput {
+                name: "count".to_owned(),
+                value: "3".to_owned(),
+                value_type: CredentialValueType::Integer,
+                scope: CredentialScope::default(),
+                expires_at: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            store.grants_for_bindings(
+                "process",
+                "sample",
+                &BTreeMap::from([("api_key".to_owned(), "count".to_owned())]),
+            ),
+            Err(CredentialError::NonStringSecretBinding { .. })
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_records_without_value_type_default_to_string() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let (protected_value, protection) = protect_value(b"legacy-secret").unwrap();
+        fs::write(
+            root.join(CREDENTIALS_FILE),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "credentials": [{
+                    "name": "legacy",
+                    "protectedValue": protected_value,
+                    "protection": protection,
+                    "scope": {}
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = CredentialStore::new(&root);
+        assert_eq!(
+            store.summaries().unwrap()[0].value_type,
+            CredentialValueType::String
+        );
+        assert_eq!(
+            store
+                .global_values_for_bindings(&BTreeMap::from([(
+                    "value".to_owned(),
+                    "legacy".to_owned(),
+                )]))
+                .unwrap()["value"]
+                .value,
+            serde_json::json!("legacy-secret")
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

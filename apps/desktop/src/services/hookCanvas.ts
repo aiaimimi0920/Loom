@@ -185,6 +185,48 @@ export async function readCanvasWorkflowSnapshot(
   );
 }
 
+export interface HookWorkflowInstantiationGraph {
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+}
+
+// Restore a frozen Loom canvas snapshot to the graph payload consumed by Hook's
+// `art_hook/instantiate` handler. Keep the original ids and geometry so
+// reference-mode re-instantiation updates an existing desktop copy in place.
+export function buildHookWorkflowInstantiationGraph(
+  snapshot: HookCanvasSnapshot,
+  baseUrl: string,
+): HookWorkflowInstantiationGraph {
+  const nodes = snapshot.nodes.map((node) => {
+    const previewUrl = resolveHookCanvasPreviewUrl(baseUrl, node);
+    return {
+      id: node.id,
+      type: node.kind === "art" ? "artNode" : "sticker",
+      position: { x: node.x, y: node.y },
+      measured: { width: node.width, height: node.height },
+      data: {
+        ...(node.artId ? { artId: node.artId } : {}),
+        label: node.label,
+        w: node.width,
+        h: node.height,
+        params: node.params ?? {},
+        ...(previewUrl ? { src: previewUrl, previewSrc: previewUrl } : {}),
+        minified: node.minified,
+        opacityNormal: node.opacity,
+        opacityMini: node.opacity,
+      },
+    };
+  });
+  const edges = snapshot.edges.map((edge) => ({
+    id: edge.id,
+    source: edge.sourceNodeId,
+    target: edge.targetNodeId,
+    sourceHandle: edge.sourcePortId ?? "output_image",
+    targetHandle: edge.targetPortId ?? "image",
+  }));
+  return { nodes, edges };
+}
+
 // A pipeline-level port of a canvas workflow: an image that must be supplied to
 // the workflow (input) or that the workflow produces (output). Derived purely
 // from the snapshot topology — source nodes (no upstream edge) are inputs, sink
@@ -194,6 +236,7 @@ export interface CanvasWorkflowPort {
   nodeId: string;
   portId: string;
   label: string;
+  semanticTarget?: string;
 }
 
 export interface CanvasWorkflowInterface {
@@ -206,17 +249,45 @@ export function inferCanvasWorkflowInterface(
 ): CanvasWorkflowInterface {
   const incoming = new Set(snapshot.edges.map((edge) => edge.targetNodeId));
   const outgoing = new Set(snapshot.edges.map((edge) => edge.sourceNodeId));
-  const inputs: CanvasWorkflowPort[] = [];
+  const inputs: Array<CanvasWorkflowPort & { sourceOrder: number }> = [];
   const outputs: CanvasWorkflowPort[] = [];
-  for (const node of snapshot.nodes) {
+  for (const [sourceOrder, node] of snapshot.nodes.entries()) {
     if (!incoming.has(node.id)) {
-      inputs.push({ nodeId: node.id, portId: "image", label: node.label || "输入图像" });
+      const semanticTarget = snapshot.edges
+        .find((edge) => edge.sourceNodeId === node.id)
+        ?.targetPortId
+        ?.trim();
+      inputs.push({
+        nodeId: node.id,
+        portId: "image",
+        label: node.label || "输入图像",
+        semanticTarget,
+        sourceOrder,
+      });
     }
     if (!outgoing.has(node.id)) {
       outputs.push({ nodeId: node.id, portId: "output_image", label: node.label || "输出图像" });
     }
   }
-  return { inputs, outputs };
+  inputs.sort((left, right) => {
+    const semanticRank = (target?: string) => {
+      const normalized = target?.trim().toLowerCase() || "";
+      if (["input", "image", "input_image", "source", "source_image"].includes(normalized)) return 0;
+      if (["reference", "reference_image", "ref", "style", "style_image"].includes(normalized)) return 2;
+      return 1;
+    };
+    return semanticRank(left.semanticTarget) - semanticRank(right.semanticTarget)
+      || left.sourceOrder - right.sourceOrder;
+  });
+  return {
+    inputs: inputs.map((port) => ({
+      nodeId: port.nodeId,
+      portId: port.portId,
+      label: port.label,
+      semanticTarget: port.semanticTarget,
+    })),
+    outputs,
+  };
 }
 
 // One Art-node parameter that can be exposed as a workflow input. `key` is
@@ -227,6 +298,17 @@ export interface ExposableParam {
   label: string;
   uiType: string;
   executionType: string;
+  widget?: string;
+  dataType?: string;
+  defaultValue?: unknown;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: unknown[];
+  multiline?: boolean;
+  group?: string;
+  required?: boolean;
+  secret?: boolean;
 }
 
 export interface WorkflowArtBundle {
@@ -254,6 +336,66 @@ function nodeWorkflowId(snapshot: HookCanvasSnapshot, rawNodeId: string): string
   return node?.workflowNodeId || rawNodeId;
 }
 
+function workflowNodeUses(node: HookCanvasNode): string {
+  return node.artId || (node.kind === "screenshot" ? "sticker" : node.kind);
+}
+
+interface WorkflowEdgeBinding {
+  sourceNodeId: string;
+  sourcePortId: string;
+  targetPortId: string;
+}
+
+function workflowOutputReference(binding: WorkflowEdgeBinding): string {
+  return "${{ nodes."
+    + binding.sourceNodeId
+    + ".outputs."
+    + binding.sourcePortId
+    + " }}";
+}
+
+function workflowEdgeBindings(
+  snapshot: HookCanvasSnapshot,
+  rawToWorkflowId: Map<string, string>,
+  memberIds: Set<string>,
+): Map<string, WorkflowEdgeBinding[]> {
+  const bindingsByTarget = new Map<string, WorkflowEdgeBinding[]>();
+  for (const edge of snapshot.edges) {
+    const sourceNodeId = rawToWorkflowId.get(edge.sourceNodeId);
+    const targetNodeId = rawToWorkflowId.get(edge.targetNodeId);
+    if (
+      !sourceNodeId
+      || !targetNodeId
+      || !memberIds.has(sourceNodeId)
+      || !memberIds.has(targetNodeId)
+    ) {
+      continue;
+    }
+
+    const binding: WorkflowEdgeBinding = {
+      sourceNodeId,
+      sourcePortId: edge.sourcePortId?.trim() || "output_image",
+      targetPortId: edge.targetPortId?.trim() || "image",
+    };
+    const bindings = bindingsByTarget.get(targetNodeId) ?? [];
+    const existing = bindings.find((candidate) => candidate.targetPortId === binding.targetPortId);
+    if (existing) {
+      if (
+        existing.sourceNodeId !== binding.sourceNodeId
+        || existing.sourcePortId !== binding.sourcePortId
+      ) {
+        throw new Error(
+          `Workflow node ${targetNodeId} has multiple incoming edges for port ${binding.targetPortId}.`,
+        );
+      }
+      continue;
+    }
+    bindings.push(binding);
+    bindingsByTarget.set(targetNodeId, bindings);
+  }
+  return bindingsByTarget;
+}
+
 // Build the YAML + tool definition for wrapping a saved canvas workflow into a
 // reusable "type: workflow" tool. Exposed params become tool input ports (kind
 // "param"); unexposed params are baked into each node's YAML `with` as constants.
@@ -279,7 +421,11 @@ export function buildWorkflowArtBundle(options: {
 
   // Member node ids (workflow-node-id space) so `needs` never references a node
   // absent from this bundle, mirroring buildSubWorkflowYaml's filtering.
-  const memberIds = new Set(snapshot.nodes.map((node) => node.workflowNodeId || node.id));
+  const rawToWorkflowId = new Map(
+    snapshot.nodes.map((node) => [node.id, node.workflowNodeId || node.id]),
+  );
+  const memberIds = new Set(rawToWorkflowId.values());
+  const edgeBindingsByTarget = workflowEdgeBindings(snapshot, rawToWorkflowId, memberIds);
 
   const nodes: WorkflowStudioNode[] = snapshot.nodes.map((node) => {
     const wid = node.workflowNodeId || node.id;
@@ -295,10 +441,20 @@ export function buildWorkflowArtBundle(options: {
         }
       }
     }
+    const edgeBindings = edgeBindingsByTarget.get(wid) ?? [];
+    for (const binding of edgeBindings) {
+      // A connected port is data-driven by the edge and therefore overrides any
+      // stale baked value for that same target parameter.
+      withMap[binding.targetPortId] = workflowOutputReference(binding);
+    }
+    const needs = [...new Set([
+      ...(node.upstreamWorkflowNodeIds ?? []).filter((id) => memberIds.has(id)),
+      ...edgeBindings.map((binding) => binding.sourceNodeId),
+    ])];
     return {
       id: wid,
-      uses: node.artId || node.kind,
-      needs: (node.upstreamWorkflowNodeIds ?? []).filter((id) => memberIds.has(id)),
+      uses: workflowNodeUses(node),
+      needs,
       with: withMap,
     };
   });
@@ -336,15 +492,7 @@ export function buildWorkflowArtBundle(options: {
     executionType: string;
     default: string;
   }> = [];
-  const toolParams: Array<{
-    id: string;
-    name: string;
-    label: string;
-    widget: string;
-    type: string;
-    executionType: string;
-    default: string;
-  }> = [];
+  const toolParams: Array<Record<string, unknown>> = [];
 
   iface.inputs.forEach((port, index) => {
     const wid = nodeWorkflowId(snapshot, port.nodeId);
@@ -353,7 +501,12 @@ export function buildWorkflowArtBundle(options: {
     toolInputs.push({
       id: workflowParam,
       name: workflowParam,
-      label: "输入图像",
+      label: port.semanticTarget?.toLowerCase().includes("reference")
+        || port.semanticTarget?.toLowerCase() === "ref"
+        ? "参考图像"
+        : index === 0
+          ? "输入图像"
+          : port.label,
       widget: "image_link",
       type: "image",
       executionType: "image_buffer",
@@ -364,22 +517,32 @@ export function buildWorkflowArtBundle(options: {
   for (const param of params) {
     const key = `${param.workflowNodeId}::${param.target}`;
     if (!exposed.has(key)) continue;
-    const workflowParam = reserve(`${param.workflowNodeId}_${param.target}`);
+    const workflowParam = reserve(param.target);
     bindingInputs.push({
       workflowParam,
       nodeId: param.workflowNodeId,
       target: param.target,
       kind: "param",
     });
-    toolParams.push({
+    const toolParam: Record<string, unknown> = {
       id: workflowParam,
       name: workflowParam,
       label: param.label,
-      widget: widgetForUiType(param.uiType),
+      widget: param.widget || widgetForUiType(param.uiType),
       type: param.uiType,
       executionType: param.executionType,
-      default: values[key] ?? "",
-    });
+      default: values[key] ?? param.defaultValue ?? "",
+    };
+    if (param.dataType) toolParam.data_type = param.dataType;
+    if (typeof param.min === "number") toolParam.min = param.min;
+    if (typeof param.max === "number") toolParam.max = param.max;
+    if (typeof param.step === "number") toolParam.step = param.step;
+    if (param.options?.length) toolParam.options = param.options;
+    if (param.multiline) toolParam.multiline = true;
+    if (param.group) toolParam.group = param.group;
+    if (param.required) toolParam.required = true;
+    if (param.secret) toolParam.secret = true;
+    toolParams.push(toolParam);
   }
 
   const outPort = iface.outputs[0];
@@ -393,8 +556,8 @@ export function buildWorkflowArtBundle(options: {
 
   const tool: LoomToolDefinition = {
     id: `hook-wf-${workflowId}`,
-    name: `${workflowName} 工具`,
-    description: "由 Hook 截图工作流封装的 Loom 工具。",
+    name: workflowName,
+    description: "由 Hook 工作流创建的 Art。",
     enabled: true,
     execution: {
       type: "workflow",
@@ -586,58 +749,47 @@ export function buildSubWorkflowYaml(
       && Array.isArray(node.upstreamWorkflowNodeIds),
   );
 
-  if (canUseDaemonMetadata) {
-    const selectedWorkflowIds = new Set(
-      members
-        .map((node) => node.workflowNodeId as string),
-    );
-    for (const node of members) {
-      const wid = node.workflowNodeId as string;
-      lines.push(`  - id: ${wid}`);
-      lines.push(`    uses: ${yamlSingleQuoted(node.artId || node.kind)}`);
-      const needs = (node.upstreamWorkflowNodeIds ?? []).filter((upstreamId) =>
-        selectedWorkflowIds.has(upstreamId),
-      );
-      if (needs.length) {
-        lines.push(`    needs: [${needs.join(", ")}]`);
-      }
-    }
-    return `${lines.join("\n")}\n`;
-  }
-
   const idMap = new Map<string, string>();
-  const usedIds = new Set<string>();
-  for (const node of members) {
-    let candidate = workflowNodeId(node);
-    let suffix = 2;
-    while (usedIds.has(candidate)) {
-      candidate = `${workflowNodeId(node)}-${suffix}`;
-      suffix += 1;
+  if (canUseDaemonMetadata) {
+    for (const node of members) {
+      idMap.set(node.id, node.workflowNodeId as string);
     }
-    usedIds.add(candidate);
-    idMap.set(node.id, candidate);
+  } else {
+    const usedIds = new Set<string>();
+    for (const node of members) {
+      let candidate = workflowNodeId(node);
+      let suffix = 2;
+      while (usedIds.has(candidate)) {
+        candidate = `${workflowNodeId(node)}-${suffix}`;
+        suffix += 1;
+      }
+      usedIds.add(candidate);
+      idMap.set(node.id, candidate);
+    }
   }
-
-  // Upstream dependencies: for each edge inside the component, the target needs
-  // the source.
-  const needsByNode = new Map<string, string[]>();
-  for (const edge of snapshot.edges) {
-    if (!nodeIds.has(edge.sourceNodeId) || !nodeIds.has(edge.targetNodeId)) continue;
-    const target = idMap.get(edge.targetNodeId);
-    const source = idMap.get(edge.sourceNodeId);
-    if (!target || !source || target === source) continue;
-    const list = needsByNode.get(target) ?? [];
-    if (!list.includes(source)) list.push(source);
-    needsByNode.set(target, list);
-  }
+  const selectedWorkflowIds = new Set(idMap.values());
+  const edgeBindingsByTarget = workflowEdgeBindings(snapshot, idMap, selectedWorkflowIds);
 
   for (const node of members) {
     const wid = idMap.get(node.id) as string;
     lines.push(`  - id: ${wid}`);
-    lines.push(`    uses: ${yamlSingleQuoted(node.artId || node.kind)}`);
-    const needs = needsByNode.get(wid);
-    if (needs && needs.length) {
+    lines.push(`    uses: ${yamlSingleQuoted(workflowNodeUses(node))}`);
+    const edgeBindings = edgeBindingsByTarget.get(wid) ?? [];
+    const needs = [...new Set([
+      ...(canUseDaemonMetadata ? node.upstreamWorkflowNodeIds ?? [] : [])
+        .filter((upstreamId) => selectedWorkflowIds.has(upstreamId)),
+      ...edgeBindings.map((binding) => binding.sourceNodeId),
+    ])];
+    if (needs.length) {
       lines.push(`    needs: [${needs.join(", ")}]`);
+    }
+    if (edgeBindings.length) {
+      lines.push("    with:");
+      for (const binding of edgeBindings) {
+        lines.push(
+          `      ${yamlMappingKey(binding.targetPortId)}: ${yamlSingleQuoted(workflowOutputReference(binding))}`,
+        );
+      }
     }
   }
   return `${lines.join("\n")}\n`;
@@ -819,4 +971,8 @@ export function sliderValueToScale(
 
 function yamlSingleQuoted(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function yamlMappingKey(value: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(value) ? value : yamlSingleQuoted(value);
 }

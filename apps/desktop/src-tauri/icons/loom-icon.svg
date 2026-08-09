@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom - Anvil of Hephaestus</title>
+  <desc id="desc">A green anvil and yellow spark representing tools, making, transformation, and execution.</desc>
+  <path d="M196 330h632c-38 96-130 148-270 158v108h106l96 194H264l96-194h106V488H318L196 330Z" fill="#22C55E"/>
+  <path d="m690 206 30 66 72 8-54 48 16 70-64-36-64 36 16-70-54-48 72-8 30-66Z" fill="#FFE600"/>
+</svg>

@@ -6,6 +6,7 @@ import type {
   LoomToolDefinition,
   LoomToolExecution,
 } from "./loomApi";
+import { frameworkFilterLabel } from "./artHubUi.ts";
 
 export interface ArtAuthoringDraft {
   id: string;
@@ -22,6 +23,18 @@ export interface AuthoredArtPackage {
 }
 
 const asString = (value: unknown) => typeof value === "string" ? value.trim() : "";
+const executionFieldIds = new Set([
+  "endpoint",
+  "method",
+  "headers",
+  "body",
+  "serverId",
+  "toolName",
+  "arguments",
+  "workflowId",
+  "runtimeCommand",
+  "runtimeArgs",
+]);
 
 const splitArguments = (value: unknown): string[] => {
   const text = asString(value);
@@ -81,7 +94,7 @@ const requiredValue = (
   framework: LoomFramework,
 ) => {
   const value = asString(values[field]);
-  if (!value) throw new Error(`${framework.name} 需要字段 ${field}。`);
+  if (!value) throw new Error(`${frameworkFilterLabel(framework)} 需要字段 ${field}。`);
   return value;
 };
 
@@ -90,14 +103,6 @@ const executionForFramework = (
   values: Record<string, unknown>,
 ): { execution: LoomToolExecution; runtime?: LoomArtRuntimeManifest } => {
   switch (framework.id) {
-    case "cli_wrapper":
-      return {
-        execution: {
-          type: "cli_wrapper",
-          command: requiredValue(values, "command", framework),
-          args: splitArguments(values.args),
-        },
-      };
     case "cloud_api":
       return {
         execution: {
@@ -110,27 +115,12 @@ const executionForFramework = (
           body: typeof values.body === "string" ? values.body : JSON.stringify(values.body ?? {}),
         },
       };
-    case "script":
-      return {
-        execution: {
-          type: "script",
-          path: requiredValue(values, "script", framework),
-        },
-      };
     case "mcp":
       return {
         execution: {
           type: "mcp",
           serverId: requiredValue(values, "serverId", framework),
           toolName: requiredValue(values, "toolName", framework),
-        },
-      };
-    case "python_art":
-      return {
-        execution: {
-          type: "python_art",
-          artId: requiredValue(values, "artId", framework),
-          artPath: requiredValue(values, "artPath", framework),
         },
       };
     case "workflow":
@@ -175,7 +165,7 @@ export function buildAuthoredArtPackage(
   }
   const schema = framework.authoringSchema;
   if (!framework.installed || !framework.enabled || !framework.ready || !schema) {
-    throw new Error(`框架 ${framework.name} 未安装、未启用、未就绪或没有 authoring schema。`);
+    throw new Error(`框架 ${frameworkFilterLabel(framework)} 未安装、未启用、未就绪或没有 authoring schema。`);
   }
   for (const field of schema.fields ?? []) {
     if (field.required && (draft.values[field.id] === undefined || asString(draft.values[field.id]) === "")) {
@@ -185,6 +175,10 @@ export function buildAuthoredArtPackage(
   const secretFields = new Set(
     (schema.fields ?? []).filter((field) => field.secret || field.type === "secret").map((field) => field.id),
   );
+  const secretExecutionField = [...secretFields].find((field) => executionFieldIds.has(field));
+  if (secretExecutionField) {
+    throw new Error(`机密字段 ${secretExecutionField} 不能直接作为 Art 执行配置。`);
+  }
   const persistedValues = Object.fromEntries(
     Object.entries(draft.values).filter(([field]) => !secretFields.has(field)),
   );
@@ -214,6 +208,8 @@ export function buildAuthoredArtPackage(
       authoring: {
         schemaVersion: schema.schemaVersion,
         frameworkId,
+        origin: "local",
+        owner: "local-user",
         values: persistedValues,
         ...(Object.keys(credentialBindings).length ? { credentialBindings } : {}),
       },

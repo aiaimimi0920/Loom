@@ -23,13 +23,11 @@ const framework = (id: string, fields: LoomFramework["authoringSchema"] extends 
   },
 });
 
-test("builds all six official authoring execution contracts", () => {
+test("builds the four built-in authoring execution contracts", () => {
   const fixtures: Array<[string, Record<string, unknown>, string]> = [
-    ["cli_wrapper", { command: "ffmpeg", args: '-i "input file"\noutput' }, "cli_wrapper"],
+    ["process", { runtimeCommand: "ffmpeg", runtimeArgs: "-i\ninput file\noutput" }, "framework_art"],
     ["cloud_api", { endpoint: "https://api.example.com/v1", method: "post" }, "cloud_api"],
-    ["script", { script: "C:/art/main.py" }, "script"],
     ["mcp", { serverId: "search", toolName: "query" }, "mcp"],
-    ["python_art", { artId: "python-demo", artPath: "C:/arts/demo" }, "python_art"],
     ["workflow", { workflowId: "workflow-demo" }, "workflow"],
   ];
   for (const [id, values, executionType] of fixtures) {
@@ -41,6 +39,16 @@ test("builds all six official authoring execution contracts", () => {
     });
     assert.equal(built.tool.execution?.type, executionType);
     assert.equal((built.tool.metadata as { dependencies: { framework: string } }).dependencies.framework, `publisher.test/${id}`);
+    if (id === "process") {
+      assert.deepEqual(built.tool.execution, {
+        type: "framework_art",
+        framework: "publisher.test/process",
+      });
+      assert.deepEqual(built.runtime, {
+        protocolVersion: "loom.art.runtime.v1",
+        entry: { command: "ffmpeg", args: ["-i", "input file", "output"] },
+      });
+    }
   }
 });
 
@@ -78,6 +86,17 @@ test("secret authoring fields are persisted only as credential bindings", () => 
   const authoring = (built.tool.metadata as { authoring: Record<string, unknown> }).authoring;
   assert.deepEqual(authoring.values, { endpoint: "https://api.example.com" });
   assert.deepEqual(authoring.credentialBindings, { apiCredential: "provider-key" });
+});
+
+test("secret authoring fields cannot become execution or runtime configuration", () => {
+  assert.throws(() => buildAuthoredArtPackage(framework("process", [
+    { id: "runtimeCommand", label: "Runtime", type: "secret", secret: true, required: true },
+  ]), {
+    id: "unsafe-runtime-art",
+    name: "Unsafe",
+    description: "",
+    values: { runtimeCommand: "plaintext-secret" },
+  }), /机密字段 runtimeCommand 不能直接作为 Art 执行配置/);
 });
 
 test("default values follow field defaults and boolean shape", () => {

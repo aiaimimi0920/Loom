@@ -3,13 +3,14 @@
 //! A tiny std-TCP HTTP server backing the daemon's art-store client. Serves an
 //! art catalog, raw art packages, third-party portable binaries, and accepts
 //! published packages. Data lives under a store root:
-//!   <root>/arts/<id>.zip        art packages
-//!   <root>/arts/<id>.zip.sha256 package digest sidecars
+//!   <root>/arts/<id>/<version>.zip immutable art package versions
+//!   <root>/arts/<id>.zip           latest-version compatibility copy
 //!   <root>/binaries/<name>      third-party portable executables
 //!
 //! Endpoints (matching the daemon's client contract):
-//!   GET  /catalog               -> { "arts": [ {id,name,description,framework} ] }
+//!   GET  /catalog               -> version-aware Art catalog
 //!   GET  /arts/<id>.zip         -> raw art package bytes (application/zip)
+//!   GET  /arts/<id>/<version>.zip -> exact package version
 //!   GET  /arts/<id>.zip.sha256  -> package digest sidecar (text/plain)
 //!   GET  /binaries/<name>       -> raw binary bytes (application/octet-stream)
 //!   POST /publish               -> body = zip, header X-Art-Id: <id>
@@ -25,8 +26,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use loom_art_store::{
-    build_catalog, read_art_zip, read_art_zip_sha256, read_binary, read_framework_package,
-    store_published_zip, StoreError,
+    build_catalog, read_art_zip, read_art_zip_sha256, read_art_zip_version,
+    read_art_zip_version_sha256, read_binary, read_framework_package, read_publisher,
+    register_publisher_with_id, rotate_publisher_key, store_verified_published_zip,
+    PublisherRotationRequest, StoreError,
 };
 
 fn main() -> Result<()> {
@@ -220,9 +223,56 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
             Ok(arts) => Response::json(200, serde_json::json!({ "arts": arts })),
             Err(error) => store_error_response(error),
         },
+        ("POST", "/publishers/register") => handle_publisher_register(request, root),
+        ("POST", path) if path.starts_with("/publishers/") && path.ends_with("/rotate") => {
+            let user_id = path
+                .trim_start_matches("/publishers/")
+                .trim_end_matches("/rotate")
+                .trim_end_matches('/');
+            handle_publisher_rotate(request, root, user_id)
+        }
+        ("GET", path) if path.starts_with("/publishers/") => {
+            let user_id = path.trim_start_matches("/publishers/");
+            match read_publisher(root, user_id) {
+                Ok(Some(publisher)) => {
+                    Response::json(200, serde_json::json!({ "publisher": publisher }))
+                }
+                Ok(None) => Response::json(
+                    404,
+                    serde_json::json!({ "error": format!("publisher `{user_id}` not found") }),
+                ),
+                Err(error) => store_error_response(error),
+            }
+        }
         ("POST", "/publish") => handle_publish(request, root),
         ("GET", path) if path.starts_with("/arts/") => {
             let file = &path["/arts/".len()..];
+            if let Some((id, version_file)) = file.split_once('/') {
+                if let Some(version) = version_file.strip_suffix(".zip.sha256") {
+                    return match read_art_zip_version_sha256(root, id, version) {
+                        Ok(Some(bytes)) => Response::bytes(200, "text/plain; charset=utf-8", bytes),
+                        Ok(None) => Response::json(
+                            404,
+                            serde_json::json!({ "error": format!("art `{id}` version `{version}` not found") }),
+                        ),
+                        Err(error) => store_error_response(error),
+                    };
+                }
+                let Some(version) = version_file.strip_suffix(".zip") else {
+                    return Response::json(
+                        404,
+                        serde_json::json!({ "error": "versioned art package must end with .zip" }),
+                    );
+                };
+                return match read_art_zip_version(root, id, version) {
+                    Ok(Some(bytes)) => Response::bytes(200, "application/zip", bytes),
+                    Ok(None) => Response::json(
+                        404,
+                        serde_json::json!({ "error": format!("art `{id}` version `{version}` not found") }),
+                    ),
+                    Err(error) => store_error_response(error),
+                };
+            }
             if let Some(id) = file.strip_suffix(".zip.sha256") {
                 return match read_art_zip_sha256(root, id) {
                     Ok(Some(bytes)) => Response::bytes(200, "text/plain; charset=utf-8", bytes),
@@ -281,13 +331,60 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterPublisherRequest {
+    #[serde(default)]
+    user_id: Option<String>,
+    key_id: String,
+    public_key: String,
+}
+
+fn handle_publisher_register(request: &Request, root: &std::path::Path) -> Response {
+    let input = match serde_json::from_slice::<RegisterPublisherRequest>(&request.body) {
+        Ok(input) => input,
+        Err(error) => {
+            return Response::json(400, serde_json::json!({ "error": error.to_string() }))
+        }
+    };
+    match register_publisher_with_id(
+        root,
+        input.user_id.as_deref(),
+        &input.key_id,
+        &input.public_key,
+    ) {
+        Ok(publisher) => Response::json(200, serde_json::json!({ "publisher": publisher })),
+        Err(error) => store_error_response(error),
+    }
+}
+
+fn handle_publisher_rotate(request: &Request, root: &std::path::Path, user_id: &str) -> Response {
+    let input = match serde_json::from_slice::<PublisherRotationRequest>(&request.body) {
+        Ok(input) => input,
+        Err(error) => {
+            return Response::json(400, serde_json::json!({ "error": error.to_string() }))
+        }
+    };
+    match rotate_publisher_key(root, user_id, &input) {
+        Ok(publisher) => Response::json(200, serde_json::json!({ "publisher": publisher })),
+        Err(error) => store_error_response(error),
+    }
+}
+
 fn handle_publish(request: &Request, root: &std::path::Path) -> Response {
     if request.body.is_empty() {
         return Response::json(400, serde_json::json!({ "error": "empty publish body" }));
     }
     let declared = request.header("X-Art-Id");
-    match store_published_zip(root, declared, &request.body) {
-        Ok(id) => Response::json(200, serde_json::json!({ "artId": id, "published": true })),
+    match store_verified_published_zip(root, declared, &request.body) {
+        Ok(published) => Response::json(
+            200,
+            serde_json::json!({
+                "artId": published.art_id,
+                "globalId": published.global_id,
+                "published": true
+            }),
+        ),
         Err(error) => store_error_response(error),
     }
 }
@@ -298,9 +395,26 @@ fn store_error_response(error: StoreError) -> Response {
         | StoreError::InvalidResourceName(_)
         | StoreError::MissingManifest
         | StoreError::ArtIdMismatch { .. }
+        | StoreError::InvalidVersion { .. }
+        | StoreError::VersionConflict { .. }
+        | StoreError::IdentityConflict { .. }
+        | StoreError::InvalidPublisherId(_)
+        | StoreError::InvalidPublisherKeyId(_)
+        | StoreError::InvalidPublisherPublicKey
+        | StoreError::PublisherActiveKeyMissing(_)
+        | StoreError::PublisherRotationSignature
+        | StoreError::PublisherKeyConflict { .. }
+        | StoreError::MissingPublisherSignature
+        | StoreError::InvalidPublisherSignatureMetadata
+        | StoreError::PublisherSignatureVerification
         | StoreError::Zip(_)
         | StoreError::Json(_) => 400,
-        StoreError::Io(_) => 500,
+        StoreError::PublisherNotFound(_) => 404,
+        StoreError::GlobalIdExhausted
+        | StoreError::PublisherIdExhausted
+        | StoreError::UnsupportedOfficialCertificationSchema(_)
+        | StoreError::UnsupportedPublisherDirectorySchema(_)
+        | StoreError::Io(_) => 500,
     };
     Response::json(status, serde_json::json!({ "error": error.to_string() }))
 }

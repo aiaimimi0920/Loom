@@ -157,11 +157,12 @@ function New-SupportSpec {
 }
 
 function Get-LoomCatalog {
-    param([string]$FrameworkPackageOutputRoot)
+    param(
+        [string]$FrameworkPackageOutputRoot,
+        [string]$SampleArtPackageOutputRoot
+    )
 
     $ocrRoot = Join-Path $repoRoot "resources\ocr"
-    $pythonEmbedRoot = Join-Path $repoRoot "resources\python-embed"
-    $pythonRoot = Join-Path $repoRoot "resources\python"
 
     $exes = @(
         New-ExeSpec -Name "Loom.exe" -Source (Join-Path $repoRoot "apps\desktop\src-tauri\target\release\loom-desktop.exe")
@@ -177,17 +178,6 @@ function Get-LoomCatalog {
         New-SupportSpec -Source (Join-Path $ocrRoot "fixtures\test_1.png") -DestinationRelativePath "runtime\resources\ocr\fixtures\test_1.png"
         New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime.dll"
         New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime_providers_shared.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime_providers_shared.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python.exe") -DestinationRelativePath "runtime\bin\python-embed\python.exe"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "pythonw.exe") -DestinationRelativePath "runtime\bin\python-embed\pythonw.exe"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python3.dll") -DestinationRelativePath "runtime\bin\python-embed\python3.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312.dll") -DestinationRelativePath "runtime\bin\python-embed\python312.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312.zip") -DestinationRelativePath "runtime\bin\python-embed\python312.zip"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "python312._pth") -DestinationRelativePath "runtime\bin\python-embed\python312._pth"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "LICENSE.txt") -DestinationRelativePath "runtime\bin\python-embed\LICENSE.txt"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "vcruntime140.dll") -DestinationRelativePath "runtime\bin\python-embed\vcruntime140.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "vcruntime140_1.dll") -DestinationRelativePath "runtime\bin\python-embed\vcruntime140_1.dll"
-        New-SupportSpec -Source (Join-Path $pythonEmbedRoot "site-packages\.loom-keep") -DestinationRelativePath "runtime\bin\python-embed\site-packages\.loom-keep"
-        New-SupportSpec -Source (Join-Path $pythonRoot "Launcher.py") -DestinationRelativePath "runtime\python\Launcher.py"
     )
 
     $cliArtifact = [ordered]@{
@@ -221,12 +211,20 @@ function Get-LoomCatalog {
     $frameworkPackageCatalog = [ordered]@{
         outputRoot = [System.IO.Path]::GetFullPath($FrameworkPackageOutputRoot)
         expectedIds = @(
-            "cli_wrapper",
+            "process",
             "cloud_api",
-            "script",
-            "python_art",
             "mcp",
             "workflow"
+        )
+    }
+
+    $sampleArtPackageCatalog = [ordered]@{
+        outputRoot = [System.IO.Path]::GetFullPath($SampleArtPackageOutputRoot)
+        expected = @(
+            [ordered]@{ id = "custom-1770146354922"; framework = "process" }
+            [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api" }
+            [ordered]@{ id = "custom-image-search"; framework = "mcp" }
+            [ordered]@{ id = "custom-1770131241684"; framework = "process" }
         )
     }
 
@@ -239,6 +237,7 @@ function Get-LoomCatalog {
         cliArtifact = $cliArtifact
         pluginSdkArtifact = $pluginSdkArtifact
         frameworkPackageCatalog = $frameworkPackageCatalog
+        sampleArtPackageCatalog = $sampleArtPackageCatalog
         commands = @(
             New-CommandSpec -Executable "cargo" `
                 -Arguments @("build", "--locked", "--release", "-p", "loom-daemon", "-p", "loom-cli", "-p", "loom-plugin-cli") `
@@ -266,6 +265,17 @@ function Get-LoomCatalog {
                 -WorkingDirectory $repoRoot `
                 -Display "Build-LoomArtFrameworkPackages.ps1 -OutputRoot packages\frameworks -Configuration Release" `
                 -LogName "build-04.log"
+            New-CommandSpec -Executable "powershell.exe" `
+                -Arguments @(
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", (Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"),
+                    "-OutputRoot", $sampleArtPackageCatalog.outputRoot,
+                    "-Configuration", "Release"
+                ) `
+                -WorkingDirectory $repoRoot `
+                -Display "Build-LoomSampleArtPackages.ps1 -OutputRoot packages\arts -Configuration Release" `
+                -LogName "build-05.log"
         )
     }
 }
@@ -330,6 +340,10 @@ function New-Plan {
         frameworkPackageCatalog = [ordered]@{
             outputRoot = $Catalog.frameworkPackageCatalog.outputRoot
             expectedIds = @($Catalog.frameworkPackageCatalog.expectedIds)
+        }
+        sampleArtPackageCatalog = [ordered]@{
+            outputRoot = $Catalog.sampleArtPackageCatalog.outputRoot
+            expected = @($Catalog.sampleArtPackageCatalog.expected)
         }
         requireCleanSource = [bool]$RequireCleanSource
         zip = (-not $NoZip)
@@ -483,6 +497,109 @@ function Get-FrameworkPackageArtifacts {
         kind = "framework-package-catalog"
         name = $summaryFile.Name
         path = "packages\frameworks\summary.json"
+        bytes = [int64]$summaryFile.Length
+        sha256 = (Get-FileHash -LiteralPath $summaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $artifactRecords += $summaryRecord
+    $payloadRecords += $summaryRecord
+    return [pscustomobject]@{
+        packages = @($packageRecords)
+        catalog = $summaryRecord
+        artifacts = @($artifactRecords)
+        payload = @($payloadRecords)
+    }
+}
+
+function Get-SampleArtPackageArtifacts {
+    param([System.Collections.Specialized.OrderedDictionary]$ArtCatalog)
+
+    $catalogRoot = [string]$ArtCatalog.outputRoot
+    $summaryPath = Join-Path $catalogRoot "summary.json"
+    if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+        throw "Sample Art package catalog summary is missing: $summaryPath"
+    }
+    $summary = Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath | ConvertFrom-Json
+    $expectedEntries = @($ArtCatalog.expected)
+    $summaryEntries = @($summary.packages)
+    $expectedIds = @($expectedEntries | ForEach-Object { [string]$_.id })
+    $actualIds = @($summaryEntries | ForEach-Object { [string]$_.id })
+    if (-not [string]::Equals(
+        (@($expectedIds | Sort-Object) -join "`n"),
+        (@($actualIds | Sort-Object) -join "`n"),
+        [System.StringComparison]::Ordinal
+    )) {
+        throw "Sample Art package catalog ids do not match the release contract."
+    }
+
+    $packageRecords = @()
+    $artifactRecords = @()
+    $payloadRecords = @()
+    foreach ($expected in $expectedEntries) {
+        $id = [string]$expected.id
+        $framework = [string]$expected.framework
+        $entry = @($summaryEntries | Where-Object { [string]$_.id -eq $id })
+        if ($entry.Count -ne 1) {
+            throw "Sample Art package catalog must contain exactly one entry for ${id}."
+        }
+        if (-not [string]::Equals([string]$entry[0].framework, $framework, [System.StringComparison]::Ordinal)) {
+            throw "Sample Art framework mismatch in catalog: $id"
+        }
+        if (-not [string]::Equals([string]$entry[0].zip, "$id.zip", [System.StringComparison]::Ordinal)) {
+            throw "Sample Art ZIP name mismatch in catalog: $id"
+        }
+
+        $zipPath = Join-Path $catalogRoot "$id.zip"
+        $sidecarPath = "$zipPath.sha256"
+        foreach ($required in @($zipPath, $sidecarPath)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw "Sample Art package artifact is missing: $required"
+            }
+        }
+        $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sidecarFields = @((Get-Content -Raw -Encoding UTF8 -LiteralPath $sidecarPath).Trim() -split '\s+')
+        if (
+            $sidecarFields.Count -ne 2 -or
+            -not [string]::Equals($sidecarFields[0], $zipHash, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($sidecarFields[1], "$id.zip", [System.StringComparison]::Ordinal)
+        ) {
+            throw "Sample Art package checksum sidecar is invalid: $sidecarPath"
+        }
+        if (-not [string]::Equals([string]$entry[0].sha256, $zipHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Sample Art package summary hash mismatch: $id"
+        }
+
+        $zipFile = Get-Item -LiteralPath $zipPath
+        $zipRelative = "packages\arts\$id.zip"
+        $zipRecord = [ordered]@{
+            kind = "sample-art-package-zip"
+            role = "sample-art"
+            id = $id
+            framework = $framework
+            name = $zipFile.Name
+            path = $zipRelative
+            bytes = [int64]$zipFile.Length
+            sha256 = $zipHash
+        }
+        $sidecarFile = Get-Item -LiteralPath $sidecarPath
+        $sidecarRecord = [ordered]@{
+            kind = "sample-art-package-zip-sha256"
+            role = "sample-art"
+            id = $id
+            name = $sidecarFile.Name
+            path = "$zipRelative.sha256"
+            bytes = [int64]$sidecarFile.Length
+            sha256 = (Get-FileHash -LiteralPath $sidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $packageRecords += $zipRecord
+        $artifactRecords += @($zipRecord, $sidecarRecord)
+        $payloadRecords += @($zipRecord, $sidecarRecord)
+    }
+
+    $summaryFile = Get-Item -LiteralPath $summaryPath
+    $summaryRecord = [ordered]@{
+        kind = "sample-art-package-catalog"
+        name = $summaryFile.Name
+        path = "packages\arts\summary.json"
         bytes = [int64]$summaryFile.Length
         sha256 = (Get-FileHash -LiteralPath $summaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
@@ -711,7 +828,9 @@ function New-PluginSdkZip {
 $resolvedVersionId = Resolve-VersionId -ExplicitVersionId $VersionId
 $resolvedOutputRoot = Resolve-OutputRoot -Value $OutputRoot
 $destination = Join-Path $resolvedOutputRoot $resolvedVersionId
-$catalog = Get-LoomCatalog -FrameworkPackageOutputRoot (Join-Path $destination "packages\frameworks")
+$catalog = Get-LoomCatalog `
+    -FrameworkPackageOutputRoot (Join-Path $destination "packages\frameworks") `
+    -SampleArtPackageOutputRoot (Join-Path $destination "packages\arts")
 $sourceGitDirty = Get-GitDirty
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
     throw "Formal Loom release requires a clean, readable Git worktree. gitDirty=$sourceGitDirty"
@@ -769,6 +888,11 @@ $frameworkPackageRecords = @($frameworkArtifacts.packages)
 $frameworkCatalogRecord = $frameworkArtifacts.catalog
 $frameworkArtifactRecords = @($frameworkArtifacts.artifacts)
 $frameworkPayloadRecords = @($frameworkArtifacts.payload)
+$sampleArtArtifacts = Get-SampleArtPackageArtifacts -ArtCatalog $catalog.sampleArtPackageCatalog
+$sampleArtPackageRecords = @($sampleArtArtifacts.packages)
+$sampleArtCatalogRecord = $sampleArtArtifacts.catalog
+$sampleArtArtifactRecords = @($sampleArtArtifacts.artifacts)
+$sampleArtPayloadRecords = @($sampleArtArtifacts.payload)
 
 $gitHead = Get-GitText -Arguments @("rev-parse", "HEAD")
 if ([string]::IsNullOrWhiteSpace($gitHead)) {
@@ -795,8 +919,8 @@ $buildInfo = [ordered]@{
     sha256 = (Get-FileHash -LiteralPath $buildInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-$payloadRecords = @($exeRecords + $supportRecords + $frameworkPayloadRecords)
-$artifactRecords = @($frameworkArtifactRecords)
+$payloadRecords = @($exeRecords + $supportRecords + $frameworkPayloadRecords + $sampleArtPayloadRecords)
+$artifactRecords = @($frameworkArtifactRecords + $sampleArtArtifactRecords)
 $cliArtifactManifest = $null
 $pluginSdkArtifactManifest = $null
 if (-not $NoZip) {
@@ -807,7 +931,8 @@ if (-not $NoZip) {
         $desktopArtifactRecords +
         $cliArtifactRecords +
         $pluginSdkArtifactRecords +
-        $frameworkArtifactRecords
+        $frameworkArtifactRecords +
+        $sampleArtArtifactRecords
     )
     $cliZipRecord = @($cliArtifactRecords | Where-Object { [string]$_.kind -eq "cli-zip" })[0]
     $cliArtifactManifest = [ordered]@{
@@ -893,6 +1018,8 @@ $manifest = [ordered]@{
     pluginSdkArtifact = $pluginSdkArtifactManifest
     frameworkPackages = $frameworkPackageRecords
     frameworkCatalog = $frameworkCatalogRecord
+    sampleArtPackages = $sampleArtPackageRecords
+    sampleArtCatalog = $sampleArtCatalogRecord
     sbom = $sbomRecords
     provenance = $provenanceRecord
     buildInfo = $buildInfo
@@ -922,6 +1049,8 @@ $result = [ordered]@{
     pluginSdkArtifact = $pluginSdkArtifactManifest
     frameworkPackages = $frameworkPackageRecords
     frameworkCatalog = $frameworkCatalogRecord
+    sampleArtPackages = $sampleArtPackageRecords
+    sampleArtCatalog = $sampleArtCatalogRecord
     sbom = $sbomRecords
     provenance = $provenanceRecord
     artifacts = $artifactRecords

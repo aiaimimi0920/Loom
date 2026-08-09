@@ -529,12 +529,17 @@ impl HookCanvasDocument {
             .iter()
             .map(|node| node.workflow_node_id.clone())
             .collect::<HashSet<_>>();
+        let workflow_ids_by_raw_node = members
+            .iter()
+            .map(|node| (node.id.as_str(), node.workflow_node_id.as_str()))
+            .collect::<HashMap<_, _>>();
         for node in members {
             lines.push(format!("  - id: {}", node.workflow_node_id));
-            lines.push(format!(
-                "    uses: {}",
-                yaml_single_quoted(node.art_id.as_deref().unwrap_or(node.kind.as_str()))
-            ));
+            let uses = node.art_id.as_deref().unwrap_or_else(|| match &node.kind {
+                HookCanvasNodeKind::Screenshot => "sticker",
+                _ => node.kind.as_str(),
+            });
+            lines.push(format!("    uses: {}", yaml_single_quoted(uses)));
             let needs = node
                 .upstream_workflow_node_ids
                 .iter()
@@ -543,6 +548,46 @@ impl HookCanvasDocument {
                 .collect::<Vec<_>>();
             if !needs.is_empty() {
                 lines.push(format!("    needs: [{}]", needs.join(", ")));
+            }
+            let mut seen_target_ports = HashSet::new();
+            let incoming_edges = self
+                .snapshot
+                .edges
+                .iter()
+                .filter(|edge| edge.target_node_id == node.id)
+                .filter_map(|edge| {
+                    let source_node_id = workflow_ids_by_raw_node
+                        .get(edge.source_node_id.as_str())?
+                        .to_string();
+                    let source_port_id = edge
+                        .source_port_id
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("output_image")
+                        .to_owned();
+                    let target_port_id = edge
+                        .target_port_id
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("image")
+                        .to_owned();
+                    if !seen_target_ports.insert(target_port_id.clone()) {
+                        return None;
+                    }
+                    Some((source_node_id, source_port_id, target_port_id))
+                })
+                .collect::<Vec<_>>();
+            if !incoming_edges.is_empty() {
+                lines.push("    with:".to_owned());
+                for (source_node_id, source_port_id, target_port_id) in incoming_edges {
+                    let reference =
+                        format!("${{{{ nodes.{source_node_id}.outputs.{source_port_id} }}}}");
+                    lines.push(format!(
+                        "      {}: {}",
+                        yaml_mapping_key(&target_port_id),
+                        yaml_single_quoted(&reference)
+                    ));
+                }
             }
         }
 
@@ -1547,6 +1592,18 @@ fn yaml_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn yaml_mapping_key(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        value.to_owned()
+    } else {
+        yaml_single_quoted(value)
+    }
+}
+
 fn sanitize_workflow_node_id(value: &str) -> String {
     let mut sanitized = String::new();
     let mut previous_was_dash = false;
@@ -1809,11 +1866,46 @@ mod tests {
 
         assert!(yaml.contains("name: 'hook-export'"));
         assert!(yaml.contains("- id: a"));
+        assert!(yaml.contains("uses: 'sticker'"));
+        assert!(!yaml.contains("uses: 'screenshot'"));
         assert!(yaml.contains("- id: resize"));
         assert!(yaml.contains("- id: resize-2"));
         assert!(yaml.contains("needs: [a]"));
         assert!(yaml.contains("needs: [resize]"));
+        assert!(yaml.contains("image: '${{ nodes.a.outputs.output_image }}'"));
+        assert!(yaml.contains("image: '${{ nodes.resize.outputs.output_image }}'"));
         assert!(!yaml.contains("lonely"));
+    }
+
+    #[test]
+    fn exports_multi_image_edge_target_ports_into_workflow_yaml() {
+        let root = test_root("workflow-yaml-multi-image");
+        let session = write_session(
+            &root,
+            r#"{
+              "stickers": [
+                {"id":"input","type":"sticker","x":0,"y":0,"w":80,"h":80},
+                {"id":"reference","type":"sticker","x":0,"y":200,"w":80,"h":80},
+                {"id":"color","type":"art","artId":"color-transfer","x":200,"y":100,"w":80,"h":80},
+                {"id":"compress","type":"art","artId":"compress","x":400,"y":100,"w":80,"h":80}
+              ],
+              "links": [
+                {"id":"e1","fromUnitId":"input","fromPortId":"output","toUnitId":"color","toPortId":"input"},
+                {"id":"e2","fromUnitId":"reference","fromPortId":"output_image","toUnitId":"color","toPortId":"reference"},
+                {"id":"e3","fromUnitId":"color","fromPortId":"output","toUnitId":"compress","toPortId":"input"}
+              ]
+            }"#,
+        );
+
+        let document = HookCanvasDocument::read(&session).expect("normalize multi-image workflow");
+        let yaml = document
+            .export_workflow_yaml_for_selected_node("input", "color-compress")
+            .expect("export multi-image workflow yaml");
+
+        assert!(yaml.contains("needs: [input, reference]"));
+        assert!(yaml.contains("input: '${{ nodes.input.outputs.output }}'"));
+        assert!(yaml.contains("reference: '${{ nodes.reference.outputs.output_image }}'"));
+        assert!(yaml.contains("input: '${{ nodes.color-transfer.outputs.output }}'"));
     }
 
     #[test]

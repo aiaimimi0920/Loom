@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon J - Zhong seal</title>
+  <desc id="desc">A seal-like geometric Chinese Zhong mark representing the personal middle platform.</desc>
+  <rect x="96" y="96" width="832" height="832" rx="186" fill="#0D161C"/>
+  <rect x="118" y="118" width="788" height="788" rx="164" fill="none" stroke="#223238" stroke-width="28"/>
+  <rect x="262" y="302" width="500" height="420" rx="54" fill="none" stroke="#22C55E" stroke-width="104"/>
+  <path d="M512 224v576" fill="none" stroke="#FFE600" stroke-width="110" stroke-linecap="round"/>
+</svg>

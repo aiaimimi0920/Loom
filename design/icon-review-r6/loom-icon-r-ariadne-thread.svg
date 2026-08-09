@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon R - Thread of Ariadne</title>
+  <desc id="desc">One continuous path reaches a yellow endpoint through a simplified labyrinth.</desc>
+  <rect x="96" y="96" width="832" height="832" rx="184" fill="#0D161C"/>
+  <rect x="118" y="118" width="788" height="788" rx="162" fill="none" stroke="#223238" stroke-width="28"/>
+  <path d="M236 314h552v474H354V438h310v230H478V554h158" fill="none" stroke="#22C55E" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="636" cy="554" r="76" fill="#FFE600"/>
+</svg>

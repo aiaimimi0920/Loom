@@ -51,10 +51,8 @@ else {
 }
 $stagingRoot = Join-Path $outputRootPath ".staging"
 $expectedIds = @(
-    "cli_wrapper",
+    "process",
     "cloud_api",
-    "script",
-    "python_art",
     "mcp",
     "workflow"
 )
@@ -109,17 +107,11 @@ try {
         Copy-Item -LiteralPath $sourceManifestPath -Destination (Join-Path $stageDir "framework.manifest.json") -Force
         Copy-Item -LiteralPath $hostExecutable -Destination (Join-Path $stageDir $command) -Force
 
-        if ($id -eq "python_art") {
-            $pythonLauncher = Join-Path $repoRoot "resources\python\Launcher.py"
+        if ($id -eq "process") {
             $pythonEmbedRoot = Join-Path $repoRoot "resources\python-embed"
-            if (-not (Test-Path -LiteralPath $pythonLauncher -PathType Leaf)) {
-                throw "Python Art framework package requires the Python launcher: $pythonLauncher"
-            }
             if (-not (Test-Path -LiteralPath $pythonEmbedRoot -PathType Container)) {
-                throw "Python Art framework package requires the embedded Python runtime: $pythonEmbedRoot"
+                throw "Process framework package requires the embedded Python runtime: $pythonEmbedRoot"
             }
-            New-Item -ItemType Directory -Force -Path (Join-Path $stageDir "python") | Out-Null
-            Copy-Item -LiteralPath $pythonLauncher -Destination (Join-Path $stageDir "python\Launcher.py") -Force
             Copy-Item -LiteralPath $pythonEmbedRoot -Destination (Join-Path $stageDir "python-embed") -Recurse -Force
         }
 

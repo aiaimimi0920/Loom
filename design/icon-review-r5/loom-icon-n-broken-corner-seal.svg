@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon N - Broken corner seal</title>
+  <desc id="desc">Four green seal corners surround one yellow execution chevron.</desc>
+  <rect x="96" y="96" width="832" height="832" rx="184" fill="#0D161C"/>
+  <rect x="118" y="118" width="788" height="788" rx="162" fill="none" stroke="#223238" stroke-width="28"/>
+  <g fill="none" stroke="#22C55E" stroke-width="104" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M438 250H250v188"/>
+    <path d="M586 250h188v188"/>
+    <path d="M250 586v188h188"/>
+    <path d="M774 586v188H586"/>
+  </g>
+  <path d="m420 362 150 150-150 150" fill="none" stroke="#FFE600" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

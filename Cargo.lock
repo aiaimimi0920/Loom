@@ -1251,6 +1251,11 @@ name = "loom-art-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "ed25519-dalek",
+ "loom_plugin_security",
+ "loom_protocol",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -1291,6 +1296,7 @@ dependencies = [
  "loom_memory",
  "loom_native_image",
  "loom_ocr",
+ "loom_plugin_security",
  "loom_protocol",
  "loom_sandbox",
  "loom_shared_image",
@@ -1299,6 +1305,7 @@ dependencies = [
  "loom_workflow_runtime",
  "loom_workflow_store",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

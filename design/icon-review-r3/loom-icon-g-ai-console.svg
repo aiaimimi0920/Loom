@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon G - AI command console</title>
+  <desc id="desc">A dark application tile with a green command prompt and yellow execution cursor.</desc>
+  <rect x="96" y="96" width="832" height="832" rx="208" fill="#0D161C"/>
+  <rect x="118" y="118" width="788" height="788" rx="186" fill="none" stroke="#223238" stroke-width="28"/>
+  <path d="m302 344 168 168-168 168" fill="none" stroke="#22C55E" stroke-width="116" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M558 680h174" fill="none" stroke="#FFE600" stroke-width="104" stroke-linecap="round"/>
+</svg>

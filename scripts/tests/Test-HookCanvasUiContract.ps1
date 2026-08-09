@@ -32,27 +32,21 @@ function ConvertFrom-UnicodeCodePoints {
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $appPath = Join-Path $repoRoot "apps\desktop\src\App.tsx"
 $thumbnailPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasThumbnail.tsx"
-$viewPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasView.tsx"
 $nodePath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasNode.tsx"
 $desktopRustPath = Join-Path $repoRoot "apps\desktop\src-tauri\src\lib.rs"
 $smokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
 $inspectorPath = Join-Path $repoRoot "scripts\Inspect-LoomWebView.mjs"
 
 Assert-PathExists $thumbnailPath
-Assert-PathExists $viewPath
 Assert-PathExists $nodePath
 Assert-PathExists $desktopRustPath
 
 $app = Get-Content -Raw -Encoding UTF8 $appPath
 $thumbnail = Get-Content -Raw -Encoding UTF8 $thumbnailPath
-$view = Get-Content -Raw -Encoding UTF8 $viewPath
 $node = Get-Content -Raw -Encoding UTF8 $nodePath
 $desktopRust = Get-Content -Raw -Encoding UTF8 $desktopRustPath
 $visualWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x53EF, 0x89C6, 0x5316, 0x5DE5, 0x4F5C, 0x6D41)
 $saveWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x4FDD, 0x5B58, 0x5DE5, 0x4F5C, 0x6D41)
-$openWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x5DE5, 0x4F5C, 0x6D41)
-$yamlStorageLabel = "YAML " + (ConvertFrom-UnicodeCodePoints @(0x5B58, 0x50A8))
-$loadYamlLabel = ">" + (ConvertFrom-UnicodeCodePoints @(0x52A0, 0x8F7D)) + " YAML<"
 $executionFailureLabel = ConvertFrom-UnicodeCodePoints @(0x6267, 0x884C, 0x5931, 0x8D25)
 $quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints @(
     0x989D, 0x5EA6, 0x4E0D, 0x8DB3, 0xFF08, 0x0048, 0x0054, 0x0054, 0x0050,
@@ -62,15 +56,10 @@ $quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints @(
 Assert-Contains 'data-testid=' $app "Hook navigation needs a stable UI smoke target."
 Assert-Contains 'nav-hook-bridge' $app "Hook navigation needs a stable UI smoke target."
 Assert-Contains 'data-testid="hook-canvas-thumbnail"' $thumbnail "Screenshot Sync must render a real Hook canvas thumbnail."
-Assert-Contains 'data-testid="hook-canvas-open-workflow"' $thumbnail "Thumbnail must expose a stable visual-workflow entry target."
+Assert-NotContains 'data-testid="hook-canvas-open-workflow"' $thumbnail "The removed visual-workflow entry must not return."
 Assert-Contains 'data-testid="hook-canvas-node"' $node "Hook canvas nodes need stable smoke targets."
-Assert-Contains 'data-testid="hook-canvas-view"' $view "Hook workflow must render a full visual canvas."
-Assert-Contains $visualWorkflowLabel $thumbnail "Thumbnail must expose the visual workflow entry."
-Assert-Contains 'data-testid="advanced-technical-information"' $app "Technical workflow formats must be in an explicit disclosure."
-Assert-Contains $saveWorkflowLabel $app "Normal save action must not require YAML wording."
-Assert-Contains $openWorkflowLabel $app "Normal load action must not require YAML wording."
-Assert-NotContains ("eyebrow: `"$yamlStorageLabel`"") $app "Navigation must not advertise YAML to normal users."
-Assert-NotContains $loadYamlLabel $app "Saved workflow action must use visual language."
+Assert-NotContains $visualWorkflowLabel $thumbnail "The removed visual-workflow label must not return."
+Assert-Contains $saveWorkflowLabel $thumbnail "Hook Sync must expose the compact save-workflow action."
 Assert-Contains 'const nextSnapshot = await waitForLoomOnline(refreshSnapshot);' $app "Daemon start must always poll the complete snapshot until online."
 Assert-NotContains '? await waitForLoomOnline' $app "Daemon readiness polling must not depend on whether a new process was spawned."
 
@@ -121,12 +110,10 @@ Assert-Contains 'function Read-BoundedTaskText' $smoke "Inspector stream drainin
 Assert-Contains '$Task.Wait($TimeoutMilliseconds)' $smoke "Inspector stream draining must not block indefinitely."
 Assert-NotContains 'Start-Sleep -Seconds 2' $smoke "Smoke must not use a fixed Hook canvas refresh delay."
 Assert-Contains 'failedArtThumbnailFailureVisible' $smoke "Hook canvas smoke must assert the failed Art thumbnail presentation."
-Assert-Contains 'failedArtExecutionFailureVisible' $smoke "Hook canvas smoke must assert the failed Art full-canvas presentation."
 Assert-Contains 'min-nodes' $inspector "Inspector must wait for the expected Hook canvas node count."
 Assert-Contains 'data-revision' $inspector "Inspector must wait for a non-empty Hook canvas revision."
-Assert-Contains 'hook-canvas-open-workflow' $inspector "Inspector must target the dedicated visual-workflow entry."
+Assert-NotContains 'hook-canvas-open-workflow' $inspector "Inspector must not target the removed visual-workflow entry."
 Assert-Contains ('placeholderTitle === "' + $executionFailureLabel + '"') $inspector "Inspector must detect the failed Art execution-failure placeholder."
-Assert-Contains 'fullCanvasNodes' $inspector "Inspector must persist full-canvas node presentation evidence."
 Assert-Contains 'thumbnailNodes' $inspector "Inspector must persist thumbnail node presentation evidence."
 Assert-Contains 'placeholderDetailText' $inspector "Inspector must persist failed-node detail text evidence."
 Assert-Contains "hasImage: Boolean(node.querySelector('img'))" $inspector "Inspector must distinguish image previews from placeholder rendering."

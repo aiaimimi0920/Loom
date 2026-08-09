@@ -1,11 +1,11 @@
 {
   "id": "custom-1770146354922",
   "name": "图片压缩",
-  "description": "通过可插拔命令行框架对输入图片重新编码并输出 PNG。",
+  "description": "通过脚本对输入图片重新编码并输出 PNG。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
-    "framework": "cli_wrapper"
+    "framework": "process"
   },
   "inputs": [
     {
@@ -44,14 +44,31 @@
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "0.1.0",
+      "version": "0.1.2",
       "publisher": {
         "id": "neuro.official",
-        "name": "Neuro"
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/custom-1770146354922",
+      "englishName": "custom-1770146354922",
+      "globalId": "NA20260802001"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "图片压缩",
+        "en-US": "Image Compress"
+      },
+      "descriptions": {
+        "zh-CN": "通过脚本对输入图片重新编码并输出 PNG。",
+        "en-US": "Re-encodes the input image and returns PNG output."
       }
     },
     "dependencies": {
-      "framework": "cli_wrapper",
+      "framework": "process",
       "frameworkVersion": "^0.1"
     },
     "capabilities": {

@@ -22,10 +22,8 @@ $packagesRoot = Join-Path $repoRoot "framework-packages"
 $buildScript = Join-Path $repoRoot "scripts\Build-LoomArtFrameworkPackages.ps1"
 $runtimeHostManifest = Join-Path $packagesRoot "runtime-host\Cargo.toml"
 $expectedIds = @(
-    "cli_wrapper",
+    "process",
     "cloud_api",
-    "script",
-    "python_art",
     "mcp",
     "workflow"
 )

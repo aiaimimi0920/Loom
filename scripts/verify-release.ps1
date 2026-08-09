@@ -241,9 +241,9 @@ function Assert-FrameworkPackages {
         return @()
     }
 
-    $expectedIds = @("cli_wrapper", "cloud_api", "script", "python_art", "mcp", "workflow")
+    $expectedIds = @("process", "cloud_api", "mcp", "workflow")
     $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "frameworkPackages")
-    Assert-Equal -Expected $expectedIds.Count -Actual $packageRecords.Count -Message "Manifest must contain six framework package records."
+    Assert-Equal -Expected $expectedIds.Count -Actual $packageRecords.Count -Message "Manifest must contain four framework package records."
     $actualIds = @($packageRecords | ForEach-Object { [string]$_.id } | Sort-Object)
     Assert-Equal -Expected (($expectedIds | Sort-Object) -join ",") -Actual ($actualIds -join ",") -Message "Framework package id set mismatch."
 
@@ -313,6 +313,97 @@ function Assert-FrameworkPackages {
     return @($payloadPaths)
 }
 
+function Assert-SampleArtPackages {
+    param(
+        [string]$PackagePath,
+        [object]$Manifest
+    )
+
+    if ([int]$Manifest.schemaVersion -lt 2) {
+        return @()
+    }
+
+    $expected = [ordered]@{
+        "custom-1770146354922" = "process"
+        "custom-remove-bg-cloud" = "cloud_api"
+        "custom-image-search" = "mcp"
+        "custom-1770131241684" = "process"
+    }
+    $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "sampleArtPackages")
+    Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain four curated Art package records."
+    $actualIds = @($packageRecords | ForEach-Object { [string]$_.id } | Sort-Object)
+    Assert-Equal -Expected ((@($expected.Keys) | Sort-Object) -join ",") -Actual ($actualIds -join ",") -Message "Sample Art package id set mismatch."
+
+    $artifacts = @(Get-ManifestRecord -Manifest $Manifest -Name "artifacts")
+    $payloadPaths = @()
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    foreach ($id in $expected.Keys) {
+        $framework = [string]$expected[$id]
+        $zipRecord = @($packageRecords | Where-Object { [string]$_.id -eq $id })
+        Assert-Equal -Expected 1 -Actual $zipRecord.Count -Message "Sample Art package record count mismatch for $id."
+        Assert-Equal -Expected "sample-art-package-zip" -Actual ([string]$zipRecord[0].kind) -Message "Sample Art package kind mismatch for $id."
+        Assert-Equal -Expected $framework -Actual ([string]$zipRecord[0].framework) -Message "Sample Art framework mismatch for $id."
+        Assert-Equal -Expected "$id.zip" -Actual ([string]$zipRecord[0].name) -Message "Sample Art package name mismatch for $id."
+        Assert-Equal -Expected "packages\arts\$id.zip" -Actual (([string]$zipRecord[0].path).Replace("/", "\")) -Message "Sample Art package path mismatch for $id."
+        $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $zipRecord[0]
+
+        $sidecarRecord = @($artifacts | Where-Object {
+            (Test-LoomArtifactKind -Artifact $_ -Kind "sample-art-package-zip-sha256") -and
+            [string]$_.id -eq $id
+        })
+        Assert-Equal -Expected 1 -Actual $sidecarRecord.Count -Message "Sample Art package checksum record count mismatch for $id."
+        $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $sidecarRecord[0]
+        Assert-ZipChecksumSidecar -PackagePath $PackagePath -ZipRecord $zipRecord[0] -SidecarRecord $sidecarRecord[0]
+
+        $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord[0].path)
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+        try {
+            $manifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "manifest.json" })
+            $runtimeManifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "art.runtime.json" })
+            Assert-Equal -Expected 1 -Actual $manifestEntry.Count -Message "Sample Art ZIP must contain one root manifest: $id"
+            Assert-Equal -Expected 1 -Actual $runtimeManifestEntry.Count -Message "Sample Art ZIP must contain one runtime manifest: $id"
+            $reader = [System.IO.StreamReader]::new($manifestEntry[0].Open())
+            try {
+                $artManifest = $reader.ReadToEnd() | ConvertFrom-Json
+            }
+            finally {
+                $reader.Dispose()
+            }
+            Assert-Equal -Expected $id -Actual ([string]$artManifest.id) -Message "Sample Art ZIP manifest id mismatch for $id."
+            Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$artManifest.name)) -Message "Sample Art ZIP manifest name is empty for $id."
+            Assert-Equal -Expected "framework_art" -Actual ([string]$artManifest.execution.type) -Message "Sample Art ZIP execution type mismatch for $id."
+            Assert-Equal -Expected $framework -Actual ([string]$artManifest.execution.framework) -Message "Sample Art ZIP execution framework mismatch for $id."
+            Assert-Equal -Expected $framework -Actual ([string]$artManifest.metadata.dependencies.framework) -Message "Sample Art ZIP dependency framework mismatch for $id."
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+
+    $catalogRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "sampleArtCatalog")
+    Assert-Equal -Expected 1 -Actual $catalogRecords.Count -Message "Manifest must contain one sample Art catalog record."
+    Assert-Equal -Expected "packages\arts\summary.json" -Actual (([string]$catalogRecords[0].path).Replace("/", "\")) -Message "Sample Art catalog path mismatch."
+    $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $catalogRecords[0]
+    $catalogArtifact = @($artifacts | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "sample-art-package-catalog" })
+    Assert-Equal -Expected 1 -Actual $catalogArtifact.Count -Message "Manifest artifacts must contain one sample Art catalog."
+    Assert-Equal -Expected ([string]$catalogRecords[0].sha256) -Actual ([string]$catalogArtifact[0].sha256) -Message "Sample Art catalog artifact mismatch."
+
+    $catalogPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$catalogRecords[0].path)
+    $catalog = Get-Content -Raw -Encoding UTF8 -LiteralPath $catalogPath | ConvertFrom-Json
+    Assert-Equal -Expected "Release" -Actual ([string]$catalog.configuration) -Message "Sample Art catalog configuration mismatch."
+    $catalogEntries = @($catalog.packages)
+    Assert-Equal -Expected $expected.Count -Actual $catalogEntries.Count -Message "Sample Art catalog entry count mismatch."
+    foreach ($record in $packageRecords) {
+        $entry = @($catalogEntries | Where-Object { [string]$_.id -eq [string]$record.id })
+        Assert-Equal -Expected 1 -Actual $entry.Count -Message "Sample Art catalog entry is missing for $($record.id)."
+        Assert-Equal -Expected ([string]$record.framework) -Actual ([string]$entry[0].framework) -Message "Sample Art catalog framework mismatch for $($record.id)."
+        Assert-Equal -Expected ([string]$record.name) -Actual ([string]$entry[0].zip) -Message "Sample Art catalog ZIP mismatch for $($record.id)."
+        Assert-Equal -Expected ([string]$record.sha256) -Actual ([string]$entry[0].sha256) -Message "Sample Art catalog hash mismatch for $($record.id)."
+    }
+
+    return @($payloadPaths)
+}
+
 function Assert-SupplyChainMetadata {
     param(
         [string]$PackagePath,
@@ -362,11 +453,13 @@ function Assert-ZipChecksumSidecar {
     $sidecarPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath $sidecarRelativePath
     $actualZipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $expectedLine = "$actualZipHash  $zipName"
-    $expectedContent = $expectedLine + "`r`n"
+    $expectedContentCrLf = $expectedLine + "`r`n"
+    $expectedContentLf = $expectedLine + "`n"
     $actualContent = [System.IO.File]::ReadAllText($sidecarPath, [System.Text.Encoding]::ASCII)
     $contentMatches = (
         [string]::Equals($actualContent, $expectedLine, [System.StringComparison]::Ordinal) -or
-        [string]::Equals($actualContent, $expectedContent, [System.StringComparison]::Ordinal)
+        [string]::Equals($actualContent, $expectedContentCrLf, [System.StringComparison]::Ordinal) -or
+        [string]::Equals($actualContent, $expectedContentLf, [System.StringComparison]::Ordinal)
     )
     if (-not $contentMatches) {
         throw "ZIP checksum sidecar content mismatch for $zipName."
@@ -427,6 +520,7 @@ foreach ($record in $supportRecords) {
     $payloadPaths += Assert-FileRecord -PackagePath $packageFullPath -Record $record
 }
 $payloadPaths += @(Assert-FrameworkPackages -PackagePath $packageFullPath -Manifest $manifest)
+$payloadPaths += @(Assert-SampleArtPackages -PackagePath $packageFullPath -Manifest $manifest)
 
 $buildInfo = @(Get-ManifestRecord -Manifest $manifest -Name "buildInfo")
 Assert-Equal -Expected 1 -Actual $buildInfo.Count -Message "Manifest must contain one BUILD_INFO record."
@@ -475,6 +569,7 @@ $hookCanvasSmokeStatus = "not-run"
 $hookErrorPreviewSmokeStatus = "not-run"
 $frameworkArtStoreHookSmokeStatus = "not-run"
 $pluginBoundarySmokeStatus = "not-run"
+$authoredArtCreationSmokeStatus = "not-run"
 if ($RunSmoke) {
     $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $smokePath -PathType Leaf) -Message "Missing standalone smoke script: $smokePath"
@@ -556,6 +651,21 @@ if ($RunSmoke) {
         throw "Plugin Art boundary smoke failed: $($pluginBoundarySmokeOutput -join [Environment]::NewLine)"
     }
     $pluginBoundarySmokeStatus = "passed"
+
+    $authoredArtCreationSmokePath = Join-Path $repoRoot "scripts\tests\Test-LoomAuthoredArtCreateExecution.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $authoredArtCreationSmokePath -PathType Leaf) -Message "Missing authored Art creation smoke script: $authoredArtCreationSmokePath"
+    $authoredArtCreationSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $authoredArtCreationSmokePath,
+        "-DaemonExecutable", (Join-Path $packageFullPath "runtime\loom-daemon.exe"),
+        "-FrameworkArtifactRoot", (Join-Path $packageFullPath "packages\frameworks")
+    )
+    $authoredArtCreationSmokeOutput = @($authoredArtCreationSmokeResult.output)
+    if ([int]$authoredArtCreationSmokeResult.exitCode -ne 0) {
+        throw "Authored Art creation smoke failed: $($authoredArtCreationSmokeOutput -join [Environment]::NewLine)"
+    }
+    $authoredArtCreationSmokeStatus = "passed"
 }
 
 $result = [ordered]@{
@@ -570,5 +680,6 @@ $result = [ordered]@{
     hookErrorPreviewSmoke = $hookErrorPreviewSmokeStatus
     frameworkArtStoreHookSmoke = $frameworkArtStoreHookSmokeStatus
     pluginBoundarySmoke = $pluginBoundarySmokeStatus
+    authoredArtCreationSmoke = $authoredArtCreationSmokeStatus
 }
 Write-Output ($result | ConvertTo-Json -Depth 10)

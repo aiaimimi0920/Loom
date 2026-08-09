@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Loom 程序图标评审 R4</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter,"Segoe UI",system-ui,sans-serif; background:#06080d; color:#f4f7ef; }
+    * { box-sizing:border-box; }
+    body { min-width:940px; margin:0; background:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px),#06080d; background-size:32px 32px; }
+    button { font:inherit; }
+    .shell { width:min(1440px,calc(100% - 64px)); margin:0 auto; padding:38px 0 54px; }
+    .header { display:flex; align-items:end; justify-content:space-between; gap:32px; border-bottom:1px solid rgba(255,255,255,.14); padding-bottom:22px; }
+    .eyebrow { margin:0 0 8px; color:#d9ff38; font-size:12px; font-weight:900; letter-spacing:.18em; text-transform:uppercase; }
+    h1 { margin:0; font-size:clamp(32px,4vw,58px); line-height:.96; letter-spacing:-.045em; }
+    .tool-button { border:1px solid rgba(255,255,255,.2); border-radius:8px; padding:10px 14px; background:rgba(255,255,255,.05); color:#f4f7ef; font-size:13px; font-weight:850; cursor:pointer; }
+    .tool-button:hover,.tool-button[aria-pressed="true"] { border-color:#d9ff38; background:rgba(217,255,56,.1); color:#d9ff38; }
+    .principle { display:flex; align-items:center; justify-content:space-between; gap:24px; margin:18px 0 22px; border-left:3px solid #ffe600; padding:12px 15px; background:rgba(255,230,0,.055); color:rgba(244,247,239,.72); font-size:13px; }
+    .principle a { color:#7ee2a1; font-weight:850; text-decoration:none; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+    .candidate { display:grid; grid-template-rows:auto auto auto 1fr auto; min-width:0; border:1px solid rgba(255,255,255,.14); border-radius:14px; background:rgba(13,17,23,.97); overflow:hidden; transition:border-color 140ms ease,box-shadow 140ms ease; }
+    .candidate[data-selected="true"] { border-color:#d9ff38; box-shadow:0 0 0 1px rgba(217,255,56,.2); }
+    .candidate__head { min-height:76px; display:flex; align-items:start; justify-content:space-between; gap:16px; border-bottom:1px solid rgba(255,255,255,.1); padding:18px; }
+    .candidate__index { color:#d9ff38; font:900 12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    h2 { margin:4px 0 0; font-size:20px; letter-spacing:-.02em; }
+    .tag { border:1px solid rgba(34,197,94,.38); border-radius:999px; padding:5px 8px; color:#7ee2a1; font-size:11px; font-weight:900; white-space:nowrap; }
+    .hero { display:grid; min-height:292px; place-items:center; background:radial-gradient(circle,rgba(34,197,94,.06),transparent 58%),#080b10; }
+    .hero img { width:228px; height:228px; }
+    .sizes { display:flex; align-items:end; justify-content:center; gap:18px; border-top:1px solid rgba(255,255,255,.09); border-bottom:1px solid rgba(255,255,255,.09); padding:16px; background:#0b0f15; }
+    .sample { display:grid; gap:7px; place-items:center; color:rgba(244,247,239,.44); font:10px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .frame { display:grid; width:72px; height:72px; place-items:center; border:1px solid rgba(255,255,255,.08); border-radius:9px; background:#e8ece8; }
+    .frame--dark { background:#06080d; }.s64 img{width:64px;height:64px}.s32 img{width:32px;height:32px}.s16 img{width:16px;height:16px}
+    .description { min-height:112px; margin:0; padding:17px 18px 8px; color:rgba(244,247,239,.64); font-size:13px; line-height:1.65; }
+    .action { margin:12px 18px 18px; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:10px 12px; background:rgba(255,255,255,.04); color:#f4f7ef; font-weight:850; cursor:pointer; }
+    .action:hover { border-color:rgba(217,255,56,.54); background:rgba(217,255,56,.08); }.candidate[data-selected="true"] .action{border-color:#d9ff38;background:#d9ff38;color:#111614}
+    .output { min-height:44px; margin-top:18px; border-left:3px solid #d9ff38; padding:11px 14px; background:rgba(217,255,56,.06); color:rgba(244,247,239,.72); font-size:13px; }
+    body.blind .semantic-copy { visibility:hidden; } body.blind .candidate__head { justify-content:center; } body.blind .candidate__index { font-size:16px; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header"><div><p class="eyebrow">Loom / App Icon Review / R4</p><h1>中国传统元素</h1></div><button class="tool-button" id="blindToggle" type="button" aria-pressed="false">隐藏说明，盲看图标</button></header>
+    <div class="principle"><span>本轮只采用可在 16px 下成立的传统元素：中、司南、算盘。排除八卦、太极、中国结、铜钱与复杂斗拱，避免玄学、节庆、金融或细节糊化。</span><span><a href="../icon-review-r1/index.html">R1</a>　<a href="../icon-review-r2/index.html">R2</a>　<a href="../icon-review-r3/index.html">R3</a></span></div>
+    <section class="grid" aria-label="Loom 图标 R4 候选">
+      <article class="candidate" data-candidate="J" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION J</span><div class="semantic-copy"><h2>篆印「中」</h2></div></div><span class="tag semantic-copy">中台</span></header>
+        <div class="hero"><img src="loom-icon-j-zhong-seal.svg" alt="候选 J，篆印中字图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-j-zhong-seal.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame frame--dark"><img src="loom-icon-j-zhong-seal.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-j-zhong-seal.svg" alt="" /></span>16PX</span></div>
+        <p class="description semantic-copy">用几何化的“中”直接表达中台，深色方牌形成印章感；绿色方框是能力边界，黄色中轴是用户控制。元素最少，16px 辨识最稳定。</p>
+        <button class="action" type="button">标记候选 J</button>
+      </article>
+      <article class="candidate" data-candidate="K" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION K</span><div class="semantic-copy"><h2>司南</h2></div></div><span class="tag semantic-copy">调度</span></header>
+        <div class="hero"><img src="loom-icon-k-sinan.svg" alt="候选 K，司南图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-k-sinan.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame frame--dark"><img src="loom-icon-k-sinan.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-k-sinan.svg" alt="" /></span>16PX</span></div>
+        <p class="description semantic-copy">方盘与黄色勺针来自传统司南，表达方向、选择和调度。它能自然对应 Loom 为不同 Art、智能体和工作流选择执行路径，但可能被理解成地图指南针。</p>
+        <button class="action" type="button">标记候选 K</button>
+      </article>
+      <article class="candidate" data-candidate="L" data-selected="false">
+        <header class="candidate__head"><div><span class="candidate__index">OPTION L</span><div class="semantic-copy"><h2>算盘</h2></div></div><span class="tag semantic-copy">计算</span></header>
+        <div class="hero"><img src="loom-icon-l-abacus.svg" alt="候选 L，算盘图标" /></div>
+        <div class="sizes"><span class="sample s64"><span class="frame"><img src="loom-icon-l-abacus.svg" alt="" /></span>64PX</span><span class="sample s32"><span class="frame frame--dark"><img src="loom-icon-l-abacus.svg" alt="" /></span>32PX</span><span class="sample s16"><span class="frame"><img src="loom-icon-l-abacus.svg" alt="" /></span>16PX</span></div>
+        <p class="description semantic-copy">算盘是传统计算与管理工具，能直接表达本地计算、参数操作和任务执行。普通用户容易识别，但也可能被误解为财务、记账或计算器程序。</p>
+        <button class="action" type="button">标记候选 L</button>
+      </article>
+    </section>
+    <div class="output" id="output">请先隐藏说明盲看。如果图标本身不能被识别为“中、司南、算盘”，就不应采用。</div>
+  </main>
+  <script>
+    const cards=Array.from(document.querySelectorAll(".candidate"));const output=document.querySelector("#output");const blindToggle=document.querySelector("#blindToggle");
+    blindToggle.addEventListener("click",()=>{const blind=!document.body.classList.contains("blind");document.body.classList.toggle("blind",blind);blindToggle.setAttribute("aria-pressed",String(blind));blindToggle.textContent=blind?"显示图标说明":"隐藏说明，盲看图标";});
+    cards.forEach(card=>card.querySelector(".action").addEventListener("click",()=>{const selected=card.dataset.selected!=="true";cards.forEach(item=>{item.dataset.selected="false";item.querySelector(".action").textContent=`标记候选 ${item.dataset.candidate}`;});if(selected){card.dataset.selected="true";card.querySelector(".action").textContent=`已标记候选 ${card.dataset.candidate}`;output.textContent=`当前临时标记：候选 ${card.dataset.candidate}。你可以直接告诉我采用、修改或继续寻找传统元素。`;}else{output.textContent="当前未标记候选。建议继续盲看 16px 表现。";}}));
+  </script>
+</body>
+</html>

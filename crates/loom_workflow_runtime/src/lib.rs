@@ -1,10 +1,11 @@
 //! Runtime for registry-backed Loom workflow Arts.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 
 use loom_tool_registry::{
-    execute_tool, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
-    WorkflowExecutionBindings, WorkflowInputBinding, WorkflowOutputBinding,
+    execute_tool, prepare_tool_arguments, ToolDefinition, ToolExecution, ToolRegistry,
+    ToolRegistryError, WorkflowExecutionBindings, WorkflowInputBinding, WorkflowOutputBinding,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use serde::Deserialize;
@@ -40,6 +41,8 @@ pub enum WorkflowRuntimeError {
         node_id: String,
         message: String,
     },
+    #[error("workflow `{workflow_id}` preview policy is invalid: {reason}")]
+    InvalidPreviewPolicy { workflow_id: String, reason: String },
 }
 
 pub type WorkflowRuntimeResult<T> = Result<T, WorkflowRuntimeError>;
@@ -51,6 +54,28 @@ pub fn execute_tool_with_workflows(
     tool_registry: &ToolRegistry,
     arguments: JsonValue,
 ) -> WorkflowRuntimeResult<serde_json::Value> {
+    execute_tool_with_workflows_and_preview(
+        tool,
+        mcp_servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        |_| {},
+    )
+}
+
+pub fn execute_tool_with_workflows_and_preview<F>(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    workflow_store: &WorkflowStore,
+    tool_registry: &ToolRegistry,
+    arguments: JsonValue,
+    mut preview_callback: F,
+) -> WorkflowRuntimeResult<serde_json::Value>
+where
+    F: FnMut(JsonValue),
+{
+    let arguments = prepare_tool_arguments(tool, arguments)?;
     match &tool.execution {
         ToolExecution::Workflow {
             workflow_id,
@@ -62,6 +87,7 @@ pub fn execute_tool_with_workflows(
             workflow_store,
             tool_registry,
             arguments,
+            &mut preview_callback,
         ),
         _ => execute_tool(tool, mcp_servers, arguments).map_err(WorkflowRuntimeError::from),
     }
@@ -93,6 +119,29 @@ struct StoredWorkflowNodeMeta {
     preview_src: Option<String>,
 }
 
+fn load_stored_workflow(
+    workflow_store: &WorkflowStore,
+    workflow_id: &str,
+) -> WorkflowRuntimeResult<StoredWorkflow> {
+    let workflow_yaml = workflow_store.load_workflow(workflow_id)?;
+    serde_yaml::from_str(&workflow_yaml).map_err(|source| WorkflowRuntimeError::WorkflowYaml {
+        workflow_id: workflow_id.to_owned(),
+        source,
+    })
+}
+
+pub fn workflow_node_tool_ids(
+    workflow_store: &WorkflowStore,
+    workflow_id: &str,
+) -> WorkflowRuntimeResult<BTreeMap<String, String>> {
+    let workflow = load_stored_workflow(workflow_store, workflow_id)?;
+    Ok(workflow
+        .nodes
+        .into_iter()
+        .map(|node| (node.id, node.uses))
+        .collect())
+}
+
 fn execute_workflow_tool(
     workflow_id: &str,
     workflow_bindings: Option<&WorkflowExecutionBindings>,
@@ -100,14 +149,24 @@ fn execute_workflow_tool(
     workflow_store: &WorkflowStore,
     tool_registry: &ToolRegistry,
     arguments: JsonValue,
+    preview_callback: &mut dyn FnMut(JsonValue),
 ) -> WorkflowRuntimeResult<JsonValue> {
-    let workflow_yaml = workflow_store.load_workflow(workflow_id)?;
-    let workflow: StoredWorkflow = serde_yaml::from_str(&workflow_yaml).map_err(|source| {
-        WorkflowRuntimeError::WorkflowYaml {
-            workflow_id: workflow_id.to_owned(),
-            source,
-        }
-    })?;
+    let workflow = load_stored_workflow(workflow_store, workflow_id)?;
+    let normalized_bindings = workflow_bindings
+        .map(|bindings| normalize_workflow_image_input_bindings(&workflow, bindings));
+    let workflow_bindings = normalized_bindings.as_ref();
+    let preview_policy = workflow_bindings
+        .and_then(|bindings| bindings.preview_output.as_ref())
+        .map(|preview_output| {
+            validate_preview_policy(
+                workflow_id,
+                &workflow,
+                workflow_bindings.expect("preview output requires bindings"),
+                preview_output,
+                tool_registry,
+            )
+        })
+        .transpose()?;
 
     if workflow.nodes.is_empty() {
         return Ok(text_content_response(&format!(
@@ -128,9 +187,10 @@ fn execute_workflow_tool(
         .map(|node| node.id.clone())
         .collect::<Vec<_>>();
     let mut results = HashMap::<String, JsonValue>::new();
+    let mut preview_emitted = false;
 
     while !pending.is_empty() {
-        let ready = order
+        let mut ready = order
             .iter()
             .filter(|node_id| pending.contains_key(*node_id))
             .filter(|node_id| {
@@ -141,6 +201,10 @@ fn execute_workflow_tool(
             })
             .cloned()
             .collect::<Vec<_>>();
+
+        if let Some(policy) = &preview_policy {
+            ready.sort_by_key(|node_id| !policy.priority_nodes.contains(node_id));
+        }
 
         if ready.is_empty() {
             return Err(WorkflowRuntimeError::UnresolvedDependencies {
@@ -164,6 +228,26 @@ fn execute_workflow_tool(
                 tool_registry,
             )?;
             results.insert(node_id, result);
+            if !preview_emitted {
+                if let Some(policy) = &preview_policy {
+                    if policy
+                        .required_nodes
+                        .iter()
+                        .all(|required| results.contains_key(required))
+                    {
+                        let preview = select_bound_workflow_output(&policy.output, &results)
+                            .ok_or_else(|| WorkflowRuntimeError::InvalidPreviewPolicy {
+                                workflow_id: workflow_id.to_owned(),
+                                reason: format!(
+                                    "node `{}` did not produce output `{}`",
+                                    policy.output.node_id, policy.output.output
+                                ),
+                            })?;
+                        preview_callback(preview);
+                        preview_emitted = true;
+                    }
+                }
+            }
         }
     }
 
@@ -173,6 +257,174 @@ fn execute_workflow_tool(
         workflow_bindings.and_then(|bindings| bindings.primary_output.as_ref()),
         &results,
     ))
+}
+
+#[derive(Debug)]
+struct WorkflowPreviewPolicy {
+    output: WorkflowOutputBinding,
+    required_nodes: BTreeSet<String>,
+    priority_nodes: BTreeSet<String>,
+}
+
+fn validate_preview_policy(
+    workflow_id: &str,
+    workflow: &StoredWorkflow,
+    bindings: &WorkflowExecutionBindings,
+    preview_output: &WorkflowOutputBinding,
+    tool_registry: &ToolRegistry,
+) -> WorkflowRuntimeResult<WorkflowPreviewPolicy> {
+    let nodes = workflow
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<HashMap<_, _>>();
+    let preview_node = nodes.get(preview_output.node_id.as_str()).ok_or_else(|| {
+        WorkflowRuntimeError::InvalidPreviewPolicy {
+            workflow_id: workflow_id.to_owned(),
+            reason: format!("preview node `{}` does not exist", preview_output.node_id),
+        }
+    })?;
+
+    if !preview_output.output.trim().is_empty()
+        && !is_sticker_art(&preview_node.uses)
+        && !loom_native_image::is_native_art_id(&preview_node.uses)
+    {
+        if let Some(tool) = tool_registry.get_tool(&preview_node.uses)? {
+            let output_names = tool
+                .outputs
+                .iter()
+                .filter_map(|output| output.get("name").and_then(JsonValue::as_str))
+                .collect::<BTreeSet<_>>();
+            if !output_names.is_empty() && !output_names.contains(preview_output.output.as_str()) {
+                return Err(WorkflowRuntimeError::InvalidPreviewPolicy {
+                    workflow_id: workflow_id.to_owned(),
+                    reason: format!(
+                        "node `{}` has no output `{}`",
+                        preview_output.node_id, preview_output.output
+                    ),
+                });
+            }
+        }
+    }
+
+    let mut required_nodes = bindings
+        .preview_required_nodes
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    required_nodes.insert(preview_output.node_id.clone());
+    if let Some(missing) = required_nodes
+        .iter()
+        .find(|node_id| !nodes.contains_key(node_id.as_str()))
+    {
+        return Err(WorkflowRuntimeError::InvalidPreviewPolicy {
+            workflow_id: workflow_id.to_owned(),
+            reason: format!("required node `{missing}` does not exist"),
+        });
+    }
+
+    let mut priority_nodes = required_nodes.clone();
+    let mut stack = required_nodes.iter().cloned().collect::<Vec<_>>();
+    while let Some(node_id) = stack.pop() {
+        let node = nodes.get(node_id.as_str()).ok_or_else(|| {
+            WorkflowRuntimeError::InvalidPreviewPolicy {
+                workflow_id: workflow_id.to_owned(),
+                reason: format!("preview dependency `{node_id}` does not exist"),
+            }
+        })?;
+        for dependency in &node.needs {
+            if !nodes.contains_key(dependency.as_str()) {
+                return Err(WorkflowRuntimeError::InvalidPreviewPolicy {
+                    workflow_id: workflow_id.to_owned(),
+                    reason: format!("preview dependency `{dependency}` does not exist"),
+                });
+            }
+            if priority_nodes.insert(dependency.clone()) {
+                stack.push(dependency.clone());
+            }
+        }
+    }
+
+    Ok(WorkflowPreviewPolicy {
+        output: preview_output.clone(),
+        required_nodes,
+        priority_nodes,
+    })
+}
+
+fn normalize_workflow_image_input_bindings(
+    workflow: &StoredWorkflow,
+    bindings: &WorkflowExecutionBindings,
+) -> WorkflowExecutionBindings {
+    let mut normalized = bindings.clone();
+    let mut binding_indices = normalized
+        .inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, binding)| binding.kind == "input_image")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if binding_indices.len() < 2 {
+        return normalized;
+    }
+
+    binding_indices
+        .sort_by_key(|index| workflow_image_param_order(&normalized.inputs[*index].workflow_param));
+    let mut targets = binding_indices
+        .iter()
+        .map(|index| {
+            let binding = &normalized.inputs[*index];
+            (
+                binding.node_id.clone(),
+                binding.target.clone(),
+                workflow_image_node_role(workflow, &binding.node_id),
+            )
+        })
+        .collect::<Vec<_>>();
+    if targets.iter().all(|(_, _, role)| *role == 1) {
+        return normalized;
+    }
+    targets.sort_by_key(|(_, _, role)| *role);
+
+    for (binding_index, (node_id, target, _)) in binding_indices.into_iter().zip(targets) {
+        normalized.inputs[binding_index].node_id = node_id;
+        normalized.inputs[binding_index].target = target;
+    }
+    normalized
+}
+
+fn workflow_image_param_order(param: &str) -> usize {
+    if param == "input" {
+        return 0;
+    }
+    param
+        .strip_prefix("input_")
+        .and_then(|suffix| suffix.parse::<usize>().ok())
+        .unwrap_or(usize::MAX)
+}
+
+fn workflow_image_node_role(workflow: &StoredWorkflow, node_id: &str) -> u8 {
+    let reference = format!("nodes.{node_id}.outputs.");
+    workflow
+        .nodes
+        .iter()
+        .flat_map(|node| node.params.iter())
+        .filter_map(|(target, value)| {
+            value
+                .as_str()
+                .filter(|value| value.contains(&reference))
+                .map(|_| workflow_image_target_role(target))
+        })
+        .min()
+        .unwrap_or(1)
+}
+
+fn workflow_image_target_role(target: &str) -> u8 {
+    match target.trim().to_ascii_lowercase().as_str() {
+        "input" | "image" | "input_image" | "source" | "source_image" => 0,
+        "reference" | "reference_image" | "ref" | "style" | "style_image" => 2,
+        _ => 1,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -187,42 +439,39 @@ fn execute_workflow_node(
     workflow_store: &WorkflowStore,
     tool_registry: &ToolRegistry,
 ) -> WorkflowRuntimeResult<JsonValue> {
-    let mut child_args = JsonMap::new();
-    let mut child_input = None;
+    let (mut child_args, mut child_input) = resolve_node_params(node, results);
 
-    for (target, raw_value) in &node.params {
-        let json_value = yaml_value_to_json(raw_value);
-        if let Some(reference) = json_value.as_str() {
-            if let Some(resolved) = resolve_workflow_reference(reference, results) {
-                if let Some(image) = json_value_as_image(&resolved) {
-                    if child_input.is_none() {
-                        child_input = Some(image);
-                    } else {
-                        insert_child_argument(&mut child_args, target, resolved);
-                    }
-                } else {
-                    insert_child_argument(&mut child_args, target, resolved);
-                }
-                continue;
-            }
-        }
+    let missing_explicit_image_binding = workflow_bindings
+        .map(|bindings| {
+            apply_input_bindings(
+                bindings,
+                node,
+                root_arguments,
+                root_input,
+                &mut child_input,
+                &mut child_args,
+            )
+        })
+        .unwrap_or(false);
 
-        insert_child_argument(&mut child_args, target, json_value);
-    }
-
-    if let Some(bindings) = workflow_bindings {
-        apply_input_bindings(
-            bindings,
-            node,
-            root_arguments,
-            root_input,
-            &mut child_input,
-            &mut child_args,
-        );
+    if missing_explicit_image_binding {
+        return Err(WorkflowRuntimeError::MissingImageInput {
+            workflow_id: workflow_id.to_owned(),
+            node_id: node.id.clone(),
+        });
     }
 
     if child_input.is_none() {
         child_input = extract_root_input(&JsonValue::Object(child_args.clone()));
+    }
+    if child_input.is_none() {
+        // Hook canvas edges are serialized as `needs`. When the node has no
+        // explicit input binding, keep the visual pipeline semantics by
+        // forwarding the first upstream image along that edge.
+        child_input = node
+            .needs
+            .iter()
+            .find_map(|dependency| results.get(dependency).and_then(json_value_as_image));
     }
     if child_input.is_none() && node.needs.is_empty() {
         child_input = root_input.clone();
@@ -231,7 +480,8 @@ fn execute_workflow_node(
         child_input = node
             .meta
             .as_ref()
-            .and_then(|meta| meta.preview_src.clone().or_else(|| meta.src.clone()));
+            .and_then(|meta| meta.preview_src.as_deref().or(meta.src.as_deref()))
+            .and_then(normalize_image_reference);
     }
 
     if let Some(input) = &child_input {
@@ -288,6 +538,36 @@ fn execute_workflow_node(
     )
 }
 
+fn resolve_node_params(
+    node: &StoredWorkflowNode,
+    results: &HashMap<String, JsonValue>,
+) -> (JsonMap<String, JsonValue>, Option<String>) {
+    let mut child_args = JsonMap::new();
+    let mut child_input = None;
+
+    for (target, raw_value) in &node.params {
+        let json_value = yaml_value_to_json(raw_value);
+        if let Some(reference) = json_value.as_str() {
+            if let Some(resolved) = resolve_workflow_reference(reference, results) {
+                if let Some(image) = json_value_as_image(&resolved) {
+                    if child_input.is_none() {
+                        child_input = Some(image);
+                    } else {
+                        insert_child_argument(&mut child_args, target, resolved);
+                    }
+                } else {
+                    insert_child_argument(&mut child_args, target, resolved);
+                }
+                continue;
+            }
+        }
+
+        insert_child_argument(&mut child_args, target, json_value);
+    }
+
+    (child_args, child_input)
+}
+
 fn apply_input_bindings(
     bindings: &WorkflowExecutionBindings,
     node: &StoredWorkflowNode,
@@ -295,7 +575,9 @@ fn apply_input_bindings(
     root_input: &Option<String>,
     child_input: &mut Option<String>,
     child_args: &mut JsonMap<String, JsonValue>,
-) {
+) -> bool {
+    let mut missing_image_binding = false;
+
     for binding in bindings
         .inputs
         .iter()
@@ -305,6 +587,8 @@ fn apply_input_bindings(
             "input_image" => {
                 if let Some(value) = bound_argument_as_image(binding, root_arguments, root_input) {
                     *child_input = Some(value);
+                } else {
+                    missing_image_binding = true;
                 }
             }
             "input_value" | "param" => {
@@ -319,15 +603,29 @@ fn apply_input_bindings(
             }
         }
     }
+
+    missing_image_binding
 }
 
 fn bound_argument_value(
     binding: &WorkflowInputBinding,
     root_arguments: &JsonValue,
 ) -> Option<JsonValue> {
-    root_arguments
-        .as_object()
-        .and_then(|arguments| arguments.get(&binding.workflow_param))
+    let arguments = root_arguments.as_object()?;
+    arguments
+        .get(&binding.workflow_param)
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(JsonValue::as_object)
+                .and_then(|params| params.get(&binding.workflow_param))
+        })
+        .or_else(|| {
+            arguments
+                .get("inputs")
+                .and_then(JsonValue::as_object)
+                .and_then(|inputs| inputs.get(&binding.workflow_param))
+        })
         .cloned()
 }
 
@@ -354,13 +652,8 @@ fn select_workflow_output(
     results: &HashMap<String, JsonValue>,
 ) -> JsonValue {
     if let Some(primary_output) = primary_output {
-        if let Some(result) = results.get(&primary_output.node_id) {
-            if primary_output.kind == "node_result" {
-                return result.clone();
-            }
-            if let Some(output) = extract_named_output(result, &primary_output.output) {
-                return value_to_content_response(output);
-            }
+        if let Some(output) = select_bound_workflow_output(primary_output, results) {
+            return output;
         }
     }
 
@@ -381,6 +674,19 @@ fn select_workflow_output(
     }
 
     text_content_response(&format!("workflow `{workflow_id}` completed"))
+}
+
+fn select_bound_workflow_output(
+    binding: &WorkflowOutputBinding,
+    results: &HashMap<String, JsonValue>,
+) -> Option<JsonValue> {
+    let result = results.get(&binding.node_id)?;
+    if !binding.output.trim().is_empty() {
+        if let Some(output) = extract_named_output(result, &binding.output) {
+            return Some(value_to_content_response(output));
+        }
+    }
+    (binding.kind == "node_result").then(|| result.clone())
 }
 
 fn resolve_workflow_reference(
@@ -536,8 +842,7 @@ fn extract_root_input(arguments: &JsonValue) -> Option<String> {
             object
                 .get(*key)
                 .and_then(JsonValue::as_str)
-                .filter(|value| is_image_like(value))
-                .map(str::to_owned)
+                .and_then(normalize_image_reference)
         })
         .or_else(|| {
             object
@@ -550,23 +855,39 @@ fn extract_root_input(arguments: &JsonValue) -> Option<String> {
                             .map(str::to_owned)
                     })
                 })
-                .filter(|value| is_image_like(value))
+                .and_then(|value| normalize_image_reference(&value))
         })
 }
 
 fn json_value_as_image(value: &JsonValue) -> Option<String> {
     value
         .as_str()
-        .filter(|value| is_image_like(value))
-        .map(str::to_owned)
+        .and_then(normalize_image_reference)
         .or_else(|| {
             value
                 .get("data")
                 .and_then(JsonValue::as_str)
-                .filter(|value| is_image_like(value))
-                .map(str::to_owned)
+                .and_then(normalize_image_reference)
         })
-        .or_else(|| extract_image_output(value))
+        .or_else(|| {
+            extract_image_output(value)
+                .as_deref()
+                .and_then(normalize_image_reference)
+        })
+}
+
+fn normalize_image_reference(value: &str) -> Option<String> {
+    let value = value.trim();
+    if is_image_like(value) {
+        return Some(value.to_owned());
+    }
+
+    let path = Path::new(value);
+    if !path.is_file() {
+        return None;
+    }
+
+    loom_image_io::read_image_path_as_data_url(path).ok()
 }
 
 fn is_sticker_art(uses: &str) -> bool {
@@ -616,12 +937,12 @@ fn text_content_response(text: &str) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use loom_tool_registry::{
         ToolDefinition, ToolExecution, ToolRegistry, WorkflowExecutionBindings,
-        WorkflowOutputBinding,
+        WorkflowInputBinding, WorkflowOutputBinding,
     };
     use loom_workflow_store::WorkflowStore;
     use serde_json::json;
@@ -629,6 +950,7 @@ mod tests {
     use super::*;
 
     const TEST_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpH7DwABpAE8k4sOtwAAAABJRU5ErkJggg==";
+    const TEST_REFERENCE_IMAGE: &str = "data:image/png;base64,cmVmZXJlbmNlLWltYWdl";
 
     fn temp_root(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -638,19 +960,6 @@ mod tests {
         let root = std::env::temp_dir().join(format!("loom-workflow-runtime-{name}-{nonce}"));
         fs::create_dir_all(&root).expect("create temp workflow runtime root");
         root
-    }
-
-    fn save_script_tool(registry: &ToolRegistry, script_path: &Path) {
-        registry
-            .save_tool(ToolDefinition::new(
-                "fixture-script",
-                "Fixture Script",
-                "Script child",
-                ToolExecution::Script {
-                    path: script_path.display().to_string(),
-                },
-            ))
-            .expect("save script tool");
     }
 
     fn workflow_tool(workflow_id: &str) -> ToolDefinition {
@@ -665,135 +974,27 @@ mod tests {
         )
     }
 
-    #[test]
-    fn workflow_tool_executes_saved_script_child() {
-        let root = temp_root("script-child");
-        let workflow_store = WorkflowStore::new(root.join("workflows"));
-        let tool_registry = ToolRegistry::new(root.join("tools"));
-        let script_path = write_script_fixture(&root);
-        save_script_tool(&tool_registry, &script_path);
-        workflow_store
-            .save_workflow(
-                "runtime-flow",
-                r#"name: Runtime Flow
-nodes:
-  - id: prompt
-    uses: fixture-script
-    with:
-      text: hello workflow runtime
-"#,
-            )
-            .expect("save workflow");
-
-        let result = execute_tool_with_workflows(
-            &workflow_tool("runtime-flow"),
-            &[],
-            &workflow_store,
-            &tool_registry,
-            json!({}),
-        )
-        .expect("execute workflow tool");
-
-        assert_eq!(result["content"][0]["type"], "text");
-        assert_eq!(
-            result["content"][0]["text"],
-            "script saw hello workflow runtime"
-        );
-        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
-    }
-
-    #[test]
-    fn workflow_runtime_resolves_node_output_reference() {
-        let root = temp_root("reference");
-        let workflow_store = WorkflowStore::new(root.join("workflows"));
-        let tool_registry = ToolRegistry::new(root.join("tools"));
-        let script_path = write_script_fixture(&root);
-        save_script_tool(&tool_registry, &script_path);
-        workflow_store
-            .save_workflow(
-                "reference-flow",
-                r#"name: Reference Flow
-nodes:
-  - id: prompt
-    uses: fixture-script
-    with:
-      text: hello reference
-  - id: followup
-    uses: fixture-script
-    needs:
-      - prompt
-    with:
-      text: ${{ nodes.prompt.outputs.text }}
-"#,
-            )
-            .expect("save workflow");
-
-        let result = execute_tool_with_workflows(
-            &workflow_tool("reference-flow"),
-            &[],
-            &workflow_store,
-            &tool_registry,
-            json!({}),
-        )
-        .expect("execute workflow tool");
-
-        assert_eq!(result["content"][0]["type"], "text");
-        assert_eq!(
-            result["content"][0]["text"],
-            "script saw script saw hello reference"
-        );
-        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
-    }
-
-    #[test]
-    fn workflow_runtime_primary_output_binding_selects_configured_node() {
-        let root = temp_root("primary-output");
-        let workflow_store = WorkflowStore::new(root.join("workflows"));
-        let tool_registry = ToolRegistry::new(root.join("tools"));
-        let script_path = write_script_fixture(&root);
-        save_script_tool(&tool_registry, &script_path);
-        workflow_store
-            .save_workflow(
-                "primary-flow",
-                r#"name: Primary Flow
-nodes:
-  - id: prompt
-    uses: fixture-script
-    with:
-      text: first output
-  - id: tail
-    uses: fixture-script
-    needs:
-      - prompt
-    with:
-      text: second output
-"#,
-            )
-            .expect("save workflow");
-        let tool = ToolDefinition::new(
+    fn workflow_tool_with_bindings(
+        workflow_id: &str,
+        bindings: WorkflowExecutionBindings,
+    ) -> ToolDefinition {
+        ToolDefinition::new(
             "fixture-workflow",
             "Fixture Workflow",
             "Workflow child runner",
             ToolExecution::Workflow {
-                workflow_id: "primary-flow".to_owned(),
-                workflow_bindings: Some(WorkflowExecutionBindings {
-                    inputs: vec![],
-                    primary_output: Some(WorkflowOutputBinding {
-                        node_id: "prompt".to_owned(),
-                        output: "text".to_owned(),
-                        kind: "node_result".to_owned(),
-                    }),
-                }),
+                workflow_id: workflow_id.to_owned(),
+                workflow_bindings: Some(bindings),
             },
-        );
+        )
+    }
 
-        let result =
-            execute_tool_with_workflows(&tool, &[], &workflow_store, &tool_registry, json!({}))
-                .expect("execute workflow tool");
-
-        assert_eq!(result["content"][0]["type"], "text");
-        assert_eq!(result["content"][0]["text"], "script saw first output");
-        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    fn output_binding(node_id: &str, output: &str) -> WorkflowOutputBinding {
+        WorkflowOutputBinding {
+            node_id: node_id.to_owned(),
+            output: output.to_owned(),
+            kind: "node_result".to_owned(),
+        }
     }
 
     #[test]
@@ -827,70 +1028,618 @@ nodes:
         fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
     }
 
-    #[cfg(windows)]
     #[test]
-    fn workflow_runtime_executes_image_blend_then_cli_compress_with_bound_inputs_and_params() {
-        let root = temp_root("image-blend-compress");
+    fn workflow_runtime_forwards_images_across_needs_edges() {
+        let root = temp_root("implicit-image-edges");
         let workflow_store = WorkflowStore::new(root.join("workflows"));
         let tool_registry = ToolRegistry::new(root.join("tools"));
-        let workflow_yaml =
-            fs::read_to_string(workspace_image_blend_compress_resource("workflow.yaml"))
-                .expect("read image blend compress workflow");
-        let workflow_tool: ToolDefinition = serde_json::from_str(
-            &fs::read_to_string(workspace_image_blend_compress_resource("manifest.json"))
-                .expect("read image blend compress manifest"),
-        )
-        .expect("parse image blend compress manifest");
-
-        tool_registry
-            .save_tool(ToolDefinition::new(
-                "custom-image-blend-script",
-                "Fixture Image Blend",
-                "Production image blend script child",
-                ToolExecution::Script {
-                    path: workspace_image_blend_script().display().to_string(),
-                },
-            ))
-            .expect("save production image blend script tool");
-        let (compress_script, compress_evidence) = write_cli_image_copy_fixture(&root);
-        save_fixture_compress_tool(&tool_registry, &compress_script, &compress_evidence);
         workflow_store
-            .save_workflow("image-blend-compress-workflow", &workflow_yaml)
-            .expect("save image blend compress workflow");
+            .save_workflow(
+                "sticker-chain",
+                r#"name: Sticker Chain
+nodes:
+  - id: a
+    uses: sticker
+  - id: b
+    uses: sticker
+    needs: [a]
+  - id: c
+    uses: sticker
+    needs: [b]
+"#,
+            )
+            .expect("save workflow");
 
-        let source = loom_image_io::rgba8_to_png_data_url(1, 1, &[240, 60, 0, 255])
-            .expect("encode workflow source image");
-        let reference = loom_image_io::rgba8_to_png_data_url(1, 1, &[40, 160, 200, 255])
-            .expect("encode workflow reference image");
         let result = execute_tool_with_workflows(
-            &workflow_tool,
+            &workflow_tool("sticker-chain"),
+            &[],
+            &workflow_store,
+            &tool_registry,
+            json!({ "input_base64": TEST_IMAGE }),
+        )
+        .expect("execute sticker chain");
+
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["data"], TEST_IMAGE);
+        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    }
+
+    #[test]
+    fn workflow_runtime_emits_preview_before_non_required_formal_failure() {
+        let root = temp_root("preview-before-final");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        workflow_store
+            .save_workflow(
+                "preview-before-final",
+                r#"name: Preview Before Final
+nodes:
+  - id: formal
+    uses: missing-formal-tool
+  - id: preview
+    uses: sticker
+"#,
+            )
+            .expect("save workflow");
+        let bindings = WorkflowExecutionBindings {
+            preview_output: Some(output_binding("preview", "output_image")),
+            preview_required_nodes: vec!["preview".to_owned()],
+            primary_output: Some(output_binding("formal", "result")),
+            ..WorkflowExecutionBindings::default()
+        };
+        let mut previews = Vec::new();
+
+        let error = execute_tool_with_workflows_and_preview(
+            &workflow_tool_with_bindings("preview-before-final", bindings),
+            &[],
+            &workflow_store,
+            &tool_registry,
+            json!({ "input_base64": TEST_IMAGE }),
+            |preview| previews.push(preview),
+        )
+        .expect_err("formal node should still execute and fail");
+
+        assert!(matches!(
+            error,
+            WorkflowRuntimeError::ChildToolNotFound { .. }
+        ));
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0]["content"][0]["data"], TEST_IMAGE);
+        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    }
+
+    #[test]
+    fn workflow_runtime_required_node_blocks_preview() {
+        let root = temp_root("required-blocks-preview");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        workflow_store
+            .save_workflow(
+                "required-blocks-preview",
+                r#"name: Required Blocks Preview
+nodes:
+  - id: required
+    uses: missing-required-tool
+  - id: preview
+    uses: sticker
+"#,
+            )
+            .expect("save workflow");
+        let bindings = WorkflowExecutionBindings {
+            preview_output: Some(output_binding("preview", "output_image")),
+            preview_required_nodes: vec!["required".to_owned(), "preview".to_owned()],
+            ..WorkflowExecutionBindings::default()
+        };
+        let mut previews = Vec::new();
+
+        let error = execute_tool_with_workflows_and_preview(
+            &workflow_tool_with_bindings("required-blocks-preview", bindings),
+            &[],
+            &workflow_store,
+            &tool_registry,
+            json!({ "input_base64": TEST_IMAGE }),
+            |preview| previews.push(preview),
+        )
+        .expect_err("required node should fail before preview publication");
+
+        assert!(matches!(
+            error,
+            WorkflowRuntimeError::ChildToolNotFound { .. }
+        ));
+        assert!(previews.is_empty());
+        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    }
+
+    #[test]
+    fn workflow_runtime_keeps_preview_and_formal_outputs_separate() {
+        let root = temp_root("separate-preview-formal");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        workflow_store
+            .save_workflow(
+                "separate-preview-formal",
+                r#"name: Separate Preview And Formal
+nodes:
+  - id: preview
+    uses: sticker
+  - id: formal
+    uses: sticker
+"#,
+            )
+            .expect("save workflow");
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![
+                WorkflowInputBinding {
+                    workflow_param: "input".to_owned(),
+                    node_id: "preview".to_owned(),
+                    target: "image".to_owned(),
+                    kind: "input_image".to_owned(),
+                },
+                WorkflowInputBinding {
+                    workflow_param: "input_2".to_owned(),
+                    node_id: "formal".to_owned(),
+                    target: "image".to_owned(),
+                    kind: "input_image".to_owned(),
+                },
+            ],
+            primary_output: Some(output_binding("formal", "output_image")),
+            preview_output: Some(output_binding("preview", "output_image")),
+            preview_required_nodes: vec!["preview".to_owned()],
+        };
+        let mut previews = Vec::new();
+
+        let result = execute_tool_with_workflows_and_preview(
+            &workflow_tool_with_bindings("separate-preview-formal", bindings),
             &[],
             &workflow_store,
             &tool_registry,
             json!({
-                "input_base64": source,
-                "reference": reference,
-                "mix_ratio": 25,
-                "quality_num": 73
+                "input": TEST_IMAGE,
+                "input_2": TEST_REFERENCE_IMAGE,
             }),
+            |preview| previews.push(preview),
         )
-        .expect("execute image blend compress workflow");
+        .expect("execute workflow");
 
-        assert_eq!(result["content"][0]["type"], "image");
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            result["content"][0]["data"]
-                .as_str()
-                .expect("workflow image output data"),
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0]["content"][0]["data"], TEST_IMAGE);
+        assert_eq!(result["content"][0]["data"], TEST_REFERENCE_IMAGE);
+        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    }
+
+    #[test]
+    fn workflow_runtime_without_preview_binding_keeps_single_result_behavior() {
+        let root = temp_root("no-preview-binding");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        workflow_store
+            .save_workflow(
+                "no-preview-binding",
+                "name: No Preview\nnodes:\n  - id: only\n    uses: sticker\n",
+            )
+            .expect("save workflow");
+        let mut preview_count = 0;
+
+        let result = execute_tool_with_workflows_and_preview(
+            &workflow_tool("no-preview-binding"),
+            &[],
+            &workflow_store,
+            &tool_registry,
+            json!({ "input_base64": TEST_IMAGE }),
+            |_| preview_count += 1,
         )
-        .expect("decode workflow image output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-        assert_eq!(output.data, vec![190, 85, 50, 255]);
-        assert_eq!(
-            fs::read_to_string(&compress_evidence).expect("read compression evidence"),
-            "73"
+        .expect("execute workflow");
+
+        assert_eq!(preview_count, 0);
+        assert_eq!(result["content"][0]["data"], TEST_IMAGE);
+        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    }
+
+    #[test]
+    fn workflow_runtime_rejects_invalid_preview_node_and_port() {
+        let root = temp_root("invalid-preview-policy");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        workflow_store
+            .save_workflow(
+                "invalid-preview-policy",
+                "name: Invalid Preview\nnodes:\n  - id: child\n    uses: child-tool\n",
+            )
+            .expect("save workflow");
+        let mut child = ToolDefinition::new(
+            "child-tool",
+            "Child Tool",
+            "Preview output fixture",
+            ToolExecution::CloudApi {
+                endpoint: "https://example.invalid".to_owned(),
+                method: "GET".to_owned(),
+                content_type: None,
+                headers: None,
+                body: None,
+            },
         );
-        fs::remove_dir_all(root).expect("cleanup image blend compress workflow root");
+        child.outputs = vec![json!({ "name": "image", "type": "image" })];
+        tool_registry.save_tool(child).expect("save child tool");
+
+        for (node_id, output) in [("missing", "image"), ("child", "missing-output")] {
+            let bindings = WorkflowExecutionBindings {
+                preview_output: Some(output_binding(node_id, output)),
+                ..WorkflowExecutionBindings::default()
+            };
+            let error = execute_tool_with_workflows_and_preview(
+                &workflow_tool_with_bindings("invalid-preview-policy", bindings),
+                &[],
+                &workflow_store,
+                &tool_registry,
+                json!({}),
+                |_| panic!("invalid preview policy must not emit"),
+            )
+            .expect_err("invalid preview policy");
+            assert!(matches!(
+                error,
+                WorkflowRuntimeError::InvalidPreviewPolicy { .. }
+            ));
+        }
+        fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
+    }
+
+    #[test]
+    fn workflow_runtime_preserves_named_secondary_image_references() {
+        let node = StoredWorkflowNode {
+            id: "color".to_owned(),
+            uses: "color-transfer".to_owned(),
+            needs: vec!["input-source".to_owned(), "reference-source".to_owned()],
+            params: BTreeMap::from([
+                (
+                    "input".to_owned(),
+                    serde_yaml::Value::String(
+                        "${{ nodes.input-source.outputs.output_image }}".to_owned(),
+                    ),
+                ),
+                (
+                    "reference".to_owned(),
+                    serde_yaml::Value::String(
+                        "${{ nodes.reference-source.outputs.output_image }}".to_owned(),
+                    ),
+                ),
+            ]),
+            meta: None,
+        };
+        let results = HashMap::from([
+            (
+                "input-source".to_owned(),
+                image_content_response(TEST_IMAGE, "image/png"),
+            ),
+            (
+                "reference-source".to_owned(),
+                image_content_response(TEST_REFERENCE_IMAGE, "image/png"),
+            ),
+        ]);
+
+        let (mut child_args, child_input) = resolve_node_params(&node, &results);
+        assert_eq!(child_input.as_deref(), Some(TEST_IMAGE));
+        assert_eq!(
+            child_args.get("reference"),
+            Some(&JsonValue::String(TEST_REFERENCE_IMAGE.to_owned()))
+        );
+        insert_child_input(
+            &mut child_args,
+            child_input.as_deref().expect("primary image input"),
+        );
+        assert_eq!(
+            child_args.get("input"),
+            Some(&JsonValue::String(TEST_IMAGE.to_owned()))
+        );
+    }
+
+    #[test]
+    fn legacy_reversed_workflow_image_bindings_follow_workflow_semantics() {
+        let workflow = StoredWorkflow {
+            nodes: vec![StoredWorkflowNode {
+                id: "transfer".to_owned(),
+                uses: "color-transfer".to_owned(),
+                needs: vec!["input-source".to_owned(), "reference-source".to_owned()],
+                params: BTreeMap::from([
+                    (
+                        "input".to_owned(),
+                        serde_yaml::Value::String(
+                            "${{ nodes.input-source.outputs.output_image }}".to_owned(),
+                        ),
+                    ),
+                    (
+                        "reference".to_owned(),
+                        serde_yaml::Value::String(
+                            "${{ nodes.reference-source.outputs.output_image }}".to_owned(),
+                        ),
+                    ),
+                ]),
+                meta: None,
+            }],
+        };
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![
+                WorkflowInputBinding {
+                    workflow_param: "input".to_owned(),
+                    node_id: "reference-source".to_owned(),
+                    target: "image".to_owned(),
+                    kind: "input_image".to_owned(),
+                },
+                WorkflowInputBinding {
+                    workflow_param: "strength".to_owned(),
+                    node_id: "transfer".to_owned(),
+                    target: "strength".to_owned(),
+                    kind: "param".to_owned(),
+                },
+                WorkflowInputBinding {
+                    workflow_param: "input_2".to_owned(),
+                    node_id: "input-source".to_owned(),
+                    target: "image".to_owned(),
+                    kind: "input_image".to_owned(),
+                },
+            ],
+            primary_output: None,
+            ..WorkflowExecutionBindings::default()
+        };
+
+        let normalized = normalize_workflow_image_input_bindings(&workflow, &bindings);
+
+        assert_eq!(normalized.inputs[0].node_id, "input-source");
+        assert_eq!(normalized.inputs[0].target, "image");
+        assert_eq!(normalized.inputs[1], bindings.inputs[1]);
+        assert_eq!(normalized.inputs[2].node_id, "reference-source");
+        assert_eq!(normalized.inputs[2].target, "image");
+    }
+
+    #[test]
+    fn ambiguous_workflow_image_bindings_are_left_unchanged() {
+        let workflow = StoredWorkflow {
+            nodes: vec![StoredWorkflowNode {
+                id: "consumer".to_owned(),
+                uses: "fixture".to_owned(),
+                needs: vec!["first".to_owned(), "second".to_owned()],
+                params: BTreeMap::from([
+                    (
+                        "mask".to_owned(),
+                        serde_yaml::Value::String("${{ nodes.first.outputs.image }}".to_owned()),
+                    ),
+                    (
+                        "overlay".to_owned(),
+                        serde_yaml::Value::String("${{ nodes.second.outputs.image }}".to_owned()),
+                    ),
+                ]),
+                meta: None,
+            }],
+        };
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![
+                WorkflowInputBinding {
+                    workflow_param: "input".to_owned(),
+                    node_id: "second".to_owned(),
+                    target: "image".to_owned(),
+                    kind: "input_image".to_owned(),
+                },
+                WorkflowInputBinding {
+                    workflow_param: "input_2".to_owned(),
+                    node_id: "first".to_owned(),
+                    target: "image".to_owned(),
+                    kind: "input_image".to_owned(),
+                },
+            ],
+            primary_output: None,
+            ..WorkflowExecutionBindings::default()
+        };
+
+        assert_eq!(
+            normalize_workflow_image_input_bindings(&workflow, &bindings),
+            bindings
+        );
+    }
+
+    #[test]
+    fn workflow_param_binding_overrides_baked_value_from_nested_params() {
+        let node = StoredWorkflowNode {
+            id: "transfer".to_owned(),
+            uses: "color-transfer".to_owned(),
+            needs: vec![],
+            params: BTreeMap::from([("strength".to_owned(), serde_yaml::Value::Number(20.into()))]),
+            meta: None,
+        };
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![WorkflowInputBinding {
+                workflow_param: "strength".to_owned(),
+                node_id: node.id.clone(),
+                target: "strength".to_owned(),
+                kind: "param".to_owned(),
+            }],
+            primary_output: None,
+            ..WorkflowExecutionBindings::default()
+        };
+        let (mut child_args, mut child_input) = resolve_node_params(&node, &HashMap::new());
+
+        apply_input_bindings(
+            &bindings,
+            &node,
+            &json!({ "params": { "strength": 87 } }),
+            &None,
+            &mut child_input,
+            &mut child_args,
+        );
+
+        assert_eq!(child_args.get("strength"), Some(&json!(87)));
+    }
+
+    #[test]
+    fn workflow_param_binding_keeps_baked_value_when_argument_is_missing() {
+        let node = StoredWorkflowNode {
+            id: "transfer".to_owned(),
+            uses: "color-transfer".to_owned(),
+            needs: vec![],
+            params: BTreeMap::from([("strength".to_owned(), serde_yaml::Value::Number(20.into()))]),
+            meta: None,
+        };
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![WorkflowInputBinding {
+                workflow_param: "strength".to_owned(),
+                node_id: node.id.clone(),
+                target: "strength".to_owned(),
+                kind: "param".to_owned(),
+            }],
+            primary_output: None,
+            ..WorkflowExecutionBindings::default()
+        };
+        let (mut child_args, mut child_input) = resolve_node_params(&node, &HashMap::new());
+
+        apply_input_bindings(
+            &bindings,
+            &node,
+            &json!({ "params": {} }),
+            &None,
+            &mut child_input,
+            &mut child_args,
+        );
+
+        assert_eq!(child_args.get("strength"), Some(&json!(20)));
+    }
+
+    #[test]
+    fn bound_workflow_argument_prefers_top_level_then_params_then_inputs() {
+        let binding = WorkflowInputBinding {
+            workflow_param: "strength".to_owned(),
+            node_id: "transfer".to_owned(),
+            target: "strength".to_owned(),
+            kind: "param".to_owned(),
+        };
+
+        assert_eq!(
+            bound_argument_value(
+                &binding,
+                &json!({
+                    "strength": 90,
+                    "params": { "strength": 80 },
+                    "inputs": { "strength": 70 }
+                }),
+            ),
+            Some(json!(90)),
+        );
+        assert_eq!(
+            bound_argument_value(
+                &binding,
+                &json!({
+                    "params": { "strength": 80 },
+                    "inputs": { "strength": 70 }
+                }),
+            ),
+            Some(json!(80)),
+        );
+        assert_eq!(
+            bound_argument_value(&binding, &json!({ "inputs": { "strength": 70 } })),
+            Some(json!(70)),
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_resolves_local_path_image_bindings() {
+        let root = temp_root("local-path-binding");
+        let reference_path = root.join("reference.png");
+        let reference_data = loom_image_io::rgba8_to_png_data_url(1, 1, &[10, 20, 30, 255])
+            .expect("encode reference fixture");
+        fs::write(
+            &reference_path,
+            loom_image_io::decode_data_url_bytes(&reference_data)
+                .expect("decode reference fixture"),
+        )
+        .expect("write reference fixture");
+
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        let node = StoredWorkflowNode {
+            id: "reference-source".to_owned(),
+            uses: "sticker".to_owned(),
+            needs: vec![],
+            params: BTreeMap::new(),
+            meta: None,
+        };
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![WorkflowInputBinding {
+                workflow_param: "input_2".to_owned(),
+                node_id: node.id.clone(),
+                target: "image".to_owned(),
+                kind: "input_image".to_owned(),
+            }],
+            primary_output: None,
+            ..WorkflowExecutionBindings::default()
+        };
+        let root_input = Some(TEST_IMAGE.to_owned());
+        let result = execute_workflow_node(
+            "local-path-flow",
+            &node,
+            Some(&bindings),
+            &root_input,
+            &json!({
+                "input_base64": TEST_IMAGE,
+                "input_2": reference_path.to_string_lossy()
+            }),
+            &HashMap::new(),
+            &[],
+            &workflow_store,
+            &tool_registry,
+        )
+        .expect("resolve local path binding");
+
+        let output = result["content"][0]["data"]
+            .as_str()
+            .expect("sticker image output");
+        let decoded =
+            loom_image_io::decode_image_base64_to_rgba8(output).expect("decode sticker output");
+        assert_eq!(decoded.data, vec![10, 20, 30, 255]);
+        fs::remove_dir_all(root).expect("cleanup local path binding root");
+    }
+
+    #[test]
+    fn workflow_runtime_rejects_missing_explicit_image_binding() {
+        let root = temp_root("missing-explicit-image-binding");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        let node = StoredWorkflowNode {
+            id: "reference-source".to_owned(),
+            uses: "sticker".to_owned(),
+            needs: vec![],
+            params: BTreeMap::new(),
+            meta: None,
+        };
+        let bindings = WorkflowExecutionBindings {
+            inputs: vec![WorkflowInputBinding {
+                workflow_param: "input_2".to_owned(),
+                node_id: node.id.clone(),
+                target: "image".to_owned(),
+                kind: "input_image".to_owned(),
+            }],
+            primary_output: None,
+            ..WorkflowExecutionBindings::default()
+        };
+        let root_input = Some(TEST_IMAGE.to_owned());
+
+        let error = execute_workflow_node(
+            "missing-binding-flow",
+            &node,
+            Some(&bindings),
+            &root_input,
+            &json!({ "input_base64": TEST_IMAGE }),
+            &HashMap::new(),
+            &[],
+            &workflow_store,
+            &tool_registry,
+        )
+        .expect_err("missing input_2 must not reuse the root input");
+
+        assert!(matches!(
+            error,
+            WorkflowRuntimeError::MissingImageInput {
+                workflow_id,
+                node_id
+            } if workflow_id == "missing-binding-flow" && node_id == "reference-source"
+        ));
+        fs::remove_dir_all(root).expect("cleanup missing binding root");
     }
 
     #[test]
@@ -924,170 +1673,5 @@ nodes:
 
         assert!(error.to_string().contains("unresolved dependencies"));
         fs::remove_dir_all(root).expect("cleanup temp workflow runtime root");
-    }
-
-    fn write_script_fixture(root: &Path) -> PathBuf {
-        #[cfg(windows)]
-        {
-            let script_path = root.join("fixture-script.ps1");
-            let source = r#"
-$ErrorActionPreference = "Stop"
-$payload = $args[0] | ConvertFrom-Json
-$arguments = $payload.arguments
-$image = $arguments.input_base64
-if (-not $image) { $image = $arguments.input }
-if (-not $image) { $image = $arguments.image }
-if ($image) {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "image"
-                data = [string]$image
-                mimeType = "image/png"
-            }
-        )
-    }
-} else {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "text"
-                text = "script saw $($arguments.text)"
-            }
-        )
-    }
-}
-[Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
-"#;
-            fs::write(&script_path, source).expect("write PowerShell script fixture");
-            script_path
-        }
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let script_path = root.join("fixture-script.sh");
-            let source = r#"#!/usr/bin/env sh
-python3 - "$1" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-arguments = payload.get("arguments", {})
-image = arguments.get("input_base64") or arguments.get("input") or arguments.get("image")
-if image:
-    response = {
-        "content": [
-            {
-                "type": "image",
-                "data": image,
-                "mimeType": "image/png",
-            }
-        ]
-    }
-else:
-    response = {
-        "content": [
-            {
-                "type": "text",
-                "text": "script saw " + str(arguments.get("text", "")),
-            }
-        ]
-    }
-print(json.dumps(response))
-PY
-"#;
-            fs::write(&script_path, source).expect("write shell script fixture");
-            let mut permissions = fs::metadata(&script_path)
-                .expect("script fixture metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&script_path, permissions).expect("make shell fixture executable");
-            script_path
-        }
-    }
-
-    #[cfg(windows)]
-    fn write_cli_image_copy_fixture(root: &Path) -> (PathBuf, PathBuf) {
-        let script_path = root.join("fixture-compress.ps1");
-        let evidence_path = root.join("compress-evidence.txt");
-        let source = r#"
-param(
-    [Parameter(Mandatory = $true)][string]$InputPath,
-    [Parameter(Mandatory = $true)][string]$OutputPath,
-    [Parameter(Mandatory = $true)][int]$Quality,
-    [Parameter(Mandatory = $true)][string]$EvidencePath
-)
-$ErrorActionPreference = "Stop"
-Copy-Item -LiteralPath $InputPath -Destination $OutputPath -Force
-[System.IO.File]::WriteAllText(
-    $EvidencePath,
-    [string]$Quality,
-    [System.Text.UTF8Encoding]::new($false)
-)
-"#;
-        fs::write(&script_path, source).expect("write CLI image copy fixture");
-        (script_path, evidence_path)
-    }
-
-    #[cfg(windows)]
-    fn save_fixture_compress_tool(
-        registry: &ToolRegistry,
-        script_path: &Path,
-        evidence_path: &Path,
-    ) {
-        registry
-            .save_tool(ToolDefinition::new(
-                "custom-1770146354922",
-                "Fixture Image Compress",
-                "Deterministic cli_wrapper child for workflow tests",
-                ToolExecution::CliWrapper {
-                    command: "powershell.exe".to_owned(),
-                    args: vec![
-                        "-NoProfile".to_owned(),
-                        "-ExecutionPolicy".to_owned(),
-                        "Bypass".to_owned(),
-                        "-File".to_owned(),
-                        script_path.display().to_string(),
-                        "-InputPath".to_owned(),
-                        "{{input}}".to_owned(),
-                        "-OutputPath".to_owned(),
-                        "{{output}}".to_owned(),
-                        "-Quality".to_owned(),
-                        "{{quality_num}}".to_owned(),
-                        "-EvidencePath".to_owned(),
-                        evidence_path.display().to_string(),
-                    ],
-                },
-            ))
-            .expect("save fixture compression tool");
-    }
-
-    fn workspace_image_blend_compress_resource(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let path = candidate
-                    .join("resources")
-                    .join("workflow-arts")
-                    .join("image-blend-compress")
-                    .join(name);
-                path.exists().then_some(path)
-            })
-            .unwrap_or_else(|| panic!("locate image-blend-compress resource `{name}`"))
-    }
-
-    fn workspace_image_blend_script() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let path = candidate
-                    .join("resources")
-                    .join("script-arts")
-                    .join("image-blend")
-                    .join("main.ps1");
-                path.exists().then_some(path)
-            })
-            .expect("locate production image blend script")
     }
 }

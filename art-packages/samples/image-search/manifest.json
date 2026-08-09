@@ -1,7 +1,7 @@
 {
   "id": "custom-image-search",
   "name": "图片搜索",
-  "description": "通过可插拔 MCP 框架搜索图片并返回可缓存的候选缩略图。",
+  "description": "通过 MCP 搜索图片并返回可缓存的候选缩略图。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -21,6 +21,7 @@
       "id": "query",
       "label": "搜索词",
       "widget": "text",
+      "required": true,
       "default": "",
       "data_type": "string"
     },
@@ -33,19 +34,42 @@
       "max": 6,
       "step": 1,
       "data_type": "number"
+    },
+    {
+      "id": "brave_api_key",
+      "label": "Brave API Key",
+      "type": "secret",
+      "required": true
     }
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "0.1.0",
+      "version": "0.2.1",
       "publisher": {
         "id": "neuro.official",
-        "name": "Neuro"
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/custom-image-search",
+      "englishName": "custom-image-search",
+      "globalId": "NA20260802003"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "图片搜索",
+        "en-US": "Image Search"
+      },
+      "descriptions": {
+        "zh-CN": "通过 MCP 搜索图片并返回可缓存的候选缩略图。",
+        "en-US": "Searches for images through MCP and returns cacheable thumbnail candidates."
       }
     },
     "dependencies": {
       "framework": "mcp",
-      "frameworkVersion": "^0.1"
+      "frameworkVersion": "^0.2"
     },
     "capabilities": {
       "preview": "image",
@@ -55,8 +79,18 @@
       "cache": "eager"
     },
     "mcp": {
-      "serverId": "package-image-search",
-      "toolName": "image_search"
+      "serverId": "brave-search",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@brave/brave-search-mcp-server",
+        "--transport",
+        "stdio"
+      ],
+      "toolName": "brave_image_search",
+      "credentialEnv": {
+        "BRAVE_API_KEY": "brave_api_key"
+      }
     }
   }
 }

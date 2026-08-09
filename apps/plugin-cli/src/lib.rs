@@ -333,13 +333,21 @@ fn sign_plugin_package(directory: &Path, key_path: &Path, publisher_id: &str) ->
         let metadata = metadata
             .as_object_mut()
             .ok_or_else(|| anyhow!("Art metadata must be an object"))?;
-        metadata.insert(
-            "packageSecurity".to_owned(),
-            json!({
-                "publisher": { "id": publisher_id, "keyId": key.key_id.clone() },
-                "signature": signature
-            }),
-        );
+        let security = metadata
+            .entry("packageSecurity".to_owned())
+            .or_insert_with(|| json!({}));
+        let security = security
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Art packageSecurity metadata must be an object"))?;
+        let publisher = security
+            .entry("publisher".to_owned())
+            .or_insert_with(|| json!({}));
+        let publisher = publisher
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Art publisher metadata must be an object"))?;
+        publisher.insert("id".to_owned(), json!(publisher_id));
+        publisher.insert("keyId".to_owned(), json!(key.key_id.clone()));
+        security.insert("signature".to_owned(), signature);
         write_pretty_json(path, &manifest)?;
     } else {
         bail!("package directory has no framework.manifest.json or manifest.json");
@@ -811,6 +819,40 @@ mod tests {
     fn bounded_reader_rejects_excess_output() {
         let bytes = vec![b'x'; MAX_CONFORMANCE_OUTPUT_BYTES + 1];
         assert!(read_bounded(Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
+    fn signing_art_preserves_existing_package_security_metadata() {
+        let root = temp_root("sign-art-metadata");
+        let art_dir = root.join("art-package");
+        let key_path = root.join("publisher-key.json");
+        init_art(&art_dir, "signed-art", "publisher.example/process").expect("init Art");
+
+        let manifest_path = art_dir.join("manifest.json");
+        let mut manifest: Value = read_json(&manifest_path).expect("read manifest");
+        manifest["metadata"]["packageSecurity"] = json!({
+            "version": "1.2.3",
+            "publisher": {
+                "id": "publisher.example",
+                "name": "Publisher Example",
+                "icon": "P"
+            }
+        });
+        write_pretty_json(manifest_path.clone(), &manifest).expect("write manifest");
+
+        let key = generate_signing_key("release-key-1");
+        write_signing_key(&key_path, &key).expect("write key");
+        sign_plugin_package(&art_dir, &key_path, "publisher.example").expect("sign Art");
+
+        let signed: Value = read_json(&manifest_path).expect("read signed manifest");
+        let security = &signed["metadata"]["packageSecurity"];
+        assert_eq!(security["version"], "1.2.3");
+        assert_eq!(security["publisher"]["name"], "Publisher Example");
+        assert_eq!(security["publisher"]["icon"], "P");
+        assert_eq!(security["publisher"]["keyId"], "release-key-1");
+        assert_eq!(security["signature"]["file"], "signature.json");
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

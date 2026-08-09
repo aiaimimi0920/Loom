@@ -1,7 +1,8 @@
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
     [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks",
-    [string]$ArtArtifactRoot = ".loom-art-store-data\arts"
+    [string]$ArtArtifactRoot = ".loom-art-store-data\arts",
+    [string]$LargeImagePath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +52,127 @@ function Install-Zip {
     return Invoke-LoomJson -Method Post -Url ($Url.TrimEnd('/') + $Prefix + "/install") -Body @{ zipBase64 = $encoded }
 }
 
+function Write-Utf8NoBomFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
+function New-ImageSearchFixturePackage {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceZip,
+        [Parameter(Mandatory = $true)][string]$DestinationZip,
+        [Parameter(Mandatory = $true)][string]$WorkRoot
+    )
+
+    $stage = Join-Path $WorkRoot "image-search-fixture"
+    Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
+    $serverPath = Join-Path $stage "runtime\fake-mcp-server.ps1"
+    $server = @'
+$ErrorActionPreference = "Stop"
+function Write-Message {
+    param([Parameter(Mandatory = $true)][object]$Value)
+    [Console]::Out.WriteLine(($Value | ConvertTo-Json -Depth 30 -Compress))
+    [Console]::Out.Flush()
+}
+
+$image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+    if ([string]::IsNullOrWhiteSpace($line)) {
+        continue
+    }
+    $request = $line | ConvertFrom-Json
+    $method = [string]$request.method
+    if ($method -eq "notifications/initialized") {
+        continue
+    }
+    if ($method -eq "initialize") {
+        Write-Message @{
+            jsonrpc = "2.0"
+            id = $request.id
+            result = @{
+                protocolVersion = "2024-11-05"
+                capabilities = @{ tools = @{} }
+                serverInfo = @{ name = "loom-image-search-fixture"; version = "1.0.0" }
+            }
+        }
+        continue
+    }
+    if ($method -eq "tools/list") {
+        Write-Message @{
+            jsonrpc = "2.0"
+            id = $request.id
+            result = @{
+                tools = @(
+                    @{
+                        name = "brave_image_search"
+                        description = "Return a fixture image"
+                        inputSchema = @{
+                            type = "object"
+                            properties = @{
+                                query = @{ type = "string" }
+                                count = @{ type = "integer" }
+                            }
+                            required = @("query")
+                        }
+                    }
+                )
+            }
+        }
+        continue
+    }
+    if ($method -eq "tools/call") {
+        if ($env:BRAVE_API_KEY -ne "loom-package-smoke-key") {
+            Write-Message @{
+                jsonrpc = "2.0"
+                id = $request.id
+                error = @{ code = -32001; message = "BRAVE_API_KEY was not injected" }
+            }
+            continue
+        }
+        $query = [string]$request.params.arguments.query
+        Write-Message @{
+            jsonrpc = "2.0"
+            id = $request.id
+            result = @{
+                content = @(@{ type = "text"; text = "fixture results for $query" })
+                structuredContent = @{
+                    type = "object"
+                    items = @(
+                        @{
+                            title = "Fixture image"
+                            url = "https://example.invalid/source"
+                            properties = @{ url = $image; width = 1; height = 1 }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+'@
+    Write-Utf8NoBomFile -Path $serverPath -Content $server
+
+    $manifestPath = Join-Path $stage "manifest.json"
+    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
+    $manifest.metadata.mcp.command = "powershell.exe"
+    $manifest.metadata.mcp.args = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{artDir}/runtime/fake-mcp-server.ps1"
+    )
+    Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
+    if (Test-Path -LiteralPath $DestinationZip) {
+        Remove-Item -LiteralPath $DestinationZip -Force
+    }
+    Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $daemonPath = if ([System.IO.Path]::IsPathRooted($DaemonExecutable)) {
@@ -72,6 +194,18 @@ else {
     [System.IO.Path]::GetFullPath((Join-Path $repoRoot $ArtArtifactRoot))
 }
 Assert-True (Test-Path -LiteralPath $daemonPath -PathType Leaf) "Loom daemon executable not found: $daemonPath"
+$largeImagePathResolved = if ([string]::IsNullOrWhiteSpace($LargeImagePath)) {
+    ""
+}
+elseif ([System.IO.Path]::IsPathRooted($LargeImagePath)) {
+    [System.IO.Path]::GetFullPath($LargeImagePath)
+}
+else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $LargeImagePath))
+}
+if (-not [string]::IsNullOrWhiteSpace($largeImagePathResolved)) {
+    Assert-True (Test-Path -LiteralPath $largeImagePathResolved -PathType Leaf) "Large image fixture not found: $largeImagePathResolved"
+}
 
 $controlPlane = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-sample-art-install-" + [guid]::NewGuid().ToString("N"))
 $configuration = Join-Path $controlPlane "configuration"
@@ -88,18 +222,45 @@ foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_
 }
 
 $image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-$frameworkIds = @("cli_wrapper", "cloud_api", "script", "python_art", "mcp", "workflow")
+$frameworkIds = @("process", "cloud_api", "mcp", "workflow")
+$colorTransferParams = @{
+    strength = 80
+    gamma = 1.2
+    exposure = -0.2
+    contrast = 10
+    highlights = -5
+    shadows = 5
+    whites = 3
+    blacks = -3
+    temperature = 10
+    tint = -5
+    saturation = 12
+    vibrance = 8
+    hue = 15
+    split_h_hue = 35
+    split_h_sat = 10
+    split_s_hue = 215
+    split_s_sat = 8
+    split_balance = -10
+    skin_protection = $true
+}
 $artCases = @(
     @{ id = "custom-1770146354922"; arguments = @{ inputs = @{ input = $image }; params = @{ quality_num = 90; lossless = $true } } },
     @{ id = "custom-remove-bg-cloud"; arguments = @{ inputs = @{ input = $image }; params = @{} } },
     @{ id = "custom-image-search"; arguments = @{ inputs = @{}; params = @{ query = "loom package smoke"; count = 3 } } },
-    @{ id = "custom-1770131241684"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = @{ strength = 50 } } },
-    @{ id = "custom-image-blend-script"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = @{ mix_ratio = 50 } } },
-    @{ id = "custom-image-blend-compress-workflow"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = @{ mix_ratio = 50; quality_num = 90 } } }
+    @{ id = "custom-1770131241684"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = $colorTransferParams } }
 )
 
 New-Item -ItemType Directory -Force -Path $controlPlane, $configuration | Out-Null
 try {
+    $sourceImageSearchZip = Join-Path $artRootPath "custom-image-search.zip"
+    Assert-True (Test-Path -LiteralPath $sourceImageSearchZip -PathType Leaf) "Image-search Art ZIP missing: $sourceImageSearchZip"
+    $imageSearchFixtureZip = Join-Path $controlPlane "custom-image-search-fixture.zip"
+    New-ImageSearchFixturePackage `
+        -SourceZip $sourceImageSearchZip `
+        -DestinationZip $imageSearchFixtureZip `
+        -WorkRoot $controlPlane
+
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$port
     $env:LOOM_CONTROL_PLANE_ROOT = $controlPlane
@@ -137,7 +298,12 @@ try {
     }
 
     foreach ($case in $artCases) {
-        $zipPath = Join-Path $artRootPath "$($case.id).zip"
+        $zipPath = if ($case.id -eq "custom-image-search") {
+            $imageSearchFixtureZip
+        }
+        else {
+            Join-Path $artRootPath "$($case.id).zip"
+        }
         Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Art ZIP missing: $zipPath"
         $null = Install-Zip -Url $baseUrl -ZipPath $zipPath -Prefix "/v1/arts"
     }
@@ -146,15 +312,82 @@ try {
         Assert-True (@($tools.tools | Where-Object { [string]$_.id -eq $case.id }).Count -eq 1) "Installed Art is not listed: $($case.id)"
     }
 
+    $management = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/arts/custom-image-search/management" -Body $null
+    $braveKeyParameter = @($management.parameters | Where-Object { [string]$_.id -eq "brave_api_key" }) | Select-Object -First 1
+    Assert-True ($null -ne $braveKeyParameter -and [bool]$braveKeyParameter.required -and [bool]$braveKeyParameter.secret) "Image-search management does not expose its required Brave API Key."
+    $savedManagement = Invoke-LoomJson `
+        -Method Put `
+        -Url "$baseUrl/v1/arts/custom-image-search/settings" `
+        -Body @{
+            autoUpdate = $true
+            defaults = @{ query = "loom package smoke"; count = 3 }
+            credentialBindings = @{}
+            secretValues = @{ brave_api_key = "loom-package-smoke-key" }
+        }
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$savedManagement.credentialBindings.brave_api_key)) "Image-search Brave API Key was not stored as an Art credential binding."
+
+    $colorTransferManagement = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/arts/custom-1770131241684/management" -Body $null
+    $colorTransferParameterIds = @($colorTransferManagement.parameters | ForEach-Object { [string]$_.id })
+    Assert-True ($colorTransferParameterIds.Count -eq 19) "Color Transfer management does not expose all 19 RBF-era parameters."
+    foreach ($key in $colorTransferParams.Keys) {
+        Assert-True ($colorTransferParameterIds -contains $key) "Color Transfer management parameter is missing: $key"
+    }
+    Assert-True ([string](@($colorTransferManagement.parameters | Where-Object { [string]$_.id -eq "gamma" })[0].parameterType) -eq "number") "Color Transfer gamma parameter type was not preserved."
+    Assert-True ([string](@($colorTransferManagement.parameters | Where-Object { [string]$_.id -eq "skin_protection" })[0].parameterType) -eq "boolean") "Color Transfer skin protection parameter type was not preserved."
+
     foreach ($case in $artCases) {
         $executed = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/tools/$($case.id)/execute" -Body @{ arguments = $case.arguments }
         Assert-True ([string]$executed.status -eq "succeeded") "Art execution failed: $($case.id) -> $($executed | ConvertTo-Json -Depth 20 -Compress)"
-        $outputBase64 = [string]$executed.result.output_base64
-        if ([string]::IsNullOrWhiteSpace($outputBase64)) {
-            $outputBase64 = [string]$executed.result.output.output_base64
+        $outputBase64 = ""
+        $outputBase64Property = $executed.result.PSObject.Properties["output_base64"]
+        if ($null -ne $outputBase64Property) {
+            $outputBase64 = [string]$outputBase64Property.Value
+        }
+        $nestedOutputProperty = $executed.result.PSObject.Properties["output"]
+        if ([string]::IsNullOrWhiteSpace($outputBase64) -and $null -ne $nestedOutputProperty) {
+            $nestedOutputBase64Property = $nestedOutputProperty.Value.PSObject.Properties["output_base64"]
+            if ($null -ne $nestedOutputBase64Property) {
+                $outputBase64 = [string]$nestedOutputBase64Property.Value
+            }
+        }
+        $contentProperty = $executed.result.PSObject.Properties["content"]
+        if ([string]::IsNullOrWhiteSpace($outputBase64) -and $null -ne $contentProperty) {
+            $outputBase64 = [string]@($contentProperty.Value)[0].data
+        }
+        if ([string]::IsNullOrWhiteSpace($outputBase64) -and $null -ne $nestedOutputProperty) {
+            $nestedContentProperty = $nestedOutputProperty.Value.PSObject.Properties["content"]
+            if ($null -ne $nestedContentProperty) {
+                $outputBase64 = [string]@($nestedContentProperty.Value)[0].data
+            }
         }
         Assert-True ($outputBase64.StartsWith("data:image/", [System.StringComparison]::Ordinal)) "Art execution did not return an image data URL: $($case.id)"
+        if ($case.id -eq "custom-1770131241684") {
+            Assert-True ([string]$executed.result.algorithm -eq "oklab-statistical-transfer") "Installed Color Transfer did not execute the restored algorithm."
+            $appliedParameterIds = @($executed.result.applied_params.PSObject.Properties.Name)
+            Assert-True ($appliedParameterIds.Count -eq 19) "Installed Color Transfer did not receive all 19 parameters."
+            foreach ($key in $colorTransferParams.Keys) {
+                Assert-True ($appliedParameterIds -contains $key) "Installed Color Transfer did not apply parameter: $key"
+            }
+        }
         Write-Host "PASS installed/executed $($case.id)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($largeImagePathResolved)) {
+        $executed = Invoke-LoomJson `
+            -Method Post `
+            -Url "$baseUrl/v1/tools/custom-1770146354922/execute" `
+            -Body @{
+                arguments = @{
+                    inputs = @{ input = $largeImagePathResolved }
+                    params = @{ quality_num = 90; lossless = $true }
+                }
+            }
+        Assert-True ([string]$executed.status -eq "succeeded") "Large-image compression failed: $($executed | ConvertTo-Json -Depth 20 -Compress)"
+        $content = @($executed.result.content)
+        Assert-True ($content.Count -eq 1 -and [string]$content[0].data -like "data:image/png;base64,*") "Large-image compression did not return a normalized image."
+        $executionMetadata = $executed.result.PSObject.Properties["_loomExecution"].Value
+        $diagnostics = $executionMetadata.PSObject.Properties["diagnostics"].Value
+        Assert-True ([int64]$diagnostics.stdoutBytes -lt 65536) "Large-image compression leaked the image through framework stdout: $($diagnostics.stdoutBytes) bytes"
+        Write-Host "PASS large-image compression: input=$((Get-Item -LiteralPath $largeImagePathResolved).Length) stdout=$($diagnostics.stdoutBytes) output=$(([string]$content[0].data).Length)"
     }
     $succeeded = $true
 }

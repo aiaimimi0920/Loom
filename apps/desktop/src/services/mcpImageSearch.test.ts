@@ -40,7 +40,7 @@ test("canExecuteHookCanvasNodeManually only enables generator-like image-search 
   const resizeTool: LoomToolDefinition = {
     id: "resize",
     name: "Resize",
-    execution: { type: "script" },
+    execution: { type: "framework_art", framework: "process" },
     inputs: [{ name: "image", type: "image", executionType: "image_path" }],
   };
   const node: HookCanvasNode = {

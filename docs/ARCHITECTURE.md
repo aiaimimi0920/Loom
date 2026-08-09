@@ -61,8 +61,9 @@ Loom.exe
 runtime/
   loom-daemon.exe
   resources/ocr/*
-  bin/python-embed/*
-  python/*
+packages/
+  frameworks/*.zip
+  arts/*.zip
 ```
 
 `Loom.exe` resolves its daemon in this order: an explicit
@@ -70,6 +71,13 @@ runtime/
 then the development `target/debug/loom-daemon.exe` fallback. The daemon's
 executable-relative resource discovery therefore remains unchanged in the
 packaged layout.
+
+Framework and Art ZIPs stay outside both executables. The desktop validates the
+packaged catalogs and applies the six repo-owned sample Arts once per catalog
+hash through the public framework and Art install APIs. The migration marker is
+stored in the writable control plane, not in the release directory. This gives
+the registry useful initial cards without introducing framework or Art-specific
+branches into Loom execution.
 
 The CLI is intentionally a separate release artifact named
 `Loom-CLI-<versionId>-windows-x64.zip`. That ZIP contains only `loom.exe`; it
@@ -142,9 +150,11 @@ real agent/model dispatch is introduced.
 ## Plugin runtime model
 
 Frameworks and Arts are control-plane packages, not code linked into Loom's
-default binaries. The six repo-owned framework IDs are a catalog only. A
-third-party package uses the same public `loom.framework.v1` process+JSON ABI
-and canonical `publisher/id` identity as those packages.
+default binaries. The four repo-owned framework IDs are `process`, `cloud_api`,
+`mcp`, and `workflow`. Command, script, and Python Arts all use `process` and
+select their package-local entry through `art.runtime.json`. A third-party
+package uses the same public `loom.framework.v1` process+JSON ABI and canonical
+`publisher/id` identity as the repo-owned packages.
 
 The package roots are:
 

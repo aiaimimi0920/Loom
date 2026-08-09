@@ -85,8 +85,9 @@ first and then open the desktop:
 The CLI entry for advanced scripting is available from the separate
 `Loom-CLI-*.zip` release artifact. It is not copied into the desktop package
 root. The desktop package contains only the user-facing `Loom.exe` plus its
-internal runtime sidecar, support files, and uninstalled framework package
-catalog. Framework runtimes remain separate ZIPs until the user installs one.
+internal runtime sidecar, support files, framework package catalog, and six
+independent sample Art packages. Framework and Art runtimes remain separate
+ZIPs and are never statically linked into the desktop executable.
 
 The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
@@ -169,20 +170,24 @@ Loom treats Art execution kinds as installable frameworks. An Art package
 belongs to exactly one framework, and Loom refuses to install that Art until
 its framework is both installed and ready.
 
-The six repo-owned sample framework ids are:
+The four repo-owned framework ids are:
 
-- `cli_wrapper`
+- `process`
 - `cloud_api`
-- `script`
-- `python_art`
 - `mcp`
 - `workflow`
 
-These six packages are optional and are not installed in a fresh control plane.
-Formal desktop releases carry them as independent ZIPs under
-`packages\frameworks`; clicking **安装** verifies and installs the selected ZIP
-into the writable control plane at runtime. They are never statically linked
-into `Loom.exe` or `loom-daemon.exe`. They are a repo-owned catalog, not a closed allowlist: safe third-party
+`process` is the single local execution boundary for command-backed,
+script-backed, and Python-backed Arts. Those authoring styles differ only in
+their package-local `art.runtime.json` entry; they are not separate frameworks.
+
+These four packages are optional and are not installed by a standalone daemon in
+a fresh control plane. Formal desktop releases carry them as independent ZIPs
+under `packages\frameworks`. The desktop's one-time sample-Art bootstrap installs
+the dependencies required by its six bundled Arts; operators can still install,
+disable, update, or uninstall packages independently through **管理框架**. They
+are never statically linked into `Loom.exe` or `loom-daemon.exe`. They are a
+repo-owned catalog, not a closed allowlist: safe third-party
 framework IDs use the same package and runtime protocol. Install a framework ZIP
 before installing an Art ZIP; Loom validates the package manifest, process
 entry, protocol version, and platform before marking the framework ready.
@@ -190,8 +195,8 @@ entry, protocol version, and platform before marking the framework ready.
 Package identity is publisher-qualified: the canonical form is
 `publisher/id`. HTTP path parameters encode that slash as `%2F`, for example
 `publisher.alpha%2Fshared-framework`; raw slashes are rejected so the route
-cannot be confused with another endpoint. Legacy local IDs remain readable
-when they resolve to exactly one installed package.
+cannot be confused with another endpoint. An unqualified local ID resolves only
+when it identifies exactly one installed package.
 
 Daemon routes:
 
@@ -218,9 +223,17 @@ POST /v1/arts/store/publish
 GET  /v1/plugin-trust
 POST /v1/plugin-trust/publishers
 POST /v1/plugin-trust/revoke
+POST /v1/plugin-trust/policy
+POST /v1/plugin-trust/users
+POST /v1/plugin-trust/users/remove
 GET  /v1/plugin-credentials
 POST /v1/plugin-credentials
 POST /v1/plugin-credentials/delete
+POST /v1/plugin-credentials/reveal
+GET  /v1/publisher-identity
+POST /v1/publisher-identity/register
+POST /v1/publisher-identity/rotate
+POST /v1/publisher-identity/private-key
 GET  /v1/diagnostics/executions/{runId}
 GET  /v1/support-bundle?runId={runId}
 ```
@@ -242,8 +255,17 @@ By default it listens on `http://127.0.0.1:8790` and serves:
 GET  /catalog
 GET  /arts/{artId}.zip
 GET  /frameworks/{frameworkId}.zip
+POST /publishers/register
+GET  /publishers/{userId}
+POST /publishers/{userId}/rotate
 POST /publish
 ```
+
+The store assigns immutable `NU` publisher IDs, retains retired public keys for
+historical Art verification, and accepts new Art versions only when their
+Ed25519 signature matches the publisher's current active key. The desktop
+stores only the current private key locally; Art packages contain the public
+key and detached signature.
 
 Point the daemon at that store with:
 
@@ -257,7 +279,7 @@ packaged daemon automatically checks the release's sibling
 `packages\frameworks` directory and verifies each ZIP against its `.sha256`
 sidecar before installation.
 
-The six repo-owned framework packages and sample Art packages are built
+The four repo-owned framework packages and seven sample Art packages are built
 independently from the Loom binaries:
 
 ```powershell
@@ -272,10 +294,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 The output contains one framework ZIP per framework and one Art ZIP per sample
 Art. Both ZIP types have independent manifests and SHA-256 files. Formal desktop
-release tooling runs the framework builder and publishes those six uninstalled
-ZIPs as its local catalog; sample Art packages remain separate. A sample Art
-is installed through its generic package installer; the installer never edits
-Loom or Hook source and never writes into the default release payload:
+release tooling publishes both catalogs under `packages\frameworks` and
+`packages\arts`. On the first launch for a catalog hash, the desktop verifies the
+ZIPs, installs the declared framework dependencies, and installs the four curated Arts
+through the public package APIs. The applied catalog hash is recorded under the
+writable control plane, so deleting an Art later does not make it reappear on
+every startup. This bootstrap never edits Loom or Hook source. The same generic
+installer remains available for explicit local installation:
+
+Repo-owned sample builds also write `packages\official-art-certifications.json`.
+The Art Store marks an entry as official only when its qualified ID, latest
+version, and computed ZIP SHA-256 all match this server-owned index. Manifest
+fields cannot self-certify a package, and user-published Art remains unverified
+until the platform adds the exact package digest to the index.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -285,14 +316,26 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 The legacy per-Art script names are now thin wrappers over
 `Install-LoomSampleArtPackage.ps1`; they no longer generate or install a
 legacy built-in execution definition. The corresponding wrappers are
-`Install-LoomImageSearchArt.ps1`, `Install-LoomColorTransferArt.ps1`,
-`Install-LoomImageBlendScriptArt.ps1`, and
-`Install-LoomImageBlendCompressWorkflowArt.ps1`.
+`Install-LoomImageSearchArt.ps1` and `Install-LoomColorTransferArt.ps1`.
 
-When `python_art` is installed from the store, Loom downloads the framework
-runtime zip first, unpacks it under
-`<LOOM_CONTROL_PLANE_ROOT>\frameworks\python_art\`, and then prefers
-that runtime over packaged or PATH Python fallbacks when executing Python Arts.
+When `process` is installed from the store, Loom downloads one runtime ZIP,
+unpacks it under `<LOOM_CONTROL_PLANE_ROOT>\frameworks\...\process\`, and uses
+its bundled Python 3.12 runtime for Python-backed Arts. Command and script Arts
+use the same installed framework process boundary without modifying Loom or Hook.
+
+The packaged `图片搜索` Art declares `Brave API Key` as a required secret. Set it
+from the Art editor by either selecting a global credential or entering an
+Art-scoped value. The independently installed `mcp` framework maps that binding
+to `BRAVE_API_KEY`, starts `@brave/brave-search-mcp-server`, and calls
+`brave_image_search`; the key is not stored in normal Art defaults.
+
+Every Art parameter can also switch from a literal default to a typed global
+encrypted value. Global values declare `string`, `number`, `integer`, `boolean`,
+or `json`; the editor only lists compatible values for each parameter. Art
+settings persist the reference in `valueBindings`, never the plaintext, and
+runtime node parameters still override the referenced default. Secret parameters
+use the same editor interaction but remain isolated in `credentialBindings` and
+only accept string credentials.
 
 For a repo-owned all-framework local proof path, run the dedicated fake-store
 Hook smoke:
@@ -308,8 +351,9 @@ That smoke starts a temporary local fake cloud API server, a temporary stdio
 MCP server, and a temporary local `loom-art-store` root. The MCP fixture now
 proves the `图片搜索` path specifically by returning structured
 `brave_image_search` results whose first image URL is fetched back into a real
-previewable base64 image. The smoke installs one Art for each framework id,
-instantiates six Hook nodes, executes each node once, and writes a
+previewable base64 image. The smoke installs all four framework packages and six
+Arts: three `process` Arts (command, script, and Python), plus cloud, MCP, and
+workflow Arts. It instantiates six Hook nodes, executes each node once, and writes a
 machine-readable summary under:
 
 ```text
@@ -649,26 +693,28 @@ Each candidate contains the desktop payload under one visible entry:
 Loom.exe
 runtime\loom-daemon.exe
 runtime\resources\...
-runtime\bin\...
-runtime\python\...
-packages\frameworks\cli_wrapper.zip
+packages\frameworks\process.zip
 packages\frameworks\cloud_api.zip
-packages\frameworks\script.zip
-packages\frameworks\python_art.zip
 packages\frameworks\mcp.zip
 packages\frameworks\workflow.zip
 packages\frameworks\*.zip.sha256
 packages\frameworks\summary.json
+packages\arts\*.zip
+packages\arts\*.zip.sha256
+packages\arts\summary.json
 packages\Loom-<versionId>-windows-x64.zip
 packages\Loom-<versionId>-windows-x64.zip.sha256
 packages\Loom-CLI-<versionId>-windows-x64.zip
 packages\Loom-CLI-<versionId>-windows-x64.zip.sha256
 ```
 
-The desktop ZIP contains `Loom.exe`, the runtime tree, and the six independent
-framework ZIPs as an uninstalled local catalog. The CLI ZIP contains only
-`loom.exe`, allowing command-line use without adding a second executable to the
-desktop package root.
+The desktop ZIP contains `Loom.exe`, the runtime tree, the four independent
+framework ZIPs, and six independent Art ZIPs. On desktop startup, the Art catalog
+is applied once to the writable control plane through the same install APIs used
+by external packages. The CLI ZIP contains only `loom.exe`, allowing command-line
+use without adding a second executable to the desktop package root. The embedded Python runtime exists only inside
+`packages\frameworks\process.zip`; it is not duplicated in the default Loom
+runtime tree.
 
 `verify-release.ps1` validates the complete candidate boundary: the desktop
 root must contain exactly `Loom.exe`, the CLI artifact metadata must agree with
@@ -688,8 +734,8 @@ smoke chain in sequence:
 
 The fourth step reuses the packaged `runtime\loom-daemon.exe` from the release
 candidate, starts a temporary local fake art store plus fake cloud/MCP fixtures,
-installs one Art for each repo-owned framework id, instantiates six Hook nodes,
-and executes all six. The fifth step independently compiles a temporary
+installs all four framework packages and six representative Arts, instantiates
+six Hook nodes, and executes all six. The fifth step independently compiles a temporary
 third-party framework outside the repository and proves the no-source-change
 plugin lifecycle through Loom and the Hook Bridge.
 

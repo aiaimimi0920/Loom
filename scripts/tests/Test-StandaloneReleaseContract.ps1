@@ -121,13 +121,17 @@ Assert-ScriptContract `
         'pluginSdkArtifact',
         'Loom-Plugin-SDK-',
         'Build-LoomArtFrameworkPackages.ps1',
+        'Build-LoomSampleArtPackages.ps1',
         'frameworkPackageCatalog',
         'frameworkPackages',
         'frameworkCatalog',
+        'sampleArtPackageCatalog',
+        'sampleArtPackages',
+        'sampleArtCatalog',
         'New-LoomSbom.ps1',
         'build-provenance.json',
         'runtime\resources\ocr',
-        'runtime\bin\python-embed',
+        'expectedIds = @(',
         'sourcePaths = @(".")',
         'checksums.sha256',
         'manifest.json',
@@ -152,9 +156,13 @@ Assert-ScriptContract `
         'pluginSdkArtifact',
         'Loom-Plugin-SDK-',
         'function Assert-FrameworkPackages',
+        'function Assert-SampleArtPackages',
         'frameworkPackages',
         'frameworkCatalog',
         'framework-package-zip-sha256',
+        'sampleArtPackages',
+        'sampleArtCatalog',
+        'sample-art-package-zip-sha256',
         'Assert-SupplyChainMetadata',
         'Get-LoomReleaseLayout',
         'Assert-ZipChecksumSidecar',
@@ -300,7 +308,7 @@ Assert-ScriptContract `
         'Invoke-LoomRunPersistenceSmoke.ps1',
         'Invoke-LoomDaemonConcurrencySmoke.ps1',
         'runtime\resources\ocr',
-        'runtime\bin\python-embed',
+        'Default Loom release unexpectedly contains legacy host Python runtime',
         'LoomSmokePorts.ps1',
         'Get-LoomSmokePort',
         '/v1/mcp/servers',
@@ -309,7 +317,7 @@ Assert-ScriptContract `
         'function Initialize-SmokeEvidenceRun',
         'function Write-SmokeJsonEvidence',
         'function Assert-SameExistingPath',
-        'Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.filePath)',
+        'Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.path)',
         '$EvidenceRoot'
     ) `
     -ForbiddenText $commonForbidden
@@ -358,7 +366,7 @@ Assert-True -Condition ([string]$defaultPlan.cliArtifact.zipNamePattern -eq "Loo
 Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$defaultPlan.pluginSdkArtifact.pluginCliEntryName) -Message "Dry-run must catalog the plugin developer CLI."
 Assert-True -Condition ([string]$defaultPlan.pluginSdkArtifact.zipNamePattern -eq "Loom-Plugin-SDK-{versionId}-windows-x64.zip") -Message "Dry-run plugin SDK ZIP naming contract mismatch."
 Assert-Equal -Expected 12 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas and developer documentation."
-Assert-Equal -Expected "cli_wrapper,cloud_api,script,python_art,mcp,workflow" -Actual (@($defaultPlan.frameworkPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog all six independent framework packages."
+Assert-Equal -Expected "process,cloud_api,mcp,workflow" -Actual (@($defaultPlan.frameworkPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog all four independent framework packages."
 Assert-Equal -Expected (Join-Path $defaultPlan.destination "packages\frameworks") -Actual ([string]$defaultPlan.frameworkPackageCatalog.outputRoot) -Message "Dry-run framework catalog output must stay inside the candidate."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { -not ([string]$_.destinationRelativePath).StartsWith("runtime\") }).Count -eq 0) -Message "All daemon-owned support files must live under runtime."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { ([string]$_.destinationRelativePath).Replace('\', '/').StartsWith("runtime/python/Arts/", [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) -Message "Default release must not package optional Python Arts."

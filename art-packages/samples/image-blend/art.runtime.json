@@ -1,7 +1,0 @@
-{
-  "protocolVersion": "loom.art.runtime.v1",
-  "entry": {
-    "command": "powershell.exe",
-    "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "runtime/main.ps1"]
-  }
-}

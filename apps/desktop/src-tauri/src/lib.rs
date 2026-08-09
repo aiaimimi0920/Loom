@@ -1,25 +1,29 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use tauri::Manager;
 
 const DEFAULT_LOOM_DAEMON_URL: &str = "http://127.0.0.1:8765";
 const DEFAULT_HOOK_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
+const HOOK_COMPANION_VERSION: &str = "0.1.7";
 const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
 const FRAMEWORK_PACKAGE_CATALOG_ENV: &str = "LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR";
 const FRAMEWORK_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
-const OFFICIAL_FRAMEWORK_IDS: [&str; 6] = [
-    "cli_wrapper",
-    "cloud_api",
-    "script",
-    "python_art",
-    "mcp",
-    "workflow",
-];
+const ART_PACKAGE_CATALOG_ENV: &str = "LOOM_ART_PACKAGE_CATALOG_DIR";
+const BUNDLED_ART_SHA256_ALLOWLIST_ENV: &str = "LOOM_BUNDLED_ART_SHA256_ALLOWLIST";
+const ART_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const LOOM_DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const OFFICIAL_FRAMEWORK_IDS: [&str; 4] = ["process", "cloud_api", "mcp", "workflow"];
+static PACKAGED_ART_BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
+static ACTIVE_DAEMON_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static ACTIVE_HOOK_BRIDGE_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 #[cfg(target_os = "windows")]
 const LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV: &str = "LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT";
 #[cfg(target_os = "windows")]
@@ -44,11 +48,494 @@ pub struct SettingsLinks {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ApplicationDiagnostics {
+    pub app: String,
+    pub app_name: String,
+    pub version: String,
+    pub repository_url: Option<String>,
+    pub commit_short: Option<String>,
+    pub log_dir: String,
+    pub log_file: Option<String>,
+    pub log_file_exists: bool,
+}
+
+fn application_log_dir(app: &str) -> Result<PathBuf, String> {
+    match app {
+        "loom" => Ok(std::env::var_os("LOOM_LOG_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| desktop_control_plane_root().join("logs"))),
+        "hook" => Ok(std::env::var_os("HOOK_LOG_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("LOCALAPPDATA")
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                    .map(|root| root.join("Hook").join("logs"))
+            })
+            .unwrap_or_else(|| std::env::temp_dir().join("Hook").join("logs"))),
+        _ => Err("不支持的应用诊断目标。".to_owned()),
+    }
+}
+
+fn newest_log_file(log_dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(log_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_log = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("log"));
+            if !is_log || !path.is_file() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+fn application_diagnostics(app: &str) -> Result<ApplicationDiagnostics, String> {
+    let log_dir = application_log_dir(app)?;
+    let (app_name, version, repository_url, commit_short, log_file) = match app {
+        "loom" => (
+            "Loom",
+            env!("CARGO_PKG_VERSION").to_owned(),
+            Some(env!("LOOM_BUILD_REPOSITORY").to_owned()),
+            Some(env!("LOOM_BUILD_COMMIT").to_owned()),
+            newest_log_file(&log_dir),
+        ),
+        "hook" => {
+            let log_file = log_dir.join("hook-runtime.log");
+            (
+                "Hook",
+                std::env::var("LOOM_HOOK_APP_VERSION")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| HOOK_COMPANION_VERSION.to_owned()),
+                Some(env!("HOOK_BUILD_REPOSITORY").to_owned()),
+                Some(env!("HOOK_BUILD_COMMIT").to_owned()),
+                log_file.is_file().then_some(log_file),
+            )
+        }
+        _ => return Err("不支持的应用诊断目标。".to_owned()),
+    };
+    Ok(ApplicationDiagnostics {
+        app: app.to_owned(),
+        app_name: app_name.to_owned(),
+        version,
+        repository_url,
+        commit_short,
+        log_dir: log_dir.to_string_lossy().into_owned(),
+        log_file_exists: log_file.is_some(),
+        log_file: log_file.map(|path| path.to_string_lossy().into_owned()),
+    })
+}
+
+#[tauri::command]
+fn resolve_application_diagnostics(app: String) -> Result<ApplicationDiagnostics, String> {
+    application_diagnostics(app.trim())
+}
+
+#[cfg(target_os = "windows")]
+fn open_local_path(path: &Path, file: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut command = std::process::Command::new(if file { "notepad.exe" } else { "explorer.exe" });
+    command.arg(path).creation_flags(CREATE_NO_WINDOW);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开 `{}`：{error}", path.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn open_local_path(path: &Path, _file: bool) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开 `{}`：{error}", path.display()))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn open_local_path(path: &Path, _file: bool) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开 `{}`：{error}", path.display()))
+}
+
+#[tauri::command]
+fn open_application_log_location(app: String, target: String) -> Result<(), String> {
+    let diagnostics = application_diagnostics(app.trim())?;
+    match target.trim() {
+        "directory" => {
+            let path = PathBuf::from(diagnostics.log_dir);
+            fs::create_dir_all(&path)
+                .map_err(|error| format!("无法创建日志目录 `{}`：{error}", path.display()))?;
+            open_local_path(&path, false)
+        }
+        "file" => {
+            let path = diagnostics
+                .log_file
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+                .ok_or_else(|| format!("{} 暂无可查看的日志。", diagnostics.app_name))?;
+            open_local_path(&path, true)
+        }
+        _ => Err("不支持的日志打开方式。".to_owned()),
+    }
+}
+
+fn is_allowed_repository_url(url: &str) -> bool {
+    [
+        env!("LOOM_BUILD_REPOSITORY"),
+        env!("HOOK_BUILD_REPOSITORY"),
+    ]
+    .contains(&url)
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_in_default_browser(url: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut command = std::process::Command::new("explorer.exe");
+    command.arg(url).creation_flags(CREATE_NO_WINDOW);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开仓库地址：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_in_default_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开仓库地址：{error}"))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn open_url_in_default_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开仓库地址：{error}"))
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !url.starts_with("https://") || !is_allowed_repository_url(url) {
+        return Err("只允许打开 Loom 或 Hook 的官方仓库地址。".to_owned());
+    }
+    open_url_in_default_browser(url)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookCacheEntry {
+    pub key: String,
+    pub label: String,
+    pub path: String,
+    pub bytes: u64,
+    pub file_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookCacheSnapshot {
+    pub temporary: HookCacheEntry,
+    pub recycle_bin_entries: u64,
+    pub reference_entries: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookCacheClearResult {
+    pub kind: String,
+    pub freed_bytes: u64,
+    pub snapshot: HookCacheSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookCachePreferences {
+    pub recycle_bin_max_entries: u32,
+    pub recycle_bin_retention_days: u32,
+    pub temp_cache_max_bytes: u64,
+    pub temp_cache_retention_days: u32,
+}
+
+fn read_hook_persisted_cache_settings() -> Option<HookCachePreferences> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(hook_effective_app_data_dir().join("app-settings.json")).ok()?,
+    )
+    .ok()?;
+    serde_json::from_value(value.get("cache")?.clone()).ok()
+}
+
+#[tauri::command]
+async fn wait_for_hook_cache_settings(settings: HookCachePreferences) -> Result<bool, String> {
+    run_blocking_command(move || {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            if read_hook_persisted_cache_settings().as_ref() == Some(&settings) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Err("缓存设置已保存，但 Hook 尚未确认应用；将在 Hook 下次连接时同步。".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
+    })
+    .await
+}
+
+fn hook_app_data_contains_user_state(dir: &Path) -> bool {
+    [
+        "session.json",
+        "history.json",
+        "tool-settings.json",
+        "app-settings.json",
+        "images",
+        "saved",
+    ]
+    .iter()
+    .any(|entry| dir.join(entry).exists())
+}
+
+fn hook_effective_app_data_dir() -> PathBuf {
+    let current = std::env::var_os("HOOK_APPDATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("APPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|root| root.join("com.yamiyu.hook"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("com.yamiyu.hook"));
+    for identifier in ["io.github.aiaimimi0920.hook", "com.vmjcv.hook"] {
+        let legacy = current.with_file_name(identifier);
+        if legacy.exists()
+            && (!current.exists()
+                || (!hook_app_data_contains_user_state(&current)
+                    && hook_app_data_contains_user_state(&legacy)))
+        {
+            return legacy;
+        }
+    }
+    current
+}
+
+fn hook_clipboard_cache_dir() -> PathBuf {
+    std::env::var_os("HOOK_CLIPBOARD_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|root| root.join("Hook").join("clipboard_cache"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("Hook").join("clipboard_cache"))
+}
+
+fn directory_usage(path: &Path) -> Result<(u64, u64), String> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+    let mut bytes = 0_u64;
+    let mut file_count = 0_u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("无法检查缓存目录 `{}`：{error}", directory.display())
+            })?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let len = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                bytes = bytes.saturating_add(len);
+                file_count = file_count.saturating_add(1);
+            }
+        }
+    }
+    Ok((bytes, file_count))
+}
+
+fn hook_cache_entry(key: &str, label: &str, path: PathBuf) -> Result<HookCacheEntry, String> {
+    let (bytes, file_count) = directory_usage(&path)?;
+    Ok(HookCacheEntry {
+        key: key.to_owned(),
+        label: label.to_owned(),
+        path: path.to_string_lossy().into_owned(),
+        bytes,
+        file_count,
+    })
+}
+
+fn hook_cache_snapshot() -> Result<HookCacheSnapshot, String> {
+    let temporary = hook_cache_entry("temporary", "临时缓存", hook_clipboard_cache_dir())?;
+    let session_path = hook_effective_app_data_dir().join("session.json");
+    let session = fs::read(&session_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let collection_count = |key: &str| {
+        session
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|entries| entries.len() as u64)
+            .unwrap_or(0)
+    };
+    Ok(HookCacheSnapshot {
+        temporary,
+        recycle_bin_entries: collection_count("recycleBin"),
+        reference_entries: collection_count("referenceLibrary"),
+    })
+}
+
+fn clear_directory_contents(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        fs::create_dir_all(path)
+            .map_err(|error| format!("无法创建缓存目录 `{}`：{error}", path.display()))?;
+        return Ok(());
+    }
+    for entry in fs::read_dir(path)
+        .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", path.display()))?
+    {
+        let entry = entry
+            .map_err(|error| format!("无法检查缓存目录 `{}`：{error}", path.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
+        let entry_path = entry.path();
+        let result = if file_type.is_dir() && !file_type.is_symlink() {
+            fs::remove_dir_all(&entry_path)
+        } else {
+            fs::remove_file(&entry_path)
+        };
+        result.map_err(|error| format!("无法删除缓存 `{}`：{error}", entry_path.display()))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_hook_cache_snapshot() -> Result<HookCacheSnapshot, String> {
+    hook_cache_snapshot()
+}
+
+#[tauri::command]
+fn clear_hook_cache(kind: String) -> Result<HookCacheClearResult, String> {
+    let kind = kind.trim();
+    let before = hook_cache_snapshot()?;
+    match kind {
+        "temporary" => clear_directory_contents(&hook_clipboard_cache_dir())?,
+        "recycleBin" => {
+            http_post_json(
+                &configured_loom_daemon_url(),
+                "/v1/artloom-compat/hook/cache-control",
+                &serde_json::json!({ "action": "clearRecycleBin" }),
+            )?;
+        }
+        "referenceLibrary" => {
+            http_post_json(
+                &configured_loom_daemon_url(),
+                "/v1/artloom-compat/hook/cache-control",
+                &serde_json::json!({ "action": "clearReferenceLibrary" }),
+            )?;
+        }
+        _ => return Err("不支持的 Hook 缓存清理目标。".to_owned()),
+    }
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let snapshot = loop {
+        let snapshot = hook_cache_snapshot()?;
+        let cleared = match kind {
+            "temporary" => snapshot.temporary.bytes == 0 && snapshot.temporary.file_count == 0,
+            "recycleBin" => snapshot.recycle_bin_entries == 0,
+            "referenceLibrary" => snapshot.reference_entries == 0,
+            _ => false,
+        };
+        if cleared {
+            break snapshot;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("Hook 未在规定时间内完成 `{kind}` 清理。"));
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    };
+    Ok(HookCacheClearResult {
+        kind: kind.to_owned(),
+        freed_bytes: before
+            .temporary
+            .bytes
+            .saturating_sub(snapshot.temporary.bytes),
+        snapshot,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoomDaemonStartResult {
     pub started: bool,
     pub base_url: String,
     pub path: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackagedArtBootstrapResult {
+    pub available: bool,
+    pub applied: bool,
+    pub catalog_hash: Option<String>,
+    pub framework_ids: Vec<String>,
+    pub art_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackagedArtCatalog {
+    #[serde(default)]
+    packages: Vec<PackagedArtCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackagedFrameworkCatalog {
+    #[serde(default)]
+    frameworks: Vec<PackagedFrameworkCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackagedFrameworkCatalogEntry {
+    id: String,
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackagedArtCatalogEntry {
+    id: String,
+    framework: String,
+    zip: String,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,8 +580,17 @@ fn resolve_loom_daemon_url() -> DesktopRuntimeConfig {
     }
 }
 
-#[tauri::command]
-fn read_loom_snapshot(base_url: Option<String>) -> LoomSnapshot {
+async fn run_blocking_command<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("Loom 桌面后台任务异常结束：{error}"))?
+}
+
+fn read_loom_snapshot_blocking(base_url: Option<String>) -> LoomSnapshot {
     let resolved_base_url = normalize_base_url(
         base_url
             .filter(|value| !value.trim().is_empty())
@@ -143,19 +639,40 @@ fn read_loom_snapshot(base_url: Option<String>) -> LoomSnapshot {
 }
 
 #[tauri::command]
-fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
-    let base_url = normalize_base_url(configured_loom_daemon_url());
+async fn read_loom_snapshot(base_url: Option<String>) -> Result<LoomSnapshot, String> {
+    run_blocking_command(move || Ok(read_loom_snapshot_blocking(base_url))).await
+}
+
+fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, String> {
+    let mut base_url = normalize_base_url(configured_loom_daemon_url());
+    let mut isolated_hook_bridge_url = None;
     let current_exe =
         std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
     if let Ok(health) = http_get_json(&base_url, "/health") {
-        let message = daemon_path_mismatch_warning(&current_exe, &health)
-            .unwrap_or_else(|| "Loom 本地服务已运行。".to_string());
-        return Ok(LoomDaemonStartResult {
-            started: false,
-            base_url,
-            path: String::new(),
-            message,
-        });
+        if daemon_path_mismatch_warning(&current_exe, &health).is_none() {
+            return Ok(LoomDaemonStartResult {
+                started: false,
+                base_url,
+                path: String::new(),
+                message: "Loom 本地服务已运行。".to_string(),
+            });
+        }
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|error| format!("无法为当前 Loom 分配本地服务端口：{error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("无法读取 Loom 本地服务端口：{error}"))?
+            .port();
+        drop(listener);
+        base_url = format!("http://127.0.0.1:{port}");
+        let hook_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|error| format!("无法为当前 Loom 分配 Hook Bridge 端口：{error}"))?;
+        let hook_port = hook_listener
+            .local_addr()
+            .map_err(|error| format!("无法读取 Loom Hook Bridge 端口：{error}"))?
+            .port();
+        drop(hook_listener);
+        isolated_hook_bridge_url = Some(format!("ws://127.0.0.1:{hook_port}"));
     }
 
     let explicit_daemon_path = std::env::var(LOOM_DAEMON_EXECUTABLE_ENV)
@@ -177,10 +694,18 @@ fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
         )
     })?;
     let (host, port) = parse_loopback_http_url(&base_url)?;
+    let bundled_art_sha256_allowlist = packaged_art_sha256_allowlist(&current_exe)?;
     let mut command = std::process::Command::new(&daemon_path);
     command
         .env("LOOM_DAEMON_HOST", host)
-        .env("LOOM_DAEMON_PORT", port.to_string());
+        .env("LOOM_DAEMON_PORT", port.to_string())
+        .env_remove(BUNDLED_ART_SHA256_ALLOWLIST_ENV);
+    if !bundled_art_sha256_allowlist.is_empty() {
+        command.env(
+            BUNDLED_ART_SHA256_ALLOWLIST_ENV,
+            bundled_art_sha256_allowlist.join(","),
+        );
+    }
 
     // Write the discovery manifest to the shared Neuro capabilities dir so peer
     // apps (e.g. Hook) can find this daemon via %APPDATA%\Neuro\capabilities\loom.json.
@@ -202,6 +727,18 @@ fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
         .spawn()
         .map_err(|error| format!("启动 Loom 本地服务失败：{error}"))?;
 
+    if let Ok(mut active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
+        *active_url = Some(base_url.clone());
+    }
+    if let Some(hook_bridge_url) = isolated_hook_bridge_url {
+        if let Ok(mut active_url) = ACTIVE_HOOK_BRIDGE_URL
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+        {
+            *active_url = Some(hook_bridge_url);
+        }
+    }
+
     Ok(LoomDaemonStartResult {
         started: true,
         base_url,
@@ -211,39 +748,82 @@ fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
 }
 
 #[tauri::command]
-fn post_loom_daemon_json(base_url: String, path: String, body: Value) -> Result<Value, String> {
-    let resolved_base_url = resolve_command_base_url(base_url);
-    let path = normalize_daemon_path(path)?;
-    http_post_json(&resolved_base_url, &path, &body)
+async fn start_loom_daemon() -> Result<LoomDaemonStartResult, String> {
+    run_blocking_command(start_loom_daemon_blocking).await
 }
 
 #[tauri::command]
-fn install_packaged_framework(base_url: String, id: String) -> Result<Value, String> {
-    let resolved_base_url = resolve_command_base_url(base_url);
-    let current_exe =
-        std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
-    install_packaged_framework_from_exe(&resolved_base_url, &id, &current_exe)
+async fn post_loom_daemon_json(
+    base_url: String,
+    path: String,
+    body: Value,
+) -> Result<Value, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let path = normalize_daemon_path(path)?;
+        http_post_json(&resolved_base_url, &path, &body)
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_loom_daemon_json(base_url: String, path: String) -> Result<Value, String> {
-    let resolved_base_url = resolve_command_base_url(base_url);
-    let path = normalize_daemon_path(path)?;
-    http_get_json(&resolved_base_url, &path)
+async fn install_packaged_framework(base_url: String, id: String) -> Result<Value, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let current_exe =
+            std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+        install_packaged_framework_from_exe(&resolved_base_url, &id, &current_exe)
+    })
+    .await
 }
 
 #[tauri::command]
-fn put_loom_daemon_json(base_url: String, path: String, body: Value) -> Result<Value, String> {
-    let resolved_base_url = resolve_command_base_url(base_url);
-    let path = normalize_daemon_path(path)?;
-    http_put_json(&resolved_base_url, &path, &body)
+async fn bootstrap_packaged_arts(base_url: String) -> Result<PackagedArtBootstrapResult, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let current_exe =
+            std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+        bootstrap_packaged_arts_from_exe(
+            &resolved_base_url,
+            &current_exe,
+            &desktop_control_plane_root(),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-fn delete_loom_daemon_json(base_url: String, path: String) -> Result<Value, String> {
-    let resolved_base_url = resolve_command_base_url(base_url);
-    let path = normalize_daemon_path(path)?;
-    http_delete_json(&resolved_base_url, &path)
+async fn get_loom_daemon_json(base_url: String, path: String) -> Result<Value, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let path = normalize_daemon_path(path)?;
+        http_get_json(&resolved_base_url, &path)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn put_loom_daemon_json(
+    base_url: String,
+    path: String,
+    body: Value,
+) -> Result<Value, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let path = normalize_daemon_path(path)?;
+        http_put_json(&resolved_base_url, &path, &body)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_loom_daemon_json(base_url: String, path: String) -> Result<Value, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let path = normalize_daemon_path(path)?;
+        http_delete_json(&resolved_base_url, &path)
+    })
+    .await
 }
 
 // Fetch a Hook canvas preview image through the native HTTP client and return it
@@ -251,19 +831,35 @@ fn delete_loom_daemon_json(base_url: String, path: String) -> Result<Value, Stri
 // daemon images with an `<img src>` tag, so the frontend renders previews from
 // the data URL this command returns instead of a direct daemon URL.
 #[tauri::command]
-fn read_hook_canvas_preview(base_url: String, path: String) -> Result<String, String> {
-    let resolved_base_url = resolve_command_base_url(base_url);
-    let path = normalize_daemon_path(path)?;
-    let (content_type, bytes) = http_get_binary(&resolved_base_url, &path)?;
-    let encoded = base64_encode(&bytes);
-    Ok(format!("data:{content_type};base64,{encoded}"))
+async fn read_hook_canvas_preview(base_url: String, path: String) -> Result<String, String> {
+    run_blocking_command(move || {
+        let resolved_base_url = resolve_command_base_url(base_url);
+        let path = normalize_daemon_path(path)?;
+        let (content_type, bytes) = http_get_binary(&resolved_base_url, &path)?;
+        let encoded = base64_encode(&bytes);
+        Ok(format!("data:{content_type};base64,{encoded}"))
+    })
+    .await
 }
 
 fn configured_loom_daemon_url() -> String {
+    if let Ok(active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
+        if let Some(active_url) = active_url.as_ref() {
+            return active_url.clone();
+        }
+    }
     std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
 }
 
 fn configured_hook_bridge_url() -> String {
+    if let Ok(active_url) = ACTIVE_HOOK_BRIDGE_URL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        if let Some(active_url) = active_url.as_ref() {
+            return active_url.clone();
+        }
+    }
     if let Ok(url) = std::env::var("LOOM_HOOK_BRIDGE_URL") {
         if !url.trim().is_empty() {
             return url.trim().to_owned();
@@ -561,8 +1157,11 @@ fn http_request_json_with_timeout(
     timeout: Duration,
 ) -> Result<Value, String> {
     let (host, port) = parse_loopback_http_url(base_url)?;
-    let mut stream = TcpStream::connect((host.as_str(), port))
-        .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
+    let mut stream = TcpStream::connect_timeout(
+        &loopback_socket_addr(&host, port)?,
+        LOOM_DAEMON_CONNECT_TIMEOUT,
+    )
+    .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|error| format!("无法设置 Loom 本地服务读取超时：{error}"))?;
@@ -663,6 +1262,51 @@ fn install_packaged_framework_from_exe(
     Ok(response)
 }
 
+fn upgrade_packaged_framework_from_exe(
+    base_url: &str,
+    id: &str,
+    current_exe: &Path,
+) -> Result<Value, String> {
+    let package_path = packaged_framework_package_candidates(current_exe, id)
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| format!("当前 Loom 包内未找到框架升级包：{id}"))?;
+    let package = read_verified_framework_package(id, &package_path)?;
+    http_post_json_with_timeout(
+        base_url,
+        &format!("/v1/frameworks/{}/upgrade", percent_encode_path_segment(id)),
+        &serde_json::json!({ "zipBase64": base64_encode(&package) }),
+        Duration::from_secs(120),
+    )
+}
+
+fn packaged_framework_version(current_exe: &Path, id: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os(FRAMEWORK_PACKAGE_CATALOG_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        candidates.push(root.join("summary.json"));
+    }
+    if let Some(parent) = current_exe.parent() {
+        candidates.push(
+            parent
+                .join("packages")
+                .join("frameworks")
+                .join("summary.json"),
+        );
+    }
+    candidates.into_iter().find_map(|path| {
+        let bytes = fs::read(path).ok()?;
+        let catalog: PackagedFrameworkCatalog = serde_json::from_slice(&bytes).ok()?;
+        catalog
+            .frameworks
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.version)
+    })
+}
+
 fn framework_source_is_missing(error: &str) -> bool {
     error.contains("no configured runtime download source")
         || error.contains("no available package source")
@@ -693,36 +1337,48 @@ fn packaged_framework_package_path(current_exe: &Path, id: &str) -> PathBuf {
 }
 
 fn read_verified_framework_package(id: &str, package_path: &Path) -> Result<Vec<u8>, String> {
+    read_verified_package("框架", id, package_path, FRAMEWORK_PACKAGE_MAX_BYTES)
+}
+
+fn read_verified_art_package(id: &str, package_path: &Path) -> Result<Vec<u8>, String> {
+    read_verified_package("Art", id, package_path, ART_PACKAGE_MAX_BYTES)
+}
+
+fn read_verified_package(
+    kind: &str,
+    id: &str,
+    package_path: &Path,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
     let metadata = fs::metadata(package_path).map_err(|error| {
         format!(
-            "无法读取框架 `{id}` 安装包 `{}`：{error}",
+            "无法读取{kind} `{id}` 安装包 `{}`：{error}",
             package_path.display()
         )
     })?;
     if !metadata.is_file() {
         return Err(format!(
-            "框架 `{id}` 安装包不是文件：{}",
+            "{kind} `{id}` 安装包不是文件：{}",
             package_path.display()
         ));
     }
-    if metadata.len() > FRAMEWORK_PACKAGE_MAX_BYTES {
+    if metadata.len() > max_bytes {
         return Err(format!(
-            "框架 `{id}` 安装包超过 {} 字节限制：{}",
-            FRAMEWORK_PACKAGE_MAX_BYTES,
+            "{kind} `{id}` 安装包超过 {max_bytes} 字节限制：{}",
             package_path.display()
         ));
     }
 
     let package = fs::read(package_path).map_err(|error| {
         format!(
-            "无法读取框架 `{id}` 安装包 `{}`：{error}",
+            "无法读取{kind} `{id}` 安装包 `{}`：{error}",
             package_path.display()
         )
     })?;
     let checksum_path = package_path.with_extension("zip.sha256");
     let checksum = fs::read_to_string(&checksum_path).map_err(|error| {
         format!(
-            "无法读取框架 `{id}` 校验文件 `{}`：{error}",
+            "无法读取{kind} `{id}` 校验文件 `{}`：{error}",
             checksum_path.display()
         )
     })?;
@@ -734,18 +1390,274 @@ fn read_verified_framework_package(id: &str, package_path: &Path) -> Result<Vec<
     let package_name = package_path.file_name().and_then(|name| name.to_str());
     if expected_hash.is_none() || expected_name != package_name || fields.next().is_some() {
         return Err(format!(
-            "框架 `{id}` 校验文件格式无效：{}",
+            "{kind} `{id}` 校验文件格式无效：{}",
             checksum_path.display()
         ));
     }
     let actual_hash = format!("{:x}", Sha256::digest(&package));
     if !actual_hash.eq_ignore_ascii_case(expected_hash.expect("validated checksum hash")) {
         return Err(format!(
-            "框架 `{id}` 安装包 SHA-256 不匹配：{}",
+            "{kind} `{id}` 安装包 SHA-256 不匹配：{}",
             package_path.display()
         ));
     }
     Ok(package)
+}
+
+fn packaged_art_catalog_candidates(current_exe: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os(ART_PACKAGE_CATALOG_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        candidates.push(root.join("summary.json"));
+    }
+    let packaged = current_exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("packages")
+        .join("arts")
+        .join("summary.json");
+    if !candidates.iter().any(|candidate| candidate == &packaged) {
+        candidates.push(packaged);
+    }
+    candidates
+}
+
+fn packaged_art_sha256_allowlist(current_exe: &Path) -> Result<Vec<String>, String> {
+    let Some(catalog_path) = packaged_art_catalog_candidates(current_exe)
+        .into_iter()
+        .find(|path| path.is_file())
+    else {
+        return Ok(Vec::new());
+    };
+    let catalog_bytes = fs::read(&catalog_path).map_err(|error| {
+        format!(
+            "无法读取打包 Art 目录 `{}`：{error}",
+            catalog_path.display()
+        )
+    })?;
+    let catalog: PackagedArtCatalog = serde_json::from_slice(&catalog_bytes).map_err(|error| {
+        format!(
+            "无法解析打包 Art 目录 `{}`：{error}",
+            catalog_path.display()
+        )
+    })?;
+    if catalog.packages.is_empty() {
+        return Err(format!("打包 Art 目录为空：{}", catalog_path.display()));
+    }
+
+    let mut art_ids = BTreeSet::new();
+    let mut hashes = Vec::with_capacity(catalog.packages.len());
+    for entry in &catalog.packages {
+        validate_packaged_art_entry(entry)?;
+        if !art_ids.insert(entry.id.as_str()) {
+            return Err(format!("打包 Art 目录包含重复 ID：{}", entry.id));
+        }
+        hashes.push(entry.sha256.to_ascii_lowercase());
+    }
+    Ok(hashes)
+}
+
+fn desktop_control_plane_root() -> PathBuf {
+    std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("APPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|root| root.join("Loom").join("control-plane"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".runtime").join("loom").join("control-plane"))
+}
+
+fn validate_packaged_art_entry(entry: &PackagedArtCatalogEntry) -> Result<(), String> {
+    for (kind, value) in [
+        ("Art", entry.id.as_str()),
+        ("框架", entry.framework.as_str()),
+    ] {
+        if value.is_empty()
+            || value.len() > 256
+            || value.contains("..")
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(format!("打包{kind} ID 无效：{value}"));
+        }
+    }
+    if entry.zip != format!("{}.zip", entry.id) {
+        return Err(format!("打包 Art `{}` 的 ZIP 文件名无效。", entry.id));
+    }
+    if entry.sha256.len() != 64 || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("打包 Art `{}` 的 SHA-256 无效。", entry.id));
+    }
+    Ok(())
+}
+
+fn bootstrap_packaged_arts_from_exe(
+    base_url: &str,
+    current_exe: &Path,
+    control_plane_root: &Path,
+) -> Result<PackagedArtBootstrapResult, String> {
+    let _bootstrap_guard = PACKAGED_ART_BOOTSTRAP_LOCK
+        .lock()
+        .map_err(|_| "打包 Art 初始化锁已损坏。".to_string())?;
+    let Some(catalog_path) = packaged_art_catalog_candidates(current_exe)
+        .into_iter()
+        .find(|path| path.is_file())
+    else {
+        return Ok(PackagedArtBootstrapResult {
+            available: false,
+            applied: false,
+            catalog_hash: None,
+            framework_ids: Vec::new(),
+            art_ids: Vec::new(),
+        });
+    };
+    let catalog_bytes = fs::read(&catalog_path).map_err(|error| {
+        format!(
+            "无法读取打包 Art 目录 `{}`：{error}",
+            catalog_path.display()
+        )
+    })?;
+    let catalog_hash = format!("{:x}", Sha256::digest(&catalog_bytes));
+    let catalog: PackagedArtCatalog = serde_json::from_slice(&catalog_bytes).map_err(|error| {
+        format!(
+            "无法解析打包 Art 目录 `{}`：{error}",
+            catalog_path.display()
+        )
+    })?;
+    if catalog.packages.is_empty() {
+        return Err(format!("打包 Art 目录为空：{}", catalog_path.display()));
+    }
+
+    let mut art_ids = Vec::new();
+    let mut framework_ids = Vec::new();
+    for entry in &catalog.packages {
+        validate_packaged_art_entry(entry)?;
+        if art_ids.contains(&entry.id) {
+            return Err(format!("打包 Art 目录包含重复 ID：{}", entry.id));
+        }
+        art_ids.push(entry.id.clone());
+        if !framework_ids.contains(&entry.framework) {
+            framework_ids.push(entry.framework.clone());
+        }
+    }
+
+    let marker_path = control_plane_root
+        .join("migrations")
+        .join("packaged-arts.sha256");
+    let catalog_already_applied = fs::read_to_string(&marker_path)
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(&catalog_hash));
+
+    let framework_response = http_get_json(base_url, "/v1/frameworks")?;
+    let framework_statuses = framework_response
+        .get("frameworks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Loom 本地服务没有返回框架数组。".to_string())?;
+    let mut framework_changed = false;
+    for framework_id in &framework_ids {
+        let official_qualified_id = format!("neuro.official/{framework_id}");
+        let status = framework_statuses.iter().find(|status| {
+            status.get("id").and_then(Value::as_str) == Some(framework_id.as_str())
+                || status.get("qualifiedId").and_then(Value::as_str)
+                    == Some(official_qualified_id.as_str())
+        });
+        let installed = status
+            .and_then(|value| value.get("installed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let enabled = status
+            .and_then(|value| value.get("enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let ready = status
+            .and_then(|value| value.get("ready"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let installed_version = status
+            .and_then(|value| value.get("version"))
+            .and_then(Value::as_str);
+        let bundled_version = packaged_framework_version(current_exe, framework_id);
+        let needs_upgrade = installed
+            && ready
+            && bundled_version
+                .as_deref()
+                .is_some_and(|version| installed_version != Some(version));
+        if needs_upgrade {
+            upgrade_packaged_framework_from_exe(base_url, framework_id, current_exe)?;
+            framework_changed = true;
+        } else if !installed || (enabled && !ready) {
+            install_packaged_framework_from_exe(base_url, framework_id, current_exe)?;
+            framework_changed = true;
+        } else if !enabled {
+            http_post_json_with_timeout(
+                base_url,
+                &format!(
+                    "/v1/frameworks/{}/enable",
+                    percent_encode_path_segment(framework_id)
+                ),
+                &serde_json::json!({}),
+                Duration::from_secs(60),
+            )?;
+        }
+    }
+
+    // A framework upgrade can invalidate the version lock captured by an
+    // already-installed Art package. Reinstall the bundled Art packages in
+    // that case so their dependency lock points at the active framework.
+    let should_install_arts = !catalog_already_applied || framework_changed;
+    if !should_install_arts {
+        return Ok(PackagedArtBootstrapResult {
+            available: true,
+            applied: false,
+            catalog_hash: Some(catalog_hash),
+            framework_ids,
+            art_ids,
+        });
+    }
+
+    let catalog_root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
+    for entry in &catalog.packages {
+        let package_path = catalog_root.join(&entry.zip);
+        let package = read_verified_art_package(&entry.id, &package_path)?;
+        let actual_hash = format!("{:x}", Sha256::digest(&package));
+        if !actual_hash.eq_ignore_ascii_case(&entry.sha256) {
+            return Err(format!("打包 Art `{}` 的目录哈希不匹配。", entry.id));
+        }
+        http_post_json_with_timeout(
+            base_url,
+            "/v1/arts/install",
+            &serde_json::json!({
+                "zipBase64": base64_encode(&package),
+                "bundledCatalog": true,
+            }),
+            Duration::from_secs(120),
+        )?;
+    }
+
+    if let Some(parent) = marker_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("无法创建打包 Art 迁移目录 `{}`：{error}", parent.display())
+        })?;
+    }
+    fs::write(&marker_path, format!("{catalog_hash}\n")).map_err(|error| {
+        format!(
+            "无法写入打包 Art 迁移标记 `{}`：{error}",
+            marker_path.display()
+        )
+    })?;
+
+    Ok(PackagedArtBootstrapResult {
+        available: true,
+        applied: true,
+        catalog_hash: Some(catalog_hash),
+        framework_ids,
+        art_ids,
+    })
 }
 
 fn percent_encode_path_segment(value: &str) -> String {
@@ -766,8 +1678,11 @@ fn percent_encode_path_segment(value: &str) -> String {
 // can build a correct `data:` URL.
 fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), String> {
     let (host, port) = parse_loopback_http_url(base_url)?;
-    let mut stream = TcpStream::connect((host.as_str(), port))
-        .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
+    let mut stream = TcpStream::connect_timeout(
+        &loopback_socket_addr(&host, port)?,
+        LOOM_DAEMON_CONNECT_TIMEOUT,
+    )
+    .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| format!("无法设置 Loom 本地服务读取超时：{error}"))?;
@@ -869,6 +1784,15 @@ fn parse_loopback_http_url(base_url: &str) -> Result<(String, u16), String> {
     Ok((host.trim_matches(&['[', ']'][..]).to_string(), port))
 }
 
+fn loopback_socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
+    let ip = match host {
+        "127.0.0.1" | "localhost" => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        "::1" => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        _ => return Err("Loom 桌面端只连接回环地址上的本地服务。".to_string()),
+    };
+    Ok(SocketAddr::new(ip, port))
+}
+
 #[cfg(target_os = "windows")]
 fn configured_webview2_browser_args() -> Option<String> {
     let port = std::env::var(LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV)
@@ -901,8 +1825,21 @@ pub fn run() {
     configure_webview2_browser_args(&mut context);
 
     tauri::Builder::default()
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?;
+                window.set_icon(icon)?;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             resolve_loom_daemon_url,
+            resolve_application_diagnostics,
+            open_application_log_location,
+            open_external_url,
+            get_hook_cache_snapshot,
+            wait_for_hook_cache_settings,
+            clear_hook_cache,
             read_loom_snapshot,
             start_loom_daemon,
             get_loom_daemon_json,
@@ -910,6 +1847,7 @@ pub fn run() {
             delete_loom_daemon_json,
             post_loom_daemon_json,
             install_packaged_framework,
+            bootstrap_packaged_arts,
             read_hook_canvas_preview
         ])
         .run(context)
@@ -1052,8 +1990,74 @@ mod tests {
     }
 
     #[test]
+    fn application_diagnostics_expose_build_repositories_and_six_character_commits() {
+        for (app, repository) in [
+            ("loom", "https://github.com/aiaimimi0920/Loom"),
+            ("hook", "https://github.com/aiaimimi0920/Hook"),
+        ] {
+            let diagnostics = application_diagnostics(app).expect("application diagnostics");
+            assert_eq!(diagnostics.repository_url.as_deref(), Some(repository));
+            let commit = diagnostics.commit_short.expect("embedded commit");
+            assert_eq!(commit.len(), 6);
+            assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert!(is_allowed_repository_url(repository));
+        }
+        assert!(!is_allowed_repository_url("https://example.com/untrusted"));
+    }
+
+    #[test]
+    fn hook_cache_snapshot_and_clear_only_manage_hook_temporary_files() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("hook-cache");
+        let clipboard = root.join("clipboard");
+        let app_data = root.join("app-data");
+        let image_search = app_data.join("image-search-cache");
+        fs::create_dir_all(&clipboard).expect("create clipboard cache");
+        fs::create_dir_all(&image_search).expect("create image search cache");
+        fs::write(clipboard.join("capture.png"), vec![1_u8; 12]).expect("write clipboard cache");
+        fs::write(image_search.join("remote_test.png"), vec![2_u8; 20])
+            .expect("write image search cache");
+        fs::write(
+            app_data.join("session.json"),
+            br#"{"recycleBin":[{},{}],"referenceLibrary":[{}]}"#,
+        )
+        .expect("write session");
+        fs::write(
+            app_data.join("app-settings.json"),
+            br#"{"cache":{"recycleBinMaxEntries":50,"recycleBinRetentionDays":30,"tempCacheMaxBytes":0,"tempCacheRetentionDays":0}}"#,
+        )
+        .expect("write app settings");
+        let previous_clipboard = std::env::var("HOOK_CLIPBOARD_CACHE_DIR").ok();
+        let previous_app_data = std::env::var("HOOK_APPDATA_DIR").ok();
+        std::env::set_var("HOOK_CLIPBOARD_CACHE_DIR", &clipboard);
+        std::env::set_var("HOOK_APPDATA_DIR", &app_data);
+
+        let before = hook_cache_snapshot().expect("cache snapshot");
+        assert_eq!(
+            read_hook_persisted_cache_settings(),
+            Some(HookCachePreferences {
+                recycle_bin_max_entries: 50,
+                recycle_bin_retention_days: 30,
+                temp_cache_max_bytes: 0,
+                temp_cache_retention_days: 0,
+            })
+        );
+        assert_eq!(before.temporary.bytes, 12);
+        assert_eq!(before.recycle_bin_entries, 2);
+        assert_eq!(before.reference_entries, 1);
+        let cleared = clear_hook_cache("temporary".to_owned()).expect("clear temporary cache");
+        assert_eq!(cleared.freed_bytes, 12);
+        assert_eq!(cleared.snapshot.temporary.bytes, 0);
+        assert!(image_search.join("remote_test.png").is_file());
+
+        restore_env("HOOK_CLIPBOARD_CACHE_DIR", previous_clipboard);
+        restore_env("HOOK_APPDATA_DIR", previous_app_data);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn offline_snapshot_preserves_settings_links() {
-        let snapshot = read_loom_snapshot(Some("http://127.0.0.1:9".to_string()));
+        let snapshot = read_loom_snapshot_blocking(Some("http://127.0.0.1:9".to_string()));
 
         assert_eq!(snapshot.base_url, "http://127.0.0.1:9");
         assert_eq!(snapshot.connection_state, "offline");
@@ -1126,7 +2130,8 @@ mod tests {
                 .expect("write snapshot response");
         });
 
-        let snapshot = read_loom_snapshot(Some(format!("http://127.0.0.1:{}", address.port())));
+        let snapshot =
+            read_loom_snapshot_blocking(Some(format!("http://127.0.0.1:{}", address.port())));
         shutdown_tx.send(()).expect("stop snapshot fixture");
         server.join().expect("join snapshot fixture");
 
@@ -1151,7 +2156,7 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept error request");
             let mut request = [0_u8; 512];
             let _ = stream.read(&mut request).expect("read error request");
-            let body = r#"{"error":{"code":"framework_install_failed","message":"framework `python_art` has no available package source"}}"#;
+            let body = r#"{"error":{"code":"framework_install_failed","message":"framework `process` has no available package source"}}"#;
             let response = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -1163,7 +2168,7 @@ mod tests {
 
         let error = http_post_json(
             &format!("http://127.0.0.1:{}", address.port()),
-            "/v1/frameworks/python_art/install",
+            "/v1/frameworks/process/install",
             &serde_json::json!({}),
         )
         .expect_err("framework install must fail");
@@ -1227,6 +2232,124 @@ mod tests {
 
         assert!(error.contains("SHA-256 不匹配"), "{error}");
         fs::remove_dir_all(root).expect("cleanup checksum fixture");
+    }
+
+    #[test]
+    fn packaged_art_checksum_mismatch_is_rejected() {
+        let root = unique_temp_dir("art-checksum");
+        let package_path = root.join("sample-art.zip");
+        fs::write(&package_path, b"art-package").expect("write package");
+        fs::write(
+            package_path.with_extension("zip.sha256"),
+            format!("{}  sample-art.zip\n", "0".repeat(64)),
+        )
+        .expect("write checksum");
+
+        let error = read_verified_art_package("sample-art", &package_path)
+            .expect_err("mismatched checksum must fail");
+
+        assert!(error.contains("SHA-256 不匹配"), "{error}");
+        fs::remove_dir_all(root).expect("cleanup checksum fixture");
+    }
+
+    #[test]
+    fn packaged_art_bootstrap_installs_catalog_once() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_catalog = std::env::var(ART_PACKAGE_CATALOG_ENV).ok();
+        std::env::remove_var(ART_PACKAGE_CATALOG_ENV);
+
+        let root = unique_temp_dir("art-bootstrap");
+        let desktop_exe = root.join("Loom.exe");
+        let catalog_root = root.join("packages").join("arts");
+        let control_plane_root = root.join("control-plane");
+        fs::create_dir_all(&catalog_root).expect("create Art catalog");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop placeholder");
+
+        let mut packages = Vec::new();
+        let mut expected_hashes = Vec::new();
+        for id in ["sample-a", "sample-b"] {
+            let package = format!("independent-{id}").into_bytes();
+            let hash = format!("{:x}", Sha256::digest(&package));
+            expected_hashes.push(hash.clone());
+            let package_path = catalog_root.join(format!("{id}.zip"));
+            fs::write(&package_path, &package).expect("write Art package");
+            fs::write(
+                package_path.with_extension("zip.sha256"),
+                format!("{hash}  {id}.zip\n"),
+            )
+            .expect("write Art checksum");
+            packages.push(serde_json::json!({
+                "id": id,
+                "framework": "process",
+                "zip": format!("{id}.zip"),
+                "sha256": hash,
+            }));
+        }
+        fs::write(
+            catalog_root.join("summary.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "configuration": "Release",
+                "packages": packages,
+            }))
+            .expect("serialize Art catalog"),
+        )
+        .expect("write Art catalog");
+
+        assert_eq!(
+            packaged_art_sha256_allowlist(&desktop_exe).expect("read packaged Art allowlist"),
+            expected_hashes,
+        );
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind Art bootstrap fixture");
+        let address = listener
+            .local_addr()
+            .expect("read Art bootstrap fixture address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for (status, body) in [
+                (
+                    "200 OK",
+                    r#"{"frameworks":[{"id":"process","qualifiedId":"neuro.official/process","installed":true,"enabled":true,"ready":true}]}"#,
+                ),
+                ("200 OK", r#"{"tool":{"id":"sample-a"}}"#),
+                ("200 OK", r#"{"tool":{"id":"sample-b"}}"#),
+            ] {
+                let (mut stream, _) = listener.accept().expect("accept Art bootstrap request");
+                request_tx
+                    .send(read_test_http_request(&mut stream))
+                    .expect("record Art bootstrap request");
+                write_test_json_response(&mut stream, status, body);
+            }
+        });
+
+        let base_url = format!("http://127.0.0.1:{}", address.port());
+        let first = bootstrap_packaged_arts_from_exe(&base_url, &desktop_exe, &control_plane_root)
+            .expect("bootstrap packaged Arts");
+        server.join().expect("join Art bootstrap fixture");
+
+        assert!(first.available);
+        assert!(first.applied);
+        assert_eq!(first.framework_ids, vec!["process"]);
+        assert_eq!(first.art_ids, vec!["sample-a", "sample-b"]);
+        let requests = [
+            request_rx.recv().expect("framework listing request"),
+            request_rx.recv().expect("first Art install request"),
+            request_rx.recv().expect("second Art install request"),
+        ];
+        assert!(requests[0].starts_with("GET /v1/frameworks HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /v1/arts/install HTTP/1.1"));
+        assert!(requests[2].starts_with("POST /v1/arts/install HTTP/1.1"));
+        assert!(requests[1].contains("\"bundledCatalog\":true"));
+        assert!(requests[2].contains("\"bundledCatalog\":true"));
+
+        let second = bootstrap_packaged_arts_from_exe(&base_url, &desktop_exe, &control_plane_root)
+            .expect("skip previously applied catalog");
+        assert!(second.available);
+        assert!(!second.applied);
+        assert_eq!(second.catalog_hash, first.catalog_hash);
+
+        fs::remove_dir_all(root).expect("cleanup Art bootstrap fixture");
+        restore_env(ART_PACKAGE_CATALOG_ENV, previous_catalog);
     }
 
     #[test]
@@ -1348,7 +2471,8 @@ mod tests {
             }
         });
 
-        let snapshot = read_loom_snapshot(Some(format!("http://127.0.0.1:{}", address.port())));
+        let snapshot =
+            read_loom_snapshot_blocking(Some(format!("http://127.0.0.1:{}", address.port())));
         server.join().expect("join disappearing fixture");
 
         assert_eq!(snapshot.connection_state, "offline");
@@ -1392,7 +2516,7 @@ mod tests {
 
     #[test]
     fn rejects_non_loopback_daemon_url() {
-        let snapshot = read_loom_snapshot(Some("http://example.com:8765".to_string()));
+        let snapshot = read_loom_snapshot_blocking(Some("http://example.com:8765".to_string()));
 
         assert_eq!(snapshot.connection_state, "offline");
         assert_eq!(

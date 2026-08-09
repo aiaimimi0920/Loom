@@ -3,14 +3,21 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use loom_process::ProcessSpec;
 use loom_protocol::{
     ArtRuntimeManifest, FrameworkExecuteRequest, ART_RUNTIME_PROTOCOL_VERSION,
     FRAMEWORK_PROTOCOL_VERSION,
 };
-use loom_process::ProcessSpec;
 use serde_json::{json, Value};
 
+mod mcp;
+
 const MAX_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
+// Art runtimes commonly return image payloads as base64 inside a JSON response.
+// Keep the outer framework process limit bounded, but allow the nested runtime
+// to return a full-size image without being killed at the historical 8 MiB cap.
+const MAX_ART_RUNTIME_STDOUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ART_RUNTIME_STDERR_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() {
     if let Err(error) = run() {
@@ -55,17 +62,37 @@ fn run() -> Result<(), String> {
             ));
         }
     }
-    let art_dir = request.art_dir;
+    let art_dir = request.art_dir.clone();
     if !art_dir.is_dir() {
-        return Err(format!("Art directory does not exist: {}", art_dir.display()));
+        return Err(format!(
+            "Art directory does not exist: {}",
+            art_dir.display()
+        ));
     }
 
+    let runtime_payload = if framework_id == "mcp" {
+        let execution = mcp::execute(&request, &art_dir)?;
+        let mut payload = serde_json::to_value(&request)
+            .map_err(|error| format!("cannot serialize framework request: {error}"))?;
+        if let Some(context) = payload.get_mut("context").and_then(Value::as_object_mut) {
+            context.insert("credentials".to_owned(), Value::Array(Vec::new()));
+        }
+        payload
+            .as_object_mut()
+            .expect("framework request serializes as an object")
+            .insert("frameworkData".to_owned(), json!({ "mcp": execution }));
+        payload
+    } else {
+        serde_json::from_str(request_text.trim())
+            .map_err(|error| format!("invalid framework request JSON: {error}"))?
+    };
+
     let runtime_manifest_path = art_dir.join("art.runtime.json");
-    let runtime_manifest: ArtRuntimeManifest = serde_json::from_slice(
-        &fs::read(&runtime_manifest_path)
-            .map_err(|error| format!("cannot read {}: {error}", runtime_manifest_path.display()))?,
-    )
-    .map_err(|error| format!("invalid {}: {error}", runtime_manifest_path.display()))?;
+    let runtime_manifest: ArtRuntimeManifest =
+        serde_json::from_slice(&fs::read(&runtime_manifest_path).map_err(|error| {
+            format!("cannot read {}: {error}", runtime_manifest_path.display())
+        })?)
+        .map_err(|error| format!("invalid {}: {error}", runtime_manifest_path.display()))?;
     if runtime_manifest.protocol_version != ART_RUNTIME_PROTOCOL_VERSION {
         return Err(format!(
             "unsupported Art runtime protocol: {}",
@@ -82,7 +109,11 @@ fn run() -> Result<(), String> {
     let mut process = ProcessSpec::new(&command_path);
     process.args = args;
     process.current_dir = Some(art_dir.clone());
-    let mut payload = request_text.trim().as_bytes().to_vec();
+    process.limits.stdout_bytes = MAX_ART_RUNTIME_STDOUT_BYTES;
+    process.limits.stderr_bytes = MAX_ART_RUNTIME_STDERR_BYTES;
+    configure_packaged_runtimes(&mut process);
+    let mut payload = serde_json::to_vec(&runtime_payload)
+        .map_err(|error| format!("cannot serialize Art runtime request: {error}"))?;
     payload.push(b'\n');
     let output = loom_process::run_with_input(&process, &payload)
         .map_err(|error| format!("Art runtime `{command}` failed: {error}"))?;
@@ -106,9 +137,9 @@ fn run() -> Result<(), String> {
     match serde_json::from_str::<Value>(&stdout) {
         Ok(mut value) if value.get("status").is_some() => {
             if let Some(object) = value.as_object_mut() {
-                object
-                    .entry("diagnostics".to_owned())
-                    .or_insert_with(|| serde_json::to_value(&output.diagnostics).unwrap_or_default());
+                object.entry("diagnostics".to_owned()).or_insert_with(|| {
+                    serde_json::to_value(&output.diagnostics).unwrap_or_default()
+                });
             }
             write_response(value)
         }
@@ -126,6 +157,38 @@ fn run() -> Result<(), String> {
         })),
     }
     Ok(())
+}
+
+fn configure_packaged_runtimes(process: &mut ProcessSpec) {
+    let Some(package_root) = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_path_buf))
+    else {
+        return;
+    };
+    let python_root = package_root.join("python-embed");
+    if !python_root.is_dir() {
+        return;
+    }
+    let mut paths = vec![python_root.clone()];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    if let Ok(path) = env::join_paths(paths) {
+        process
+            .env
+            .insert("PATH".to_owned(), path.to_string_lossy().into_owned());
+    }
+    process.env.insert(
+        "LOOM_PYTHON".to_owned(),
+        python_root
+            .join("python.exe")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    process
+        .env
+        .insert("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned());
 }
 
 fn parse_framework_id() -> Option<String> {
@@ -180,7 +243,10 @@ fn resolve_command(art_dir: &Path, command: &str) -> Result<PathBuf, String> {
         let canonical_art_dir = fs::canonicalize(art_dir)
             .map_err(|error| format!("cannot resolve Art directory: {error}"))?;
         let canonical_candidate = fs::canonicalize(&candidate).map_err(|error| {
-            format!("cannot resolve Art runtime command {}: {error}", candidate.display())
+            format!(
+                "cannot resolve Art runtime command {}: {error}",
+                candidate.display()
+            )
         })?;
         if !canonical_candidate.starts_with(&canonical_art_dir) {
             return Err("Art runtime command resolves outside the Art package".to_owned());

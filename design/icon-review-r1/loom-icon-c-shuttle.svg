@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Loom icon C - Shuttle</title>
+  <desc id="desc">A compact loom shuttle crossed by a signal-yellow thread.</desc>
+  <defs>
+    <filter id="greenGlow" x="-55%" y="-75%" width="210%" height="250%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.13  0 0 0 0 0.77  0 0 0 0 0.37  0 0 0 0.64 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="yellowGlow" x="-40%" y="-100%" width="180%" height="300%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 1  0 0 0 0 0.9  0 0 0 0 0  0 0 0 0.7 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M232 512 402 318h220l170 194-170 194H402L232 512Z" stroke="#22C55E" stroke-width="74" filter="url(#greenGlow)"/>
+    <path d="M354 512h316" stroke="#FFE600" stroke-width="78" filter="url(#yellowGlow)"/>
+  </g>
+</svg>

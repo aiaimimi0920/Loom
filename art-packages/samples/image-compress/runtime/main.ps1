@@ -19,7 +19,7 @@ try {
     }
 
     $quality = [double](Get-RequestParamValue -Request $request -Names @("quality_num", "quality") -DefaultValue 90)
-    $output = New-ImageOutput -Path $outputPath -Extra @{
+    $output = New-ImagePathOutput -Path $outputPath -Extra @{
         quality_num = $quality
         lossless = [bool](Get-RequestParamValue -Request $request -Names @("lossless") -DefaultValue $true)
         compression = "png-reencode"

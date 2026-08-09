@@ -22,16 +22,9 @@ function ConvertFrom-UnicodeCodePoints {
 $imageSearchLabel = ConvertFrom-UnicodeCodePoints @(0x56FE, 0x7247, 0x641C, 0x7D22)
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$frameworkArtifactFullPath = if ([System.IO.Path]::IsPathRooted($FrameworkArtifactRoot)) {
-    [System.IO.Path]::GetFullPath($FrameworkArtifactRoot)
-} else {
-    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $FrameworkArtifactRoot))
-}
 $frameworkIds = @(
-    "cli_wrapper",
+    "process",
     "cloud_api",
-    "script",
-    "python_art",
     "mcp",
     "workflow"
 )
@@ -44,6 +37,13 @@ if (-not [string]::IsNullOrWhiteSpace($PackageDir)) {
     } else {
         [System.IO.Path]::GetFullPath((Join-Path $repoRoot $PackageDir))
     }
+}
+$frameworkArtifactFullPath = if ($null -ne $packageFullPath -and -not $PSBoundParameters.ContainsKey("FrameworkArtifactRoot")) {
+    [System.IO.Path]::GetFullPath((Join-Path $packageFullPath "packages\frameworks"))
+} elseif ([System.IO.Path]::IsPathRooted($FrameworkArtifactRoot)) {
+    [System.IO.Path]::GetFullPath($FrameworkArtifactRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $FrameworkArtifactRoot))
 }
 $EvidenceRoot = if ([System.IO.Path]::IsPathRooted($EvidenceRoot)) {
     [System.IO.Path]::GetFullPath($EvidenceRoot)
@@ -738,67 +738,74 @@ for raw_line in sys.stdin:
 Write-Utf8NoBomFile -Path $mcpScriptPath -Content $mcpScript
 
 
+$processImageRuntime = @'
+$ErrorActionPreference = "Stop"
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$inputValue = $request.inputs.input
+if ($null -eq $inputValue) { $inputValue = $request.inputs.input_base64 }
+if ($inputValue -isnot [string]) {
+    $inputValue = [string]$inputValue.data
+}
+$response = [ordered]@{
+    status = "success"
+    output = [ordered]@{
+        output_base64 = $inputValue
+        content = @(
+            [ordered]@{
+                type = "image"
+                data = $inputValue
+                mimeType = "image/png"
+            }
+        )
+    }
+}
+[Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
+'@
+$processRuntimeManifest = @{
+    protocolVersion = "loom.art.runtime.v1"
+    entry = @{
+        command = "powershell.exe"
+        args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "runtime/main.ps1")
+    }
+}
 $cliManifest = @{
     id = "store-cli-art"
     name = "Store CLI Art"
-    description = "Fake store cli_wrapper Art"
+    description = "Fake store command-backed process Art"
     enabled = $true
-    execution = if ($isWindows) {
-        @{
-            type = "cli_wrapper"
-            command = "powershell.exe"
-            args = @(
-                "-NoProfile",
-                "-Command",
-                "Copy-Item -LiteralPath '{{input}}' -Destination '{{output}}' -Force"
-            )
-        }
-    } else {
-        @{
-            type = "cli_wrapper"
-            command = "sh"
-            args = @(
-                "-c",
-                "cp `"$1`" `"$2`"",
-                "loom-cli-wrapper",
-                "{{input}}",
-                "{{output}}"
-            )
-        }
+    execution = @{
+        type = "framework_art"
+        framework = "process"
+    }
+    metadata = @{
+        packageSecurity = @{ version = "1.0.0" }
+        dependencies = @{ framework = "process" }
     }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cli-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $cliManifest)
+    "art.runtime.json" = (ConvertTo-NormalizedJson $processRuntimeManifest)
+    "runtime/main.ps1" = $processImageRuntime
 }
 
-$scriptSource = @'
-$ErrorActionPreference = "Stop"
-$payload = $args[0] | ConvertFrom-Json
-$arguments = $payload.arguments
-$response = [ordered]@{
-    content = @(
-        [ordered]@{
-            type = "image"
-            data = [string]$arguments.input_base64
-            mimeType = "image/png"
-        }
-    )
-}
-[Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
-'@
 $scriptManifest = @{
     id = "store-script-art"
     name = "Store Script Art"
-    description = "Fake store script Art"
+    description = "Fake store script-backed process Art"
     enabled = $true
     execution = @{
-        type = "script"
-        path = "script.ps1"
+        type = "framework_art"
+        framework = "process"
+    }
+    metadata = @{
+        packageSecurity = @{ version = "1.0.0" }
+        dependencies = @{ framework = "process" }
     }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-script-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $scriptManifest)
-    "script.ps1" = $scriptSource
+    "art.runtime.json" = (ConvertTo-NormalizedJson $processRuntimeManifest)
+    "runtime/main.ps1" = $processImageRuntime
 }
 
 $cloudManifest = @{
@@ -811,71 +818,63 @@ $cloudManifest = @{
         endpoint = "http://127.0.0.1:$cloudPort/image"
         method = "POST"
     }
+    metadata = @{ packageSecurity = @{ version = "1.0.0" } }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cloud-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $cloudManifest)
 }
 
-$pythonArtJson = @'
-{
-  "art_id": "store_echo",
-  "label": "Store Echo",
-  "description": "Fake store Python Art fixture",
-  "version": "1.0.0",
-  "execution": {
-    "engine": "python",
-    "entry": "main.py"
-  },
-  "signature": {
-    "inputs": [
-      {
-        "id": "text",
-        "label": "Text",
-        "type": "String"
-      }
-    ],
-    "outputs": [
-      {
-        "id": "text",
-        "label": "Text",
-        "type": "String"
-      }
-    ]
-  },
-  "variables": []
-}
-'@
 $pythonMain = @'
 #!/usr/bin/env python3
+import json
 import sys
 
-
-def main(args):
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"python art saw {args.get('text', '')}",
-            }
-        ],
+request = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
+arguments = {}
+arguments.update(request.get("inputs") or {})
+arguments.update(request.get("params") or {})
+text = str(arguments.get("text", ""))
+print(json.dumps({
+    "status": "success",
+    "output": {
+        "content": [{"type": "text", "text": f"python art saw {text}"}],
         "pythonExecutable": sys.executable,
-    }
+    },
+}, separators=(",", ":")))
 '@
+$pythonRuntimeManifest = @{
+    protocolVersion = "loom.art.runtime.v1"
+    entry = @{
+        command = "python.exe"
+        args = @("runtime/main.py")
+    }
+}
 $pythonManifest = @{
     id = "store-python-art"
     name = "Store Python Art"
-    description = "Fake store python_art Art"
+    description = "Fake store Python-backed process Art"
     enabled = $true
     execution = @{
-        type = "python_art"
-        artId = "store_echo"
-        artPath = "python/Arts/Art_StoreEcho"
+        type = "framework_art"
+        framework = "process"
+    }
+    params = @(
+        @{
+            id = "text"
+            label = "Text"
+            widget = "text"
+            default = ""
+        }
+    )
+    metadata = @{
+        packageSecurity = @{ version = "1.0.0" }
+        dependencies = @{ framework = "process" }
     }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-python-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $pythonManifest)
-    "python/Arts/Art_StoreEcho/art.json" = $pythonArtJson
-    "python/Arts/Art_StoreEcho/main.py" = $pythonMain
+    "art.runtime.json" = (ConvertTo-NormalizedJson $pythonRuntimeManifest)
+    "runtime/main.py" = $pythonMain
 }
 
 $mcpManifest = @{
@@ -901,6 +900,7 @@ $mcpManifest = @{
         @{ id = "count"; default = 2 },
         @{ id = "result_index"; default = 0 }
     )
+    metadata = @{ packageSecurity = @{ version = "1.0.0" } }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $mcpManifest)
@@ -915,6 +915,7 @@ $workflowManifest = @{
         type = "workflow"
         workflowId = "store-script-workflow"
     }
+    metadata = @{ packageSecurity = @{ version = "1.0.0" } }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-workflow-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $workflowManifest)
@@ -983,7 +984,7 @@ try {
     $summary.baseUrl = $baseUrl
 
     $frameworksBefore = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"
-    Assert-Equal 6 (@($frameworksBefore.frameworks).Count) "Framework list must expose exactly six framework ids."
+    Assert-Equal 4 (@($frameworksBefore.frameworks).Count) "Framework list must expose exactly four framework ids."
     $summary.frameworksBefore = $frameworksBefore.frameworks
 
     $catalog = Invoke-JsonGet -Uri "$baseUrl/v1/arts/store/catalog"
@@ -1010,7 +1011,7 @@ try {
         $frameworkInstallReports[$frameworkId] = $frameworkReport.framework
     }
     $installedFrameworkPackageText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5bey5a6J6KOF5qGG5p625YyF"))
-    Assert-Contains $installedFrameworkPackageText ([string]$frameworkInstallReports['python_art'].readyDetail) "python_art ready detail should describe the installed framework package."
+    Assert-Contains $installedFrameworkPackageText ([string]$frameworkInstallReports['process'].readyDetail) "process ready detail should describe the installed framework package."
     $summary.frameworkInstallReports = $frameworkInstallReports
 
     $frameworksAfter = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"

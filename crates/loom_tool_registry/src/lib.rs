@@ -1,5 +1,6 @@
 //! User-managed tool and Art registry contracts for Loom.
 
+pub mod art_settings;
 pub mod credentials;
 pub mod dependency;
 pub mod framework;
@@ -12,13 +13,13 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use loom_process::{ProcessError, ProcessSpec};
+use loom_process::ProcessSpec;
 use loom_protocol::{is_safe_publisher_id, PublisherIdentity};
 use reqwest::blocking::multipart;
 use reqwest::Method;
@@ -26,7 +27,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const TOOLS_FILE: &str = "tools.json";
-const SCRIPT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOUD_API_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_IMAGE_FETCH_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -42,6 +42,8 @@ pub enum ToolRegistryError {
     InvalidToolDefinition { id: String, reason: String },
     #[error("tool `{id}` is disabled")]
     ExecutionRejected { id: String },
+    #[error("tool `{id}` parameter binding failed: {reason}")]
+    ParameterBinding { id: String, reason: String },
     #[error("tool id `{id}` is ambiguous; use a publisher-qualified id")]
     AmbiguousToolId { id: String },
     #[error("tool `{id}` execution type `{execution_type}` is not supported by this runtime")]
@@ -53,73 +55,6 @@ pub enum ToolRegistryError {
     MissingMcpServer { tool_id: String, server_id: String },
     #[error("MCP execution failed: {0}")]
     Mcp(#[from] loom_mcp::McpError),
-    #[error("CLI tool `{id}` failed: {reason}")]
-    CliWrapperFailed { id: String, reason: String },
-    #[error("script `{path}` for tool `{id}` was not found")]
-    ScriptNotFound { id: String, path: String },
-    #[error("script `{path}` for tool `{id}` failed to spawn: {source}")]
-    ScriptSpawn {
-        id: String,
-        path: String,
-        source: std::io::Error,
-    },
-    #[error("script `{path}` for tool `{id}` timed out after {timeout_ms}ms")]
-    ScriptTimedOut {
-        id: String,
-        path: String,
-        timeout_ms: u128,
-    },
-    #[error("script `{path}` for tool `{id}` exited with code {code:?}: {stderr}")]
-    ScriptFailed {
-        id: String,
-        path: String,
-        code: Option<i32>,
-        stderr: String,
-    },
-    #[error("script `{path}` for tool `{id}` returned no stdout")]
-    ScriptEmptyStdout { id: String, path: String },
-    #[error("script `{path}` for tool `{id}` returned invalid JSON: {source}; stdout: {stdout}")]
-    ScriptJson {
-        id: String,
-        path: String,
-        source: serde_json::Error,
-        stdout: String,
-    },
-    #[error("Python Art `{art_id}` for tool `{id}` was not found")]
-    PythonArtNotFound { id: String, art_id: String },
-    #[error("Python Art launcher for tool `{id}` was not found")]
-    PythonArtLauncherNotFound { id: String },
-    #[error("Python Art `{art_id}` for tool `{id}` failed to spawn: {source}")]
-    PythonArtSpawn {
-        id: String,
-        art_id: String,
-        source: std::io::Error,
-    },
-    #[error("Python Art `{art_id}` for tool `{id}` exited with code {code:?}: {stderr}")]
-    PythonArtFailed {
-        id: String,
-        art_id: String,
-        code: Option<i32>,
-        stderr: String,
-    },
-    #[error("Python Art `{art_id}` for tool `{id}` returned no stdout")]
-    PythonArtEmptyStdout { id: String, art_id: String },
-    #[error(
-        "Python Art `{art_id}` for tool `{id}` returned invalid JSON: {source}; stdout: {stdout}"
-    )]
-    PythonArtJson {
-        id: String,
-        art_id: String,
-        source: serde_json::Error,
-        stdout: String,
-    },
-    #[error("Python Art `{art_id}` for tool `{id}` returned status {status}: {message}")]
-    PythonArtStatus {
-        id: String,
-        art_id: String,
-        status: i64,
-        message: String,
-    },
     #[error("cloud API method `{method}` for tool `{id}` is not supported")]
     CloudInvalidMethod { id: String, method: String },
     #[error("cloud API request to `{endpoint}` for tool `{id}` failed: {source}")]
@@ -277,8 +212,6 @@ impl ToolDefinition {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum ToolExecution {
     #[serde(rename_all = "camelCase")]
-    CliWrapper { command: String, args: Vec<String> },
-    #[serde(rename_all = "camelCase")]
     CloudApi {
         #[serde(alias = "url")]
         endpoint: String,
@@ -289,14 +222,6 @@ pub enum ToolExecution {
         headers: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<String>,
-    },
-    #[serde(rename_all = "camelCase")]
-    Script { path: String },
-    #[serde(rename_all = "camelCase")]
-    PythonArt {
-        art_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        art_path: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Mcp {
@@ -320,6 +245,10 @@ pub struct WorkflowExecutionBindings {
     pub inputs: Vec<WorkflowInputBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_output: Option<WorkflowOutputBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_output: Option<WorkflowOutputBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_required_nodes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -342,15 +271,12 @@ pub struct WorkflowOutputBinding {
 impl ToolExecution {
     fn validate(&self, tool_id: &str) -> ToolRegistryResult<()> {
         match self {
-            Self::CliWrapper { command, .. } => require_non_empty(tool_id, command, "command"),
             Self::CloudApi {
                 endpoint, method, ..
             } => {
                 require_non_empty(tool_id, endpoint, "endpoint")?;
                 require_non_empty(tool_id, method, "method")
             }
-            Self::Script { path } => require_non_empty(tool_id, path, "path"),
-            Self::PythonArt { art_id, .. } => require_non_empty(tool_id, art_id, "art_id"),
             Self::Mcp {
                 server_id,
                 tool_name,
@@ -389,10 +315,30 @@ impl ToolRegistry {
     }
 
     pub fn save_tool(&self, tool: ToolDefinition) -> ToolRegistryResult<ToolDefinition> {
+        self.save_tool_inner(tool, false)
+    }
+
+    pub(crate) fn save_packaged_tool(
+        &self,
+        tool: ToolDefinition,
+    ) -> ToolRegistryResult<ToolDefinition> {
+        self.save_tool_inner(tool, true)
+    }
+
+    fn save_tool_inner(
+        &self,
+        tool: ToolDefinition,
+        replace_unpublished: bool,
+    ) -> ToolRegistryResult<ToolDefinition> {
         tool.validate()?;
         self.ensure_root()?;
 
         let mut tools = self.read_tools()?;
+        if replace_unpublished && tool.publisher_identity().is_some() {
+            tools.retain(|existing| {
+                existing.id != tool.id || existing.publisher_identity().is_some()
+            });
+        }
         let qualified_id = tool.qualified_id();
         if let Some(existing) = tools
             .iter_mut()
@@ -479,7 +425,9 @@ impl ToolRegistry {
         match serde_json::from_str(&content) {
             Ok(tools) => Ok(tools),
             Err(error) => {
-                let Some(tools) = recover_tools_with_trailing_delimiters(&content) else {
+                let Some(tools) = recover_tools_with_trailing_delimiters(&content)
+                    .or_else(|| recover_tools_without_obsolete_executions(&content))
+                else {
                     return Err(ToolRegistryError::Json(error));
                 };
                 self.write_corruption_backup(&content)?;
@@ -557,6 +505,32 @@ fn recover_tools_with_trailing_delimiters(content: &str) -> Option<Vec<ToolDefin
         return None;
     }
     Some(tools)
+}
+
+pub(crate) fn is_obsolete_execution_type(execution_type: &str) -> bool {
+    matches!(execution_type, "cli_wrapper" | "python_art" | "script")
+}
+
+fn obsolete_execution_type(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("execution")?
+        .get("type")?
+        .as_str()
+        .filter(|execution_type| is_obsolete_execution_type(execution_type))
+}
+
+fn recover_tools_without_obsolete_executions(content: &str) -> Option<Vec<ToolDefinition>> {
+    let entries = serde_json::from_str::<Vec<serde_json::Value>>(content).ok()?;
+    let mut recovered = Vec::with_capacity(entries.len());
+    let mut removed_obsolete = false;
+    for entry in entries {
+        match serde_json::from_value::<ToolDefinition>(entry.clone()) {
+            Ok(tool) => recovered.push(tool),
+            Err(_) if obsolete_execution_type(&entry).is_some() => removed_obsolete = true,
+            Err(_) => return None,
+        }
+    }
+    removed_obsolete.then_some(recovered)
 }
 
 #[cfg(not(windows))]
@@ -641,6 +615,7 @@ pub fn execute_tool(
         });
     }
 
+    let arguments = prepare_tool_arguments(tool, arguments)?;
     match &tool.execution {
         ToolExecution::Mcp {
             server_id,
@@ -683,13 +658,6 @@ pub fn execute_tool(
             body.as_deref(),
             arguments,
         ),
-        ToolExecution::Script { path } => execute_script_tool(tool, path, arguments),
-        ToolExecution::CliWrapper { command, args } => {
-            execute_cli_wrapper_tool(tool, command, args, arguments)
-        }
-        ToolExecution::PythonArt { art_id, art_path } => {
-            execute_python_art_tool(tool, art_id, art_path.as_deref(), arguments)
-        }
         ToolExecution::FrameworkArt { framework } => {
             framework_process::execute_framework_art(tool, framework, arguments)
         }
@@ -698,6 +666,19 @@ pub fn execute_tool(
             execution_type: execution_type_name(&tool.execution),
         }),
     }
+}
+
+pub fn prepare_tool_arguments(
+    tool: &ToolDefinition,
+    arguments: serde_json::Value,
+) -> ToolRegistryResult<serde_json::Value> {
+    let arguments = art_settings::merge_tool_arguments(tool, arguments);
+    art_settings::resolve_tool_value_bindings(tool, arguments).map_err(|error| {
+        ToolRegistryError::ParameterBinding {
+            id: tool.qualified_id(),
+            reason: error.to_string(),
+        }
+    })
 }
 
 fn find_mcp_tool_input_schema<'a>(
@@ -857,276 +838,6 @@ fn parse_bool_string(value: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
-}
-
-fn execute_python_art_tool(
-    tool: &ToolDefinition,
-    art_id: &str,
-    art_path: Option<&str>,
-    arguments: serde_json::Value,
-) -> ToolRegistryResult<serde_json::Value> {
-    let launcher_path = resolve_python_launcher_path().ok_or_else(|| {
-        ToolRegistryError::PythonArtLauncherNotFound {
-            id: tool.id.clone(),
-        }
-    })?;
-    let plugin_path = resolve_python_art_path(&tool.id, art_id, art_path).ok_or_else(|| {
-        ToolRegistryError::PythonArtNotFound {
-            id: tool.id.clone(),
-            art_id: art_id.to_owned(),
-        }
-    })?;
-    let launcher_path = canonical_process_path(launcher_path);
-    let plugin_path = canonical_process_path(plugin_path);
-    let base_dir = launcher_path
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let request = serde_json::json!({
-        "request_id": format!("loom-python-art-{}", tool.id),
-        "art_id": art_id,
-        "plugin_path": plugin_path,
-        "params": arguments,
-    });
-    let request_json = serde_json::to_string(&request)?;
-    let mut command = Command::new(canonical_process_path(resolve_python_executable()));
-    configure_python_process(&mut command);
-    command
-        .arg(&launcher_path)
-        .arg(request_json)
-        .current_dir(base_dir);
-    let mut process = ProcessSpec::from_command(&command);
-    process.limits.timeout = SCRIPT_EXECUTION_TIMEOUT;
-    let output = loom_process::run_with_input(&process, b"").map_err(|error| {
-        ToolRegistryError::PythonArtSpawn {
-            id: tool.id.clone(),
-            art_id: art_id.to_owned(),
-            source: std::io::Error::other(error.to_string()),
-        }
-    })?;
-
-    if !output.status.success() {
-        return Err(ToolRegistryError::PythonArtFailed {
-            id: tool.id.clone(),
-            art_id: art_id.to_owned(),
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if stdout.is_empty() {
-        return Err(ToolRegistryError::PythonArtEmptyStdout {
-            id: tool.id.clone(),
-            art_id: art_id.to_owned(),
-        });
-    }
-
-    let response: serde_json::Value =
-        serde_json::from_str(&stdout).map_err(|source| ToolRegistryError::PythonArtJson {
-            id: tool.id.clone(),
-            art_id: art_id.to_owned(),
-            source,
-            stdout,
-        })?;
-    let status = response
-        .get("status")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(500);
-    if status != 200 {
-        let message = response
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Python Art execution failed")
-            .to_owned();
-        return Err(ToolRegistryError::PythonArtStatus {
-            id: tool.id.clone(),
-            art_id: art_id.to_owned(),
-            status,
-            message,
-        });
-    }
-
-    let data = response
-        .get("data")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    Ok(normalize_python_art_data(data))
-}
-
-fn normalize_python_art_data(data: serde_json::Value) -> serde_json::Value {
-    if data
-        .get("content")
-        .and_then(serde_json::Value::as_array)
-        .is_some()
-    {
-        return data;
-    }
-    if let Some(text) = data.get("text").and_then(serde_json::Value::as_str) {
-        return text_content_response(text);
-    }
-    if let Some(image) = data
-        .get("output_base64")
-        .or_else(|| data.get("image_base64"))
-        .or_else(|| data.get("image"))
-        .and_then(serde_json::Value::as_str)
-    {
-        return image_content_response(image, "image/png");
-    }
-    if let Some(output_path) = data
-        .get("output_path")
-        .or_else(|| data.get("outputPath"))
-        .and_then(serde_json::Value::as_str)
-    {
-        if let Ok(bytes) = fs::read(output_path) {
-            return image_content_response(
-                &format!("data:image/png;base64,{}", BASE64.encode(bytes)),
-                "image/png",
-            );
-        }
-    }
-    text_content_response(&data.to_string())
-}
-
-fn resolve_python_launcher_path() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    // A framework package installed via the framework registry wins: the
-    // `python_art` package may ship the launcher alongside its interpreter.
-    if let Some(runtime_dir) = framework_packages_root_env() {
-        for base in python_framework_package_dirs(Path::new(&runtime_dir)) {
-            candidates.push(base.join("python").join("Launcher.py"));
-            candidates.push(base.join("Launcher.py"));
-        }
-    }
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-    {
-        candidates.push(exe_dir.join("python").join("Launcher.py"));
-    }
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join("python").join("Launcher.py"));
-        candidates.push(
-            current_dir
-                .join("Loom")
-                .join("resources")
-                .join("python")
-                .join("Launcher.py"),
-        );
-    }
-    candidates.into_iter().find(|candidate| candidate.is_file())
-}
-
-fn resolve_python_art_path(tool_id: &str, art_id: &str, art_path: Option<&str>) -> Option<PathBuf> {
-    if let Some(art_path) = art_path.map(str::trim).filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(art_path);
-        if path.is_dir() {
-            return Some(path);
-        }
-        if path.is_relative() {
-            let control_plane_root = std::env::var("LOOM_CONTROL_PLANE_ROOT")
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())?;
-            let candidate = Path::new(&control_plane_root)
-                .join("arts")
-                .join(tool_id)
-                .join(&path);
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    python_arts_dirs()
-        .into_iter()
-        .find_map(|arts_dir| find_python_art_in_dir(&arts_dir, art_id))
-}
-
-fn python_arts_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    // Arts bundled inside the installed python_art framework package win.
-    if let Some(runtime_dir) = framework_packages_root_env() {
-        for base in python_framework_package_dirs(Path::new(&runtime_dir)) {
-            dirs.push(base.join("python").join("Arts"));
-            dirs.push(base.join("Arts"));
-        }
-    }
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-    {
-        dirs.push(exe_dir.join("python").join("Arts"));
-    }
-    if let Ok(current_dir) = std::env::current_dir() {
-        dirs.push(current_dir.join("python").join("Arts"));
-        dirs.push(
-            current_dir
-                .join("Loom")
-                .join("resources")
-                .join("python")
-                .join("Arts"),
-        );
-    }
-    dirs
-}
-
-fn python_framework_package_dirs(runtime_root: &Path) -> Vec<PathBuf> {
-    let legacy = runtime_root.join("python_art");
-    let mut packages = Vec::new();
-    if let Some(active) = framework::resolve_framework_package_dir(runtime_root, "python_art") {
-        packages.push(active);
-    }
-    if packages.first() != Some(&legacy) {
-        packages.push(legacy);
-    }
-    packages
-}
-
-#[cfg(windows)]
-fn canonical_process_path(path: PathBuf) -> PathBuf {
-    use std::os::windows::ffi::OsStrExt;
-
-    const WINDOWS_LEGACY_PATH_LIMIT: usize = 260;
-    if path.as_os_str().encode_wide().count() < WINDOWS_LEGACY_PATH_LIMIT {
-        return path;
-    }
-    fs::canonicalize(&path).unwrap_or(path)
-}
-
-#[cfg(not(windows))]
-fn canonical_process_path(path: PathBuf) -> PathBuf {
-    path
-}
-
-fn find_python_art_in_dir(arts_dir: &Path, art_id: &str) -> Option<PathBuf> {
-    for entry in fs::read_dir(arts_dir).ok()?.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let art_json_path = path.join("art.json");
-        if !art_json_path.is_file() {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(art_json_path) else {
-            continue;
-        };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        if json
-            .get("art_id")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|candidate| candidate == art_id)
-        {
-            return Some(path);
-        }
-    }
-    None
 }
 
 fn execute_cloud_api_tool(
@@ -2335,403 +2046,9 @@ fn scalar_template_value(value: &serde_json::Value) -> String {
     }
 }
 
-// Substitute one CLI arg token: {{input}}/{input} → input path, {{output}}/
-// {output} → output path, and {{key}}/{key} → param values (bool → arg_true/
-// arg_false or -key/--key flag forms). Mirrors Hook's CliEngine rules.
-fn substitute_cli_token(
-    token: &str,
-    input_path: &str,
-    output_path: &str,
-    params: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    let mut out = token
-        .replace("{{input}}", input_path)
-        .replace("{{output}}", output_path)
-        .replace("{input}", input_path)
-        .replace("{output}", output_path);
-    for (key, value) in params {
-        let s_val = match value {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Bool(b) => b.to_string(),
-            other => other.to_string(),
-        };
-        let (flag_single, flag_double) = match value {
-            serde_json::Value::Bool(true) => (format!("-{key}"), format!("--{key}")),
-            serde_json::Value::Bool(false) => (String::new(), String::new()),
-            serde_json::Value::String(s) => (s.clone(), s.clone()),
-            _ => (s_val.clone(), s_val.clone()),
-        };
-        // Double-brace before single-brace so {key} doesn't match inside {{key}}.
-        out = out
-            .replace(&format!("{{{{-{key}}}}}"), &flag_single)
-            .replace(&format!("{{{{--{key}}}}}"), &flag_double)
-            .replace(&format!("{{{{{key}}}}}"), &s_val)
-            .replace(&format!("{{{key}}}"), &s_val);
-    }
-    out
-}
-
-// Execute a cli_wrapper art in the image flow: decode the input image to a temp
-// file, pre-copy it to an output file (so in-place tools like pingo work),
-// substitute the command/args templates, run the process, then read the output
-// file back as a base64 image. Returns the content-array shape the AHRP flow
-// expects. Best-effort: input must be a decodable image container.
-fn execute_cli_wrapper_tool(
-    tool: &ToolDefinition,
-    command: &str,
-    args: &[String],
-    arguments: serde_json::Value,
-) -> ToolRegistryResult<serde_json::Value> {
-    let obj = arguments.as_object().cloned().unwrap_or_default();
-    let input_field = obj
-        .get("input_base64")
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| obj.get("input").and_then(serde_json::Value::as_str))
-        .ok_or_else(|| ToolRegistryError::CliWrapperFailed {
-            id: tool.id.clone(),
-            reason: "missing input image".to_owned(),
-        })?;
-    let input_bytes = loom_image_io::decode_data_url_bytes(input_field).map_err(|error| {
-        ToolRegistryError::CliWrapperFailed {
-            id: tool.id.clone(),
-            reason: format!("decode input image: {error}"),
-        }
-    })?;
-
-    // Params = all arguments except the image input keys.
-    let mut params = obj.clone();
-    params.remove("input_base64");
-    params.remove("input");
-
-    let temp_dir = std::env::temp_dir().join("loom_cli");
-    fs::create_dir_all(&temp_dir).map_err(|error| ToolRegistryError::CliWrapperFailed {
-        id: tool.id.clone(),
-        reason: format!("temp dir: {error}"),
-    })?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let input_path = temp_dir.join(format!("{stamp}_in.png"));
-    let output_path = temp_dir.join(format!("{stamp}_out.png"));
-    fs::write(&input_path, &input_bytes).map_err(|error| ToolRegistryError::CliWrapperFailed {
-        id: tool.id.clone(),
-        reason: format!("write input: {error}"),
-    })?;
-    // Pre-fill output with input so in-place tools have a target.
-    let _ = fs::copy(&input_path, &output_path);
-
-    let input_str = input_path.to_string_lossy().to_string();
-    let output_str = output_path.to_string_lossy().to_string();
-    let program = substitute_cli_token(command, &input_str, &output_str, &params);
-    let cli_args: Vec<String> = args
-        .iter()
-        .map(|arg| substitute_cli_token(arg, &input_str, &output_str, &params))
-        .filter(|arg| !arg.is_empty())
-        .collect();
-
-    let mut cmd = Command::new(&program);
-    cmd.args(&cli_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut process = ProcessSpec::from_command(&cmd);
-    process.limits.timeout = SCRIPT_EXECUTION_TIMEOUT;
-    let output = loom_process::run_with_input(&process, b"").map_err(|error| {
-        ToolRegistryError::CliWrapperFailed {
-            id: tool.id.clone(),
-            reason: format!("run `{program}`: {error}"),
-        }
-    })?;
-    if !output.status.success() {
-        return Err(ToolRegistryError::CliWrapperFailed {
-            id: tool.id.clone(),
-            reason: format!(
-                "process exited with {:?}: {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        });
-    }
-
-    if !output_path.exists() {
-        return Err(ToolRegistryError::CliWrapperFailed {
-            id: tool.id.clone(),
-            reason: format!(
-                "no output produced (exit {:?}): {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        });
-    }
-    let out_bytes =
-        fs::read(&output_path).map_err(|error| ToolRegistryError::CliWrapperFailed {
-            id: tool.id.clone(),
-            reason: format!("read output: {error}"),
-        })?;
-    let data = BASE64.encode(&out_bytes);
-    Ok(serde_json::json!({
-        "content": [ { "type": "image", "data": data, "mimeType": "image/png" } ]
-    }))
-}
-
-fn execute_script_tool(
-    tool: &ToolDefinition,
-    path: &str,
-    arguments: serde_json::Value,
-) -> ToolRegistryResult<serde_json::Value> {
-    let script_path = Path::new(path);
-    if !script_path.exists() {
-        return Err(ToolRegistryError::ScriptNotFound {
-            id: tool.id.clone(),
-            path: path.to_owned(),
-        });
-    }
-
-    let payload = serde_json::to_string(&serde_json::json!({
-        "tool_id": tool.id,
-        "arguments": arguments,
-    }))?;
-    let output = run_script_process(tool, path, &payload)?;
-
-    if !output.status.success() {
-        return Err(ToolRegistryError::ScriptFailed {
-            id: tool.id.clone(),
-            path: path.to_owned(),
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if stdout.is_empty() {
-        return Err(ToolRegistryError::ScriptEmptyStdout {
-            id: tool.id.clone(),
-            path: path.to_owned(),
-        });
-    }
-
-    serde_json::from_str(&stdout).map_err(|source| ToolRegistryError::ScriptJson {
-        id: tool.id.clone(),
-        path: path.to_owned(),
-        source,
-        stdout,
-    })
-}
-
-fn run_script_process(
-    tool: &ToolDefinition,
-    path: &str,
-    payload: &str,
-) -> ToolRegistryResult<Output> {
-    let ScriptInvocation {
-        command,
-        staged_files,
-    } = script_command(path, payload).map_err(|source| ToolRegistryError::ScriptSpawn {
-        id: tool.id.clone(),
-        path: path.to_owned(),
-        source,
-    })?;
-    let mut process = ProcessSpec::from_command(&command);
-    process.limits.timeout = SCRIPT_EXECUTION_TIMEOUT;
-    let result = loom_process::run_with_input(&process, b"");
-    cleanup_staged_script_files(&staged_files);
-    match result {
-        Ok(output) => Ok(Output {
-            status: output.status,
-            stdout: output.stdout,
-            stderr: output.stderr,
-        }),
-        Err(ProcessError::Timeout { .. }) => Err(ToolRegistryError::ScriptTimedOut {
-            id: tool.id.clone(),
-            path: path.to_owned(),
-            timeout_ms: SCRIPT_EXECUTION_TIMEOUT.as_millis(),
-        }),
-        Err(error) => Err(ToolRegistryError::ScriptSpawn {
-            id: tool.id.clone(),
-            path: path.to_owned(),
-            source: std::io::Error::other(error.to_string()),
-        }),
-    }
-}
-
-struct ScriptInvocation {
-    command: Command,
-    staged_files: Vec<PathBuf>,
-}
-
-fn script_command(path: &str, payload: &str) -> std::io::Result<ScriptInvocation> {
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    if extension == "ps1" {
-        let payload_path = write_staged_script_file("payload", "json", payload.as_bytes())?;
-        let wrapper = br#"
-param(
-    [Parameter(Mandatory = $true)][string]$PayloadPath,
-    [Parameter(Mandatory = $true)][string]$ScriptPath
-)
-$ErrorActionPreference = 'Stop'
-$payload = [System.IO.File]::ReadAllText($PayloadPath, [System.Text.UTF8Encoding]::new($false))
-& $ScriptPath $payload
-"#;
-        let wrapper_path = write_staged_script_file("wrapper", "ps1", wrapper)?;
-        let mut command = Command::new("powershell.exe");
-        command
-            .arg("-NoProfile")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass")
-            .arg("-File")
-            .arg(&wrapper_path)
-            .arg(&payload_path)
-            .arg(path);
-        return Ok(ScriptInvocation {
-            command,
-            staged_files: vec![payload_path, wrapper_path],
-        });
-    }
-
-    if extension == "py" {
-        let payload_path = write_staged_script_file("payload", "json", payload.as_bytes())?;
-        let wrapper = br#"
-import pathlib
-import runpy
-import sys
-
-payload = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-script = sys.argv[2]
-sys.argv = [script, payload]
-runpy.run_path(script, run_name="__main__")
-"#;
-        let wrapper_path = write_staged_script_file("wrapper", "py", wrapper)?;
-        let mut command = Command::new(resolve_python_executable());
-        configure_python_process(&mut command);
-        command.arg(&wrapper_path).arg(&payload_path).arg(path);
-        return Ok(ScriptInvocation {
-            command,
-            staged_files: vec![payload_path, wrapper_path],
-        });
-    }
-
-    let mut command = Command::new(path);
-    command.arg(payload);
-    Ok(ScriptInvocation {
-        command,
-        staged_files: Vec::new(),
-    })
-}
-
-fn write_staged_script_file(stem: &str, extension: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let sequence = REGISTRY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let path =
-        std::env::temp_dir().join(format!("loom-script-{stem}-{nonce}-{sequence}.{extension}"));
-    fs::write(&path, bytes)?;
-    Ok(path)
-}
-
-fn cleanup_staged_script_files(paths: &[PathBuf]) {
-    for path in paths {
-        let _ = fs::remove_file(path);
-    }
-}
-
-fn configure_python_process(command: &mut Command) {
-    command.env("PYTHONDONTWRITEBYTECODE", "1");
-}
-
-fn framework_packages_root_env() -> Option<String> {
-    ["LOOM_FRAMEWORK_PACKAGES_DIR", "LOOM_FRAMEWORK_RUNTIMES_DIR"]
-        .into_iter()
-        .find_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        })
-}
-
-fn resolve_python_executable() -> PathBuf {
-    let loom_python = std::env::var("LOOM_PYTHON").ok();
-    let framework_runtime_root = framework_packages_root_env();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf));
-    let current_dir = std::env::current_dir().ok();
-
-    resolve_python_executable_from(
-        loom_python.as_deref(),
-        framework_runtime_root.as_deref(),
-        exe_dir.as_deref(),
-        current_dir.as_deref(),
-    )
-}
-
-fn resolve_python_executable_from(
-    loom_python: Option<&str>,
-    framework_runtime_root: Option<&str>,
-    exe_dir: Option<&Path>,
-    current_dir: Option<&Path>,
-) -> PathBuf {
-    if let Some(override_python) = loom_python.map(str::trim).filter(|value| !value.is_empty()) {
-        return PathBuf::from(override_python);
-    }
-
-    if let Some(runtime_root) = framework_runtime_root
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        for package_dir in python_framework_package_dirs(Path::new(runtime_root)) {
-            let candidate = package_dir.join("python-embed").join("python.exe");
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
-    }
-
-    let mut candidates = Vec::new();
-    if let Some(exe_dir) = exe_dir {
-        candidates.push(exe_dir.join("bin").join("python-embed").join("python.exe"));
-    }
-    if let Some(current_dir) = current_dir {
-        candidates.push(
-            current_dir
-                .join("bin")
-                .join("python-embed")
-                .join("python.exe"),
-        );
-        candidates.push(
-            current_dir
-                .join("Loom")
-                .join("resources")
-                .join("python-embed")
-                .join("python.exe"),
-        );
-    }
-
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| PathBuf::from("python"))
-}
-
 fn execution_type_name(execution: &ToolExecution) -> &'static str {
     match execution {
-        ToolExecution::CliWrapper { .. } => "cli_wrapper",
         ToolExecution::CloudApi { .. } => "cloud_api",
-        ToolExecution::Script { .. } => "script",
-        ToolExecution::PythonArt { .. } => "python_art",
         ToolExecution::Mcp { .. } => "mcp",
         ToolExecution::Workflow { .. } => "workflow",
         ToolExecution::FrameworkArt { .. } => "framework_art",
@@ -2760,26 +2077,11 @@ fn require_no_path_separator(tool_id: &str, value: &str) -> ToolRegistryResult<(
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
     use std::fs;
     use std::io::{BufRead, Read, Write};
     use std::net::{TcpListener, TcpStream};
 
-    #[test]
-    fn cli_token_substitutes_paths_params_and_flags() {
-        let mut params = serde_json::Map::new();
-        params.insert("level_num".to_owned(), serde_json::json!(6));
-        params.insert("lossless".to_owned(), serde_json::json!(true));
-        params.insert("off_flag".to_owned(), serde_json::json!(false));
-        let sub = |t: &str| super::substitute_cli_token(t, "IN.png", "OUT.png", &params);
-        assert_eq!(sub("{{input}}"), "IN.png");
-        assert_eq!(sub("{output}"), "OUT.png");
-        assert_eq!(sub("-s{{level_num}}"), "-s6");
-        // {{-key}} bool-true → -key flag; bool-false → empty.
-        assert_eq!(sub("{{-lossless}}"), "-lossless");
-        assert_eq!(sub("{{-off_flag}}"), "");
-    }
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2818,54 +2120,6 @@ mod tests {
             b"replacement"
         );
         fs::remove_dir_all(root).expect("remove extended-length test directory");
-    }
-
-    #[test]
-    fn python_framework_paths_follow_the_active_immutable_version() {
-        let root = temp_root("python-framework-active-version");
-        let package_root = root.join("python_art");
-        let active = package_root.join("versions").join("1.0.0-deadbeef0000");
-        fs::create_dir_all(active.join("python")).expect("create active Python framework");
-        fs::write(active.join("framework.manifest.json"), b"{}").expect("write framework manifest");
-        fs::write(
-            package_root.join("active.json"),
-            br#"{"active":"versions/1.0.0-deadbeef0000"}"#,
-        )
-        .expect("write framework activation");
-
-        assert_eq!(
-            python_framework_package_dirs(&root),
-            vec![active, package_root]
-        );
-        fs::remove_dir_all(root).expect("cleanup Python framework path fixture");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn canonical_process_path_supports_extended_length_executables() {
-        let root = temp_root("long-process-path");
-        let mut directory = root.clone();
-        while directory.as_os_str().to_string_lossy().len() < 270 {
-            directory = directory.join("extended-process-segment");
-        }
-        fs::create_dir_all(&directory).expect("create extended process directory");
-        let executable = directory.join("python.exe");
-        fs::write(&executable, b"fixture").expect("write extended process fixture");
-
-        let canonical = canonical_process_path(executable);
-        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
-        fs::remove_dir_all(root).expect("cleanup extended process fixture");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn canonical_process_path_preserves_ordinary_windows_paths() {
-        let root = temp_root("ordinary-process-path");
-        let executable = root.join("python.exe");
-        fs::write(&executable, b"fixture").expect("write ordinary process fixture");
-
-        assert_eq!(canonical_process_path(executable.clone()), executable);
-        fs::remove_dir_all(root).expect("cleanup ordinary process fixture");
     }
 
     #[test]
@@ -2957,45 +2211,13 @@ mod tests {
     }
 
     #[test]
-    fn python_art_tool_definition_accepts_installed_art_contract() {
-        let tool: ToolDefinition = serde_json::from_str(
-            r#"{
-              "id": "python-art-loom-echo",
-              "name": "Loom Echo",
-              "description": "Installed Python Art",
-              "enabled": true,
-              "execution": {
-                "type": "python_art",
-                "artId": "loom_echo",
-                "artPath": "python/Arts/Art_LoomEcho"
-              }
-            }"#,
-        )
-        .expect("deserialize Python Art tool definition");
-
-        assert!(tool.validate().is_ok());
-        assert_eq!(execution_type_name(&tool.execution), "python_art");
-        assert!(matches!(
-            tool.execution,
-            ToolExecution::PythonArt {
-                ref art_id,
-                ref art_path,
-            } if art_id == "loom_echo" && art_path.as_deref() == Some("python/Arts/Art_LoomEcho")
-        ));
-    }
-
-    #[test]
     fn tool_definition_preserves_desktop_port_metadata() {
         let tool: ToolDefinition = serde_json::from_value(serde_json::json!({
             "id": "advanced-cli-art",
             "name": "Advanced CLI Art",
             "description": "Desktop Add Art advanced ports",
             "enabled": true,
-            "execution": {
-                "type": "cli_wrapper",
-                "command": "ffmpeg",
-                "args": ["-i", "{{inputs.image.path}}", "{{outputs.result.path}}"]
-            },
+            "execution": { "type": "framework_art", "framework": "process" },
             "inputs": [{
                 "name": "image",
                 "label": "Image",
@@ -3036,45 +2258,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_execution_types_remain_representable() {
-        let tools = [
-            ToolDefinition::new(
-                "ffmpeg",
-                "FFmpeg",
-                "Wrap local ffmpeg",
-                ToolExecution::CliWrapper {
-                    command: "ffmpeg".to_owned(),
-                    args: vec!["-version".to_owned()],
-                },
-            ),
-            ToolDefinition::new(
-                "cloud-image",
-                "Cloud Image",
-                "Call a cloud image API",
-                ToolExecution::CloudApi {
-                    endpoint: "https://example.invalid/generate".to_owned(),
-                    method: "POST".to_owned(),
-                    content_type: None,
-                    headers: None,
-                    body: None,
-                },
-            ),
-            ToolDefinition::new(
-                "python-filter",
-                "Python Filter",
-                "Run a local script",
-                ToolExecution::Script {
-                    path: "filters/enhance.py".to_owned(),
-                },
-            ),
-        ];
-
-        for tool in tools {
-            tool.validate().expect("legacy execution type validates");
-        }
-    }
-
-    #[test]
     fn framework_art_execution_type_deserializes_without_host_specific_fields() {
         let value = serde_json::from_value::<ToolDefinition>(serde_json::json!({
             "id": "third-party-art",
@@ -3083,25 +2266,13 @@ mod tests {
             "enabled": true,
             "execution": {
                 "type": "framework_art",
-                "framework": "script"
+                "framework": "process"
             }
         }));
         assert!(
             value.is_ok(),
             "framework_art execution should deserialize: {value:?}"
         );
-    }
-
-    #[test]
-    fn python_script_command_disables_bytecode_writes() {
-        let command = script_command("fixture.py", "{}").expect("build python script command");
-        let value = command
-            .command
-            .get_envs()
-            .find(|(key, _)| *key == OsStr::new("PYTHONDONTWRITEBYTECODE"))
-            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().to_string()));
-
-        assert_eq!(value.as_deref(), Some("1"));
     }
 
     #[test]
@@ -3157,9 +2328,8 @@ mod tests {
                 "shared-art",
                 name,
                 "Publisher-scoped Art",
-                ToolExecution::CliWrapper {
-                    command: "echo".to_owned(),
-                    args: vec!["ok".to_owned()],
+                ToolExecution::FrameworkArt {
+                    framework: "process".to_owned(),
                 },
             );
             tool.metadata = Some(serde_json::json!({
@@ -3207,9 +2377,8 @@ mod tests {
             "recovered-tool",
             "Recovered Tool",
             "Tool from a recoverable registry",
-            ToolExecution::CliWrapper {
-                command: "echo".to_owned(),
-                args: vec!["ok".to_owned()],
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
             },
         );
         let valid = serde_json::to_string_pretty(&vec![tool.clone()]).expect("serialize tool");
@@ -3245,6 +2414,112 @@ mod tests {
     }
 
     #[test]
+    fn registry_removes_obsolete_execution_entries_and_quarantines_original() {
+        let root = temp_root("obsolete-executions");
+        fs::create_dir_all(&root).expect("create registry root");
+        let current = ToolDefinition::new(
+            "current-art",
+            "Current Art",
+            "Current framework Art",
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
+            },
+        );
+        let obsolete = serde_json::json!([
+            serde_json::to_value(&current).expect("serialize current tool"),
+            {
+                "id": "legacy-python",
+                "name": "Legacy Python",
+                "description": "obsolete",
+                "enabled": true,
+                "execution": { "type": "python_art", "artId": "legacy" }
+            },
+            {
+                "id": "legacy-cli",
+                "name": "Legacy CLI",
+                "description": "obsolete",
+                "enabled": true,
+                "execution": { "type": "cli_wrapper", "command": "tool.exe" }
+            },
+            {
+                "id": "legacy-script",
+                "name": "Legacy Script",
+                "description": "obsolete",
+                "enabled": true,
+                "execution": { "type": "script", "path": "main.ps1" }
+            }
+        ]);
+        let original = serde_json::to_string_pretty(&obsolete).expect("serialize obsolete tools");
+        fs::write(root.join("tools.json"), &original).expect("write obsolete registry");
+
+        let registry = ToolRegistry::new(&root);
+        assert_eq!(registry.list_tools().expect("recover tools"), vec![current]);
+
+        let canonical =
+            fs::read_to_string(root.join("tools.json")).expect("read repaired registry");
+        let parsed: Vec<ToolDefinition> =
+            serde_json::from_str(&canonical).expect("repaired registry is valid JSON");
+        assert_eq!(parsed.len(), 1);
+
+        let backups = fs::read_dir(&root)
+            .expect("read registry directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("tools.json.corrupt-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read_to_string(backups[0].path()).expect("read migration backup"),
+            original
+        );
+
+        fs::remove_dir_all(root).expect("cleanup obsolete registry root");
+    }
+
+    #[test]
+    fn registry_does_not_remove_unknown_future_execution_entries() {
+        let root = temp_root("future-execution");
+        fs::create_dir_all(&root).expect("create registry root");
+        let original = serde_json::to_string_pretty(&serde_json::json!([{
+            "id": "future-art",
+            "name": "Future Art",
+            "description": "unknown future execution",
+            "enabled": true,
+            "execution": { "type": "future_runtime" }
+        }]))
+        .expect("serialize future tool");
+        let registry_path = root.join("tools.json");
+        fs::write(&registry_path, &original).expect("write future registry");
+
+        let registry = ToolRegistry::new(&root);
+        assert!(matches!(
+            registry.list_tools(),
+            Err(ToolRegistryError::Json(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(&registry_path).expect("read unchanged registry"),
+            original
+        );
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("read registry directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("tools.json.corrupt-"))
+                .count(),
+            0
+        );
+
+        fs::remove_dir_all(root).expect("cleanup future registry root");
+    }
+
+    #[test]
     fn registry_does_not_recover_comma_only_trailing_json() {
         let root = temp_root("trailing-commas");
         fs::create_dir_all(&root).expect("create registry root");
@@ -3252,9 +2527,8 @@ mod tests {
             "preserved-tool",
             "Preserved Tool",
             "Tool in an unrecoverable registry",
-            ToolExecution::CliWrapper {
-                command: "echo".to_owned(),
-                args: vec!["ok".to_owned()],
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
             },
         );
         let valid = serde_json::to_string_pretty(&vec![tool]).expect("serialize tool");
@@ -4035,315 +3309,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_script_tool_passes_arguments_to_fixture() {
-        let root = temp_root("script-text");
-        let script_path = write_script_fixture(&root);
-        let tool = ToolDefinition::new(
-            "fixture-script",
-            "Fixture Script",
-            "Echo through script",
-            ToolExecution::Script {
-                path: script_path.display().to_string(),
-            },
-        );
-
-        let result = execute_tool(&tool, &[], serde_json::json!({ "text": "hello registry" }))
-            .expect("execute script-backed tool");
-
-        assert_eq!(result["content"][0]["type"], "text");
-        assert_eq!(result["content"][0]["text"], "script saw hello registry");
-
-        fs::remove_dir_all(root).expect("cleanup script text root");
-    }
-
-    #[test]
-    fn execute_script_tool_accepts_image_content_fixture() {
-        let root = temp_root("script-image");
-        let script_path = write_script_fixture(&root);
-        let tool = ToolDefinition::new(
-            "fixture-script-image",
-            "Fixture Script Image",
-            "Return image through script",
-            ToolExecution::Script {
-                path: script_path.display().to_string(),
-            },
-        );
-        let image_data = "data:image/png;base64,abc123";
-
-        let result = execute_tool(&tool, &[], serde_json::json!({ "image": image_data }))
-            .expect("execute image script-backed tool");
-
-        assert_eq!(result["content"][0]["type"], "image");
-        assert_eq!(result["content"][0]["mimeType"], "image/png");
-        assert_eq!(result["content"][0]["data"], image_data);
-
-        fs::remove_dir_all(root).expect("cleanup script image root");
-    }
-
-    #[test]
-    fn execute_script_tool_blends_input_and_reference_images_with_mix_ratio() {
-        let tool = ToolDefinition::new(
-            "fixture-script-blend",
-            "Fixture Script Blend",
-            "Blend two images through script",
-            ToolExecution::Script {
-                path: workspace_image_blend_script().display().to_string(),
-            },
-        );
-        let source = one_pixel_png_data_url([200, 50, 0, 255]);
-        let reference = one_pixel_png_data_url([0, 150, 200, 255]);
-
-        let result = execute_tool(
-            &tool,
-            &[],
-            serde_json::json!({
-                "input": source,
-                "reference": reference,
-                "mix_ratio": 25
-            }),
-        )
-        .expect("execute script blend tool");
-
-        assert_eq!(result["content"][0]["type"], "image");
-        assert_eq!(result["content"][0]["mimeType"], "image/png");
-
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            result["content"][0]["data"]
-                .as_str()
-                .expect("script image blend output data"),
-        )
-        .expect("decode blend output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-        assert_eq!(output.data, vec![150, 75, 50, 255]);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn execute_script_image_blend_art_accepts_large_payloads_with_valid_images() {
-        let tool = ToolDefinition::new(
-            "fixture-script-blend-large-images",
-            "Fixture Script Blend Large Images",
-            "Blend large valid images through script",
-            ToolExecution::Script {
-                path: workspace_image_blend_script().display().to_string(),
-            },
-        );
-        let source = one_pixel_png_data_url([200, 50, 0, 255]);
-        let reference = one_pixel_png_data_url([0, 150, 200, 255]);
-        let debug_padding = "x".repeat(40_000);
-
-        let result = execute_tool(
-            &tool,
-            &[],
-            serde_json::json!({
-                "input": source,
-                "reference": reference,
-                "mix_ratio": 50,
-                "debug_padding": debug_padding
-            }),
-        )
-        .expect("execute script blend tool with large payload and valid images");
-
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            result["content"][0]["data"]
-                .as_str()
-                .expect("large payload blend output"),
-        )
-        .expect("decode large payload blend output");
-        assert_eq!(output.width, 1);
-        assert_eq!(output.height, 1);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn execute_script_image_blend_art_handles_4k_images_within_timeout() {
-        let tool = ToolDefinition::new(
-            "fixture-script-blend-4k-images",
-            "Fixture Script Blend 4K Images",
-            "Blend 4K images through script without timing out",
-            ToolExecution::Script {
-                path: workspace_image_blend_script().display().to_string(),
-            },
-        );
-        let source = solid_color_png_data_url(4096, 4096, [200, 50, 0, 255]);
-        let reference = solid_color_png_data_url(4096, 4096, [0, 150, 200, 255]);
-
-        let result = execute_tool(
-            &tool,
-            &[],
-            serde_json::json!({
-                "input": source,
-                "reference": reference,
-                "mix_ratio": 25
-            }),
-        )
-        .expect("execute script blend tool with 4k images");
-
-        let output = loom_image_io::decode_image_base64_to_rgba8(
-            result["content"][0]["data"]
-                .as_str()
-                .expect("4k blend output"),
-        )
-        .expect("decode 4k blend output");
-        assert_eq!(output.width, 4096);
-        assert_eq!(output.height, 4096);
-        assert_eq!(&output.data[0..4], &[150, 75, 50, 255]);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn execute_script_tool_supports_large_payloads_without_hitting_windows_command_limit() {
-        let root = temp_root("script-large-payload");
-        let script_path = write_script_fixture(&root);
-        let tool = ToolDefinition::new(
-            "fixture-script-large-payload",
-            "Fixture Script Large Payload",
-            "Echo large payload through script",
-            ToolExecution::Script {
-                path: script_path.display().to_string(),
-            },
-        );
-        let large_text = "x".repeat(40_000);
-
-        let result = execute_tool(&tool, &[], serde_json::json!({ "text": large_text }))
-            .expect("execute script-backed tool with large payload");
-
-        let text = result["content"][0]["text"]
-            .as_str()
-            .expect("script large payload response text");
-        assert!(text.starts_with("script saw "));
-        assert_eq!(text.len(), "script saw ".len() + 40_000);
-
-        fs::remove_dir_all(root).expect("cleanup large payload script root");
-    }
-
-    #[test]
-    fn execute_script_tool_reports_missing_script() {
-        let root = temp_root("script-missing");
-        let tool = ToolDefinition::new(
-            "missing-script",
-            "Missing Script",
-            "Missing script fixture",
-            ToolExecution::Script {
-                path: root.join("missing.ps1").display().to_string(),
-            },
-        );
-
-        let error =
-            execute_tool(&tool, &[], serde_json::json!({})).expect_err("missing script fails");
-
-        assert!(error.to_string().contains("script"));
-
-        fs::remove_dir_all(root).expect("cleanup missing script root");
-    }
-
-    #[test]
-    fn resolve_python_executable_prefers_loom_python_env() {
-        let root = temp_root("python-env");
-        let override_python = root.join("custom-python.exe");
-        fs::write(&override_python, b"").expect("write override python fixture");
-        let packaged_python = root.join("bin").join("python-embed").join("python.exe");
-        fs::create_dir_all(packaged_python.parent().expect("packaged python parent"))
-            .expect("create packaged python parent");
-        fs::write(&packaged_python, b"").expect("write packaged python fixture");
-
-        let resolved = resolve_python_executable_from(
-            Some(override_python.to_string_lossy().as_ref()),
-            None,
-            Some(&root),
-            Some(&root),
-        );
-
-        assert_eq!(resolved, override_python);
-
-        fs::remove_dir_all(root).expect("cleanup python env root");
-    }
-
-    #[test]
-    fn resolve_python_executable_prefers_packaged_python() {
-        let root = temp_root("python-packaged");
-        let packaged_python = root.join("bin").join("python-embed").join("python.exe");
-        fs::create_dir_all(packaged_python.parent().expect("packaged python parent"))
-            .expect("create packaged python parent");
-        fs::write(&packaged_python, b"").expect("write packaged python fixture");
-
-        let resolved = resolve_python_executable_from(None, None, Some(&root), Some(&root));
-
-        assert_eq!(resolved, packaged_python);
-
-        fs::remove_dir_all(root).expect("cleanup packaged python root");
-    }
-
-    #[test]
-    fn resolve_python_executable_prefers_framework_runtime_dir() {
-        // A python_art framework package installed via the framework registry
-        // (<control-plane>/frameworks/) must win over a packaged
-        // python-embed next to the exe/cwd — this is what wires "installing the
-        // framework" to "executing an art with it" (方向 A).
-        let root = temp_root("python-runtime-dir");
-        let runtime_python = root
-            .join("python_art")
-            .join("python-embed")
-            .join("python.exe");
-        fs::create_dir_all(runtime_python.parent().expect("runtime python parent"))
-            .expect("create runtime python parent");
-        fs::write(&runtime_python, b"").expect("write runtime python fixture");
-
-        // A competing packaged python under a separate cwd candidate.
-        let cwd = temp_root("python-runtime-cwd");
-        let packaged_python = cwd.join("bin").join("python-embed").join("python.exe");
-        fs::create_dir_all(packaged_python.parent().expect("packaged python parent"))
-            .expect("create packaged python parent");
-        fs::write(&packaged_python, b"").expect("write packaged python fixture");
-
-        let resolved = resolve_python_executable_from(
-            None,
-            Some(root.to_string_lossy().as_ref()),
-            None,
-            Some(&cwd),
-        );
-
-        assert_eq!(resolved, runtime_python);
-
-        fs::remove_dir_all(root).expect("cleanup runtime dir root");
-        fs::remove_dir_all(cwd).expect("cleanup runtime cwd root");
-    }
-
-    #[test]
-    fn resolve_python_art_path_prefers_installed_art_dir_for_relative_art_path() {
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = temp_root("python-installed-art-root");
-        let plugin_dir = root
-            .join("arts")
-            .join("store-python-tool")
-            .join("python")
-            .join("Arts")
-            .join("StorePythonEcho");
-        fs::create_dir_all(&plugin_dir).expect("create installed python art dir");
-        fs::write(
-            plugin_dir.join("art.json"),
-            r#"{"art_id":"store_python_echo","label":"Store Python Echo"}"#,
-        )
-        .expect("write installed python art json");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-
-        let resolved = resolve_python_art_path(
-            "store-python-tool",
-            "store_python_echo",
-            Some("python/Arts/StorePythonEcho"),
-        );
-
-        assert_eq!(resolved, Some(plugin_dir));
-
-        match previous_root {
-            Some(value) => std::env::set_var("LOOM_CONTROL_PLANE_ROOT", value),
-            None => std::env::remove_var("LOOM_CONTROL_PLANE_ROOT"),
-        }
-        fs::remove_dir_all(root).expect("cleanup installed python art root");
-    }
-
-    #[test]
     fn mcp_registry_fixture_server() {
         if std::env::var("LOOM_TOOL_REGISTRY_MCP_FIXTURE_SERVER")
             .ok()
@@ -4946,110 +3911,5 @@ mod tests {
             body.len()
         );
         let _ = stream.flush();
-    }
-
-    fn write_script_fixture(root: &Path) -> PathBuf {
-        #[cfg(windows)]
-        {
-            let script_path = root.join("fixture-script.ps1");
-            let source = r#"
-$ErrorActionPreference = "Stop"
-$payload = $args[0] | ConvertFrom-Json
-if ($payload.arguments.image) {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "image"
-                data = [string]$payload.arguments.image
-                mimeType = "image/png"
-            }
-        )
-    }
-} else {
-    $response = [ordered]@{
-        content = @(
-            [ordered]@{
-                type = "text"
-                text = "script saw $($payload.arguments.text)"
-            }
-        )
-    }
-}
-[Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
-"#;
-            fs::write(&script_path, source).expect("write PowerShell script fixture");
-            script_path
-        }
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let script_path = root.join("fixture-script.sh");
-            let source = r#"#!/usr/bin/env sh
-python3 - "$1" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-arguments = payload.get("arguments", {})
-if arguments.get("image"):
-    response = {
-        "content": [
-            {
-                "type": "image",
-                "data": arguments["image"],
-                "mimeType": "image/png",
-            }
-        ]
-    }
-else:
-    response = {
-        "content": [
-            {
-                "type": "text",
-                "text": "script saw " + str(arguments.get("text", "")),
-            }
-        ]
-    }
-print(json.dumps(response))
-PY
-"#;
-            fs::write(&script_path, source).expect("write shell script fixture");
-            let mut permissions = fs::metadata(&script_path)
-                .expect("script fixture metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&script_path, permissions).expect("make shell fixture executable");
-            script_path
-        }
-    }
-
-    fn workspace_image_blend_script() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find_map(|candidate| {
-                let script = candidate
-                    .join("resources")
-                    .join("script-arts")
-                    .join("image-blend")
-                    .join("main.ps1");
-                script.exists().then_some(script)
-            })
-            .expect("locate Loom/resources/script-arts/image-blend/main.ps1")
-    }
-
-    fn one_pixel_png_data_url(rgba: [u8; 4]) -> String {
-        loom_image_io::rgba8_to_png_data_url(1, 1, &rgba).expect("encode one pixel png")
-    }
-
-    fn solid_color_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
-        let pixels = usize::try_from(width)
-            .expect("width usize")
-            .saturating_mul(usize::try_from(height).expect("height usize"));
-        let mut data = Vec::with_capacity(pixels.saturating_mul(4));
-        for _ in 0..pixels {
-            data.extend_from_slice(&rgba);
-        }
-        loom_image_io::rgba8_to_png_data_url(width, height, &data).expect("encode solid color png")
     }
 }

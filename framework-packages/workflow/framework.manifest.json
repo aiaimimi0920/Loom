@@ -1,6 +1,6 @@
 {
   "id": "workflow",
-  "name": "Workflow Framework",
+  "name": "流程",
   "description": "Composes other Art packages through an isolated workflow process boundary.",
   "version": "0.1.0",
   "publisher": {
@@ -36,7 +36,7 @@
   },
   "authoringSchema": {
     "schemaVersion": 1,
-    "title": "Workflow Art",
+    "title": "流程 Art",
     "description": "Create an Art backed by a saved Loom workflow.",
     "fields": [
       { "id": "workflowId", "label": "Workflow ID", "type": "string", "required": true }

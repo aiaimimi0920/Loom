@@ -197,7 +197,7 @@ async function main() {
       client,
       '[data-testid="hook-canvas-thumbnail"]',
     );
-    const beforeOpen = await client.evaluate(`(() => {
+    const uiState = await client.evaluate(`(() => {
       const thumbnail = document.querySelector('[data-testid="hook-canvas-thumbnail"]');
       const yaml = document.querySelector('.studio-textarea--yaml');
       const visible = yaml && (yaml.offsetWidth || yaml.offsetHeight || yaml.getClientRects().length);
@@ -214,14 +214,8 @@ async function main() {
         failedArtThumbnailFailureVisible: false,
       };
     })()`);
-    beforeOpen.thumbnailNodes = thumbnailNodes;
-    beforeOpen.failedArtThumbnailFailureVisible = failedArtThumbnailFailureVisible;
-    const clickResult = await client.evaluate(`(() => {
-      const button = document.querySelector('[data-testid="hook-canvas-open-workflow"]');
-      if (!button) return { found: false };
-      button.click();
-      return { found: true, disabled: Boolean(button.disabled), text: button.textContent?.trim() ?? '' };
-    })()`);
+    uiState.thumbnailNodes = thumbnailNodes;
+    uiState.failedArtThumbnailFailureVisible = failedArtThumbnailFailureVisible;
     const tauriProbe = await client.evaluate(`(async () => {
       try {
         const baseUrl = document.querySelector('.daemon-chip')?.textContent?.trim() ?? '';
@@ -234,31 +228,9 @@ async function main() {
         return { ok: false, error: String(error), stack: error?.stack ?? null };
       }
     })()`);
-    diagnostic = { beforeOpen, clickResult, tauriProbe };
-    await fs.mkdir(path.dirname(args.output), { recursive: true });
-    await fs.writeFile(args.output, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
-
-    await waitFor(client, "Boolean(document.querySelector('[data-testid=\"hook-canvas-view\"]'))");
-    const fullCanvasNodes = await readNodePresentations(client, '[data-testid="hook-canvas-view"]');
-    const failedArtExecutionFailureVisible = await readFailedArtExecutionFailureVisible(
-      client,
-      '[data-testid="hook-canvas-view"]',
-    );
-    const afterOpen = await client.evaluate(`(() => ({
-      fullCanvasVisible: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
-      selectedNodeCount: document.querySelectorAll('[data-testid="hook-canvas-view"] .hook-canvas-node--selected').length,
-      fullCanvasNodes: [],
-      failedArtExecutionFailureVisible: false,
-    }))()`);
-    afterOpen.fullCanvasNodes = fullCanvasNodes;
-    afterOpen.failedArtExecutionFailureVisible = failedArtExecutionFailureVisible;
+    diagnostic = { uiState, tauriProbe };
     const screenshot = await client.command("Page.captureScreenshot", { format: "png", fromSurface: true });
-
-    const result = {
-      ...beforeOpen,
-      ...afterOpen,
-      selectedNodeCount: afterOpen.selectedNodeCount ?? 0,
-    };
+    const result = uiState;
     await fs.mkdir(path.dirname(args.screenshot), { recursive: true });
     await fs.writeFile(args.output, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     await fs.writeFile(args.screenshot, Buffer.from(screenshot.data, "base64"));
