@@ -464,12 +464,31 @@ pub fn handle_request(
 
 fn default_legacy_settings() -> JsonValue {
     serde_json::json!({
+        "appearance_version": 1,
         "general": {
-            "theme": "system",
+            "theme": "dark",
             "language": "zh-Hans",
             "auto_start": false,
             "minimize_to_tray": true,
             "enable_tray_icon": true
+        },
+        "hook_general": {
+            "theme": "dark",
+            "language": "zh-Hans",
+            "close_to_tray": true
+        },
+        "loom_cache": {
+            "art_cache_max_bytes": 1073741824,
+            "art_cache_retention_days": 30,
+            "framework_temp_retention_days": 3
+        },
+        "mcp": {
+            "request_timeout_seconds": 60,
+            "memory_limit_bytes": 536870912
+        },
+        "art_store": {
+            "auto_update": true,
+            "official_only": false
         },
         "system": {
             "auto_check_updates": true,
@@ -486,13 +505,7 @@ fn default_legacy_settings() -> JsonValue {
             "compute_device": "0",
             "vram_reservation_gb": 12
         },
-        "quick_bindings": [
-            {
-                "id": "1",
-                "art": "ComfyUI Workflow",
-                "key": "Ctrl+Shift+1"
-            }
-        ],
+        "quick_bindings": [],
         "shortcuts": {
             "capture": {
                 "id": "capture",
@@ -1523,7 +1536,7 @@ mod tests {
         )
         .expect("handle settings");
         assert_eq!(settings.response["type"], "settings");
-        assert_eq!(settings.response["data"]["general"]["theme"], "system");
+        assert_eq!(settings.response["data"]["general"]["theme"], "dark");
         assert_eq!(
             settings.response["data"]["engine"]["python_interpreter"],
             "python.exe"

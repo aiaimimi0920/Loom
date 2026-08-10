@@ -629,7 +629,7 @@ pub fn execute_tool(
                     server_id: server_id.clone(),
                 })?;
 
-            let mut client = loom_mcp::StdioMcpClient::spawn(server)?;
+            let mut client = loom_mcp::McpClient::connect(server)?;
             client.initialize()?;
             let tool_list = client.list_tools().ok();
             let normalized_arguments = normalize_mcp_call_arguments(

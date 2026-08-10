@@ -99,6 +99,13 @@ test("exposes one Art navigation entry instead of separate registry and framewor
   assert.match(appSource, /activeSection === "registry" && \(\s*<ArtPanel/);
 });
 
+test("removes Overview and Agents from the Loom shell", () => {
+  assert.doesNotMatch(appSource, /id: "overview"|label: "总览"|OverviewPanel/);
+  assert.doesNotMatch(appSource, /id: "agents"|label: "智能体"|AgentsPanel/);
+  assert.match(appSource, /useState<SectionId>\("mcp"\)/);
+  assert.match(appSource, /aria-label="返回 MCP"/);
+});
+
 test("keeps the Art workspace compact without a descriptive hero", () => {
   assert.doesNotMatch(appSource, /art-hub__hero/);
   assert.doesNotMatch(appSource, /Art 运行与注册中心/);
@@ -260,9 +267,9 @@ test("keeps concise Chinese labels and visibly separated tabs in the Art workspa
   }
   assert.doesNotMatch(appSource, /art-panel-frameworks/);
   assert.doesNotMatch(appSource, /执行框架/);
-  assert.match(styleSource, /\.art-hub__tabs \{[\s\S]*?gap: 4px;[\s\S]*?padding: 5px;/);
-  assert.match(styleSource, /\.art-hub__tab \{[\s\S]*?border: 1px solid rgba\(255, 255, 255, 0\.14\);[\s\S]*?background: rgba\(255, 255, 255, 0\.035\);/);
-  assert.match(styleSource, /\.art-hub__tab--active \{[\s\S]*?border-color: #d9ff38;[\s\S]*?background: #d9ff38;/);
+  assert.match(styleSource, /\.art-hub__tabs \{[\s\S]*?gap: 4px;[\s\S]*?border: 0;[\s\S]*?background: transparent;[\s\S]*?padding: 0 0 5px;/);
+  assert.match(styleSource, /\.art-hub__tab \{[\s\S]*?border: 1px solid rgba\(255, 255, 255, 0\.14\);/);
+  assert.match(styleSource, /\.art-hub__tab--active,[\s\S]*?background: var\(--loom-theme-surface\);[\s\S]*?color: var\(--loom-theme-accent-text\);/);
 });
 
 test("trust and credentials use editable field rows plus persistent install policy", () => {
@@ -312,6 +319,11 @@ test("trust and credentials use editable field rows plus persistent install poli
   assert.match(styleSource, /\.trusted-user-library__list \{[\s\S]*?max-height: 180px;[\s\S]*?overflow-y: auto;/);
   assert.match(styleSource, /\.security-policy-row \{[\s\S]*?grid-template-columns: auto minmax\(0, 720px\);/);
   assert.match(styleSource, /\.publisher-identity__keys \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(appSource, /className="studio-input mono-line" readOnly type=\{showPrivateKey \? "text" : "password"\}/);
+  assert.match(styleSource, /\.art-hub :is\(\.studio-input, \.studio-textarea, \.studio-json\) \{[\s\S]*?color: var\(--loom-theme-text\);[\s\S]*?-webkit-text-fill-color: var\(--loom-theme-text\);/);
+  assert.match(styleSource, /\.publisher-identity__secret \.studio-input\[type="password"\] \{[\s\S]*?-webkit-text-fill-color: var\(--loom-theme-text\);[\s\S]*?opacity: 1;/);
+  assert.match(styleSource, /\.art-hub \.publisher-identity label,[\s\S]*?color: var\(--loom-theme-muted\);/);
+  assert.match(styleSource, /\.art-hub \.publisher-identity__id,[\s\S]*?color: var\(--loom-theme-text\);/);
   assert.match(styleSource, /\.app-toast-stack \{[\s\S]*?position: fixed;[\s\S]*?top: 64px;[\s\S]*?right: 18px;/);
   assert.match(styleSource, /\.app-toast \{[\s\S]*?transform: translateY\(var\(--toast-offset\)\);[\s\S]*?pointer-events: auto;/);
   assert.match(styleSource, /\.app-toast--error/);
@@ -338,6 +350,7 @@ test("keeps framework filtering beside a modal management trigger", () => {
   assert.match(appSource, /<span title="只显示官方">官<\/span>/);
   assert.doesNotMatch(appSource, /<summary>管理框架<\/summary>/);
   assert.match(styleSource, /\.framework-filter \{[\s\S]*?flex-wrap: nowrap;/);
+  assert.match(styleSource, /\.framework-filter \{[\s\S]*?border: 0;[\s\S]*?border-bottom: 1px solid var\(--loom-theme-line\);[\s\S]*?background: transparent;/);
   assert.match(styleSource, /\.framework-filter__search \{[\s\S]*?width: clamp\(120px, 14vw, 190px\);/);
   assert.match(styleSource, /\.framework-filter__options \{[\s\S]*?overflow-x: auto;/);
   assert.match(styleSource, /\.framework-filter__option \{[\s\S]*?flex: 0 0 auto;/);
@@ -386,7 +399,7 @@ test("uses one accessible in-app confirmation dialog for destructive and risky a
 
 test("renders Loom and Hook as attached application settings tabs", () => {
   assert.match(appSource, /type SettingsAppId = "loom" \| "hook"/);
-  assert.match(appSource, /type SettingsSectionId = "general" \| "window" \| "engine" \| "shortcuts" \| "system" \| "network" \| "cache" \| "about"/);
+  assert.match(appSource, /type SettingsSectionId = "general" \| "shortcuts" \| "mcp" \| "art-store" \| "network" \| "cache" \| "about"/);
   assert.match(appSource, /function SettingsAccordionSection\(/);
   assert.match(appSource, /aria-expanded=\{open\}/);
   assert.match(appSource, /aria-controls=\{contentId\}/);
@@ -402,12 +415,12 @@ test("renders Loom and Hook as attached application settings tabs", () => {
   assert.doesNotMatch(appSource, /<SettingsAccordionSection id="bindings" label="快速绑定"/);
   assert.match(appSource, /activeSection === "settings"[\s\S]*?app-titlebar__back/);
   assert.doesNotMatch(appSource, /settings-subnav|legacy-settings-grid|settings-card--wide|settings-page__save/);
-  assert.match(styleSource, /\.workspace-panel--settings,[\s\S]*?#090c11;/);
+  assert.match(styleSource, /\.workspace-panel--settings,[\s\S]*?var\(--loom-theme-surface\);/);
   assert.match(styleSource, /\.settings-app-panel \{[\s\S]*?border-top:/);
-  assert.match(styleSource, /\.settings-app-tab--active::after \{[\s\S]*?background: #090c11;/);
+  assert.match(styleSource, /\.settings-app-tab--active::after \{[\s\S]*?background: var\(--loom-theme-surface\);/);
   assert.match(styleSource, /\.settings-section__trigger \{[\s\S]*?min-height: 66px;/);
-  assert.match(styleSource, /\.settings-section__icon \{[\s\S]*?color: #d9ff38;/);
-  assert.match(styleSource, /\.settings-section--open \.settings-section__icon \{[\s\S]*?color: #4adeff;/);
+  assert.match(styleSource, /\.settings-section__icon \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
+  assert.match(styleSource, /\.settings-section--open \.settings-section__icon \{[\s\S]*?color: var\(--loom-theme-secondary-text\);/);
 });
 
 test("shows compact About and diagnostic log content for Loom and Hook", () => {
@@ -415,6 +428,7 @@ test("shows compact About and diagnostic log content for Loom and Hook", () => {
   assert.match(appSource, /<dt>版本号<\/dt>/);
   assert.match(appSource, /<dt>检查更新<\/dt>/);
   assert.match(appSource, />立即检查<\/button>/);
+  assert.match(appSource, /\$\{repositoryUrl\}\/releases\/latest/);
   assert.match(appSource, /<dt>仓库<\/dt>/);
   assert.match(appSource, /diagnostics\.commitShort\?\.slice\(0, 6\)/);
   assert.match(appSource, /open_external_url/);
@@ -430,13 +444,28 @@ test("shows compact About and diagnostic log content for Loom and Hook", () => {
   assert.match(appSource, /loom_log_level/);
   assert.match(appSource, /hook_log_level/);
   assert.doesNotMatch(appSource, /Telegram 群组|赞助支持|赞助方式/);
-  assert.match(styleSource, /\.about-panel__group \{[\s\S]*?border-radius: 8px;/);
+  assert.match(styleSource, /\.about-panel__group \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
   assert.match(styleSource, /\.about-panel__rows > div \{[\s\S]*?grid-template-columns:/);
-  assert.match(styleSource, /\.about-panel__commit \{[\s\S]*?color: #d9ff38;/);
-  assert.match(styleSource, /\.about-panel__repository-link \{[\s\S]*?color: #4adeff;/);
-  assert.match(styleSource, /\.settings-page \.studio-input option \{[\s\S]*?background: #111720;[\s\S]*?color: #f7f8ef;/);
-  assert.match(styleSource, /\.about-panel__log-level \{[\s\S]*?background: #111720;[\s\S]*?-webkit-text-fill-color: #f7f8ef;/);
+  assert.match(styleSource, /\.about-panel__commit \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
+  assert.match(styleSource, /\.about-panel__repository-link \{[\s\S]*?color: var\(--loom-theme-secondary-text\);/);
+  assert.match(styleSource, /\.settings-page \.studio-input option \{[\s\S]*?background: var\(--loom-theme-control\);[\s\S]*?color: var\(--loom-theme-text\);/);
+  assert.match(styleSource, /\.about-panel__log-level \{[\s\S]*?background: var\(--loom-theme-control\);[\s\S]*?-webkit-text-fill-color: var\(--loom-theme-text\);/);
   assert.match(styleSource, /\.workspace-scroll--settings \{[\s\S]*?scrollbar-gutter: stable;/);
+});
+
+test("uses the dark Settings visual baseline for Art and Hook Sync without changing their content", () => {
+  assert.match(appSource, /workspace-panel workspace-panel--tooling/);
+  assert.match(appSource, /workspace-header workspace-header--tooling/);
+  assert.match(appSource, /workspace-scroll workspace-scroll--tooling/);
+  assert.match(styleSource, /:root \{[\s\S]*?--neuro-panel: #0e1218;/);
+  assert.match(styleSource, /:root \{[\s\S]*?--loom-theme-panel: var\(--neuro-panel\);/);
+  assert.match(styleSource, /\.workspace-panel--tooling,[\s\S]*?var\(--loom-theme-surface\)/);
+  assert.match(styleSource, /\.art-hub__surface \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(styleSource, /\.art-registry-card--enabled \{[\s\S]*?color-mix\(in srgb, var\(--loom-theme-success\) 10%, var\(--loom-theme-panel\)\)/);
+  assert.match(styleSource, /\.framework-dialog \{[\s\S]*?background: var\(--loom-theme-panel\)/);
+  assert.match(styleSource, /\.hook-canvas-rename-dialog,[\s\S]*?background: var\(--loom-theme-panel\)/);
+  assert.match(styleSource, /\.hook-canvas-workspace \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(styleSource, /\.hook-canvas-surface \{[\s\S]*?overflow: hidden;/);
 });
 
 test("provides independent proxy settings for Loom and Hook", () => {
@@ -453,12 +482,61 @@ test("provides independent proxy settings for Loom and Hook", () => {
   assert.match(appSource, /<option value="socks5">socks5:\/\/<\/option>/);
   assert.match(appSource, /placeholder="127\.0\.0\.1:7890"/);
   assert.match(appSource, /const updateNetworkDraft[\s\S]*?\[app\]: \{ \.\.\.current\.network\[app\], \.\.\.patch \}/);
-  assert.match(styleSource, /\.settings-network-panel \{[\s\S]*?background: #0e1218;/);
+  assert.match(styleSource, /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
   assert.match(styleSource, /\.settings-network-row \{[\s\S]*?grid-template-columns:/);
 });
 
+test("provides independent compact general settings for Loom and Hook", () => {
+  assert.equal((appSource.match(/<SettingsAccordionSection id="general" label="常规"/g) || []).length, 2);
+  assert.match(appSource, /function GeneralSettingsPanel\(/);
+  assert.match(appSource, /appName="loom"[\s\S]*?language: draft\.general\.language[\s\S]*?theme: draft\.general\.theme[\s\S]*?closeToTray: draft\.general\.minimize_to_tray/);
+  assert.match(appSource, /appName="hook"[\s\S]*?language: draft\.hook_general\.language[\s\S]*?theme: draft\.hook_general\.theme[\s\S]*?closeToTray: draft\.hook_general\.close_to_tray/);
+  assert.match(appSource, /<strong>语言<\/strong>[\s\S]*?<strong>主题<\/strong>[\s\S]*?<strong>关闭到系统托盘<\/strong>/);
+  assert.match(appSource, /const updateHookGeneralDraft[\s\S]*?hook_general:/);
+  assert.doesNotMatch(appSource, /SettingsAccordionSection id="window"/);
+  assert.match(styleSource, /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(styleSource, /\.settings-general-toggle \{[\s\S]*?justify-self: end;/);
+  assert.match(appSource, /applyLoomGeneralSettings\(draft\.general\)/);
+  assert.match(appSource, /invoke\("apply_loom_general_settings"/);
+  assert.match(styleSource, /:root\[data-loom-theme="light"\]/);
+});
+
+test("replaces System and Data with runtime-backed MCP and Art settings", () => {
+  assert.doesNotMatch(appSource, /SettingsAccordionSection id="system"|label="系统与数据"/);
+  assert.doesNotMatch(appSource, /toggleAutostart|setArtLoomCompatAutostart/);
+  assert.match(appSource, /SettingsAccordionSection id="mcp" label="MCP"/);
+  assert.match(appSource, /function McpSettingsPanel\(/);
+  assert.match(appSource, /MCP 请求超时/);
+  assert.match(appSource, /MCP 子进程内存上限/);
+  assert.match(appSource, /SettingsAccordionSection id="art-store" label="Art"/);
+  assert.match(appSource, /function ArtStoreSettingsPanel\(/);
+  assert.doesNotMatch(appSource, /商店地址|settings-art-store-url|value\.base_url/);
+  assert.match(appSource, /Art 自动更新/);
+  assert.match(appSource, /Art 默认只显示官方/);
+  assert.match(appSource, /Art 安装策略/);
+  assert.match(appSource, /setPluginTrustPolicy\(snapshot\.baseUrl, policy\)/);
+  assert.match(appSource, /setStoreOfficialOnly\(settings\.art_store\?\.official_only === true\)/);
+  assert.match(styleSource, /\.settings-mcp-panel/);
+  assert.match(styleSource, /\.settings-art-store-panel/);
+});
+
+test("manages only rebuildable Loom caches and removes the obsolete engine UI", () => {
+  assert.equal((appSource.match(/<SettingsAccordionSection id="cache" label="缓存"/g) || []).length, 2);
+  assert.doesNotMatch(appSource, /SettingsAccordionSection id="engine"|label="引擎"|draft\.engine/);
+  assert.match(appSource, /function LoomCacheSettingsPanel\(/);
+  assert.match(appSource, /get_loom_cache_snapshot/);
+  assert.match(appSource, /apply_loom_cache_settings/);
+  assert.match(appSource, /clear_loom_cache/);
+  assert.match(appSource, /loomCachePreferencesForRuntime\(saved\.loom_cache\)/);
+  assert.match(appSource, /Art 运行缓存上限/);
+  assert.match(appSource, /Art 运行缓存自动清理周期/);
+  assert.match(appSource, /框架临时文件自动清理周期/);
+  assert.match(appSource, /不会卸载 Art 或删除工作流/);
+  assert.doesNotMatch(appSource, /清空已安装 Art|清空工作流|清空运行记录/);
+});
+
 test("manages Hook recycle bin, temporary cache, and reference images from the Hook settings tab", () => {
-  assert.equal((appSource.match(/<SettingsAccordionSection id="cache" label="缓存"/g) || []).length, 1);
+  assert.equal((appSource.match(/<SettingsAccordionSection id="cache" label="缓存"/g) || []).length, 2);
   assert.match(appSource, /function HookCacheSettingsPanel\(/);
   assert.match(appSource, /get_hook_cache_snapshot/);
   assert.match(appSource, /clear_hook_cache/);
@@ -472,19 +550,19 @@ test("manages Hook recycle bin, temporary cache, and reference images from the H
   assert.match(appSource, /清空临时缓存/);
   assert.match(appSource, /清空参考图/);
   assert.match(appSource, /\[15, 50, 0\]/);
-  assert.equal((appSource.match(/\[3, 7, 30, 0\]/g) || []).length, 2);
+  assert.equal((appSource.match(/\[3, 7, 30, 0\]/g) || []).length, 3);
   assert.match(appSource, /label: "128 MB"/);
   assert.match(appSource, /label: "256 MB"/);
   assert.match(appSource, /label: "1 GB"/);
   assert.match(appSource, /label: "无限制"/);
   assert.doesNotMatch(appSource, /hook-cache-usage-title/);
-  assert.equal((appSource.match(/hook-cache-row hook-cache-row--action/g) || []).length, 3);
+  assert.equal((appSource.match(/hook-cache-row hook-cache-row--action/g) || []).length, 5);
   assert.doesNotMatch(appSource, /图片搜索缓存/);
   assert.doesNotMatch(appSource, /剪贴板缓存/);
   assert.match(appSource, /requestAppConfirmation\(\{[\s\S]*?title: `清空\$\{labels\[kind\]\}`/);
   assert.match(styleSource, /\.hook-cache-settings \{[\s\S]*?gap: 12px;/);
-  assert.match(styleSource, /\.hook-cache-group \{[\s\S]*?background: #0e1218;/);
-  assert.match(styleSource, /\.hook-cache-row--total b \{[\s\S]*?color: #d9ff38;/);
+  assert.match(styleSource, /\.hook-cache-group \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(styleSource, /\.hook-cache-row--total b \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
 });
 
 test("auto-saves Loom fields and Hook shortcuts without a manual save action", () => {

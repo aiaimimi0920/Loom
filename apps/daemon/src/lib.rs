@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -34,7 +34,7 @@ use loom_hook_bridge::{
     HookBridgeRequest, HookBridgeRuntimeInput, HOOK_BRIDGE_PORT,
 };
 use loom_hooks::{HookSettings, HookSettingsSummary};
-use loom_mcp::{McpServerConfig, StdioMcpClient};
+use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
     is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest, PublisherTrustRecord,
@@ -88,8 +88,14 @@ const CAPABILITY_BRAIN_PLAN: &str = "brain.plan";
 const CAPABILITY_TEA_TICKET_DECOMPOSE: &str = "tea.ticket.decompose.v1";
 const CAPABILITY_TEA_TICKET_EXECUTE: &str = "tea.ticket.execute.v1";
 const CAPABILITY_TEA_TICKET_REVIEW: &str = "tea.ticket.review.v1";
-const DEFAULT_MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0/servers";
+const DEFAULT_MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 const MAX_REGISTRY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MCP_REGISTRY_CACHE_SCHEMA_VERSION: u32 = 1;
+const MCP_REGISTRY_CACHE_FRESH_MILLIS: u64 = 15 * 60 * 1000;
+const MCP_REGISTRY_CACHE_MAX_ENTRIES: usize = 64;
+const MCP_REGISTRY_FETCH_ATTEMPTS: usize = 2;
+const MCP_REGISTRY_RETRY_DELAY: Duration = Duration::from_millis(350);
+static MCP_REGISTRY_FETCH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const MAX_ART_STORE_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ART_STORE_PACKAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PUBLISHER_DIRECTORY_BYTES: usize = 256 * 1024;
@@ -449,13 +455,21 @@ impl LoomDaemon {
             .map_err(|error| anyhow::anyhow!("recover Loom run store: {error}"))?;
         let run_store_status = run_store.status();
         if let Some(manifest_dir) = config.manifest_dir.as_deref() {
-            write_local_capability_manifest(
+            if let Err(error) = write_local_capability_manifest(
                 manifest_dir,
                 local_addr,
                 config.auth_token.as_deref(),
-            )?;
+            ) {
+                handle_capability_manifest_error(local_addr, error)?;
+            }
         }
         let request_executor = config.request_executor;
+        let artloom_settings_store = ArtLoomCompatSettingsStore::new(
+            control_plane_root
+                .join("settings")
+                .join("artloom-compat-settings.json"),
+        );
+        apply_artloom_runtime_settings(&artloom_settings_store.settings);
         let runtime = DaemonRuntime {
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
@@ -476,11 +490,7 @@ impl LoomDaemon {
                 control_plane_root.join("settings").join("devices.json"),
                 local_addr,
             ))),
-            artloom_settings: Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
-                control_plane_root
-                    .join("settings")
-                    .join("artloom-compat-settings.json"),
-            ))),
+            artloom_settings: Arc::new(Mutex::new(artloom_settings_store)),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
             settings_base_url,
@@ -627,6 +637,7 @@ fn route_with_runtime(
     runtime: &DaemonRuntime,
     request: &ParsedHttpRequest,
 ) -> Result<(u16, String)> {
+    runtime_log_debug(format!("{} {}", request.method, request.path));
     route(
         request,
         &runtime.hook_settings,
@@ -856,6 +867,9 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), route_path) {
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
+        ("GET", "/v1/mcp/registry" | "/v1/artloom-compat/mcp/registry") => {
+            RequestConcurrencyClass::Concurrent
+        }
         ("GET", "/v1/hook-bridge/canvas") => RequestConcurrencyClass::Concurrent,
         ("GET", path) if hook_canvas_preview_node_id("GET", path).is_some() => {
             RequestConcurrencyClass::Concurrent
@@ -1119,6 +1133,14 @@ fn write_local_capability_manifest(
     Ok(())
 }
 
+fn handle_capability_manifest_error(address: SocketAddr, error: anyhow::Error) -> Result<()> {
+    if address.ip().is_loopback() {
+        eprintln!("[WARN] Loom 本地服务已启动，但无法更新客户端发现清单：{error:#}");
+        return Ok(());
+    }
+    Err(error).context("publish Loom capability manifest for non-loopback daemon")
+}
+
 fn create_sensitive_temporary(path: &Path) -> std::io::Result<(PathBuf, fs::File)> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -1320,8 +1342,15 @@ fn mcp_server_store_path(control_plane_root: &Path) -> PathBuf {
     control_plane_root.join("mcp").join("servers.json")
 }
 
+fn mcp_registry_cache_path(control_plane_root: &Path) -> PathBuf {
+    control_plane_root.join("mcp").join("registry-cache.json")
+}
+
 fn normalize_mcp_server_config(mut server: McpServerConfig) -> McpServerConfig {
-    if is_npx_command(&server.command) && server_uses_brave_search_package(&server.args) {
+    if server.transport == McpTransport::Stdio
+        && is_npx_command(&server.command)
+        && server_uses_brave_search_package(&server.args)
+    {
         server.args = vec![
             "-y".to_owned(),
             "@brave/brave-search-mcp-server".to_owned(),
@@ -1384,6 +1413,118 @@ fn persist_mcp_servers_snapshot(
     fs::write(path, serde_json::to_string_pretty(&ordered)?)
         .with_context(|| format!("write MCP server store {}", path.display()))?;
     Ok(())
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpRegistryCache {
+    schema_version: u32,
+    #[serde(default)]
+    entries: BTreeMap<String, McpRegistryCacheEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpRegistryCacheEntry {
+    fetched_at_ms: u64,
+    response: Value,
+}
+
+fn load_mcp_registry_cache(path: &Path) -> McpRegistryCache {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<McpRegistryCache>(&bytes).ok())
+        .filter(|cache| cache.schema_version == MCP_REGISTRY_CACHE_SCHEMA_VERSION)
+        .unwrap_or_else(|| McpRegistryCache {
+            schema_version: MCP_REGISTRY_CACHE_SCHEMA_VERSION,
+            entries: BTreeMap::new(),
+        })
+}
+
+fn persist_mcp_registry_cache(path: &Path, cache: &McpRegistryCache) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("MCP registry cache path has no parent"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create MCP registry cache dir {}", parent.display()))?;
+    let mut bytes = serde_json::to_vec_pretty(cache)?;
+    bytes.push(b'\n');
+    let (temporary, mut file) = create_sensitive_temporary(path).with_context(|| {
+        format!(
+            "create MCP registry cache temporary in {}",
+            parent.display()
+        )
+    })?;
+    let result = (|| -> Result<()> {
+        file.write_all(&bytes)
+            .with_context(|| format!("write MCP registry cache {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("flush MCP registry cache {}", temporary.display()))?;
+        drop(file);
+        replace_sensitive_file(&temporary, path)
+            .with_context(|| format!("replace MCP registry cache {}", path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn unix_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
+}
+
+fn annotate_mcp_registry_response(
+    mut response: Value,
+    source: &str,
+    stale: bool,
+    fetched_at_ms: u64,
+) -> Value {
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "loomRegistry".to_owned(),
+            json!({
+                "provider": "official",
+                "source": source,
+                "stale": stale,
+                "fetchedAtMs": fetched_at_ms,
+            }),
+        );
+    }
+    response
+}
+
+fn cache_mcp_registry_response(path: &Path, key: &str, response: &Value, fetched_at_ms: u64) {
+    let mut cache = load_mcp_registry_cache(path);
+    cache.entries.insert(
+        key.to_owned(),
+        McpRegistryCacheEntry {
+            fetched_at_ms,
+            response: response.clone(),
+        },
+    );
+    if cache.entries.len() > MCP_REGISTRY_CACHE_MAX_ENTRIES {
+        let mut oldest = cache
+            .entries
+            .iter()
+            .map(|(key, entry)| (entry.fetched_at_ms, key.clone()))
+            .collect::<Vec<_>>();
+        oldest.sort();
+        let remove_count = cache
+            .entries
+            .len()
+            .saturating_sub(MCP_REGISTRY_CACHE_MAX_ENTRIES);
+        for (_, key) in oldest.into_iter().take(remove_count) {
+            cache.entries.remove(&key);
+        }
+    }
+    if let Err(error) = persist_mcp_registry_cache(path, &cache) {
+        runtime_log_error(format!("persist MCP Registry cache failed: {error:#}"));
+    }
 }
 
 enum HttpReadOutcome {
@@ -1687,11 +1828,17 @@ struct McpPackageInstallPlanRequest {
 #[serde(rename_all = "camelCase")]
 struct ArtLoomCompatCallMcpToolRequest {
     #[serde(default)]
+    transport: McpTransport,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
     #[serde(default, alias = "tool_name")]
     tool_name: String,
     #[serde(default, alias = "tool_args")]
@@ -1796,6 +1943,23 @@ struct ArtLoomGeneralSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ArtLoomHookGeneralSettings {
+    theme: String,
+    language: String,
+    close_to_tray: bool,
+}
+
+impl Default for ArtLoomHookGeneralSettings {
+    fn default() -> Self {
+        Self {
+            theme: "dark".to_owned(),
+            language: "zh-Hans".to_owned(),
+            close_to_tray: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct ArtLoomSystemPreferences {
     auto_check_updates: bool,
     enable_run_log: bool,
@@ -1810,6 +1974,75 @@ struct ArtLoomSystemPreferences {
 
 fn default_artloom_log_level() -> String {
     "info".to_owned()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(u8)]
+enum RuntimeLogLevel {
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+}
+
+static RUNTIME_LOG_LEVEL: AtomicU8 = AtomicU8::new(RuntimeLogLevel::Info as u8);
+
+fn parse_runtime_log_level(value: &str) -> RuntimeLogLevel {
+    match value {
+        "error" => RuntimeLogLevel::Error,
+        "warn" => RuntimeLogLevel::Warn,
+        "debug" => RuntimeLogLevel::Debug,
+        _ => RuntimeLogLevel::Info,
+    }
+}
+
+fn configure_runtime_log_level(value: &str) {
+    RUNTIME_LOG_LEVEL.store(parse_runtime_log_level(value) as u8, Ordering::Relaxed);
+}
+
+fn runtime_log_enabled(level: RuntimeLogLevel) -> bool {
+    level as u8 <= RUNTIME_LOG_LEVEL.load(Ordering::Relaxed)
+}
+
+fn runtime_log(level: RuntimeLogLevel, message: &str) {
+    if !runtime_log_enabled(level) {
+        return;
+    }
+    let label = match level {
+        RuntimeLogLevel::Error => "ERROR",
+        RuntimeLogLevel::Warn => "WARN",
+        RuntimeLogLevel::Info => "INFO",
+        RuntimeLogLevel::Debug => "DEBUG",
+    };
+    eprintln!("[{label}] {message}");
+    let log_dir = std::env::var_os("LOOM_LOG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_control_plane_root().join("logs"));
+    if fs::create_dir_all(&log_dir).is_ok() {
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("loom-daemon.log"))
+        {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or_default();
+            let _ = writeln!(file, "{timestamp} [{label}] {message}");
+        }
+    }
+}
+
+pub fn runtime_log_info(message: impl AsRef<str>) {
+    runtime_log(RuntimeLogLevel::Info, message.as_ref());
+}
+
+fn runtime_log_error(message: impl AsRef<str>) {
+    runtime_log(RuntimeLogLevel::Error, message.as_ref());
+}
+
+fn runtime_log_debug(message: impl AsRef<str>) {
+    runtime_log(RuntimeLogLevel::Debug, message.as_ref());
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1829,6 +2062,30 @@ impl Default for ArtLoomProxySettings {
     }
 }
 
+impl ArtLoomProxySettings {
+    fn validate(&self) -> std::result::Result<(), String> {
+        if !matches!(self.mode.as_str(), "system" | "custom" | "disabled") {
+            return Err("代理模式必须是跟随系统、自定义或不使用代理".to_owned());
+        }
+        if !matches!(self.protocol.as_str(), "http" | "https" | "socks5") {
+            return Err("代理协议必须是 http、https 或 socks5".to_owned());
+        }
+        if self.mode == "custom" {
+            let address = self.address.trim();
+            if address.is_empty() {
+                return Err("自定义代理必须填写地址".to_owned());
+            }
+            let url = format!("{}://{address}", self.protocol);
+            let parsed = reqwest::Url::parse(&url)
+                .map_err(|error| format!("自定义代理地址无效：{error}"))?;
+            if parsed.host_str().is_none() || parsed.port_or_known_default().is_none() {
+                return Err("自定义代理地址必须包含主机和端口".to_owned());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 struct ArtLoomNetworkSettings {
     #[serde(default)]
@@ -1843,6 +2100,82 @@ struct ArtLoomHookCacheSettings {
     recycle_bin_retention_days: u32,
     temp_cache_max_bytes: u64,
     temp_cache_retention_days: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ArtLoomMcpSettings {
+    request_timeout_seconds: u64,
+    memory_limit_bytes: u64,
+}
+
+impl Default for ArtLoomMcpSettings {
+    fn default() -> Self {
+        Self {
+            request_timeout_seconds: 60,
+            memory_limit_bytes: 512 * 1024 * 1024,
+        }
+    }
+}
+
+impl ArtLoomMcpSettings {
+    fn validate(&self) -> std::result::Result<(), String> {
+        if !(5..=600).contains(&self.request_timeout_seconds) {
+            return Err("MCP 请求超时必须介于 5 秒到 10 分钟之间".to_owned());
+        }
+        if !(64 * 1024 * 1024..=4 * 1024 * 1024 * 1024).contains(&self.memory_limit_bytes) {
+            return Err("MCP 子进程内存上限必须介于 64 MB 到 4 GB 之间".to_owned());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ArtLoomArtStoreSettings {
+    auto_update: bool,
+    official_only: bool,
+}
+
+impl Default for ArtLoomArtStoreSettings {
+    fn default() -> Self {
+        Self {
+            auto_update: true,
+            official_only: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct ArtLoomCacheSettings {
+    art_cache_max_bytes: u64,
+    art_cache_retention_days: u32,
+    framework_temp_retention_days: u32,
+}
+
+impl Default for ArtLoomCacheSettings {
+    fn default() -> Self {
+        Self {
+            art_cache_max_bytes: 1024 * 1024 * 1024,
+            art_cache_retention_days: 30,
+            framework_temp_retention_days: 3,
+        }
+    }
+}
+
+impl ArtLoomCacheSettings {
+    fn validate(&self) -> std::result::Result<(), String> {
+        if self.art_cache_max_bytes != 0
+            && !(64 * 1024 * 1024..=64 * 1024 * 1024 * 1024).contains(&self.art_cache_max_bytes)
+        {
+            return Err("Art 运行缓存上限必须为无限制或介于 64 MB 到 64 GB 之间".to_owned());
+        }
+        if self.art_cache_retention_days > 3650 {
+            return Err("Art 运行缓存自动清理周期不能超过 3650 天".to_owned());
+        }
+        if self.framework_temp_retention_days > 3650 {
+            return Err("框架临时文件自动清理周期不能超过 3650 天".to_owned());
+        }
+        Ok(())
+    }
 }
 
 impl Default for ArtLoomHookCacheSettings {
@@ -1896,10 +2229,20 @@ struct ArtLoomQuickBinding {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct ArtLoomCompatSettings {
+    #[serde(default)]
+    appearance_version: u32,
     general: ArtLoomGeneralSettings,
+    #[serde(default)]
+    hook_general: ArtLoomHookGeneralSettings,
     system: ArtLoomSystemPreferences,
     #[serde(default)]
     network: ArtLoomNetworkSettings,
+    #[serde(default)]
+    mcp: ArtLoomMcpSettings,
+    #[serde(default)]
+    art_store: ArtLoomArtStoreSettings,
+    #[serde(default)]
+    loom_cache: ArtLoomCacheSettings,
     #[serde(default)]
     hook_cache: ArtLoomHookCacheSettings,
     engine: ArtLoomEngineSettings,
@@ -1916,13 +2259,15 @@ impl Default for ArtLoomCompatSettings {
             shortcuts.insert(shortcut.id.clone(), shortcut);
         }
         Self {
+            appearance_version: CURRENT_APPEARANCE_VERSION,
             general: ArtLoomGeneralSettings {
-                theme: "system".to_owned(),
+                theme: "dark".to_owned(),
                 language: "zh-Hans".to_owned(),
                 auto_start: false,
                 minimize_to_tray: true,
                 enable_tray_icon: true,
             },
+            hook_general: ArtLoomHookGeneralSettings::default(),
             system: ArtLoomSystemPreferences {
                 auto_check_updates: true,
                 enable_run_log: true,
@@ -1933,6 +2278,9 @@ impl Default for ArtLoomCompatSettings {
                 history_retention: "7d".to_owned(),
             },
             network: ArtLoomNetworkSettings::default(),
+            mcp: ArtLoomMcpSettings::default(),
+            art_store: ArtLoomArtStoreSettings::default(),
+            loom_cache: ArtLoomCacheSettings::default(),
             hook_cache: ArtLoomHookCacheSettings::default(),
             engine: ArtLoomEngineSettings {
                 comfyui_url: "http://127.0.0.1:8188".to_owned(),
@@ -1941,14 +2289,50 @@ impl Default for ArtLoomCompatSettings {
                 compute_device: "0".to_owned(),
                 vram_reservation_gb: 12,
             },
-            quick_bindings: vec![ArtLoomQuickBinding {
-                id: "1".to_owned(),
-                art: "ComfyUI Workflow".to_owned(),
-                key: "Ctrl+Shift+1".to_owned(),
-            }],
+            quick_bindings: Vec::new(),
             shortcuts,
         }
     }
+}
+
+const CURRENT_APPEARANCE_VERSION: u32 = 1;
+
+impl ArtLoomCompatSettings {
+    fn migrate_appearance_defaults(&mut self) -> bool {
+        if self.appearance_version >= CURRENT_APPEARANCE_VERSION {
+            return false;
+        }
+        if self.general.theme == "system" {
+            self.general.theme = "dark".to_owned();
+        }
+        if self.hook_general.theme == "system" {
+            self.hook_general.theme = "dark".to_owned();
+        }
+        self.appearance_version = CURRENT_APPEARANCE_VERSION;
+        true
+    }
+}
+
+fn apply_artloom_runtime_settings(settings: &ArtLoomCompatSettings) {
+    loom_mcp::configure_runtime_limits(
+        settings.mcp.request_timeout_seconds,
+        settings.mcp.memory_limit_bytes,
+    );
+    if let Err(error) = loom_tool_registry::network_policy::configure_runtime_proxy(
+        &settings.network.loom.mode,
+        &settings.network.loom.protocol,
+        &settings.network.loom.address,
+    ) {
+        runtime_log_error(format!("apply Loom proxy settings failed: {error}"));
+    }
+    if let Err(error) = loom_gateway::configure_runtime_proxy(
+        &settings.network.loom.mode,
+        &settings.network.loom.protocol,
+        &settings.network.loom.address,
+    ) {
+        runtime_log_error(format!("apply Gateway proxy settings failed: {error}"));
+    }
+    configure_runtime_log_level(&settings.system.loom_log_level);
 }
 
 struct ArtLoomCompatSettingsStore {
@@ -1958,11 +2342,21 @@ struct ArtLoomCompatSettingsStore {
 
 impl ArtLoomCompatSettingsStore {
     fn new(path: PathBuf) -> Self {
-        let settings = fs::read_to_string(&path)
+        let mut settings = fs::read_to_string(&path)
             .ok()
             .and_then(|content| serde_json::from_str::<ArtLoomCompatSettings>(&content).ok())
             .unwrap_or_default();
-        Self { path, settings }
+        let appearance_migrated = settings.migrate_appearance_defaults();
+        settings.quick_bindings.retain(|binding| {
+            !(binding.id == "1"
+                && binding.art == "ComfyUI Workflow"
+                && binding.key == "Ctrl+Shift+1")
+        });
+        let store = Self { path, settings };
+        if appearance_migrated {
+            let _ = store.save();
+        }
+        store
     }
 
     fn save(&self) -> Result<()> {
@@ -2304,14 +2698,20 @@ fn route(
         }
         ("GET", "/v1/capabilities") => capabilities(),
         ("GET", "/v1/mcp/servers") => list_mcp_servers(mcp_servers),
-        ("GET", "/v1/mcp/registry") => fetch_mcp_registry(&request.path, mcp_registry_endpoint),
+        ("GET", "/v1/mcp/registry") => fetch_mcp_registry(
+            &request.path,
+            mcp_registry_endpoint,
+            &mcp_registry_cache_path(control_plane_root),
+        ),
         ("POST", "/v1/mcp/test") => test_mcp_connection(&request.body),
         ("POST", "/v1/mcp/package/check") => check_mcp_package_installed(&request.body),
         ("POST", "/v1/mcp/package/install-plan") => build_mcp_package_install_plan(&request.body),
         ("POST", "/v1/artloom-compat/mcp/call-tool") => artloom_compat_call_mcp_tool(&request.body),
-        ("GET", "/v1/artloom-compat/mcp/registry") => {
-            artloom_compat_fetch_mcp_registry(&request.path, mcp_registry_endpoint)
-        }
+        ("GET", "/v1/artloom-compat/mcp/registry") => artloom_compat_fetch_mcp_registry(
+            &request.path,
+            mcp_registry_endpoint,
+            &mcp_registry_cache_path(control_plane_root),
+        ),
         ("GET", "/v1/artloom-compat/mcp/servers") => artloom_compat_list_mcp_servers(mcp_servers),
         ("POST", "/v1/artloom-compat/mcp/servers") => artloom_compat_save_mcp_server(
             &request.body,
@@ -2443,6 +2843,7 @@ fn route(
             framework_registry,
             control_plane_root,
             hook_bridge,
+            artloom_settings,
         ),
         ("POST", path)
             if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/rollback").is_some() =>
@@ -2696,6 +3097,7 @@ fn route(
                 path_id(path, "/v1/artloom-compat/shortcuts/").expect("checked path"),
                 &request.body,
                 artloom_settings,
+                hook_bridge,
             )
         }
         ("GET", "/v1/artloom-compat/app-paths") => get_artloom_compat_app_paths(),
@@ -3203,6 +3605,9 @@ fn build_mcp_registry_url(
     search: Option<&str>,
     limit: Option<u32>,
     cursor: Option<&str>,
+    updated_since: Option<&str>,
+    version: Option<&str>,
+    include_deleted: bool,
 ) -> String {
     let safe_limit = limit.unwrap_or(60).clamp(1, 100);
     let mut pairs = vec![format!("limit={safe_limit}")];
@@ -3211,6 +3616,20 @@ fn build_mcp_registry_url(
     }
     if let Some(cursor_text) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
         pairs.push(format!("cursor={}", percent_encode(cursor_text)));
+    }
+    if let Some(updated_since) = updated_since
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        pairs.push(format!("updated_since={}", percent_encode(updated_since)));
+    }
+    let version = version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("latest");
+    pairs.push(format!("version={}", percent_encode(version)));
+    if include_deleted {
+        pairs.push("include_deleted=true".to_owned());
     }
     let separator = if endpoint.contains('?') { '&' } else { '?' };
     format!(
@@ -3512,8 +3931,8 @@ fn put_mcp_server(
     if server.id != path_id {
         return id_mismatch("server", path_id, &server.id);
     }
-    if server.name.trim().is_empty() || server.command.trim().is_empty() {
-        return invalid_request("MCP server name and command are required");
+    if let Err(error) = server.validate() {
+        return invalid_request(error.to_string());
     }
 
     {
@@ -3600,8 +4019,8 @@ fn artloom_compat_save_mcp_server(
     if server.id.trim().is_empty() {
         return invalid_request("MCP server id is required");
     }
-    if server.name.trim().is_empty() || server.command.trim().is_empty() {
-        return invalid_request("MCP server name and command are required");
+    if let Err(error) = server.validate() {
+        return invalid_request(error.to_string());
     }
 
     {
@@ -3669,8 +4088,12 @@ fn artloom_compat_delete_mcp_server(
     ))
 }
 
-fn artloom_compat_fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
-    let (status, body) = fetch_mcp_registry(path, endpoint)?;
+fn artloom_compat_fetch_mcp_registry(
+    path: &str,
+    endpoint: &str,
+    cache_path: &Path,
+) -> Result<(u16, String)> {
+    let (status, body) = fetch_mcp_registry(path, endpoint, cache_path)?;
     if status != 200 {
         return Ok((status, body));
     }
@@ -3690,11 +4113,46 @@ fn artloom_compat_fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16,
     Ok((200, serde_json::to_string(&value)?))
 }
 
-fn fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
+fn fetch_mcp_registry(path: &str, endpoint: &str, cache_path: &Path) -> Result<(u16, String)> {
+    let _fetch_guard = MCP_REGISTRY_FETCH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP Registry fetch state"))?;
     let search = query_value(path, "search");
     let cursor = query_value(path, "cursor");
     let limit = query_value(path, "limit").and_then(|value| value.parse::<u32>().ok());
-    let url = build_mcp_registry_url(endpoint, search.as_deref(), limit, cursor.as_deref());
+    let updated_since =
+        query_value(path, "updated_since").or_else(|| query_value(path, "updatedSince"));
+    let version = query_value(path, "version");
+    let include_deleted = query_value(path, "include_deleted")
+        .or_else(|| query_value(path, "includeDeleted"))
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true"));
+    let refresh =
+        query_value(path, "refresh").is_some_and(|value| matches!(value.as_str(), "1" | "true"));
+    let url = build_mcp_registry_url(
+        endpoint,
+        search.as_deref(),
+        limit,
+        cursor.as_deref(),
+        updated_since.as_deref(),
+        version.as_deref(),
+        include_deleted,
+    );
+    let now = unix_time_millis();
+    let cached = load_mcp_registry_cache(cache_path).entries.remove(&url);
+    if !refresh {
+        if let Some(entry) = cached.as_ref().filter(|entry| {
+            now.saturating_sub(entry.fetched_at_ms) <= MCP_REGISTRY_CACHE_FRESH_MILLIS
+        }) {
+            let response = annotate_mcp_registry_response(
+                entry.response.clone(),
+                "cache",
+                false,
+                entry.fetched_at_ms,
+            );
+            return Ok((200, serde_json::to_string(&response)?));
+        }
+    }
 
     let policy = user_configured_outbound_policy();
     let client = secure_client(
@@ -3703,9 +4161,35 @@ fn fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
         policy.clone(),
     )
     .map_err(|error| anyhow::anyhow!("build MCP Registry client: {error}"))?;
-    let bytes = match get_bounded(&client, &url, &policy, MAX_REGISTRY_RESPONSE_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) => {
+    let mut bytes = None;
+    let mut fetch_error = None;
+    for attempt in 0..MCP_REGISTRY_FETCH_ATTEMPTS {
+        match get_bounded(&client, &url, &policy, MAX_REGISTRY_RESPONSE_BYTES) {
+            Ok(response_bytes) => {
+                bytes = Some(response_bytes);
+                break;
+            }
+            Err(error) => {
+                fetch_error = Some(error.to_string());
+                if attempt + 1 < MCP_REGISTRY_FETCH_ATTEMPTS {
+                    std::thread::sleep(MCP_REGISTRY_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    let bytes = match bytes {
+        Some(bytes) => bytes,
+        None => {
+            let error = fetch_error.unwrap_or_else(|| "unknown MCP Registry error".to_owned());
+            if let Some(entry) = cached {
+                let response = annotate_mcp_registry_response(
+                    entry.response,
+                    "cache",
+                    true,
+                    entry.fetched_at_ms,
+                );
+                return Ok((200, serde_json::to_string(&response)?));
+            }
             return structured_error(
                 502,
                 json!({
@@ -3719,6 +4203,15 @@ fn fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
     let value = match serde_json::from_slice::<Value>(&bytes) {
         Ok(value) => value,
         Err(error) => {
+            if let Some(entry) = cached {
+                let response = annotate_mcp_registry_response(
+                    entry.response,
+                    "cache",
+                    true,
+                    entry.fetched_at_ms,
+                );
+                return Ok((200, serde_json::to_string(&response)?));
+            }
             return structured_error(
                 502,
                 json!({
@@ -3730,7 +4223,9 @@ fn fetch_mcp_registry(path: &str, endpoint: &str) -> Result<(u16, String)> {
         }
     };
 
-    Ok((200, serde_json::to_string(&value)?))
+    cache_mcp_registry_response(cache_path, &url, &value, now);
+    let response = annotate_mcp_registry_response(value, "network", false, now);
+    Ok((200, serde_json::to_string(&response)?))
 }
 
 fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
@@ -3749,7 +4244,7 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
     };
     let config = normalize_mcp_server_config(config);
 
-    let mut client = match StdioMcpClient::spawn(&config) {
+    let mut client = match McpClient::connect(&config) {
         Ok(client) => client,
         Err(error) => {
             return Ok((
@@ -3815,11 +4310,7 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
-    let command = request.command.trim();
     let tool_name = request.tool_name.trim();
-    if command.is_empty() {
-        return invalid_request("command is required");
-    }
     if tool_name.is_empty() {
         return invalid_request("toolName is required");
     }
@@ -3828,12 +4319,18 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
         id: "artloom-compat-direct".to_owned(),
         name: "ArtLoom Compat Direct MCP".to_owned(),
         description: "One-shot ArtLoom call_mcp_tool compatibility server".to_owned(),
-        command: command.to_owned(),
+        command: request.command.trim().to_owned(),
         args: request.args,
         env: request.env,
+        transport: request.transport,
+        url: request.url.trim().to_owned(),
+        headers: request.headers,
         enabled: true,
     };
-    let mut client = match StdioMcpClient::spawn(&config) {
+    if let Err(error) = config.validate() {
+        return invalid_request(error.to_string());
+    }
+    let mut client = match McpClient::connect(&config) {
         Ok(client) => client,
         Err(error) => {
             return structured_error(
@@ -4825,7 +5322,7 @@ fn update_art_version(
             &InstallFromStoreRequest {
                 art_id: source.art_id,
                 version: Some(target.clone()),
-                store: Some(source.store),
+                store: None,
                 sha256: (!sha256.is_empty()).then_some(sha256),
             },
             tool_registry,
@@ -4865,7 +5362,24 @@ fn auto_update_arts(
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
+    settings_store: &SharedArtLoomCompatSettingsStore,
 ) -> Result<(u16, String)> {
+    let auto_update_enabled = settings_store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?
+        .settings
+        .art_store
+        .auto_update;
+    if !auto_update_enabled {
+        return Ok((
+            200,
+            serde_json::to_string(&json!({
+                "updated": [],
+                "errors": [],
+                "disabled": true
+            }))?,
+        ));
+    }
     let mut stored_settings = match ArtSettingsStore::new(control_plane_root).list() {
         Ok(settings) => settings,
         Err(error) => {
@@ -4916,7 +5430,7 @@ fn auto_update_arts(
         let request = InstallFromStoreRequest {
             art_id: source.art_id,
             version: Some(remote.latest_version.clone()),
-            store: Some(source.store),
+            store: None,
             sha256: digest,
         };
         match install_art_from_store_request(
@@ -4986,7 +5500,12 @@ fn effective_art_update_source(
     tool: &ToolDefinition,
     settings: &ArtUserSettings,
 ) -> Option<ArtUpdateSource> {
+    let store = resolve_art_store_url()?;
     if let Some(mut source) = settings.source.clone() {
+        // Older versions persisted a caller-selected store per Art. Keep the
+        // package identity, but always route updates through Loom's official
+        // deployment-managed store.
+        source.store = store;
         source
             .qualified_id
             .get_or_insert_with(|| tool.qualified_id());
@@ -4995,7 +5514,7 @@ fn effective_art_update_source(
     if tool.publisher_identity().is_none() {
         return None;
     }
-    resolve_art_store_url(None).map(|store| ArtUpdateSource {
+    Some(ArtUpdateSource {
         store,
         art_id: tool.id.clone(),
         qualified_id: Some(tool.qualified_id()),
@@ -5034,19 +5553,17 @@ fn version_is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-// Resolve the remote art store base URL: explicit `?store=`/`store` field wins,
-// else the LOOM_ART_STORE_URL env var.
-fn resolve_art_store_url(explicit: Option<&str>) -> Option<String> {
-    explicit
-        .map(str::trim)
+// The official Art store is configured by the Loom deployment. User requests
+// and persisted Art settings must never select an alternate remote store.
+fn resolve_art_store_url() -> Option<String> {
+    std::env::var("LOOM_ART_STORE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
         .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            std::env::var("LOOM_ART_STORE_URL")
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        })
+}
+
+fn custom_art_store_requested(store: Option<&str>) -> bool {
+    store.is_some_and(|value| !value.trim().is_empty())
 }
 
 fn user_configured_outbound_policy() -> OutboundPolicy {
@@ -5382,10 +5899,19 @@ fn fetch_remote_art_store_catalog(
 
 // Proxy the remote art store catalog (GET {store}/catalog).
 fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
-    let Some(store) = resolve_art_store_url(query_value(path, "store").as_deref()) else {
+    if query_value(path, "store").is_some() {
         return structured_error(
             400,
-            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址（LOOM_ART_STORE_URL 或 ?store=）" }),
+            json!({
+                "code": "custom_art_store_not_supported",
+                "message": "Loom 不支持选择第三方 Art 商店"
+            }),
+        );
+    }
+    let Some(store) = resolve_art_store_url() else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "Loom 官方 Art 服务暂不可用" }),
         );
     };
     match fetch_remote_art_store_catalog(&store) {
@@ -5537,10 +6063,17 @@ fn install_art_from_store_request(
     Vec<loom_tool_registry::install::ArtInstallReport>,
     loom_tool_registry::install::ArtInstallError,
 > {
-    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+    if custom_art_store_requested(request.store.as_deref()) {
         return Err(
             loom_tool_registry::install::ArtInstallError::InvalidPackage(
-                "未配置 art 商店地址".to_owned(),
+                "Loom 不支持选择第三方 Art 商店；可以改用本地 Art 包安装".to_owned(),
+            ),
+        );
+    }
+    let Some(store) = resolve_art_store_url() else {
+        return Err(
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(
+                "Loom 官方 Art 服务暂不可用".to_owned(),
             ),
         );
     };
@@ -5749,6 +6282,15 @@ fn publish_art_to_store(
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
+    if custom_art_store_requested(request.store.as_deref()) {
+        return structured_error(
+            400,
+            json!({
+                "code": "custom_art_store_not_supported",
+                "message": "Loom 不支持选择第三方 Art 商店"
+            }),
+        );
+    }
     let mut tool = match tool_registry.get_tool(&request.art_id) {
         Ok(Some(tool)) => tool,
         Ok(None) => {
@@ -5768,10 +6310,10 @@ fn publish_art_to_store(
             }),
         );
     }
-    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+    let Some(store) = resolve_art_store_url() else {
         return structured_error(
             400,
-            json!({ "code": "art_store_not_configured", "message": "未配置 art 商店地址" }),
+            json!({ "code": "art_store_not_configured", "message": "Loom 官方 Art 服务暂不可用" }),
         );
     };
     let (identity, signing_key) = match ensure_local_publisher_identity(control_plane_root) {
@@ -6309,10 +6851,19 @@ fn trust_plugin_user(body: &str, framework_registry: &FrameworkRegistry) -> Resu
     if !is_platform_publisher_id(user_id) {
         return invalid_request("用户 ID 格式无效");
     }
-    let Some(store) = resolve_art_store_url(request.store.as_deref()) else {
+    if custom_art_store_requested(request.store.as_deref()) {
         return structured_error(
             400,
-            json!({ "code": "art_store_not_configured", "message": "未配置 Art 商店地址" }),
+            json!({
+                "code": "custom_art_store_not_supported",
+                "message": "Loom 不支持选择第三方 Art 商店"
+            }),
+        );
+    }
+    let Some(store) = resolve_art_store_url() else {
+        return structured_error(
+            400,
+            json!({ "code": "art_store_not_configured", "message": "Loom 官方 Art 服务暂不可用" }),
         );
     };
     if let Err(error) = sync_trusted_publisher_from_store(&store, user_id, framework_registry) {
@@ -6373,6 +6924,15 @@ fn register_publisher_identity(body: &str, control_plane_root: &Path) -> Result<
             Err(error) => return invalid_request(error.to_string()),
         }
     };
+    if custom_art_store_requested(request.store.as_deref()) {
+        return structured_error(
+            400,
+            json!({
+                "code": "custom_art_store_not_supported",
+                "message": "Loom 不支持选择第三方 Art 商店"
+            }),
+        );
+    }
     let (identity, key) = match ensure_local_publisher_identity(control_plane_root) {
         Ok(identity) => identity,
         Err(error) => {
@@ -6382,7 +6942,7 @@ fn register_publisher_identity(body: &str, control_plane_root: &Path) -> Result<
             )
         }
     };
-    if let Some(store) = resolve_art_store_url(request.store.as_deref()) {
+    if let Some(store) = resolve_art_store_url() {
         if let Err(error) = ensure_remote_publisher_registered(&store, &identity, &key) {
             return structured_error(
                 502,
@@ -6402,6 +6962,15 @@ fn rotate_publisher_identity(body: &str, control_plane_root: &Path) -> Result<(u
             Err(error) => return invalid_request(error.to_string()),
         }
     };
+    if custom_art_store_requested(request.store.as_deref()) {
+        return structured_error(
+            400,
+            json!({
+                "code": "custom_art_store_not_supported",
+                "message": "Loom 不支持选择第三方 Art 商店"
+            }),
+        );
+    }
     let (identity, current_key) = match ensure_local_publisher_identity(control_plane_root) {
         Ok(identity) => identity,
         Err(error) => {
@@ -6412,7 +6981,7 @@ fn rotate_publisher_identity(body: &str, control_plane_root: &Path) -> Result<(u
         }
     };
     let next_key = generate_signing_key(publisher_key_id());
-    if let Some(store) = resolve_art_store_url(request.store.as_deref()) {
+    if let Some(store) = resolve_art_store_url() {
         if let Err(error) = ensure_remote_publisher_registered(&store, &identity, &current_key) {
             return structured_error(
                 502,
@@ -9259,12 +9828,34 @@ fn put_artloom_compat_settings(
     settings_store: &SharedArtLoomCompatSettingsStore,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
-    let settings: ArtLoomCompatSettings = match serde_json::from_str(body) {
+    let mut settings: ArtLoomCompatSettings = match serde_json::from_str(body) {
         Ok(settings) => settings,
         Err(error) => return invalid_request(error.to_string()),
     };
+    settings.migrate_appearance_defaults();
     if let Err(error) = settings.hook_cache.validate() {
         return invalid_request(error);
+    }
+    if let Err(error) = settings.mcp.validate() {
+        return invalid_request(error);
+    }
+    if let Err(error) = settings.loom_cache.validate() {
+        return invalid_request(error);
+    }
+    if let Err(error) = settings.network.loom.validate() {
+        return invalid_request(error);
+    }
+    if let Err(error) = settings.network.hook.validate() {
+        return invalid_request(error);
+    }
+    if !matches!(
+        settings.system.loom_log_level.as_str(),
+        "error" | "warn" | "info" | "debug"
+    ) || !matches!(
+        settings.system.hook_log_level.as_str(),
+        "error" | "warn" | "info" | "debug"
+    ) {
+        return invalid_request("日志级别必须是 error、warn、info 或 debug");
     }
     let mut store = settings_store
         .lock()
@@ -9275,6 +9866,7 @@ fn put_artloom_compat_settings(
         return Err(error);
     }
     drop(store);
+    apply_artloom_runtime_settings(&settings);
     broadcast_hook_bridge_json(
         hook_bridge,
         json!({
@@ -9285,6 +9877,7 @@ fn put_artloom_compat_settings(
             }
         }),
     );
+    broadcast_artloom_compat_settings_updated(hook_bridge, &settings);
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -9369,6 +9962,7 @@ fn put_artloom_compat_shortcut(
     path_id: &str,
     body: &str,
     settings_store: &SharedArtLoomCompatSettingsStore,
+    hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
     let shortcut: ArtLoomShortcutConfig = match serde_json::from_str(body) {
         Ok(shortcut) => shortcut,
@@ -9395,6 +9989,9 @@ fn put_artloom_compat_shortcut(
         }
         return Err(error);
     }
+    let settings = store.settings.clone();
+    drop(store);
+    broadcast_artloom_compat_settings_updated(hook_bridge, &settings);
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -9403,6 +10000,19 @@ fn put_artloom_compat_shortcut(
             "saved": true,
         }))?,
     ))
+}
+
+fn broadcast_artloom_compat_settings_updated(
+    hook_bridge: &SharedHookBridgeRuntime,
+    settings: &ArtLoomCompatSettings,
+) {
+    broadcast_hook_bridge_json(
+        hook_bridge,
+        json!({
+            "method": "art_hook/settings_updated",
+            "params": { "settings": settings },
+        }),
+    );
 }
 
 fn get_artloom_compat_app_paths() -> Result<(u16, String)> {
@@ -12161,10 +12771,13 @@ fn translate_text_via_provider(
         _ => return Ok(None),
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|error| format!("build translate provider client: {error}"))?;
+    let client = loom_tool_registry::network_policy::apply_runtime_proxy(
+        reqwest::blocking::Client::builder(),
+    )
+    .map_err(|error| format!("configure translate provider proxy: {error}"))?
+    .timeout(Duration::from_secs(15))
+    .build()
+    .map_err(|error| format!("build translate provider client: {error}"))?;
     let response = client
         .post(endpoint)
         .json(&json!({
@@ -17459,6 +18072,33 @@ nodes:
             200,
         );
         assert_eq!(saved["server"]["id"], "fixture");
+        let saved_remote = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/remote-fixture",
+                    &[],
+                    Some(
+                        r#"{
+                          "id": "remote-fixture",
+                          "name": "Remote Fixture",
+                          "description": "Persist every Streamable HTTP field",
+                          "transport": "streamable-http",
+                          "command": "",
+                          "args": [],
+                          "env": {},
+                          "url": "https://example.test/mcp",
+                          "headers": { "Authorization": "Bearer persisted-test-token" },
+                          "enabled": false
+                        }"#,
+                    ),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(saved_remote["server"]["transport"], "streamable-http");
+        assert_eq!(saved_remote["server"]["url"], "https://example.test/mcp");
         drop(runtime);
 
         let reloaded_runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
@@ -17471,10 +18111,24 @@ nodes:
         );
         assert_eq!(
             reloaded["servers"].as_array().expect("servers").len(),
-            1,
-            "persisted MCP server should reload from disk"
+            2,
+            "persisted local and remote MCP servers should reload from disk"
         );
-        assert_eq!(reloaded["servers"][0]["id"], "fixture");
+        let reloaded_servers = reloaded["servers"].as_array().expect("servers");
+        assert!(reloaded_servers
+            .iter()
+            .any(|server| server["id"] == "fixture"));
+        let reloaded_remote = reloaded_servers
+            .iter()
+            .find(|server| server["id"] == "remote-fixture")
+            .expect("remote server");
+        assert_eq!(reloaded_remote["transport"], "streamable-http");
+        assert_eq!(reloaded_remote["url"], "https://example.test/mcp");
+        assert_eq!(
+            reloaded_remote["headers"]["Authorization"],
+            "Bearer persisted-test-token"
+        );
+        assert_eq!(reloaded_remote["enabled"], false);
 
         let deleted = expect_json_text_route_response(
             route_request(
@@ -17484,6 +18138,14 @@ nodes:
             200,
         );
         assert_eq!(deleted["deleted"], true);
+        let deleted_remote = expect_json_text_route_response(
+            route_request(
+                &reloaded_runtime,
+                &parsed_request("DELETE", "/v1/mcp/servers/remote-fixture", &[], None),
+            ),
+            200,
+        );
+        assert_eq!(deleted_remote["deleted"], true);
         drop(reloaded_runtime);
 
         let deleted_runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
@@ -17512,6 +18174,9 @@ nodes:
                 "github:brave/brave-search-mcp-server".to_owned(),
             ],
             env: BTreeMap::new(),
+            transport: McpTransport::Stdio,
+            url: String::new(),
+            headers: BTreeMap::new(),
             enabled: true,
         });
 
@@ -17535,6 +18200,9 @@ nodes:
             command: "python".to_owned(),
             args: vec!["server.py".to_owned()],
             env: BTreeMap::new(),
+            transport: McpTransport::Stdio,
+            url: String::new(),
+            headers: BTreeMap::new(),
             enabled: true,
         };
 
@@ -17549,7 +18217,7 @@ nodes:
         let root = unique_temp_dir("artloom-mcp-server-store");
         std::env::set_var(
             "LOOM_MCP_REGISTRY_ENDPOINT",
-            registry_fixture.url("/v0/servers"),
+            registry_fixture.url("/v0.1/servers"),
         );
         let config = DaemonConfig::localhost(0);
         restore_env("LOOM_MCP_REGISTRY_ENDPOINT", previous_registry_endpoint);
@@ -17606,7 +18274,7 @@ nodes:
                 &runtime,
                 &parsed_request(
                     "GET",
-                    "/v1/artloom-compat/mcp/registry?search=fixture&limit=250&cursor=cursor-1",
+                    "/v1/artloom-compat/mcp/registry?search=fixture&limit=250&cursor=cursor-1&updatedSince=2026-08-01T00%3A00%3A00Z&includeDeleted=true",
                     &[],
                     None,
                 ),
@@ -17619,6 +18287,13 @@ nodes:
             "io.modelcontextprotocol/fixture"
         );
         assert!(registry_fixture.request_path().contains("limit=100"));
+        assert!(registry_fixture.request_path().contains("version=latest"));
+        assert!(registry_fixture
+            .request_path()
+            .contains("updated_since=2026-08-01T00%3A00%3A00Z"));
+        assert!(registry_fixture
+            .request_path()
+            .contains("include_deleted=true"));
 
         let deleted = expect_json_text_route_response(
             route_request(
@@ -17647,7 +18322,7 @@ nodes:
         let previous_registry_endpoint = std::env::var("LOOM_MCP_REGISTRY_ENDPOINT").ok();
         std::env::set_var(
             "LOOM_MCP_REGISTRY_ENDPOINT",
-            registry_fixture.url("/v0/servers"),
+            registry_fixture.url("/v0.1/servers"),
         );
         let root = unique_temp_dir("mcp-registry-contracts");
         let config = DaemonConfig::localhost(0);
@@ -17673,6 +18348,7 @@ nodes:
         assert!(registry_fixture.request_path().contains("limit=100"));
         assert!(registry_fixture.request_path().contains("search=fixture"));
         assert!(registry_fixture.request_path().contains("cursor=cursor-1"));
+        assert!(registry_fixture.request_path().contains("version=latest"));
 
         let request_body = current_test_binary_mcp_fixture_config().to_string();
         let test_result = expect_json_text_route_response(
@@ -17692,6 +18368,62 @@ nodes:
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup mcp registry root");
+    }
+
+    #[test]
+    fn mcp_registry_uses_stale_disk_cache_when_the_official_registry_is_unavailable() {
+        let fixture = McpRegistryFixture::start();
+        let endpoint = fixture.url("/v0.1/servers");
+        let root = unique_temp_dir("mcp-registry-cache");
+        let cache_path = mcp_registry_cache_path(&root);
+        let path = "/v1/mcp/registry?limit=20&refresh=true";
+
+        let (status, body) =
+            fetch_mcp_registry(path, &endpoint, &cache_path).expect("initial registry fetch");
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(&body).expect("initial registry response");
+        assert_eq!(body["loomRegistry"]["source"], "network");
+        assert_eq!(body["loomRegistry"]["stale"], false);
+        assert!(cache_path.is_file());
+        drop(fixture);
+
+        let (status, body) =
+            fetch_mcp_registry(path, &endpoint, &cache_path).expect("cached registry fallback");
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(&body).expect("cached registry response");
+        assert_eq!(body["loomRegistry"]["source"], "cache");
+        assert_eq!(body["loomRegistry"]["stale"], true);
+        assert_eq!(
+            body["servers"][0]["server"]["name"],
+            "io.modelcontextprotocol/fixture"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup MCP registry cache");
+    }
+
+    #[test]
+    fn mcp_registry_retries_the_same_cursor_after_a_transient_connection_failure() {
+        let fixture = McpRegistryFixture::start_flaky();
+        let endpoint = fixture.url("/v0.1/servers");
+        let root = unique_temp_dir("mcp-registry-retry");
+        let cache_path = mcp_registry_cache_path(&root);
+
+        let (status, body) = fetch_mcp_registry(
+            "/v1/mcp/registry?limit=100&cursor=retry-cursor",
+            &endpoint,
+            &cache_path,
+        )
+        .expect("retried registry fetch");
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(&body).expect("retried registry response");
+        assert_eq!(body["loomRegistry"]["source"], "network");
+        assert_eq!(
+            body["servers"][0]["server"]["name"],
+            "io.modelcontextprotocol/fixture"
+        );
+        assert!(fixture.request_path().contains("cursor=retry-cursor"));
+
+        fs::remove_dir_all(root).expect("cleanup MCP registry retry cache");
     }
 
     #[test]
@@ -18913,6 +19645,38 @@ def run(args):
     }
 
     #[test]
+    fn artloom_settings_migrate_legacy_system_theme_to_dark_once() {
+        let root = unique_temp_dir("artloom-theme-migration");
+        let path = root.join("settings").join("artloom-compat-settings.json");
+        fs::create_dir_all(path.parent().expect("settings parent")).expect("create settings");
+
+        let mut legacy = ArtLoomCompatSettings::default();
+        legacy.appearance_version = 0;
+        legacy.general.theme = "system".to_owned();
+        legacy.hook_general.theme = "system".to_owned();
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&legacy).expect("legacy settings json"),
+        )
+        .expect("write legacy settings");
+
+        let mut migrated = ArtLoomCompatSettingsStore::new(path.clone());
+        assert_eq!(
+            migrated.settings.appearance_version,
+            CURRENT_APPEARANCE_VERSION
+        );
+        assert_eq!(migrated.settings.general.theme, "dark");
+        assert_eq!(migrated.settings.hook_general.theme, "dark");
+
+        migrated.settings.general.theme = "system".to_owned();
+        migrated.save().expect("save explicit system theme");
+        let reloaded = ArtLoomCompatSettingsStore::new(path);
+        assert_eq!(reloaded.settings.general.theme, "system");
+
+        fs::remove_dir_all(root).expect("cleanup settings");
+    }
+
+    #[test]
     fn daemon_exposes_artloom_settings_shortcuts_and_safe_system_contracts() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("artloom-settings");
@@ -18926,7 +19690,7 @@ def run(args):
             200,
         );
         assert_eq!(settings["compatCommand"], "get_settings");
-        assert_eq!(settings["settings"]["general"]["theme"], "system");
+        assert_eq!(settings["settings"]["general"]["theme"], "dark");
         assert_eq!(
             settings["settings"]["engine"]["comfyui_url"],
             "http://127.0.0.1:8188"
@@ -19125,6 +19889,123 @@ def run(args):
     }
 
     #[test]
+    fn artloom_settings_store_drops_the_legacy_placeholder_quick_binding() {
+        let root = unique_temp_dir("hook-legacy-quick-binding");
+        fs::create_dir_all(&root).expect("create settings root");
+        let path = root.join("settings.json");
+        let mut settings = ArtLoomCompatSettings::default();
+        settings.quick_bindings.push(ArtLoomQuickBinding {
+            id: "1".to_owned(),
+            art: "ComfyUI Workflow".to_owned(),
+            key: "Ctrl+Shift+1".to_owned(),
+        });
+        settings.quick_bindings.push(ArtLoomQuickBinding {
+            id: "color-transfer".to_owned(),
+            art: "custom-1770131241684".to_owned(),
+            key: "Ctrl+K".to_owned(),
+        });
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&settings).expect("settings json"),
+        )
+        .expect("write settings");
+
+        let store = ArtLoomCompatSettingsStore::new(path);
+
+        assert_eq!(store.settings.quick_bindings.len(), 1);
+        assert_eq!(store.settings.quick_bindings[0].art, "custom-1770131241684");
+        fs::remove_dir_all(root).expect("cleanup settings root");
+    }
+
+    #[test]
+    fn artloom_settings_store_defaults_new_loom_sections_for_older_settings_files() {
+        let root = unique_temp_dir("loom-cache-settings-default");
+        fs::create_dir_all(&root).expect("create settings root");
+        let path = root.join("settings.json");
+        let mut value = serde_json::to_value(ArtLoomCompatSettings::default())
+            .expect("serialize default settings");
+        let settings = value.as_object_mut().expect("settings object");
+        settings.remove("loom_cache");
+        settings.remove("mcp");
+        settings.remove("art_store");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&value).expect("settings json"),
+        )
+        .expect("write settings");
+
+        let store = ArtLoomCompatSettingsStore::new(path);
+
+        assert_eq!(store.settings.loom_cache, ArtLoomCacheSettings::default());
+        assert_eq!(store.settings.mcp, ArtLoomMcpSettings::default());
+        assert_eq!(store.settings.art_store, ArtLoomArtStoreSettings::default());
+        fs::remove_dir_all(root).expect("cleanup settings root");
+    }
+
+    #[test]
+    fn artloom_settings_apply_mcp_limits_and_global_art_update_policy() {
+        let root = unique_temp_dir("loom-runtime-settings");
+        let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+            root.join("settings.json"),
+        )));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        let mut settings = ArtLoomCompatSettings::default();
+        settings.mcp.request_timeout_seconds = 120;
+        settings.mcp.memory_limit_bytes = 1024 * 1024 * 1024;
+        settings.network.loom.mode = "disabled".to_owned();
+        settings.system.loom_log_level = "error".to_owned();
+        settings.art_store.auto_update = false;
+        let body = serde_json::to_string(&settings).expect("settings body");
+
+        let (status, _) = put_artloom_compat_settings(&body, &settings_store, &hook_bridge)
+            .expect("save runtime settings");
+
+        assert_eq!(status, 200);
+        assert_eq!(loom_mcp::runtime_limits(), (120, 1024 * 1024 * 1024));
+        assert_eq!(
+            loom_tool_registry::network_policy::runtime_proxy(),
+            loom_tool_registry::network_policy::RuntimeProxy::Disabled
+        );
+        assert!(!runtime_log_enabled(RuntimeLogLevel::Info));
+        assert!(runtime_log_enabled(RuntimeLogLevel::Error));
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        let framework_registry = FrameworkRegistry::new(&root);
+        let (update_status, update_body) = auto_update_arts(
+            &tool_registry,
+            &framework_registry,
+            &root,
+            &hook_bridge,
+            &settings_store,
+        )
+        .expect("skip globally disabled Art updates");
+        assert_eq!(update_status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&update_body).expect("update response")["disabled"],
+            true
+        );
+        apply_artloom_runtime_settings(&ArtLoomCompatSettings::default());
+        fs::remove_dir_all(root).expect("cleanup settings root");
+    }
+
+    #[test]
+    fn art_store_rejects_caller_selected_remote_store() {
+        let (status, body) = fetch_art_store_catalog(
+            "/v1/arts/store/catalog?store=https%3A%2F%2Fthird-party.example",
+        )
+        .expect("custom store rejection response");
+
+        assert_eq!(status, 400);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("error response")["error"]["code"],
+            "custom_art_store_not_supported"
+        );
+        assert!(custom_art_store_requested(Some(
+            "https://third-party.example"
+        )));
+        assert!(!custom_art_store_requested(None));
+    }
+
+    #[test]
     fn hook_cache_settings_and_library_commands_use_the_hook_bridge_channel() {
         let root = unique_temp_dir("hook-cache-control");
         let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
@@ -19165,6 +20046,66 @@ def run(args):
         )
         .expect("clear json");
         assert_eq!(clear_event["params"]["action"], "clearReferenceLibrary");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn hook_receives_full_settings_after_settings_or_shortcut_updates() {
+        let root = unique_temp_dir("hook-settings-updated");
+        let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+            root.join("settings.json"),
+        )));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        let hub = hook_bridge
+            .lock()
+            .expect("hook bridge")
+            .broadcast_hub
+            .clone();
+        let (rx, _subscription) =
+            register_hook_bridge_subscription(&hub, vec!["art_hook/settings_updated".to_owned()]);
+
+        let mut settings = ArtLoomCompatSettings::default();
+        settings.general.theme = "dark".to_owned();
+        let body = serde_json::to_string(&settings).expect("settings body");
+        put_artloom_compat_settings(&body, &settings_store, &hook_bridge).expect("save settings");
+        let settings_event: Value = serde_json::from_str(
+            &rx.recv_timeout(Duration::from_secs(1))
+                .expect("full settings event"),
+        )
+        .expect("settings json");
+        assert_eq!(settings_event["method"], "art_hook/settings_updated");
+        assert_eq!(
+            settings_event["params"]["settings"]["general"]["theme"],
+            "dark"
+        );
+
+        let shortcut = ArtLoomShortcutConfig {
+            id: "capture".to_owned(),
+            label: "Screenshot".to_owned(),
+            keys: "Alt+9 / F8".to_owned(),
+            enabled: true,
+        };
+        put_artloom_compat_shortcut(
+            "capture",
+            &serde_json::to_string(&shortcut).expect("shortcut body"),
+            &settings_store,
+            &hook_bridge,
+        )
+        .expect("save shortcut");
+        let shortcut_event: Value = serde_json::from_str(
+            &rx.recv_timeout(Duration::from_secs(1))
+                .expect("shortcut settings event"),
+        )
+        .expect("shortcut settings json");
+        assert_eq!(
+            shortcut_event["params"]["settings"]["shortcuts"]["capture"]["keys"],
+            "Alt+9 / F8"
+        );
+        assert_eq!(
+            shortcut_event["params"]["settings"]["general"]["theme"],
+            "dark"
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -19616,10 +20557,10 @@ def run(args):
         let stream =
             TcpStream::connect(("127.0.0.1", bridge_port)).expect("connect bridge tcp socket");
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("set websocket read timeout");
         stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
+            .set_write_timeout(Some(Duration::from_secs(20)))
             .expect("set websocket write timeout");
         let (mut socket, _) = tungstenite::client(format!("ws://127.0.0.1:{bridge_port}"), stream)
             .expect("connect bridge websocket");
@@ -22537,6 +23478,45 @@ def run(args):
             }
         }
 
+        fn start_flaky() -> Self {
+            let listener =
+                TcpListener::bind(("127.0.0.1", 0)).expect("bind flaky MCP registry fixture");
+            let port = listener
+                .local_addr()
+                .expect("flaky MCP registry fixture address")
+                .port();
+            let request_path = Arc::new(Mutex::new(None));
+            let worker_request_path = Arc::clone(&request_path);
+            let worker = thread::spawn(move || {
+                let (mut first, _) = listener.accept().expect("accept failed registry request");
+                let _ = read_cloud_fixture_request(&mut first);
+                let _ = first.shutdown(Shutdown::Both);
+
+                let (mut second, _) = listener.accept().expect("accept retried registry request");
+                let request = read_cloud_fixture_request(&mut second);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_owned();
+                *worker_request_path
+                    .lock()
+                    .expect("lock retried MCP registry request path") = Some(path);
+                write_cloud_fixture_response(
+                    &mut second,
+                    "200 OK",
+                    "application/json",
+                    r#"{"servers":[{"server":{"name":"io.modelcontextprotocol/fixture","title":"Fixture MCP","description":"Fixture registry server","packages":[{"registryType":"npm","identifier":"@fixture/mcp","version":"1.0.0","transport":{"type":"stdio"}}]}}],"metadata":{"count":1}}"#,
+                );
+            });
+            Self {
+                port,
+                worker: Some(worker),
+                request_path,
+            }
+        }
+
         fn url(&self, path: &str) -> String {
             format!("http://127.0.0.1:{}{path}", self.port)
         }
@@ -22674,6 +23654,22 @@ def run(args):
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn loopback_daemon_survives_an_unwritable_discovery_manifest() {
+        handle_capability_manifest_error(
+            "127.0.0.1:38191".parse().expect("loopback address"),
+            anyhow::anyhow!("simulated access denied"),
+        )
+        .expect("loopback manifest failure is non-fatal");
+
+        let error = handle_capability_manifest_error(
+            "0.0.0.0:38191".parse().expect("non-loopback address"),
+            anyhow::anyhow!("simulated access denied"),
+        )
+        .expect_err("non-loopback manifest failure remains fatal");
+        assert!(error.to_string().contains("capability manifest"));
     }
 
     #[test]

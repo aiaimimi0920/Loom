@@ -16,22 +16,42 @@ export interface McpMarketServer {
   name: string;
   description: string;
   category: McpMarketCategory;
+  transport: "stdio" | "streamable-http";
   command: string;
   args: string[];
   env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
   sourceUrl: string;
   sourceLabel: string;
   sourceKind: "registry" | "curated";
   installSource: {
-    registry: "npm" | "pypi" | "oci" | "github" | "ghcr";
+    registry: "npm" | "pypi" | "oci" | "remote";
     packageName: string;
     version?: string;
   };
   requiredEnvKeys?: string[];
+  requiredHeaderKeys?: string[];
   author?: string;
   defaultEnabled?: boolean;
   requiresManualConfiguration?: boolean;
   notes?: string;
+  installOptions: McpMarketInstallOption[];
+}
+
+export interface McpMarketInstallOption {
+  id: string;
+  label: string;
+  transport: "stdio" | "streamable-http";
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+  installSource: McpMarketServer["installSource"];
+  requiredEnvKeys?: string[];
+  requiredHeaderKeys?: string[];
+  requiresManualConfiguration?: boolean;
 }
 
 export interface McpMarketplaceTestSnapshot {
@@ -62,6 +82,26 @@ interface McpRegistryEnvironmentVariable {
   isRequired?: boolean;
 }
 
+interface McpRegistryRemoteVariable {
+  default?: string;
+  value?: string;
+  isRequired?: boolean;
+  isSecret?: boolean;
+  choices?: string[];
+}
+
+interface McpRegistryRemoteHeader extends McpRegistryEnvironmentVariable {
+  description?: string;
+  isSecret?: boolean;
+}
+
+interface McpRegistryRemote {
+  type?: string;
+  url?: string;
+  variables?: Record<string, McpRegistryRemoteVariable>;
+  headers?: McpRegistryRemoteHeader[];
+}
+
 interface McpRegistryRuntimeArgument {
   value?: string;
 }
@@ -86,16 +126,26 @@ interface McpRegistryPackage {
   environmentVariables?: McpRegistryEnvironmentVariable[];
 }
 
+interface McpRegistryLocalizedText {
+  title?: string;
+  description?: string;
+}
+
 interface McpRegistryServer {
   name?: string;
   title?: string;
   description?: string;
+  // The Official Registry does not currently define localized text. Keep this
+  // optional extension so compatible registries can provide real translations
+  // without Loom inventing or machine-translating upstream content.
+  localizations?: Record<string, McpRegistryLocalizedText>;
   repository?: {
     url?: string;
     source?: string;
   };
   websiteUrl?: string;
   packages?: McpRegistryPackage[];
+  remotes?: McpRegistryRemote[];
 }
 
 interface McpRegistryEntry {
@@ -115,6 +165,52 @@ export interface McpRegistryResponse {
     count?: number;
     nextCursor?: string;
   };
+  loomRegistry?: {
+    provider?: string;
+    source?: "network" | "cache";
+    stale?: boolean;
+    fetchedAtMs?: number;
+  };
+}
+
+export interface ParsedMcpKeyValueLines {
+  values: Record<string, string>;
+  invalidLineNumbers: number[];
+}
+
+export function parseMcpKeyValueLines(value: string): ParsedMcpKeyValueLines {
+  return value.split(/\r?\n/).reduce<ParsedMcpKeyValueLines>((parsed, line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return parsed;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) {
+      parsed.invalidLineNumbers.push(index + 1);
+      return parsed;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    if (!key) {
+      parsed.invalidLineNumbers.push(index + 1);
+      return parsed;
+    }
+    parsed.values[key] = trimmed.slice(separator + 1).trim();
+    return parsed;
+  }, { values: {}, invalidLineNumbers: [] });
+}
+
+export function isValidMcpRemoteUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim());
+    return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
+export function findInstalledMcpServer(
+  servers: readonly LoomMcpServer[],
+  marketItem: Pick<McpMarketServer, "id">,
+): LoomMcpServer | undefined {
+  return servers.find((server) => server.id === marketItem.id);
 }
 
 export const MCP_MARKET_CATEGORIES: readonly McpMarketCategory[] = [
@@ -145,120 +241,199 @@ export function mcpMarketCategoryLabel(category: McpMarketCategory): string {
   return MCP_MARKET_CATEGORY_LABELS[category] || category;
 }
 
+interface CuratedMcpDefinition {
+  id: string;
+  name: string;
+  description: string;
+  category: McpMarketCategory;
+  command: string;
+  args: string[];
+  registry: "npm" | "pypi" | "oci";
+  packageName: string;
+  sourceUrl: string;
+  author: string;
+  requiredEnvKeys?: string[];
+  requiresManualConfiguration?: boolean;
+}
+
+function curatedLocalMcp(definition: CuratedMcpDefinition): McpMarketServer {
+  const env = Object.fromEntries((definition.requiredEnvKeys || []).map((key) => [key, ""]));
+  const option: McpMarketInstallOption = {
+    id: `stdio:${definition.registry}:${definition.packageName}`,
+    label: definition.registry === "npm" ? "本地 · Node.js" : definition.registry === "pypi" ? "本地 · Python" : "本地 · 容器",
+    transport: "stdio",
+    command: definition.command,
+    args: [...definition.args],
+    env,
+    url: "",
+    headers: {},
+    installSource: { registry: definition.registry, packageName: definition.packageName },
+    requiredEnvKeys: definition.requiredEnvKeys,
+    requiresManualConfiguration: definition.requiresManualConfiguration,
+  };
+  return {
+    id: definition.id,
+    name: definition.name,
+    description: definition.description,
+    category: definition.category,
+    transport: "stdio",
+    command: option.command,
+    args: option.args,
+    env: option.env,
+    url: "",
+    headers: {},
+    sourceUrl: definition.sourceUrl,
+    sourceLabel: "Loom 精选",
+    sourceKind: "curated",
+    installSource: option.installSource,
+    requiredEnvKeys: definition.requiredEnvKeys,
+    author: definition.author,
+    defaultEnabled: !definition.requiresManualConfiguration && !definition.requiredEnvKeys?.length,
+    requiresManualConfiguration: definition.requiresManualConfiguration,
+    installOptions: [option],
+  };
+}
+
+// Loom exposes a deliberately small, reviewed catalog instead of forwarding
+// the entire public Registry to end users. The upstream Registry integration
+// remains available to the daemon for future catalog maintenance and imports.
 export const MCP_MARKET_SERVERS: readonly McpMarketServer[] = [
-  {
-    id: "brave-search",
-    name: "Brave Search",
-    description: "通过 Brave Search 搜索网页、本地、图片、视频、新闻和摘要结果。",
-    category: "Search",
-    command: "npx",
-    args: ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"],
-    env: { BRAVE_API_KEY: "" },
-    sourceUrl: "https://github.com/brave/brave-search-mcp-server",
-    sourceLabel: "Brave 官方 MCP 服务",
-    sourceKind: "curated",
-    installSource: {
-      registry: "npm",
-      packageName: "@brave/brave-search-mcp-server",
-    },
-    requiredEnvKeys: ["BRAVE_API_KEY"],
-  },
-  {
-    id: "fetch",
-    name: "Fetch",
-    description: "抓取网页并转换为适合模型读取的内容。",
-    category: "Web",
-    command: "uvx",
-    args: ["mcp-server-fetch"],
-    env: {},
-    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-    sourceLabel: "MCP 参考服务",
-    sourceKind: "curated",
-    installSource: {
-      registry: "pypi",
-      packageName: "mcp-server-fetch",
-    },
-  },
-  {
-    id: "filesystem",
-    name: "Filesystem",
-    description: "只允许访问明确加入白名单的本地目录。",
-    category: "Local",
-    command: "npx",
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "<allowed-directory>"],
-    env: {},
-    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-    sourceLabel: "MCP 参考服务",
-    sourceKind: "curated",
-    installSource: {
-      registry: "npm",
-      packageName: "@modelcontextprotocol/server-filesystem",
-    },
-    defaultEnabled: false,
-    requiresManualConfiguration: true,
-    notes: "先把 <allowed-directory> 替换为允许读写的精确目录，再启用该服务。",
-  },
-  {
-    id: "playwright",
-    name: "Playwright Browser",
-    description: "提供结构化页面快照和网页交互工具的浏览器自动化服务。",
-    category: "Browser",
-    command: "npx",
-    args: ["-y", "@playwright/mcp@latest"],
-    env: {},
-    sourceUrl: "https://github.com/microsoft/playwright-mcp",
-    sourceLabel: "Microsoft Playwright MCP 服务",
-    sourceKind: "curated",
-    installSource: {
-      registry: "npm",
-      packageName: "@playwright/mcp",
-    },
-  },
-  {
-    id: "memory",
-    name: "Memory",
-    description: "用于跨会话保留上下文的知识图谱记忆服务。",
+  curatedLocalMcp({
+    id: "loom.curated/memory",
+    name: "持久记忆",
+    description: "使用知识图谱保存实体、关系和观察结果，为智能体提供可持续维护的本地记忆。",
     category: "Memory",
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-memory"],
-    env: {},
+    registry: "npm",
+    packageName: "@modelcontextprotocol/server-memory",
     sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
-    sourceLabel: "MCP 参考服务",
-    sourceKind: "curated",
-    installSource: {
-      registry: "npm",
-      packageName: "@modelcontextprotocol/server-memory",
-    },
-  },
-  {
-    id: "github",
+    author: "Model Context Protocol",
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/filesystem",
+    name: "文件系统",
+    description: "在明确授权的目录内读取、编辑、搜索和管理文件，适合本地资料与项目操作。",
+    category: "Local",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "<允许访问的目录>"],
+    registry: "npm",
+    packageName: "@modelcontextprotocol/server-filesystem",
+    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+    author: "Model Context Protocol",
+    requiresManualConfiguration: true,
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/fetch",
+    name: "网页读取",
+    description: "抓取网页内容并转换为适合模型阅读的文本，用于资料检索、阅读和摘要。",
+    category: "Web",
+    command: "uvx",
+    args: ["mcp-server-fetch"],
+    registry: "pypi",
+    packageName: "mcp-server-fetch",
+    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+    author: "Model Context Protocol",
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/git",
+    name: "Git 仓库",
+    description: "读取提交、分支和差异，并在指定的本地 Git 仓库中执行受控版本操作。",
+    category: "Developer",
+    command: "uvx",
+    args: ["mcp-server-git", "--repository", "<仓库路径>"],
+    registry: "pypi",
+    packageName: "mcp-server-git",
+    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+    author: "Model Context Protocol",
+    requiresManualConfiguration: true,
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/time",
+    name: "时间与时区",
+    description: "查询当前时间并进行时区转换，适合日程、跨地区协作和时间计算。",
+    category: "Utility",
+    command: "uvx",
+    args: ["mcp-server-time"],
+    registry: "pypi",
+    packageName: "mcp-server-time",
+    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+    author: "Model Context Protocol",
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/sequential-thinking",
+    name: "顺序思考",
+    description: "通过可调整的分步推演处理复杂问题，适合规划、分析和需要反复修正的任务。",
+    category: "Reasoning",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+    registry: "npm",
+    packageName: "@modelcontextprotocol/server-sequential-thinking",
+    sourceUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+    author: "Model Context Protocol",
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/playwright",
+    name: "Playwright 浏览器",
+    description: "使用结构化页面信息控制浏览器，适合网页交互、自动化验证和可重复测试。",
+    category: "Browser",
+    command: "npx",
+    args: ["-y", "@playwright/mcp@latest"],
+    registry: "npm",
+    packageName: "@playwright/mcp",
+    sourceUrl: "https://github.com/microsoft/playwright-mcp",
+    author: "Microsoft",
+  }),
+  curatedLocalMcp({
+    id: "loom.curated/github",
     name: "GitHub",
-    description: "通过 GitHub MCP 服务自动处理仓库、Issue、Pull Request 和代码搜索。",
+    description: "连接 GitHub 仓库、议题和拉取请求，适合代码检索、协作和项目维护。",
     category: "Developer",
     command: "docker",
     args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"],
-    env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" },
+    registry: "oci",
+    packageName: "ghcr.io/github/github-mcp-server",
     sourceUrl: "https://github.com/github/github-mcp-server",
-    sourceLabel: "GitHub 官方 MCP 服务",
-    sourceKind: "curated",
-    installSource: {
-      registry: "ghcr",
-      packageName: "ghcr.io/github/github-mcp-server",
-    },
+    author: "GitHub",
     requiredEnvKeys: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
-    defaultEnabled: false,
-    notes: "Requires Docker and a GitHub token. Keep it disabled until the token is configured.",
-  },
+  }),
 ];
 
-export function mapRegistryResponseToMarketplace(response: McpRegistryResponse): McpMarketServer[] {
+export function mapRegistryResponseToMarketplace(
+  response: McpRegistryResponse,
+  locale = "en",
+): McpMarketServer[] {
   return dedupeMarketplaceServers(
     (response.servers || [])
-      .filter((entry) => entry._meta?.["io.modelcontextprotocol.registry/official"]?.status !== "deprecated")
+      .filter((entry) => !["deprecated", "deleted"].includes(
+        entry._meta?.["io.modelcontextprotocol.registry/official"]?.status || "active",
+      ))
       .filter((entry) => entry._meta?.["io.modelcontextprotocol.registry/official"]?.isLatest !== false)
-      .map(registryEntryToMarketplaceServer)
+      .map((entry) => registryEntryToMarketplaceServer(entry, locale))
       .filter((server): server is McpMarketServer => Boolean(server)),
   );
+}
+
+export type McpPaginationItem = number | "start-ellipsis" | "end-ellipsis";
+
+export function buildMcpPaginationItems(currentPage: number, totalPages: number): McpPaginationItem[] {
+  const total = Math.max(1, Math.trunc(totalPages));
+  const current = Math.min(total, Math.max(1, Math.trunc(currentPage)));
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+
+  const pages = new Set([1, total, current - 1, current, current + 1]);
+  if (current <= 3) [2, 3, 4].forEach((page) => pages.add(page));
+  if (current >= total - 2) [total - 3, total - 2, total - 1].forEach((page) => pages.add(page));
+  const ordered = [...pages].filter((page) => page >= 1 && page <= total).sort((left, right) => left - right);
+  const items: McpPaginationItem[] = [];
+  ordered.forEach((page, index) => {
+    const previous = ordered[index - 1];
+    if (previous !== undefined && page - previous > 1) {
+      items.push(previous === 1 ? "start-ellipsis" : "end-ellipsis");
+    }
+    items.push(page);
+  });
+  return items;
 }
 
 export function mergeRegistryAndCuratedMarketplace(
@@ -271,14 +446,26 @@ export function mergeRegistryAndCuratedMarketplace(
 export function buildMarketplaceServerConfig(
   marketItem: McpMarketServer,
   existing?: LoomMcpServer,
+  installOptionId?: string,
 ): LoomMcpServer {
+  const option = marketItem.installOptions.find((candidate) => candidate.id === installOptionId) ||
+    marketItem.installOptions.find((candidate) => candidate.transport === existing?.transport &&
+      (candidate.transport === "stdio" ? candidate.command === existing?.command : candidate.url === existing?.url)) ||
+    marketItem.installOptions.find((candidate) => candidate.transport === existing?.transport) ||
+    marketItem.installOptions[0];
+  if (!option) throw new Error(`MCP Registry entry ${marketItem.id} has no install option`);
   return {
     id: existing?.id || marketItem.id,
     name: marketItem.name,
     description: marketItem.description,
-    command: marketItem.command,
-    args: [...marketItem.args],
-    env: mergeMarketplaceEnv(marketItem.env, existing?.env),
+    transport: option.transport,
+    command: option.command,
+    args: [...option.args],
+    env: mergeMarketplaceEnv(option.env, existing?.env),
+    url: option.transport === "streamable-http" && existing?.transport === "streamable-http" && existing.url
+      ? existing.url
+      : option.url,
+    headers: mergeMarketplaceEnv(option.headers, existing?.headers),
     enabled: existing?.enabled ?? marketItem.defaultEnabled ?? true,
   };
 }
@@ -288,25 +475,31 @@ export function getMarketplaceHealth(
   configuredServer?: LoomMcpServer,
   testSnapshot?: McpMarketplaceTestSnapshot,
 ): McpMarketplaceHealth {
-  const requiredEnvKeys = getRequiredEnvKeys(marketItem);
+  const installOption = marketItem.installOptions.find((option) =>
+    configuredServer?.transport === option.transport &&
+    (option.transport === "stdio" ? option.command === configuredServer.command : option.url === configuredServer?.url)) ||
+    marketItem.installOptions.find((option) => configuredServer?.transport === option.transport) ||
+    marketItem.installOptions[0];
+  const requiredEnvKeys = installOption?.requiredEnvKeys || [];
+  const requiredHeaderKeys = installOption?.requiredHeaderKeys || [];
   const requiredEnvPresent =
-    requiredEnvKeys.length === 0 ||
-    requiredEnvKeys.every((key) => Boolean(configuredServer?.env?.[key]?.trim()));
+    (requiredEnvKeys.length === 0 || requiredEnvKeys.every((key) => Boolean(configuredServer?.env?.[key]?.trim()))) &&
+    (requiredHeaderKeys.length === 0 || requiredHeaderKeys.every((key) => Boolean(configuredServer?.headers?.[key]?.trim())));
   const tags: McpMarketplaceHealth["tags"] = [];
 
   if (configuredServer) {
-    tags.push({ label: "Configured", tone: "success" });
+    tags.push({ label: "已安装", tone: "success" });
     tags.push({
-      label: configuredServer.enabled === false ? "Disabled" : "Enabled",
+      label: configuredServer.enabled === false ? "已禁用" : "已启用",
       tone: configuredServer.enabled === false ? "neutral" : "success",
     });
   }
 
-  if (marketItem.requiresManualConfiguration) {
+  if (installOption?.requiresManualConfiguration) {
     tags.push({ label: "需要配置", tone: "warning" });
   }
 
-  if (requiredEnvKeys.length > 0) {
+  if (requiredEnvKeys.length > 0 || requiredHeaderKeys.length > 0) {
     tags.push({
       label: requiredEnvPresent ? "密钥已填" : "缺少密钥",
       tone: requiredEnvPresent ? "success" : "error",
@@ -329,23 +522,17 @@ export function getMarketplaceHealth(
   };
 }
 
-function registryEntryToMarketplaceServer(entry: McpRegistryEntry): McpMarketServer | null {
+function registryEntryToMarketplaceServer(entry: McpRegistryEntry, locale: string): McpMarketServer | null {
   const registryServer = entry.server;
   if (!registryServer?.name) return null;
 
-  const selectedPackage = selectInstallableRegistryPackage(registryServer.packages || []);
-  if (!selectedPackage?.identifier) return null;
-
-  const installCommand = buildRegistryInstallCommand(selectedPackage);
-  if (!installCommand) return null;
-
-  const env = buildRegistryEnv(selectedPackage.environmentVariables || []);
-  const requiredEnvKeys = (selectedPackage.environmentVariables || [])
-    .filter((item) => item.isRequired === true && item.name)
-    .map((item) => item.name as string);
-  const sourceUrl = registryServer.repository?.url || registryServer.websiteUrl || "https://registry.modelcontextprotocol.io";
-  const title = registryServer.title?.trim() || readableNameFromRegistryId(registryServer.name);
-  const description = registryServer.description?.trim() || "MCP Registry 服务。";
+  const installOptions = buildRegistryInstallOptions(registryServer);
+  const selected = installOptions[0];
+  if (!selected) return null;
+  const sourceUrl = registrySourceUrl(registryServer);
+  const localized = findRegistryLocalization(registryServer.localizations, locale);
+  const title = localized?.title?.trim() || registryServer.title?.trim() || readableNameFromRegistryId(registryServer.name);
+  const description = localized?.description?.trim() || registryServer.description?.trim() || "MCP Registry 服务。";
   const category = inferRegistryCategory(`${title} ${description} ${registryServer.name}`);
 
   return {
@@ -353,32 +540,132 @@ function registryEntryToMarketplaceServer(entry: McpRegistryEntry): McpMarketSer
     name: title,
     description,
     category,
-    command: installCommand.command,
-    args: installCommand.args,
-    env,
+    transport: selected.transport,
+    command: selected.command,
+    args: selected.args,
+    env: selected.env,
+    url: selected.url,
+    headers: selected.headers,
     sourceUrl,
     sourceLabel: "MCP Registry",
     sourceKind: "registry",
     installSource: {
-      registry: normalizeRegistryType(selectedPackage.registryType),
-      packageName: selectedPackage.identifier,
-      version: normalizeVersion(selectedPackage.version),
+      ...selected.installSource,
     },
-    requiredEnvKeys: requiredEnvKeys.length > 0 ? requiredEnvKeys : undefined,
+    requiredEnvKeys: selected.requiredEnvKeys,
+    requiredHeaderKeys: selected.requiredHeaderKeys,
     author: registryServer.repository?.source || registryServer.name.split("/")[0] || "registry",
-    defaultEnabled: requiredEnvKeys.length === 0,
-    requiresManualConfiguration: hasRequiredPackageArguments(selectedPackage),
-    notes: buildRegistryNotes(entry, selectedPackage),
+    defaultEnabled: !(selected.requiredEnvKeys?.length || selected.requiredHeaderKeys?.length || selected.requiresManualConfiguration),
+    requiresManualConfiguration: selected.requiresManualConfiguration,
+    notes: buildRegistryNotes(entry, selected),
+    installOptions,
   };
 }
 
-function selectInstallableRegistryPackage(packages: readonly McpRegistryPackage[]): McpRegistryPackage | undefined {
-  const stdioPackages = packages.filter((item) => item.transport?.type === "stdio" && item.identifier);
-  return (
-    stdioPackages.find((item) => normalizeRegistryType(item.registryType) === "npm") ||
-    stdioPackages.find((item) => normalizeRegistryType(item.registryType) === "pypi") ||
-    stdioPackages.find((item) => normalizeRegistryType(item.registryType) === "oci")
-  );
+function registrySourceUrl(server: McpRegistryServer): string {
+  for (const candidate of [server.repository?.url, server.websiteUrl]) {
+    const normalized = candidate?.trim().replace(/^git\+https:\/\//i, "https://");
+    if (!normalized) continue;
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol === "https:" && !parsed.username && !parsed.password) return parsed.toString();
+    } catch {
+      // Ignore non-browser repository transports and use the next safe URL.
+    }
+  }
+  return "https://registry.modelcontextprotocol.io";
+}
+
+function findRegistryLocalization(
+  localizations: Record<string, McpRegistryLocalizedText> | undefined,
+  locale: string,
+): McpRegistryLocalizedText | undefined {
+  if (!localizations) return undefined;
+  const requested = locale.trim().replace(/_/g, "-");
+  const language = requested.split("-")[0]?.toLowerCase();
+  const candidates = [
+    requested,
+    requested.toLowerCase(),
+    ...(language === "zh" ? ["zh-Hans", "zh-CN", "zh"] : []),
+    ...(language === "en" ? ["en-US", "en"] : language ? [language] : []),
+  ];
+  const entries = Object.entries(localizations);
+  for (const candidate of candidates) {
+    const match = entries.find(([key]) => key.toLowerCase() === candidate.toLowerCase());
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+function buildRegistryInstallOptions(server: McpRegistryServer): McpMarketInstallOption[] {
+  const packages = (server.packages || [])
+    .filter((item) => item.transport?.type === "stdio" && item.identifier && isSupportedRegistryType(item.registryType))
+    .map((pkg) => buildPackageInstallOption(pkg))
+    .filter((option): option is McpMarketInstallOption => Boolean(option));
+  const remotes = (server.remotes || [])
+    .filter((remote) => remote.type === "streamable-http" && remote.url)
+    .map(buildRemoteInstallOption)
+    .filter((option): option is McpMarketInstallOption => Boolean(option));
+  const orderedPackages = ["npm", "pypi", "oci"].flatMap((registry) =>
+    packages.filter((option) => option.installSource.registry === registry));
+  return dedupeInstallOptions([...orderedPackages, ...remotes]);
+}
+
+function buildPackageInstallOption(pkg: McpRegistryPackage): McpMarketInstallOption | null {
+  if (!pkg.identifier) return null;
+  const installCommand = buildRegistryInstallCommand(pkg);
+  if (!installCommand) return null;
+  const env = buildRegistryEnv(pkg.environmentVariables || []);
+  const requiredEnvKeys = (pkg.environmentVariables || [])
+    .filter((item) => item.isRequired === true && item.name)
+    .map((item) => item.name as string);
+  const registry = normalizeRegistryType(pkg.registryType);
+  const version = normalizeVersion(pkg.version);
+  return {
+    id: `stdio:${registry}:${pkg.identifier}:${version || "latest"}`,
+    label: registry === "npm" ? "本地 · Node.js" : registry === "pypi" ? "本地 · Python" : "本地 · 容器",
+    transport: "stdio",
+    command: installCommand.command,
+    args: installCommand.args,
+    env,
+    url: "",
+    headers: {},
+    installSource: { registry, packageName: pkg.identifier, version },
+    requiredEnvKeys: requiredEnvKeys.length > 0 ? requiredEnvKeys : undefined,
+    requiresManualConfiguration: hasRequiredPackageArguments(pkg),
+  };
+}
+
+function buildRemoteInstallOption(remote: McpRegistryRemote): McpMarketInstallOption | null {
+  if (!remote.url) return null;
+  let url = remote.url;
+  let unresolvedVariable = false;
+  Object.entries(remote.variables || {}).forEach(([name, variable]) => {
+    const value = variable.value ?? variable.default;
+    if (value !== undefined && value !== "") {
+      url = url.replaceAll(`{${name}}`, value);
+    } else if (variable.isRequired !== false) {
+      unresolvedVariable = true;
+    }
+  });
+  unresolvedVariable ||= /\{[^}]+\}/.test(url);
+  const headers = buildRegistryEnv(remote.headers || []);
+  const requiredHeaderKeys = (remote.headers || [])
+    .filter((item) => item.isRequired === true && item.name)
+    .map((item) => item.name as string);
+  return {
+    id: `streamable-http:${remote.url}`,
+    label: "远程 · Streamable HTTP",
+    transport: "streamable-http",
+    command: "",
+    args: [],
+    env: {},
+    url,
+    headers,
+    installSource: { registry: "remote", packageName: remote.url },
+    requiredHeaderKeys: requiredHeaderKeys.length > 0 ? requiredHeaderKeys : undefined,
+    requiresManualConfiguration: unresolvedVariable,
+  };
 }
 
 function buildRegistryInstallCommand(pkg: McpRegistryPackage): { command: string; args: string[] } | null {
@@ -449,16 +736,29 @@ function normalizeRegistryType(registryType: string | undefined): RegistryPackag
   return "npm";
 }
 
+function isSupportedRegistryType(registryType: string | undefined): boolean {
+  return registryType === "npm" || registryType === "pypi" || registryType === "oci";
+}
+
 function hasRequiredPackageArguments(pkg: McpRegistryPackage): boolean {
   return (pkg.packageArguments || []).some((item) => item.isRequired === true);
 }
 
-function buildRegistryNotes(entry: McpRegistryEntry, pkg: McpRegistryPackage): string | undefined {
+function buildRegistryNotes(entry: McpRegistryEntry, option: McpMarketInstallOption): string | undefined {
   const official = entry._meta?.["io.modelcontextprotocol.registry/official"];
   const notes: string[] = [];
   if (official?.updatedAt) notes.push(`注册表更新时间 ${official.updatedAt}`);
-  if (hasRequiredPackageArguments(pkg)) notes.push("启用前需要手动补充包参数。");
+  if (option.requiresManualConfiguration) notes.push("启用前需要补充连接参数。");
   return notes.length > 0 ? notes.join(" | ") : undefined;
+}
+
+function dedupeInstallOptions(options: readonly McpMarketInstallOption[]): McpMarketInstallOption[] {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    if (seen.has(option.id)) return false;
+    seen.add(option.id);
+    return true;
+  });
 }
 
 function readableNameFromRegistryId(id: string): string {
@@ -480,13 +780,6 @@ function inferRegistryCategory(text: string): McpMarketCategory {
   if (normalized.includes("fetch") || normalized.includes("web") || normalized.includes("http")) return "Web";
   if (normalized.includes("think") || normalized.includes("reason")) return "Reasoning";
   return "Utility";
-}
-
-function getRequiredEnvKeys(marketItem: McpMarketServer): string[] {
-  if (marketItem.requiredEnvKeys) return marketItem.requiredEnvKeys;
-  return Object.entries(marketItem.env)
-    .filter(([, value]) => value.trim() === "")
-    .map(([key]) => key);
 }
 
 function mergeMarketplaceEnv(

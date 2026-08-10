@@ -9,6 +9,7 @@ description = "Loom MCP server and tool invocation contracts"
 
 [dependencies]
 loom_process.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

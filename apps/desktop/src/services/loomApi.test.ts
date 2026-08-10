@@ -6,15 +6,18 @@ import {
   autoUpdateArts,
   bootstrapPackagedArts,
   fetchArtStoreCatalog,
+  fetchMcpRegistry,
   getArtManagement,
   getPublisherIdentity,
   installArtFromStore,
   installFramework,
+  callMcpTool,
   listPluginCredentials,
   listPluginTrust,
   listFrameworks,
   publishArt,
   readLoomSnapshot,
+  retainAvailableSnapshotData,
   revokePluginPublisher,
   revealPluginCredential,
   revealPublisherPrivateKey,
@@ -36,6 +39,61 @@ import {
   type ConnectionState,
   type LoomSnapshot,
 } from "./loomApi.ts";
+
+test("official MCP Registry and remote tool helpers preserve standard transport fields", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const seen: Array<{ url: URL; body: unknown }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    seen.push({
+      url: new URL(value),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return new Response(JSON.stringify({ servers: [], metadata: {} }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  await fetchMcpRegistry("http://127.0.0.1:18765", {
+    search: "remote docs",
+    limit: 80,
+    updatedSince: "2026-08-01T00:00:00Z",
+    includeDeleted: true,
+    refresh: true,
+  });
+  await callMcpTool(
+    "http://127.0.0.1:18765",
+    {
+      transport: "streamable-http",
+      command: "",
+      url: "https://example.test/mcp",
+      headers: { Authorization: "Bearer secret" },
+    },
+    "search",
+    { query: "loom" },
+  );
+
+  assert.equal(seen[0].url.pathname, "/v1/mcp/registry");
+  assert.equal(seen[0].url.searchParams.get("version"), "latest");
+  assert.equal(seen[0].url.searchParams.get("search"), "remote docs");
+  assert.equal(seen[0].url.searchParams.get("updated_since"), "2026-08-01T00:00:00Z");
+  assert.equal(seen[0].url.searchParams.get("include_deleted"), "true");
+  assert.equal(seen[0].url.searchParams.get("refresh"), "true");
+  assert.deepEqual(seen[1].body, {
+    transport: "streamable-http",
+    command: "",
+    args: [],
+    env: {},
+    url: "https://example.test/mcp",
+    headers: { Authorization: "Bearer secret" },
+    toolName: "search",
+    toolArgs: { query: "loom" },
+  });
+});
 
 function readinessSnapshot(connectionState: ConnectionState): LoomSnapshot {
   return {
@@ -59,6 +117,33 @@ function readinessSnapshot(connectionState: ConnectionState): LoomSnapshot {
     error: connectionState === "online" ? null : "offline",
   };
 }
+
+test("retains the last available Art data while the daemon is temporarily offline", () => {
+  const previous = readinessSnapshot("online");
+  previous.tools = [{ id: "color-transfer", name: "颜色迁移" } as LoomSnapshot["tools"][number]];
+  previous.workflows = [{ id: "workflow-art", name: "颜色迁移-压缩" } as LoomSnapshot["workflows"][number]];
+  const offline = readinessSnapshot("offline");
+
+  const retained = retainAvailableSnapshotData(previous, offline);
+
+  assert.equal(retained.connectionState, "offline");
+  assert.equal(retained.error, "offline");
+  assert.deepEqual(retained.tools, previous.tools);
+  assert.deepEqual(retained.workflows, previous.workflows);
+});
+
+test("retains only modules that failed in an otherwise online snapshot", () => {
+  const previous = readinessSnapshot("online");
+  previous.tools = [{ id: "image-compression", name: "图片压缩" } as LoomSnapshot["tools"][number]];
+  previous.mcpServers = [{ id: "old-mcp", name: "旧服务" } as LoomSnapshot["mcpServers"][number]];
+  const degraded = readinessSnapshot("online");
+  degraded.error = "Loom 本地服务在线，但部分模块暂不可用：/v1/tools returned HTTP 500";
+
+  const retained = retainAvailableSnapshotData(previous, degraded);
+
+  assert.deepEqual(retained.tools, previous.tools);
+  assert.deepEqual(retained.mcpServers, []);
+});
 
 test("waits through transient offline snapshots until the daemon is online", async () => {
   const states: ConnectionState[] = ["offline", "offline", "online"];
@@ -892,19 +977,14 @@ test("art store helpers preserve certification and call install and publish rout
     throw new Error(`Unexpected art store path: ${method} ${url.pathname}${url.search}`);
   }) as typeof fetch;
 
-  const catalog = await fetchArtStoreCatalog(
-    "http://127.0.0.1:18772",
-    "http://127.0.0.1:8790",
-  );
+  const catalog = await fetchArtStoreCatalog("http://127.0.0.1:18772");
   await installArtFromStore(
     "http://127.0.0.1:18772",
     "loom_echo",
-    "http://127.0.0.1:8790",
   );
   const published = await publishArt(
     "http://127.0.0.1:18772",
     "local-art",
-    "http://127.0.0.1:8790",
   );
 
   assert.equal(catalog.length, 1);
@@ -914,17 +994,17 @@ test("art store helpers preserve certification and call install and publish rout
   assert.deepEqual(
     seen.map((entry) => `${entry.method} ${entry.pathWithQuery}`),
     [
-      "GET /v1/arts/store/catalog?store=http%3A%2F%2F127.0.0.1%3A8790",
+      "GET /v1/arts/store/catalog",
       "POST /v1/arts/store/install",
       "POST /v1/arts/store/publish",
     ],
   );
   assert.equal(
     seen[1]?.body,
-    JSON.stringify({ artId: "loom_echo", store: "http://127.0.0.1:8790" }),
+    JSON.stringify({ artId: "loom_echo" }),
   );
   assert.equal(
     seen[2]?.body,
-    JSON.stringify({ artId: "local-art", store: "http://127.0.0.1:8790" }),
+    JSON.stringify({ artId: "local-art" }),
   );
 });

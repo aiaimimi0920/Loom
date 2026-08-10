@@ -1,10 +1,11 @@
 //! Client contracts for the external Neuro Gateway.
 
 use std::io::Read;
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
-use reqwest::Url;
+use reqwest::{Proxy, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -15,6 +16,42 @@ pub const LOOM_GATEWAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_GATEWAY_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_GATEWAY_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 512;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RuntimeProxy {
+    System,
+    Disabled,
+    Custom(String),
+}
+
+impl Default for RuntimeProxy {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+static RUNTIME_PROXY: OnceLock<RwLock<RuntimeProxy>> = OnceLock::new();
+
+fn runtime_proxy_store() -> &'static RwLock<RuntimeProxy> {
+    RUNTIME_PROXY.get_or_init(|| RwLock::new(RuntimeProxy::System))
+}
+
+pub fn configure_runtime_proxy(mode: &str, protocol: &str, address: &str) -> Result<(), String> {
+    let proxy = match mode {
+        "system" => RuntimeProxy::System,
+        "disabled" => RuntimeProxy::Disabled,
+        "custom" => {
+            let url = format!("{}://{}", protocol.trim(), address.trim());
+            Proxy::all(&url).map_err(|error| format!("invalid Gateway proxy: {error}"))?;
+            RuntimeProxy::Custom(url)
+        }
+        _ => return Err(format!("unsupported Gateway proxy mode `{mode}`")),
+    };
+    *runtime_proxy_store()
+        .write()
+        .map_err(|_| "lock Gateway proxy settings".to_owned())? = proxy;
+    Ok(())
+}
 
 /// Gateway client errors.
 #[derive(Debug, Error)]
@@ -153,7 +190,17 @@ impl GatewayClient {
         }
 
         base_url.set_path("/v1/chat/completions");
-        let http = Client::builder().timeout(config.timeout).build()?;
+        let builder = Client::builder().timeout(config.timeout);
+        let builder = match runtime_proxy_store()
+            .read()
+            .map(|proxy| proxy.clone())
+            .unwrap_or_default()
+        {
+            RuntimeProxy::System => builder,
+            RuntimeProxy::Disabled => builder.no_proxy(),
+            RuntimeProxy::Custom(url) => builder.proxy(Proxy::all(url)?),
+        };
+        let http = builder.build()?;
         Ok(Self {
             http,
             chat_url: base_url,

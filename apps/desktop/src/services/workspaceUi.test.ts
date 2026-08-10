@@ -26,6 +26,23 @@ test("keeps save workflow beside the live canvas zoom controls", () => {
   assert.match(styleSource, /\.hook-canvas-save-workflow \{[\s\S]*?min-width: 96px;/);
 });
 
+test("keeps Hook zoom controls readable while preserving the fixed dark canvas", () => {
+  assert.match(hookCanvasSource, /className="hook-canvas-zoom__label">缩放<\/span>/);
+  assert.match(
+    hookCanvasSource,
+    /className="hook-canvas-zoom__slider"[\s\S]*?type="range"[\s\S]*?min=\{0\}[\s\S]*?max=\{1000\}[\s\S]*?step=\{1\}[\s\S]*?aria-label="画布缩放"/,
+  );
+  assert.match(hookCanvasSource, /className="hook-canvas-zoom__value">\{Math\.round\(effectiveViewport\.scale \* 100\)\}%/);
+  assert.match(hookCanvasSource, /aria-pressed=\{showMinimap\}/);
+  assert.match(styleSource, /\.hook-canvas-zoom \{[\s\S]*?color: var\(--loom-theme-muted\);/);
+  assert.match(styleSource, /\.hook-canvas-zoom__label \{[\s\S]*?color: var\(--loom-theme-muted\);/);
+  assert.match(styleSource, /\.hook-canvas-zoom__value \{[\s\S]*?color: var\(--loom-theme-text\);/);
+  assert.match(styleSource, /\.hook-canvas-zoom__slider \{[\s\S]*?background: color-mix\(in srgb, var\(--loom-theme-text\) 28%, transparent\);[\s\S]*?accent-color: var\(--loom-theme-accent-text\);/);
+  assert.match(styleSource, /\.hook-canvas-surface \{[\s\S]*?linear-gradient\(135deg, #101722, #18252b 58%, #11171d\);/);
+  assert.match(styleSource, /\.hook-canvas-surface \{[\s\S]*?color-scheme: dark;/);
+  assert.doesNotMatch(styleSource, /:root\[data-loom-theme="light"\] \.hook-canvas-surface/);
+});
+
 test("serializes desktop snapshot refreshes and does not subscribe an offline instance to Hook Bridge", () => {
   assert.match(appSource, /const snapshotSingleFlight = useRef\(createSingleFlightGate\(\)\);/);
   assert.match(appSource, /return await snapshotSingleFlight\.current\.run\(async \(\) => \{/);

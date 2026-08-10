@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use loom_mcp::{McpServerConfig, StdioMcpClient};
+use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_protocol::{CredentialGrant, FrameworkExecuteRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -24,6 +24,7 @@ struct ArtMetadata {
 struct McpArtConfig {
     #[serde(default)]
     server_id: String,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
@@ -32,6 +33,14 @@ struct McpArtConfig {
     env: BTreeMap<String, String>,
     #[serde(default)]
     credential_env: BTreeMap<String, String>,
+    #[serde(default)]
+    transport: McpTransport,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    credential_headers: BTreeMap<String, String>,
     #[serde(default)]
     arguments: Value,
 }
@@ -47,21 +56,33 @@ pub struct McpExecution {
 
 pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpExecution, String> {
     let config = load_config(art_dir)?;
-    let command = super::resolve_command(art_dir, config.command.trim())?;
     let arguments = build_arguments(request, &config.arguments)?;
     let environment = build_environment(request, &config)?;
+    let headers = build_headers(request, &config)?;
     let server_id = non_empty(&config.server_id).unwrap_or(request.art_id.as_str());
-    let mut server = McpServerConfig::new(
-        server_id,
-        format!("{} MCP server", request.art_id),
-        command.to_string_lossy(),
-    );
+    let mut server = match config.transport {
+        McpTransport::Stdio => {
+            let command = super::resolve_command(art_dir, config.command.trim())?;
+            McpServerConfig::new(
+                server_id,
+                format!("{} MCP server", request.art_id),
+                command.to_string_lossy(),
+            )
+        }
+        McpTransport::StreamableHttp => McpServerConfig::remote(
+            server_id,
+            format!("{} MCP server", request.art_id),
+            expand_runtime_paths(&config.url, request, art_dir),
+        ),
+        McpTransport::Sse => return Err("MCP Art legacy SSE transport is not supported".to_owned()),
+    };
     server.args = config
         .args
         .iter()
         .map(|argument| expand_runtime_paths(argument, request, art_dir))
         .collect();
     server.env = environment;
+    server.headers = headers;
 
     let result = execute_tool(&server, &config.tool_name, &arguments)
         .map_err(|error| redact_credentials(error, &request.context.credentials))?;
@@ -84,8 +105,14 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
         .metadata
         .mcp
         .ok_or_else(|| "MCP Art metadata.mcp is required".to_owned())?;
-    if config.command.trim().is_empty() {
-        return Err("MCP Art metadata.mcp.command is required".to_owned());
+    match config.transport {
+        McpTransport::Stdio if config.command.trim().is_empty() => {
+            return Err("MCP Art metadata.mcp.command is required".to_owned())
+        }
+        McpTransport::StreamableHttp if config.url.trim().is_empty() => {
+            return Err("MCP Art metadata.mcp.url is required".to_owned())
+        }
+        _ => {}
     }
     if config.tool_name.trim().is_empty() {
         return Err("MCP Art metadata.mcp.toolName is required".to_owned());
@@ -128,6 +155,69 @@ fn build_environment(
         environment.insert(environment_name.clone(), credential.value.clone());
     }
     Ok(environment)
+}
+
+fn build_headers(
+    request: &FrameworkExecuteRequest,
+    config: &McpArtConfig,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut headers = config
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            validate_header_name(name)?;
+            Ok((
+                name.clone(),
+                expand_runtime_paths(value, request, &request.art_dir),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    for (header_name, credential_name) in &config.credential_headers {
+        validate_header_name(header_name)?;
+        let credential_name = credential_name.trim();
+        if credential_name.is_empty() {
+            return Err(format!(
+                "MCP credential mapping for header `{header_name}` is empty"
+            ));
+        }
+        let credential = request
+            .context
+            .credentials
+            .iter()
+            .find(|credential| credential.name == credential_name)
+            .ok_or_else(|| {
+                format!("MCP Art requires credential `{credential_name}` for `{header_name}`")
+            })?;
+        headers.insert(header_name.clone(), credential.value.clone());
+    }
+    Ok(headers)
+}
+
+fn validate_header_name(name: &str) -> Result<(), String> {
+    let valid = !name.trim().is_empty()
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        });
+    valid
+        .then_some(())
+        .ok_or_else(|| format!("invalid MCP HTTP header name `{name}`"))
 }
 
 fn validate_environment_name(name: &str) -> Result<(), String> {
@@ -185,8 +275,8 @@ fn execute_tool(
     tool_name: &str,
     arguments: &Value,
 ) -> Result<Value, String> {
-    let mut client = StdioMcpClient::spawn(server)
-        .map_err(|error| format!("failed to start MCP server: {error}"))?;
+    let mut client = McpClient::connect(server)
+        .map_err(|error| format!("failed to connect MCP server: {error}"))?;
     client
         .initialize()
         .map_err(|error| format!("MCP initialize failed: {error}"))?;
@@ -375,6 +465,10 @@ mod tests {
             tool_name: "search".to_owned(),
             env: BTreeMap::new(),
             credential_env: BTreeMap::from([("BRAVE_API_KEY".to_owned(), "api_key".to_owned())]),
+            transport: McpTransport::Stdio,
+            url: String::new(),
+            headers: BTreeMap::new(),
+            credential_headers: BTreeMap::new(),
             arguments: Value::Null,
         };
         let environment = build_environment(&request(), &config).unwrap();

@@ -3,16 +3,22 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use reqwest::blocking::{Client as HttpClient, Response as HttpResponse};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
+use reqwest::redirect::Policy as RedirectPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
-const MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0/servers";
+const MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
+const MCP_STDIO_PROTOCOL_VERSION: &str = "2024-11-05";
+const MCP_HTTP_PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// Version of the MCP crate.
 pub const LOOM_MCP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -45,9 +51,44 @@ pub enum McpError {
     OutputLimit { limit: usize },
     #[error("MCP process exited with code {code:?}; stderr: {stderr}")]
     ProcessExited { code: Option<i32>, stderr: String },
+    #[error("MCP server `{server_id}` is disabled")]
+    Disabled { server_id: String },
+    #[error("invalid MCP configuration: {0}")]
+    InvalidConfig(String),
+    #[error("MCP transport `{0}` is not supported")]
+    UnsupportedTransport(String),
+    #[error("MCP HTTP request failed: {0}")]
+    Http(String),
+    #[error("MCP HTTP endpoint returned status {status}: {body}")]
+    HttpStatus { status: u16, body: String },
 }
 
 pub type McpResult<T> = Result<T, McpError>;
+
+/// Transport used to connect to a configured MCP server.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    StreamableHttp,
+    Sse,
+}
+
+impl McpTransport {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Stdio => "stdio",
+            Self::StreamableHttp => "streamable-http",
+            Self::Sse => "sse",
+        }
+    }
+}
+
+fn is_stdio_transport(transport: &McpTransport) -> bool {
+    *transport == McpTransport::Stdio
+}
 
 /// User-configured MCP server definition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -57,11 +98,18 @@ pub struct McpServerConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "is_stdio_transport")]
+    pub transport: McpTransport,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -95,6 +143,9 @@ impl McpServerConfig {
             command: command.into(),
             args: Vec::new(),
             env: BTreeMap::new(),
+            transport: McpTransport::Stdio,
+            url: String::new(),
+            headers: BTreeMap::new(),
             enabled: true,
         }
     }
@@ -109,6 +160,47 @@ impl McpServerConfig {
     pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(name.into(), value.into());
         self
+    }
+
+    #[must_use]
+    pub fn remote(id: impl Into<String>, name: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            transport: McpTransport::StreamableHttp,
+            url: url.into(),
+            headers: BTreeMap::new(),
+            enabled: true,
+        }
+    }
+
+    #[must_use]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(name.into(), value.into());
+        self
+    }
+
+    pub fn validate(&self) -> McpResult<()> {
+        if self.id.trim().is_empty() {
+            return Err(McpError::InvalidConfig("server id is required".to_owned()));
+        }
+        if self.name.trim().is_empty() {
+            return Err(McpError::InvalidConfig(
+                "server name is required".to_owned(),
+            ));
+        }
+        match self.transport {
+            McpTransport::Stdio if self.command.trim().is_empty() => Err(McpError::InvalidConfig(
+                "stdio command is required".to_owned(),
+            )),
+            McpTransport::StreamableHttp => validate_remote_config(self),
+            McpTransport::Sse => Err(McpError::UnsupportedTransport("sse".to_owned())),
+            McpTransport::Stdio => Ok(()),
+        }
     }
 
     #[must_use]
@@ -282,17 +374,23 @@ pub fn build_registry_url(
         pairs.push(format!("cursor={}", percent_encode(cursor_text)));
     }
 
+    pairs.push("version=latest".to_owned());
     Ok(format!("{MCP_REGISTRY_ENDPOINT}?{}", pairs.join("&")))
 }
 
 #[must_use]
 pub fn initialize_request(id: u64) -> serde_json::Value {
+    initialize_request_for_version(id, MCP_STDIO_PROTOCOL_VERSION)
+}
+
+#[must_use]
+pub fn initialize_request_for_version(id: u64, protocol_version: &str) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": {
                 "name": "Loom",
@@ -300,6 +398,58 @@ pub fn initialize_request(id: u64) -> serde_json::Value {
             }
         }
     })
+}
+
+/// Transport-neutral MCP client used by daemon and tool registry callers.
+pub enum McpClient {
+    Stdio(StdioMcpClient),
+    StreamableHttp(StreamableHttpMcpClient),
+}
+
+impl McpClient {
+    pub fn connect(config: &McpServerConfig) -> McpResult<Self> {
+        if !config.enabled {
+            return Err(McpError::Disabled {
+                server_id: config.id.clone(),
+            });
+        }
+        config.validate()?;
+        match config.transport {
+            McpTransport::Stdio => StdioMcpClient::spawn(config).map(Self::Stdio),
+            McpTransport::StreamableHttp => {
+                StreamableHttpMcpClient::connect(config).map(Self::StreamableHttp)
+            }
+            McpTransport::Sse => Err(McpError::UnsupportedTransport("sse".to_owned())),
+        }
+    }
+
+    pub fn initialize(&mut self) -> McpResult<JsonValue> {
+        match self {
+            Self::Stdio(client) => client.initialize(),
+            Self::StreamableHttp(client) => client.initialize(),
+        }
+    }
+
+    pub fn list_tools(&mut self) -> McpResult<JsonValue> {
+        match self {
+            Self::Stdio(client) => client.list_tools(),
+            Self::StreamableHttp(client) => client.list_tools(),
+        }
+    }
+
+    pub fn call_tool(&mut self, name: &str, arguments: JsonValue) -> McpResult<JsonValue> {
+        match self {
+            Self::Stdio(client) => client.call_tool(name, arguments),
+            Self::StreamableHttp(client) => client.call_tool(name, arguments),
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        match self {
+            Self::Stdio(client) => client.cancel(),
+            Self::StreamableHttp(client) => client.cancel(),
+        }
+    }
 }
 
 #[must_use]
@@ -343,9 +493,26 @@ pub struct StdioMcpClient {
     next_id: u64,
 }
 
-const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS: u64 = 60;
+const DEFAULT_MCP_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const MCP_MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const MCP_MAX_STDERR_BYTES: usize = 1024 * 1024;
+static MCP_REQUEST_TIMEOUT_SECONDS: AtomicU64 = AtomicU64::new(DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS);
+static MCP_MEMORY_LIMIT_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_MCP_MEMORY_LIMIT_BYTES);
+
+/// Applies process-wide defaults used by newly spawned MCP stdio clients.
+pub fn configure_runtime_limits(request_timeout_seconds: u64, memory_limit_bytes: u64) {
+    MCP_REQUEST_TIMEOUT_SECONDS.store(request_timeout_seconds.max(1), Ordering::Relaxed);
+    MCP_MEMORY_LIMIT_BYTES.store(memory_limit_bytes.max(1), Ordering::Relaxed);
+}
+
+#[must_use]
+pub fn runtime_limits() -> (u64, u64) {
+    (
+        MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed),
+        MCP_MEMORY_LIMIT_BYTES.load(Ordering::Relaxed),
+    )
+}
 
 enum StdoutEvent {
     Line(Vec<u8>),
@@ -372,13 +539,38 @@ impl BoundedStderr {
 
 impl StdioMcpClient {
     pub fn spawn(config: &McpServerConfig) -> McpResult<Self> {
-        Self::spawn_with_timeout(config, MCP_REQUEST_TIMEOUT)
+        if !config.enabled {
+            return Err(McpError::Disabled {
+                server_id: config.id.clone(),
+            });
+        }
+        config.validate()?;
+        if config.transport != McpTransport::Stdio {
+            return Err(McpError::UnsupportedTransport(
+                config.transport.label().to_owned(),
+            ));
+        }
+        Self::spawn_with_timeout(
+            config,
+            Duration::from_secs(MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed)),
+        )
     }
 
     pub fn spawn_with_timeout(
         config: &McpServerConfig,
         request_timeout: Duration,
     ) -> McpResult<Self> {
+        if !config.enabled {
+            return Err(McpError::Disabled {
+                server_id: config.id.clone(),
+            });
+        }
+        config.validate()?;
+        if config.transport != McpTransport::Stdio {
+            return Err(McpError::UnsupportedTransport(
+                config.transport.label().to_owned(),
+            ));
+        }
         let spawn_spec = spawn_command_spec(config);
         let mut process_spec = loom_process::ProcessSpec::new(&spawn_spec.program);
         process_spec.args = spawn_spec.args;
@@ -386,7 +578,9 @@ impl StdioMcpClient {
         process_spec.limits.timeout = request_timeout;
         process_spec.limits.stdout_bytes = MCP_MAX_MESSAGE_BYTES;
         process_spec.limits.stderr_bytes = MCP_MAX_STDERR_BYTES;
-        process_spec.limits.memory_bytes = Some(512 * 1024 * 1024);
+        process_spec.limits.memory_bytes = Some(
+            usize::try_from(MCP_MEMORY_LIMIT_BYTES.load(Ordering::Relaxed)).unwrap_or(usize::MAX),
+        );
         process_spec.limits.max_processes = Some(8);
         let (process, pipes) = match loom_process::ManagedChild::spawn(&process_spec) {
             Ok(value) => value,
@@ -518,6 +712,297 @@ impl StdioMcpClient {
     }
 }
 
+/// Synchronous MCP client for the standard Streamable HTTP transport.
+pub struct StreamableHttpMcpClient {
+    client: HttpClient,
+    url: String,
+    headers: HeaderMap,
+    session_id: Option<String>,
+    protocol_version: String,
+    next_id: u64,
+}
+
+impl StreamableHttpMcpClient {
+    pub fn connect(config: &McpServerConfig) -> McpResult<Self> {
+        if !config.enabled {
+            return Err(McpError::Disabled {
+                server_id: config.id.clone(),
+            });
+        }
+        config.validate()?;
+        if config.transport != McpTransport::StreamableHttp {
+            return Err(McpError::UnsupportedTransport(
+                config.transport.label().to_owned(),
+            ));
+        }
+
+        let request_timeout =
+            Duration::from_secs(MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed));
+        let client = HttpClient::builder()
+            .connect_timeout(request_timeout.min(Duration::from_secs(15)))
+            .timeout(request_timeout)
+            .redirect(RedirectPolicy::none())
+            .build()
+            .map_err(|error| McpError::Http(error.to_string()))?;
+        let headers = build_remote_headers(&config.headers)?;
+
+        Ok(Self {
+            client,
+            url: config.url.trim().to_owned(),
+            headers,
+            session_id: None,
+            protocol_version: MCP_HTTP_PROTOCOL_VERSION.to_owned(),
+            next_id: 1,
+        })
+    }
+
+    pub fn initialize(&mut self) -> McpResult<JsonValue> {
+        let id = self.next_request_id();
+        let request = initialize_request_for_version(id, MCP_HTTP_PROTOCOL_VERSION);
+        let result = self.send_message(&request, Some(id))?;
+        if let Some(version) = result
+            .get("protocolVersion")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|version| !version.is_empty())
+        {
+            self.protocol_version = version.to_owned();
+        }
+        self.send_message(&initialized_notification(), None)?;
+        Ok(result)
+    }
+
+    pub fn list_tools(&mut self) -> McpResult<JsonValue> {
+        let id = self.next_request_id();
+        self.send_message(&tools_list_request(id), Some(id))
+    }
+
+    pub fn call_tool(&mut self, name: &str, arguments: JsonValue) -> McpResult<JsonValue> {
+        let id = self.next_request_id();
+        self.send_message(&tools_call_request(id, name, arguments), Some(id))
+    }
+
+    pub fn cancel(&mut self) {
+        // Streamable HTTP cancellation is request-scoped. Dropping the
+        // blocking response cancels an in-flight request; there is no child
+        // process to terminate after a completed one-shot call.
+    }
+
+    fn next_request_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn send_message(
+        &mut self,
+        message: &JsonValue,
+        expected_id: Option<u64>,
+    ) -> McpResult<JsonValue> {
+        let mut request = self
+            .client
+            .post(&self.url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", &self.protocol_version)
+            .headers(self.headers.clone())
+            .json(message);
+        if let Some(session_id) = self.session_id.as_deref() {
+            request = request.header("MCP-Session-Id", session_id);
+        }
+
+        let mut response = request
+            .send()
+            .map_err(|error| McpError::Http(error.to_string()))?;
+        if let Some(session_id) = response
+            .headers()
+            .get("MCP-Session-Id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            self.session_id = Some(session_id.to_owned());
+        }
+
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let body = read_bounded_http_body(&mut response)?;
+        if !status.is_success() {
+            return Err(McpError::HttpStatus {
+                status: status.as_u16(),
+                body: bounded_error_body(&body),
+            });
+        }
+        if body.is_empty() {
+            return expected_id.map_or_else(
+                || Ok(JsonValue::Null),
+                |id| {
+                    Err(McpError::Protocol(format!(
+                        "MCP HTTP response id {id} had an empty body"
+                    )))
+                },
+            );
+        }
+
+        let messages = if content_type.contains("text/event-stream") {
+            parse_sse_messages(&body)?
+        } else {
+            parse_json_messages(&body)?
+        };
+        match expected_id {
+            Some(id) => result_from_messages(messages, id),
+            None => Ok(JsonValue::Null),
+        }
+    }
+}
+
+fn validate_remote_config(config: &McpServerConfig) -> McpResult<()> {
+    let url = reqwest::Url::parse(config.url.trim())
+        .map_err(|error| McpError::InvalidConfig(format!("invalid remote MCP URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(McpError::InvalidConfig(
+            "remote MCP URL must use http or https".to_owned(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(McpError::InvalidConfig(
+            "remote MCP URL must not contain embedded credentials".to_owned(),
+        ));
+    }
+    if url.host_str().is_none() || url.fragment().is_some() {
+        return Err(McpError::InvalidConfig(
+            "remote MCP URL must contain a host and no fragment".to_owned(),
+        ));
+    }
+    if config.url.contains('{') || config.url.contains('}') {
+        return Err(McpError::InvalidConfig(
+            "remote MCP URL still contains unresolved template variables".to_owned(),
+        ));
+    }
+    build_remote_headers(&config.headers).map(|_| ())
+}
+
+fn build_remote_headers(headers: &BTreeMap<String, String>) -> McpResult<HeaderMap> {
+    let mut result = HeaderMap::new();
+    for (name, value) in headers {
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(McpError::InvalidConfig(
+                "remote MCP header name is empty".to_owned(),
+            ));
+        }
+        if matches!(
+            normalized.as_str(),
+            "accept"
+                | "connection"
+                | "content-length"
+                | "content-type"
+                | "host"
+                | "mcp-protocol-version"
+                | "mcp-session-id"
+                | "origin"
+                | "transfer-encoding"
+        ) {
+            return Err(McpError::InvalidConfig(format!(
+                "remote MCP header `{name}` is managed by Loom"
+            )));
+        }
+        let header_name = HeaderName::from_bytes(normalized.as_bytes()).map_err(|error| {
+            McpError::InvalidConfig(format!("invalid remote MCP header `{name}`: {error}"))
+        })?;
+        let header_value = HeaderValue::from_str(value).map_err(|error| {
+            McpError::InvalidConfig(format!(
+                "invalid value for remote MCP header `{name}`: {error}"
+            ))
+        })?;
+        result.insert(header_name, header_value);
+    }
+    Ok(result)
+}
+
+fn read_bounded_http_body(response: &mut HttpResponse) -> McpResult<Vec<u8>> {
+    let mut body = Vec::new();
+    response
+        .take((MCP_MAX_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|error| McpError::Http(error.to_string()))?;
+    if body.len() > MCP_MAX_MESSAGE_BYTES {
+        return Err(McpError::OutputLimit {
+            limit: MCP_MAX_MESSAGE_BYTES,
+        });
+    }
+    Ok(body)
+}
+
+fn bounded_error_body(body: &[u8]) -> String {
+    const ERROR_BODY_LIMIT: usize = 2048;
+    let visible = &body[..body.len().min(ERROR_BODY_LIMIT)];
+    let mut text = String::from_utf8_lossy(visible).trim().to_owned();
+    if body.len() > ERROR_BODY_LIMIT {
+        text.push_str(" [truncated]");
+    }
+    text
+}
+
+fn parse_json_messages(body: &[u8]) -> McpResult<Vec<JsonValue>> {
+    let value = serde_json::from_slice::<JsonValue>(body)?;
+    Ok(match value {
+        JsonValue::Array(messages) => messages,
+        message => vec![message],
+    })
+}
+
+fn parse_sse_messages(body: &[u8]) -> McpResult<Vec<JsonValue>> {
+    let text = String::from_utf8_lossy(body);
+    let mut messages = Vec::new();
+    let mut data_lines = Vec::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if data_lines.is_empty() {
+                continue;
+            }
+            let data = data_lines.join("\n");
+            data_lines.clear();
+            let value = serde_json::from_str::<JsonValue>(&data)?;
+            match value {
+                JsonValue::Array(values) => messages.extend(values),
+                value => messages.push(value),
+            }
+        } else if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.strip_prefix(' ').unwrap_or(data));
+        }
+    }
+    if messages.is_empty() {
+        return Err(McpError::Protocol(
+            "MCP SSE response did not contain a JSON data event".to_owned(),
+        ));
+    }
+    Ok(messages)
+}
+
+fn result_from_messages(messages: Vec<JsonValue>, expected_id: u64) -> McpResult<JsonValue> {
+    let expected = serde_json::json!(expected_id);
+    let response = messages
+        .into_iter()
+        .find(|message| message.get("id") == Some(&expected))
+        .ok_or_else(|| {
+            McpError::Protocol(format!(
+                "MCP HTTP response did not contain id {expected_id}"
+            ))
+        })?;
+    if let Some(error) = response.get("error") {
+        return Err(McpError::JsonRpc(error.clone()));
+    }
+    response.get("result").cloned().ok_or_else(|| {
+        McpError::Protocol(format!("MCP HTTP response id {expected_id} missing result"))
+    })
+}
+
 fn read_stdout_lines(mut stdout: std::process::ChildStdout, sender: mpsc::Sender<StdoutEvent>) {
     let mut buffer = [0u8; 16 * 1024];
     let mut line = Vec::new();
@@ -595,6 +1080,7 @@ fn percent_encode(value: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{BufRead, Write};
+    use std::net::{TcpListener, TcpStream};
 
     #[test]
     fn registry_url_encodes_search_limit_and_cursor() {
@@ -607,7 +1093,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://registry.modelcontextprotocol.io/v0/servers?limit=100&search=brave%20search&cursor=ai.example%2Fserver%3A1.0.0"
+            "https://registry.modelcontextprotocol.io/v0.1/servers?limit=100&search=brave%20search&cursor=ai.example%2Fserver%3A1.0.0&version=latest"
         );
     }
 
@@ -618,7 +1104,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://registry.modelcontextprotocol.io/v0/servers?limit=1"
+            "https://registry.modelcontextprotocol.io/v0.1/servers?limit=1&version=latest"
         );
     }
 
@@ -638,6 +1124,47 @@ mod tests {
             Some("test-key")
         );
         assert!(config.enabled);
+    }
+
+    #[test]
+    fn legacy_server_config_deserializes_as_stdio() {
+        let config: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "name": "Legacy",
+            "command": "npx",
+            "args": ["-y", "legacy-mcp"]
+        }))
+        .expect("legacy MCP config");
+
+        assert_eq!(config.transport, McpTransport::Stdio);
+        assert!(config.url.is_empty());
+        assert!(config.headers.is_empty());
+        config.validate().expect("valid legacy stdio config");
+    }
+
+    #[test]
+    fn remote_server_config_rejects_embedded_credentials_and_templates() {
+        let embedded =
+            McpServerConfig::remote("remote", "Remote", "https://user:secret@example.test/mcp");
+        assert!(matches!(
+            embedded.validate(),
+            Err(McpError::InvalidConfig(_))
+        ));
+
+        let templated =
+            McpServerConfig::remote("remote", "Remote", "https://{tenant}.example.test/mcp");
+        assert!(matches!(
+            templated.validate(),
+            Err(McpError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn runtime_limits_can_be_updated_for_new_clients() {
+        let previous = runtime_limits();
+        configure_runtime_limits(30, 1024 * 1024 * 1024);
+        assert_eq!(runtime_limits(), (30, 1024 * 1024 * 1024));
+        configure_runtime_limits(previous.0, previous.1);
     }
 
     #[test]
@@ -706,6 +1233,42 @@ mod tests {
 
         assert_eq!(result["content"][0]["type"], "text");
         assert_eq!(result["content"][0]["text"], "hello loom");
+    }
+
+    #[test]
+    fn streamable_http_client_initializes_lists_and_calls_tools() {
+        let fixture = StreamableHttpFixture::start();
+        let config = McpServerConfig::remote("remote", "Remote MCP", fixture.url())
+            .header("Authorization", "Bearer fixture-token");
+        let mut client = McpClient::connect(&config).expect("connect HTTP MCP fixture");
+
+        let initialized = client.initialize().expect("initialize HTTP MCP fixture");
+        let tools = client.list_tools().expect("list HTTP MCP tools");
+        let result = client
+            .call_tool("echo", serde_json::json!({ "text": "hello remote" }))
+            .expect("call HTTP MCP tool");
+
+        assert_eq!(initialized["serverInfo"]["name"], "loom-http-fixture");
+        assert_eq!(tools["tools"][0]["name"], "echo");
+        assert_eq!(result["content"][0]["text"], "hello remote");
+        fixture.finish();
+    }
+
+    #[test]
+    fn live_streamable_http_server_from_official_registry() {
+        let Some(url) = std::env::var("LOOM_MCP_LIVE_TEST_URL")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let config = McpServerConfig::remote("live", "Live MCP", url);
+        let mut client = McpClient::connect(&config).expect("connect live HTTP MCP");
+        let initialized = client.initialize().expect("initialize live HTTP MCP");
+        let tools = client.list_tools().expect("list live HTTP MCP tools");
+        assert!(initialized.get("serverInfo").is_some());
+        assert!(tools.get("tools").and_then(JsonValue::as_array).is_some());
     }
 
     #[test]
@@ -914,6 +1477,156 @@ mod tests {
         )
         .expect("write fixture response");
         stdout.flush().expect("flush fixture response");
+    }
+
+    struct StreamableHttpFixture {
+        url: String,
+        worker: thread::JoinHandle<()>,
+    }
+
+    impl StreamableHttpFixture {
+        fn start() -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind HTTP MCP fixture");
+            let address = listener.local_addr().expect("HTTP MCP fixture address");
+            let worker = thread::spawn(move || {
+                for request_index in 0..4 {
+                    let (mut stream, _) = listener.accept().expect("accept HTTP MCP request");
+                    let request = read_http_fixture_request(&mut stream);
+                    assert!(request
+                        .to_ascii_lowercase()
+                        .contains("accept: application/json, text/event-stream"));
+                    assert!(request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer fixture-token"));
+                    if request_index > 0 {
+                        assert!(request
+                            .to_ascii_lowercase()
+                            .contains("mcp-session-id: fixture-session"));
+                    }
+                    let body = request
+                        .split_once("\r\n\r\n")
+                        .map(|(_, body)| body)
+                        .unwrap_or("{}");
+                    let message: JsonValue =
+                        serde_json::from_str(body).expect("HTTP MCP fixture JSON");
+                    match message["method"].as_str().unwrap_or_default() {
+                        "initialize" => write_http_fixture_response(
+                            &mut stream,
+                            "200 OK",
+                            "application/json",
+                            Some("fixture-session"),
+                            &serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": {
+                                    "protocolVersion": MCP_HTTP_PROTOCOL_VERSION,
+                                    "capabilities": { "tools": {} },
+                                    "serverInfo": { "name": "loom-http-fixture", "version": "0.1.0" }
+                                }
+                            })
+                            .to_string(),
+                        ),
+                        "notifications/initialized" => write_http_fixture_response(
+                            &mut stream,
+                            "202 Accepted",
+                            "application/json",
+                            None,
+                            "",
+                        ),
+                        "tools/list" => write_http_fixture_response(
+                            &mut stream,
+                            "200 OK",
+                            "text/event-stream",
+                            None,
+                            &format!(
+                                "event: message\ndata: {}\n\n",
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": message["id"],
+                                    "result": { "tools": [{ "name": "echo", "inputSchema": { "type": "object" } }] }
+                                })
+                            ),
+                        ),
+                        "tools/call" => write_http_fixture_response(
+                            &mut stream,
+                            "200 OK",
+                            "application/json",
+                            None,
+                            &serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": {
+                                    "content": [{ "type": "text", "text": message["params"]["arguments"]["text"] }]
+                                }
+                            })
+                            .to_string(),
+                        ),
+                        method => panic!("unexpected HTTP MCP method {method}"),
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{address}/mcp"),
+                worker,
+            }
+        }
+
+        fn url(&self) -> String {
+            self.url.clone()
+        }
+
+        fn finish(self) {
+            self.worker.join().expect("HTTP MCP fixture worker");
+        }
+    }
+
+    fn read_http_fixture_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).expect("read HTTP MCP request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&request);
+            let Some(header_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = text[..header_end]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("HTTP MCP request UTF-8")
+    }
+
+    fn write_http_fixture_response(
+        stream: &mut TcpStream,
+        status: &str,
+        content_type: &str,
+        session_id: Option<&str>,
+        body: &str,
+    ) {
+        let session_header = session_id
+            .map(|value| format!("MCP-Session-Id: {value}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{session_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write HTTP MCP response");
+        stream.flush().expect("flush HTTP MCP response");
     }
 
     #[cfg(windows)]

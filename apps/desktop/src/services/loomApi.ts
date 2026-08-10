@@ -37,9 +37,12 @@ export interface LoomMcpServer {
   id: string;
   name: string;
   description?: string;
+  transport?: "stdio" | "streamable-http" | "sse";
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
   enabled?: boolean;
 }
 
@@ -276,12 +279,18 @@ export interface ArtLoomShortcutConfig {
 }
 
 export interface ArtLoomCompatSettings {
+  appearance_version: number;
   general: {
     theme: string;
     language: string;
     auto_start: boolean;
     minimize_to_tray: boolean;
     enable_tray_icon: boolean;
+  };
+  hook_general: {
+    theme: string;
+    language: string;
+    close_to_tray: boolean;
   };
   system: {
     auto_check_updates: boolean;
@@ -296,6 +305,9 @@ export interface ArtLoomCompatSettings {
     loom: ArtLoomProxySettings;
     hook: ArtLoomProxySettings;
   };
+  mcp: ArtLoomMcpSettings;
+  art_store: ArtLoomArtStoreSettings;
+  loom_cache: ArtLoomCacheSettings;
   hook_cache: ArtLoomHookCacheSettings;
   engine: {
     comfyui_url: string;
@@ -310,6 +322,22 @@ export interface ArtLoomCompatSettings {
     key: string;
   }>;
   shortcuts: Record<string, ArtLoomShortcutConfig>;
+}
+
+export interface ArtLoomMcpSettings {
+  request_timeout_seconds: number;
+  memory_limit_bytes: number;
+}
+
+export interface ArtLoomArtStoreSettings {
+  auto_update: boolean;
+  official_only: boolean;
+}
+
+export interface ArtLoomCacheSettings {
+  art_cache_max_bytes: number;
+  art_cache_retention_days: number;
+  framework_temp_retention_days: number;
 }
 
 export interface ArtLoomHookCacheSettings {
@@ -452,12 +480,18 @@ export interface SharedMemoryBufferResponse {
 }
 
 export const DEFAULT_ARTLOOM_COMPAT_SETTINGS: ArtLoomCompatSettings = {
+  appearance_version: 1,
   general: {
-    theme: "system",
+    theme: "dark",
     language: "zh-Hans",
     auto_start: false,
     minimize_to_tray: true,
     enable_tray_icon: true,
+  },
+  hook_general: {
+    theme: "dark",
+    language: "zh-Hans",
+    close_to_tray: true,
   },
   system: {
     auto_check_updates: true,
@@ -472,6 +506,19 @@ export const DEFAULT_ARTLOOM_COMPAT_SETTINGS: ArtLoomCompatSettings = {
     loom: { mode: "system", protocol: "http", address: "" },
     hook: { mode: "system", protocol: "http", address: "" },
   },
+  mcp: {
+    request_timeout_seconds: 60,
+    memory_limit_bytes: 512 * 1024 * 1024,
+  },
+  art_store: {
+    auto_update: true,
+    official_only: false,
+  },
+  loom_cache: {
+    art_cache_max_bytes: 1024 * 1024 * 1024,
+    art_cache_retention_days: 30,
+    framework_temp_retention_days: 3,
+  },
   hook_cache: {
     recycle_bin_max_entries: 15,
     recycle_bin_retention_days: 0,
@@ -485,7 +532,7 @@ export const DEFAULT_ARTLOOM_COMPAT_SETTINGS: ArtLoomCompatSettings = {
     compute_device: "0",
     vram_reservation_gb: 12,
   },
-  quick_bindings: [{ id: "1", art: "ComfyUI Workflow", key: "Ctrl+Shift+1" }],
+  quick_bindings: [],
   shortcuts: {
     cancel: { id: "cancel", label: "Cancel / Deselect", keys: "Escape", enabled: true },
     capture: { id: "capture", label: "Screenshot", keys: "Ctrl+1", enabled: true },
@@ -612,6 +659,33 @@ export async function waitForLoomOnline(
 }
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
+
+export function retainAvailableSnapshotData(previous: LoomSnapshot, next: LoomSnapshot): LoomSnapshot {
+  if (previous.connectionState !== "online") return next;
+  if (next.connectionState === "offline") {
+    return {
+      ...next,
+      capabilities: previous.capabilities,
+      mcpServers: previous.mcpServers,
+      tools: previous.tools,
+      pythonArts: previous.pythonArts,
+      workflows: previous.workflows,
+      hookBridge: previous.hookBridge,
+    };
+  }
+  if (!next.error) return next;
+
+  const moduleFailed = (path: string) => next.error?.includes(path) === true;
+  return {
+    ...next,
+    capabilities: moduleFailed("/v1/capabilities") ? previous.capabilities : next.capabilities,
+    mcpServers: moduleFailed("/v1/mcp/servers") ? previous.mcpServers : next.mcpServers,
+    tools: moduleFailed("/v1/tools") ? previous.tools : next.tools,
+    pythonArts: moduleFailed("/v1/python-arts") ? previous.pythonArts : next.pythonArts,
+    workflows: moduleFailed("/v1/workflows") ? previous.workflows : next.workflows,
+    hookBridge: moduleFailed("/v1/hook-bridge/status") ? previous.hookBridge : next.hookBridge,
+  };
+}
 
 const daemonErrorMessage = (payload: unknown): string | null => {
   if (!isRecord(payload)) return null;
@@ -1379,22 +1453,17 @@ interface ArtStoreCatalogResponse {
   arts?: ArtStoreEntry[];
 }
 
-export async function fetchArtStoreCatalog(
-  baseUrl: string,
-  store?: string,
-): Promise<ArtStoreEntry[]> {
-  const query = store ? `?store=${encodeURIComponent(store)}` : "";
-  const response = await getJson<ArtStoreCatalogResponse>(baseUrl, `/v1/arts/store/catalog${query}`);
+export async function fetchArtStoreCatalog(baseUrl: string): Promise<ArtStoreEntry[]> {
+  const response = await getJson<ArtStoreCatalogResponse>(baseUrl, "/v1/arts/store/catalog");
   return Array.isArray(response.arts) ? response.arts : [];
 }
 
 export async function installArtFromStore(
   baseUrl: string,
   artId: string,
-  store?: string,
   version?: string,
 ): Promise<void> {
-  await postJson(baseUrl, "/v1/arts/store/install", { artId, store, version });
+  await postJson(baseUrl, "/v1/arts/store/install", { artId, version });
 }
 
 export interface LoomArtManagementParameter {
@@ -1512,9 +1581,8 @@ export async function createAuthoredArtPackage(
 export async function publishArt(
   baseUrl: string,
   artId: string,
-  store?: string,
 ): Promise<{ artId: string; globalId: string; sha256: string; published: boolean }> {
-  return await postJson(baseUrl, "/v1/arts/store/publish", { artId, store });
+  return await postJson(baseUrl, "/v1/arts/store/publish", { artId });
 }
 
 export async function deleteCanvasWorkflow(baseUrl: string, workflowId: string): Promise<void> {
@@ -1721,24 +1789,46 @@ export async function deleteArtLoomMcpServer(
 
 export async function fetchMcpRegistry(
   baseUrl: string,
-  options: { search?: string; limit?: number; cursor?: string | null } = {},
+  options: {
+    search?: string;
+    limit?: number;
+    cursor?: string | null;
+    updatedSince?: string;
+    includeDeleted?: boolean;
+    refresh?: boolean;
+  } = {},
 ): Promise<McpRegistryResponse> {
   const params = new URLSearchParams();
   if (options.search?.trim()) params.set("search", options.search.trim());
   if (typeof options.limit === "number") params.set("limit", String(options.limit));
   if (options.cursor?.trim()) params.set("cursor", options.cursor.trim());
+  params.set("version", "latest");
+  if (options.updatedSince?.trim()) params.set("updated_since", options.updatedSince.trim());
+  if (options.includeDeleted) params.set("include_deleted", "true");
+  if (options.refresh) params.set("refresh", "true");
   const suffix = params.toString();
   return await getJson<McpRegistryResponse>(baseUrl, `/v1/mcp/registry${suffix ? `?${suffix}` : ""}`);
 }
 
 export async function fetchArtLoomMcpRegistry(
   baseUrl: string,
-  options: { search?: string; limit?: number; cursor?: string | null } = {},
+  options: {
+    search?: string;
+    limit?: number;
+    cursor?: string | null;
+    updatedSince?: string;
+    includeDeleted?: boolean;
+    refresh?: boolean;
+  } = {},
 ): Promise<ArtLoomMcpRegistryResponse> {
   const params = new URLSearchParams();
   if (options.search?.trim()) params.set("search", options.search.trim());
   if (typeof options.limit === "number") params.set("limit", String(options.limit));
   if (options.cursor?.trim()) params.set("cursor", options.cursor.trim());
+  params.set("version", "latest");
+  if (options.updatedSince?.trim()) params.set("updated_since", options.updatedSince.trim());
+  if (options.includeDeleted) params.set("include_deleted", "true");
+  if (options.refresh) params.set("refresh", "true");
   const suffix = params.toString();
   return await getJson<ArtLoomMcpRegistryResponse>(
     baseUrl,
@@ -1755,14 +1845,17 @@ export async function testMcpConnection(
 
 export async function callMcpTool(
   baseUrl: string,
-  server: Pick<LoomMcpServer, "command" | "args" | "env">,
+  server: Pick<LoomMcpServer, "transport" | "command" | "args" | "env" | "url" | "headers">,
   toolName: string,
   toolArgs: Record<string, unknown> = {},
 ): Promise<ArtLoomMcpCallToolResponse> {
   return await postJson<ArtLoomMcpCallToolResponse>(baseUrl, "/v1/artloom-compat/mcp/call-tool", {
+    transport: server.transport ?? "stdio",
     command: server.command,
     args: server.args ?? [],
     env: server.env ?? {},
+    url: server.url ?? "",
+    headers: server.headers ?? {},
     toolName,
     toolArgs,
   });

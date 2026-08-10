@@ -1422,6 +1422,7 @@ name = "loom_mcp"
 version = "0.1.0"
 dependencies = [
  "loom_process",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

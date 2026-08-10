@@ -1,10 +1,68 @@
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, ClientBuilder, Response};
 use reqwest::redirect;
-use reqwest::Url;
+use reqwest::{Proxy, Url};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RuntimeProxy {
+    System,
+    Disabled,
+    Custom(String),
+}
+
+impl Default for RuntimeProxy {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+static RUNTIME_PROXY: OnceLock<RwLock<RuntimeProxy>> = OnceLock::new();
+
+fn runtime_proxy_store() -> &'static RwLock<RuntimeProxy> {
+    RUNTIME_PROXY.get_or_init(|| RwLock::new(RuntimeProxy::System))
+}
+
+pub fn configure_runtime_proxy(mode: &str, protocol: &str, address: &str) -> Result<(), String> {
+    let proxy = match mode {
+        "system" => RuntimeProxy::System,
+        "disabled" => RuntimeProxy::Disabled,
+        "custom" => {
+            let address = address.trim();
+            if address.is_empty() {
+                return Err("custom proxy address is required".to_owned());
+            }
+            let url = format!("{}://{}", protocol.trim(), address);
+            Url::parse(&url).map_err(|error| format!("invalid proxy URL: {error}"))?;
+            RuntimeProxy::Custom(url)
+        }
+        _ => return Err(format!("unsupported proxy mode `{mode}`")),
+    };
+    *runtime_proxy_store()
+        .write()
+        .map_err(|_| "lock runtime proxy settings".to_owned())? = proxy;
+    Ok(())
+}
+
+pub fn runtime_proxy() -> RuntimeProxy {
+    runtime_proxy_store()
+        .read()
+        .map(|proxy| proxy.clone())
+        .unwrap_or_default()
+}
+
+pub fn apply_runtime_proxy(builder: ClientBuilder) -> Result<ClientBuilder, String> {
+    match runtime_proxy() {
+        RuntimeProxy::System => Ok(builder),
+        RuntimeProxy::Disabled => Ok(builder.no_proxy()),
+        RuntimeProxy::Custom(url) => Proxy::all(&url)
+            .map(|proxy| builder.proxy(proxy))
+            .map_err(|error| format!("configure proxy `{url}`: {error}")),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct OutboundPolicy {
@@ -31,9 +89,8 @@ pub fn secure_client(
     policy: OutboundPolicy,
 ) -> Result<Client, String> {
     let redirect_policy = policy.clone();
-    Client::builder()
+    let builder = Client::builder()
         .user_agent(user_agent)
-        .no_proxy()
         .timeout(timeout)
         .redirect(redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= redirect_policy.max_redirects {
@@ -43,7 +100,8 @@ pub fn secure_client(
                 Ok(()) => attempt.follow(),
                 Err(error) => attempt.error(error),
             }
-        }))
+        }));
+    apply_runtime_proxy(builder)?
         .build()
         .map_err(|error| error.to_string())
 }
@@ -224,5 +282,20 @@ mod tests {
             validate_outbound_url(&Url::parse("http://127.0.0.1:8765/test").unwrap(), &policy)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn runtime_proxy_modes_are_validated_and_applied() {
+        configure_runtime_proxy("disabled", "http", "").unwrap();
+        assert_eq!(runtime_proxy(), RuntimeProxy::Disabled);
+        assert!(apply_runtime_proxy(Client::builder()).is_ok());
+
+        configure_runtime_proxy("custom", "socks5", "127.0.0.1:7890").unwrap();
+        assert_eq!(
+            runtime_proxy(),
+            RuntimeProxy::Custom("socks5://127.0.0.1:7890".to_owned())
+        );
+        assert!(configure_runtime_proxy("custom", "http", "").is_err());
+        configure_runtime_proxy("system", "http", "").unwrap();
     }
 }

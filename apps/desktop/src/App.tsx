@@ -6,45 +6,40 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import desktopPackage from "../package.json";
 import {
   ArtLoomAppPaths,
+  ArtLoomArtStoreSettings,
+  ArtLoomCacheSettings,
   ArtLoomCompatSettings,
   ArtLoomHookCacheSettings,
+  ArtLoomMcpSettings,
   ArtLoomProxySettings,
   ArtLoomShortcutConfig,
   DEFAULT_LOOM_DAEMON_URL,
   DEFAULT_ARTLOOM_COMPAT_SETTINGS,
-  LoomCapability,
   LoomHookBridgeStatus,
   LoomMcpServer,
-  LoomModuleStatus,
   LoomPythonPortDefinition,
   LoomSnapshot,
   type LoomArtRuntimeManifest,
   LoomToolDefinition,
   LoomToolExecution,
   LoomWorkflowMetadata,
-  buildMcpPackageInstallPlan,
   bootstrapPackagedArts,
   autoUpdateArts,
   addManagedDevice,
   approveManagedDevice,
   checkPythonArtJsonNearby,
-  checkMcpPackageInstalled,
   createAuthoredArtPackage,
-  deleteMcpServer,
   deleteToolDefinition,
-  fetchMcpRegistry,
   getArtLoomCompatAppPaths,
   getArtLoomCompatSettings,
   getArtLoomCompatShortcuts,
   inferPythonArtPorts,
   readLoomSnapshot,
+  retainAvailableSnapshotData,
   readPythonArtJson,
   readPythonArtSource,
   saveArtLoomCompatSettings,
-  saveMcpServer,
   saveToolDefinition,
-  setArtLoomCompatAutostart,
-  setArtLoomCompatMinimizeToTray,
   startHookBridge,
   startLoomDaemon,
   listFrameworks,
@@ -95,18 +90,6 @@ import {
   defaultAuthoringValues,
 } from "./services/artAuthoring";
 import {
-  MCP_MARKET_CATEGORIES,
-  MCP_MARKET_SERVERS,
-  buildMarketplaceServerConfig,
-  getMarketplaceHealth,
-  mapRegistryResponseToMarketplace,
-  mergeRegistryAndCuratedMarketplace,
-  mcpMarketCategoryLabel,
-  type McpMarketCategory,
-  type McpMarketServer,
-  type McpMarketplaceTestSnapshot,
-} from "./services/mcpMarketplace";
-import {
   inferPortsFromPythonCode,
   mapArtJsonPorts,
   type PythonArtPort,
@@ -130,12 +113,6 @@ import {
   type ArtWorkspaceId,
 } from "./services/artHubUi";
 import {
-  IMAGE_SEARCH_ART_ID,
-  IMAGE_SEARCH_SERVER_ID,
-  buildImageSearchArtDefinition,
-  buildImageSearchServerConfig,
-} from "./services/mcpImageSearch";
-import {
   getHookCanvasRefreshTrigger,
   keepNewestHookCanvasSnapshot,
   readHookCanvasSnapshot,
@@ -145,6 +122,7 @@ import {
   HookCanvasThumbnail,
   type WorkflowArtCreationRequest,
 } from "./components/hook/HookCanvasThumbnail";
+import { McpHub } from "./components/mcp/McpHub";
 import {
   autoTemplateResponse,
   collectWorkflowParamBindingCandidates,
@@ -155,6 +133,7 @@ import {
   parseWorkflowYamlLite,
   portsFromMcpToolSchema,
 } from "./services/workflowStudio";
+import { applyLoomGeneralSettings } from "./services/loomGeneralSettings";
 import type {
   CurlImportResult,
   ParsedPort,
@@ -168,11 +147,9 @@ import type {
 } from "./services/workflowStudio";
 
 type SectionId =
-  | "overview"
   | "mcp"
   | "registry"
   | "hook-bridge"
-  | "agents"
   | "devices"
   | "settings";
 
@@ -185,11 +162,9 @@ interface RuntimeConfig {
 type ShellIconKind =
   | "sidebar"
   | "back"
-  | "overview"
   | "mcp"
   | "registry"
   | "hook-bridge"
-  | "agents"
   | "device"
   | "settings"
   | "refresh"
@@ -205,11 +180,9 @@ interface NavigationItem {
 }
 
 const navigationItems: NavigationItem[] = [
-  { id: "overview", label: "总览", eyebrow: "本地工作台", icon: "overview" },
   { id: "mcp", label: "MCP", eyebrow: "服务工具", icon: "mcp" },
   { id: "registry", label: "Art", eyebrow: "", icon: "registry" },
   { id: "hook-bridge", label: "Hook 同步", eyebrow: "", icon: "hook-bridge" },
-  { id: "agents", label: "智能体", eyebrow: "本地大脑", icon: "agents" },
   { id: "devices", label: "设备管理", eyebrow: "客户端连接", icon: "device" },
   { id: "settings", label: "设置", eyebrow: "配置中心", icon: "settings" },
 ];
@@ -249,12 +222,6 @@ const DEFAULT_HOOK_BRIDGE_URL = "ws://127.0.0.1:19820";
 // computes a cheap content revision and keepNewestHookCanvasSnapshot dedupes by
 // it, so a poll that finds no change does not re-render the canvas.
 const HOOK_CANVAS_POLL_INTERVAL_MS = 1500;
-
-const formatTime = (value: string) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "未检查";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-};
 
 const firstWords = (value: string | undefined, fallback: string) => {
   if (!value) return fallback;
@@ -387,8 +354,8 @@ const openExternal = (url: string) => {
 function LoomMark() {
   return (
     <svg className="loom-mark" viewBox="0 0 1024 1024" aria-hidden="true">
-      <path d="M196 330h632c-38 96-130 148-270 158v108h106l96 194H264l96-194h106V488H318L196 330Z" fill="#22C55E" />
-      <path d="m690 206 30 66 72 8-54 48 16 70-64-36-64 36 16-70-54-48 72-8 30-66Z" fill="#FFE600" />
+      <path d="M196 330h632c-38 96-130 148-270 158v108h106l96 194H264l96-194h106V488H318L196 330Z" fill="var(--loom-brand-primary)" />
+      <path d="m690 206 30 66 72 8-54 48 16 70-64-36-64 36 16-70-54-48 72-8 30-66Z" fill="var(--loom-brand-secondary)" />
     </svg>
   );
 }
@@ -410,16 +377,12 @@ function ShellIcon({ kind }: { kind: ShellIconKind }) {
       return <svg {...iconProps}><rect x="3" y="4" width="18" height="16" rx="1.5" /><path d="M8 4v16" /></svg>;
     case "back":
       return <svg {...iconProps}><path d="m15 18-6-6 6-6" /><path d="M9 12h11" /></svg>;
-    case "overview":
-      return <svg {...iconProps}><path d="m3 11 9-8 9 8" /><path d="M5.5 9.5V21h13V9.5M9.5 21v-7h5v7" /></svg>;
     case "mcp":
       return <svg {...iconProps}><rect x="4" y="3" width="16" height="6" rx="2" /><rect x="4" y="15" width="16" height="6" rx="2" /><path d="M8 6h.01M8 18h.01M12 9v6" /></svg>;
     case "registry":
       return <svg {...iconProps}><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></svg>;
     case "hook-bridge":
       return <svg {...iconProps}><path d="M7 7h10a4 4 0 0 1 0 8h-1" /><path d="m9 4-3 3 3 3M15 20l3-3-3-3" /><path d="M17 17H7a4 4 0 0 1 0-8h1" /></svg>;
-    case "agents":
-      return <svg {...iconProps}><path d="M12 3 9.8 8.3 4 9l4.4 3.8L7.1 18 12 15.2 16.9 18l-1.3-5.2L20 9l-5.8-.7L12 3Z" /><path d="m18.5 17.5.7 1.3 1.3.7-1.3.7-.7 1.3-.7-1.3-1.3-.7 1.3-.7.7-1.3Z" /></svg>;
     case "device":
       return <svg {...iconProps}><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h4" /></svg>;
     case "settings":
@@ -435,115 +398,6 @@ function ShellIcon({ kind }: { kind: ShellIconKind }) {
     default:
       return null;
   }
-}
-
-function StatusPill({ snapshot }: { snapshot: LoomSnapshot }) {
-  const online = snapshot.connectionState === "online";
-  return (
-    <span
-      className={online ? "status-pill status-pill--online" : "status-pill status-pill--offline"}
-      title={online ? "本地服务在线" : "本地服务离线"}
-    >
-      <span className="status-dot" />
-      <span className="status-pill__label">{online ? "本地服务在线" : "本地服务离线"}</span>
-    </span>
-  );
-}
-
-function ModuleCard({ module }: { module: LoomModuleStatus }) {
-  return (
-    <article className="glass-card module-card">
-      <div>
-        <p className="card-kicker">模块</p>
-        <h3>{module.name}</h3>
-      </div>
-      <span className="mini-chip">{module.status}</span>
-      {module.detail ? <p>{module.detail}</p> : null}
-    </article>
-  );
-}
-
-function CapabilityCard({ capability }: { capability: LoomCapability }) {
-  return (
-    <article className="glass-card capability-card">
-      <p className="card-kicker">能力</p>
-      <h3>{capability.id}</h3>
-      <p>{firstWords(capability.description, "本地能力")}</p>
-      <span className="mini-chip">{capability.mode || "run"}</span>
-    </article>
-  );
-}
-
-function OverviewPanel({
-  snapshot,
-  refresh,
-  startLocalService,
-  localServiceBusy,
-  localServiceMessage,
-}: {
-  snapshot: LoomSnapshot;
-  refresh: () => void;
-  startLocalService: () => void;
-  localServiceBusy: boolean;
-  localServiceMessage: StudioMessage | null;
-}) {
-  const modules = snapshot.status?.modules ?? [];
-  return (
-    <section className="content-grid">
-      <div className="hero-panel">
-        <div>
-          <p className="section-kicker">本地工作台</p>
-          <h1>Loom 桌面端</h1>
-          <div className="hero-actions">
-            <button className="signal-button" type="button" onClick={startLocalService} disabled={localServiceBusy}>
-              {localServiceBusy ? "启动中" : "启动 Loom 本地服务"}
-            </button>
-            <button className="signal-button" type="button" onClick={refresh}>
-              刷新本地服务
-            </button>
-            <button className="ghost-button" type="button" onClick={() => openExternal(snapshot.settings.root)}>
-              打开设置
-            </button>
-          </div>
-        </div>
-        <div className="hero-status-card">
-          <StatusPill snapshot={snapshot} />
-          <strong>{snapshot.baseUrl}</strong>
-          <span>检查时间：{formatTime(snapshot.checkedAt)}</span>
-          {snapshot.error ? <p className="error-text">{snapshot.error}</p> : <p>健康状态：{snapshot.health?.status ?? "ok"}</p>}
-          {localServiceMessage ? (
-            <p className={localServiceMessage.kind === "error" ? "error-text" : "success-text"}>
-              {localServiceMessage.text}
-            </p>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="stat-row">
-        <div className="stat-card">
-          <span>模块</span>
-          <strong>{modules.length}</strong>
-        </div>
-        <div className="stat-card">
-          <span>能力</span>
-          <strong>{snapshot.capabilities.length}</strong>
-        </div>
-        <div className="stat-card">
-          <span>运行时</span>
-          <strong>{snapshot.status?.status ?? "offline"}</strong>
-        </div>
-      </div>
-
-      <div className="card-grid">
-        {modules.length ? modules.map((module) => <ModuleCard key={module.name} module={module} />) : (
-          <article className="glass-card empty-card">
-            <h3>暂无模块状态</h3>
-            <p>启动 Loom 本地服务后会显示。</p>
-          </article>
-        )}
-      </div>
-    </section>
-  );
 }
 
 function EnabledChip({ enabled }: { enabled?: boolean }) {
@@ -716,7 +570,9 @@ function ArtEditDialog({
       ? artDisplayIdentity(
           tool,
           management.artId,
-          typeof window === "undefined" ? "zh-CN" : window.navigator.language,
+          typeof document === "undefined"
+            ? "zh-CN"
+            : document.documentElement.lang || window.navigator.language,
         )
       : null;
     setName(management.canEditIdentity
@@ -805,7 +661,9 @@ function ArtEditDialog({
   const displayIdentity = artDisplayIdentity(
     tool,
     management?.artId,
-    typeof window === "undefined" ? "zh-CN" : window.navigator.language,
+    typeof document === "undefined"
+      ? "zh-CN"
+      : document.documentElement.lang || window.navigator.language,
   );
   const requiredParameters = management?.parameters.filter((parameter) => parameter.required && !parameter.secret) ?? [];
   const optionalParameters = management?.parameters.filter((parameter) => !parameter.required && !parameter.secret) ?? [];
@@ -2869,642 +2727,22 @@ function McpPanel({
   baseUrl: string;
   refresh: () => Promise<void>;
 }) {
-  const [busyServerId, setBusyServerId] = useState<string | null>(null);
-  const [busyMarketplaceId, setBusyMarketplaceId] = useState<string | null>(null);
-  const [mcpMessage, setMcpMessage] = useState<StudioMessage | null>(null);
-  const [searchText, setSearchText] = useState("");
-  const [marketCategory, setMarketCategory] = useState<McpMarketCategory | "All">("All");
-  const [marketServers, setMarketServers] = useState<McpMarketServer[]>([...MCP_MARKET_SERVERS]);
-  const [marketSource, setMarketSource] = useState<"registry" | "fallback">("fallback");
-  const [registryCount, setRegistryCount] = useState(0);
-  const [registryCursor, setRegistryCursor] = useState<string | null>(null);
-  const [testSnapshots, setTestSnapshots] = useState<Record<string, McpMarketplaceTestSnapshot>>({});
-  const [manualServerId, setManualServerId] = useState("manual-mcp-server");
-  const [manualServerName, setManualServerName] = useState("手动 MCP 服务");
-  const [manualDescription, setManualDescription] = useState("供 Loom Art 节点使用的手动 MCP 服务。");
-  const [manualCommand, setManualCommand] = useState("npx");
-  const [manualArgsText, setManualArgsText] = useState("-y\n@modelcontextprotocol/server-memory");
-  const [manualEnvText, setManualEnvText] = useState("");
-  const [packageModuleName, setPackageModuleName] = useState("json");
-  const [packageName, setPackageName] = useState("mcp-server-demo");
-  const [packageBusy, setPackageBusy] = useState<"check" | "plan" | null>(null);
-  const [packageResult, setPackageResult] = useState<string | null>(null);
-  const [imageSearchApiKey, setImageSearchApiKey] = useState("");
-  const [imageSearchBusy, setImageSearchBusy] = useState(false);
-
-  useEffect(() => {
-    const configured = servers.find((server) => server.id === IMAGE_SEARCH_SERVER_ID);
-    const nextKey = configured?.env?.BRAVE_API_KEY ?? "";
-    setImageSearchApiKey((previous) => (previous || nextKey ? previous || nextKey : ""));
-  }, [servers]);
-
-  const removeServer = async (server: LoomMcpServer) => {
-    setBusyServerId(server.id);
-    try {
-      await deleteMcpServer(baseUrl, server.id);
-      setMcpMessage({ kind: "info", text: `已删除 MCP 服务 ${server.name || server.id}。` });
-      await refresh();
-    } catch (error) {
-      setMcpMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : "无法删除 MCP 服务。",
-      });
-    } finally {
-      setBusyServerId(null);
-    }
-  };
-
-  const refreshMarketplace = async (append = false) => {
-    setBusyMarketplaceId("registry-refresh");
-    try {
-      const response = await fetchMcpRegistry(baseUrl, {
-        search: searchText,
-        limit: 80,
-        cursor: append ? registryCursor : null,
-      });
-      const registryServers = mapRegistryResponseToMarketplace(response);
-      const existingRegistryServers = append
-        ? marketServers.filter((server) => server.sourceKind === "registry")
-        : [];
-      const combinedRegistryServers = mergeRegistryAndCuratedMarketplace(
-        [...existingRegistryServers, ...registryServers],
-        [],
-      );
-      setMarketServers(mergeRegistryAndCuratedMarketplace(combinedRegistryServers, MCP_MARKET_SERVERS));
-      setMarketSource("registry");
-      setRegistryCount(combinedRegistryServers.length);
-      setRegistryCursor(response.metadata?.nextCursor || null);
-      setMcpMessage({
-        kind: "info",
-        text: `已加载 ${registryServers.length} 个 MCP Registry stdio 模板。`,
-      });
-    } catch (error) {
-      setMarketServers([...MCP_MARKET_SERVERS]);
-      setMarketSource("fallback");
-      setRegistryCount(0);
-      setRegistryCursor(null);
-      setMcpMessage({
-        kind: "error",
-        text: error instanceof Error
-          ? `MCP Registry 不可用，使用内置列表。${error.message}`
-          : "MCP Registry 不可用，使用内置列表。",
-      });
-    } finally {
-      setBusyMarketplaceId(null);
-    }
-  };
-
-  const installMarketplaceServer = async (marketItem: McpMarketServer, testAfterInstall: boolean) => {
-    const existing = servers.find((server) => server.id === marketItem.id || server.name === marketItem.name);
-    const serverConfig = buildMarketplaceServerConfig(marketItem, existing);
-    const health = getMarketplaceHealth(marketItem, serverConfig, existing ? testSnapshots[existing.id] : undefined);
-    const actionKey = `${marketItem.id}:${testAfterInstall ? "test" : "install"}`;
-    setBusyMarketplaceId(actionKey);
-    try {
-      const savedServer = await saveMcpServer(baseUrl, serverConfig);
-      if (testAfterInstall) {
-        if (marketItem.requiresManualConfiguration) {
-          setMcpMessage({
-            kind: "error",
-            text: `${marketItem.name} 已保存，但测试前仍需补充参数。`,
-          });
-        } else if (!health.requiredEnvPresent) {
-          setMcpMessage({
-            kind: "error",
-            text: `${marketItem.name} 已保存，但缺少环境变量。`,
-          });
-        } else {
-          const result = await testMcpConnection(baseUrl, savedServer);
-          const tools = Array.isArray(result.tools) ? result.tools : [];
-          setTestSnapshots((previous) => ({
-            ...previous,
-            [savedServer.id]: {
-              status: result.success === false ? "error" : "success",
-              toolCount: tools.length,
-              testedAt: new Date().toISOString(),
-              error: result.success === false ? result.error || "MCP 测试失败" : undefined,
-            },
-          }));
-          setMcpMessage({
-            kind: result.success === false ? "error" : "info",
-            text: result.success === false
-              ? `${marketItem.name} 已保存，但连接测试失败：${result.error || "未知错误"}`
-              : `${marketItem.name} 已保存，发现 ${tools.length} 个工具。`,
-          });
-        }
-      } else {
-        setMcpMessage({ kind: "info", text: `已安装服务 ${marketItem.name}。` });
-      }
-      await refresh();
-    } catch (error) {
-      setMcpMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : "无法安装 MCP 市场服务。",
-      });
-    } finally {
-      setBusyMarketplaceId(null);
-    }
-  };
-
-  const testConfiguredServer = async (server: LoomMcpServer) => {
-    setBusyServerId(server.id);
-    try {
-      const result = await testMcpConnection(baseUrl, server);
-      const tools = Array.isArray(result.tools) ? result.tools : [];
-      setTestSnapshots((previous) => ({
-        ...previous,
-        [server.id]: {
-          status: result.success === false ? "error" : "success",
-          toolCount: tools.length,
-          testedAt: new Date().toISOString(),
-          error: result.success === false ? result.error || "MCP 测试失败" : undefined,
-        },
-      }));
-      setMcpMessage({
-        kind: result.success === false ? "error" : "info",
-        text: result.success === false
-          ? `${server.name || server.id} 测试失败：${result.error || "未知错误"}`
-          : `${server.name || server.id} 暴露 ${tools.length} 个工具。`,
-      });
-    } catch (error) {
-      setMcpMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : "无法测试 MCP 服务。",
-      });
-    } finally {
-      setBusyServerId(null);
-    }
-  };
-
-  const connectManualMcpServer = async (testAfterSave: boolean) => {
-    const id = normalizeToolId(manualServerId || manualServerName);
-    const server: LoomMcpServer = {
-      id,
-      name: manualServerName.trim() || "手动 MCP 服务",
-      description: manualDescription.trim(),
-      command: manualCommand.trim() || "npx",
-      args: parseListText(manualArgsText),
-      env: parseEnvText(manualEnvText),
-      enabled: true,
-    };
-
-    setBusyServerId(id);
-    try {
-      const savedServer = await saveMcpServer(baseUrl, server);
-      if (testAfterSave) {
-        const result = await testMcpConnection(baseUrl, savedServer);
-        const tools = Array.isArray(result.tools) ? result.tools : [];
-        setTestSnapshots((previous) => ({
-          ...previous,
-          [savedServer.id]: {
-            status: result.success === false ? "error" : "success",
-            toolCount: tools.length,
-            testedAt: new Date().toISOString(),
-            error: result.success === false ? result.error || "MCP 测试失败" : undefined,
-          },
-        }));
-        setMcpMessage({
-          kind: result.success === false ? "error" : "info",
-          text: result.success === false
-            ? `已保存 MCP 服务，但测试失败：${result.error || "未知错误"}`
-            : `已连接 ${savedServer.name}，发现 ${tools.length} 个工具。`,
-        });
-      } else {
-        setMcpMessage({ kind: "info", text: `已保存 MCP 服务 ${savedServer.name}。` });
-      }
-      setManualServerId(savedServer.id);
-      await refresh();
-    } catch (error) {
-      setMcpMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : "无法保存手动 MCP 服务。",
-      });
-    } finally {
-      setBusyServerId(null);
-    }
-  };
-
-  const runMcpPackageCheck = async () => {
-    setPackageBusy("check");
-    try {
-      const result = await checkMcpPackageInstalled(baseUrl, packageModuleName.trim() || "json");
-      setPackageResult(
-        `check_mcp_package_installed: module=${result.module || packageModuleName}, installed=${result.installed === true}`,
-      );
-    } catch (error) {
-      setPackageResult(error instanceof Error ? error.message : "无法检查 MCP 包。");
-    } finally {
-      setPackageBusy(null);
-    }
-  };
-
-  const prepareMcpPackageInstallPlan = async () => {
-    setPackageBusy("plan");
-    try {
-      const result = await buildMcpPackageInstallPlan(baseUrl, packageName.trim() || "mcp-server-demo");
-      setPackageResult(
-        `install_mcp_package safe plan: ${(result.command || []).join(" ")}; sideEffect=${result.sideEffect === true}`,
-      );
-    } catch (error) {
-      setPackageResult(error instanceof Error ? error.message : "无法生成 MCP 包安装计划。");
-    } finally {
-      setPackageBusy(null);
-    }
-  };
-
-  const normalizedSearch = searchText.trim().toLowerCase();
-  const installImageSearchManualFlow = async () => {
-    const braveApiKey = imageSearchApiKey.trim();
-    if (!braveApiKey) {
-      setMcpMessage({ kind: "error", text: "图片搜索手工测试流需要先填写 BRAVE_API_KEY。" });
-      return;
-    }
-
-    const existingServer = servers.find((server) => server.id === IMAGE_SEARCH_SERVER_ID);
-    setImageSearchBusy(true);
-    try {
-      const savedServer = await saveMcpServer(
-        baseUrl,
-        buildImageSearchServerConfig(braveApiKey, existingServer),
-      );
-      const framework = await installFramework(baseUrl, "mcp");
-      await saveToolDefinition(baseUrl, buildImageSearchArtDefinition(savedServer.id));
-      const connection = await testMcpConnection(baseUrl, savedServer);
-      const tools = Array.isArray(connection.tools) ? connection.tools : [];
-      setTestSnapshots((previous) => ({
-        ...previous,
-        [savedServer.id]: {
-          status: connection.success === false ? "error" : "success",
-          toolCount: tools.length,
-          testedAt: new Date().toISOString(),
-          error: connection.success === false ? connection.error || "MCP 测试失败" : undefined,
-        },
-      }));
-      setMcpMessage({
-        kind: connection.success === false ? "error" : "info",
-        text: connection.success === false
-          ? `图片搜索 Art 已保存，但 Brave Search 测试失败：${connection.error || "未知错误"}`
-          : `图片搜索手工测试流已就绪：MCP ${framework?.ready ? "已就绪" : "已安装"}，服务 ${savedServer.name} 暴露 ${tools.length} 个工具，Art 已保存为 ${IMAGE_SEARCH_ART_ID}。`,
-      });
-      await refresh();
-    } catch (error) {
-      setMcpMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : "无法安装图片搜索手工测试流。",
-      });
-    } finally {
-      setImageSearchBusy(false);
-    }
-  };
-
-  const filteredServers = servers.filter((server) => {
-    const matchesSearch =
-      !normalizedSearch ||
-      server.name.toLowerCase().includes(normalizedSearch) ||
-      server.id.toLowerCase().includes(normalizedSearch) ||
-      (server.description || "").toLowerCase().includes(normalizedSearch);
-    return matchesSearch;
-  });
-  const filteredMarketServers = marketServers.filter((server) => {
-    const matchesSearch =
-      !normalizedSearch ||
-      server.name.toLowerCase().includes(normalizedSearch) ||
-      server.description.toLowerCase().includes(normalizedSearch) ||
-      server.id.toLowerCase().includes(normalizedSearch);
-    const matchesCategory = marketCategory === "All" || server.category === marketCategory;
-    return matchesSearch && matchesCategory;
-  });
-
+  const notify = useCallback((level: "info" | "warning" | "error", text: string) => {
+    pushAppToast({ level, text });
+  }, []);
   return (
-    <section className="content-grid">
-      <div className="main-board">
-        <p className="section-kicker">MCP</p>
-        <h2>MCP 服务</h2>
-        <button className="ghost-button" type="button" onClick={() => openExternal(`${baseUrl}/v1/mcp/servers`)}>
-          查看 MCP 服务 JSON
-        </button>
-        <div className="marketplace-toolbar">
-          <label className="field-label">
-            搜索
-            <input
-              className="studio-input"
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              placeholder="搜索 MCP 服务"
-            />
-          </label>
-          <label className="field-label">
-            分类
-            <select
-              className="studio-input"
-              value={marketCategory}
-              onChange={(event) => setMarketCategory(event.target.value as McpMarketCategory | "All")}
-            >
-              <option value="All">全部分类</option>
-              {MCP_MARKET_CATEGORIES.map((category) => (
-                <option key={category} value={category}>{mcpMarketCategoryLabel(category)}</option>
-              ))}
-            </select>
-          </label>
-          <button
-            className="signal-button"
-            type="button"
-            onClick={() => refreshMarketplace(false)}
-            disabled={busyMarketplaceId === "registry-refresh"}
-          >
-            刷新注册表
-          </button>
-          {registryCursor ? (
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => refreshMarketplace(true)}
-              disabled={busyMarketplaceId === "registry-refresh"}
-            >
-              加载更多
-            </button>
-          ) : null}
-        </div>
-        <p className="mono-line">
-          市场来源：{marketSource === "registry" ? `MCP Registry（${registryCount} 个模板）` : "内置列表"}
-        </p>
-        {mcpMessage ? (
-          <p className={mcpMessage.kind === "error" ? "error-text" : "success-text"}>{mcpMessage.text}</p>
-        ) : null}
-      </div>
-      <article className="glass-card studio-card manual-mcp-card">
-        <div className="control-card__head">
-          <div>
-            <p className="card-kicker">图片搜索</p>
-            <h3>手工测试流</h3>
-          </div>
-          <span className="mini-chip">Brave Search</span>
-        </div>
-        <p>
-          一键保存 Brave Search MCP 服务、安装 MCP，并注册
-          <code>{IMAGE_SEARCH_ART_ID}</code>
-          ，方便直接在 Hook 中执行“图片搜索”节点。
-        </p>
-        <label className="field-label">
-          BRAVE_API_KEY
-          <input
-            className="studio-input"
-            value={imageSearchApiKey}
-            onChange={(event) => setImageSearchApiKey(event.target.value)}
-            placeholder="输入 Brave Search API Key"
-          />
-        </label>
-        <div className="studio-actions">
-          <button
-            className="signal-button"
-            type="button"
-            onClick={installImageSearchManualFlow}
-            disabled={imageSearchBusy}
-          >
-            {imageSearchBusy ? "安装中" : "安装图片搜索测试流"}
-          </button>
-        </div>
-      </article>
-      <article className="glass-card studio-card manual-mcp-card">
-        <div className="control-card__head">
-          <div>
-            <p className="card-kicker">手动 MCP 服务</p>
-            <h3>连接 MCP 服务</h3>
-          </div>
-          <span className="mini-chip">stdio</span>
-        </div>
-        <div className="manual-mcp-grid">
-          <label className="field-label">
-            服务 ID
-            <input
-              className="studio-input"
-              value={manualServerId}
-              onChange={(event) => setManualServerId(event.target.value)}
-            />
-          </label>
-          <label className="field-label">
-            名称
-            <input
-              className="studio-input"
-              value={manualServerName}
-              onChange={(event) => setManualServerName(event.target.value)}
-            />
-          </label>
-          <label className="field-label">
-            命令
-            <input
-              className="studio-input"
-              value={manualCommand}
-              onChange={(event) => setManualCommand(event.target.value)}
-              placeholder="npx, uvx, python, docker"
-            />
-          </label>
-          <label className="field-label">
-            描述
-            <input
-              className="studio-input"
-              value={manualDescription}
-              onChange={(event) => setManualDescription(event.target.value)}
-            />
-          </label>
-          <label className="field-label">
-            参数，每行一个
-            <textarea
-              className="studio-textarea studio-textarea--compact"
-              value={manualArgsText}
-              onChange={(event) => setManualArgsText(event.target.value)}
-            />
-          </label>
-          <label className="field-label">
-            环境变量，KEY=value 每行一个
-            <textarea
-              className="studio-textarea studio-textarea--compact"
-              value={manualEnvText}
-              onChange={(event) => setManualEnvText(event.target.value)}
-              placeholder="BRAVE_API_KEY=..."
-            />
-          </label>
-        </div>
-        <div className="studio-actions">
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => connectManualMcpServer(false)}
-            disabled={busyServerId !== null}
-          >
-            保存 MCP 服务
-          </button>
-          <button
-            className="signal-button"
-            type="button"
-            onClick={() => connectManualMcpServer(true)}
-            disabled={busyServerId !== null}
-          >
-            连接 MCP 服务
-          </button>
-        </div>
-      </article>
-      <article className="glass-card studio-card mcp-package-card">
-        <div className="control-card__head">
-          <div>
-            <p className="card-kicker">MCP 包兼容</p>
-            <h3>check_mcp_package_installed / install_mcp_package</h3>
-          </div>
-          <span className="mini-chip">安全预览</span>
-        </div>
-        <div className="manual-mcp-grid">
-          <label className="field-label">
-            要检查的模块
-            <input
-              className="studio-input"
-              value={packageModuleName}
-              onChange={(event) => setPackageModuleName(event.target.value)}
-              placeholder="mcp_server_brave_search"
-            />
-          </label>
-          <label className="field-label">
-            安装计划包名
-            <input
-              className="studio-input"
-              value={packageName}
-              onChange={(event) => setPackageName(event.target.value)}
-              placeholder="mcp-server-brave-search"
-            />
-          </label>
-        </div>
-        <div className="studio-actions">
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={runMcpPackageCheck}
-            disabled={packageBusy !== null}
-          >
-            {packageBusy === "check" ? "检查中" : "检查包"}
-          </button>
-          <button
-            className="signal-button"
-            type="button"
-            onClick={prepareMcpPackageInstallPlan}
-            disabled={packageBusy !== null}
-          >
-            {packageBusy === "plan" ? "生成中" : "安装命令预览"}
-          </button>
-        </div>
-        {packageResult ? <p className="mono-line">{packageResult}</p> : null}
-      </article>
-      <div className="section-heading-row">
-        <div>
-          <p className="section-kicker">已配置服务</p>
-          <h3>已配置服务</h3>
-        </div>
-        <span className="mini-chip">{filteredServers.length}</span>
-      </div>
-      <div className="card-grid">
-        {filteredServers.length ? filteredServers.map((server) => {
-          const testSnapshot = testSnapshots[server.id];
-          return (
-          <article className="glass-card control-card" key={server.id}>
-            <div className="control-card__head">
-              <div>
-                <p className="card-kicker">MCP 服务</p>
-                <h3>{server.name || server.id}</h3>
-              </div>
-              <EnabledChip enabled={server.enabled} />
-            </div>
-            <p className="mono-line">{server.command}</p>
-            <p>{server.args?.length ? server.args.join(" ") : "未配置启动参数。"}</p>
-            {server.description ? <p>{firstWords(server.description, server.description)}</p> : null}
-            {testSnapshot ? (
-              <p className={testSnapshot.status === "error" ? "error-text" : "success-text"}>
-                {testSnapshot.status === "error"
-                  ? testSnapshot.error || "测试失败"
-                  : `上次测试发现 ${testSnapshot.toolCount} 个工具。`}
-              </p>
-            ) : null}
-            <div className="studio-actions">
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => testConfiguredServer(server)}
-                disabled={busyServerId === server.id}
-              >
-                测试连接
-              </button>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => removeServer(server)}
-                disabled={busyServerId === server.id}
-              >
-                {busyServerId === server.id ? "删除中" : "删除服务"}
-              </button>
-            </div>
-          </article>
-          );
-        }) : (
-          <article className="glass-card empty-card">
-            <h3>暂无 MCP 服务</h3>
-          </article>
-        )}
-      </div>
-      <div className="section-heading-row">
-        <div>
-          <p className="section-kicker">市场</p>
-          <h3>MCP 市场</h3>
-        </div>
-        <span className="mini-chip">{filteredMarketServers.length}</span>
-      </div>
-      <div className="card-grid">
-        {filteredMarketServers.map((marketItem) => {
-          const configured = servers.find((server) => server.id === marketItem.id || server.name === marketItem.name);
-          const health = getMarketplaceHealth(marketItem, configured, configured ? testSnapshots[configured.id] : undefined);
-          const installKey = `${marketItem.id}:install`;
-          const testKey = `${marketItem.id}:test`;
-          return (
-            <article className="glass-card control-card" key={marketItem.id}>
-              <div className="control-card__head">
-                <div>
-                  <p className="card-kicker">{marketItem.sourceKind === "registry" ? "注册表服务" : "内置服务"}</p>
-                  <h3>{marketItem.name}</h3>
-                </div>
-                <EnabledChip enabled={marketItem.defaultEnabled !== false} />
-              </div>
-              <p>{firstWords(marketItem.description, "无描述。")}</p>
-              <p className="mono-line">{marketItem.command} {marketItem.args.join(" ")}</p>
-              <div className="marketplace-tags">
-                <span className="method-chip">{mcpMarketCategoryLabel(marketItem.category)}</span>
-                <span className="method-chip">{marketItem.sourceKind === "registry" ? "注册表" : "内置"}</span>
-                {health.tags.map((tag) => (
-                  <span className={`method-chip marketplace-tag--${tag.tone}`} key={tag.label}>{tag.label}</span>
-                ))}
-              </div>
-              {marketItem.notes ? <p className="mono-line">{marketItem.notes}</p> : null}
-              <p className="mono-line">
-                {marketItem.installSource.registry}:{marketItem.installSource.packageName}
-              </p>
-              <div className="studio-actions">
-                <button
-                  className="signal-button"
-                  type="button"
-                  onClick={() => installMarketplaceServer(marketItem, false)}
-                  disabled={Boolean(busyMarketplaceId)}
-                >
-                  {busyMarketplaceId === installKey ? "安装中" : "安装服务"}
-                </button>
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => installMarketplaceServer(marketItem, true)}
-                  disabled={Boolean(busyMarketplaceId)}
-                >
-                  {busyMarketplaceId === testKey ? "测试中" : "安装并测试"}
-                </button>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </section>
+    <McpHub
+      servers={servers}
+      baseUrl={baseUrl}
+      refresh={refresh}
+      notify={notify}
+      confirmRemove={(server) => requestAppConfirmation({
+        title: "删除 MCP",
+        message: `删除 ${server.name || server.id} 后，使用该服务的 Art 将无法运行。`,
+        confirmLabel: "删除",
+        tone: "danger",
+      })}
+    />
   );
 }
 
@@ -5487,6 +4725,18 @@ function ArtPanel({
   }, [loadFrameworks]);
 
   useEffect(() => {
+    let cancelled = false;
+    void getArtLoomCompatSettings(baseUrl)
+      .then((settings) => {
+        if (!cancelled) setStoreOfficialOnly(settings.art_store?.official_only === true);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl]);
+
+  useEffect(() => {
     if (!pendingCreationRequest) return;
     setActiveWorkspace("registry");
     setFrameworkDialogOpen(false);
@@ -5805,29 +5055,9 @@ function HookBridgePanel({
   );
 }
 
-function AgentsPanel({ capabilities }: { capabilities: LoomCapability[] }) {
-  return (
-    <section className="content-grid">
-      <div className="main-board">
-        <p className="section-kicker">智能体</p>
-        <h2>本地能力</h2>
-      </div>
-      <div className="card-grid">
-        {capabilities.length ? capabilities.map((capability) => (
-          <CapabilityCard key={capability.id} capability={capability} />
-        )) : (
-          <article className="glass-card empty-card">
-            <h3>暂无能力</h3>
-          </article>
-        )}
-      </div>
-    </section>
-  );
-}
-
 type SettingsAppId = "loom" | "hook";
-type SettingsSectionId = "general" | "window" | "engine" | "shortcuts" | "system" | "network" | "cache" | "about";
-type SettingsSectionIconKind = SettingsSectionId;
+type SettingsSectionId = "general" | "shortcuts" | "mcp" | "art-store" | "network" | "cache" | "about";
+type SettingsSectionIconKind = SettingsSectionId | "system";
 
 interface ApplicationDiagnosticsInfo {
   app: SettingsAppId;
@@ -5858,6 +5088,17 @@ interface HookCacheClearResult {
   kind: string;
   freedBytes: number;
   snapshot: HookCacheSnapshotInfo;
+}
+
+interface LoomCacheSnapshotInfo {
+  artRuntime: HookCacheEntryInfo;
+  frameworkTemporary: HookCacheEntryInfo;
+}
+
+interface LoomCacheClearResult {
+  kind: string;
+  freedBytes: number;
+  snapshot: LoomCacheSnapshotInfo;
 }
 
 type HookShortcutGroupIconKind = "capture" | "tools" | "sticker" | "transform";
@@ -6123,12 +5364,12 @@ function SettingsSectionIcon({ kind }: { kind: SettingsSectionIconKind }) {
   switch (kind) {
     case "general":
       return <svg {...iconProps}><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg>;
-    case "window":
-      return <svg {...iconProps}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18M7 6.5h.01M10 6.5h.01" /></svg>;
-    case "engine":
-      return <svg {...iconProps}><path d="M9 3h6v3h3v3h3v6h-3v3h-3v3H9v-3H6v-3H3V9h3V6h3V3Z" /><circle cx="12" cy="12" r="3" /></svg>;
     case "shortcuts":
       return <svg {...iconProps}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 9h.01M11 9h.01M15 9h.01M7 13h.01M11 13h6M7 16h10" /></svg>;
+    case "mcp":
+      return <svg {...iconProps}><rect x="3" y="5" width="7" height="5" rx="1" /><rect x="14" y="14" width="7" height="5" rx="1" /><path d="M10 7.5h4a3 3 0 0 1 3 3V14M14 16.5h-4a3 3 0 0 1-3-3V10" /></svg>;
+    case "art-store":
+      return <svg {...iconProps}><path d="M4 9h16l-1-4H5L4 9Z" /><path d="M5 9v10h14V9M9 19v-6h6v6" /><path d="M4 9c0 2 3 2 4 0 1 2 3 2 4 0 1 2 3 2 4 0 1 2 4 2 4 0" /></svg>;
     case "system":
       return <svg {...iconProps}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" /><circle cx="12" cy="12" r="3" /></svg>;
     case "network":
@@ -6174,6 +5415,190 @@ function SettingsAccordionSection({
         </button>
       </h2>
       {open ? <div className="settings-section__body" id={contentId}>{children}</div> : null}
+    </section>
+  );
+}
+
+interface GeneralSettingsValue {
+  language: string;
+  theme: string;
+  closeToTray: boolean;
+}
+
+function GeneralSettingsPanel({
+  appName,
+  value,
+  onChange,
+}: {
+  appName: SettingsAppId;
+  value: GeneralSettingsValue;
+  onChange: (patch: Partial<GeneralSettingsValue>) => void;
+}) {
+  const applicationName = appName === "loom" ? "Loom" : "Hook";
+  return (
+    <section className="settings-general-panel" aria-label={`${applicationName} 常规设置`}>
+      <header className="settings-general-panel__header">
+        <SettingsSectionIcon kind="general" />
+        <strong>应用设置</strong>
+      </header>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>语言</strong>
+          <span>界面显示语言</span>
+        </div>
+        <select
+          className="studio-input settings-network-row__control"
+          aria-label={`${applicationName} 语言`}
+          value={value.language}
+          onChange={(event) => onChange({ language: event.target.value })}
+        >
+          <option value="zh-Hans">简体中文</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>主题</strong>
+          <span>界面明暗模式</span>
+        </div>
+        <select
+          className="studio-input settings-network-row__control"
+          aria-label={`${applicationName} 主题`}
+          value={value.theme}
+          onChange={(event) => onChange({ theme: event.target.value })}
+        >
+          <option value="system">跟随系统</option>
+          <option value="dark">深色</option>
+          <option value="light">浅色</option>
+        </select>
+      </div>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>关闭到系统托盘</strong>
+          <span>关闭窗口后继续在后台运行</span>
+        </div>
+        <label className="settings-general-toggle">
+          <input
+            type="checkbox"
+            aria-label={`${applicationName} 关闭到系统托盘`}
+            checked={value.closeToTray}
+            onChange={(event) => onChange({ closeToTray: event.target.checked })}
+          />
+          <span>{value.closeToTray ? "已开启" : "已关闭"}</span>
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function McpSettingsPanel({
+  value,
+  onChange,
+}: {
+  value: ArtLoomMcpSettings;
+  onChange: (patch: Partial<ArtLoomMcpSettings>) => void;
+}) {
+  return (
+    <section className="settings-mcp-panel" aria-label="MCP 设置">
+      <header className="settings-mcp-panel__header">
+        <SettingsSectionIcon kind="mcp" />
+        <strong>运行限制</strong>
+      </header>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>请求超时</strong>
+          <span>单次 MCP 初始化、工具列表或调用的最长等待时间</span>
+        </div>
+        <select
+          className="studio-input settings-network-row__control"
+          aria-label="MCP 请求超时"
+          value={value.request_timeout_seconds}
+          onChange={(event) => onChange({ request_timeout_seconds: Number(event.target.value) })}
+        >
+          {[15, 30, 60, 120, 300].map((seconds) => (
+            <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} 秒` : `${seconds / 60} 分钟`}</option>
+          ))}
+        </select>
+      </div>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>子进程内存上限</strong>
+          <span>限制每个由 Loom 启动的 MCP 服务进程</span>
+        </div>
+        <select
+          className="studio-input settings-network-row__control"
+          aria-label="MCP 子进程内存上限"
+          value={value.memory_limit_bytes}
+          onChange={(event) => onChange({ memory_limit_bytes: Number(event.target.value) })}
+        >
+          {[
+            { value: 256 * 1024 * 1024, label: "256 MB" },
+            { value: 512 * 1024 * 1024, label: "512 MB" },
+            { value: 1024 * 1024 * 1024, label: "1 GB" },
+            { value: 2 * 1024 * 1024 * 1024, label: "2 GB" },
+          ].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+    </section>
+  );
+}
+
+function ArtStoreSettingsPanel({
+  value,
+  trustPolicy,
+  trustPolicyBusy,
+  onChange,
+  onTrustPolicyChange,
+}: {
+  value: ArtLoomArtStoreSettings;
+  trustPolicy: LoomPluginTrustPolicy;
+  trustPolicyBusy: boolean;
+  onChange: (patch: Partial<ArtLoomArtStoreSettings>) => void;
+  onTrustPolicyChange: (policy: LoomPluginTrustPolicy) => void;
+}) {
+  return (
+    <section className="settings-art-store-panel" aria-label="Art 设置">
+      <header className="settings-art-store-panel__header">
+        <SettingsSectionIcon kind="art-store" />
+        <strong>更新与安装</strong>
+      </header>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>自动更新</strong>
+          <span>启动 Art 页面时更新已启用自动更新的 Art</span>
+        </div>
+        <label className="settings-general-toggle">
+          <input type="checkbox" aria-label="Art 自动更新" checked={value.auto_update} onChange={(event) => onChange({ auto_update: event.target.checked })} />
+          <span>{value.auto_update ? "已开启" : "已关闭"}</span>
+        </label>
+      </div>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>默认只显示官方</strong>
+          <span>进入商店时优先隐藏未经官方认证的 Art</span>
+        </div>
+        <label className="settings-general-toggle">
+          <input type="checkbox" aria-label="Art 默认只显示官方" checked={value.official_only} onChange={(event) => onChange({ official_only: event.target.checked })} />
+          <span>{value.official_only ? "已开启" : "已关闭"}</span>
+        </label>
+      </div>
+      <div className="settings-network-row">
+        <div className="settings-network-row__label">
+          <strong>安装策略</strong>
+          <span>决定 Loom 可以安装何种签名状态的 Art</span>
+        </div>
+        <select
+          className="studio-input settings-network-row__control"
+          aria-label="Art 安装策略"
+          value={trustPolicy}
+          disabled={trustPolicyBusy}
+          onChange={(event) => onTrustPolicyChange(event.target.value as LoomPluginTrustPolicy)}
+        >
+          <option value="require_trusted">仅可信发布者</option>
+          <option value="require_signed">需要有效签名</option>
+          <option value="allow_unsigned">允许未签名</option>
+        </select>
+      </div>
     </section>
   );
 }
@@ -6247,6 +5672,99 @@ function formatCacheBytes(bytes: number): string {
   const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / (1024 ** unitIndex);
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function loomCacheSettingsForUi(value?: Partial<ArtLoomCacheSettings>): ArtLoomCacheSettings {
+  const merged = { ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.loom_cache, ...value };
+  return {
+    art_cache_max_bytes: [0, 256 * 1024 * 1024, 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024]
+      .includes(merged.art_cache_max_bytes)
+      ? merged.art_cache_max_bytes
+      : 1024 * 1024 * 1024,
+    art_cache_retention_days: [0, 3, 7, 30].includes(merged.art_cache_retention_days)
+      ? merged.art_cache_retention_days
+      : 30,
+    framework_temp_retention_days: [0, 1, 3, 7, 30]
+      .includes(merged.framework_temp_retention_days)
+      ? merged.framework_temp_retention_days
+      : 3,
+  };
+}
+
+function loomCachePreferencesForRuntime(settings: ArtLoomCacheSettings) {
+  return {
+    artCacheMaxBytes: settings.art_cache_max_bytes,
+    artCacheRetentionDays: settings.art_cache_retention_days,
+    frameworkTempRetentionDays: settings.framework_temp_retention_days,
+  };
+}
+
+function LoomCacheSettingsPanel({
+  settings,
+  snapshot,
+  loading,
+  busyKind,
+  onSettingsChange,
+  onClear,
+}: {
+  settings: ArtLoomCacheSettings;
+  snapshot: LoomCacheSnapshotInfo | null;
+  loading: boolean;
+  busyKind: string | null;
+  onSettingsChange: (patch: Partial<ArtLoomCacheSettings>) => void;
+  onClear: (kind: "artRuntime" | "frameworkTemporary") => void;
+}) {
+  const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
+  return (
+    <div className="hook-cache-settings loom-cache-settings" aria-busy={loading || Boolean(busyKind)}>
+      <section className="hook-cache-group" aria-labelledby="loom-cache-policy-title">
+        <header className="hook-cache-group__header">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7" /><path d="M12 9v4l2.5 1.5M9 3h6M12 3v3" /></svg>
+          <strong id="loom-cache-policy-title">缓存规则</strong>
+        </header>
+        <div className="hook-cache-row">
+          <span><strong>Art 运行缓存上限</strong><small>限制已安装 Art 在运行时生成的可重建缓存</small></span>
+          <select className="studio-input hook-cache-row__control" aria-label="Art 运行缓存上限" value={settings.art_cache_max_bytes} onChange={(event) => onSettingsChange({ art_cache_max_bytes: Number(event.target.value) })}>
+            {[
+              { value: 256 * 1024 * 1024, label: "256 MB" },
+              { value: 1024 * 1024 * 1024, label: "1 GB" },
+              { value: 4 * 1024 * 1024 * 1024, label: "4 GB" },
+              { value: 0, label: "无限制" },
+            ].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div className="hook-cache-row">
+          <span><strong>Art 运行缓存自动清理周期</strong><small>按最后修改时间移除可重新生成的缓存文件</small></span>
+          <select className="studio-input hook-cache-row__control" aria-label="Art 运行缓存自动清理周期" value={settings.art_cache_retention_days} onChange={(event) => onSettingsChange({ art_cache_retention_days: Number(event.target.value) })}>
+            {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
+          </select>
+        </div>
+        <div className="hook-cache-row">
+          <span><strong>框架临时文件自动清理周期</strong><small>清理已经结束的框架执行残留，不影响已安装框架</small></span>
+          <select className="studio-input hook-cache-row__control" aria-label="框架临时文件自动清理周期" value={settings.framework_temp_retention_days} onChange={(event) => onSettingsChange({ framework_temp_retention_days: Number(event.target.value) })}>
+            {[1, 3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
+          </select>
+        </div>
+      </section>
+
+      <section className="hook-cache-group" aria-labelledby="loom-cache-clean-title">
+        <header className="hook-cache-group__header">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 18 8-8 4 4-8 8H4v-4ZM13.5 8.5l2-2 2 2-2 2M15.5 6.5l2-2 2 2-2 2" /></svg>
+          <strong id="loom-cache-clean-title">手动清理</strong>
+        </header>
+        <div className="hook-cache-row hook-cache-row--action" title={snapshot?.artRuntime.path}>
+          <span><strong>Art 运行缓存</strong><small>{snapshot ? `${snapshot.artRuntime.fileCount} 个文件` : "正在统计缓存"}</small></span>
+          <b>{snapshot ? formatCacheBytes(snapshot.artRuntime.bytes) : "统计中..."}</b>
+          <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("artRuntime")}>{busyKind === "artRuntime" ? "清理中..." : "清空"}</button>
+        </div>
+        <div className="hook-cache-row hook-cache-row--action" title={snapshot?.frameworkTemporary.path}>
+          <span><strong>框架临时文件</strong><small>{snapshot ? `${snapshot.frameworkTemporary.fileCount} 个文件` : "正在统计缓存"}</small></span>
+          <b>{snapshot ? formatCacheBytes(snapshot.frameworkTemporary.bytes) : "统计中..."}</b>
+          <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("frameworkTemporary")}>{busyKind === "frameworkTemporary" ? "清理中..." : "清空"}</button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function hookCacheSettingsForUi(value?: Partial<ArtLoomHookCacheSettings>): ArtLoomHookCacheSettings {
@@ -6365,9 +5883,14 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
   const [appDiagnostics, setAppDiagnostics] = useState<Record<SettingsAppId, ApplicationDiagnosticsInfo>>(
     FALLBACK_APPLICATION_DIAGNOSTICS,
   );
+  const [loomCacheSnapshot, setLoomCacheSnapshot] = useState<LoomCacheSnapshotInfo | null>(null);
+  const [loomCacheLoading, setLoomCacheLoading] = useState(false);
+  const [loomCacheBusyKind, setLoomCacheBusyKind] = useState<string | null>(null);
   const [hookCacheSnapshot, setHookCacheSnapshot] = useState<HookCacheSnapshotInfo | null>(null);
   const [hookCacheLoading, setHookCacheLoading] = useState(false);
   const [hookCacheBusyKind, setHookCacheBusyKind] = useState<string | null>(null);
+  const [artStoreTrustPolicy, setArtStoreTrustPolicy] = useState<LoomPluginTrustPolicy>("allow_unsigned");
+  const [artStoreTrustPolicyBusy, setArtStoreTrustPolicyBusy] = useState(false);
   const [activeSettingsApp, setActiveSettingsApp] = useState<SettingsAppId>("loom");
   const [openSettingsSection, setOpenSettingsSection] = useState<SettingsSectionId | null>(null);
   const [openShortcutGroups, setOpenShortcutGroups] = useState<Set<string>>(() => new Set());
@@ -6401,11 +5924,39 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
       const baseUrl = settingsBaseUrlRef.current;
       pendingSettingsRef.current = null;
       try {
+        const loomGeneralChanged = JSON.stringify(nextSettings.general)
+          !== JSON.stringify(lastSavedSettingsRef.current.general);
+        const loomCacheChanged = JSON.stringify(nextSettings.loom_cache)
+          !== JSON.stringify(lastSavedSettingsRef.current.loom_cache);
         const hookCacheChanged = JSON.stringify(nextSettings.hook_cache)
           !== JSON.stringify(lastSavedSettingsRef.current.hook_cache);
         const saved = await saveArtLoomCompatSettings(baseUrl, nextSettings);
         if (settingsBaseUrlRef.current === baseUrl) {
           lastSavedSettingsRef.current = saved;
+        }
+        if (loomGeneralChanged) {
+          try {
+            await invoke("apply_loom_general_settings", {
+              settings: { minimizeToTray: saved.general.minimize_to_tray },
+            });
+          } catch (error) {
+            pushAppToast({
+              level: "warning",
+              text: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if (loomCacheChanged) {
+          try {
+            setLoomCacheSnapshot(await invoke<LoomCacheSnapshotInfo>("apply_loom_cache_settings", {
+              settings: loomCachePreferencesForRuntime(saved.loom_cache),
+            }));
+          } catch (error) {
+            pushAppToast({
+              level: "warning",
+              text: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
         if (hookCacheChanged) {
           try {
@@ -6441,6 +5992,20 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     settingsSaveActiveRef.current = false;
   }, []);
 
+  const refreshLoomCache = useCallback(async () => {
+    setLoomCacheLoading(true);
+    try {
+      setLoomCacheSnapshot(await invoke<LoomCacheSnapshotInfo>("get_loom_cache_snapshot"));
+    } catch (error) {
+      pushAppToast({
+        level: "error",
+        text: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setLoomCacheLoading(false);
+    }
+  }, []);
+
   const refreshHookCache = useCallback(async () => {
     setHookCacheLoading(true);
     try {
@@ -6454,6 +6019,10 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
       setHookCacheLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    applyLoomGeneralSettings(draft.general);
+  }, [draft.general.language, draft.general.minimize_to_tray, draft.general.theme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -6477,6 +6046,14 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
           : Object.values(DEFAULT_ARTLOOM_COMPAT_SETTINGS.shortcuts);
         const hydratedSettings = {
           ...loadedSettings,
+          general: {
+            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.general,
+            ...loadedSettings.general,
+          },
+          hook_general: {
+            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.hook_general,
+            ...loadedSettings.hook_general,
+          },
           system: {
             ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.system,
             ...loadedSettings.system,
@@ -6491,6 +6068,15 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
               ...loadedSettings.network?.hook,
             },
           },
+          mcp: {
+            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.mcp,
+            ...loadedSettings.mcp,
+          },
+          art_store: {
+            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.art_store,
+            ...loadedSettings.art_store,
+          },
+          loom_cache: loomCacheSettingsForUi(loadedSettings.loom_cache),
           hook_cache: hookCacheSettingsForUi(loadedSettings.hook_cache),
           shortcuts: Object.fromEntries(nextShortcuts.map((shortcut) => [shortcut.id, shortcut])),
         };
@@ -6549,10 +6135,33 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
   }, []);
 
   useEffect(() => {
-    if (activeSettingsApp === "hook" && openSettingsSection === "cache") {
+    if (openSettingsSection !== "cache") return;
+    if (activeSettingsApp === "loom") {
+      void refreshLoomCache();
+    } else {
       void refreshHookCache();
     }
-  }, [activeSettingsApp, openSettingsSection, refreshHookCache]);
+  }, [activeSettingsApp, openSettingsSection, refreshHookCache, refreshLoomCache]);
+
+  useEffect(() => {
+    if (activeSettingsApp !== "loom" || openSettingsSection !== "art-store") return;
+    let cancelled = false;
+    void listPluginTrust(snapshot.baseUrl)
+      .then((trustStore) => {
+        if (!cancelled) setArtStoreTrustPolicy(trustStore.policy);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          pushAppToast({
+            level: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSettingsApp, openSettingsSection, snapshot.baseUrl]);
 
   useEffect(() => {
     if (!settingsHydratedRef.current) return;
@@ -6616,11 +6225,92 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     }));
   };
 
+  const updateHookGeneralDraft = (patch: Partial<GeneralSettingsValue>) => {
+    setDraft((current) => ({
+      ...current,
+      hook_general: {
+        ...current.hook_general,
+        ...(patch.language === undefined ? {} : { language: patch.language }),
+        ...(patch.theme === undefined ? {} : { theme: patch.theme }),
+        ...(patch.closeToTray === undefined ? {} : { close_to_tray: patch.closeToTray }),
+      },
+    }));
+  };
+
+  const updateLoomCacheDraft = (patch: Partial<ArtLoomCacheSettings>) => {
+    setDraft((current) => ({
+      ...current,
+      loom_cache: { ...current.loom_cache, ...patch },
+    }));
+  };
+
+  const updateMcpDraft = (patch: Partial<ArtLoomMcpSettings>) => {
+    setDraft((current) => ({
+      ...current,
+      mcp: { ...current.mcp, ...patch },
+    }));
+  };
+
+  const updateArtStoreDraft = (patch: Partial<ArtLoomArtStoreSettings>) => {
+    setDraft((current) => ({
+      ...current,
+      art_store: { ...current.art_store, ...patch },
+    }));
+  };
+
+  const updateArtStoreTrustPolicy = async (policy: LoomPluginTrustPolicy) => {
+    const previous = artStoreTrustPolicy;
+    setArtStoreTrustPolicy(policy);
+    setArtStoreTrustPolicyBusy(true);
+    try {
+      const trustStore = await setPluginTrustPolicy(snapshot.baseUrl, policy);
+      setArtStoreTrustPolicy(trustStore.policy);
+      pushAppToast({ level: "info", text: "Art 安装策略已更新" });
+    } catch (error) {
+      setArtStoreTrustPolicy(previous);
+      pushAppToast({
+        level: "error",
+        text: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setArtStoreTrustPolicyBusy(false);
+    }
+  };
+
   const updateHookCacheDraft = (patch: Partial<ArtLoomHookCacheSettings>) => {
     setDraft((current) => ({
       ...current,
       hook_cache: { ...current.hook_cache, ...patch },
     }));
+  };
+
+  const clearLoomCache = async (kind: "artRuntime" | "frameworkTemporary") => {
+    const label = kind === "artRuntime" ? "Art 运行缓存" : "框架临时文件";
+    const accepted = await requestAppConfirmation({
+      title: `清空${label}`,
+      message: kind === "artRuntime"
+        ? "将删除 Art 生成的可重建运行缓存，不会卸载 Art 或删除工作流。"
+        : "将删除框架执行产生的临时文件。请先等待正在运行的 Art 完成。",
+      confirmLabel: "清空",
+      tone: "warning",
+    });
+    if (!accepted) return;
+    setLoomCacheBusyKind(kind);
+    try {
+      const result = await invoke<LoomCacheClearResult>("clear_loom_cache", { kind });
+      setLoomCacheSnapshot(result.snapshot);
+      pushAppToast({
+        level: "info",
+        text: `已清空${label}，释放 ${formatCacheBytes(result.freedBytes)}`,
+      });
+    } catch (error) {
+      pushAppToast({
+        level: "error",
+        text: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setLoomCacheBusyKind(null);
+    }
   };
 
   const clearHookCache = async (kind: "recycleBin" | "temporary" | "referenceLibrary") => {
@@ -6663,42 +6353,8 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     }
   };
 
-  const toggleAutostart = async () => {
-    const enabled = !draft.general.auto_start;
-    setDraft((current) => ({ ...current, general: { ...current.general, auto_start: enabled } }));
-    try {
-      const result = await setArtLoomCompatAutostart(snapshot.baseUrl, enabled);
-      pushAppToast({
-        level: result.sideEffect === true ? "info" : "warning",
-        text: result.sideEffect === true
-          ? `开机自启已${enabled ? "开启" : "关闭"}`
-          : "开机自启设置已保存，当前宿主暂未应用",
-      });
-    } catch (error) {
-      pushAppToast({
-        level: "error",
-        text: error instanceof Error ? error.message : "无法更新开机自启。",
-      });
-    }
-  };
-
-  const toggleMinimizeToTray = async () => {
-    const enabled = !draft.general.minimize_to_tray;
+  const toggleMinimizeToTray = (enabled = !draft.general.minimize_to_tray) => {
     setDraft((current) => ({ ...current, general: { ...current.general, minimize_to_tray: enabled } }));
-    try {
-      const result = await setArtLoomCompatMinimizeToTray(snapshot.baseUrl, enabled);
-      pushAppToast({
-        level: result.sideEffect === true ? "info" : "warning",
-        text: result.sideEffect === true
-          ? `最小化到托盘已${enabled ? "开启" : "关闭"}`
-          : "最小化到托盘设置已保存，当前宿主暂未应用",
-      });
-    } catch (error) {
-      pushAppToast({
-        level: "error",
-        text: error instanceof Error ? error.message : "无法更新托盘设置。",
-      });
-    }
   };
 
   const toggleSettingsSection = (section: SettingsSectionId) => {
@@ -6733,11 +6389,12 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
   };
 
   const checkApplicationUpdate = (app: SettingsAppId) => {
-    const appName = appDiagnostics[app].appName;
-    pushAppToast({
-      level: "warning",
-      text: `${appName} 暂未配置更新源`,
-    });
+    const repositoryUrl = appDiagnostics[app].repositoryUrl?.replace(/\/$/, "");
+    if (!repositoryUrl) {
+      pushAppToast({ level: "warning", text: `${appDiagnostics[app].appName} 暂无更新地址` });
+      return;
+    }
+    void openRepository(`${repositoryUrl}/releases/latest`);
   };
 
   const resolveShortcutKeys = (item: HookShortcutDisplayItem) => {
@@ -6931,124 +6588,53 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
       {activeSettingsApp === "loom" ? (
         <div className="settings-accordion">
         <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
-          <div className="settings-field-grid">
-            <label className="field-label">
-              语言
-              <select
-                className="studio-input"
-                value={draft.general.language}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  general: { ...current.general, language: event.target.value },
-                }))}
-              >
-                <option value="en">英文</option>
-                <option value="zh-Hans">简体中文</option>
-              </select>
-            </label>
-            <label className="field-label">
-              主题
-              <select
-                className="studio-input"
-                value={draft.general.theme}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  general: { ...current.general, theme: event.target.value },
-                }))}
-              >
-                <option value="dark">深色</option>
-                <option value="light">浅色</option>
-                <option value="system">跟随系统</option>
-              </select>
-            </label>
-          </div>
+          <GeneralSettingsPanel
+            appName="loom"
+            value={{
+              language: draft.general.language,
+              theme: draft.general.theme,
+              closeToTray: draft.general.minimize_to_tray,
+            }}
+            onChange={(patch) => {
+              if (patch.closeToTray !== undefined) {
+                toggleMinimizeToTray(patch.closeToTray);
+                return;
+              }
+              setDraft((current) => ({
+                ...current,
+                general: {
+                  ...current.general,
+                  ...(patch.language === undefined ? {} : { language: patch.language }),
+                  ...(patch.theme === undefined ? {} : { theme: patch.theme }),
+                },
+              }));
+            }}
+          />
         </SettingsAccordionSection>
 
-        <SettingsAccordionSection id="window" label="窗口" open={openSettingsSection === "window"} onToggle={() => toggleSettingsSection("window")}>
-          <div className="settings-toggle-grid">
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={draft.general.enable_tray_icon}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  general: { ...current.general, enable_tray_icon: event.target.checked },
-                }))}
-              />
-              <span>启用托盘图标</span>
-            </label>
-            <label className="toggle-row">
-              <input type="checkbox" checked={draft.general.minimize_to_tray} onChange={toggleMinimizeToTray} />
-              <span>最小化到托盘</span>
-            </label>
-          </div>
+        <SettingsAccordionSection id="mcp" label="MCP" open={openSettingsSection === "mcp"} onToggle={() => toggleSettingsSection("mcp")}>
+          <McpSettingsPanel value={draft.mcp} onChange={updateMcpDraft} />
         </SettingsAccordionSection>
 
-        <SettingsAccordionSection id="engine" label="引擎" open={openSettingsSection === "engine"} onToggle={() => toggleSettingsSection("engine")}>
-          <div className="settings-field-stack">
-            <label className="field-label">
-              ComfyUI API 地址
-              <input
-                className="studio-input"
-                value={draft.engine.comfyui_url}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  engine: { ...current.engine, comfyui_url: event.target.value },
-                }))}
-              />
-            </label>
-            <label className="field-label">
-              Python 解释器
-              <input
-                className="studio-input"
-                value={draft.engine.python_interpreter}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  engine: { ...current.engine, python_interpreter: event.target.value },
-                }))}
-              />
-            </label>
-            <label className="field-label">
-              虚拟环境路径
-              <input
-                className="studio-input"
-                value={draft.engine.virtual_env_path}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  engine: { ...current.engine, virtual_env_path: event.target.value },
-                }))}
-              />
-            </label>
-            <div className="settings-field-grid">
-              <label className="field-label">
-                计算设备
-                <select
-                  className="studio-input"
-                  value={draft.engine.compute_device}
-                  onChange={(event) => setDraft((current) => ({
-                    ...current,
-                    engine: { ...current.engine, compute_device: event.target.value },
-                  }))}
-                >
-                  <option value="0">CUDA 0</option>
-                  <option value="cpu">CPU</option>
-                </select>
-              </label>
-              <label className="field-label">
-                显存预留（GB）
-                <input
-                  className="studio-input"
-                  type="number"
-                  min="1"
-                  value={draft.engine.vram_reservation_gb}
-                  onChange={(event) => setDraft((current) => ({
-                    ...current,
-                    engine: { ...current.engine, vram_reservation_gb: Number(event.target.value) || 1 },
-                  }))}
-                />
-              </label>
-            </div>
-          </div>
+        <SettingsAccordionSection id="art-store" label="Art" open={openSettingsSection === "art-store"} onToggle={() => toggleSettingsSection("art-store")}>
+          <ArtStoreSettingsPanel
+            value={draft.art_store}
+            trustPolicy={artStoreTrustPolicy}
+            trustPolicyBusy={artStoreTrustPolicyBusy}
+            onChange={updateArtStoreDraft}
+            onTrustPolicyChange={(policy) => void updateArtStoreTrustPolicy(policy)}
+          />
+        </SettingsAccordionSection>
+
+        <SettingsAccordionSection id="cache" label="缓存" open={openSettingsSection === "cache"} onToggle={() => toggleSettingsSection("cache")}>
+          <LoomCacheSettingsPanel
+            settings={draft.loom_cache}
+            snapshot={loomCacheSnapshot}
+            loading={loomCacheLoading}
+            busyKind={loomCacheBusyKind}
+            onSettingsChange={updateLoomCacheDraft}
+            onClear={(kind) => void clearLoomCache(kind)}
+          />
         </SettingsAccordionSection>
 
         <SettingsAccordionSection id="network" label="网络" open={openSettingsSection === "network"} onToggle={() => toggleSettingsSection("network")}>
@@ -7057,70 +6643,6 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
             value={draft.network.loom}
             onChange={(patch) => updateNetworkDraft("loom", patch)}
           />
-        </SettingsAccordionSection>
-
-        <SettingsAccordionSection id="system" label="系统与数据" open={openSettingsSection === "system"} onToggle={() => toggleSettingsSection("system")}>
-          <div className="settings-toggle-grid">
-            <label className="toggle-row">
-              <input type="checkbox" checked={draft.general.auto_start} onChange={toggleAutostart} />
-              <span>开机自启</span>
-            </label>
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={draft.system.auto_check_updates}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  system: { ...current.system, auto_check_updates: event.target.checked },
-                }))}
-              />
-              <span>自动检查更新</span>
-            </label>
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={draft.system.enable_run_log}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  system: { ...current.system, enable_run_log: event.target.checked },
-                }))}
-              />
-              <span>启用运行日志</span>
-            </label>
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={draft.system.record_screenshot_history}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  system: { ...current.system, record_screenshot_history: event.target.checked },
-                }))}
-              />
-              <span>记录截图历史</span>
-            </label>
-          </div>
-          <label className="field-label settings-retention-field">
-            历史保留
-            <select
-              className="studio-input"
-              value={draft.system.history_retention}
-              onChange={(event) => setDraft((current) => ({
-                ...current,
-                system: { ...current.system, history_retention: event.target.value },
-              }))}
-            >
-              <option value="1d">1 天</option>
-              <option value="3d">3 天</option>
-              <option value="7d">1 周</option>
-              <option value="30d">1 个月</option>
-              <option value="forever">永久</option>
-            </select>
-          </label>
-          <div className="settings-path-list">
-            <span><strong>数据目录</strong>{appPaths?.dataDir || "未加载"}</span>
-            <span><strong>配置目录</strong>{appPaths?.configDir || "未加载"}</span>
-            <span><strong>日志目录</strong>{appPaths?.logDir || "未加载"}</span>
-          </div>
         </SettingsAccordionSection>
 
         <SettingsAccordionSection id="about" label="关于" open={openSettingsSection === "about"} onToggle={() => toggleSettingsSection("about")}>
@@ -7143,6 +6665,18 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
         </div>
       ) : (
         <div className="settings-accordion">
+          <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
+            <GeneralSettingsPanel
+              appName="hook"
+              value={{
+                language: draft.hook_general.language,
+                theme: draft.hook_general.theme,
+                closeToTray: draft.hook_general.close_to_tray,
+              }}
+              onChange={updateHookGeneralDraft}
+            />
+          </SettingsAccordionSection>
+
           <SettingsAccordionSection id="shortcuts" label="快捷键" open={openSettingsSection === "shortcuts"} onToggle={() => toggleSettingsSection("shortcuts")}>
             <div className="hook-shortcut-groups">
               {HOOK_SHORTCUT_GROUPS.map((group) => {
@@ -7510,10 +7044,10 @@ function ApplicationAboutMark({ app }: { app: SettingsAppId }) {
         </filter>
       </defs>
       <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M250 394V250h144" stroke="#22C55E" strokeWidth="72" filter="url(#about-hook-green-glow)" />
-        <path d="M774 394V250H630" stroke="#22C55E" strokeWidth="72" filter="url(#about-hook-green-glow)" />
-        <path d="M250 630v144h144" stroke="#22C55E" strokeWidth="72" filter="url(#about-hook-green-glow)" />
-        <path d="M774 630v144H630" stroke="#FFE600" strokeWidth="72" filter="url(#about-hook-yellow-glow)" />
+        <path d="M250 394V250h144" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-hook-green-glow)" />
+        <path d="M774 394V250H630" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-hook-green-glow)" />
+        <path d="M250 630v144h144" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-hook-green-glow)" />
+        <path d="M774 630v144H630" stroke="var(--loom-brand-secondary)" strokeWidth="72" filter="url(#about-hook-yellow-glow)" />
       </g>
     </svg>
   );
@@ -7641,12 +7175,10 @@ export default function App() {
   const hookCanvasSingleFlight = useRef(createSingleFlightGate());
   const hookCanvasFlightBaseUrl = useRef<string | null>(null);
   const packagedArtsBootstrapBaseUrl = useRef<string | null>(null);
-  const [activeSection, setActiveSection] = useState<SectionId>("overview");
+  const [activeSection, setActiveSection] = useState<SectionId>("mcp");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [snapshot, setSnapshot] = useState<LoomSnapshot>(fallbackSnapshot);
   const [loading, setLoading] = useState(false);
-  const [localServiceBusy, setLocalServiceBusy] = useState(false);
-  const [localServiceMessage, setLocalServiceMessage] = useState<StudioMessage | null>(null);
   const [autoStartAttempted, setAutoStartAttempted] = useState(false);
   const [pendingArtCreationRequest, setPendingArtCreationRequest] = useState<ArtCreationRequest | null>(null);
   const [hookCanvas, setHookCanvas] = useState<HookCanvasSnapshot | null>(null);
@@ -7684,7 +7216,7 @@ export default function App() {
         const next = await readLoomSnapshot(baseUrl);
         if (!abortSignal?.aborted && snapshotRequestGate.current.isCurrent(requestToken)) {
           setHookBridgeUrl(nextHookBridgeUrl);
-          setSnapshot(next);
+          setSnapshot((previous) => retainAvailableSnapshotData(previous, next));
         }
         return next;
       } finally {
@@ -7727,38 +7259,37 @@ export default function App() {
     });
   }, []);
 
-  const startLocalService = async (silent = false) => {
-    setLocalServiceBusy(true);
-    if (!silent) setLocalServiceMessage(null);
+  const startLocalService = async () => {
     try {
-      const result = await startLoomDaemon();
-      if (!silent || result.started) {
-        setLocalServiceMessage({ kind: "info", text: result.message || "已启动 Loom 本地服务。" });
-      }
-      const nextSnapshot = await waitForLoomOnline(refreshSnapshot);
-      if (!silent && nextSnapshot?.connectionState !== "online") {
-        setLocalServiceMessage({
-          kind: "error",
-          text: nextSnapshot?.error || "Loom 本地服务启动后仍未就绪，请稍后重试。",
-        });
-      }
-    } catch (error) {
-      if (!silent) {
-        setLocalServiceMessage({
-          kind: "error",
-          text: error instanceof Error ? error.message : "无法启动 Loom 本地服务。",
-        });
-      }
-    } finally {
-      setLocalServiceBusy(false);
+      await startLoomDaemon();
+      await waitForLoomOnline(refreshSnapshot);
+    } catch {
+      // The regular snapshot state reports startup failures.
     }
   };
 
   useEffect(() => {
     setAutoStartAttempted(true);
     void refresh();
-    void startLocalService(true);
+    void startLocalService();
   }, []);
+
+  useEffect(() => {
+    if (snapshot.connectionState !== "online") return;
+    let cancelled = false;
+    void getArtLoomCompatSettings(snapshot.baseUrl)
+      .then(async (settings) => {
+        if (cancelled) return;
+        applyLoomGeneralSettings(settings.general);
+        await invoke("apply_loom_general_settings", {
+          settings: { minimizeToTray: settings.general.minimize_to_tray },
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshot.baseUrl, snapshot.connectionState]);
 
   useEffect(() => {
     if (hookCanvasRefreshTrigger === null) {
@@ -7798,7 +7329,7 @@ export default function App() {
       return;
     }
     setAutoStartAttempted(true);
-    void startLocalService(true);
+    void startLocalService();
   }, [autoStartAttempted, loading, snapshot.connectionState, snapshot.checkedAt]);
 
   useEffect(() => {
@@ -7828,8 +7359,8 @@ export default function App() {
         }
       }
       if (!cancelled) {
-        setLocalServiceMessage({
-          kind: "error",
+        pushAppToast({
+          level: "error",
           text: lastError instanceof Error ? lastError.message : "无法加载打包 Art。",
         });
       }
@@ -7947,10 +7478,10 @@ export default function App() {
             <button
               className="app-titlebar__back"
               type="button"
-              aria-label="返回总览"
-              title="返回总览"
+              aria-label="返回 MCP"
+              title="返回 MCP"
               onDoubleClick={(event) => event.stopPropagation()}
-              onClick={() => setActiveSection("overview")}
+              onClick={() => setActiveSection("mcp")}
             >
               <ShellIcon kind="back" />
             </button>
@@ -8036,8 +7567,14 @@ export default function App() {
         </div>
       </aside>
 
-      <section className={activeSection === "settings" ? "workspace-panel workspace-panel--settings" : "workspace-panel"}>
-        {activeSection !== "devices" && activeSection !== "settings" ? <header className="workspace-header">
+      <section className={activeSection === "settings"
+        ? "workspace-panel workspace-panel--settings"
+        : activeSection === "registry" || activeSection === "hook-bridge"
+          ? "workspace-panel workspace-panel--tooling"
+          : "workspace-panel"}>
+        {activeSection !== "devices" && activeSection !== "settings" ? <header className={activeSection === "registry" || activeSection === "hook-bridge"
+          ? "workspace-header workspace-header--tooling"
+          : "workspace-header"}>
           <div>
             {activeNavigation.eyebrow ? (
               <p className="section-kicker">{activeNavigation.eyebrow}</p>
@@ -8050,16 +7587,9 @@ export default function App() {
           ? "workspace-scroll workspace-scroll--devices"
           : activeSection === "settings"
             ? "workspace-scroll workspace-scroll--settings"
-            : "workspace-scroll"}>
-          {activeSection === "overview" && (
-            <OverviewPanel
-              snapshot={snapshot}
-              refresh={refresh}
-              startLocalService={() => void startLocalService(false)}
-              localServiceBusy={localServiceBusy}
-              localServiceMessage={localServiceMessage}
-            />
-          )}
+            : activeSection === "registry" || activeSection === "hook-bridge"
+              ? "workspace-scroll workspace-scroll--tooling"
+              : "workspace-scroll"}>
           {activeSection === "mcp" && (
             <McpPanel
               servers={snapshot.mcpServers}
@@ -8087,7 +7617,6 @@ export default function App() {
               onCreateWorkflowArt={openWorkflowArtCreator}
             />
           )}
-          {activeSection === "agents" && <AgentsPanel capabilities={snapshot.capabilities} />}
           {activeSection === "devices" && (
             <DeviceManagementPanel
               baseUrl={snapshot.baseUrl}

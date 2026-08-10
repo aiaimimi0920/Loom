@@ -6,9 +6,12 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
-use tauri::Manager;
+use std::time::{Duration, Instant, SystemTime};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Manager, WindowEvent};
 
 const DEFAULT_LOOM_DAEMON_URL: &str = "http://127.0.0.1:8765";
 const DEFAULT_HOOK_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
@@ -20,10 +23,16 @@ const ART_PACKAGE_CATALOG_ENV: &str = "LOOM_ART_PACKAGE_CATALOG_DIR";
 const BUNDLED_ART_SHA256_ALLOWLIST_ENV: &str = "LOOM_BUNDLED_ART_SHA256_ALLOWLIST";
 const ART_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const LOOM_DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const LOOM_MCP_REGISTRY_REQUEST_TIMEOUT: Duration = Duration::from_secs(50);
 const OFFICIAL_FRAMEWORK_IDS: [&str; 4] = ["process", "cloud_api", "mcp", "workflow"];
 static PACKAGED_ART_BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
+static DAEMON_START_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_DAEMON_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ACTIVE_HOOK_BRIDGE_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static OWNED_DAEMON_PROCESS: OnceLock<Mutex<Option<std::process::Child>>> = OnceLock::new();
+static LOOM_CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
+static LOOM_EXITING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 const LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT_ENV: &str = "LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT";
 #[cfg(target_os = "windows")]
@@ -194,23 +203,41 @@ fn open_application_log_location(app: String, target: String) -> Result<(), Stri
 }
 
 fn is_allowed_repository_url(url: &str) -> bool {
-    [
-        env!("LOOM_BUILD_REPOSITORY"),
-        env!("HOOK_BUILD_REPOSITORY"),
-    ]
-    .contains(&url)
+    [env!("LOOM_BUILD_REPOSITORY"), env!("HOOK_BUILD_REPOSITORY")].contains(&url)
+}
+
+fn is_safe_external_https_url(url: &str) -> bool {
+    tauri::Url::parse(url).is_ok_and(|parsed| {
+        parsed.scheme() == "https"
+            && parsed.host_str().is_some()
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+    })
 }
 
 #[cfg(target_os = "windows")]
 fn open_url_in_default_browser(url: &str) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let mut command = std::process::Command::new("explorer.exe");
-    command.arg(url).creation_flags(CREATE_NO_WINDOW);
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("无法打开仓库地址：{error}"))
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation = "open\0".encode_utf16().collect::<Vec<_>>();
+    let target = url.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let status = result as isize;
+    if status > 32 {
+        Ok(())
+    } else {
+        Err(format!("系统浏览器无法打开地址（ShellExecuteW={status}）。"))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -236,6 +263,15 @@ fn open_external_url(url: String) -> Result<(), String> {
     let url = url.trim();
     if !url.starts_with("https://") || !is_allowed_repository_url(url) {
         return Err("只允许打开 Loom 或 Hook 的官方仓库地址。".to_owned());
+    }
+    open_url_in_default_browser(url)
+}
+
+#[tauri::command]
+fn open_mcp_source_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !is_safe_external_https_url(url) {
+        return Err("只允许打开不包含账号信息的 HTTPS MCP 来源地址。".to_owned());
     }
     open_url_in_default_browser(url)
 }
@@ -292,7 +328,9 @@ async fn wait_for_hook_cache_settings(settings: HookCachePreferences) -> Result<
                 return Ok(true);
             }
             if Instant::now() >= deadline {
-                return Err("缓存设置已保存，但 Hook 尚未确认应用；将在 Hook 下次连接时同步。".to_owned());
+                return Err(
+                    "缓存设置已保存，但 Hook 尚未确认应用；将在 Hook 下次连接时同步。".to_owned(),
+                );
             }
             std::thread::sleep(Duration::from_millis(80));
         }
@@ -361,9 +399,8 @@ fn directory_usage(path: &Path) -> Result<(u64, u64), String> {
         let entries = fs::read_dir(&directory)
             .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", directory.display()))?;
         for entry in entries {
-            let entry = entry.map_err(|error| {
-                format!("无法检查缓存目录 `{}`：{error}", directory.display())
-            })?;
+            let entry = entry
+                .map_err(|error| format!("无法检查缓存目录 `{}`：{error}", directory.display()))?;
             let file_type = entry
                 .file_type()
                 .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
@@ -423,8 +460,8 @@ fn clear_directory_contents(path: &Path) -> Result<(), String> {
     for entry in fs::read_dir(path)
         .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", path.display()))?
     {
-        let entry = entry
-            .map_err(|error| format!("无法检查缓存目录 `{}`：{error}", path.display()))?;
+        let entry =
+            entry.map_err(|error| format!("无法检查缓存目录 `{}`：{error}", path.display()))?;
         let file_type = entry
             .file_type()
             .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
@@ -489,6 +526,325 @@ fn clear_hook_cache(kind: String) -> Result<HookCacheClearResult, String> {
             .temporary
             .bytes
             .saturating_sub(snapshot.temporary.bytes),
+        snapshot,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoomCacheEntry {
+    pub key: String,
+    pub label: String,
+    pub path: String,
+    pub bytes: u64,
+    pub file_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoomCacheSnapshot {
+    pub art_runtime: LoomCacheEntry,
+    pub framework_temporary: LoomCacheEntry,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoomCacheClearResult {
+    pub kind: String,
+    pub freed_bytes: u64,
+    pub snapshot: LoomCacheSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoomCachePreferences {
+    #[serde(alias = "art_cache_max_bytes")]
+    pub art_cache_max_bytes: u64,
+    #[serde(alias = "art_cache_retention_days")]
+    pub art_cache_retention_days: u32,
+    #[serde(alias = "framework_temp_retention_days")]
+    pub framework_temp_retention_days: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoomGeneralRuntimeSettings {
+    #[serde(alias = "minimize_to_tray")]
+    pub minimize_to_tray: bool,
+}
+
+fn read_loom_persisted_general_settings() -> Option<LoomGeneralRuntimeSettings> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(
+            desktop_control_plane_root()
+                .join("settings")
+                .join("artloom-compat-settings.json"),
+        )
+        .ok()?,
+    )
+    .ok()?;
+    serde_json::from_value(value.get("general")?.clone()).ok()
+}
+
+#[tauri::command]
+fn apply_loom_general_settings(settings: LoomGeneralRuntimeSettings) {
+    LOOM_CLOSE_TO_TRAY.store(settings.minimize_to_tray, Ordering::Relaxed);
+}
+
+impl Default for LoomCachePreferences {
+    fn default() -> Self {
+        Self {
+            art_cache_max_bytes: 1024 * 1024 * 1024,
+            art_cache_retention_days: 30,
+            framework_temp_retention_days: 3,
+        }
+    }
+}
+
+fn validate_loom_cache_preferences(settings: &LoomCachePreferences) -> Result<(), String> {
+    if settings.art_cache_max_bytes != 0
+        && !(64 * 1024 * 1024..=64 * 1024 * 1024 * 1024).contains(&settings.art_cache_max_bytes)
+    {
+        return Err("Art 运行缓存上限必须为无限制或介于 64 MB 到 64 GB 之间".to_owned());
+    }
+    if settings.art_cache_retention_days > 3650 {
+        return Err("Art 运行缓存自动清理周期不能超过 3650 天".to_owned());
+    }
+    if settings.framework_temp_retention_days > 3650 {
+        return Err("框架临时文件自动清理周期不能超过 3650 天".to_owned());
+    }
+    Ok(())
+}
+
+fn read_loom_persisted_cache_settings() -> Option<LoomCachePreferences> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(
+            desktop_control_plane_root()
+                .join("settings")
+                .join("artloom-compat-settings.json"),
+        )
+        .ok()?,
+    )
+    .ok()?;
+    serde_json::from_value(value.get("loom_cache")?.clone()).ok()
+}
+
+fn loom_framework_temporary_dir() -> PathBuf {
+    std::env::var_os("LOOM_FRAMEWORK_TEMP_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("loom-framework"))
+}
+
+fn collect_art_cache_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut cache_dirs = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("无法读取 Art 目录 `{}`：{error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("无法检查 Art 目录：{error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("无法检查 Art 缓存类型：{error}"))?;
+            if file_type.is_symlink() || !file_type.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_name() == ".loom-cache" {
+                cache_dirs.push(path);
+            } else {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(cache_dirs)
+}
+
+fn loom_art_cache_dirs() -> Result<Vec<PathBuf>, String> {
+    collect_art_cache_dirs(&desktop_control_plane_root().join("arts"))
+}
+
+fn loom_cache_entry(
+    key: &str,
+    label: &str,
+    display_path: PathBuf,
+    roots: &[PathBuf],
+) -> Result<LoomCacheEntry, String> {
+    let mut bytes = 0_u64;
+    let mut file_count = 0_u64;
+    for root in roots {
+        let (root_bytes, root_files) = directory_usage(root)?;
+        bytes = bytes.saturating_add(root_bytes);
+        file_count = file_count.saturating_add(root_files);
+    }
+    Ok(LoomCacheEntry {
+        key: key.to_owned(),
+        label: label.to_owned(),
+        path: display_path.to_string_lossy().into_owned(),
+        bytes,
+        file_count,
+    })
+}
+
+fn loom_cache_snapshot() -> Result<LoomCacheSnapshot, String> {
+    let art_root = desktop_control_plane_root().join("arts");
+    let art_cache_dirs = loom_art_cache_dirs()?;
+    let framework_root = loom_framework_temporary_dir();
+    Ok(LoomCacheSnapshot {
+        art_runtime: loom_cache_entry("artRuntime", "Art 运行缓存", art_root, &art_cache_dirs)?,
+        framework_temporary: loom_cache_entry(
+            "frameworkTemporary",
+            "框架临时文件",
+            framework_root.clone(),
+            &[framework_root],
+        )?,
+    })
+}
+
+#[derive(Debug)]
+struct CacheFileInfo {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+fn collect_cache_files(roots: &[PathBuf]) -> Result<Vec<CacheFileInfo>, String> {
+    let mut files = Vec::new();
+    let mut pending = roots.to_vec();
+    while let Some(directory) = pending.pop() {
+        if !directory.exists() {
+            continue;
+        }
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("无法检查缓存目录：{error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let metadata = entry
+                    .metadata()
+                    .map_err(|error| format!("无法读取缓存文件信息：{error}"))?;
+                files.push(CacheFileInfo {
+                    path: entry.path(),
+                    bytes: metadata.len(),
+                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                });
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn remove_cache_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法删除缓存文件 `{}`：{error}", path.display())),
+    }
+}
+
+fn prune_cache_roots(roots: &[PathBuf], max_bytes: u64, retention_days: u32) -> Result<(), String> {
+    let now = SystemTime::now();
+    let retention = Duration::from_secs(u64::from(retention_days).saturating_mul(86_400));
+    let mut files = collect_cache_files(roots)?;
+    if retention_days > 0 {
+        for file in &files {
+            if now.duration_since(file.modified).unwrap_or_default() >= retention {
+                remove_cache_file(&file.path)?;
+            }
+        }
+        files = collect_cache_files(roots)?;
+    }
+    if max_bytes == 0 {
+        return Ok(());
+    }
+    files.sort_by_key(|file| file.modified);
+    let mut total = files.iter().map(|file| file.bytes).sum::<u64>();
+    for file in files {
+        if total <= max_bytes {
+            break;
+        }
+        remove_cache_file(&file.path)?;
+        total = total.saturating_sub(file.bytes);
+    }
+    Ok(())
+}
+
+fn apply_loom_cache_preferences(settings: &LoomCachePreferences) -> Result<(), String> {
+    validate_loom_cache_preferences(settings)?;
+    prune_cache_roots(
+        &loom_art_cache_dirs()?,
+        settings.art_cache_max_bytes,
+        settings.art_cache_retention_days,
+    )?;
+    prune_cache_roots(
+        &[loom_framework_temporary_dir()],
+        0,
+        settings.framework_temp_retention_days,
+    )
+}
+
+#[tauri::command]
+fn get_loom_cache_snapshot() -> Result<LoomCacheSnapshot, String> {
+    loom_cache_snapshot()
+}
+
+#[tauri::command]
+async fn apply_loom_cache_settings(
+    settings: LoomCachePreferences,
+) -> Result<LoomCacheSnapshot, String> {
+    run_blocking_command(move || {
+        apply_loom_cache_preferences(&settings)?;
+        loom_cache_snapshot()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn clear_loom_cache(kind: String) -> Result<LoomCacheClearResult, String> {
+    run_blocking_command(move || clear_loom_cache_blocking(&kind)).await
+}
+
+fn clear_loom_cache_blocking(kind: &str) -> Result<LoomCacheClearResult, String> {
+    let kind = kind.trim();
+    let before = loom_cache_snapshot()?;
+    match kind {
+        "artRuntime" => {
+            for cache_dir in loom_art_cache_dirs()? {
+                clear_directory_contents(&cache_dir)?;
+            }
+        }
+        "frameworkTemporary" => {
+            clear_directory_contents(&loom_framework_temporary_dir())?;
+        }
+        _ => return Err("不支持的 Loom 缓存清理目标。".to_owned()),
+    }
+    let snapshot = loom_cache_snapshot()?;
+    let freed_bytes = match kind {
+        "artRuntime" => before
+            .art_runtime
+            .bytes
+            .saturating_sub(snapshot.art_runtime.bytes),
+        "frameworkTemporary" => before
+            .framework_temporary
+            .bytes
+            .saturating_sub(snapshot.framework_temporary.bytes),
+        _ => 0,
+    };
+    Ok(LoomCacheClearResult {
+        kind: kind.to_owned(),
+        freed_bytes,
         snapshot,
     })
 }
@@ -591,11 +947,7 @@ where
 }
 
 fn read_loom_snapshot_blocking(base_url: Option<String>) -> LoomSnapshot {
-    let resolved_base_url = normalize_base_url(
-        base_url
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(configured_loom_daemon_url),
-    );
+    let resolved_base_url = resolve_command_base_url(base_url.unwrap_or_default());
     let settings = settings_links(&resolved_base_url);
     let checked_at = chrono::Utc::now().to_rfc3339();
 
@@ -644,6 +996,12 @@ async fn read_loom_snapshot(base_url: Option<String>) -> Result<LoomSnapshot, St
 }
 
 fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, String> {
+    let _start_guard = DAEMON_START_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if LOOM_EXITING.load(Ordering::Acquire) {
+        return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
+    }
     let mut base_url = normalize_base_url(configured_loom_daemon_url());
     let mut isolated_hook_bridge_url = None;
     let current_exe =
@@ -723,9 +1081,10 @@ fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    command
+    let child = command
         .spawn()
         .map_err(|error| format!("启动 Loom 本地服务失败：{error}"))?;
+    register_owned_daemon_process(child)?;
 
     if let Ok(mut active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
         *active_url = Some(base_url.clone());
@@ -745,6 +1104,81 @@ fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, String> {
         path: daemon_path.display().to_string(),
         message: "已启动 Loom 本地服务。".to_string(),
     })
+}
+
+fn register_owned_daemon_process(mut child: std::process::Child) -> Result<(), String> {
+    if LOOM_EXITING.load(Ordering::Acquire) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
+    }
+    let processes = OWNED_DAEMON_PROCESS.get_or_init(|| Mutex::new(None));
+    let mut owned = processes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Exit may begin after the fast check above but before this lock is acquired.
+    // Rechecking while holding the same lock used by cleanup closes that window:
+    // either registration wins and cleanup takes the child, or registration reaps it.
+    if LOOM_EXITING.load(Ordering::Acquire) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
+    }
+
+    if let Some(mut previous) = owned.take() {
+        match previous.try_wait() {
+            Ok(Some(_)) => {
+                let _ = previous.wait();
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                *owned = Some(previous);
+                return Err("当前 Loom 已经拥有一个本地服务进程。".to_owned());
+            }
+        }
+    }
+    *owned = Some(child);
+    Ok(())
+}
+
+fn stop_owned_daemon_process() -> Option<u32> {
+    let process = OWNED_DAEMON_PROCESS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let mut process = process?;
+    let pid = process.id();
+    if process.try_wait().ok().flatten().is_none() {
+        let _ = process.kill();
+    }
+    let _ = process.wait();
+    if let Ok(mut active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
+        *active_url = None;
+    }
+    if let Ok(mut active_url) = ACTIVE_HOOK_BRIDGE_URL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *active_url = None;
+    }
+    Some(pid)
+}
+
+fn begin_desktop_exit() {
+    LOOM_EXITING.store(true, Ordering::Release);
+    stop_owned_daemon_process();
+}
+
+#[cfg(test)]
+fn owned_daemon_process_id() -> Option<u32> {
+    OWNED_DAEMON_PROCESS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|owned| owned.as_ref().map(std::process::Child::id))
 }
 
 #[tauri::command]
@@ -842,11 +1276,18 @@ async fn read_hook_canvas_preview(base_url: String, path: String) -> Result<Stri
     .await
 }
 
-fn configured_loom_daemon_url() -> String {
+fn active_loom_daemon_url() -> Option<String> {
     if let Ok(active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
         if let Some(active_url) = active_url.as_ref() {
-            return active_url.clone();
+            return Some(active_url.clone());
         }
+    }
+    None
+}
+
+fn configured_loom_daemon_url() -> String {
+    if let Some(active_url) = active_loom_daemon_url() {
+        return active_url;
     }
     std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
 }
@@ -876,6 +1317,13 @@ fn configured_hook_bridge_url() -> String {
 }
 
 fn resolve_command_base_url(base_url: String) -> String {
+    resolve_command_base_url_with_active(base_url, active_loom_daemon_url())
+}
+
+fn resolve_command_base_url_with_active(base_url: String, active_url: Option<String>) -> String {
+    if let Some(active_url) = active_url {
+        return normalize_base_url(active_url);
+    }
     normalize_base_url(if base_url.trim().is_empty() {
         configured_loom_daemon_url()
     } else {
@@ -1103,7 +1551,19 @@ fn snapshot_error(errors: &[String], warning: Option<&str>) -> Option<String> {
 }
 
 fn http_get_json(base_url: &str, path: &str) -> Result<Value, String> {
-    http_request_json(base_url, "GET", path, None)
+    http_request_json_with_timeout(base_url, "GET", path, None, daemon_get_timeout(path))
+}
+
+fn daemon_get_timeout(path: &str) -> Duration {
+    if path == "/v1/mcp/registry"
+        || path.starts_with("/v1/mcp/registry?")
+        || path == "/v1/artloom-compat/mcp/registry"
+        || path.starts_with("/v1/artloom-compat/mcp/registry?")
+    {
+        LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
+    } else {
+        LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT
+    }
 }
 
 fn http_post_json(base_url: &str, path: &str, body: &Value) -> Result<Value, String> {
@@ -1146,7 +1606,13 @@ fn http_request_json(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value, String> {
-    http_request_json_with_timeout(base_url, method, path, body, Duration::from_secs(3))
+    http_request_json_with_timeout(
+        base_url,
+        method,
+        path,
+        body,
+        LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT,
+    )
 }
 
 fn http_request_json_with_timeout(
@@ -1820,23 +2286,86 @@ fn configure_webview2_browser_args(context: &mut tauri::Context<tauri::Wry>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    LOOM_EXITING.store(false, Ordering::Release);
     let mut context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     configure_webview2_browser_args(&mut context);
 
-    tauri::Builder::default()
+    let run_result = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
+            let general =
+                read_loom_persisted_general_settings().unwrap_or(LoomGeneralRuntimeSettings {
+                    minimize_to_tray: true,
+                });
+            LOOM_CLOSE_TO_TRAY.store(general.minimize_to_tray, Ordering::Relaxed);
+            let settings = read_loom_persisted_cache_settings().unwrap_or_default();
+            std::thread::spawn(move || {
+                let _ = apply_loom_cache_preferences(&settings);
+            });
+            std::thread::spawn(|| {
+                if let Err(error) = start_loom_daemon_blocking() {
+                    eprintln!("[ERROR] Loom 本地服务启动失败：{error}");
+                }
+            });
             if let Some(window) = app.get_webview_window("main") {
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?;
                 window.set_icon(icon)?;
             }
+            let show_item = MenuItem::with_id(app, "show", "显示 Loom", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let mut tray_builder = TrayIconBuilder::with_id("loom")
+                .menu(&tray_menu)
+                .tooltip("Loom")
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        begin_desktop_exit();
+                        app.exit(0);
+                    }
+                    _ => {}
+                });
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+            app.manage(tray_builder.build(app)?);
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if LOOM_CLOSE_TO_TRAY.load(Ordering::Relaxed) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    begin_desktop_exit();
+                    window.app_handle().exit(0);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             resolve_loom_daemon_url,
             resolve_application_diagnostics,
             open_application_log_location,
             open_external_url,
+            open_mcp_source_url,
+            apply_loom_general_settings,
+            get_loom_cache_snapshot,
+            apply_loom_cache_settings,
+            clear_loom_cache,
             get_hook_cache_snapshot,
             wait_for_hook_cache_settings,
             clear_hook_cache,
@@ -1850,8 +2379,9 @@ pub fn run() {
             bootstrap_packaged_arts,
             read_hook_canvas_preview
         ])
-        .run(context)
-        .expect("error while running Loom desktop");
+        .run(context);
+    begin_desktop_exit();
+    run_result.expect("error while running Loom desktop");
 }
 
 #[cfg(test)]
@@ -1865,6 +2395,70 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn owned_daemon_sleep_fixture() {
+        if std::env::var("LOOM_DESKTOP_OWNED_DAEMON_FIXTURE")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn desktop_exit_terminates_and_reaps_the_owned_daemon_process() {
+        let _guard = ENV_LOCK.lock().expect("environment lock");
+        LOOM_EXITING.store(false, Ordering::Release);
+        stop_owned_daemon_process();
+        let child =
+            std::process::Command::new(std::env::current_exe().expect("desktop test executable"))
+                .args([
+                    "tests::owned_daemon_sleep_fixture",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env("LOOM_DESKTOP_OWNED_DAEMON_FIXTURE", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn owned daemon fixture");
+        let pid = child.id();
+
+        register_owned_daemon_process(child).expect("register owned daemon fixture");
+        assert_eq!(owned_daemon_process_id(), Some(pid));
+        assert_eq!(stop_owned_daemon_process(), Some(pid));
+        assert_eq!(owned_daemon_process_id(), None);
+    }
+
+    #[test]
+    fn daemon_start_finishing_after_exit_is_reaped_instead_of_registered() {
+        let _guard = ENV_LOCK.lock().expect("environment lock");
+        LOOM_EXITING.store(false, Ordering::Release);
+        stop_owned_daemon_process();
+        let child =
+            std::process::Command::new(std::env::current_exe().expect("desktop test executable"))
+                .args([
+                    "tests::owned_daemon_sleep_fixture",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env("LOOM_DESKTOP_OWNED_DAEMON_FIXTURE", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn late daemon fixture");
+
+        LOOM_EXITING.store(true, Ordering::Release);
+        let error = register_owned_daemon_process(child).expect_err("exit rejects late daemon");
+
+        assert!(error.contains("正在退出"));
+        assert_eq!(owned_daemon_process_id(), None);
+        LOOM_EXITING.store(false, Ordering::Release);
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -2006,6 +2600,84 @@ mod tests {
     }
 
     #[test]
+    fn mcp_source_urls_allow_safe_https_and_reject_unsafe_targets() {
+        assert!(is_safe_external_https_url(
+            "https://github.com/modelcontextprotocol/servers"
+        ));
+        assert!(is_safe_external_https_url(
+            "https://registry.modelcontextprotocol.io/v0.1/servers"
+        ));
+        assert!(!is_safe_external_https_url("http://example.com/mcp"));
+        assert!(!is_safe_external_https_url(
+            "https://user:secret@example.com/mcp"
+        ));
+        assert!(!is_safe_external_https_url("javascript:alert(1)"));
+        assert!(!is_safe_external_https_url("not-a-url"));
+    }
+
+    #[test]
+    fn mcp_registry_gets_a_timeout_longer_than_the_daemon_outbound_fetch() {
+        assert_eq!(
+            daemon_get_timeout("/v1/mcp/registry?limit=100&cursor=opaque"),
+            LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            daemon_get_timeout("/v1/artloom-compat/mcp/registry"),
+            LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
+        );
+        assert_eq!(daemon_get_timeout("/health"), LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT);
+        assert!(LOOM_MCP_REGISTRY_REQUEST_TIMEOUT > Duration::from_secs(40));
+    }
+
+    #[test]
+    fn daemon_commands_prefer_the_active_owned_daemon_over_a_stale_frontend_url() {
+        assert_eq!(
+            resolve_command_base_url_with_active(
+                DEFAULT_LOOM_DAEMON_URL.to_owned(),
+                Some("http://127.0.0.1:49321/".to_owned()),
+            ),
+            "http://127.0.0.1:49321"
+        );
+        assert_eq!(
+            resolve_command_base_url_with_active(
+                "http://127.0.0.1:18765/".to_owned(),
+                None,
+            ),
+            "http://127.0.0.1:18765"
+        );
+    }
+
+    #[test]
+    fn loom_general_settings_restore_and_apply_close_to_tray() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("general-settings");
+        let settings_dir = root.join("settings");
+        fs::create_dir_all(&settings_dir).expect("settings dir");
+        fs::write(
+            settings_dir.join("artloom-compat-settings.json"),
+            br#"{"general":{"minimize_to_tray":false}}"#,
+        )
+        .expect("settings file");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+
+        assert_eq!(
+            read_loom_persisted_general_settings(),
+            Some(LoomGeneralRuntimeSettings {
+                minimize_to_tray: false,
+            })
+        );
+        apply_loom_general_settings(LoomGeneralRuntimeSettings {
+            minimize_to_tray: false,
+        });
+        assert!(!LOOM_CLOSE_TO_TRAY.load(Ordering::Relaxed));
+
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        LOOM_CLOSE_TO_TRAY.store(true, Ordering::Relaxed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn hook_cache_snapshot_and_clear_only_manage_hook_temporary_files() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("hook-cache");
@@ -2052,6 +2724,79 @@ mod tests {
 
         restore_env("HOOK_CLIPBOARD_CACHE_DIR", previous_clipboard);
         restore_env("HOOK_APPDATA_DIR", previous_app_data);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loom_cache_snapshot_and_clear_preserve_installed_art_and_workflow_data() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("loom-cache");
+        let control_plane = root.join("control-plane");
+        let art_version = control_plane
+            .join("arts")
+            .join("sample-art")
+            .join("versions")
+            .join("0.1.0");
+        let art_cache = art_version.join(".loom-cache");
+        let workflow = control_plane.join("workflows").join("saved.yaml");
+        let framework_temp = root.join("framework-temporary");
+        fs::create_dir_all(&art_cache).expect("create Art cache");
+        fs::create_dir_all(workflow.parent().expect("workflow parent"))
+            .expect("create workflow directory");
+        fs::create_dir_all(&framework_temp).expect("create framework temporary directory");
+        fs::write(art_version.join("manifest.json"), b"installed-art").expect("write Art manifest");
+        fs::write(art_cache.join("runtime.bin"), vec![1_u8; 12]).expect("write Art cache");
+        fs::write(&workflow, b"workflow").expect("write workflow");
+        fs::write(framework_temp.join("request.bin"), vec![2_u8; 20])
+            .expect("write framework temporary file");
+        let settings_path = control_plane
+            .join("settings")
+            .join("artloom-compat-settings.json");
+        fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        fs::write(
+            &settings_path,
+            br#"{"loom_cache":{"art_cache_max_bytes":0,"art_cache_retention_days":0,"framework_temp_retention_days":0}}"#,
+        )
+        .expect("write Loom cache settings");
+
+        let previous_control_plane = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let previous_framework_temp = std::env::var("LOOM_FRAMEWORK_TEMP_DIR").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane);
+        std::env::set_var("LOOM_FRAMEWORK_TEMP_DIR", &framework_temp);
+
+        assert_eq!(
+            read_loom_persisted_cache_settings(),
+            Some(LoomCachePreferences {
+                art_cache_max_bytes: 0,
+                art_cache_retention_days: 0,
+                framework_temp_retention_days: 0,
+            })
+        );
+        let before = loom_cache_snapshot().expect("read Loom cache snapshot");
+        assert_eq!(before.art_runtime.bytes, 12);
+        assert_eq!(before.framework_temporary.bytes, 20);
+
+        let cleared_art = clear_loom_cache_blocking("artRuntime").expect("clear Art cache");
+        assert_eq!(cleared_art.freed_bytes, 12);
+        assert!(art_version.join("manifest.json").is_file());
+        assert!(workflow.is_file());
+        assert!(framework_temp.join("request.bin").is_file());
+
+        let cleared_temp = clear_loom_cache_blocking("frameworkTemporary")
+            .expect("clear framework temporary files");
+        assert_eq!(cleared_temp.freed_bytes, 20);
+        assert!(art_version.join("manifest.json").is_file());
+        assert!(workflow.is_file());
+
+        fs::write(art_cache.join("old.bin"), vec![3_u8; 4]).expect("write first cache file");
+        fs::write(art_cache.join("new.bin"), vec![4_u8; 4]).expect("write second cache file");
+        prune_cache_roots(std::slice::from_ref(&art_cache), 5, 0).expect("enforce Art cache limit");
+        assert!(directory_usage(&art_cache).expect("read pruned cache").0 <= 5);
+        assert!(art_version.join("manifest.json").is_file());
+
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_control_plane);
+        restore_env("LOOM_FRAMEWORK_TEMP_DIR", previous_framework_temp);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2313,6 +3058,10 @@ mod tests {
                 ),
                 ("200 OK", r#"{"tool":{"id":"sample-a"}}"#),
                 ("200 OK", r#"{"tool":{"id":"sample-b"}}"#),
+                (
+                    "200 OK",
+                    r#"{"frameworks":[{"id":"process","qualifiedId":"neuro.official/process","installed":true,"enabled":true,"ready":true}]}"#,
+                ),
             ] {
                 let (mut stream, _) = listener.accept().expect("accept Art bootstrap request");
                 request_tx
@@ -2325,7 +3074,6 @@ mod tests {
         let base_url = format!("http://127.0.0.1:{}", address.port());
         let first = bootstrap_packaged_arts_from_exe(&base_url, &desktop_exe, &control_plane_root)
             .expect("bootstrap packaged Arts");
-        server.join().expect("join Art bootstrap fixture");
 
         assert!(first.available);
         assert!(first.applied);
@@ -2344,9 +3092,14 @@ mod tests {
 
         let second = bootstrap_packaged_arts_from_exe(&base_url, &desktop_exe, &control_plane_root)
             .expect("skip previously applied catalog");
+        server.join().expect("join Art bootstrap fixture");
         assert!(second.available);
         assert!(!second.applied);
         assert_eq!(second.catalog_hash, first.catalog_hash);
+        assert!(request_rx
+            .recv()
+            .expect("second framework listing request")
+            .starts_with("GET /v1/frameworks HTTP/1.1"));
 
         fs::remove_dir_all(root).expect("cleanup Art bootstrap fixture");
         restore_env(ART_PACKAGE_CATALOG_ENV, previous_catalog);

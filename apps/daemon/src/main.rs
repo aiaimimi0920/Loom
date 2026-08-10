@@ -93,11 +93,11 @@ fn main() -> Result<()> {
     install_shutdown_handler(shutdown_tx)?;
     let daemon = LoomDaemon::bind(config)?;
     let address = daemon.local_addr()?;
-    println!(
+    loom_daemon::runtime_log_info(format!(
         "loom-daemon {} listening on http://{}",
         loom_core::LOOM_VERSION,
         address
-    );
+    ));
 
     daemon.serve_until(shutdown_rx)?;
     Ok(())

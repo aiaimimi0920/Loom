@@ -289,7 +289,7 @@ function Test-LoomHookBridgeSettingsCompatibility {
             -Json '{"method":"get_settings"}'
         $settings = Receive-LoomHookBridgeWebSocketJson -Client $client
         Assert-Equal "settings" ([string]$settings.type) "Loom Hook Bridge get_settings response type mismatch."
-        Assert-Equal "system" ([string]$settings.data.general.theme) "Loom Hook Bridge get_settings theme mismatch."
+        Assert-Equal "dark" ([string]$settings.data.general.theme) "Loom Hook Bridge get_settings theme mismatch."
         Assert-Equal "python.exe" ([string]$settings.data.engine.python_interpreter) "Loom Hook Bridge get_settings Python interpreter mismatch."
 
         Send-LoomHookBridgeWebSocketJson `
