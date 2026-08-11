@@ -2,9 +2,9 @@
 
 ## Status
 
-Implementation and dirty-source native runtime verification are complete.
-Phase-one publication remains open only because Hook and Loom still need scoped
-commits followed by clean-source release builds and provenance verification.
+Phase one is complete. Hook and Loom were committed independently, rebuilt from
+detached clean worktrees, verified with clean provenance, and exercised together
+through the formal ten-minute native dual-end gate.
 
 ## Scope delivered
 
@@ -68,21 +68,23 @@ commits followed by clean-source release builds and provenance verification.
 
 ## Runtime candidates
 
-### Hook R8
+### Hook clean R9
 
 Path:
-`release/Hook/20260811-distributed-art-surface-r8`
+`release/Hook/20260811-distributed-art-surface-clean-r9`
 
 - `hook.exe`: 7,218,688 bytes, SHA-256
-  `753b7ab09138b0df0079a4fcba77c75cf78dbc8baf618069ae58b811166a9cf9`.
-- `hook-windows-x64-V0.1.7.zip`: 3,482,191 bytes, SHA-256
-  `3f2c39bf78671da3880e9c9a88d0bf49e2deee3c17f12608c9659f2b1bde4f37`.
+  `40fb48aa728d70be27846c9c073354fc25f07f2e2ba672e190cedea80a7fe5b9`.
+- `hook-windows-x64-V0.1.7.zip`: 3,482,241 bytes, SHA-256
+  `b3de3d387faf62eb5cc53d5f2461b83eddf6eb03d7c0ca023f6b8dd34fd0d3a1`.
 - CLI version is `hook 0.1.7`; no-GUI self-check status is `ok`.
 - Candidate root contains exactly the executable and ZIP. The ZIP contains
   `hook.exe`, project license, third-party notices, and three required bundled
   license files. Evidence:
-  `Hook/artifacts/release-validation/r8/summary.json`.
-- R8 retains the awaited `frontend-initialized` marker and required
+  `Hook/artifacts/release-validation/clean-r9/summary.json`.
+- Source commit is `0e76222e7add3225cc8c9906a6ad1422910079aa`;
+  the detached build worktree remained clean before and after the build.
+- Clean R9 includes the awaited `frontend-initialized` marker and required
   `remote_resources` host capability, then adds a bounded pending-device approval
   wait. Only Loom's structured `device_not_authorized` response is retryable;
   revoked, malformed, and server-failure responses remain terminal.
@@ -95,49 +97,60 @@ Path:
   isolated app-settings persistence, and the dashboard Surface before and after
   Hook restart.
 - `Hook/scripts/Invoke-HookLoomSurfaceCandidateAcceptance.ps1` starts the exact
-  packaged R8 daemon on isolated ports/control-plane storage, installs the real
-  process framework and dashboard prototype through a fixture Art Store, starts
-  the Hook Bridge, then delegates to the native R8 runner. The CDP probe waits
-  for the real declarative Surface DOM, clicks `refresh`, requires a higher
+  packaged clean R9 daemon on isolated ports/control-plane storage, installs the
+  real process framework and dashboard prototype through a fixture Art Store,
+  starts the Hook Bridge, then delegates to the native clean R9 runner. The CDP
+  probe waits for the real declarative Surface DOM, clicks `refresh`, requires a higher
   revision and resolved PNG data URL, and cross-checks the daemon attachment,
   succeeded ACK, authoritative state, and formal result.
-- The formal 600-second packaged R8 Hook -> packaged R8 Loom run passed. It
-  approved the pending device, mounted the real dashboard, advanced Surface
+- The formal 600-second packaged clean R9 Hook -> packaged clean R9 Loom run
+  passed. It approved the pending device, mounted the real dashboard, advanced Surface
   revision 1 -> 4, resolved the authenticated PNG resource, observed exactly one
-  succeeded ACK, and held process-tree private-memory growth to 7,450,624 bytes
-  (4.945%) with no violations across 373 samples.
+  succeeded ACK, and ended 303,104 bytes below the private-memory baseline with
+  no positive growth and no violations across 384 samples. Peak private memory
+  was 167,219,200 bytes.
 - The first Hook process exited normally with one cleanup record and no remaining
   Hook/watchdog/CDP process. Restart preserved settings and the same instance,
   attachment, and unit identities, then advanced revision 5 -> 8. Final cleanup
   stopped the daemon, fixture store, Bridge, and all three isolated listeners.
   Evidence:
-  `Hook/artifacts/runtime-performance/hook-loom-surface-candidate/r8-r8-full-600s/summary.json`.
+  `Hook/artifacts/runtime-performance/hook-loom-surface-candidate/clean-r9-clean-r9-full-600s/summary.json`.
 
-### Loom R8
+### Loom clean R9
 
 Path:
-`release/Loom/20260811-distributed-art-surface-r8`
+`release/Loom/20260811-distributed-art-surface-clean-r9`
 
 - 45 checksum entries verified.
 - `verify-release.ps1 -RunSmoke` passed standalone release, Hook canvas, Hook
   error preview, Framework Art Store Hook, Plugin Boundary, Surface Prototype,
   and Authored Art Creation smokes.
-- Release Surface evidence:
-  `target/runtime-smoke/surface-prototypes/20260811-182410-surface-prototypes-59448-4a5be59062134766810044915df88fef/summary.json`.
-- Release summary:
-  `target/runtime-smoke/latest/loom-release-20260811-distributed-art-surface-r8-summary.json`.
+- `Loom.exe` SHA-256 is
+  `8495b17f7cadd9bd92c4afa2c2570fa7fd733b29b0945fce719f91ac602aff47`;
+  `runtime/loom-daemon.exe` SHA-256 is
+  `2b480d23d9aa750f3baadadf466a29350a913b2c1b154f481467c5a25c5fa920`.
+- The desktop ZIP SHA-256 is
+  `a41c175ab96204293f64965aafc078f6172e9fc263fefb691e65219b2e3dca25`.
 - Manifest/provenance record Git head
-  `92fb6e11a0dd9577d1d48c41ee3a2e9d595b1ff8` with `gitDirty=true` and
-  `sourceGitDirty=true`. R8 is runtime evidence, not a clean-source publication.
+  `2daf1f611fefa10a161ee67dcb7984dd66781a54` with `gitDirty=false` and
+  `sourceGitDirty=false`.
+- Release summary:
+  `target/runtime-smoke/latest/loom-release-20260811-distributed-art-surface-clean-r9-summary.json`.
+  Consolidated verifier evidence:
+  `target/runtime-smoke/phase69-clean-r9/verify-summary.json`.
 
-## Remaining closure gates
+## Closure result
 
-1. Commit Hook and Loom independently while excluding unrelated dirty-worktree
-   changes.
-2. Build both final candidates from detached clean worktrees at those exact
-   commits, verify release contents, and require clean provenance
-   (`gitDirty=false` / `sourceGitDirty=false` where supported).
-3. Repeat the packaged dual-end gate against the clean-source candidates and
-   retain process/listener cleanup evidence.
-4. Only after those gates may the architecture document state that phase one is
-   fully complete.
+All ten phase-one acceptance gates are complete. Dirty-source R8/R8 remains
+immutable historical runtime evidence; clean R9/R9 is the publication baseline.
+The final teardown found no clean-candidate Hook, watchdog, Loom daemon, Art
+Store, Bridge, CDP, or isolated listener remaining. The user's pre-existing Loom
+R120 process pair retained its original PIDs and executable paths.
+
+One compatibility risk remains outside the phase-one gate: a first verifier run
+from a deeply nested worktree produced Windows OS error 267 when a framework
+process path reached 301 characters. The same exact clean candidate passed the
+complete verifier from a short detached worktree. Extended-length framework
+package/control-plane paths therefore remain follow-up hardening; this result is
+not relabeled as a product-functional failure or hidden as a passed long-path
+case.

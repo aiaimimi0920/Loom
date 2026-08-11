@@ -126,7 +126,7 @@ separate projects.
   [details](./phase-67-pluginized-art-frameworks.md)
 - [x] Phase 68: Art plugin platform hardening (10/10 tasks)
   [details](./phase-68-art-plugin-platform-hardening.md)
-- [ ] Phase 69: Distributed Art Surface phase-one closure (9/10 gates)
+- [x] Phase 69: Distributed Art Surface phase-one closure (10/10 gates)
   [details](./phase-69-distributed-art-surface.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
@@ -442,17 +442,17 @@ Latest completed phases:
   arbitrary filesystem, GPU, and clipboard declarations that are not fully
   OS-enforced. Full details and current test evidence are in
   `docs/progress/phase-68-art-plugin-platform-hardening.md`.
-- Phase 69 implementation and dirty-source native runtime verification are
-  complete. Loom owns persistent/shared Surface instances, ordered snapshots
+- Phase 69 implementation and clean-source publication are complete. Loom owns
+  persistent/shared Surface instances, ordered snapshots
   and patches, action execution/cancellation, device sessions, leased resources,
   and restart recovery; Hook owns bounded declarative/JavaScript rendering and
-  explicit full-snapshot recovery after patch conflicts. The current candidates
-  are `release/Loom/20260811-distributed-art-surface-r8` and
-  `release/Hook/20260811-distributed-art-surface-r8`. Their formal 600-second
+  explicit full-snapshot recovery after patch conflicts. The publication
+  candidates are `release/Loom/20260811-distributed-art-surface-clean-r9` and
+  `release/Hook/20260811-distributed-art-surface-clean-r9`. Their formal 600-second
   packaged dual-end gate passed native Surface interaction, bounded memory,
   normal exit, same-identity restart recovery, and complete service/listener
-  cleanup. Phase-one publication remains open only for scoped commits and
-  clean-source provenance. See
+  cleanup. Both were built from detached clean worktrees; Loom records
+  `gitDirty=false` and `sourceGitDirty=false`. See
   `docs/progress/phase-69-distributed-art-surface.md`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
@@ -497,13 +497,14 @@ Completed Phase 8 tasks:
 
 Last completed phase:
 
-- Phase 68 closed the public Art plugin platform with clean-source R4 evidence.
+- Phase 69 closed Distributed Art Surface phase one with clean-source R9/R9
+  publication and native dual-end evidence.
 
 Current closure phase:
 
-- Phase 69 has passed implementation, source tests, browser budget smoke, Loom
-  packaged restart/resource smoke, and the formal ten-minute packaged Hook/Loom
-  native gate. Its remaining gate is clean-source publication provenance.
+- None. Phase 69 has passed implementation, source tests, browser budget smoke,
+  Loom packaged restart/resource smoke, clean-source provenance, and the formal
+  ten-minute packaged Hook/Loom native gate.
 
 Repository status:
 
@@ -522,16 +523,17 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Commit Loom and Hook separately, rebuild both Phase 69 candidates from clean
-   source, and require `gitDirty=false`/`sourceGitDirty=false` where supported.
-2. Repeat the packaged dual-end gate against those clean-source candidates.
-3. Preserve R8/R8 as immutable dirty-source runtime evidence, with earlier
+1. Preserve clean R9/R9 as the Phase 69 publication baseline and R8/R8 as
+   immutable dirty-source runtime evidence, with earlier
    retained as superseded predecessors; do not relabel any candidate as a
    clean-source publication.
-4. Keep the Phase 44 and `20260721-release-integrity-f99e810` candidates and
+2. Harden Windows extended-length framework/control-plane process paths; the
+   exact clean R9 candidate passed from a short detached verifier worktree, while
+   a 301-character framework path failed with OS error 267.
+3. Keep the Phase 44 and `20260721-release-integrity-f99e810` candidates and
    their checksum evidence immutable; regenerate a candidate after any later
    production source, resource, dependency, or release-tooling change.
-5. If further ArtLoom/plugin gaps are reported, classify them as user-visible
+4. If further ArtLoom/plugin gaps are reported, classify them as user-visible
    UI, public protocol/runtime, package lifecycle/supply chain, OS enforcement,
    or intentionally replaced before making changes.
 6. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
