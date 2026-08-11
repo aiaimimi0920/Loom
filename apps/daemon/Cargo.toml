@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+ed25519-dalek.workspace = true
+image.workspace = true
 loom_agent.workspace = true
 loom_configuration.workspace = true
 loom_core.workspace = true
@@ -35,15 +37,16 @@ loom_workflow.workspace = true
 loom_workflow_runtime.workspace = true
 loom_workflow_store.workspace = true
 reqwest.workspace = true
+rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 semver.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tungstenite.workspace = true
+uuid.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-image.workspace = true
 zip.workspace = true

@@ -1,0 +1,136 @@
+{
+  "protocolVersion": "loom.surface.v1",
+  "scene": {
+    "id": "root",
+    "type": "scroll",
+    "layout": {
+      "maxHeight": 420,
+      "overflowY": "auto"
+    },
+    "children": [
+      {
+        "id": "content",
+        "type": "column",
+        "layout": {
+          "gap": 12,
+          "padding": 12
+        },
+        "children": [
+          {
+            "id": "header",
+            "type": "row",
+            "layout": {
+              "align": "center",
+              "justify": "space-between",
+              "gap": 12
+            },
+            "children": [
+              {
+                "id": "title",
+                "type": "text",
+                "props": {
+                  "text": "设备仪表板"
+                }
+              },
+              {
+                "id": "auto_sync",
+                "type": "switch",
+                "props": {
+                  "value": true
+                },
+                "events": {
+                  "change": "dashboard_toggle"
+                },
+                "accessibility": {
+                  "label": "自动同步"
+                }
+              }
+            ]
+          },
+          {
+            "id": "sync_status",
+            "type": "text",
+            "props": {
+              "text": "等待同步"
+            },
+            "accessibility": {
+              "label": "同步状态",
+              "live": "polite"
+            }
+          },
+          {
+            "id": "sync_progress",
+            "type": "progress",
+            "props": {
+              "value": 0,
+              "max": 1
+            },
+            "accessibility": {
+              "label": "同步进度"
+            }
+          },
+          {
+            "id": "divider",
+            "type": "divider"
+          },
+          {
+            "id": "devices",
+            "type": "column",
+            "layout": {
+              "gap": 8
+            },
+            "children": [
+              {
+                "id": "device_1",
+                "type": "text",
+                "props": {
+                  "text": "主机 · 在线"
+                }
+              },
+              {
+                "id": "device_2",
+                "type": "text",
+                "props": {
+                  "text": "平板 · 等待同步"
+                }
+              },
+              {
+                "id": "device_3",
+                "type": "text",
+                "props": {
+                  "text": "工作站 · 在线"
+                }
+              }
+            ]
+          },
+          {
+            "id": "chart",
+            "type": "image",
+            "props": {
+              "alt": "设备同步状态图"
+            },
+            "layout": {
+              "width": "100%",
+              "height": 96
+            }
+          },
+          {
+            "id": "refresh",
+            "type": "button",
+            "props": {
+              "label": "刷新仪表板"
+            },
+            "events": {
+              "click": "dashboard_refresh"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "authoritativeState": {
+    "autoSync": true,
+    "refreshCount": 0,
+    "status": "idle"
+  }
+}

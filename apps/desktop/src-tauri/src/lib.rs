@@ -2291,14 +2291,22 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     configure_webview2_browser_args(&mut context);
 
-    let run_result = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let mut builder = tauri::Builder::default();
+    let allow_multiple_instances = matches!(
+        std::env::var("LOOM_SMOKE_ALLOW_MULTIPLE_INSTANCES").as_deref(),
+        Ok("1")
+    );
+    if !allow_multiple_instances {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-        }))
+        }));
+    }
+
+    let run_result = builder
         .setup(|app| {
             let general =
                 read_loom_persisted_general_settings().unwrap_or(LoomGeneralRuntimeSettings {

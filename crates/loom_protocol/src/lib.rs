@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod device;
+pub mod surface;
+
+pub use device::*;
+pub use surface::*;
+
 pub const FRAMEWORK_PROTOCOL_VERSION: &str = "loom.framework.v1";
 pub const ART_EXECUTION_REQUEST_SCHEMA: &str = "loom.art.execute.v1";
 pub const ART_EXECUTION_RESPONSE_SCHEMA: &str = "loom.art.result.v1";
@@ -28,6 +34,14 @@ pub mod schemas {
         include_str!("../../../protocol/schemas/framework-authoring.v1.schema.json");
     pub const ART_RUNTIME_V1: &str =
         include_str!("../../../protocol/schemas/art-runtime.v1.schema.json");
+    pub const SURFACE_MANIFEST_V1: &str =
+        include_str!("../../../protocol/schemas/surface-manifest.v1.schema.json");
+    pub const SURFACE_MESSAGE_V1: &str =
+        include_str!("../../../protocol/schemas/surface-message.v1.schema.json");
+    pub const SURFACE_SCENE_V1: &str =
+        include_str!("../../../protocol/schemas/surface-scene.v1.schema.json");
+    pub const DEVICE_SESSION_V1: &str =
+        include_str!("../../../protocol/schemas/device-session.v1.schema.json");
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

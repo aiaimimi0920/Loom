@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use loom_process::{ProcessError, ProcessSpec};
@@ -60,6 +61,60 @@ pub fn execute_framework_art(
         arguments,
         &packages_root,
         DEFAULT_FRAMEWORK_PROCESS_TIMEOUT,
+        None,
+    )
+}
+
+/// Execute a framework Art with a caller-owned upper timeout bound.
+///
+/// Surface actions use this entry point so their declared deadline also bounds
+/// the managed process tree instead of merely timing out the caller.
+pub fn execute_framework_art_with_timeout(
+    tool: &ToolDefinition,
+    framework: &str,
+    arguments: Value,
+    timeout: Duration,
+) -> ToolRegistryResult<Value> {
+    let packages_root =
+        framework_packages_root().ok_or_else(|| ToolRegistryError::FrameworkPackageNotFound {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            path: "LOOM_CONTROL_PLANE_ROOT/frameworks".to_owned(),
+        })?;
+    execute_framework_art_in_root_with_timeout(
+        tool,
+        framework,
+        arguments,
+        &packages_root,
+        timeout.min(DEFAULT_FRAMEWORK_PROCESS_TIMEOUT),
+        None,
+    )
+}
+
+/// Execute a framework Art with timeout and caller-owned cancellation.
+///
+/// Cancellation is propagated to `loom_process`, which terminates the managed
+/// process tree before returning.
+pub fn execute_framework_art_with_timeout_and_cancellation(
+    tool: &ToolDefinition,
+    framework: &str,
+    arguments: Value,
+    timeout: Duration,
+    cancellation: &AtomicBool,
+) -> ToolRegistryResult<Value> {
+    let packages_root =
+        framework_packages_root().ok_or_else(|| ToolRegistryError::FrameworkPackageNotFound {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            path: "LOOM_CONTROL_PLANE_ROOT/frameworks".to_owned(),
+        })?;
+    execute_framework_art_in_root_with_timeout(
+        tool,
+        framework,
+        arguments,
+        &packages_root,
+        timeout.min(DEFAULT_FRAMEWORK_PROCESS_TIMEOUT),
+        Some(cancellation),
     )
 }
 
@@ -69,6 +124,7 @@ fn execute_framework_art_in_root_with_timeout(
     arguments: Value,
     packages_root: &Path,
     timeout: Duration,
+    cancellation: Option<&AtomicBool>,
 ) -> ToolRegistryResult<Value> {
     if !is_valid_framework(framework) {
         return Err(ToolRegistryError::FrameworkProcessProtocol {
@@ -289,8 +345,13 @@ fn execute_framework_art_in_root_with_timeout(
         .or(process.limits.max_processes);
     let mut stdin_payload = payload;
     stdin_payload.push(b'\n');
-    let process_output = loom_process::run_with_input(&process, &stdin_payload)
-        .map_err(|error| map_process_error(tool, framework, process.limits.timeout, error))?;
+    let process_output = match cancellation {
+        Some(cancellation) => {
+            loom_process::run_with_input_cancellable(&process, &stdin_payload, cancellation)
+        }
+        None => loom_process::run_with_input(&process, &stdin_payload),
+    }
+    .map_err(|error| map_process_error(tool, framework, process.limits.timeout, error))?;
     let exit_status = process_output.status;
     let stdout = process_output.stdout;
     let stderr = String::from_utf8_lossy(&process_output.stderr).into_owned();
@@ -493,6 +554,13 @@ fn map_process_error(
             id: tool.id.clone(),
             framework: framework.to_owned(),
             timeout_ms: timeout.as_millis(),
+        },
+        ProcessError::Cancelled { .. } => ToolRegistryError::FrameworkProcessFailed {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            code: "cancelled".to_owned(),
+            message: "framework process was cancelled".to_owned(),
+            detail: String::new(),
         },
         ProcessError::OutputLimit {
             stderr,
@@ -860,6 +928,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             }),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect("framework process success");
         assert_eq!(
@@ -892,6 +961,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             }),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect("framework process success");
 
@@ -939,6 +1009,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect_err("framework error response");
         let detail = match error {
@@ -968,6 +1039,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect_err("unsafe framework id");
         assert!(matches!(
@@ -988,6 +1060,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect_err("invalid framework response");
         assert!(matches!(
@@ -1008,6 +1081,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_millis(50),
+            None,
         )
         .expect_err("framework timeout");
         assert!(matches!(
@@ -1027,6 +1101,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect("large framework response");
         assert_eq!(
@@ -1046,6 +1121,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect("path image output");
 
@@ -1068,6 +1144,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             json!({}),
             &root,
             Duration::from_secs(10),
+            None,
         )
         .expect_err("outside path rejected");
 

@@ -1,0 +1,110 @@
+{
+  "protocolVersion": "loom.surface.v1",
+  "scene": {
+    "id": "root",
+    "type": "column",
+    "props": {
+      "gap": 12
+    },
+    "children": [
+      {
+        "id": "header",
+        "type": "row",
+        "children": [
+          {
+            "id": "title",
+            "type": "text",
+            "props": {
+              "text": "实时行情"
+            }
+          },
+          {
+            "id": "status",
+            "type": "text",
+            "props": {
+              "text": "等待刷新"
+            }
+          }
+        ]
+      },
+      {
+        "id": "price",
+        "type": "text",
+        "props": {
+          "text": "¥101.20"
+        },
+        "accessibility": {
+          "label": "当前价格",
+          "live": "polite"
+        }
+      },
+      {
+        "id": "divider",
+        "type": "divider"
+      },
+      {
+        "id": "symbol",
+        "type": "input",
+        "props": {
+          "value": "MSFT",
+          "placeholder": "股票代码"
+        },
+        "events": {
+          "input": "stock_symbol_input",
+          "change": "stock_symbol_commit"
+        },
+        "accessibility": {
+          "label": "股票代码"
+        }
+      },
+      {
+        "id": "symbol_hint",
+        "type": "text",
+        "props": {
+          "text": "已选择 MSFT"
+        }
+      },
+      {
+        "id": "interval_label",
+        "type": "text",
+        "props": {
+          "text": "每 3 秒刷新"
+        }
+      },
+      {
+        "id": "interval",
+        "type": "slider",
+        "props": {
+          "min": 1,
+          "max": 10,
+          "step": 1,
+          "value": 3
+        },
+        "events": {
+          "input": "stock_interval_preview",
+          "change": "stock_interval_commit"
+        },
+        "accessibility": {
+          "label": "刷新间隔"
+        }
+      },
+      {
+        "id": "refresh",
+        "type": "button",
+        "props": {
+          "label": "刷新行情"
+        },
+        "events": {
+          "click": "stock_refresh"
+        }
+      }
+    ]
+  },
+  "authoritativeState": {
+    "symbol": "MSFT",
+    "draftSymbol": "MSFT",
+    "price": 101.2,
+    "interval": 3,
+    "draftInterval": 3
+  }
+}

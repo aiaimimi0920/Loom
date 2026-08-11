@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/loom/device-session.v1.schema.json",
+  "title": "Loom Device Session v1",
+  "oneOf": [
+    { "$ref": "#/$defs/pairingRequest" },
+    { "$ref": "#/$defs/challengeRequest" },
+    { "$ref": "#/$defs/challengeResponse" },
+    { "$ref": "#/$defs/sessionRequest" },
+    { "$ref": "#/$defs/sessionResponse" }
+  ],
+  "$defs": {
+    "safeIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._:/-]+$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "pairingRequest": {
+      "type": "object",
+      "required": ["name", "kind", "address", "publicKey"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "kind": { "enum": ["computer", "tablet", "phone", "other"] },
+        "address": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "publicKey": { "type": "string", "minLength": 40, "maxLength": 64 }
+      },
+      "additionalProperties": false
+    },
+    "challengeRequest": {
+      "type": "object",
+      "required": ["deviceId"],
+      "properties": {
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" }
+      },
+      "additionalProperties": false
+    },
+    "challengeResponse": {
+      "type": "object",
+      "required": ["protocolVersion", "challengeId", "deviceId", "challenge", "expiresAtMs"],
+      "properties": {
+        "protocolVersion": { "const": "loom.device-session.v1" },
+        "challengeId": { "$ref": "#/$defs/safeIdentifier" },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "challenge": { "$ref": "#/$defs/nonce" },
+        "expiresAtMs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "sessionRequest": {
+      "type": "object",
+      "required": ["deviceId", "challengeId", "clientNonce", "signature"],
+      "properties": {
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "challengeId": { "$ref": "#/$defs/safeIdentifier" },
+        "clientNonce": { "$ref": "#/$defs/nonce" },
+        "signature": { "type": "string", "minLength": 80, "maxLength": 100 }
+      },
+      "additionalProperties": false
+    },
+    "sessionResponse": {
+      "type": "object",
+      "required": ["protocolVersion", "deviceId", "token", "expiresAtMs"],
+      "properties": {
+        "protocolVersion": { "const": "loom.device-session.v1" },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "token": { "$ref": "#/$defs/nonce" },
+        "expiresAtMs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

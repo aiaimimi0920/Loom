@@ -96,6 +96,12 @@ pub enum ProcessError {
         stderr: Vec<u8>,
         diagnostics: ExecutionDiagnostics,
     },
+    #[error("process was cancelled")]
+    Cancelled {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        diagnostics: ExecutionDiagnostics,
+    },
     #[error("process exceeded stdout/stderr resource limits")]
     OutputLimit {
         stdout: Vec<u8>,
@@ -184,6 +190,22 @@ impl Drop for ManagedChild {
 }
 
 pub fn run_with_input(spec: &ProcessSpec, input: &[u8]) -> Result<SupervisedOutput, ProcessError> {
+    run_with_input_internal(spec, input, None)
+}
+
+pub fn run_with_input_cancellable(
+    spec: &ProcessSpec,
+    input: &[u8],
+    cancellation: &AtomicBool,
+) -> Result<SupervisedOutput, ProcessError> {
+    run_with_input_internal(spec, input, Some(cancellation))
+}
+
+fn run_with_input_internal(
+    spec: &ProcessSpec,
+    input: &[u8],
+    cancellation: Option<&AtomicBool>,
+) -> Result<SupervisedOutput, ProcessError> {
     let started = Instant::now();
     let mut command = Command::new(&spec.program);
     command
@@ -247,6 +269,18 @@ pub fn run_with_input(spec: &ProcessSpec, input: &[u8]) -> Result<SupervisedOutp
             let stderr = join_reader(stderr_reader)?;
             return Err(ProcessError::OutputLimit {
                 diagnostics: diagnostics(started, None, &stdout, &stderr, false, true),
+                stdout: stdout.bytes,
+                stderr: stderr.bytes,
+            });
+        }
+        if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+            isolation.kill_tree(&mut child);
+            let _ = child.wait();
+            let _ = join_stdin_writer(stdin_writer.take());
+            let stdout = join_reader(stdout_reader)?;
+            let stderr = join_reader(stderr_reader)?;
+            return Err(ProcessError::Cancelled {
+                diagnostics: diagnostics(started, None, &stdout, &stderr, false, false),
                 stdout: stdout.bytes,
                 stderr: stderr.bytes,
             });
@@ -580,6 +614,36 @@ mod tests {
         let started = Instant::now();
         let error = run_with_input(&spec, &input).expect_err("stdin-blocked child must time out");
         assert!(matches!(error, ProcessError::Timeout { .. }));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cancellation_terminates_the_managed_process_tree() {
+        let mut spec = if cfg!(windows) {
+            let mut spec = ProcessSpec::new("powershell.exe");
+            spec.args = vec![
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                "Start-Sleep -Seconds 30".to_owned(),
+            ];
+            spec
+        } else {
+            let mut spec = ProcessSpec::new("sh");
+            spec.args = vec!["-c".to_owned(), "sleep 30".to_owned()];
+            spec
+        };
+        spec.limits.timeout = Duration::from_secs(30);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&cancellation);
+        let toggler = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            signal.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let error = run_with_input_cancellable(&spec, b"", cancellation.as_ref())
+            .expect_err("managed process must be cancelled");
+        toggler.join().expect("cancellation toggler");
+        assert!(matches!(error, ProcessError::Cancelled { .. }));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

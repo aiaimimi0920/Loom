@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/loom/surface-scene.v1.schema.json",
+  "title": "Loom Declarative Surface Scene v1",
+  "oneOf": [
+    { "$ref": "#/$defs/node" },
+    {
+      "type": "object",
+      "required": ["scene"],
+      "properties": {
+        "protocolVersion": { "const": "loom.surface.v1" },
+        "scene": { "$ref": "#/$defs/node" },
+        "authoritativeState": true,
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resource" }
+        }
+      },
+      "additionalProperties": true
+    }
+  ],
+  "$defs": {
+    "safeIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._:/-]+$"
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeIdentifier" },
+        "type": { "type": "string", "minLength": 1 },
+        "props": true,
+        "layout": true,
+        "style": true,
+        "accessibility": true,
+        "events": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/safeIdentifier" }
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "resource": {
+      "type": "object",
+      "required": ["resourceId", "kind", "mime", "size"],
+      "properties": {
+        "resourceId": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "kind": { "enum": ["image", "audio", "video", "file", "binary"] },
+        "mime": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    }
+  }
+}

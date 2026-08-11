@@ -199,6 +199,12 @@ function Get-LoomCatalog {
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\framework-execute-response.v1.schema.json") -DestinationRelativePath "protocol\schemas\framework-execute-response.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\framework-authoring.v1.schema.json") -DestinationRelativePath "protocol\schemas\framework-authoring.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\art-runtime.v1.schema.json") -DestinationRelativePath "protocol\schemas\art-runtime.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-manifest.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-manifest.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-message.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-message.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-scene.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-scene.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\device-session.v1.schema.json") -DestinationRelativePath "protocol\schemas\device-session.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\README.md") -DestinationRelativePath "sdk\surface\README.md"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\neuro-surface.d.ts") -DestinationRelativePath "sdk\surface\neuro-surface.d.ts"
             New-SupportSpec -Source (Join-Path $repoRoot "docs\plugin-development.md") -DestinationRelativePath "docs\plugin-development.md"
             New-SupportSpec -Source (Join-Path $repoRoot "docs\plugin-security.md") -DestinationRelativePath "docs\plugin-security.md"
             New-SupportSpec -Source (Join-Path $repoRoot "docs\plugin-permissions.md") -DestinationRelativePath "docs\plugin-permissions.md"
@@ -952,7 +958,7 @@ if (-not $NoZip) {
         bytes = $pluginSdkZipRecord.bytes
         sha256 = $pluginSdkZipRecord.sha256
         protocolVersion = "loom.framework.v1"
-        schemaCount = 5
+        schemaCount = 9
     }
 }
 

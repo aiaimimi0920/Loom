@@ -368,6 +368,7 @@ function New-DesktopEnvironment {
         LOOM_GATEWAY_BASE_URL = $null
         LOOM_GATEWAY_TOKEN = $null
         LOOM_GATEWAY_TIMEOUT_SECS = $null
+        LOOM_SMOKE_ALLOW_MULTIPLE_INSTANCES = "1"
         APPDATA = $AppDataRoot
         LOCALAPPDATA = $LocalAppDataRoot
     }

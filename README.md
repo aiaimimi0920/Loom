@@ -731,6 +731,8 @@ smoke chain in sequence:
 3. `scripts\Invoke-LoomHookErrorPreviewSmoke.ps1`
 4. `scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1`
 5. `scripts\Invoke-LoomPluginBoundarySmoke.ps1`
+6. `scripts\Invoke-LoomSurfacePrototypeSmoke.ps1`
+7. `scripts\Invoke-LoomAuthoredArtCreationSmoke.ps1`
 
 The fourth step reuses the packaged `runtime\loom-daemon.exe` from the release
 candidate, starts a temporary local fake art store plus fake cloud/MCP fixtures,
@@ -738,6 +740,12 @@ installs all four framework packages and six representative Arts, instantiates
 six Hook nodes, and executes all six. The fifth step independently compiles a temporary
 third-party framework outside the repository and proves the no-source-change
 plugin lifecycle through Loom and the Hook Bridge.
+The sixth step installs the process framework plus the stock card, shared device
+dashboard, and project form Surface packages into an isolated control plane. It
+proves patch fanout, formal output, confirmation/cancellation, leased resource
+bytes, persistent-versus-temporary restart behavior, stream snapshot replay,
+explicit remount, and an action after daemon restart. The seventh step proves
+that a newly authored package can traverse the public package/runtime boundary.
 
 ## Validation
 

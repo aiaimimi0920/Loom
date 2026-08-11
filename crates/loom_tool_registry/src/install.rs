@@ -1024,6 +1024,179 @@ pub fn resolve_active_art_package(control_plane_root: &Path, art_id: &str) -> Op
     active.join(MANIFEST_NAME).is_file().then_some(active)
 }
 
+/// Resolves and verifies one immutable installed Art package without changing
+/// the user's active version. Long-lived Surface instances use this path so an
+/// unrelated store update cannot silently move their code or break execution.
+pub fn resolve_installed_art_package(
+    control_plane_root: &Path,
+    art_id: &str,
+    version: &str,
+    digest: &str,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+) -> Result<ToolDefinition, ArtInstallError> {
+    if !is_safe_art_reference(art_id) {
+        return Err(ArtInstallError::InvalidArtId(art_id.to_owned()));
+    }
+    if semver::Version::parse(version).is_err() {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "Art version `{version}` is not valid SemVer"
+        )));
+    }
+    let digest = digest
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(digest.trim());
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art package digest must be a SHA-256 hex value".to_owned(),
+        ));
+    }
+    let digest = digest.to_ascii_lowercase();
+    let current = tool_registry
+        .get_tool(art_id)
+        .map_err(|error| ArtInstallError::Registry(error.to_string()))?
+        .ok_or_else(|| {
+            ArtInstallError::InvalidPackage(format!("Art `{art_id}` is not installed"))
+        })?;
+    let identity = current.qualified_id();
+    let art_root = art_root_for_tool(control_plane_root, &current);
+    let activation = read_art_activation(&art_root.join("active.json"))
+        .ok_or_else(|| ArtInstallError::InvalidPackage("Art has no activation state".to_owned()))?;
+    if !art_activation_is_safe(&activation) {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art activation state contains an unsafe version path".to_owned(),
+        ));
+    }
+
+    let mut matches = Vec::new();
+    for entry in std::fs::read_dir(art_root.join("versions"))? {
+        let path = entry?.path();
+        if !path.is_dir() || !path.join(MANIFEST_NAME).is_file() {
+            continue;
+        }
+        let tool: ToolDefinition =
+            serde_json::from_slice(&std::fs::read(path.join(MANIFEST_NAME))?)?;
+        let security = read_art_package_security(&tool);
+        if tool.qualified_id() != identity
+            || security.version.as_deref().unwrap_or("0.0.0") != version
+        {
+            continue;
+        }
+        let actual_digest = canonical_package_digest(
+            &path,
+            security
+                .signature
+                .as_ref()
+                .map(|signature| signature.file.as_str()),
+        )
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        if actual_digest != digest {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(&art_root)
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !relative.ends_with(&actual_digest[..12]) {
+            return Err(ArtInstallError::InvalidPackage(
+                "Art version directory does not match its digest".to_owned(),
+            ));
+        }
+        matches.push((path, relative, tool, security));
+    }
+    if matches.len() != 1 {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "Art `{art_id}` package `{version}` with digest `{digest}` is {}",
+            if matches.is_empty() {
+                "not installed"
+            } else {
+                "ambiguous"
+            }
+        )));
+    }
+
+    let (art_dir, relative, mut tool, security) = matches.remove(0);
+    let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let trust_status = verify_package_signature(
+        &art_dir,
+        security.publisher.as_ref(),
+        security.signature.as_ref(),
+        &trust_store,
+    )
+    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    if !activation.local_authoring && !activation.bundled_catalog {
+        trust_store
+            .effective_policy()
+            .enforce(trust_status.clone())
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    }
+    let lockfile = art_root.join("locks").join(format!("{digest}.json"));
+    let mut verifying = std::collections::BTreeSet::from([identity]);
+    verify_art_lockfile(
+        control_plane_root,
+        &lockfile,
+        &art_root,
+        &art_dir,
+        &tool,
+        framework_registry,
+        &mut verifying,
+    )?;
+    let state_dir = art_root.join("state");
+    let cache_dir = art_root.join("cache");
+    let output_dir = art_root.join("outputs");
+    let qualified_id = qualified_art_id(&tool);
+    rewrite_artloom_compat_execution_paths(&mut tool.metadata, &art_dir);
+    record_art_package_directory(
+        &mut tool.metadata,
+        ArtPackagePaths {
+            qualified_id: &qualified_id,
+            art_dir: &art_dir,
+            state_dir: &state_dir,
+            cache_dir: &cache_dir,
+            output_dir: &output_dir,
+            lockfile: &lockfile,
+            version,
+            digest: &digest,
+            trust_status: &trust_status,
+        },
+    );
+    let lockfile_document: PluginLockfile = serde_json::from_slice(&std::fs::read(&lockfile)?)?;
+    let mut locked_arts = serde_json::Map::new();
+    for dependency in lockfile_document
+        .resolved
+        .iter()
+        .filter(|dependency| dependency.kind == "art")
+    {
+        let child = resolve_installed_art_package(
+            control_plane_root,
+            &dependency.id,
+            &dependency.version,
+            &dependency.sha256,
+            tool_registry,
+            framework_registry,
+        )?;
+        locked_arts.insert(dependency.id.clone(), serde_json::to_value(child)?);
+    }
+    if !locked_arts.is_empty() {
+        if let Some(package) = tool
+            .metadata
+            .as_mut()
+            .and_then(|metadata| metadata.get_mut("artPackage"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            package.insert(
+                "lockedArts".to_owned(),
+                serde_json::Value::Object(locked_arts),
+            );
+        }
+    }
+    debug_assert!(relative.ends_with(&digest[..12]));
+    Ok(tool)
+}
+
 pub fn verify_art_package_integrity(
     control_plane_root: &Path,
     tool: &ToolDefinition,
@@ -1229,7 +1402,9 @@ pub fn activate_art_version(
         let tool: ToolDefinition =
             serde_json::from_slice(&std::fs::read(path.join(MANIFEST_NAME))?)?;
         let security = read_art_package_security(&tool);
-        if tool.qualified_id() != identity || security.version.as_deref() != Some(target_version) {
+        if tool.qualified_id() != identity
+            || security.version.as_deref().unwrap_or("0.0.0") != target_version
+        {
             continue;
         }
         let digest = canonical_package_digest(
@@ -1511,60 +1686,43 @@ fn verify_art_lockfile(
                 }
             }
             "art" => {
-                let child_root = art_root_for_reference(control_plane_root, &dependency.id)
-                    .ok_or_else(|| {
-                        ArtInstallError::InvalidPackage(format!(
-                            "locked Art dependency `{}` has an invalid identity",
-                            dependency.id
-                        ))
-                    })?;
-                let activation =
-                    read_art_activation(&child_root.join("active.json")).ok_or_else(|| {
-                        ArtInstallError::InvalidPackage(format!(
-                            "locked Art dependency `{}` is not installed",
-                            dependency.id
-                        ))
-                    })?;
                 let locked_digest_is_valid = dependency.sha256.len() == 64
                     && dependency
                         .sha256
                         .bytes()
                         .all(|byte| byte.is_ascii_hexdigit());
-                if !locked_digest_is_valid
-                    || !art_activation_is_safe(&activation)
-                    || activation.active.version != dependency.version
-                    || activation.active.digest != dependency.sha256
-                    || !activation
-                        .active
-                        .path
-                        .ends_with(dependency.sha256.get(..12).unwrap_or_default())
-                {
+                if !locked_digest_is_valid {
                     return Err(ArtInstallError::InvalidPackage(format!(
-                        "locked Art dependency `{}` version, digest, or activation changed",
+                        "locked Art dependency `{}` has an invalid digest",
                         dependency.id
                     )));
                 }
-                let child_dir = child_root.join(&activation.active.path);
-                let child_tool: ToolDefinition =
-                    serde_json::from_slice(&std::fs::read(child_dir.join(MANIFEST_NAME))?)?;
-                if child_tool.qualified_id() != dependency.id {
-                    return Err(ArtInstallError::InvalidPackage(format!(
-                        "locked Art dependency `{}` manifest identity changed",
-                        dependency.id
-                    )));
-                }
-                let verified = verify_art_package_integrity_inner(
+                let (child_root, child_dir, child_tool) = locate_exact_installed_art_package(
                     control_plane_root,
+                    &dependency.id,
+                    &dependency.version,
+                    &dependency.sha256,
+                )?;
+                if !verifying.insert(dependency.id.clone()) {
+                    return Err(ArtInstallError::InvalidPackage(format!(
+                        "Art dependency cycle detected at `{}`",
+                        dependency.id
+                    )));
+                }
+                let child_lockfile = child_root
+                    .join("locks")
+                    .join(format!("{}.json", dependency.sha256));
+                let verified = verify_art_lockfile(
+                    control_plane_root,
+                    &child_lockfile,
+                    &child_root,
+                    &child_dir,
                     &child_tool,
                     framework_registry,
                     verifying,
-                )?;
-                if verified.version != dependency.version || verified.digest != dependency.sha256 {
-                    return Err(ArtInstallError::InvalidPackage(format!(
-                        "locked Art dependency `{}` no longer matches its exact lock",
-                        dependency.id
-                    )));
-                }
+                );
+                verifying.remove(&dependency.id);
+                verified?;
             }
             kind => {
                 return Err(ArtInstallError::InvalidPackage(format!(
@@ -1574,6 +1732,84 @@ fn verify_art_lockfile(
         }
     }
     Ok(())
+}
+
+fn locate_exact_installed_art_package(
+    control_plane_root: &Path,
+    art_id: &str,
+    version: &str,
+    digest: &str,
+) -> Result<(PathBuf, PathBuf, ToolDefinition), ArtInstallError> {
+    let art_root = art_root_for_reference(control_plane_root, art_id).ok_or_else(|| {
+        ArtInstallError::InvalidPackage(format!(
+            "locked Art dependency `{art_id}` has an invalid identity"
+        ))
+    })?;
+    let activation = read_art_activation(&art_root.join("active.json")).ok_or_else(|| {
+        ArtInstallError::InvalidPackage(format!(
+            "locked Art dependency `{art_id}` is not installed"
+        ))
+    })?;
+    if !art_activation_is_safe(&activation) {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "locked Art dependency `{art_id}` has unsafe activation state"
+        )));
+    }
+    let mut matches = Vec::new();
+    for entry in std::fs::read_dir(art_root.join("versions"))? {
+        let path = entry?.path();
+        if !path.is_dir() || !path.join(MANIFEST_NAME).is_file() {
+            continue;
+        }
+        let tool: ToolDefinition =
+            serde_json::from_slice(&std::fs::read(path.join(MANIFEST_NAME))?)?;
+        let security = read_art_package_security(&tool);
+        if tool.qualified_id() != art_id
+            || security.version.as_deref().unwrap_or("0.0.0") != version
+        {
+            continue;
+        }
+        let actual = canonical_package_digest(
+            &path,
+            security
+                .signature
+                .as_ref()
+                .map(|signature| signature.file.as_str()),
+        )
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        if actual.eq_ignore_ascii_case(digest)
+            && path.ends_with(format!("{version}-{}", &actual[..12]))
+        {
+            let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
+                .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+            let trust_status = verify_package_signature(
+                &path,
+                security.publisher.as_ref(),
+                security.signature.as_ref(),
+                &trust_store,
+            )
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+            if !activation.local_authoring && !activation.bundled_catalog {
+                trust_store
+                    .effective_policy()
+                    .enforce(trust_status)
+                    .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+            }
+            matches.push((path, tool));
+        }
+    }
+    if matches.len() != 1 {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "locked Art dependency `{art_id}` version `{version}` and digest `{digest}` is {}",
+            if matches.is_empty() {
+                "unavailable"
+            } else {
+                "ambiguous"
+            }
+        )));
+    }
+    let (art_dir, tool) = matches.remove(0);
+    Ok((art_root, art_dir, tool))
 }
 
 fn art_reference_matches_qualified(reference: &str, qualified_id: &str) -> bool {
@@ -3048,7 +3284,7 @@ mod tests {
     }
 
     #[test]
-    fn parent_art_lock_tracks_child_upgrade_rollback_tamper_and_uninstall() {
+    fn parent_art_lock_resolves_immutable_child_across_active_upgrade_and_rollback() {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
         install_test_framework(&framework, "workflow");
@@ -3100,6 +3336,20 @@ mod tests {
         install_art_from_zip(&parent_zip("1.0.0"), &root, &framework, &registry)
             .expect("install parent locked to child v1");
         let parent_v1 = registry.get_tool("locked-parent").unwrap().unwrap();
+        let parent_v1_version = parent_v1
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/artPackage/version"))
+            .and_then(serde_json::Value::as_str)
+            .expect("parent v1 version")
+            .to_owned();
+        let parent_v1_digest = parent_v1
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/artPackage/digest"))
+            .and_then(serde_json::Value::as_str)
+            .expect("parent v1 digest")
+            .to_owned();
         verify_art_package_integrity(&root, &parent_v1, &framework).expect("verify parent v1");
 
         install_art_from_zip(
@@ -3109,7 +3359,28 @@ mod tests {
             &registry,
         )
         .expect("upgrade child");
-        assert!(verify_art_package_integrity(&root, &parent_v1, &framework).is_err());
+        verify_art_package_integrity(&root, &parent_v1, &framework)
+            .expect("parent v1 remains bound to installed child v1");
+        let resolved_parent_v1 = resolve_installed_art_package(
+            &root,
+            "locked-parent",
+            &parent_v1_version,
+            &parent_v1_digest,
+            &registry,
+            &framework,
+        )
+        .expect("resolve immutable parent v1 after child upgrade");
+        assert_eq!(
+            resolved_parent_v1
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata
+                        .pointer("/artPackage/lockedArts/locked-child/metadata/artPackage/version")
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("1.0.0")
+        );
 
         install_art_from_zip(&parent_zip("2.0.0"), &root, &framework, &registry)
             .expect("refresh parent lock for child v2");
@@ -3119,7 +3390,8 @@ mod tests {
 
         rollback_art_package(&root, "locked-child", &registry, &framework)
             .expect("rollback child to v1");
-        assert!(verify_art_package_integrity(&root, &parent_v2, &framework).is_err());
+        verify_art_package_integrity(&root, &parent_v2, &framework)
+            .expect("parent v2 remains bound to installed child v2");
         let parent_rolled_back =
             rollback_art_package(&root, "locked-parent", &registry, &framework)
                 .expect("rollback parent to lock matching child v1");
@@ -3139,7 +3411,8 @@ mod tests {
         tampered_activation.active.version = "9.9.9".to_owned();
         write_art_activation(&child_root.join("active.json"), &tampered_activation)
             .expect("tamper child activation");
-        assert!(verify_art_package_integrity(&root, &parent_rolled_back, &framework).is_err());
+        verify_art_package_integrity(&root, &parent_rolled_back, &framework)
+            .expect("active pointer metadata does not change an immutable child lock");
         write_art_activation(&child_root.join("active.json"), &child_activation)
             .expect("restore child activation");
 
@@ -3311,6 +3584,34 @@ mod tests {
         .expect("install second Art");
         let current = registry.get_tool("rollback-art").unwrap().unwrap();
         verify_art_package_integrity(&root, &current, &framework).expect("verify current Art");
+        let installed = list_installed_art_versions(&root, "rollback-art", &registry)
+            .expect("list immutable versions");
+        assert_eq!(installed.len(), 2);
+        let payloads = installed
+            .iter()
+            .map(|version| {
+                let pinned = resolve_installed_art_package(
+                    &root,
+                    "rollback-art",
+                    &version.version,
+                    &version.digest,
+                    &registry,
+                    &framework,
+                )
+                .expect("resolve pinned package");
+                let directory = pinned
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("artPackage"))
+                    .and_then(|package| package.get("dir"))
+                    .and_then(serde_json::Value::as_str)
+                    .expect("pinned Art directory");
+                std::fs::read(Path::new(directory).join("bin/tool.exe"))
+                    .expect("read pinned payload")
+            })
+            .collect::<Vec<_>>();
+        assert!(payloads.iter().any(|payload| payload == b"version-one"));
+        assert!(payloads.iter().any(|payload| payload == b"version-two"));
 
         let rolled_back = rollback_art_package(&root, "rollback-art", &registry, &framework)
             .expect("rollback Art");

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -10,11 +11,13 @@ use loom_plugin_security::{
     write_signing_key, TrustStore,
 };
 use loom_protocol::{
-    is_safe_package_id, is_safe_publisher_id, schemas, validate_framework_manifest_contract,
+    is_safe_package_id, is_safe_publisher_id, is_safe_surface_identifier, schemas,
+    validate_framework_manifest_contract, validate_surface_node_tree, validate_surface_protocol,
     ArtRuntimeManifest, FrameworkExecuteRequest, FrameworkExecuteResponse,
     FrameworkExecutionContext, FrameworkPackageManifest, PackageSignature, PackageTrustStatus,
-    PublisherIdentity, PublisherTrustRecord, ART_RUNTIME_PROTOCOL_VERSION,
-    FRAMEWORK_PROTOCOL_VERSION,
+    PublisherIdentity, PublisherTrustRecord, SurfaceNode, SurfacePackageManifest,
+    SurfaceRuntimeKind, ART_RUNTIME_PROTOCOL_VERSION, DECLARATIVE_SURFACE_NODE_TYPES,
+    FRAMEWORK_PROTOCOL_VERSION, SURFACE_API_VERSION,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -129,7 +132,7 @@ fn help_text() -> &'static str {
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",
-        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime\n",
+        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, device-session\n",
     )
 }
 
@@ -140,6 +143,10 @@ fn schema(name: &str) -> Result<&'static str> {
         "execute-response" => Ok(schemas::FRAMEWORK_EXECUTE_RESPONSE_V1),
         "authoring" => Ok(schemas::FRAMEWORK_AUTHORING_V1),
         "art-runtime" => Ok(schemas::ART_RUNTIME_V1),
+        "surface-manifest" => Ok(schemas::SURFACE_MANIFEST_V1),
+        "surface-message" => Ok(schemas::SURFACE_MESSAGE_V1),
+        "surface-scene" => Ok(schemas::SURFACE_SCENE_V1),
+        "device-session" => Ok(schemas::DEVICE_SESSION_V1),
         _ => bail!("unknown schema `{name}`"),
     }
 }
@@ -235,7 +242,7 @@ fn validate_art_package(
             runtime.protocol_version
         );
     }
-    validate_relative_package_path(directory, &runtime.entry.command, require_payload)
+    validate_art_runtime_command(directory, &runtime.entry.command, require_payload)
         .context("validate Art runtime entry")?;
 
     let manifest_path = directory.join("manifest.json");
@@ -261,6 +268,13 @@ fn validate_art_package(
     if !is_safe_package_reference(framework) {
         bail!("Art framework id is not safe: {framework}");
     }
+    if let Some(surface) = manifest
+        .get("metadata")
+        .and_then(|value| value.get("capabilities"))
+        .and_then(|value| value.get("surface"))
+    {
+        validate_surface_package(directory, surface, require_payload)?;
+    }
     let (publisher, signature) = art_security_metadata(&manifest)?;
     let trust = verify_package_signature(
         directory,
@@ -272,6 +286,121 @@ fn validate_art_package(
     Ok(format!(
         "Art package valid: {id} -> {framework} (trust={trust:?})"
     ))
+}
+
+fn validate_surface_package(directory: &Path, value: &Value, require_payload: bool) -> Result<()> {
+    let manifest: SurfacePackageManifest =
+        serde_json::from_value(value.clone()).context("parse Art Surface manifest")?;
+    validate_surface_protocol(&manifest.protocol_version)
+        .map_err(|error| anyhow!(error))
+        .context("validate Surface protocol")?;
+    if manifest.api_version != SURFACE_API_VERSION {
+        bail!("unsupported Surface API version: {}", manifest.api_version);
+    }
+    if manifest.variants.is_empty() {
+        bail!("Surface manifest must declare at least one variant");
+    }
+
+    let mut declared_actions = BTreeSet::new();
+    for action in &manifest.actions {
+        if !is_safe_surface_identifier(&action.id) {
+            bail!("Surface action id is not safe: {}", action.id);
+        }
+        if !declared_actions.insert(action.id.as_str()) {
+            bail!("duplicate Surface action id: {}", action.id);
+        }
+        if matches!(action.risk, loom_protocol::SurfaceActionRisk::High) && !action.confirmation {
+            bail!(
+                "high-risk Surface action must require host confirmation: {}",
+                action.id
+            );
+        }
+        if action.timeout_ms == Some(0) {
+            bail!(
+                "Surface action timeoutMs must be greater than zero: {}",
+                action.id
+            );
+        }
+    }
+
+    for node_type in &manifest.required_nodes {
+        if !DECLARATIVE_SURFACE_NODE_TYPES.contains(&node_type.as_str()) {
+            bail!("Surface manifest requires unknown declarative node type: {node_type}");
+        }
+    }
+    for variant in &manifest.variants {
+        validate_relative_package_path(directory, &variant.entry, require_payload)
+            .context("validate Surface variant entry")?;
+        if variant.runtime == SurfaceRuntimeKind::Declarative && require_payload {
+            validate_declarative_surface_scene(directory, &variant.entry, &declared_actions)?;
+        }
+    }
+    if let Some(fallback) = &manifest.fallback_scene {
+        validate_relative_package_path(directory, fallback, require_payload)
+            .context("validate Surface fallback scene")?;
+        if require_payload {
+            validate_declarative_surface_scene(directory, fallback, &declared_actions)?;
+        }
+    }
+    for migration in &manifest.migrations {
+        if migration.to != migration.from.saturating_add(1) {
+            bail!(
+                "Surface state migration must advance exactly one version: {} -> {}",
+                migration.from,
+                migration.to
+            );
+        }
+        validate_relative_package_path(directory, &migration.entry, require_payload)
+            .context("validate Surface migration entry")?;
+    }
+    Ok(())
+}
+
+fn validate_declarative_surface_scene(
+    directory: &Path,
+    entry: &str,
+    declared_actions: &BTreeSet<&str>,
+) -> Result<()> {
+    let document: Value = read_json(&directory.join(entry))?;
+    let protocol = document
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("declarative Surface scene protocolVersion is required"))?;
+    validate_surface_protocol(protocol)
+        .map_err(|error| anyhow!(error))
+        .context("validate declarative Surface scene protocol")?;
+    let scene: SurfaceNode = serde_json::from_value(
+        document
+            .get("scene")
+            .cloned()
+            .ok_or_else(|| anyhow!("declarative Surface scene root is required"))?,
+    )
+    .context("parse declarative Surface scene root")?;
+    validate_surface_node_tree(&scene)
+        .map_err(|error| anyhow!(error))
+        .context("validate declarative Surface scene root")?;
+
+    fn visit(node: &SurfaceNode, declared_actions: &BTreeSet<&str>) -> Result<()> {
+        if !DECLARATIVE_SURFACE_NODE_TYPES.contains(&node.node_type.as_str()) {
+            bail!(
+                "declarative Surface scene uses unknown node type: {}",
+                node.node_type
+            );
+        }
+        for action in node.events.values() {
+            if !declared_actions.contains(action.as_str()) {
+                bail!(
+                    "declarative Surface node `{}` references undeclared action `{action}`",
+                    node.id
+                );
+            }
+        }
+        for child in &node.children {
+            visit(child, declared_actions)?;
+        }
+        Ok(())
+    }
+    visit(&scene, declared_actions)
 }
 
 fn art_security_metadata(
@@ -405,6 +534,19 @@ fn validate_relative_package_path(
         bail!("path must remain inside the package: {value}");
     }
     if require_payload && !directory.join(path).is_file() {
+        bail!("package path does not exist: {value}");
+    }
+    Ok(())
+}
+
+fn validate_art_runtime_command(
+    directory: &Path,
+    value: &str,
+    require_payload: bool,
+) -> Result<()> {
+    let path = Path::new(value);
+    validate_relative_package_path(directory, value, false)?;
+    if require_payload && path.components().count() > 1 && !directory.join(path).is_file() {
         bail!("package path does not exist: {value}");
     }
     Ok(())
@@ -793,6 +935,10 @@ mod tests {
             schemas::FRAMEWORK_EXECUTE_RESPONSE_V1,
             schemas::FRAMEWORK_AUTHORING_V1,
             schemas::ART_RUNTIME_V1,
+            schemas::SURFACE_MANIFEST_V1,
+            schemas::SURFACE_MESSAGE_V1,
+            schemas::SURFACE_SCENE_V1,
+            schemas::DEVICE_SESSION_V1,
         ] {
             serde_json::from_str::<Value>(schema).expect("schema JSON");
         }
@@ -806,6 +952,97 @@ mod tests {
         assert!(output.contains("init framework"));
         assert!(output.contains("conformance"));
         assert!(output.contains("pack"));
+        assert!(output.contains("surface-manifest"));
+    }
+
+    #[test]
+    fn surface_art_validation_checks_scene_actions_and_confirmation() {
+        let root = temp_root("surface-validation");
+        fs::create_dir_all(root.join("runtime")).expect("runtime directory");
+        fs::create_dir_all(root.join("surface")).expect("surface directory");
+        fs::write(root.join("runtime/main.ps1"), b"exit 0\n").expect("runtime entry");
+        write_pretty_json(
+            root.join("art.runtime.json"),
+            &json!({
+                "protocolVersion": ART_RUNTIME_PROTOCOL_VERSION,
+                "entry": {
+                    "command": "runtime/main.ps1",
+                    "args": []
+                }
+            }),
+        )
+        .expect("runtime manifest");
+        let valid_scene = json!({
+            "protocolVersion": "loom.surface.v1",
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [{
+                    "id": "submit",
+                    "type": "button",
+                    "props": { "label": "Submit" },
+                    "events": { "click": "submit" }
+                }]
+            },
+            "authoritativeState": {}
+        });
+        write_pretty_json(root.join("surface/main.json"), &valid_scene).expect("Surface scene");
+        let mut manifest = json!({
+            "id": "surface-validator-fixture",
+            "execution": { "type": "framework_art", "framework": "process" },
+            "metadata": {
+                "capabilities": {
+                    "surface": {
+                        "protocolVersion": "loom.surface.v1",
+                        "apiVersion": "1.0",
+                        "variants": [{ "runtime": "declarative", "entry": "surface/main.json" }],
+                        "requiredNodes": ["column", "button"],
+                        "actions": [{
+                            "id": "submit",
+                            "risk": "high",
+                            "offlinePolicy": "reject",
+                            "concurrency": "serial",
+                            "confirmation": true,
+                            "timeoutMs": 1000
+                        }]
+                    }
+                }
+            }
+        });
+        write_pretty_json(root.join("manifest.json"), &manifest).expect("Art manifest");
+
+        let valid = validate_path_with_payload(&root, true, &TrustStore::default())
+            .expect("valid Surface Art");
+        assert!(valid.contains("Art package valid"), "{valid}");
+
+        let mut unknown_node_scene = valid_scene.clone();
+        unknown_node_scene["scene"]["children"][0]["type"] = json!("webview");
+        write_pretty_json(root.join("surface/main.json"), &unknown_node_scene)
+            .expect("unknown-node Surface scene");
+        let error = validate_path_with_payload(&root, true, &TrustStore::default())
+            .expect_err("unknown declarative node must fail");
+        assert!(error.to_string().contains("unknown node type"), "{error:#}");
+
+        let mut undeclared_action_scene = valid_scene.clone();
+        undeclared_action_scene["scene"]["children"][0]["events"]["click"] =
+            json!("undeclared-admin-action");
+        write_pretty_json(root.join("surface/main.json"), &undeclared_action_scene)
+            .expect("undeclared-action Surface scene");
+        let error = validate_path_with_payload(&root, true, &TrustStore::default())
+            .expect_err("undeclared Surface action must fail");
+        assert!(error.to_string().contains("undeclared action"), "{error:#}");
+
+        write_pretty_json(root.join("surface/main.json"), &valid_scene)
+            .expect("restore valid Surface scene");
+
+        manifest["metadata"]["capabilities"]["surface"]["actions"][0]["confirmation"] =
+            json!(false);
+        write_pretty_json(root.join("manifest.json"), &manifest).expect("invalid manifest");
+        let error = validate_path_with_payload(&root, true, &TrustStore::default())
+            .expect_err("high-risk action without confirmation must fail");
+        assert!(error.to_string().contains("host confirmation"), "{error:#}");
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

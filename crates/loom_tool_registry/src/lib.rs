@@ -9,18 +9,21 @@ pub mod install;
 pub mod network_policy;
 mod secure_zip;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use loom_process::ProcessSpec;
-use loom_protocol::{is_safe_publisher_id, PublisherIdentity};
+use loom_protocol::{
+    is_safe_publisher_id, is_safe_surface_identifier, PublisherIdentity, SurfaceActionRisk,
+    SurfacePackageManifest, SurfaceRuntimeKind, SURFACE_API_VERSION, SURFACE_PROTOCOL_VERSION,
+};
 use reqwest::blocking::multipart;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -188,6 +191,9 @@ impl ToolDefinition {
                 });
             }
         }
+        if let Some(surface) = self.surface_manifest()? {
+            validate_surface_package_manifest(&self.id, &surface)?;
+        }
         self.execution.validate(&self.id)
     }
 
@@ -205,6 +211,181 @@ impl ToolDefinition {
         self.publisher_identity()
             .map(|publisher| format!("{}/{}", publisher.id, self.id))
             .unwrap_or_else(|| self.id.clone())
+    }
+
+    pub fn surface_manifest(&self) -> ToolRegistryResult<Option<SurfacePackageManifest>> {
+        let Some(surface) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("capabilities"))
+            .and_then(|capabilities| capabilities.get("surface"))
+        else {
+            return Ok(None);
+        };
+        serde_json::from_value(surface.clone())
+            .map(Some)
+            .map_err(|error| ToolRegistryError::InvalidToolDefinition {
+                id: self.id.clone(),
+                reason: format!("Surface manifest is invalid: {error}"),
+            })
+    }
+}
+
+fn validate_surface_package_manifest(
+    tool_id: &str,
+    surface: &SurfacePackageManifest,
+) -> ToolRegistryResult<()> {
+    let invalid = |reason: String| ToolRegistryError::InvalidToolDefinition {
+        id: tool_id.to_owned(),
+        reason,
+    };
+    if surface.protocol_version != SURFACE_PROTOCOL_VERSION {
+        return Err(invalid(format!(
+            "unsupported Surface protocol {}",
+            surface.protocol_version
+        )));
+    }
+    if surface.api_version != SURFACE_API_VERSION {
+        return Err(invalid(format!(
+            "unsupported Surface API {}",
+            surface.api_version
+        )));
+    }
+    if surface.variants.is_empty() && surface.fallback_scene.is_none() {
+        return Err(invalid(
+            "Surface manifest must declare a runtime variant or fallback scene".to_owned(),
+        ));
+    }
+    if surface.state_schema_version == 0 {
+        return Err(invalid(
+            "Surface state schema version must be at least 1".to_owned(),
+        ));
+    }
+    for variant in &surface.variants {
+        validate_surface_entry_path(tool_id, &variant.entry)?;
+        let expected_extension = match variant.runtime {
+            SurfaceRuntimeKind::Declarative => "json",
+            SurfaceRuntimeKind::Javascript => "js",
+            SurfaceRuntimeKind::Shader => "json",
+            SurfaceRuntimeKind::LoomRemote => "json",
+        };
+        if Path::new(&variant.entry)
+            .extension()
+            .and_then(|value| value.to_str())
+            != Some(expected_extension)
+        {
+            return Err(invalid(format!(
+                "Surface {:?} entry must use .{expected_extension}",
+                variant.runtime
+            )));
+        }
+        for capability in &variant.required_capabilities {
+            if !is_safe_surface_identifier(capability) {
+                return Err(invalid(format!(
+                    "unsafe Surface capability id {capability}"
+                )));
+            }
+        }
+    }
+    if let Some(fallback) = &surface.fallback_scene {
+        validate_surface_entry_path(tool_id, fallback)?;
+        if Path::new(fallback)
+            .extension()
+            .and_then(|value| value.to_str())
+            != Some("json")
+        {
+            return Err(invalid("Surface fallback scene must use .json".to_owned()));
+        }
+    }
+    let mut migration_sources = HashSet::new();
+    for migration in &surface.migrations {
+        if migration.from == 0
+            || migration.to == 0
+            || migration.from >= migration.to
+            || migration.to > surface.state_schema_version
+        {
+            return Err(invalid(format!(
+                "Surface migration {} -> {} is invalid for state schema {}",
+                migration.from, migration.to, surface.state_schema_version
+            )));
+        }
+        if !migration_sources.insert(migration.from) {
+            return Err(invalid(format!(
+                "Surface state schema {} has more than one migration",
+                migration.from
+            )));
+        }
+        validate_surface_entry_path(tool_id, &migration.entry)?;
+        if Path::new(&migration.entry)
+            .extension()
+            .and_then(|value| value.to_str())
+            != Some("json")
+        {
+            return Err(invalid(
+                "Surface state migration entries must use .json".to_owned(),
+            ));
+        }
+    }
+    for node in &surface.required_nodes {
+        if !is_safe_surface_identifier(node) {
+            return Err(invalid(format!("unsafe Surface node type {node}")));
+        }
+    }
+    for capability in &surface.required_capabilities {
+        if !is_safe_surface_identifier(capability) {
+            return Err(invalid(format!(
+                "unsafe Surface capability id {capability}"
+            )));
+        }
+    }
+    let mut action_ids = HashSet::new();
+    for action in &surface.actions {
+        if !is_safe_surface_identifier(&action.id) {
+            return Err(invalid(format!("unsafe Surface action id {}", action.id)));
+        }
+        if !action_ids.insert(action.id.as_str()) {
+            return Err(invalid(format!(
+                "duplicate Surface action id {}",
+                action.id
+            )));
+        }
+        if action.risk == SurfaceActionRisk::High && !action.confirmation {
+            return Err(invalid(format!(
+                "high-risk Surface action {} must require Host confirmation",
+                action.id
+            )));
+        }
+        if action
+            .timeout_ms
+            .is_some_and(|timeout| timeout == 0 || timeout > 300_000)
+        {
+            return Err(invalid(format!(
+                "Surface action {} timeout must be between 1 and 300000 ms",
+                action.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_surface_entry_path(tool_id: &str, entry: &str) -> ToolRegistryResult<()> {
+    let path = Path::new(entry);
+    let safe = !entry.trim().is_empty()
+        && !entry.contains('\\')
+        && !path.is_absolute()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+    if safe {
+        Ok(())
+    } else {
+        Err(ToolRegistryError::InvalidToolDefinition {
+            id: tool_id.to_owned(),
+            reason: format!("Surface entry path is unsafe: {entry}"),
+        })
     }
 }
 
@@ -608,6 +789,47 @@ pub fn execute_tool(
     mcp_servers: &[loom_mcp::McpServerConfig],
     arguments: serde_json::Value,
 ) -> ToolRegistryResult<serde_json::Value> {
+    execute_tool_with_optional_timeout(tool, mcp_servers, arguments, None, None)
+}
+
+pub fn execute_tool_with_timeout(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    arguments: serde_json::Value,
+    timeout: Duration,
+) -> ToolRegistryResult<serde_json::Value> {
+    execute_tool_with_optional_timeout(
+        tool,
+        mcp_servers,
+        arguments,
+        Some(timeout.max(Duration::from_millis(1))),
+        None,
+    )
+}
+
+pub fn execute_tool_with_timeout_and_cancellation(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    arguments: serde_json::Value,
+    timeout: Duration,
+    cancellation: &AtomicBool,
+) -> ToolRegistryResult<serde_json::Value> {
+    execute_tool_with_optional_timeout(
+        tool,
+        mcp_servers,
+        arguments,
+        Some(timeout.max(Duration::from_millis(1))),
+        Some(cancellation),
+    )
+}
+
+fn execute_tool_with_optional_timeout(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    arguments: serde_json::Value,
+    timeout: Option<Duration>,
+    cancellation: Option<&AtomicBool>,
+) -> ToolRegistryResult<serde_json::Value> {
     tool.validate()?;
     if !tool.enabled {
         return Err(ToolRegistryError::ExecutionRejected {
@@ -629,7 +851,10 @@ pub fn execute_tool(
                     server_id: server_id.clone(),
                 })?;
 
-            let mut client = loom_mcp::McpClient::connect(server)?;
+            let mut client = match timeout {
+                Some(timeout) => loom_mcp::McpClient::connect_with_timeout(server, timeout)?,
+                None => loom_mcp::McpClient::connect(server)?,
+            };
             client.initialize()?;
             let tool_list = client.list_tools().ok();
             let normalized_arguments = normalize_mcp_call_arguments(
@@ -657,10 +882,23 @@ pub fn execute_tool(
             headers.as_deref(),
             body.as_deref(),
             arguments,
+            timeout.unwrap_or(CLOUD_API_TIMEOUT).min(CLOUD_API_TIMEOUT),
         ),
-        ToolExecution::FrameworkArt { framework } => {
-            framework_process::execute_framework_art(tool, framework, arguments)
-        }
+        ToolExecution::FrameworkArt { framework } => match (timeout, cancellation) {
+            (Some(timeout), Some(cancellation)) => {
+                framework_process::execute_framework_art_with_timeout_and_cancellation(
+                    tool,
+                    framework,
+                    arguments,
+                    timeout,
+                    cancellation,
+                )
+            }
+            (Some(timeout), None) => framework_process::execute_framework_art_with_timeout(
+                tool, framework, arguments, timeout,
+            ),
+            (None, _) => framework_process::execute_framework_art(tool, framework, arguments),
+        },
         _ => Err(ToolRegistryError::UnsupportedExecution {
             id: tool.id.clone(),
             execution_type: execution_type_name(&tool.execution),
@@ -848,6 +1086,7 @@ fn execute_cloud_api_tool(
     headers: Option<&str>,
     body: Option<&str>,
     arguments: serde_json::Value,
+    timeout: Duration,
 ) -> ToolRegistryResult<serde_json::Value> {
     let endpoint = substitute_cloud_template(endpoint, &arguments);
     let method = parse_cloud_method(tool, method)?;
@@ -875,13 +1114,12 @@ fn execute_cloud_api_tool(
     // (e.g. a stale 127.0.0.1:7890 from a stopped Clash/V2Ray), which makes every
     // cloud API call fail with "error sending request". Cloud arts talk directly
     // to their endpoint, matching Hook's own no_proxy client.
-    let client =
-        crate::network_policy::secure_client("Loom/0.1 Cloud API", CLOUD_API_TIMEOUT, policy)
-            .map_err(|reason| ToolRegistryError::CloudSecurity {
-                id: tool.id.clone(),
-                endpoint: endpoint.clone(),
-                reason,
-            })?;
+    let client = crate::network_policy::secure_client("Loom/0.1 Cloud API", timeout, policy)
+        .map_err(|reason| ToolRegistryError::CloudSecurity {
+            id: tool.id.clone(),
+            endpoint: endpoint.clone(),
+            reason,
+        })?;
     let mut request = client.request(method.clone(), &endpoint);
     let mut explicit_content_type = false;
     if let Some(headers) = headers.filter(|value| !value.trim().is_empty()) {
@@ -2156,6 +2394,41 @@ mod tests {
             },
         );
         assert!(valid.validate().is_ok());
+    }
+
+    #[test]
+    fn surface_manifest_requires_safe_package_local_entries() {
+        let mut tool = ToolDefinition::new(
+            "stock-price",
+            "Stock Price",
+            "Interactive stock card",
+            ToolExecution::FrameworkArt {
+                framework: "framework_art".to_owned(),
+            },
+        );
+        tool.metadata = Some(serde_json::json!({
+            "capabilities": {
+                "surface": {
+                    "protocolVersion": "loom.surface.v1",
+                    "apiVersion": "1.0",
+                    "variants": [{
+                        "runtime": "declarative",
+                        "entry": "surface/main.json"
+                    }],
+                    "fallbackScene": "surface/fallback.json",
+                    "requiredNodes": ["column", "text", "button"]
+                }
+            }
+        }));
+        assert!(tool.validate().is_ok());
+
+        tool.metadata.as_mut().expect("metadata")["capabilities"]["surface"]["variants"][0]
+            ["entry"] = serde_json::json!("../escape.json");
+        assert!(matches!(
+            tool.validate(),
+            Err(ToolRegistryError::InvalidToolDefinition { reason, .. })
+                if reason.contains("entry path is unsafe")
+        ));
     }
 
     #[test]

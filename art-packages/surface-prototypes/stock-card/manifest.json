@@ -1,0 +1,128 @@
+{
+  "id": "surface-stock-card",
+  "name": "股票卡片",
+  "description": "分布式 Surface 原型：输入股票代码、连续调整刷新间隔并接收流式价格更新。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "process"
+  },
+  "inputs": [],
+  "outputs": [
+    {
+      "name": "quote",
+      "label": "行情",
+      "type": "object"
+    }
+  ],
+  "params": [],
+  "metadata": {
+    "packageSecurity": {
+      "version": "1.0.0",
+      "publisher": {
+        "id": "neuro.official",
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/surface-stock-card",
+      "englishName": "surface-stock-card",
+      "globalId": "NA20260811001"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "股票卡片",
+        "en-US": "Stock Card"
+      },
+      "descriptions": {
+        "zh-CN": "输入股票代码、调整刷新间隔并接收流式行情更新。",
+        "en-US": "Enter a symbol, tune the refresh interval, and receive streaming quote patches."
+      }
+    },
+    "dependencies": {
+      "framework": "process",
+      "frameworkVersion": "^0.1"
+    },
+    "capabilities": {
+      "surface": {
+        "protocolVersion": "loom.surface.v1",
+        "apiVersion": "1.0",
+        "variants": [
+          {
+            "runtime": "declarative",
+            "entry": "surface/main.json"
+          }
+        ],
+        "requiredNodes": ["column", "row", "text", "input", "slider", "button", "divider"],
+        "requiredCapabilities": [],
+        "minimumSize": {
+          "width": 320,
+          "height": 240
+        },
+        "actions": [
+          {
+            "id": "stock_refresh",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": false,
+            "confirmation": false,
+            "cancelable": true,
+            "timeoutMs": 5000,
+            "progress": true
+          },
+          {
+            "id": "stock_symbol_input",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": false,
+            "timeoutMs": 2000,
+            "progress": false
+          },
+          {
+            "id": "stock_symbol_commit",
+            "risk": "low",
+            "offlinePolicy": "queue",
+            "concurrency": "serial",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": false,
+            "timeoutMs": 2000,
+            "progress": false
+          },
+          {
+            "id": "stock_interval_preview",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "coalesce",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": false,
+            "timeoutMs": 2000,
+            "progress": false
+          },
+          {
+            "id": "stock_interval_commit",
+            "risk": "low",
+            "offlinePolicy": "queue",
+            "concurrency": "serial",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": false,
+            "timeoutMs": 2000,
+            "progress": false
+          }
+        ]
+      }
+    },
+    "plugin": {
+      "packageVersion": "1.0.0",
+      "runtimeMode": "surface-prototype"
+    }
+  }
+}

@@ -511,6 +511,7 @@ try {
         LOOM_HOOK_BRIDGE_URL = $bridgeUrl
         LOOM_CONTROL_PLANE_ROOT = $controlPlaneRoot
         LOOM_CONFIGURATION_ROOT = $configurationRoot
+        LOOM_SMOKE_ALLOW_MULTIPLE_INSTANCES = "1"
         APPDATA = $appDataRoot
         LOCALAPPDATA = $localAppDataRoot
         WEBVIEW2_USER_DATA_FOLDER = $webViewRoot

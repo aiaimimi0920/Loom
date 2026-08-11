@@ -1,0 +1,815 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/loom/surface-message.v1.schema.json",
+  "title": "Loom Surface Message v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/snapshot"
+    },
+    {
+      "$ref": "#/$defs/patch"
+    },
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/actionAck"
+    },
+    {
+      "$ref": "#/$defs/confirmationRequest"
+    },
+    {
+      "$ref": "#/$defs/confirmationDecision"
+    },
+    {
+      "$ref": "#/$defs/actionCancelRequest"
+    },
+    {
+      "$ref": "#/$defs/actionProgress"
+    },
+    {
+      "$ref": "#/$defs/actionInvocation"
+    },
+    {
+      "$ref": "#/$defs/actionResponse"
+    },
+    {
+      "$ref": "#/$defs/previewCommit"
+    },
+    {
+      "$ref": "#/$defs/resultCommit"
+    },
+    {
+      "$ref": "#/$defs/executionFailure"
+    },
+    {
+      "$ref": "#/$defs/lifecycleEvent"
+    }
+  ],
+  "$defs": {
+    "safeIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._:/-]+$"
+    },
+    "protocolVersion": {
+      "const": "loom.surface.v1"
+    },
+    "resource": {
+      "type": "object",
+      "required": ["resourceId", "kind", "mime", "size"],
+      "properties": {
+        "resourceId": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "kind": {
+          "enum": ["image", "audio", "video", "file", "binary"]
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "resourceLease": {
+      "type": "object",
+      "required": ["leaseId", "resource", "transport", "expiresAtMs"],
+      "properties": {
+        "leaseId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "resource": {
+          "$ref": "#/$defs/resource"
+        },
+        "transport": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": ["shared_memory", "loom_resource", "stream"]
+            },
+            "handle": {
+              "type": "string",
+              "minLength": 1
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/v1/surfaces/resources/[A-Fa-f0-9]{64}$"
+            },
+            "streamId": {
+              "$ref": "#/$defs/safeIdentifier"
+            }
+          },
+          "additionalProperties": false
+        },
+        "expiresAtMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "stream": {
+      "type": "object",
+      "required": ["streamId", "itemType", "sequence"],
+      "properties": {
+        "streamId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "itemType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "portValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {
+              "const": "value"
+            },
+            "value": true
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "resource"],
+          "properties": {
+            "kind": {
+              "const": "resource"
+            },
+            "resource": {
+              "$ref": "#/$defs/resource"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "stream"],
+          "properties": {
+            "kind": {
+              "const": "stream"
+            },
+            "stream": {
+              "$ref": "#/$defs/stream"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "props": true,
+        "layout": true,
+        "style": true,
+        "accessibility": true,
+        "events": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safeIdentifier"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "attachmentId",
+        "artId",
+        "artVersion",
+        "revision",
+        "scene"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "attachmentId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "artId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "artVersion": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtime": {
+          "enum": ["declarative", "javascript", "shader", "loom_remote"]
+        },
+        "entryResourceId": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "scene": {
+          "$ref": "#/$defs/node"
+        },
+        "authoritativeState": true,
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resource"
+          }
+        },
+        "resourceLeases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resourceLease"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "patchOperation": {
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "enum": [
+            "set",
+            "remove",
+            "insert_node",
+            "remove_node",
+            "move_node",
+            "replace_node",
+            "set_visibility",
+            "set_binding"
+          ]
+        },
+        "nodeId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "parentId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "path": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "value": true,
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "binding": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "patch": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "attachmentId",
+        "baseRevision",
+        "revision",
+        "operations"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "attachmentId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "baseRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/patchOperation"
+          }
+        },
+        "statePatch": true,
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resource"
+          }
+        },
+        "resourceLeases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resourceLease"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "attachmentId",
+        "eventId",
+        "nodeId",
+        "event",
+        "class",
+        "generation",
+        "baseRevision"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "attachmentId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "eventId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "nodeId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "class": {
+          "enum": ["discrete", "continuous", "commit", "local"]
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "baseRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload": true
+      },
+      "additionalProperties": true
+    },
+    "executionError": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "actionAck": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "eventId",
+        "requestId",
+        "accepted",
+        "status"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "eventId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "requestId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "awaiting_confirmation",
+            "queued",
+            "running",
+            "cancel_requested",
+            "cancelled",
+            "succeeded",
+            "failed",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/executionError"
+        }
+      },
+      "additionalProperties": true
+    },
+    "confirmationRequest": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "confirmationId",
+        "instanceId",
+        "attachmentId",
+        "deviceId",
+        "hookNodeId",
+        "eventId",
+        "requestId",
+        "actionId",
+        "risk",
+        "expiresAtMs"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "confirmationId": { "$ref": "#/$defs/safeIdentifier" },
+        "instanceId": { "$ref": "#/$defs/safeIdentifier" },
+        "attachmentId": { "$ref": "#/$defs/safeIdentifier" },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "hookNodeId": { "$ref": "#/$defs/safeIdentifier" },
+        "eventId": { "$ref": "#/$defs/safeIdentifier" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "actionId": { "$ref": "#/$defs/safeIdentifier" },
+        "risk": { "enum": ["low", "medium", "high"] },
+        "expiresAtMs": { "type": "integer", "minimum": 1 },
+        "payload": true
+      },
+      "additionalProperties": false
+    },
+    "confirmationDecision": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "confirmationId",
+        "instanceId",
+        "attachmentId",
+        "deviceId",
+        "approved"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "confirmationId": { "$ref": "#/$defs/safeIdentifier" },
+        "instanceId": { "$ref": "#/$defs/safeIdentifier" },
+        "attachmentId": { "$ref": "#/$defs/safeIdentifier" },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "approved": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "actionCancelRequest": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "requestId",
+        "deviceId"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "instanceId": { "$ref": "#/$defs/safeIdentifier" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" }
+      },
+      "additionalProperties": false
+    },
+    "actionProgress": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "requestId",
+        "generation"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "requestId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "value": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stage": {
+          "type": "string"
+        },
+        "messageKey": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "actionInvocation": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "attachmentId",
+        "requestId",
+        "eventId",
+        "actionId",
+        "eventClass",
+        "generation",
+        "baseRevision"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "instanceId": { "$ref": "#/$defs/safeIdentifier" },
+        "attachmentId": { "$ref": "#/$defs/safeIdentifier" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "eventId": { "$ref": "#/$defs/safeIdentifier" },
+        "actionId": { "$ref": "#/$defs/safeIdentifier" },
+        "eventClass": { "enum": ["discrete", "continuous", "commit", "local"] },
+        "generation": { "type": "integer", "minimum": 0 },
+        "baseRevision": { "type": "integer", "minimum": 0 },
+        "payload": true,
+        "authoritativeState": true
+      },
+      "additionalProperties": false
+    },
+    "actionPatchUpdate": {
+      "type": "object",
+      "properties": {
+        "attachmentId": { "$ref": "#/$defs/safeIdentifier" },
+        "operations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/patchOperation" }
+        },
+        "statePatch": true,
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resource" }
+        },
+        "resourceLeases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resourceLease" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "actionResourceUpload": {
+      "type": "object",
+      "required": ["id", "kind", "mime", "dataBase64"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeIdentifier" },
+        "kind": { "enum": ["image", "audio", "video", "file", "binary"] },
+        "mime": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "dataBase64": { "type": "string", "minLength": 1, "maxLength": 22369624 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "leaseMillis": { "type": "integer", "minimum": 1, "maximum": 3600000 }
+      },
+      "additionalProperties": false
+    },
+    "actionResponse": {
+      "type": "object",
+      "required": ["protocolVersion"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "patches": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/actionPatchUpdate" }
+        },
+        "resourceUploads": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/actionResourceUpload" }
+        },
+        "preview": {
+          "type": "object",
+          "required": ["portId", "value"],
+          "properties": {
+            "portId": { "$ref": "#/$defs/safeIdentifier" },
+            "value": { "$ref": "#/$defs/portValue" }
+          },
+          "additionalProperties": false
+        },
+        "result": {
+          "type": "object",
+          "required": ["outputs"],
+          "properties": {
+            "outputs": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "$ref": "#/$defs/portValue" }
+            },
+            "statePatch": true
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "previewCommit": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "requestId",
+        "generation",
+        "previewRevision",
+        "portId",
+        "value"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "requestId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "previewRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "portId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "value": {
+          "$ref": "#/$defs/portValue"
+        }
+      },
+      "additionalProperties": true
+    },
+    "resultCommit": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "requestId",
+        "generation",
+        "resultRevision",
+        "outputs"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "requestId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resultRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/portValue"
+          }
+        },
+        "statePatch": true
+      },
+      "additionalProperties": true
+    },
+    "executionFailure": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "requestId",
+        "generation",
+        "error"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/protocolVersion"
+        },
+        "instanceId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "requestId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "$ref": "#/$defs/executionError"
+        },
+        "lastSuccessfulResultRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "lifecycleEvent": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "instanceId",
+        "attachmentId",
+        "state",
+        "revision"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "instanceId": { "$ref": "#/$defs/safeIdentifier" },
+        "attachmentId": { "$ref": "#/$defs/safeIdentifier" },
+        "state": {
+          "enum": ["created", "mounted", "active", "inactive", "suspended", "disposed"]
+        },
+        "revision": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

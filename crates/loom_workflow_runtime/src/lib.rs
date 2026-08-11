@@ -2,10 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use loom_tool_registry::{
-    execute_tool, prepare_tool_arguments, ToolDefinition, ToolExecution, ToolRegistry,
-    ToolRegistryError, WorkflowExecutionBindings, WorkflowInputBinding, WorkflowOutputBinding,
+    execute_tool, execute_tool_with_timeout, prepare_tool_arguments, ToolDefinition, ToolExecution,
+    ToolRegistry, ToolRegistryError, WorkflowExecutionBindings, WorkflowInputBinding,
+    WorkflowOutputBinding,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use serde::Deserialize;
@@ -43,6 +45,8 @@ pub enum WorkflowRuntimeError {
     },
     #[error("workflow `{workflow_id}` preview policy is invalid: {reason}")]
     InvalidPreviewPolicy { workflow_id: String, reason: String },
+    #[error("workflow execution exceeded its caller-owned timeout")]
+    Timeout,
 }
 
 pub type WorkflowRuntimeResult<T> = Result<T, WorkflowRuntimeError>;
@@ -54,13 +58,33 @@ pub fn execute_tool_with_workflows(
     tool_registry: &ToolRegistry,
     arguments: JsonValue,
 ) -> WorkflowRuntimeResult<serde_json::Value> {
-    execute_tool_with_workflows_and_preview(
+    execute_tool_with_workflows_internal(
         tool,
         mcp_servers,
         workflow_store,
         tool_registry,
         arguments,
-        |_| {},
+        &mut |_| {},
+        None,
+    )
+}
+
+pub fn execute_tool_with_workflows_timeout(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    workflow_store: &WorkflowStore,
+    tool_registry: &ToolRegistry,
+    arguments: JsonValue,
+    timeout: Duration,
+) -> WorkflowRuntimeResult<serde_json::Value> {
+    execute_tool_with_workflows_internal(
+        tool,
+        mcp_servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        &mut |_| {},
+        Some(Instant::now() + timeout.max(Duration::from_millis(1))),
     )
 }
 
@@ -75,21 +99,47 @@ pub fn execute_tool_with_workflows_and_preview<F>(
 where
     F: FnMut(JsonValue),
 {
+    execute_tool_with_workflows_internal(
+        tool,
+        mcp_servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        &mut preview_callback,
+        None,
+    )
+}
+
+fn execute_tool_with_workflows_internal(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    workflow_store: &WorkflowStore,
+    tool_registry: &ToolRegistry,
+    arguments: JsonValue,
+    preview_callback: &mut dyn FnMut(JsonValue),
+    deadline: Option<Instant>,
+) -> WorkflowRuntimeResult<serde_json::Value> {
     let arguments = prepare_tool_arguments(tool, arguments)?;
     match &tool.execution {
         ToolExecution::Workflow {
             workflow_id,
             workflow_bindings,
         } => execute_workflow_tool(
+            tool,
             workflow_id,
             workflow_bindings.as_ref(),
             mcp_servers,
             workflow_store,
             tool_registry,
             arguments,
-            &mut preview_callback,
+            preview_callback,
+            deadline,
         ),
-        _ => execute_tool(tool, mcp_servers, arguments).map_err(WorkflowRuntimeError::from),
+        _ => match remaining_timeout(deadline)? {
+            Some(timeout) => execute_tool_with_timeout(tool, mcp_servers, arguments, timeout)
+                .map_err(WorkflowRuntimeError::from),
+            None => execute_tool(tool, mcp_servers, arguments).map_err(WorkflowRuntimeError::from),
+        },
     }
 }
 
@@ -143,6 +193,7 @@ pub fn workflow_node_tool_ids(
 }
 
 fn execute_workflow_tool(
+    root_tool: &ToolDefinition,
     workflow_id: &str,
     workflow_bindings: Option<&WorkflowExecutionBindings>,
     mcp_servers: &[loom_mcp::McpServerConfig],
@@ -150,6 +201,7 @@ fn execute_workflow_tool(
     tool_registry: &ToolRegistry,
     arguments: JsonValue,
     preview_callback: &mut dyn FnMut(JsonValue),
+    deadline: Option<Instant>,
 ) -> WorkflowRuntimeResult<JsonValue> {
     let workflow = load_stored_workflow(workflow_store, workflow_id)?;
     let normalized_bindings = workflow_bindings
@@ -163,6 +215,7 @@ fn execute_workflow_tool(
                 &workflow,
                 workflow_bindings.expect("preview output requires bindings"),
                 preview_output,
+                root_tool,
                 tool_registry,
             )
         })
@@ -213,11 +266,13 @@ fn execute_workflow_tool(
         }
 
         for node_id in ready {
+            remaining_timeout(deadline)?;
             let node = pending
                 .remove(&node_id)
                 .expect("ready node is present in pending map");
             let result = execute_workflow_node(
                 workflow_id,
+                root_tool,
                 &node,
                 workflow_bindings,
                 &root_input,
@@ -226,6 +281,7 @@ fn execute_workflow_tool(
                 mcp_servers,
                 workflow_store,
                 tool_registry,
+                deadline,
             )?;
             results.insert(node_id, result);
             if !preview_emitted {
@@ -271,6 +327,7 @@ fn validate_preview_policy(
     workflow: &StoredWorkflow,
     bindings: &WorkflowExecutionBindings,
     preview_output: &WorkflowOutputBinding,
+    root_tool: &ToolDefinition,
     tool_registry: &ToolRegistry,
 ) -> WorkflowRuntimeResult<WorkflowPreviewPolicy> {
     let nodes = workflow
@@ -289,7 +346,9 @@ fn validate_preview_policy(
         && !is_sticker_art(&preview_node.uses)
         && !loom_native_image::is_native_art_id(&preview_node.uses)
     {
-        if let Some(tool) = tool_registry.get_tool(&preview_node.uses)? {
+        if let Some(tool) =
+            resolve_workflow_child_tool(root_tool, &preview_node.uses, tool_registry)?
+        {
             let output_names = tool
                 .outputs
                 .iter()
@@ -430,6 +489,7 @@ fn workflow_image_target_role(target: &str) -> u8 {
 #[allow(clippy::too_many_arguments)]
 fn execute_workflow_node(
     workflow_id: &str,
+    parent_tool: &ToolDefinition,
     node: &StoredWorkflowNode,
     workflow_bindings: Option<&WorkflowExecutionBindings>,
     root_input: &Option<String>,
@@ -438,6 +498,7 @@ fn execute_workflow_node(
     mcp_servers: &[loom_mcp::McpServerConfig],
     workflow_store: &WorkflowStore,
     tool_registry: &ToolRegistry,
+    deadline: Option<Instant>,
 ) -> WorkflowRuntimeResult<JsonValue> {
     let (mut child_args, mut child_input) = resolve_node_params(node, results);
 
@@ -522,20 +583,101 @@ fn execute_workflow_node(
         return Ok(image_content_response(&output, "image/png"));
     }
 
-    let child_tool = tool_registry.get_tool(&node.uses)?.ok_or_else(|| {
-        WorkflowRuntimeError::ChildToolNotFound {
+    let child_tool = resolve_workflow_child_tool(parent_tool, &node.uses, tool_registry)?
+        .ok_or_else(|| WorkflowRuntimeError::ChildToolNotFound {
             workflow_id: workflow_id.to_owned(),
             tool_id: node.uses.clone(),
-        }
-    })?;
+        })?;
 
-    execute_tool_with_workflows(
+    execute_tool_with_workflows_internal(
         &child_tool,
         mcp_servers,
         workflow_store,
         tool_registry,
         JsonValue::Object(child_args),
+        &mut |_| {},
+        deadline,
     )
+}
+
+fn remaining_timeout(deadline: Option<Instant>) -> WorkflowRuntimeResult<Option<Duration>> {
+    let Some(deadline) = deadline else {
+        return Ok(None);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(WorkflowRuntimeError::Timeout);
+    }
+    Ok(Some(remaining))
+}
+
+fn resolve_workflow_child_tool(
+    parent_tool: &ToolDefinition,
+    child_id: &str,
+    tool_registry: &ToolRegistry,
+) -> WorkflowRuntimeResult<Option<ToolDefinition>> {
+    let locked = parent_tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .and_then(|package| package.get("lockedArts"))
+        .and_then(JsonValue::as_object);
+    if let Some(locked) = locked {
+        if let Some(tool) = locked.get(child_id) {
+            return serde_json::from_value::<ToolDefinition>(tool.clone())
+                .map(Some)
+                .map_err(|error| ToolRegistryError::InvalidToolDefinition {
+                    id: child_id.to_owned(),
+                    reason: format!("locked workflow child is invalid: {error}"),
+                })
+                .map_err(WorkflowRuntimeError::from);
+        }
+        for tool in locked.values() {
+            let candidate =
+                serde_json::from_value::<ToolDefinition>(tool.clone()).map_err(|error| {
+                    ToolRegistryError::InvalidToolDefinition {
+                        id: child_id.to_owned(),
+                        reason: format!("locked workflow child is invalid: {error}"),
+                    }
+                })?;
+            if candidate.id == child_id || candidate.qualified_id() == child_id {
+                return Ok(Some(candidate));
+            }
+        }
+    }
+
+    let declared_locked_dependency = parent_tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("dependencies"))
+        .and_then(|dependencies| dependencies.get("arts"))
+        .and_then(JsonValue::as_array)
+        .is_some_and(|arts| {
+            arts.iter().any(|dependency| {
+                dependency.as_str().is_some_and(|dependency| {
+                    dependency == child_id
+                        || dependency
+                            .rsplit_once('/')
+                            .is_some_and(|(_, local)| local == child_id)
+                        || child_id
+                            .rsplit_once('/')
+                            .is_some_and(|(_, local)| local == dependency)
+                })
+            })
+        });
+    if parent_tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+        .is_some()
+        && declared_locked_dependency
+    {
+        return Ok(None);
+    }
+
+    tool_registry
+        .get_tool(child_id)
+        .map_err(WorkflowRuntimeError::from)
 }
 
 fn resolve_node_params(
@@ -972,6 +1114,56 @@ mod tests {
                 workflow_bindings: None,
             },
         )
+    }
+
+    #[test]
+    fn packaged_workflow_resolves_its_immutable_locked_child_instead_of_active_registry() {
+        let root = temp_root("locked-child-resolution");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let active = ToolDefinition::new(
+            "child",
+            "Active v2",
+            "active child",
+            ToolExecution::CloudApi {
+                endpoint: "https://active.invalid".to_owned(),
+                method: "POST".to_owned(),
+                content_type: None,
+                headers: None,
+                body: None,
+            },
+        );
+        registry.save_tool(active).expect("save active child");
+        let locked = ToolDefinition::new(
+            "child",
+            "Locked v1",
+            "locked child",
+            ToolExecution::CloudApi {
+                endpoint: "https://locked.invalid".to_owned(),
+                method: "POST".to_owned(),
+                content_type: None,
+                headers: None,
+                body: None,
+            },
+        );
+        let mut parent = workflow_tool("locked-workflow");
+        parent.metadata = Some(json!({
+            "dependencies": { "arts": ["child"] },
+            "artPackage": {
+                "lockedArts": { "child": locked }
+            }
+        }));
+
+        let resolved = resolve_workflow_child_tool(&parent, "child", &registry)
+            .expect("resolve child")
+            .expect("locked child");
+        assert_eq!(resolved.name, "Locked v1");
+
+        let mut missing = parent.clone();
+        missing.metadata.as_mut().unwrap()["artPackage"]["lockedArts"] = json!({});
+        assert!(resolve_workflow_child_tool(&missing, "child", &registry)
+            .expect("resolve missing lock")
+            .is_none());
+        fs::remove_dir_all(root).expect("cleanup locked child resolution root");
     }
 
     fn workflow_tool_with_bindings(
@@ -1572,6 +1764,7 @@ nodes:
         let root_input = Some(TEST_IMAGE.to_owned());
         let result = execute_workflow_node(
             "local-path-flow",
+            &workflow_tool("local-path-flow"),
             &node,
             Some(&bindings),
             &root_input,
@@ -1583,6 +1776,7 @@ nodes:
             &[],
             &workflow_store,
             &tool_registry,
+            None,
         )
         .expect("resolve local path binding");
 
@@ -1621,6 +1815,7 @@ nodes:
 
         let error = execute_workflow_node(
             "missing-binding-flow",
+            &workflow_tool("missing-binding-flow"),
             &node,
             Some(&bindings),
             &root_input,
@@ -1629,6 +1824,7 @@ nodes:
             &[],
             &workflow_store,
             &tool_registry,
+            None,
         )
         .expect_err("missing input_2 must not reuse the root input");
 

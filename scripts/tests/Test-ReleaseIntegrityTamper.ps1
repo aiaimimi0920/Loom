@@ -186,6 +186,12 @@ function New-IntegrityFixture {
         @{ path = "protocol/schemas/framework-execute-response.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/framework-authoring.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/art-runtime.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/device-session.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/surface-manifest.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/surface-message.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/surface-scene.v1.schema.json"; content = "{}" },
+        @{ path = "sdk/surface/README.md"; content = "surface sdk" },
+        @{ path = "sdk/surface/neuro-surface.d.ts"; content = "export {};" },
         @{ path = "docs/plugin-development.md"; content = "development" },
         @{ path = "docs/plugin-security.md"; content = "security" },
         @{ path = "docs/plugin-permissions.md"; content = "permissions" },
@@ -256,7 +262,7 @@ function New-IntegrityFixture {
         bytes = $pluginSdkRecord.bytes
         sha256 = $pluginSdkRecord.sha256
         protocolVersion = "loom.framework.v1"
-        schemaCount = 5
+        schemaCount = 9
     }
 
     $manifest = [ordered]@{

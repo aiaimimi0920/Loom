@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Write};
@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64_URL};
 use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use loom_configuration::{
     built_in_registry, default_configuration_root, render_app_settings_page, render_settings_index,
     ConfigRegistry, FileDocumentStore, ManagedAppId, ManagedAppSet, ManagedConfigError,
@@ -37,7 +38,14 @@ use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
-    is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest, PublisherTrustRecord,
+    device_session_signature_message, is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest,
+    DeviceSessionChallengeRequest, DeviceSessionChallengeResponse, DeviceSessionIssueRequest,
+    DeviceSessionIssueResponse, PublisherTrustRecord, SurfaceActionCancelRequest,
+    SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure, SurfaceHostCapabilities,
+    SurfaceInstanceMode, SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode,
+    SurfacePatch, SurfacePortValue, SurfacePreviewCommit, SurfaceResourceDescriptor,
+    SurfaceResourceKind, SurfaceResourceTransport, SurfaceResourceTransportKind,
+    SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot, DEVICE_SESSION_PROTOCOL_VERSION,
 };
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
 use loom_tool_registry::art_settings::{
@@ -60,13 +68,18 @@ use loom_workflow_runtime::{
     WorkflowRuntimeError,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
+use uuid::Uuid;
 
 mod brain_plan;
 mod hook_canvas;
 mod request_executor;
+mod surface_actions;
+mod surface_resources;
+mod surface_store;
 
 use brain_plan::{
     build_brain_planner, BrainPlanRequest, BrainPlannerConfig, BrainPlannerStatus,
@@ -75,6 +88,12 @@ use brain_plan::{
 use request_executor::{
     BoundedRequestExecutor, RequestExecutorConfig, RequestExecutorStatus, SubmitError,
 };
+use surface_actions::{SharedSurfaceActionExecutor, SurfaceActionExecutor};
+use surface_resources::{
+    SharedSurfaceResourceStore, SurfaceResourceStore, SurfaceResourceStoreError,
+    MAX_SURFACE_RESOURCE_BYTES,
+};
+use surface_store::{SharedSurfaceInstanceStore, SurfaceInstanceStore, SurfaceStoreError};
 
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
@@ -84,6 +103,8 @@ const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_PACKAGE_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PYTHON_SOURCE_BYTES: u64 = 512 * 1024;
 const MAX_ART_JSON_BYTES: u64 = 512 * 1024;
+const MAX_SURFACE_SCENE_BYTES: u64 = 1024 * 1024;
+const MAX_SURFACE_JAVASCRIPT_BYTES: u64 = 512 * 1024;
 const CAPABILITY_BRAIN_PLAN: &str = "brain.plan";
 const CAPABILITY_TEA_TICKET_DECOMPOSE: &str = "tea.ticket.decompose.v1";
 const CAPABILITY_TEA_TICKET_EXECUTE: &str = "tea.ticket.execute.v1";
@@ -128,6 +149,7 @@ pub fn daemon_help_text() -> &'static str {
         "  LOOM_DAEMON_WORKERS  Request worker threads [default: 4]\n",
         "  LOOM_DAEMON_QUEUE_CAPACITY  Queued requests [default: 32]\n",
         "  LOOM_DAEMON_TOKEN    Bearer token; required for non-loopback binds\n",
+        "  LOOM_TLS_TERMINATED  Set to 1 only behind an authenticated TLS terminator for non-loopback binds\n",
         "  LOOM_BUNDLED_ART_SHA256_ALLOWLIST  Comma-separated packaged Art digests supplied by Loom desktop\n",
         "  LOOM_CAPABILITY_MANIFEST_DIR  Directory for loom.json discovery manifest\n",
         "  LOOM_RUN_STORE_PATH  SQLite run evidence path [default: <control-plane>\\runs\\loom-runs.sqlite3]\n",
@@ -141,6 +163,26 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /health\n",
         "  GET  /status\n",
         "  GET  /v1/capabilities\n",
+        "  GET  /v1/surfaces/instances\n",
+        "  POST /v1/surfaces/instances\n",
+        "  POST /v1/surfaces/attach\n",
+        "  GET  /v1/surfaces/stream\n",
+        "  GET  /v1/surfaces/instances/{instanceId}\n",
+        "  DELETE /v1/surfaces/instances/{instanceId}\n",
+        "  POST /v1/surfaces/instances/{instanceId}/attachments\n",
+        "  PUT  /v1/surfaces/instances/{instanceId}/snapshot\n",
+        "  POST /v1/surfaces/instances/{instanceId}/patch\n",
+        "  POST /v1/surfaces/instances/{instanceId}/generation\n",
+        "  POST /v1/surfaces/instances/{instanceId}/preview\n",
+        "  POST /v1/surfaces/instances/{instanceId}/result\n",
+        "  POST /v1/surfaces/instances/{instanceId}/failure\n",
+        "  POST /v1/surfaces/instances/{instanceId}/events\n",
+        "  POST /v1/surfaces/instances/{instanceId}/migrate\n",
+        "  POST /v1/surfaces/instances/{instanceId}/mount\n",
+        "  POST /v1/surfaces/actions/cancel\n",
+        "  POST /v1/surfaces/confirmations/decision\n",
+        "  POST /v1/device-sessions/challenges\n",
+        "  POST /v1/device-sessions\n",
         "  POST /v1/invoke\n",
         "  GET  /v1/mcp/servers\n",
         "  GET  /v1/mcp/registry\n",
@@ -233,6 +275,7 @@ pub struct DaemonConfig {
     port: u16,
     hook_settings: HookSettings,
     auth_token: Option<String>,
+    tls_terminated: bool,
     manifest_dir: Option<PathBuf>,
     mcp_registry_endpoint: String,
     brain_planner: BrainPlannerConfig,
@@ -249,6 +292,7 @@ impl DaemonConfig {
             port,
             hook_settings: HookSettings::default(),
             auth_token: None,
+            tls_terminated: false,
             manifest_dir: None,
             mcp_registry_endpoint: std::env::var("LOOM_MCP_REGISTRY_ENDPOINT")
                 .ok()
@@ -280,6 +324,20 @@ impl DaemonConfig {
             self.auth_token = Some(token);
         }
         self
+    }
+
+    #[must_use]
+    pub fn with_tls_termination(mut self, tls_terminated: bool) -> Self {
+        self.tls_terminated = tls_terminated;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tls_termination_from_env(self) -> Self {
+        let enabled = std::env::var("LOOM_TLS_TERMINATED")
+            .ok()
+            .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        self.with_tls_termination(enabled)
     }
 
     #[must_use]
@@ -385,6 +443,9 @@ struct DaemonRuntime {
     bundled_art_sha256_allowlist: BTreeSet<String>,
     hook_bridge: SharedHookBridgeRuntime,
     device_registry: SharedDeviceRegistryStore,
+    surface_instances: SharedSurfaceInstanceStore,
+    surface_actions: SharedSurfaceActionExecutor,
+    surface_resources: SharedSurfaceResourceStore,
     artloom_settings: SharedArtLoomCompatSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
@@ -413,6 +474,12 @@ impl LoomDaemon {
         if config.auth_token.is_none() && !is_loopback_bind_host(&config.host) {
             anyhow::bail!(
                 "loom daemon auth token is required when binding non-loopback host {}",
+                config.host
+            );
+        }
+        if !config.tls_terminated && !is_loopback_bind_host(&config.host) {
+            anyhow::bail!(
+                "loom daemon refuses plaintext non-loopback bind {}; place it behind an authenticated TLS terminator and set LOOM_TLS_TERMINATED=1",
                 config.host
             );
         }
@@ -470,26 +537,59 @@ impl LoomDaemon {
                 .join("artloom-compat-settings.json"),
         );
         apply_artloom_runtime_settings(&artloom_settings_store.settings);
+        let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root)));
+        let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
+        let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
+            control_plane_root.join("workflows"),
+        )));
+        let surface_instances = Arc::new(Mutex::new(
+            SurfaceInstanceStore::new(
+                control_plane_root
+                    .join("surface-instances")
+                    .join("instances.json"),
+            )
+            .context("open Surface instance store")?,
+        ));
+        let surface_resources = Arc::new(Mutex::new(
+            SurfaceResourceStore::new(control_plane_root.join("surface-resources"))
+                .context("open Surface resource store")?,
+        ));
+        let surface_actions = Arc::new(
+            SurfaceActionExecutor::new(
+                Arc::clone(&mcp_servers),
+                tool_registry.clone(),
+                workflow_store.clone(),
+                FrameworkRegistry::new(&control_plane_root),
+                control_plane_root.to_path_buf(),
+                Arc::clone(&surface_instances),
+                Arc::clone(&surface_resources),
+                Arc::clone(&hook_bridge),
+            )
+            .context("start Surface action executor")?,
+        );
+        surface_actions.recover_pending();
         let runtime = DaemonRuntime {
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
             auth_token: config.auth_token,
             config_registry: Arc::new(built_in_registry()),
             config_store: FileDocumentStore::new(config_root),
-            mcp_servers: Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root))),
-            tool_registry: ToolRegistry::new(control_plane_root.join("tools")),
-            workflow_store: WorkflowStore::new(control_plane_root.join("workflows")),
+            mcp_servers,
+            tool_registry,
+            workflow_store,
             canvas_workflow_root: control_plane_root.join("canvas-workflows"),
             framework_registry: FrameworkRegistry::new(&control_plane_root),
             control_plane_root: control_plane_root.to_path_buf(),
             bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
-            hook_bridge: Arc::new(Mutex::new(HookBridgeRuntime::new(
-                control_plane_root.join("workflows"),
-            ))),
+            hook_bridge,
             device_registry: Arc::new(Mutex::new(DeviceRegistryStore::new(
                 control_plane_root.join("settings").join("devices.json"),
                 local_addr,
             ))),
+            surface_instances,
+            surface_actions,
+            surface_resources,
             artloom_settings: Arc::new(Mutex::new(artloom_settings_store)),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
@@ -531,6 +631,13 @@ impl LoomDaemon {
                 move |job: RequestJob| handle_request_job(job, &worker_runtime),
             )?),
         };
+        let surface_stream_runtime = Arc::clone(&self.runtime);
+        let mut surface_stream_executor = BoundedRequestExecutor::new(
+            "loom-surface-stream",
+            SURFACE_STREAM_WORKERS,
+            SURFACE_STREAM_QUEUE_CAPACITY,
+            move |job: RequestJob| handle_request_job(job, &surface_stream_runtime),
+        )?;
 
         let serve_result: Result<()> = loop {
             if shutdown.try_recv().is_ok() {
@@ -538,6 +645,7 @@ impl LoomDaemon {
                 if let Some(request_executor) = executor.as_mut() {
                     request_executor.close();
                 }
+                surface_stream_executor.close();
                 break Ok(());
             }
 
@@ -552,6 +660,7 @@ impl LoomDaemon {
                         if let Some(request_executor) = executor.as_mut() {
                             request_executor.close();
                         }
+                        surface_stream_executor.close();
                     }
                     match outcome {
                         HttpReadOutcome::Empty => {}
@@ -574,6 +683,20 @@ impl LoomDaemon {
                             }
                             if is_reserved_probe(&job.request) {
                                 handle_parsed_request(job.stream, job.request, &self.runtime);
+                                continue;
+                            }
+                            if is_surface_stream_request(&job.request) {
+                                match surface_stream_executor.try_submit(job) {
+                                    Ok(()) => record_request_submission(&self.runtime),
+                                    Err(SubmitError::Full(job)) => {
+                                        let (status, body) = daemon_busy_response();
+                                        write_response_safely(job.stream, status, &body);
+                                    }
+                                    Err(SubmitError::Closed(job)) => {
+                                        let (status, body) = daemon_shutting_down_response();
+                                        write_response_safely(job.stream, status, &body);
+                                    }
+                                }
                                 continue;
                             }
                             let request_executor =
@@ -606,11 +729,14 @@ impl LoomDaemon {
             .as_mut()
             .map(BoundedRequestExecutor::shutdown)
             .transpose();
+        let surface_stream_shutdown_result = surface_stream_executor.shutdown();
         if let Err(error) = serve_result {
             let _ = shutdown_result;
+            let _ = surface_stream_shutdown_result;
             return Err(error);
         }
         shutdown_result.context("shutdown Loom request executor")?;
+        surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
         Ok(())
     }
 }
@@ -652,6 +778,9 @@ fn route_with_runtime(
         &runtime.workflow_store,
         &runtime.hook_bridge,
         &runtime.device_registry,
+        &runtime.surface_instances,
+        &runtime.surface_actions,
+        &runtime.surface_resources,
         &runtime.artloom_settings,
         &runtime.shared_images,
         &runtime.ocr_provider,
@@ -916,13 +1045,38 @@ enum RouteResponse {
     },
     Binary {
         status: u16,
-        content_type: &'static str,
+        content_type: String,
         body: Vec<u8>,
     },
 }
 
 fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteResponse {
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(digest) = surface_resource_request_digest(&request.method, &request.path) {
+            if let Some(token) = runtime.auth_token.as_deref() {
+                if !request.has_bearer(token) {
+                    match authenticate_http_device_session(request, &runtime.device_registry) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            return structured_error(
+                                401,
+                                json!({
+                                    "code": "unauthorized",
+                                    "message": "missing or invalid Loom administrator or device session credential",
+                                }),
+                            )
+                            .map(|(status, body)| RouteResponse::Text { status, body });
+                        }
+                        Err(error) => {
+                            return device_auth_error_response(error)
+                                .map(|(status, body)| RouteResponse::Text { status, body });
+                        }
+                    }
+                }
+            }
+            let lease_id = request.header("x-loom-surface-lease").unwrap_or_default();
+            return surface_resource_binary_response(digest, lease_id, &runtime.surface_resources);
+        }
         if let Some((workflow_id, node_id)) =
             canvas_workflow_preview_ids(&request.method, &request.path)
         {
@@ -990,7 +1144,7 @@ fn write_route_response_safely(mut stream: TcpStream, response: RouteResponse) {
             status,
             content_type,
             body,
-        } => write_binary_response(&mut stream, status, content_type, &body),
+        } => write_binary_response(&mut stream, status, &content_type, &body),
     };
     if let Err(error) = result {
         eprintln!("loom response write failed: {error:#}");
@@ -1613,7 +1767,10 @@ fn request_body_size_limit(headers: &str) -> usize {
     let path = request_line.next().unwrap_or_default();
     let is_package_install = matches!(path, "/v1/frameworks/install" | "/v1/arts/install");
     let is_framework_upgrade = path.starts_with("/v1/frameworks/") && path.ends_with("/upgrade");
-    if method.eq_ignore_ascii_case("POST") && (is_package_install || is_framework_upgrade) {
+    let is_surface_resource = path == "/v1/surfaces/resources";
+    if method.eq_ignore_ascii_case("POST")
+        && (is_package_install || is_framework_upgrade || is_surface_resource)
+    {
         MAX_PACKAGE_HTTP_BODY_BYTES
     } else {
         MAX_HTTP_BODY_BYTES
@@ -1679,6 +1836,26 @@ impl ParsedHttpRequest {
                 && parts.next() == Some(token)
                 && parts.next().is_none()
         })
+    }
+
+    fn authorization_credential(&self, expected_scheme: &str) -> Option<&str> {
+        self.headers.iter().find_map(|(name, value)| {
+            if !name.eq_ignore_ascii_case("authorization") {
+                return None;
+            }
+            let mut parts = value.split_whitespace();
+            let scheme = parts.next()?;
+            let credential = parts.next()?;
+            (scheme.eq_ignore_ascii_case(expected_scheme) && parts.next().is_none())
+                .then_some(credential)
+        })
+    }
+
+    fn header(&self, expected_name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(expected_name))
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -2448,6 +2625,28 @@ impl HookBridgeRuntime {
 struct HookBridgeBroadcastHub {
     subscribers: Arc<Mutex<Vec<HookBridgeSubscriber>>>,
     next_subscriber_id: Arc<AtomicUsize>,
+    history: Arc<(Mutex<VecDeque<HookBridgeHistoryEntry>>, Condvar)>,
+    next_sequence: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct HookBridgeHistoryEntry {
+    sequence: usize,
+    message: String,
+}
+
+const HOOK_BRIDGE_HISTORY_CAPACITY: usize = 2_048;
+const HOOK_BRIDGE_POLL_MAX_MESSAGES: usize = 128;
+const SURFACE_STREAM_WORKERS: usize = 8;
+const SURFACE_STREAM_QUEUE_CAPACITY: usize = 128;
+
+fn is_surface_stream_request(request: &ParsedHttpRequest) -> bool {
+    request.method == "GET"
+        && request
+            .path
+            .split('?')
+            .next()
+            .is_some_and(|path| path == "/v1/surfaces/stream")
 }
 
 impl HookBridgeBroadcastHub {
@@ -2455,6 +2654,8 @@ impl HookBridgeBroadcastHub {
         Self {
             subscribers: Arc::new(Mutex::new(Vec::new())),
             next_subscriber_id: Arc::new(AtomicUsize::new(1)),
+            history: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
+            next_sequence: Arc::new(AtomicUsize::new(1)),
         }
     }
 
@@ -2468,6 +2669,67 @@ impl HookBridgeBroadcastHub {
     fn clear(&self) {
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers.clear();
+        }
+        if let Ok(mut history) = self.history.0.lock() {
+            history.clear();
+        }
+    }
+
+    fn record(&self, broadcasts: &[String]) {
+        if broadcasts.is_empty() {
+            return;
+        }
+        let (history_lock, changed) = &*self.history;
+        let Ok(mut history) = history_lock.lock() else {
+            return;
+        };
+        for message in broadcasts {
+            let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
+            history.push_back(HookBridgeHistoryEntry {
+                sequence,
+                message: message.clone(),
+            });
+        }
+        while history.len() > HOOK_BRIDGE_HISTORY_CAPACITY {
+            history.pop_front();
+        }
+        changed.notify_all();
+    }
+
+    fn wait_after(
+        &self,
+        after: usize,
+        timeout: Duration,
+    ) -> (usize, bool, Vec<HookBridgeHistoryEntry>) {
+        let deadline = Instant::now() + timeout;
+        let (history_lock, changed) = &*self.history;
+        let Ok(mut history) = history_lock.lock() else {
+            return (after, false, Vec::new());
+        };
+        loop {
+            let oldest = history.front().map(|entry| entry.sequence);
+            let reset = oldest.is_some_and(|oldest| after.saturating_add(1) < oldest);
+            let entries = history
+                .iter()
+                .filter(|entry| reset || entry.sequence > after)
+                .take(HOOK_BRIDGE_POLL_MAX_MESSAGES)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !entries.is_empty() {
+                let next = entries.last().map(|entry| entry.sequence).unwrap_or(after);
+                return (next, reset, entries);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return (after, false, Vec::new());
+            }
+            let Ok((next_history, timed_out)) = changed.wait_timeout(history, remaining) else {
+                return (after, false, Vec::new());
+            };
+            history = next_history;
+            if timed_out.timed_out() {
+                return (after, false, Vec::new());
+            }
         }
     }
 }
@@ -2504,6 +2766,12 @@ struct ManagedDevice {
     is_local: bool,
     #[serde(default = "default_managed_device_enabled")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_fingerprint: Option<String>,
+    #[serde(default)]
+    session_epoch: u64,
 }
 
 fn default_managed_device_enabled() -> bool {
@@ -2519,6 +2787,44 @@ struct DeviceRegistryDocument {
 struct DeviceRegistryStore {
     path: PathBuf,
     devices: BTreeMap<String, ManagedDevice>,
+    challenges: BTreeMap<String, DeviceSessionChallenge>,
+    sessions: BTreeMap<String, ActiveDeviceSession>,
+}
+
+const DEVICE_CHALLENGE_TTL_MILLIS: u64 = 60_000;
+const DEVICE_SESSION_TTL_MILLIS: u64 = 15 * 60_000;
+const DEVICE_SESSION_MAX_NONCES: usize = 65_536;
+
+#[derive(Clone)]
+struct DeviceSessionChallenge {
+    challenge_id: String,
+    device_id: String,
+    challenge: String,
+    expires_at_ms: u64,
+}
+
+struct ActiveDeviceSession {
+    device_id: String,
+    expires_at_ms: u64,
+    session_epoch: u64,
+    used_nonces: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct DeviceAuthError {
+    status: u16,
+    code: &'static str,
+    message: String,
+}
+
+impl DeviceAuthError {
+    fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 impl DeviceRegistryStore {
@@ -2561,9 +2867,17 @@ impl DeviceRegistryStore {
                 last_seen_at: Some(now),
                 is_local: true,
                 enabled: true,
+                public_key: None,
+                key_fingerprint: None,
+                session_epoch: 1,
             },
         );
-        let store = Self { path, devices };
+        let store = Self {
+            path,
+            devices,
+            challenges: BTreeMap::new(),
+            sessions: BTreeMap::new(),
+        };
         if let Err(error) = store.persist() {
             eprintln!("loom device registry could not persist the local host: {error:#}");
         }
@@ -2582,6 +2896,209 @@ impl DeviceRegistryStore {
         fs::write(&self.path, serde_json::to_vec_pretty(&document)?)
             .with_context(|| format!("write device registry `{}`", self.path.display()))
     }
+
+    fn create_session_challenge(
+        &mut self,
+        device_id: &str,
+    ) -> std::result::Result<DeviceSessionChallengeResponse, DeviceAuthError> {
+        self.cleanup_expired_device_auth();
+        let device_id = self.authorized_keyed_device(device_id)?.id.clone();
+        let now = unix_time_millis();
+        let mut random = [0_u8; 32];
+        OsRng.fill_bytes(&mut random);
+        let challenge = BASE64_URL.encode(random);
+        let challenge_id = format!("challenge:{}", Uuid::new_v4());
+        let expires_at_ms = now.saturating_add(DEVICE_CHALLENGE_TTL_MILLIS);
+        self.challenges.insert(
+            challenge_id.clone(),
+            DeviceSessionChallenge {
+                challenge_id: challenge_id.clone(),
+                device_id: device_id.clone(),
+                challenge: challenge.clone(),
+                expires_at_ms,
+            },
+        );
+        Ok(DeviceSessionChallengeResponse {
+            protocol_version: DEVICE_SESSION_PROTOCOL_VERSION.to_owned(),
+            challenge_id,
+            device_id,
+            challenge,
+            expires_at_ms,
+        })
+    }
+
+    fn issue_device_session(
+        &mut self,
+        input: DeviceSessionIssueRequest,
+    ) -> std::result::Result<DeviceSessionIssueResponse, DeviceAuthError> {
+        self.cleanup_expired_device_auth();
+        validate_device_auth_identifier("device id", &input.device_id)?;
+        validate_device_auth_identifier("challenge id", &input.challenge_id)?;
+        validate_device_auth_nonce(&input.client_nonce)?;
+        let challenge = self.challenges.remove(&input.challenge_id).ok_or_else(|| {
+            DeviceAuthError::new(
+                401,
+                "device_challenge_invalid",
+                "device session challenge is missing, expired, or already used",
+            )
+        })?;
+        if challenge.device_id != input.device_id || challenge.challenge_id != input.challenge_id {
+            return Err(DeviceAuthError::new(
+                401,
+                "device_challenge_mismatch",
+                "device session challenge does not belong to this device",
+            ));
+        }
+        let device = self.authorized_keyed_device(&input.device_id)?.clone();
+        let public_key = decode_device_public_key(
+            device
+                .public_key
+                .as_deref()
+                .expect("authorized keyed device has a public key"),
+        )?;
+        let signature_bytes = BASE64.decode(input.signature.trim()).map_err(|_| {
+            DeviceAuthError::new(
+                401,
+                "device_signature_invalid",
+                "device session signature is not valid Base64",
+            )
+        })?;
+        let signature = Signature::from_slice(&signature_bytes).map_err(|_| {
+            DeviceAuthError::new(
+                401,
+                "device_signature_invalid",
+                "device session signature must be an Ed25519 signature",
+            )
+        })?;
+        let message = device_session_signature_message(
+            &input.device_id,
+            &input.challenge_id,
+            &challenge.challenge,
+            &input.client_nonce,
+        );
+        public_key
+            .verify(message.as_bytes(), &signature)
+            .map_err(|_| {
+                DeviceAuthError::new(
+                    401,
+                    "device_signature_invalid",
+                    "device session signature verification failed",
+                )
+            })?;
+
+        let mut token_bytes = [0_u8; 32];
+        OsRng.fill_bytes(&mut token_bytes);
+        let token = BASE64_URL.encode(token_bytes);
+        let token_hash = sha256_bytes(token.as_bytes());
+        let expires_at_ms = unix_time_millis().saturating_add(DEVICE_SESSION_TTL_MILLIS);
+        self.sessions.insert(
+            token_hash,
+            ActiveDeviceSession {
+                device_id: device.id.clone(),
+                expires_at_ms,
+                session_epoch: device.session_epoch,
+                used_nonces: BTreeSet::new(),
+            },
+        );
+        Ok(DeviceSessionIssueResponse {
+            protocol_version: DEVICE_SESSION_PROTOCOL_VERSION.to_owned(),
+            device_id: device.id,
+            token,
+            expires_at_ms,
+        })
+    }
+
+    fn authenticate_device_session(
+        &mut self,
+        token: &str,
+        nonce: &str,
+    ) -> std::result::Result<String, DeviceAuthError> {
+        self.cleanup_expired_device_auth();
+        validate_device_auth_nonce(nonce)?;
+        let token_hash = sha256_bytes(token.as_bytes());
+        let (device_id, session_epoch) = self
+            .sessions
+            .get(&token_hash)
+            .map(|session| (session.device_id.clone(), session.session_epoch))
+            .ok_or_else(|| {
+                DeviceAuthError::new(
+                    401,
+                    "device_session_invalid",
+                    "device session is missing or expired",
+                )
+            })?;
+        let device = self.devices.get(&device_id).ok_or_else(|| {
+            DeviceAuthError::new(401, "device_revoked", "device has been removed")
+        })?;
+        if device.approval != "approved" || !device.enabled || device.session_epoch != session_epoch
+        {
+            return Err(DeviceAuthError::new(
+                401,
+                "device_revoked",
+                "device is not approved, is disabled, or its sessions were revoked",
+            ));
+        }
+        let session = self
+            .sessions
+            .get_mut(&token_hash)
+            .expect("device session was resolved above");
+        if session.used_nonces.len() >= DEVICE_SESSION_MAX_NONCES {
+            self.sessions.remove(&token_hash);
+            return Err(DeviceAuthError::new(
+                401,
+                "device_session_nonce_capacity",
+                "device session nonce budget is exhausted; create a new session",
+            ));
+        }
+        if !session.used_nonces.insert(nonce.to_owned()) {
+            return Err(DeviceAuthError::new(
+                409,
+                "device_request_replayed",
+                "device request nonce has already been used",
+            ));
+        }
+        Ok(device_id)
+    }
+
+    fn authorized_keyed_device(
+        &self,
+        device_id: &str,
+    ) -> std::result::Result<&ManagedDevice, DeviceAuthError> {
+        let device = self
+            .devices
+            .get(device_id)
+            .ok_or_else(|| DeviceAuthError::new(404, "device_not_found", "device was not found"))?;
+        if device.approval != "approved" || !device.enabled {
+            return Err(DeviceAuthError::new(
+                403,
+                "device_not_authorized",
+                "device is not approved and enabled",
+            ));
+        }
+        if device.public_key.is_none() {
+            return Err(DeviceAuthError::new(
+                409,
+                "device_key_missing",
+                "device has no paired public key",
+            ));
+        }
+        Ok(device)
+    }
+
+    fn cleanup_expired_device_auth(&mut self) {
+        let now = unix_time_millis();
+        self.challenges
+            .retain(|_, challenge| challenge.expires_at_ms > now);
+        self.sessions
+            .retain(|_, session| session.expires_at_ms > now);
+    }
+
+    fn revoke_device_sessions(&mut self, device_id: &str) {
+        self.sessions
+            .retain(|_, session| session.device_id != device_id);
+        self.challenges
+            .retain(|_, challenge| challenge.device_id != device_id);
+    }
 }
 
 #[derive(Deserialize)]
@@ -2590,6 +3107,8 @@ struct ManagedDeviceInput {
     name: String,
     kind: ManagedDeviceKind,
     address: String,
+    #[serde(default)]
+    public_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2599,6 +3118,174 @@ struct ManagedDeviceUpdate {
     kind: ManagedDeviceKind,
     address: String,
     enabled: bool,
+}
+
+fn validate_device_auth_identifier(
+    label: &str,
+    value: &str,
+) -> std::result::Result<(), DeviceAuthError> {
+    if value.is_empty()
+        || value.len() > 160
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+    {
+        return Err(DeviceAuthError::new(
+            400,
+            "device_auth_invalid",
+            format!("{label} is not a valid protocol identifier"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_device_auth_nonce(nonce: &str) -> std::result::Result<(), DeviceAuthError> {
+    if nonce.len() < 16
+        || nonce.len() > 160
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(DeviceAuthError::new(
+            400,
+            "device_nonce_invalid",
+            "device request nonce must be 16 to 160 URL-safe characters",
+        ));
+    }
+    Ok(())
+}
+
+fn decode_device_public_key(encoded: &str) -> std::result::Result<VerifyingKey, DeviceAuthError> {
+    let bytes = BASE64.decode(encoded.trim()).map_err(|_| {
+        DeviceAuthError::new(
+            400,
+            "device_public_key_invalid",
+            "device public key is not valid Base64",
+        )
+    })?;
+    let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+        DeviceAuthError::new(
+            400,
+            "device_public_key_invalid",
+            "device public key must contain 32 Ed25519 bytes",
+        )
+    })?;
+    VerifyingKey::from_bytes(&bytes).map_err(|_| {
+        DeviceAuthError::new(
+            400,
+            "device_public_key_invalid",
+            "device public key is not a valid Ed25519 key",
+        )
+    })
+}
+
+fn device_public_key_fingerprint(encoded: &str) -> std::result::Result<String, DeviceAuthError> {
+    let key = decode_device_public_key(encoded)?;
+    Ok(format!("sha256:{}", sha256_bytes(key.as_bytes())))
+}
+
+fn is_public_device_auth_route(method: &str, path: &str) -> bool {
+    path == "/health"
+        || (method == "POST"
+            && matches!(
+                path,
+                "/v1/devices/requests" | "/v1/device-sessions/challenges" | "/v1/device-sessions"
+            ))
+}
+
+fn device_session_route_allowed(method: &str, path: &str) -> bool {
+    if method == "GET" {
+        return path == "/v1/capabilities"
+            || path == "/v1/surfaces/stream"
+            || path.starts_with("/v1/surfaces/resources/")
+            || path == "/v1/hook-bridge/status";
+    }
+    if method != "POST" {
+        return false;
+    }
+    path == "/v1/surfaces/actions/cancel"
+        || path == "/v1/surfaces/attach"
+        || path == "/v1/surfaces/confirmations/decision"
+        || path_id_with_suffix(path, "/v1/surfaces/instances/", "/attachments").is_some()
+        || path_id_with_suffix(path, "/v1/surfaces/instances/", "/events").is_some()
+        || path_id_with_suffix(path, "/v1/surfaces/instances/", "/lifecycle").is_some()
+}
+
+fn authenticate_http_device_session(
+    request: &ParsedHttpRequest,
+    device_registry: &SharedDeviceRegistryStore,
+) -> std::result::Result<Option<String>, DeviceAuthError> {
+    let Some(token) = request.authorization_credential("Device") else {
+        return Ok(None);
+    };
+    let nonce = request.header("X-Loom-Device-Nonce").ok_or_else(|| {
+        DeviceAuthError::new(
+            400,
+            "device_nonce_missing",
+            "authenticated device requests require X-Loom-Device-Nonce",
+        )
+    })?;
+    let device_id = device_registry
+        .lock()
+        .map_err(|_| {
+            DeviceAuthError::new(
+                503,
+                "device_registry_unavailable",
+                "device registry is unavailable",
+            )
+        })?
+        .authenticate_device_session(token, nonce)?;
+    Ok(Some(device_id))
+}
+
+fn validate_authenticated_device_identity(
+    authenticated_device_id: Option<&str>,
+    expected_device_id: &str,
+) -> std::result::Result<(), DeviceAuthError> {
+    if authenticated_device_id.is_some_and(|device_id| device_id != expected_device_id) {
+        return Err(DeviceAuthError::new(
+            403,
+            "device_identity_mismatch",
+            "device session cannot act on behalf of another device",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_authenticated_surface_attachment(
+    authenticated_device_id: Option<&str>,
+    instance_id: &str,
+    attachment_id: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+) -> std::result::Result<(), DeviceAuthError> {
+    let Some(authenticated_device_id) = authenticated_device_id else {
+        return Ok(());
+    };
+    let store = surface_instances.lock().map_err(|_| {
+        DeviceAuthError::new(
+            503,
+            "surface_store_unavailable",
+            "Surface instance store is unavailable",
+        )
+    })?;
+    let instance = store.get(instance_id).ok_or_else(|| {
+        DeviceAuthError::new(
+            404,
+            "surface_instance_not_found",
+            "Surface instance was not found",
+        )
+    })?;
+    let attachment = instance.attachments.get(attachment_id).ok_or_else(|| {
+        DeviceAuthError::new(
+            404,
+            "surface_attachment_not_found",
+            "Surface attachment was not found",
+        )
+    })?;
+    validate_authenticated_device_identity(
+        Some(authenticated_device_id),
+        &attachment.descriptor.device_id,
+    )
 }
 
 fn route(
@@ -2615,6 +3302,9 @@ fn route(
     workflow_store: &WorkflowStore,
     hook_bridge: &SharedHookBridgeRuntime,
     device_registry: &SharedDeviceRegistryStore,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_actions: &SharedSurfaceActionExecutor,
+    surface_resources: &SharedSurfaceResourceStore,
     artloom_settings: &SharedArtLoomCompatSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
@@ -2626,26 +3316,52 @@ fn route(
     control_plane_root: &Path,
     bundled_art_sha256_allowlist: &BTreeSet<String>,
 ) -> Result<(u16, String)> {
-    if let Some(token) = auth_token {
-        let requires_auth = request.path != "/health";
-        if requires_auth && !request.has_bearer(token) {
-            return structured_error(
-                401,
-                json!({
-                    "code": "unauthorized",
-                    "message": "missing or invalid Loom bearer token",
-                }),
-            );
-        }
-    }
-
     let route_path = request
         .path
         .split('?')
         .next()
         .unwrap_or(request.path.as_str());
+    let public_device_auth_route = is_public_device_auth_route(request.method.as_str(), route_path);
+    let authenticated_device_id = match authenticate_http_device_session(request, device_registry) {
+        Ok(device_id) => device_id,
+        Err(error) => return device_auth_error_response(error),
+    };
+    if let Some(token) = auth_token {
+        let admin_authenticated = request.has_bearer(token);
+        if !public_device_auth_route && !admin_authenticated && authenticated_device_id.is_none() {
+            return structured_error(
+                401,
+                json!({
+                    "code": "unauthorized",
+                    "message": "missing or invalid Loom administrator or device session credential",
+                }),
+            );
+        }
+    }
+    if authenticated_device_id.is_some()
+        && !device_session_route_allowed(request.method.as_str(), route_path)
+        && !public_device_auth_route
+    {
+        return structured_error(
+            403,
+            json!({
+                "code": "device_session_scope_denied",
+                "message": "device session is not permitted to access this Loom route",
+            }),
+        );
+    }
 
     match (request.method.as_str(), route_path) {
+        ("POST", "/v1/surfaces/resources") => {
+            create_surface_resource(&request.body, surface_resources, shared_images)
+        }
+        ("DELETE", path) if path_id(path, "/v1/surfaces/resource-leases/").is_some() => {
+            release_surface_resource_lease(
+                path_id(path, "/v1/surfaces/resource-leases/").expect("checked path"),
+                surface_resources,
+                shared_images,
+            )
+        }
         ("GET", "/health") => Ok((
             200,
             serde_json::to_string(&HealthResponse {
@@ -2697,6 +3413,200 @@ fn route(
             )
         }
         ("GET", "/v1/capabilities") => capabilities(),
+        ("GET", "/v1/surfaces/stream") => poll_surface_stream(
+            &request.path,
+            hook_bridge,
+            surface_instances,
+            authenticated_device_id.as_deref(),
+        ),
+        ("POST", "/v1/device-sessions/challenges") => {
+            create_device_session_challenge(&request.body, device_registry)
+        }
+        ("POST", "/v1/device-sessions") => issue_device_session(&request.body, device_registry),
+        ("POST", "/v1/surfaces/actions/cancel") => cancel_surface_action(
+            &request.body,
+            surface_actions,
+            device_registry,
+            authenticated_device_id.as_deref(),
+        ),
+        ("POST", "/v1/surfaces/confirmations/decision") => decide_surface_confirmation(
+            &request.body,
+            surface_actions,
+            device_registry,
+            authenticated_device_id.as_deref(),
+        ),
+        ("GET", "/v1/surfaces/instances") => list_surface_instances(surface_instances),
+        ("POST", "/v1/surfaces/attach") => attach_and_mount_surface(
+            &request.body,
+            surface_instances,
+            device_registry,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+            authenticated_device_id.as_deref(),
+        ),
+        ("POST", "/v1/surfaces/instances") => create_surface_instance(
+            &request.body,
+            surface_instances,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+        ),
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/attachments").is_some() =>
+        {
+            attach_surface_instance(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/attachments")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                device_registry,
+                authenticated_device_id.as_deref(),
+            )
+        }
+        ("PUT", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/snapshot").is_some() =>
+        {
+            put_surface_snapshot(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/snapshot")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                surface_resources,
+                hook_bridge,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/patch").is_some() =>
+        {
+            apply_surface_patch(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/patch")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                surface_resources,
+                hook_bridge,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/generation").is_some() =>
+        {
+            begin_surface_generation(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/generation")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                hook_bridge,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/lifecycle").is_some() =>
+        {
+            transition_surface_lifecycle(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/lifecycle")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                hook_bridge,
+                surface_resources,
+                shared_images,
+                authenticated_device_id.as_deref(),
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/preview").is_some() =>
+        {
+            commit_surface_preview(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/preview")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                surface_resources,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/result").is_some() =>
+        {
+            commit_surface_result(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/result")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                surface_resources,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/failure").is_some() =>
+        {
+            record_surface_failure(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/failure")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/events").is_some() =>
+        {
+            accept_surface_event(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/events")
+                    .expect("checked path"),
+                &request.body,
+                surface_actions,
+                surface_instances,
+                authenticated_device_id.as_deref(),
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/migrate").is_some() =>
+        {
+            migrate_surface_instance(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/migrate")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                tool_registry,
+                framework_registry,
+                control_plane_root,
+                hook_bridge,
+                surface_resources,
+                shared_images,
+            )
+        }
+        ("POST", path)
+            if path_id_with_suffix(path, "/v1/surfaces/instances/", "/mount").is_some() =>
+        {
+            mount_surface_instance(
+                path_id_with_suffix(path, "/v1/surfaces/instances/", "/mount")
+                    .expect("checked path"),
+                &request.body,
+                surface_instances,
+                tool_registry,
+                framework_registry,
+                control_plane_root,
+                hook_bridge,
+                surface_resources,
+                shared_images,
+            )
+        }
+        ("GET", path) if path_id(path, "/v1/surfaces/instances/").is_some() => {
+            get_surface_instance(
+                path_id(path, "/v1/surfaces/instances/").expect("checked path"),
+                surface_instances,
+            )
+        }
+        ("DELETE", path) if path_id(path, "/v1/surfaces/instances/").is_some() => {
+            delete_surface_instance(
+                path_id(path, "/v1/surfaces/instances/").expect("checked path"),
+                surface_instances,
+                hook_bridge,
+                surface_resources,
+                shared_images,
+            )
+        }
         ("GET", "/v1/mcp/servers") => list_mcp_servers(mcp_servers),
         ("GET", "/v1/mcp/registry") => fetch_mcp_registry(
             &request.path,
@@ -3258,6 +4168,8 @@ fn route(
             framework_registry,
             control_plane_root,
             run_store,
+            surface_instances,
+            surface_actions,
         ),
         ("POST", "/v1/hook-bridge/stop") => stop_hook_bridge(hook_bridge),
         ("POST", "/v1/runs") => start_tea_run(&request.body, run_store),
@@ -3332,6 +4244,120 @@ fn list_managed_devices(
     managed_devices_response(device_registry, hook_bridge)
 }
 
+fn poll_surface_stream(
+    path: &str,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_instances: &SharedSurfaceInstanceStore,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let after = query_value(path, "after")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let timeout_ms = query_value(path, "timeoutMs")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5_000)
+        .min(5_000);
+    let hub = hook_bridge
+        .lock()
+        .map_err(|_| anyhow::anyhow!("hook bridge runtime is unavailable"))?
+        .broadcast_hub
+        .clone();
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut cursor = after;
+    let mut reset = false;
+    let mut messages = if after == 0 {
+        surface_snapshot_recovery_messages_for_device(surface_instances, authenticated_device_id)
+            .into_iter()
+            .filter_map(|message| serde_json::from_str::<Value>(&message).ok())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    loop {
+        let remaining = if messages.is_empty() {
+            deadline.saturating_duration_since(Instant::now())
+        } else {
+            Duration::ZERO
+        };
+        let (next, batch_reset, entries) = hub.wait_after(cursor, remaining);
+        cursor = next;
+        reset |= batch_reset;
+        for entry in entries {
+            let Ok(message) = serde_json::from_str::<Value>(&entry.message) else {
+                continue;
+            };
+            if surface_message_visible_to_device(
+                &message,
+                authenticated_device_id,
+                surface_instances,
+            ) {
+                messages.push(message);
+            }
+            if messages.len() >= HOOK_BRIDGE_POLL_MAX_MESSAGES {
+                break;
+            }
+        }
+        if !messages.is_empty() || Instant::now() >= deadline || (cursor == after && !reset) {
+            break;
+        }
+    }
+    if after != 0 && reset {
+        messages.extend(
+            surface_snapshot_recovery_messages_for_device(
+                surface_instances,
+                authenticated_device_id,
+            )
+            .into_iter()
+            .filter_map(|message| serde_json::from_str::<Value>(&message).ok()),
+        );
+    }
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "protocolVersion": "loom.surface-stream.v1",
+            "next": cursor,
+            "reset": reset,
+            "messages": messages,
+        }))?,
+    ))
+}
+
+fn create_device_session_challenge(
+    body: &str,
+    device_registry: &SharedDeviceRegistryStore,
+) -> Result<(u16, String)> {
+    let input = match serde_json::from_str::<DeviceSessionChallengeRequest>(body) {
+        Ok(input) => input,
+        Err(error) => return invalid_request(format!("invalid device challenge payload: {error}")),
+    };
+    let response = device_registry
+        .lock()
+        .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?
+        .create_session_challenge(input.device_id.trim());
+    match response {
+        Ok(response) => Ok((201, serde_json::to_string(&response)?)),
+        Err(error) => device_auth_error_response(error),
+    }
+}
+
+fn issue_device_session(
+    body: &str,
+    device_registry: &SharedDeviceRegistryStore,
+) -> Result<(u16, String)> {
+    let input = match serde_json::from_str::<DeviceSessionIssueRequest>(body) {
+        Ok(input) => input,
+        Err(error) => return invalid_request(format!("invalid device session payload: {error}")),
+    };
+    let response = device_registry
+        .lock()
+        .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?
+        .issue_device_session(input);
+    match response {
+        Ok(response) => Ok((201, serde_json::to_string(&response)?)),
+        Err(error) => device_auth_error_response(error),
+    }
+}
+
 fn add_managed_device(
     body: &str,
     approval: &str,
@@ -3350,6 +4376,28 @@ fn add_managed_device(
     if address.is_empty() || address.len() > 240 {
         return invalid_request("device address must contain 1 to 240 characters");
     }
+    let public_key = input
+        .public_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
+    if approval == "pending" && public_key.is_none() {
+        return structured_error(
+            400,
+            json!({
+                "code": "device_public_key_required",
+                "message": "a device pairing request must include its Ed25519 public key",
+            }),
+        );
+    }
+    let key_fingerprint = match public_key.as_deref() {
+        Some(key) => match device_public_key_fingerprint(key) {
+            Ok(fingerprint) => Some(fingerprint),
+            Err(error) => return device_auth_error_response(error),
+        },
+        None => None,
+    };
 
     let created_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3367,6 +4415,24 @@ fn add_managed_device(
         let mut store = device_registry
             .lock()
             .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        if let Some(fingerprint) = key_fingerprint.as_deref() {
+            if store.devices.values().any(|device| {
+                device.key_fingerprint.as_deref() == Some(fingerprint)
+                    && device.approval != "rejected"
+            }) {
+                if approval == "pending" {
+                    drop(store);
+                    return managed_devices_response(device_registry, hook_bridge);
+                }
+                return structured_error(
+                    409,
+                    json!({
+                        "code": "device_key_already_registered",
+                        "message": "this device public key is already registered",
+                    }),
+                );
+            }
+        }
         store.devices.insert(
             id.clone(),
             ManagedDevice {
@@ -3379,6 +4445,9 @@ fn add_managed_device(
                 last_seen_at: None,
                 is_local: false,
                 enabled: true,
+                public_key,
+                key_fingerprint,
+                session_epoch: u64::from(approval == "approved"),
             },
         );
         if let Err(error) = store.persist() {
@@ -3407,10 +4476,13 @@ fn approve_managed_device(
             );
         };
         let previous = device.approval.clone();
+        let previous_epoch = device.session_epoch;
         device.approval = "approved".to_owned();
+        device.session_epoch = device.session_epoch.saturating_add(1);
         if let Err(error) = store.persist() {
             if let Some(device) = store.devices.get_mut(device_id) {
                 device.approval = previous;
+                device.session_epoch = previous_epoch;
             }
             return Err(error);
         }
@@ -3453,7 +4525,13 @@ fn update_managed_device(
             device.name = name.to_owned();
             device.kind = input.kind;
             device.address = address.to_owned();
+            if device.enabled != input.enabled {
+                device.session_epoch = device.session_epoch.saturating_add(1);
+            }
             device.enabled = input.enabled;
+        }
+        if !input.enabled {
+            store.revoke_device_sessions(device_id);
         }
         if let Err(error) = store.persist() {
             store.devices.insert(device_id.to_owned(), previous);
@@ -3485,6 +4563,7 @@ fn remove_managed_device(
                 json!({"code": "device_not_found", "message": "device was not found"}),
             );
         };
+        store.revoke_device_sessions(device_id);
         if let Err(error) = store.persist() {
             store.devices.insert(device_id.to_owned(), removed);
             return Err(error);
@@ -3553,6 +4632,1996 @@ fn path_id<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
 fn path_id_with_suffix<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     let id = path.strip_prefix(prefix)?.strip_suffix(suffix)?;
     (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSurfaceInstanceRequest {
+    art_id: String,
+    #[serde(default)]
+    expected_version: Option<String>,
+    #[serde(default)]
+    state_schema_version: Option<u32>,
+    #[serde(default = "default_surface_persistence")]
+    persistence: SurfaceInstancePersistence,
+}
+
+fn default_surface_persistence() -> SurfaceInstancePersistence {
+    SurfaceInstancePersistence::Persistent
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachSurfaceInstanceRequest {
+    hook_node_id: String,
+    device_id: String,
+    #[serde(default)]
+    capabilities: Option<SurfaceHostCapabilities>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachAndMountSurfaceRequest {
+    art_id: String,
+    hook_node_id: String,
+    device_id: String,
+    #[serde(default)]
+    capabilities: Option<SurfaceHostCapabilities>,
+    #[serde(default)]
+    expected_version: Option<String>,
+    #[serde(default)]
+    state_schema_version: Option<u32>,
+    #[serde(default = "default_surface_persistence")]
+    persistence: SurfaceInstancePersistence,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BeginSurfaceGenerationRequest {
+    #[serde(default)]
+    expected_generation: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MountSurfaceInstanceRequest {
+    attachment_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrateSurfaceInstanceRequest {
+    target_version: String,
+    target_digest: String,
+    #[serde(default)]
+    expected_generation: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SurfaceStateMigrationFile {
+    from: u32,
+    to: u32,
+    #[serde(default)]
+    state_patch: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSurfaceResourceRequest {
+    kind: SurfaceResourceKind,
+    mime: String,
+    data_base64: String,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    lease_millis: Option<u64>,
+    #[serde(default)]
+    preferred_transport: Option<SurfaceResourceTransportKind>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeclarativeSurfaceDocument {
+    #[serde(default)]
+    protocol_version: Option<String>,
+    scene: SurfaceNode,
+    #[serde(default)]
+    authoritative_state: Value,
+    #[serde(default)]
+    resources: Vec<SurfaceResourceDescriptor>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeclarativeSurfaceFile {
+    Document(DeclarativeSurfaceDocument),
+    Scene(SurfaceNode),
+}
+
+fn create_surface_resource(
+    body: &str,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<CreateSurfaceResourceRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    let encoded = request
+        .data_base64
+        .split_once(',')
+        .map(|(_, data)| data)
+        .unwrap_or(request.data_base64.as_str());
+    let bytes = match BASE64.decode(encoded) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({
+                    "code": "invalid_surface_resource",
+                    "message": format!("resource data is not valid base64: {error}"),
+                }),
+            )
+        }
+    };
+    if request.preferred_transport == Some(SurfaceResourceTransportKind::SharedMemory) {
+        if request.kind != SurfaceResourceKind::Image {
+            return structured_error(
+                400,
+                json!({
+                    "code": "invalid_surface_resource",
+                    "message": "shared-memory Surface resources must be images",
+                }),
+            );
+        }
+        let image = match image::load_from_memory(&bytes) {
+            Ok(image) => image.to_rgba8(),
+            Err(error) => {
+                return structured_error(
+                    400,
+                    json!({
+                        "code": "invalid_surface_resource",
+                        "message": format!("shared-memory image decode failed: {error}"),
+                    }),
+                )
+            }
+        };
+        let (width, height) = image.dimensions();
+        let rgba = image.into_raw();
+        if rgba.len() > MAX_SURFACE_RESOURCE_BYTES {
+            return structured_error(
+                400,
+                json!({
+                    "code": "invalid_surface_resource",
+                    "message": format!("decoded Surface image exceeds {MAX_SURFACE_RESOURCE_BYTES} bytes"),
+                }),
+            );
+        }
+        let shared = match shared_images
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock shared image store"))?
+            .create_rgba8(width, height, rgba.clone())
+        {
+            Ok(shared) => shared,
+            Err(error) => return shared_image_error_response(error),
+        };
+        let lease = {
+            let mut store = surface_resources
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+            let lease = match store.register(
+                SurfaceResourceKind::Image,
+                "application/x-neuro-rgba8",
+                &rgba,
+                Some(width),
+                Some(height),
+                request.lease_millis,
+            ) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    shared_images
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("lock shared image store"))?
+                        .release(&shared.handle);
+                    return surface_resource_store_error(error);
+                }
+            };
+            match store.replace_lease_transport(
+                &lease.lease_id,
+                SurfaceResourceTransport {
+                    kind: SurfaceResourceTransportKind::SharedMemory,
+                    handle: Some(shared.handle.clone()),
+                    path: None,
+                    stream_id: None,
+                },
+            ) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let _ = store.release(&lease.lease_id);
+                    shared_images
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("lock shared image store"))?
+                        .release(&shared.handle);
+                    return surface_resource_store_error(error);
+                }
+            }
+        };
+        return Ok((201, serde_json::to_string(&lease)?));
+    }
+
+    let mut store = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+    match store.register(
+        request.kind,
+        &request.mime,
+        &bytes,
+        request.width,
+        request.height,
+        request.lease_millis,
+    ) {
+        Ok(lease) => Ok((201, serde_json::to_string(&lease)?)),
+        Err(error) => surface_resource_store_error(error),
+    }
+}
+
+fn release_surface_resource_lease(
+    lease_id: &str,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
+    let mut store = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+    if let Some(lease) = store.release(lease_id)? {
+        drop(store);
+        release_surface_shared_memory(&lease, shared_images)?;
+        Ok((204, String::new()))
+    } else {
+        surface_resource_store_error(SurfaceResourceStoreError::NotFound(lease_id.to_owned()))
+    }
+}
+
+fn release_surface_resource_leases(
+    surface_resources: &SharedSurfaceResourceStore,
+    lease_ids: &[String],
+    shared_images: &SharedImageStoreHandle,
+) -> Result<()> {
+    if lease_ids.is_empty() {
+        return Ok(());
+    }
+    let mut store = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+    let mut released = Vec::new();
+    for lease_id in lease_ids {
+        if let Some(lease) = store.release(lease_id)? {
+            released.push(lease);
+        }
+    }
+    drop(store);
+    for lease in &released {
+        release_surface_shared_memory(lease, shared_images)?;
+    }
+    Ok(())
+}
+
+fn release_surface_shared_memory(
+    lease: &loom_protocol::SurfaceResourceLease,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<()> {
+    if lease.transport.kind != SurfaceResourceTransportKind::SharedMemory {
+        return Ok(());
+    }
+    if let Some(handle) = lease.transport.handle.as_deref() {
+        shared_images
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock shared image store"))?
+            .release(handle);
+    }
+    Ok(())
+}
+
+fn surface_resource_request_digest<'a>(method: &str, path: &'a str) -> Option<&'a str> {
+    if method != "GET" {
+        return None;
+    }
+    let route = path.split('?').next().unwrap_or(path);
+    let digest = route.strip_prefix("/v1/surfaces/resources/")?;
+    (!digest.is_empty() && !digest.contains('/')).then_some(digest)
+}
+
+fn surface_resource_binary_response(
+    digest: &str,
+    lease_id: &str,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> Result<RouteResponse> {
+    let mut store = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+    match store.get_with_lease(digest, lease_id) {
+        Ok(payload) => Ok(RouteResponse::Binary {
+            status: 200,
+            content_type: payload.descriptor.mime,
+            body: payload.bytes,
+        }),
+        Err(error) => surface_resource_store_error(error)
+            .map(|(status, body)| RouteResponse::Text { status, body }),
+    }
+}
+
+fn surface_resource_store_error(error: SurfaceResourceStoreError) -> Result<(u16, String)> {
+    structured_error(
+        error.status_code(),
+        json!({
+            "code": error.code(),
+            "message": error.to_string(),
+        }),
+    )
+}
+
+fn list_surface_instances(surface_instances: &SharedSurfaceInstanceStore) -> Result<(u16, String)> {
+    let store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    Ok((
+        200,
+        serde_json::to_string(&json!({ "instances": store.list() }))?,
+    ))
+}
+
+fn get_surface_instance(
+    instance_id: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+) -> Result<(u16, String)> {
+    let store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    let Some(instance) = store.get(instance_id) else {
+        return surface_store_error(SurfaceStoreError::NotFound(instance_id.to_owned()));
+    };
+    Ok((200, serde_json::to_string(&instance)?))
+}
+
+fn create_surface_instance(
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<CreateSurfaceInstanceRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    let tool = match tool_registry.get_tool(request.art_id.trim()) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(
+                404,
+                json!({
+                    "code": "surface_art_not_found",
+                    "message": "installed Art was not found",
+                }),
+            )
+        }
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({
+                    "code": "surface_art_lookup_failed",
+                    "message": error.to_string(),
+                }),
+            )
+        }
+    };
+    let tool = match resolve_registered_tool_package(
+        &tool,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+    ) {
+        Ok(tool) => tool,
+        Err(error) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_art_integrity_failed",
+                    "message": error.to_string(),
+                }),
+            )
+        }
+    };
+    let surface_manifest = match tool.surface_manifest() {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_manifest_missing",
+                    "message": "Art package does not declare a Surface",
+                }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    if request
+        .state_schema_version
+        .is_some_and(|version| version != surface_manifest.state_schema_version)
+    {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_state_schema_conflict",
+                "message": format!(
+                    "Art state schema is {}",
+                    surface_manifest.state_schema_version
+                ),
+            }),
+        );
+    }
+    let package = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"));
+    let Some(version) = package
+        .and_then(|package| package.get("version"))
+        .and_then(Value::as_str)
+    else {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_art_package_required",
+                "message": "Surface instances require an immutable installed Art package",
+            }),
+        );
+    };
+    let Some(digest) = package
+        .and_then(|package| package.get("digest"))
+        .and_then(Value::as_str)
+    else {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_art_digest_missing",
+                "message": "installed Art package has no locked digest",
+            }),
+        );
+    };
+    if request
+        .expected_version
+        .as_deref()
+        .is_some_and(|expected| expected != version)
+    {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_art_version_conflict",
+                "message": format!("installed Art version is {version}"),
+            }),
+        );
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    let qualified_art_id = tool.qualified_id();
+    if surface_manifest.instance_mode == SurfaceInstanceMode::Shared {
+        if let Some(existing) =
+            store.find_shared(&qualified_art_id, version, digest, &request.persistence)
+        {
+            return Ok((
+                200,
+                serde_json::to_string(&json!({
+                    "reused": true,
+                    "instance": existing,
+                }))?,
+            ));
+        }
+    }
+    match store.create(
+        &qualified_art_id,
+        version,
+        digest,
+        surface_manifest.state_schema_version,
+        request.persistence,
+        surface_manifest.instance_mode,
+    ) {
+        Ok(instance) => Ok((201, serde_json::to_string(&instance)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn delete_surface_instance(
+    instance_id: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    let existing = store.get(instance_id);
+    match store.delete(instance_id) {
+        Ok(()) => {
+            drop(store);
+            if let Some(existing) = existing {
+                let lease_ids = existing
+                    .attachments
+                    .values()
+                    .filter_map(|attachment| attachment.snapshot.as_ref())
+                    .flat_map(|snapshot| snapshot.resource_leases.iter())
+                    .map(|lease| lease.lease_id.clone())
+                    .collect::<Vec<_>>();
+                release_surface_resource_leases(surface_resources, &lease_ids, shared_images)?;
+                for attachment in existing.attachments.values() {
+                    broadcast_hook_bridge_json(
+                        hook_bridge,
+                        json!({
+                            "method": "surface/lifecycle",
+                            "params": {
+                                "hookNodeId": attachment.descriptor.hook_node_id,
+                                "event": {
+                                    "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+                                    "instanceId": instance_id,
+                                    "attachmentId": attachment.descriptor.attachment_id,
+                                    "state": "disposed",
+                                    "revision": attachment.lifecycle_revision.saturating_add(1),
+                                }
+                            }
+                        }),
+                    );
+                    broadcast_hook_bridge_json(
+                        hook_bridge,
+                        json!({
+                            "method": "surface/dispose",
+                            "params": {
+                                "hookNodeId": attachment.descriptor.hook_node_id,
+                                "instanceId": instance_id,
+                                "attachmentId": attachment.descriptor.attachment_id,
+                            },
+                        }),
+                    );
+                }
+            }
+            Ok((204, String::new()))
+        }
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn attach_and_mount_surface(
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    device_registry: &SharedDeviceRegistryStore,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<AttachAndMountSurfaceRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) =
+        validate_authenticated_device_identity(authenticated_device_id, request.device_id.trim())
+    {
+        return device_auth_error_response(error);
+    }
+    let create_body = serde_json::to_string(&json!({
+        "artId": request.art_id,
+        "expectedVersion": request.expected_version,
+        "stateSchemaVersion": request.state_schema_version,
+        "persistence": request.persistence,
+    }))?;
+    let (create_status, created) = create_surface_instance(
+        &create_body,
+        surface_instances,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+    )?;
+    if create_status != 201 && create_status != 200 {
+        return Ok((create_status, created));
+    }
+    let created_json: Value = serde_json::from_str(&created)?;
+    let instance_id = created_json
+        .pointer("/descriptor/instanceId")
+        .or_else(|| created_json.pointer("/instance/descriptor/instanceId"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("created Surface instance has no instance id"))?
+        .to_owned();
+    let attach_body = serde_json::to_string(&json!({
+        "hookNodeId": request.hook_node_id,
+        "deviceId": request.device_id,
+        "capabilities": request.capabilities,
+    }))?;
+    let (attach_status, attached) = attach_surface_instance(
+        &instance_id,
+        &attach_body,
+        surface_instances,
+        device_registry,
+        authenticated_device_id,
+    )?;
+    if attach_status != 201 {
+        let _ = delete_surface_instance(
+            &instance_id,
+            surface_instances,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+        );
+        return Ok((attach_status, attached));
+    }
+    let attached_json: Value = serde_json::from_str(&attached)?;
+    let attachment_id = attached_json
+        .pointer("/descriptor/attachmentId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("created Surface attachment has no attachment id"))?;
+    let mount_body = serde_json::to_string(&json!({"attachmentId": attachment_id}))?;
+    let mounted = mount_surface_instance(
+        &instance_id,
+        &mount_body,
+        surface_instances,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+        hook_bridge,
+        surface_resources,
+        shared_images,
+    )?;
+    if mounted.0 != 200 {
+        let _ = delete_surface_instance(
+            &instance_id,
+            surface_instances,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+        );
+    }
+    Ok(mounted)
+}
+
+fn attach_surface_instance(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    device_registry: &SharedDeviceRegistryStore,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<AttachSurfaceInstanceRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) =
+        validate_authenticated_device_identity(authenticated_device_id, request.device_id.trim())
+    {
+        return device_auth_error_response(error);
+    }
+    {
+        let devices = device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        let Some(device) = devices.devices.get(request.device_id.trim()) else {
+            return structured_error(
+                404,
+                json!({
+                    "code": "surface_device_not_found",
+                    "message": "Surface attachment device was not found",
+                }),
+            );
+        };
+        if device.approval != "approved" || !device.enabled {
+            return structured_error(
+                403,
+                json!({
+                    "code": "surface_device_not_authorized",
+                    "message": "Surface attachment device is not approved and enabled",
+                }),
+            );
+        }
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    match store.attach(
+        instance_id,
+        request.hook_node_id.trim(),
+        request.device_id.trim(),
+        request.capabilities,
+    ) {
+        Ok(attachment) => Ok((201, serde_json::to_string(&attachment)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn put_surface_snapshot(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_resources: &SharedSurfaceResourceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let snapshot = match serde_json::from_str::<SurfaceSnapshot>(body) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?
+        .validate_references(&snapshot.resources, &snapshot.resource_leases)
+    {
+        return surface_resource_store_error(error);
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    let attachment_id = snapshot.attachment_id.clone();
+    match store.put_snapshot(instance_id, snapshot) {
+        Ok(instance) => {
+            let response = serde_json::to_string(&instance)?;
+            drop(store);
+            if let Some(attachment) = instance.attachments.get(&attachment_id) {
+                if let Some(snapshot) = &attachment.snapshot {
+                    broadcast_hook_bridge_json(
+                        hook_bridge,
+                        json!({
+                            "method": "surface/snapshot",
+                            "params": {
+                                "hookNodeId": attachment.descriptor.hook_node_id,
+                                "snapshot": snapshot,
+                                "generation": instance.descriptor.generation,
+                            },
+                        }),
+                    );
+                }
+                broadcast_hook_bridge_json(
+                    hook_bridge,
+                    json!({
+                        "method": "surface/lifecycle",
+                        "params": {
+                            "hookNodeId": attachment.descriptor.hook_node_id,
+                            "event": {
+                                "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+                                "instanceId": instance_id,
+                                "attachmentId": attachment.descriptor.attachment_id,
+                                "state": attachment.lifecycle,
+                                "revision": attachment.lifecycle_revision,
+                            }
+                        }
+                    }),
+                );
+            }
+            Ok((200, response))
+        }
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn apply_surface_patch(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_resources: &SharedSurfaceResourceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let patch = match serde_json::from_str::<SurfacePatch>(body) {
+        Ok(patch) => patch,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?
+        .validate_references(&patch.resources, &patch.resource_leases)
+    {
+        return surface_resource_store_error(error);
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    let attachment_id = patch.attachment_id.clone();
+    let outbound_patch = patch.clone();
+    match store.apply_patch(instance_id, patch) {
+        Ok(instance) => {
+            let response = serde_json::to_string(&instance)?;
+            drop(store);
+            if let Some(attachment) = instance.attachments.get(&attachment_id) {
+                broadcast_hook_bridge_json(
+                    hook_bridge,
+                    json!({
+                        "method": "surface/patch",
+                        "params": {
+                            "hookNodeId": attachment.descriptor.hook_node_id,
+                            "patch": outbound_patch,
+                            "generation": instance.descriptor.generation,
+                        },
+                    }),
+                );
+            }
+            Ok((200, response))
+        }
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn begin_surface_generation(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) -> Result<(u16, String)> {
+    let request = if body.trim().is_empty() {
+        BeginSurfaceGenerationRequest::default()
+    } else {
+        match serde_json::from_str::<BeginSurfaceGenerationRequest>(body) {
+            Ok(request) => request,
+            Err(error) => return invalid_surface_payload(error),
+        }
+    };
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    match store.begin_generation(instance_id, request.expected_generation) {
+        Ok(descriptor) => {
+            let response = serde_json::to_string(&descriptor)?;
+            let attachments = store
+                .get(instance_id)
+                .map(|instance| instance.attachments)
+                .unwrap_or_default();
+            drop(store);
+            for attachment in attachments.values() {
+                broadcast_hook_bridge_json(
+                    hook_bridge,
+                    json!({
+                        "method": "surface/generation",
+                        "params": {
+                            "hookNodeId": attachment.descriptor.hook_node_id,
+                            "instanceId": instance_id,
+                            "attachmentId": attachment.descriptor.attachment_id,
+                            "generation": descriptor.generation,
+                        },
+                    }),
+                );
+            }
+            Ok((200, response))
+        }
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn transition_surface_lifecycle(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let event = match serde_json::from_str::<SurfaceLifecycleEvent>(body) {
+        Ok(event) => event,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) = validate_authenticated_surface_attachment(
+        authenticated_device_id,
+        instance_id,
+        &event.attachment_id,
+        surface_instances,
+    ) {
+        return device_auth_error_response(error);
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    let lease_ids = if event.state == loom_protocol::SurfaceLifecycleState::Disposed {
+        store
+            .get(instance_id)
+            .and_then(|instance| instance.attachments.get(&event.attachment_id).cloned())
+            .and_then(|attachment| attachment.snapshot)
+            .map(|snapshot| {
+                snapshot
+                    .resource_leases
+                    .into_iter()
+                    .map(|lease| lease.lease_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    match store.transition_lifecycle(instance_id, event.clone()) {
+        Ok(attachment) => {
+            let response = serde_json::to_string(&attachment)?;
+            drop(store);
+            release_surface_resource_leases(surface_resources, &lease_ids, shared_images)?;
+            broadcast_hook_bridge_json(
+                hook_bridge,
+                json!({
+                    "method": "surface/lifecycle",
+                    "params": {
+                        "hookNodeId": attachment.descriptor.hook_node_id,
+                        "event": event,
+                    }
+                }),
+            );
+            if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
+                broadcast_hook_bridge_json(
+                    hook_bridge,
+                    json!({
+                        "method": "surface/dispose",
+                        "params": {
+                            "hookNodeId": attachment.descriptor.hook_node_id,
+                            "instanceId": attachment.descriptor.instance_id,
+                            "attachmentId": attachment.descriptor.attachment_id,
+                        }
+                    }),
+                );
+            }
+            Ok((200, response))
+        }
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn commit_surface_preview(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> Result<(u16, String)> {
+    let commit = match serde_json::from_str::<SurfacePreviewCommit>(body) {
+        Ok(commit) => commit,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let SurfacePortValue::Resource { resource } = &commit.value {
+        if let Err(error) = surface_resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?
+            .validate_descriptor(resource)
+        {
+            return surface_resource_store_error(error);
+        }
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    match store.commit_preview(instance_id, commit) {
+        Ok(instance) => Ok((200, serde_json::to_string(&instance)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn commit_surface_result(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> Result<(u16, String)> {
+    let commit = match serde_json::from_str::<SurfaceResultCommit>(body) {
+        Ok(commit) => commit,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    {
+        let mut resources = surface_resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+        for output in commit.outputs.values() {
+            if let SurfacePortValue::Resource { resource } = output {
+                if let Err(error) = resources.validate_descriptor(resource) {
+                    return surface_resource_store_error(error);
+                }
+            }
+        }
+    }
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    match store.commit_result(instance_id, commit) {
+        Ok(instance) => Ok((200, serde_json::to_string(&instance)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn record_surface_failure(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+) -> Result<(u16, String)> {
+    let failure = match serde_json::from_str::<SurfaceExecutionFailure>(body) {
+        Ok(failure) => failure,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    match store.record_failure(instance_id, failure) {
+        Ok(instance) => Ok((200, serde_json::to_string(&instance)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn accept_surface_event(
+    instance_id: &str,
+    body: &str,
+    surface_actions: &SharedSurfaceActionExecutor,
+    surface_instances: &SharedSurfaceInstanceStore,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let event = match serde_json::from_str::<SurfaceEvent>(body) {
+        Ok(event) => event,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) = validate_authenticated_surface_attachment(
+        authenticated_device_id,
+        instance_id,
+        &event.attachment_id,
+        surface_instances,
+    ) {
+        return device_auth_error_response(error);
+    }
+    match surface_actions.submit(instance_id, event) {
+        Ok(ack) => Ok((202, serde_json::to_string(&ack)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn decide_surface_confirmation(
+    body: &str,
+    surface_actions: &SharedSurfaceActionExecutor,
+    device_registry: &SharedDeviceRegistryStore,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let decision = match serde_json::from_str::<SurfaceConfirmationDecision>(body) {
+        Ok(decision) => decision,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) =
+        validate_authenticated_device_identity(authenticated_device_id, &decision.device_id)
+    {
+        return device_auth_error_response(error);
+    }
+    let authorized = device_registry
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Device registry is unavailable"))?
+        .devices
+        .get(&decision.device_id)
+        .is_some_and(|device| device.approval == "approved" && device.enabled);
+    if !authorized {
+        return structured_error(
+            403,
+            json!({
+                "code": "surface_device_not_authorized",
+                "message": "Surface confirmation device is not approved and enabled",
+            }),
+        );
+    }
+    match surface_actions.confirm(decision) {
+        Ok(ack) => Ok((200, serde_json::to_string(&ack)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn cancel_surface_action(
+    body: &str,
+    surface_actions: &SharedSurfaceActionExecutor,
+    device_registry: &SharedDeviceRegistryStore,
+    authenticated_device_id: Option<&str>,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<SurfaceActionCancelRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    if let Err(error) =
+        validate_authenticated_device_identity(authenticated_device_id, &request.device_id)
+    {
+        return device_auth_error_response(error);
+    }
+    let authorized = device_registry
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Device registry is unavailable"))?
+        .devices
+        .get(&request.device_id)
+        .is_some_and(|device| device.approval == "approved" && device.enabled);
+    if !authorized {
+        return structured_error(
+            403,
+            json!({
+                "code": "surface_device_not_authorized",
+                "message": "Surface cancellation device is not approved and enabled",
+            }),
+        );
+    }
+    match surface_actions.cancel(request) {
+        Ok(ack) => Ok((202, serde_json::to_string(&ack)?)),
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn migrate_surface_instance(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<MigrateSurfaceInstanceRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    let before = {
+        let store = surface_instances
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+        let Some(instance) = store.get(instance_id) else {
+            return surface_store_error(SurfaceStoreError::NotFound(instance_id.to_owned()));
+        };
+        instance
+    };
+    let target_tool = match loom_tool_registry::install::resolve_installed_art_package(
+        control_plane_root,
+        &before.descriptor.art_id,
+        request.target_version.trim(),
+        request.target_digest.trim(),
+        tool_registry,
+        framework_registry,
+    ) {
+        Ok(tool) => tool,
+        Err(error) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_migration_target_unavailable",
+                    "message": error.to_string(),
+                }),
+            )
+        }
+    };
+    let target_manifest = match target_tool.surface_manifest() {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_migration_manifest_missing",
+                    "message": "target Art package does not declare a Surface",
+                }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let target_art_dir = target_tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/artPackage/dir"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("target Surface package directory is unavailable"))?;
+    if let Err(error) =
+        validate_surface_runtime_entries(control_plane_root, &target_art_dir, &target_manifest)
+    {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_migration_health_check_failed",
+                "message": error.to_string(),
+            }),
+        );
+    }
+    let is_rollback = before.migration_history.iter().any(|checkpoint| {
+        checkpoint.art_version == request.target_version
+            && checkpoint
+                .package_digest
+                .eq_ignore_ascii_case(&request.target_digest)
+            && checkpoint.state_schema_version == target_manifest.state_schema_version
+    });
+    let migrated_state = if is_rollback {
+        before.authoritative_state.clone()
+    } else {
+        match migrate_surface_state(
+            control_plane_root,
+            &target_art_dir,
+            &target_manifest,
+            before.descriptor.state_schema_version,
+            before.authoritative_state.clone(),
+        ) {
+            Ok(state) => state,
+            Err(error) => {
+                return structured_error(
+                    409,
+                    json!({
+                        "code": "surface_state_migration_failed",
+                        "message": error.to_string(),
+                    }),
+                )
+            }
+        }
+    };
+    let previous_lease_ids = before
+        .attachments
+        .values()
+        .filter_map(|attachment| attachment.snapshot.as_ref())
+        .flat_map(|snapshot| snapshot.resource_leases.iter())
+        .map(|lease| lease.lease_id.clone())
+        .collect::<Vec<_>>();
+    let attachment_states = before
+        .attachments
+        .values()
+        .map(|attachment| {
+            (
+                attachment.descriptor.attachment_id.clone(),
+                attachment.lifecycle.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let migrated = {
+        let mut store = surface_instances
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+        match store.migrate_instance(
+            instance_id,
+            request.expected_generation,
+            request.target_version.trim(),
+            request.target_digest.trim(),
+            target_manifest.state_schema_version,
+            migrated_state,
+        ) {
+            Ok(instance) => instance,
+            Err(error) => return surface_store_error(error),
+        }
+    };
+
+    let remount = remount_surface_attachments(
+        instance_id,
+        &attachment_states,
+        surface_instances,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+        hook_bridge,
+        surface_resources,
+        shared_images,
+    );
+    if let Err(error) = remount {
+        let new_lease_ids = surface_instances
+            .lock()
+            .ok()
+            .and_then(|store| store.get(instance_id))
+            .map(|instance| {
+                instance
+                    .attachments
+                    .values()
+                    .filter_map(|attachment| attachment.snapshot.as_ref())
+                    .flat_map(|snapshot| snapshot.resource_leases.iter())
+                    .map(|lease| lease.lease_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        release_surface_resource_leases(surface_resources, &new_lease_ids, shared_images)?;
+        {
+            let mut store = surface_instances
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+            store.migrate_instance(
+                instance_id,
+                Some(migrated.descriptor.generation),
+                &before.descriptor.art_version,
+                &before.descriptor.package_digest,
+                before.descriptor.state_schema_version,
+                before.authoritative_state.clone(),
+            )?;
+        }
+        let _ = remount_surface_attachments(
+            instance_id,
+            &attachment_states,
+            surface_instances,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+        );
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_migration_remount_failed",
+                "message": error.to_string(),
+                "rolledBack": true,
+            }),
+        );
+    }
+    release_surface_resource_leases(surface_resources, &previous_lease_ids, shared_images)?;
+    let current = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?
+        .get(instance_id)
+        .ok_or_else(|| anyhow::anyhow!("migrated Surface instance disappeared"))?;
+    Ok((200, serde_json::to_string(&current)?))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remount_surface_attachments(
+    instance_id: &str,
+    attachment_states: &[(String, loom_protocol::SurfaceLifecycleState)],
+    surface_instances: &SharedSurfaceInstanceStore,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<()> {
+    for (attachment_id, previous_lifecycle) in attachment_states {
+        if *previous_lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
+            continue;
+        }
+        let body = json!({ "attachmentId": attachment_id }).to_string();
+        let (status, response) = mount_surface_instance(
+            instance_id,
+            &body,
+            surface_instances,
+            tool_registry,
+            framework_registry,
+            control_plane_root,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+        )?;
+        if status != 200 {
+            anyhow::bail!("target Surface remount returned {status}: {response}");
+        }
+        if matches!(
+            previous_lifecycle,
+            loom_protocol::SurfaceLifecycleState::Active
+                | loom_protocol::SurfaceLifecycleState::Inactive
+                | loom_protocol::SurfaceLifecycleState::Suspended
+        ) {
+            let attachment = surface_instances
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?
+                .get(instance_id)
+                .and_then(|instance| instance.attachments.get(attachment_id).cloned())
+                .ok_or_else(|| anyhow::anyhow!("remounted Surface attachment disappeared"))?;
+            let event = SurfaceLifecycleEvent {
+                protocol_version: loom_protocol::SURFACE_PROTOCOL_VERSION.to_owned(),
+                instance_id: instance_id.to_owned(),
+                attachment_id: attachment_id.clone(),
+                state: previous_lifecycle.clone(),
+                revision: attachment.lifecycle_revision.saturating_add(1),
+            };
+            let body = serde_json::to_string(&event)?;
+            let (status, response) = transition_surface_lifecycle(
+                instance_id,
+                &body,
+                surface_instances,
+                hook_bridge,
+                surface_resources,
+                shared_images,
+                None,
+            )?;
+            if status != 200 {
+                anyhow::bail!("target Surface lifecycle restore returned {status}: {response}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_surface_runtime_entries(
+    control_plane_root: &Path,
+    art_dir: &Path,
+    manifest: &loom_protocol::SurfacePackageManifest,
+) -> Result<()> {
+    for variant in &manifest.variants {
+        let path = resolve_surface_package_entry(control_plane_root, art_dir, &variant.entry)?;
+        let metadata = fs::metadata(&path)?;
+        match variant.runtime {
+            SurfaceRuntimeKind::Declarative => {
+                if metadata.len() > MAX_SURFACE_SCENE_BYTES {
+                    anyhow::bail!("Surface scene exceeds {MAX_SURFACE_SCENE_BYTES} bytes");
+                }
+                serde_json::from_slice::<DeclarativeSurfaceFile>(&fs::read(path)?)?;
+            }
+            SurfaceRuntimeKind::Javascript => {
+                if metadata.len() > MAX_SURFACE_JAVASCRIPT_BYTES {
+                    anyhow::bail!(
+                        "JavaScript Surface exceeds {MAX_SURFACE_JAVASCRIPT_BYTES} bytes"
+                    );
+                }
+                std::str::from_utf8(&fs::read(path)?)
+                    .context("JavaScript Surface entry is not UTF-8")?;
+            }
+            SurfaceRuntimeKind::Shader | SurfaceRuntimeKind::LoomRemote => {
+                if metadata.len() > MAX_SURFACE_SCENE_BYTES {
+                    anyhow::bail!("Surface runtime descriptor is too large");
+                }
+            }
+        }
+    }
+    if let Some(fallback) = manifest.fallback_scene.as_deref() {
+        let path = resolve_surface_package_entry(control_plane_root, art_dir, fallback)?;
+        if fs::metadata(&path)?.len() > MAX_SURFACE_SCENE_BYTES {
+            anyhow::bail!("Surface fallback exceeds {MAX_SURFACE_SCENE_BYTES} bytes");
+        }
+        serde_json::from_slice::<DeclarativeSurfaceFile>(&fs::read(path)?)?;
+    }
+    Ok(())
+}
+
+fn migrate_surface_state(
+    control_plane_root: &Path,
+    art_dir: &Path,
+    manifest: &loom_protocol::SurfacePackageManifest,
+    source_schema: u32,
+    mut state: Value,
+) -> Result<Value> {
+    if source_schema > manifest.state_schema_version {
+        anyhow::bail!(
+            "target state schema {} is older than current schema {} and no rollback checkpoint exists",
+            manifest.state_schema_version,
+            source_schema
+        );
+    }
+    let mut current = source_schema;
+    let mut steps = 0_u32;
+    while current < manifest.state_schema_version {
+        let migration = manifest
+            .migrations
+            .iter()
+            .find(|migration| migration.from == current)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Surface state migration chain stops at schema {current} before {}",
+                    manifest.state_schema_version
+                )
+            })?;
+        let path = resolve_surface_package_entry(control_plane_root, art_dir, &migration.entry)?;
+        if fs::metadata(&path)?.len() > MAX_SURFACE_SCENE_BYTES {
+            anyhow::bail!("Surface state migration is too large");
+        }
+        let document: SurfaceStateMigrationFile = serde_json::from_slice(&fs::read(path)?)?;
+        if document.from != migration.from || document.to != migration.to {
+            anyhow::bail!(
+                "Surface state migration {} does not match manifest step {} -> {}",
+                migration.entry,
+                migration.from,
+                migration.to
+            );
+        }
+        apply_surface_state_merge_patch(&mut state, &document.state_patch);
+        current = migration.to;
+        steps = steps.saturating_add(1);
+        if steps > 32 {
+            anyhow::bail!("Surface state migration chain exceeds 32 steps");
+        }
+    }
+    Ok(state)
+}
+
+fn apply_surface_state_merge_patch(target: &mut Value, patch: &Value) {
+    match patch {
+        Value::Object(patch) => {
+            if !target.is_object() {
+                *target = json!({});
+            }
+            let target = target.as_object_mut().expect("state was normalized");
+            for (key, value) in patch {
+                if value.is_null() {
+                    target.remove(key);
+                } else {
+                    apply_surface_state_merge_patch(
+                        target.entry(key.clone()).or_insert(Value::Null),
+                        value,
+                    );
+                }
+            }
+        }
+        value => *target = value.clone(),
+    }
+}
+
+fn mount_surface_instance(
+    instance_id: &str,
+    body: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<MountSurfaceInstanceRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_surface_payload(error),
+    };
+    let instance = {
+        let store = surface_instances
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+        let Some(instance) = store.get(instance_id) else {
+            return surface_store_error(SurfaceStoreError::NotFound(instance_id.to_owned()));
+        };
+        instance
+    };
+    let Some(attachment) = instance.attachments.get(request.attachment_id.trim()) else {
+        return surface_store_error(SurfaceStoreError::NotFound(request.attachment_id));
+    };
+    let previous_lease_ids = attachment
+        .snapshot
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .resource_leases
+                .iter()
+                .map(|lease| lease.lease_id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let existing_snapshot_source = attachment.snapshot.clone();
+    let shared_snapshot_source = if instance.descriptor.instance_mode == SurfaceInstanceMode::Shared
+        && existing_snapshot_source.is_none()
+    {
+        instance
+            .attachments
+            .values()
+            .filter(|candidate| {
+                candidate.descriptor.attachment_id != attachment.descriptor.attachment_id
+            })
+            .find_map(|candidate| candidate.snapshot.clone())
+    } else {
+        None
+    };
+    let snapshot_source = existing_snapshot_source
+        .as_ref()
+        .or(shared_snapshot_source.as_ref());
+    let tool = match loom_tool_registry::install::resolve_installed_art_package(
+        control_plane_root,
+        &instance.descriptor.art_id,
+        &instance.descriptor.art_version,
+        &instance.descriptor.package_digest,
+        tool_registry,
+        framework_registry,
+    ) {
+        Ok(tool) => tool,
+        Err(error) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_art_package_unavailable",
+                    "message": error.to_string(),
+                }),
+            )
+        }
+    };
+    let manifest = match tool.surface_manifest() {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_manifest_missing",
+                    "message": "Art package does not declare a Surface",
+                }),
+            )
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let host = attachment
+        .host_capabilities
+        .clone()
+        .unwrap_or_else(default_declarative_surface_host_capabilities);
+    if host.api_version != loom_protocol::SURFACE_API_VERSION {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_api_incompatible",
+                "message": format!("Hook Surface API {} is not supported", host.api_version),
+            }),
+        );
+    }
+    let missing_nodes = manifest
+        .required_nodes
+        .iter()
+        .filter(|node| !host.nodes.contains(node))
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing_capabilities = manifest
+        .required_capabilities
+        .iter()
+        .filter(|capability| !surface_host_supports_capability(&host, capability))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_nodes.is_empty() || !missing_capabilities.is_empty() {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_host_capability_missing",
+                "message": "Hook cannot satisfy the Surface requirements",
+                "missingNodes": missing_nodes,
+                "missingCapabilities": missing_capabilities,
+            }),
+        );
+    }
+    let selected_variant = manifest.variants.iter().find(|variant| {
+        matches!(
+            variant.runtime,
+            SurfaceRuntimeKind::Declarative | SurfaceRuntimeKind::Javascript
+        ) && host.runtimes.contains(&variant.runtime)
+            && variant
+                .required_capabilities
+                .iter()
+                .all(|capability| surface_host_supports_capability(&host, capability))
+    });
+    let (runtime, entry) = if let Some(variant) = selected_variant {
+        (variant.runtime.clone(), variant.entry.clone())
+    } else if host.runtimes.contains(&SurfaceRuntimeKind::Declarative) {
+        let Some(entry) = manifest.fallback_scene.clone() else {
+            return structured_error(
+                409,
+                json!({
+                    "code": "surface_runtime_incompatible",
+                    "message": "Hook does not provide a compatible Surface runtime and the package has no declarative fallback",
+                }),
+            );
+        };
+        (SurfaceRuntimeKind::Declarative, entry)
+    } else {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_runtime_incompatible",
+                "message": "Hook does not provide a compatible Surface runtime",
+            }),
+        );
+    };
+    let package = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"));
+    let Some(art_dir) = package
+        .and_then(|package| package.get("dir"))
+        .and_then(Value::as_str)
+    else {
+        return structured_error(
+            409,
+            json!({
+                "code": "surface_art_package_required",
+                "message": "Surface package directory is unavailable",
+            }),
+        );
+    };
+    let read_declarative_entry = |scene_entry: &str| {
+        let scene_path =
+            resolve_surface_package_entry(control_plane_root, Path::new(art_dir), scene_entry)?;
+        let metadata = fs::metadata(&scene_path)
+            .with_context(|| format!("read Surface scene metadata {}", scene_path.display()))?;
+        if metadata.len() > MAX_SURFACE_SCENE_BYTES {
+            anyhow::bail!("Surface scene exceeds {MAX_SURFACE_SCENE_BYTES} bytes");
+        }
+        let surface_file =
+            serde_json::from_slice::<DeclarativeSurfaceFile>(&fs::read(&scene_path)?)?;
+        match surface_file {
+            DeclarativeSurfaceFile::Document(document) => {
+                if document
+                    .protocol_version
+                    .as_deref()
+                    .is_some_and(|version| version != loom_protocol::SURFACE_PROTOCOL_VERSION)
+                {
+                    anyhow::bail!("Surface scene protocol is not supported");
+                }
+                Ok((
+                    document.scene,
+                    document.authoritative_state,
+                    document.resources,
+                ))
+            }
+            DeclarativeSurfaceFile::Scene(scene) => Ok((scene, Value::Null, Vec::new())),
+        }
+    };
+    let fallback_scene = || SurfaceNode {
+        id: "surface-root".to_owned(),
+        node_type: "column".to_owned(),
+        children: vec![SurfaceNode {
+            id: "surface-runtime-status".to_owned(),
+            node_type: "text".to_owned(),
+            props: json!({"text": "交互界面暂不可用"}),
+            ..SurfaceNode::default()
+        }],
+        ..SurfaceNode::default()
+    };
+    let (scene, authoritative_state, resources, resource_leases, entry_resource_id) = if let Some(
+        source,
+    ) =
+        snapshot_source
+    {
+        let duplicated_leases = if source.resource_leases.is_empty() {
+            Vec::new()
+        } else {
+            let mut resource_store = surface_resources
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+            source
+                .resource_leases
+                .iter()
+                .map(|lease| resource_store.renew_loom_resource_lease(lease))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    anyhow::anyhow!("renew recovered Surface resource lease: {error}")
+                })?
+        };
+        (
+            source.scene.clone(),
+            source.authoritative_state.clone(),
+            source.resources.clone(),
+            duplicated_leases,
+            source.entry_resource_id.clone(),
+        )
+    } else {
+        match runtime {
+            SurfaceRuntimeKind::Declarative => {
+                let (scene, authoritative_state, resources) = match read_declarative_entry(&entry) {
+                    Ok(surface) => surface,
+                    Err(error) => {
+                        return structured_error(
+                            400,
+                            json!({
+                                "code": "invalid_surface_scene",
+                                "message": error.to_string(),
+                            }),
+                        )
+                    }
+                };
+                (scene, authoritative_state, resources, Vec::new(), None)
+            }
+            SurfaceRuntimeKind::Javascript => {
+                let entry_path = match resolve_surface_package_entry(
+                    control_plane_root,
+                    Path::new(art_dir),
+                    &entry,
+                ) {
+                    Ok(path) => path,
+                    Err(error) => return surface_store_error(error),
+                };
+                let metadata = fs::metadata(&entry_path).with_context(|| {
+                    format!("read JavaScript Surface metadata {}", entry_path.display())
+                })?;
+                if metadata.len() > MAX_SURFACE_JAVASCRIPT_BYTES {
+                    return structured_error(
+                        400,
+                        json!({
+                            "code": "surface_javascript_too_large",
+                            "message": format!("JavaScript Surface exceeds {MAX_SURFACE_JAVASCRIPT_BYTES} bytes"),
+                        }),
+                    );
+                }
+                let source = fs::read(&entry_path)?;
+                let lease = {
+                    let mut resource_store = surface_resources
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+                    match resource_store.register(
+                        SurfaceResourceKind::Binary,
+                        "application/javascript",
+                        &source,
+                        None,
+                        None,
+                        None,
+                    ) {
+                        Ok(lease) => lease,
+                        Err(error) => return surface_resource_store_error(error),
+                    }
+                };
+                let (scene, authoritative_state, mut resources) =
+                    if let Some(fallback_entry) = manifest.fallback_scene.as_deref() {
+                        match read_declarative_entry(fallback_entry) {
+                            Ok(surface) => surface,
+                            Err(error) => {
+                                return structured_error(
+                                    400,
+                                    json!({
+                                        "code": "invalid_surface_fallback",
+                                        "message": error.to_string(),
+                                    }),
+                                )
+                            }
+                        }
+                    } else {
+                        (fallback_scene(), Value::Null, Vec::new())
+                    };
+                if !resources
+                    .iter()
+                    .any(|resource| resource.resource_id == lease.resource.resource_id)
+                {
+                    resources.push(lease.resource.clone());
+                }
+                let entry_resource_id = lease.resource.resource_id.clone();
+                (
+                    scene,
+                    authoritative_state,
+                    resources,
+                    vec![lease],
+                    Some(entry_resource_id),
+                )
+            }
+            SurfaceRuntimeKind::Shader | SurfaceRuntimeKind::LoomRemote => {
+                return structured_error(
+                    409,
+                    json!({
+                        "code": "surface_runtime_incompatible",
+                        "message": "Selected Surface runtime is not implemented by this mount path",
+                    }),
+                )
+            }
+        }
+    };
+    let revision = existing_snapshot_source
+        .as_ref()
+        .map(|source| source.revision.saturating_add(1))
+        .or_else(|| {
+            shared_snapshot_source
+                .as_ref()
+                .map(|source| source.revision)
+        })
+        .unwrap_or_else(|| instance.descriptor.surface_revision.saturating_add(1));
+    let snapshot = SurfaceSnapshot {
+        protocol_version: loom_protocol::SURFACE_PROTOCOL_VERSION.to_owned(),
+        instance_id: instance_id.to_owned(),
+        attachment_id: attachment.descriptor.attachment_id.clone(),
+        art_id: instance.descriptor.art_id.clone(),
+        art_version: instance.descriptor.art_version.clone(),
+        revision,
+        runtime: runtime.clone(),
+        entry_resource_id,
+        scene,
+        authoritative_state,
+        resources,
+        resource_leases,
+    };
+    let mut store = surface_instances
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    match store.put_snapshot(instance_id, snapshot) {
+        Ok(instance) => {
+            let response = serde_json::to_string(&json!({
+                "runtime": runtime,
+                "entry": entry,
+                "instance": instance,
+            }))?;
+            drop(store);
+            release_surface_resource_leases(surface_resources, &previous_lease_ids, shared_images)?;
+            if let Some(attachment) = instance.attachments.get(request.attachment_id.trim()) {
+                if let Some(snapshot) = &attachment.snapshot {
+                    broadcast_hook_bridge_json(
+                        hook_bridge,
+                        json!({
+                            "method": "surface/snapshot",
+                            "params": {
+                                "hookNodeId": attachment.descriptor.hook_node_id,
+                                "snapshot": snapshot,
+                                "generation": instance.descriptor.generation,
+                            },
+                        }),
+                    );
+                }
+                broadcast_hook_bridge_json(
+                    hook_bridge,
+                    json!({
+                        "method": "surface/lifecycle",
+                        "params": {
+                            "hookNodeId": attachment.descriptor.hook_node_id,
+                            "event": {
+                                "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+                                "instanceId": instance_id,
+                                "attachmentId": attachment.descriptor.attachment_id,
+                                "state": attachment.lifecycle,
+                                "revision": attachment.lifecycle_revision,
+                            }
+                        }
+                    }),
+                );
+            }
+            Ok((200, response))
+        }
+        Err(error) => surface_store_error(error),
+    }
+}
+
+fn default_declarative_surface_host_capabilities() -> SurfaceHostCapabilities {
+    SurfaceHostCapabilities {
+        api_version: loom_protocol::SURFACE_API_VERSION.to_owned(),
+        runtimes: vec![SurfaceRuntimeKind::Declarative],
+        nodes: loom_protocol::DECLARATIVE_SURFACE_NODE_TYPES
+            .iter()
+            .map(|node| (*node).to_owned())
+            .collect(),
+        transports: Vec::new(),
+        capabilities: Vec::new(),
+        input: loom_protocol::SurfaceInputCapabilities {
+            pointer: true,
+            hover: true,
+            touch: true,
+            keyboard: true,
+        },
+    }
+}
+
+fn surface_host_supports_capability(host: &SurfaceHostCapabilities, capability: &str) -> bool {
+    host.capabilities.iter().any(|value| value == capability)
+        || host.transports.iter().any(|value| value == capability)
+        || matches!(
+            capability,
+            "input.pointer" if host.input.pointer
+        )
+        || matches!(
+            capability,
+            "input.hover" if host.input.hover
+        )
+        || matches!(
+            capability,
+            "input.touch" if host.input.touch
+        )
+        || matches!(
+            capability,
+            "input.keyboard" if host.input.keyboard
+        )
+}
+
+fn resolve_surface_package_entry(
+    control_plane_root: &Path,
+    art_dir: &Path,
+    entry: &str,
+) -> std::result::Result<PathBuf, SurfaceStoreError> {
+    let arts_root = fs::canonicalize(control_plane_root.join("arts")).map_err(|error| {
+        SurfaceStoreError::Invalid(format!("Art package root is unavailable: {error}"))
+    })?;
+    let art_dir = fs::canonicalize(art_dir).map_err(|error| {
+        SurfaceStoreError::Invalid(format!("Art package directory is unavailable: {error}"))
+    })?;
+    if !art_dir.starts_with(&arts_root) {
+        return Err(SurfaceStoreError::Invalid(
+            "Surface package directory escapes the Art package root".to_owned(),
+        ));
+    }
+    let scene_path = fs::canonicalize(art_dir.join(entry)).map_err(|error| {
+        SurfaceStoreError::Invalid(format!("Surface entry is unavailable: {error}"))
+    })?;
+    if !scene_path.starts_with(&art_dir) || !scene_path.is_file() {
+        return Err(SurfaceStoreError::Invalid(
+            "Surface entry escapes its immutable package".to_owned(),
+        ));
+    }
+    Ok(scene_path)
+}
+
+fn invalid_surface_payload(error: serde_json::Error) -> Result<(u16, String)> {
+    structured_error(
+        400,
+        json!({
+            "code": "invalid_surface_payload",
+            "message": error.to_string(),
+        }),
+    )
+}
+
+fn surface_store_error(error: SurfaceStoreError) -> Result<(u16, String)> {
+    structured_error(
+        error.status_code(),
+        json!({
+            "code": error.code(),
+            "message": error.to_string(),
+        }),
+    )
 }
 
 fn decoded_package_path_id(path: &str, prefix: &str) -> Option<String> {
@@ -5494,6 +8563,47 @@ fn art_version_from_tool(tool: &ToolDefinition) -> String {
         .and_then(Value::as_str)
         .unwrap_or("0.0.0")
         .to_owned()
+}
+
+fn resolve_registered_tool_package(
+    tool: &ToolDefinition,
+    tool_registry: &ToolRegistry,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+) -> std::result::Result<ToolDefinition, loom_tool_registry::install::ArtInstallError> {
+    let Some(package) = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artPackage"))
+    else {
+        return Ok(tool.clone());
+    };
+    let version = package
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(
+                "installed Art package has no version".to_owned(),
+            )
+        })?;
+    let digest = package
+        .get("digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            loom_tool_registry::install::ArtInstallError::InvalidPackage(
+                "installed Art package has no digest".to_owned(),
+            )
+        })?;
+    let mut resolved = loom_tool_registry::install::resolve_installed_art_package(
+        control_plane_root,
+        &tool.qualified_id(),
+        version,
+        digest,
+        tool_registry,
+        framework_registry,
+    )?;
+    resolved.enabled = tool.enabled;
+    Ok(resolved)
 }
 
 fn effective_art_update_source(
@@ -9259,17 +12369,14 @@ fn execute_registered_tool(
         }
         Err(error) => return tool_registry_error_response(error),
     };
-    if tool
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("artPackage"))
-        .is_some()
-    {
-        if let Err(error) = loom_tool_registry::install::verify_art_package_integrity(
-            control_plane_root,
-            &tool,
-            framework_registry,
-        ) {
+    let tool = match resolve_registered_tool_package(
+        &tool,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+    ) {
+        Ok(tool) => tool,
+        Err(error) => {
             return structured_error(
                 409,
                 json!({
@@ -9279,7 +12386,7 @@ fn execute_registered_tool(
                 }),
             );
         }
-    }
+    };
     if let ToolExecution::FrameworkArt { framework } = &tool.execution {
         if !tool.enabled {
             return structured_error(
@@ -11261,7 +14368,7 @@ fn hook_canvas_preview_binary_response(body: Vec<u8>) -> Result<RouteResponse> {
     };
     Ok(RouteResponse::Binary {
         status: 200,
-        content_type,
+        content_type: content_type.to_owned(),
         body,
     })
 }
@@ -12074,6 +15181,8 @@ fn start_hook_bridge(
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     run_store: &SharedRunStore,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_actions: &SharedSurfaceActionExecutor,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
     let request = match serde_json::from_str::<StartHookBridgeRequest>(request_body) {
@@ -12129,6 +15238,8 @@ fn start_hook_bridge(
     let worker_framework_registry = framework_registry.clone();
     let worker_control_plane_root = control_plane_root.to_path_buf();
     let worker_run_store = Arc::clone(run_store);
+    let worker_surface_instances = Arc::clone(surface_instances);
+    let worker_surface_actions = Arc::clone(surface_actions);
     let workflow_root = runtime.workflow_root.clone();
     let worker = thread::spawn(move || {
         run_hook_bridge_websocket_server(
@@ -12146,6 +15257,8 @@ fn start_hook_bridge(
             worker_control_plane_root,
             workflow_root,
             worker_run_store,
+            worker_surface_instances,
+            worker_surface_actions,
         );
     });
     runtime.shutdown_tx = Some(shutdown_tx);
@@ -12207,6 +15320,8 @@ fn run_hook_bridge_websocket_server(
     control_plane_root: PathBuf,
     workflow_root: PathBuf,
     run_store: SharedRunStore,
+    surface_instances: SharedSurfaceInstanceStore,
+    surface_actions: SharedSurfaceActionExecutor,
 ) {
     loop {
         if shutdown_rx.try_recv().is_ok() {
@@ -12227,6 +15342,8 @@ fn run_hook_bridge_websocket_server(
                 let control_plane_root = control_plane_root.clone();
                 let workflow_root = workflow_root.clone();
                 let run_store = Arc::clone(&run_store);
+                let surface_instances = Arc::clone(&surface_instances);
+                let surface_actions = Arc::clone(&surface_actions);
                 thread::spawn(move || {
                     handle_hook_bridge_websocket_connection(
                         stream,
@@ -12242,6 +15359,8 @@ fn run_hook_bridge_websocket_server(
                         control_plane_root,
                         workflow_root,
                         run_store,
+                        surface_instances,
+                        surface_actions,
                     );
                 });
             }
@@ -12267,6 +15386,8 @@ fn handle_hook_bridge_websocket_connection(
     control_plane_root: PathBuf,
     workflow_root: PathBuf,
     run_store: SharedRunStore,
+    surface_instances: SharedSurfaceInstanceStore,
+    surface_actions: SharedSurfaceActionExecutor,
 ) {
     let _ = stream.set_nonblocking(false);
     let Ok(mut websocket) = tungstenite::accept(stream) else {
@@ -12295,6 +15416,7 @@ fn handle_hook_bridge_websocket_connection(
         match message {
             tungstenite::Message::Text(text) => {
                 let mut intermediate_send_failed = false;
+                let mut recovery_channels: Option<Vec<String>> = None;
                 let mut emit_intermediate = |message: String| {
                     if websocket.send(tungstenite::Message::Text(message)).is_err() {
                         intermediate_send_failed = true;
@@ -12312,12 +15434,14 @@ fn handle_hook_bridge_websocket_connection(
                     &control_plane_root,
                     &workflow_root,
                     &run_store,
+                    Some(&surface_actions),
                     &mut emit_intermediate,
                 );
                 if intermediate_send_failed {
                     break;
                 }
                 if result.subscription_channels.is_some() && subscription_rx.is_none() {
+                    recovery_channels = result.subscription_channels.clone();
                     let (rx, guard) = register_hook_bridge_subscription(
                         &broadcast_hub,
                         result.subscription_channels.clone().unwrap_or_default(),
@@ -12330,6 +15454,18 @@ fn handle_hook_bridge_websocket_connection(
                     .is_err()
                 {
                     break;
+                }
+                if recovery_channels.as_ref().is_some_and(|channels| {
+                    channels
+                        .iter()
+                        .any(|channel| channel_accepts_method(channel, "surface/snapshot"))
+                }) {
+                    let recovery = surface_snapshot_recovery_messages(&surface_instances);
+                    for message in recovery {
+                        if websocket.send(tungstenite::Message::Text(message)).is_err() {
+                            return;
+                        }
+                    }
                 }
                 broadcast_hook_bridge_messages(&broadcast_hub, &result.broadcasts);
             }
@@ -12416,6 +15552,7 @@ fn handle_hook_bridge_websocket_text(
         control_plane_root,
         workflow_root,
         run_store,
+        None,
         &mut |_| {},
     )
 }
@@ -12433,8 +15570,44 @@ fn handle_hook_bridge_websocket_text_with_intermediate(
     control_plane_root: &Path,
     workflow_root: &Path,
     run_store: &SharedRunStore,
+    surface_actions: Option<&SharedSurfaceActionExecutor>,
     emit_intermediate: &mut dyn FnMut(String),
 ) -> HookBridgeWebSocketTextResult {
+    if let Ok(envelope) = serde_json::from_str::<Value>(text) {
+        if envelope.get("method").and_then(Value::as_str) == Some("surface/event") {
+            let Some(surface_actions) = surface_actions else {
+                return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(
+                    "Surface action executor is unavailable",
+                ));
+            };
+            let event = match serde_json::from_value::<SurfaceEvent>(
+                envelope.get("params").cloned().unwrap_or(Value::Null),
+            ) {
+                Ok(event) => event,
+                Err(error) => {
+                    return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(
+                        format!("Invalid Surface event: {error}"),
+                    ))
+                }
+            };
+            let instance_id = event.instance_id.clone();
+            return match surface_actions.submit(&instance_id, event) {
+                Ok(ack) => HookBridgeWebSocketTextResult::response(
+                    json!({ "type": "surface_action_ack", "data": ack }).to_string(),
+                ),
+                Err(error) => HookBridgeWebSocketTextResult::response(
+                    json!({
+                        "type": "error",
+                        "data": {
+                            "code": error.code(),
+                            "message": error.to_string(),
+                        },
+                    })
+                    .to_string(),
+                ),
+            };
+        }
+    }
     let request = match parse_request(text) {
         Ok(request) => request,
         Err(error) => {
@@ -12929,24 +16102,21 @@ fn execute_hook_bridge_art_node(
             );
         }
     };
-    if tool
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("artPackage"))
-        .is_some()
-    {
-        if let Err(error) = loom_tool_registry::install::verify_art_package_integrity(
-            control_plane_root,
-            &tool,
-            framework_registry,
-        ) {
+    let tool = match resolve_registered_tool_package(
+        &tool,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+    ) {
+        Ok(tool) => tool,
+        Err(error) => {
             let message = format!("Art package integrity verification failed: {error}");
             set_hook_canvas_runtime_status(node_id, "error", Some(message.clone()));
             return HookBridgeWebSocketTextResult::response(
                 execute_art_node_error_response(message).to_string(),
             );
         }
-    }
+    };
 
     let servers = match mcp_servers.lock() {
         Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
@@ -13534,17 +16704,14 @@ fn execute_hook_bridge_ahrp_process(
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
     };
-    if tool
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("artPackage"))
-        .is_some()
-    {
-        if let Err(error) = loom_tool_registry::install::verify_art_package_integrity(
-            control_plane_root,
-            &tool,
-            framework_registry,
-        ) {
+    let tool = match resolve_registered_tool_package(
+        &tool,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+    ) {
+        Ok(tool) => tool,
+        Err(error) => {
             let response = ahrp_error_response(
                 request_id,
                 "IntegrityError",
@@ -13553,7 +16720,7 @@ fn execute_hook_bridge_ahrp_process(
             finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
             return HookBridgeWebSocketTextResult::response(response.to_string());
         }
-    }
+    };
 
     let servers = match mcp_servers.lock() {
         Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
@@ -13875,6 +17042,7 @@ fn broadcast_hook_bridge_messages_with_count(
     if broadcasts.is_empty() {
         return 0;
     }
+    hub.record(broadcasts);
     let Ok(mut subscribers) = hub.subscribers.lock() else {
         return 0;
     };
@@ -13906,6 +17074,147 @@ fn broadcast_hook_bridge_json(hook_bridge: &SharedHookBridgeRuntime, broadcast: 
         Err(_) => return,
     };
     broadcast_hook_bridge_messages(&hub, &[serialized]);
+}
+
+fn surface_snapshot_recovery_messages(
+    surface_instances: &SharedSurfaceInstanceStore,
+) -> Vec<String> {
+    surface_snapshot_recovery_messages_for_device(surface_instances, None)
+}
+
+fn surface_snapshot_recovery_messages_for_device(
+    surface_instances: &SharedSurfaceInstanceStore,
+    authenticated_device_id: Option<&str>,
+) -> Vec<String> {
+    let Ok(store) = surface_instances.lock() else {
+        return Vec::new();
+    };
+    let mut messages = store
+        .list()
+        .into_iter()
+        .flat_map(|instance| {
+            instance
+                .attachments
+                .into_values()
+                .filter_map(move |attachment| {
+                    if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
+                        return None;
+                    }
+                    if authenticated_device_id
+                        .is_some_and(|device_id| attachment.descriptor.device_id != device_id)
+                    {
+                        return None;
+                    }
+                    let snapshot = attachment.snapshot?;
+                    serde_json::to_string(&json!({
+                        "method": "surface/snapshot",
+                        "params": {
+                            "hookNodeId": attachment.descriptor.hook_node_id,
+                            "snapshot": snapshot,
+                            "generation": instance.descriptor.generation,
+                        },
+                    }))
+                    .ok()
+                })
+        })
+        .collect::<Vec<_>>();
+    messages.extend(
+        store
+            .pending_confirmations()
+            .into_iter()
+            .filter_map(|confirmation| {
+                if authenticated_device_id
+                    .is_some_and(|device_id| confirmation.device_id != device_id)
+                {
+                    return None;
+                }
+                serde_json::to_string(&json!({
+                    "method": "surface/confirmation",
+                    "params": confirmation,
+                }))
+                .ok()
+            }),
+    );
+    messages
+}
+
+fn surface_message_visible_to_device(
+    message: &Value,
+    authenticated_device_id: Option<&str>,
+    surface_instances: &SharedSurfaceInstanceStore,
+) -> bool {
+    let Some(device_id) = authenticated_device_id else {
+        return true;
+    };
+    let Some(params) = message.get("params") else {
+        return false;
+    };
+    if params.get("deviceId").and_then(Value::as_str) == Some(device_id) {
+        return true;
+    }
+    let Ok(store) = surface_instances.lock() else {
+        return false;
+    };
+    let attachment_matches = |instance_id: &str, attachment_id: &str| {
+        store
+            .get(instance_id)
+            .and_then(|instance| instance.attachments.get(attachment_id).cloned())
+            .is_some_and(|attachment| attachment.descriptor.device_id == device_id)
+    };
+    let instance_matches = |instance_id: &str| {
+        store.get(instance_id).is_some_and(|instance| {
+            instance
+                .attachments
+                .values()
+                .any(|attachment| attachment.descriptor.device_id == device_id)
+        })
+    };
+
+    if let Some(snapshot) = params.get("snapshot") {
+        if let (Some(instance_id), Some(attachment_id)) = (
+            snapshot.get("instanceId").and_then(Value::as_str),
+            snapshot.get("attachmentId").and_then(Value::as_str),
+        ) {
+            return attachment_matches(instance_id, attachment_id);
+        }
+    }
+    if let Some(patch) = params.get("patch") {
+        if let (Some(instance_id), Some(attachment_id)) = (
+            patch.get("instanceId").and_then(Value::as_str),
+            patch.get("attachmentId").and_then(Value::as_str),
+        ) {
+            return attachment_matches(instance_id, attachment_id);
+        }
+    }
+    if let Some(commit) = params.get("commit") {
+        if let Some(instance_id) = commit.get("instanceId").and_then(Value::as_str) {
+            return instance_matches(instance_id);
+        }
+    }
+    if let Some(event) = params.get("event") {
+        if let (Some(instance_id), Some(attachment_id)) = (
+            event.get("instanceId").and_then(Value::as_str),
+            event.get("attachmentId").and_then(Value::as_str),
+        ) {
+            return attachment_matches(instance_id, attachment_id);
+        }
+    }
+    let instance_id = params
+        .get("instanceId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get("failure")
+                .and_then(|value| value.get("instanceId"))
+                .and_then(Value::as_str)
+        });
+    if let Some(instance_id) = instance_id {
+        if let Some(attachment_id) = params.get("attachmentId").and_then(Value::as_str) {
+            return attachment_matches(instance_id, attachment_id);
+        }
+        return instance_matches(instance_id);
+    }
+    false
 }
 
 fn subscriber_accepts_broadcast(subscriber: &HookBridgeSubscriber, broadcast: &str) -> bool {
@@ -14789,6 +18098,16 @@ fn structured_error(status: u16, error: Value) -> Result<(u16, String)> {
     Ok((status, serde_json::to_string(&json!({ "error": error }))?))
 }
 
+fn device_auth_error_response(error: DeviceAuthError) -> Result<(u16, String)> {
+    structured_error(
+        error.status,
+        json!({
+            "code": error.code,
+            "message": error.message,
+        }),
+    )
+}
+
 fn request_worker_failed_response() -> (u16, String) {
     structured_error(
         500,
@@ -15119,6 +18438,354 @@ mod tests {
         assert!(!updated.enabled);
         remove_managed_device(&remote_id, &registry, &hook_bridge).expect("remove remote device");
         assert_eq!(registry.lock().expect("device registry").devices.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn device_pairing_issues_short_lived_session_rejects_replay_and_revokes_on_disable() {
+        use ed25519_dalek::{Signer as _, SigningKey};
+
+        let root = unique_temp_dir("device-session-security");
+        let runtime = test_daemon_runtime_from_config(
+            &root,
+            DaemonConfig::localhost(0).with_bearer_token("loom-admin-test"),
+        );
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let public_key = BASE64.encode(signing_key.verifying_key().to_bytes());
+        let pairing_body = json!({
+            "name": "Paired Hook",
+            "kind": "computer",
+            "address": "192.168.10.20",
+            "publicKey": public_key,
+        })
+        .to_string();
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/devices/requests", &[], Some(&pairing_body)),
+        )
+        .expect("create public pairing request");
+        assert_eq!(status, 200, "{response}");
+        let device_id = runtime
+            .device_registry
+            .lock()
+            .expect("device registry")
+            .devices
+            .values()
+            .find(|device| device.name == "Paired Hook")
+            .expect("pending paired device")
+            .id
+            .clone();
+
+        let challenge_body = json!({"deviceId": device_id}).to_string();
+        let (status, _) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                "/v1/device-sessions/challenges",
+                &[],
+                Some(&challenge_body),
+            ),
+        )
+        .expect("reject challenge before approval");
+        assert_eq!(status, 403);
+
+        let approve_path = format!("/v1/devices/{device_id}/approve");
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &approve_path,
+                &[("Authorization", "Bearer loom-admin-test")],
+                None,
+            ),
+        )
+        .expect("approve paired device");
+        assert_eq!(status, 200, "{response}");
+        let (status, challenge_json) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                "/v1/device-sessions/challenges",
+                &[],
+                Some(&challenge_body),
+            ),
+        )
+        .expect("create approved device challenge");
+        assert_eq!(status, 201, "{challenge_json}");
+        let challenge: Value = serde_json::from_str(&challenge_json).expect("challenge JSON");
+        let challenge_id = challenge["challengeId"].as_str().expect("challenge id");
+        let challenge_value = challenge["challenge"].as_str().expect("challenge value");
+        let client_nonce = "client_nonce_0000000000000001";
+        let signature_message = device_session_signature_message(
+            &device_id,
+            challenge_id,
+            challenge_value,
+            client_nonce,
+        );
+        let signature = BASE64.encode(signing_key.sign(signature_message.as_bytes()).to_bytes());
+        let issue_body = json!({
+            "deviceId": device_id,
+            "challengeId": challenge_id,
+            "clientNonce": client_nonce,
+            "signature": signature,
+        })
+        .to_string();
+        let (status, session_json) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/device-sessions", &[], Some(&issue_body)),
+        )
+        .expect("issue signed device session");
+        assert_eq!(status, 201, "{session_json}");
+        let session: Value = serde_json::from_str(&session_json).expect("session JSON");
+        let token = session["token"].as_str().expect("device session token");
+        let authorization = format!("Device {token}");
+        let nonce = "request_nonce_000000000000001";
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "GET",
+                "/v1/capabilities",
+                &[
+                    ("Authorization", authorization.as_str()),
+                    ("X-Loom-Device-Nonce", nonce),
+                ],
+                None,
+            ),
+        )
+        .expect("use device session");
+        assert_eq!(status, 200, "{response}");
+        let (status, replay) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "GET",
+                "/v1/capabilities",
+                &[
+                    ("Authorization", authorization.as_str()),
+                    ("X-Loom-Device-Nonce", nonce),
+                ],
+                None,
+            ),
+        )
+        .expect("reject replayed device nonce");
+        assert_eq!(status, 409, "{replay}");
+        let resource_payload = b"remote Surface resource";
+        let resource_lease = runtime
+            .surface_resources
+            .lock()
+            .expect("Surface resource store")
+            .register(
+                SurfaceResourceKind::Binary,
+                "application/octet-stream",
+                resource_payload,
+                None,
+                None,
+                None,
+            )
+            .expect("register remote Surface resource");
+        let resource_digest = resource_lease
+            .resource
+            .resource_id
+            .trim_start_matches("sha256:");
+        match route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                &format!("/v1/surfaces/resources/{resource_digest}"),
+                &[
+                    ("Authorization", authorization.as_str()),
+                    ("X-Loom-Device-Nonce", "request_nonce_000000000000002"),
+                    ("X-Loom-Surface-Lease", resource_lease.lease_id.as_str()),
+                ],
+                None,
+            ),
+        ) {
+            RouteResponse::Binary {
+                status,
+                content_type,
+                body,
+            } => {
+                assert_eq!(status, 200);
+                assert_eq!(content_type, "application/octet-stream");
+                assert_eq!(body, resource_payload);
+            }
+            RouteResponse::Text { status, body } => {
+                panic!("expected device-authenticated Surface resource, got {status}: {body}")
+            }
+        }
+        let (status, denied) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "GET",
+                "/v1/devices",
+                &[
+                    ("Authorization", authorization.as_str()),
+                    ("X-Loom-Device-Nonce", "request_nonce_000000000000003"),
+                ],
+                None,
+            ),
+        )
+        .expect("deny device session access to administrator routes");
+        assert_eq!(status, 403, "{denied}");
+
+        let update_path = format!("/v1/devices/{device_id}");
+        let update_body = json!({
+            "name": "Paired Hook",
+            "kind": "computer",
+            "address": "192.168.10.20",
+            "enabled": false,
+        })
+        .to_string();
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "PUT",
+                &update_path,
+                &[("Authorization", "Bearer loom-admin-test")],
+                Some(&update_body),
+            ),
+        )
+        .expect("disable paired device");
+        assert_eq!(status, 200, "{response}");
+        let (status, revoked) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "GET",
+                "/v1/capabilities",
+                &[
+                    ("Authorization", authorization.as_str()),
+                    ("X-Loom-Device-Nonce", "request_nonce_000000000000004"),
+                ],
+                None,
+            ),
+        )
+        .expect("reject revoked device session");
+        assert_eq!(status, 401, "{revoked}");
+        assert!(!session_json.contains(&sha256_bytes(token.as_bytes())));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn surface_stream_history_is_ordered_bounded_and_reports_cursor_reset() {
+        let hub = HookBridgeBroadcastHub::new();
+        broadcast_hook_bridge_messages(
+            &hub,
+            &[
+                json!({"method": "surface/patch", "params": {"revision": 1}}).to_string(),
+                json!({"method": "surface/result", "params": {"resultRevision": 1}}).to_string(),
+            ],
+        );
+        let (next, reset, entries) = hub.wait_after(0, Duration::ZERO);
+        assert!(!reset);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(next, entries[1].sequence);
+        assert!(entries[0].sequence < entries[1].sequence);
+
+        for revision in 0..=HOOK_BRIDGE_HISTORY_CAPACITY {
+            broadcast_hook_bridge_messages(
+                &hub,
+                &[json!({
+                    "method": "surface/patch",
+                    "params": {"revision": revision}
+                })
+                .to_string()],
+            );
+        }
+        let (_, reset, entries) = hub.wait_after(1, Duration::ZERO);
+        assert!(reset);
+        assert_eq!(entries.len(), HOOK_BRIDGE_POLL_MAX_MESSAGES);
+        assert!(entries[0].sequence > 1);
+    }
+
+    #[test]
+    fn surface_stream_isolated_by_authenticated_attachment_device() {
+        let root = unique_temp_dir("surface-stream-device-isolation");
+        let surface_instances = Arc::new(Mutex::new(
+            SurfaceInstanceStore::new(root.join("instances.json")).expect("Surface store"),
+        ));
+        let (instance_id, attachment_a, attachment_b) = {
+            let mut store = surface_instances.lock().expect("Surface store");
+            let instance = store
+                .create(
+                    "surface-stream-fixture",
+                    "1.0.0",
+                    &"a".repeat(64),
+                    1,
+                    loom_protocol::SurfaceInstancePersistence::Persistent,
+                    loom_protocol::SurfaceInstanceMode::Independent,
+                )
+                .expect("create instance");
+            let attachment_a = store
+                .attach(
+                    &instance.descriptor.instance_id,
+                    "hook-node:a",
+                    "device-a",
+                    None,
+                )
+                .expect("attach device A");
+            let attachment_b = store
+                .attach(
+                    &instance.descriptor.instance_id,
+                    "hook-node:b",
+                    "device-b",
+                    None,
+                )
+                .expect("attach device B");
+            (
+                instance.descriptor.instance_id,
+                attachment_a.descriptor.attachment_id,
+                attachment_b.descriptor.attachment_id,
+            )
+        };
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        let hub = hook_bridge
+            .lock()
+            .expect("Hook bridge")
+            .broadcast_hub
+            .clone();
+        broadcast_hook_bridge_messages(
+            &hub,
+            &[
+                json!({
+                    "method": "surface/patch",
+                    "params": {
+                        "hookNodeId": "hook-node:a",
+                        "patch": {
+                            "instanceId": instance_id,
+                            "attachmentId": attachment_a,
+                        }
+                    }
+                })
+                .to_string(),
+                json!({
+                    "method": "surface/patch",
+                    "params": {
+                        "hookNodeId": "hook-node:b",
+                        "patch": {
+                            "instanceId": instance_id,
+                            "attachmentId": attachment_b,
+                        }
+                    }
+                })
+                .to_string(),
+            ],
+        );
+
+        let (status, body) = poll_surface_stream(
+            "/v1/surfaces/stream?after=0&timeoutMs=0",
+            &hook_bridge,
+            &surface_instances,
+            Some("device-a"),
+        )
+        .expect("poll device A stream");
+        assert_eq!(status, 200, "{body}");
+        let response: Value = serde_json::from_str(&body).expect("stream JSON");
+        assert_eq!(response["next"], 2);
+        assert_eq!(response["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            response["messages"][0]["params"]["patch"]["attachmentId"],
+            attachment_a
+        );
+        assert!(!body.contains(&attachment_b), "{body}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -15465,6 +19132,210 @@ nodes:
                     br#"{"protocolVersion":"loom.art.runtime.v1","entry":{"command":"bin/tool.exe","args":[]}}"#,
                 )
                 .unwrap();
+            writer.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn surface_art_package_zip(
+        id: &str,
+        version: &str,
+        scene: &Value,
+        instance_mode: &str,
+    ) -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": "Surface package Art",
+            "description": "declarative Surface fixture",
+            "enabled": true,
+            "execution": { "type": "framework_art", "framework": "process" },
+            "metadata": {
+                "dependencies": { "framework": "process" },
+                "packageSecurity": { "version": version },
+                "capabilities": {
+                    "surface": {
+                        "protocolVersion": "loom.surface.v1",
+                        "apiVersion": "1.0",
+                        "instanceMode": instance_mode,
+                        "variants": [{
+                            "runtime": "declarative",
+                            "entry": "surface/main.json"
+                        }],
+                        "requiredNodes": ["column", "text", "button"],
+                        "actions": [{
+                            "id": "refresh_price",
+                            "risk": "low",
+                            "offlinePolicy": "reject",
+                            "concurrency": "replace_latest",
+                            "idempotent": true,
+                            "confirmation": false,
+                            "cancelable": true,
+                            "timeoutMs": 5000,
+                            "progress": true
+                        }]
+                    }
+                }
+            }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file("manifest.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file("bin/tool.exe", options).unwrap();
+            writer.write_all(b"surface-fixture").unwrap();
+            writer.start_file("art.runtime.json", options).unwrap();
+            writer
+                .write_all(
+                    br#"{"protocolVersion":"loom.art.runtime.v1","entry":{"command":"bin/tool.exe","args":[]}}"#,
+                )
+                .unwrap();
+            writer.start_file("surface/main.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(scene).unwrap().as_bytes())
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn javascript_surface_art_package_zip(
+        id: &str,
+        version: &str,
+        source: &[u8],
+        fallback: &Value,
+    ) -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": "JavaScript Surface package Art",
+            "description": "sandboxed JavaScript Surface fixture",
+            "enabled": true,
+            "execution": { "type": "framework_art", "framework": "process" },
+            "metadata": {
+                "dependencies": { "framework": "process" },
+                "packageSecurity": { "version": version },
+                "capabilities": {
+                    "surface": {
+                        "protocolVersion": "loom.surface.v1",
+                        "apiVersion": "1.0",
+                        "variants": [{
+                            "runtime": "javascript",
+                            "entry": "surface/main.js",
+                            "requiredCapabilities": ["surface.javascript.v1"]
+                        }],
+                        "fallbackScene": "surface/fallback.json",
+                        "requiredNodes": ["column", "text", "button"],
+                        "actions": [{
+                            "id": "refresh_price",
+                            "risk": "low",
+                            "offlinePolicy": "reject",
+                            "concurrency": "replace_latest",
+                            "idempotent": true,
+                            "confirmation": false,
+                            "cancelable": true,
+                            "timeoutMs": 5000,
+                            "progress": true
+                        }]
+                    }
+                }
+            }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file("manifest.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file("bin/tool.exe", options).unwrap();
+            writer.write_all(b"surface-fixture").unwrap();
+            writer.start_file("art.runtime.json", options).unwrap();
+            writer
+                .write_all(
+                    br#"{"protocolVersion":"loom.art.runtime.v1","entry":{"command":"bin/tool.exe","args":[]}}"#,
+                )
+                .unwrap();
+            writer.start_file("surface/main.js", options).unwrap();
+            writer.write_all(source).unwrap();
+            writer.start_file("surface/fallback.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(fallback).unwrap().as_bytes())
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn migrating_surface_art_package_zip(
+        id: &str,
+        version: &str,
+        state_schema_version: u32,
+        scene: &Value,
+        migration: Option<&Value>,
+    ) -> Vec<u8> {
+        let migrations = migration
+            .map(|_| {
+                vec![json!({
+                    "from": 1,
+                    "to": state_schema_version,
+                    "entry": "migrations/1-2.json"
+                })]
+            })
+            .unwrap_or_default();
+        let manifest = json!({
+            "id": id,
+            "name": "Migrating Surface package Art",
+            "description": "Surface state migration fixture",
+            "enabled": true,
+            "execution": { "type": "framework_art", "framework": "process" },
+            "metadata": {
+                "dependencies": { "framework": "process" },
+                "packageSecurity": { "version": version },
+                "capabilities": {
+                    "surface": {
+                        "protocolVersion": "loom.surface.v1",
+                        "apiVersion": "1.0",
+                        "stateSchemaVersion": state_schema_version,
+                        "migrations": migrations,
+                        "variants": [{
+                            "runtime": "declarative",
+                            "entry": "surface/main.json"
+                        }],
+                        "requiredNodes": ["column", "text"]
+                    }
+                }
+            }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file("manifest.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file("bin/tool.exe", options).unwrap();
+            writer.write_all(b"surface-fixture").unwrap();
+            writer.start_file("art.runtime.json", options).unwrap();
+            writer
+                .write_all(
+                    br#"{"protocolVersion":"loom.art.runtime.v1","entry":{"command":"bin/tool.exe","args":[]}}"#,
+                )
+                .unwrap();
+            writer.start_file("surface/main.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(scene).unwrap().as_bytes())
+                .unwrap();
+            if let Some(migration) = migration {
+                writer.start_file("migrations/1-2.json", options).unwrap();
+                writer
+                    .write_all(serde_json::to_string(migration).unwrap().as_bytes())
+                    .unwrap();
+            }
             writer.finish().unwrap();
         }
         bytes
@@ -16225,30 +20096,31 @@ nodes:
             .framework_registry
             .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
             .expect("install framework");
-        loom_tool_registry::install::install_art_from_zip(
+        let install = loom_tool_registry::install::install_art_from_zip(
             &art_package_zip("integrity-art", "1.0.0", b"never-executed"),
             &root,
             &runtime.framework_registry,
             &runtime.tool_registry,
         )
         .expect("install Art");
-        let activation_path = root.join("arts/integrity-art/active.json");
-        let mut activation: Value =
-            serde_json::from_slice(&fs::read(&activation_path).expect("activation")).unwrap();
-        activation["active"]["digest"] = Value::String("0".repeat(64));
-        fs::write(
-            &activation_path,
-            serde_json::to_vec_pretty(&activation).unwrap(),
-        )
-        .expect("tamper activation");
+        let payload_path = install.art_dir.join("bin/tool.exe");
+        let mut permissions = fs::metadata(&payload_path)
+            .expect("payload metadata")
+            .permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&payload_path, permissions).expect("unlock installed payload");
+        fs::write(&payload_path, b"tampered").expect("tamper installed payload");
 
         let hook_response = run_hook_bridge_text(
             &runtime,
             r#"{"method":"art_loom/execute_art_node","params":{"node_id":"integrity-node","art_id":"integrity-art","params":{}}}"#,
         );
-        assert!(hook_response
-            .to_string()
-            .contains("integrity verification failed"));
+        assert!(
+            hook_response
+                .to_string()
+                .contains("integrity verification failed"),
+            "unexpected Hook response: {hook_response}"
+        );
         let hook_run_id = hook_response["executionId"].as_str().expect("Hook run id");
         {
             let store = runtime.run_store.lock().expect("run store");
@@ -16279,6 +20151,40 @@ nodes:
         drop(store);
 
         drop(runtime);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn installed_art_resolution_preserves_registry_enabled_state() {
+        let root = unique_temp_dir("art-package-enabled-state");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install framework");
+        loom_tool_registry::install::install_art_from_zip(
+            &art_package_zip("disabled-art", "1.0.0", b"never-executed"),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Art");
+
+        let mut registered = runtime
+            .tool_registry
+            .get_tool("disabled-art")
+            .expect("read registered Art")
+            .expect("registered Art");
+        registered.enabled = false;
+        let resolved = resolve_registered_tool_package(
+            &registered,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &root,
+        )
+        .expect("resolve immutable Art package");
+
+        assert!(!resolved.enabled);
         fs::remove_dir_all(&root).ok();
     }
 
@@ -16692,26 +20598,58 @@ nodes:
             .unwrap_or_else(|| control_plane_root.join("config"));
         let settings_base_url = std::env::var("LOOM_SETTINGS_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:0/settings".to_owned());
+        let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root)));
+        let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
+        let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
+            control_plane_root.join("workflows"),
+        )));
+        let surface_instances = Arc::new(Mutex::new(
+            SurfaceInstanceStore::new(
+                control_plane_root
+                    .join("surface-instances")
+                    .join("instances.json"),
+            )
+            .expect("open test Surface instance store"),
+        ));
+        let surface_resources = Arc::new(Mutex::new(
+            SurfaceResourceStore::new(control_plane_root.join("surface-resources"))
+                .expect("open test Surface resource store"),
+        ));
+        let surface_actions = Arc::new(
+            SurfaceActionExecutor::new(
+                Arc::clone(&mcp_servers),
+                tool_registry.clone(),
+                workflow_store.clone(),
+                FrameworkRegistry::new(control_plane_root),
+                control_plane_root.to_path_buf(),
+                Arc::clone(&surface_instances),
+                Arc::clone(&surface_resources),
+                Arc::clone(&hook_bridge),
+            )
+            .expect("start test Surface action executor"),
+        );
         DaemonRuntime {
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
             auth_token: config.auth_token,
             config_registry: Arc::new(built_in_registry()),
             config_store: FileDocumentStore::new(config_root),
-            mcp_servers: Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root))),
-            tool_registry: ToolRegistry::new(control_plane_root.join("tools")),
-            workflow_store: WorkflowStore::new(control_plane_root.join("workflows")),
+            mcp_servers,
+            tool_registry,
+            workflow_store,
             canvas_workflow_root: control_plane_root.join("canvas-workflows"),
             framework_registry: FrameworkRegistry::new(&control_plane_root),
             control_plane_root: control_plane_root.to_path_buf(),
             bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
-            hook_bridge: Arc::new(Mutex::new(HookBridgeRuntime::new(
-                control_plane_root.join("workflows"),
-            ))),
+            hook_bridge,
             device_registry: Arc::new(Mutex::new(DeviceRegistryStore::new(
                 control_plane_root.join("settings").join("devices.json"),
                 "127.0.0.1:0".parse().expect("test daemon address"),
             ))),
+            surface_instances,
+            surface_actions,
+            surface_resources,
             artloom_settings: Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
                 control_plane_root
                     .join("settings")
@@ -16802,6 +20740,8 @@ nodes:
                 &runtime.framework_registry,
                 &runtime.control_plane_root,
                 &runtime.run_store,
+                &runtime.surface_instances,
+                &runtime.surface_actions,
             ),
             200,
         )
@@ -16861,6 +20801,7 @@ nodes:
             &runtime.control_plane_root,
             &workflow_root,
             &runtime.run_store,
+            Some(&runtime.surface_actions),
             &mut |message| {
                 intermediate
                     .push(serde_json::from_str(&message).expect("intermediate hook bridge json"));
@@ -20487,6 +24428,8 @@ def run(args):
                 &runtime.framework_registry,
                 &runtime.control_plane_root,
                 &runtime.run_store,
+                &runtime.surface_instances,
+                &runtime.surface_actions,
             ),
             200,
         );
@@ -20512,6 +24455,8 @@ def run(args):
                 &runtime.framework_registry,
                 &runtime.control_plane_root,
                 &runtime.run_store,
+                &runtime.surface_instances,
+                &runtime.surface_actions,
             ),
             409,
         );
@@ -20550,6 +24495,8 @@ def run(args):
                 &runtime.framework_registry,
                 &runtime.control_plane_root,
                 &runtime.run_store,
+                &runtime.surface_instances,
+                &runtime.surface_actions,
             ),
             200,
         );
@@ -20684,6 +24631,8 @@ def run(args):
                 &runtime.framework_registry,
                 &runtime.control_plane_root,
                 &runtime.run_store,
+                &runtime.surface_instances,
+                &runtime.surface_actions,
             ),
             200,
         );
@@ -24602,6 +28551,7 @@ def run(args):
         let bind_error = match LoomDaemon::bind(
             DaemonConfig::bind_host("0.0.0.0", 0)
                 .with_bearer_token("local-token")
+                .with_tls_termination(true)
                 .with_manifest_dir(&manifest_dir),
         ) {
             Ok(_) => panic!("non-loopback manifest bind should fail"),
@@ -24624,8 +28574,19 @@ def run(args):
             .expect("non-loopback daemon binds require an auth token");
         assert!(bind_error.to_string().contains("auth token"));
 
-        let daemon = LoomDaemon::bind(
+        let plaintext_error = LoomDaemon::bind(
             DaemonConfig::bind_host("0.0.0.0", 0).with_bearer_token("local-token"),
+        )
+        .err()
+        .expect("non-loopback daemon binds require an authenticated TLS terminator");
+        assert!(plaintext_error
+            .to_string()
+            .contains("plaintext non-loopback"));
+
+        let daemon = LoomDaemon::bind(
+            DaemonConfig::bind_host("0.0.0.0", 0)
+                .with_bearer_token("local-token")
+                .with_tls_termination(true),
         )
         .expect("bind daemon with token");
         let address = daemon.local_addr().expect("local address");
@@ -24704,7 +28665,9 @@ def run(args):
     #[test]
     fn daemon_rejects_oversized_declared_request_body() {
         let daemon = LoomDaemon::bind(
-            DaemonConfig::bind_host("0.0.0.0", 0).with_bearer_token("local-token"),
+            DaemonConfig::bind_host("0.0.0.0", 0)
+                .with_bearer_token("local-token")
+                .with_tls_termination(true),
         )
         .expect("bind daemon with token");
         let address = daemon.local_addr().expect("local address");
@@ -25207,6 +29170,1256 @@ def run(args):
                 ),
             }
         }
+    }
+
+    #[test]
+    fn surface_instance_routes_keep_preview_and_formal_results_separate() {
+        let root = unique_temp_dir("surface-instance-routes");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let instance = runtime
+            .surface_instances
+            .lock()
+            .expect("lock Surface store")
+            .create(
+                "neuro.official/stock-price",
+                "1.0.0",
+                &"a".repeat(64),
+                1,
+                SurfaceInstancePersistence::Persistent,
+                SurfaceInstanceMode::Independent,
+            )
+            .expect("create Surface instance");
+        let instance_id = instance.descriptor.instance_id;
+
+        let (status, body) = route_with_runtime(
+            &runtime,
+            &parsed_request("GET", "/v1/surfaces/instances", &[], None),
+        )
+        .expect("list Surface instances");
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(&body).expect("list JSON");
+        assert_eq!(
+            body["instances"][0]["descriptor"]["instanceId"],
+            instance_id
+        );
+
+        let attach_path = format!("/v1/surfaces/instances/{instance_id}/attachments");
+        let attach_body = json!({
+            "hookNodeId": "hook-node:stock",
+            "deviceId": "device-000-local",
+        })
+        .to_string();
+        let (status, body) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &attach_path, &[], Some(&attach_body)),
+        )
+        .expect("attach Surface instance");
+        assert_eq!(status, 201);
+        let attachment: Value = serde_json::from_str(&body).expect("attachment JSON");
+        let attachment_id = attachment["descriptor"]["attachmentId"]
+            .as_str()
+            .expect("attachment id")
+            .to_owned();
+        let (surface_rx, _surface_subscription) = register_hook_bridge_subscription(
+            &runtime
+                .hook_bridge
+                .lock()
+                .expect("lock hook bridge")
+                .broadcast_hub,
+            vec!["surface".to_owned()],
+        );
+
+        let snapshot_path = format!("/v1/surfaces/instances/{instance_id}/snapshot");
+        let snapshot_body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": instance_id,
+            "attachmentId": attachment_id,
+            "artId": "neuro.official/stock-price",
+            "artVersion": "1.0.0",
+            "revision": 1,
+            "scene": {
+                "id": "root",
+                "type": "text",
+                "props": { "text": "100" },
+                "events": { "click": "refresh" }
+            },
+            "authoritativeState": { "price": 100 },
+            "resources": [],
+        })
+        .to_string();
+        let (status, patch_response) = route_with_runtime(
+            &runtime,
+            &parsed_request("PUT", &snapshot_path, &[], Some(&snapshot_body)),
+        )
+        .expect("put Surface snapshot");
+        assert_eq!(status, 200, "{patch_response}");
+        let snapshot_push: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface snapshot push"),
+        )
+        .expect("Surface snapshot push JSON");
+        assert_eq!(snapshot_push["method"], "surface/snapshot");
+        assert_eq!(snapshot_push["params"]["hookNodeId"], "hook-node:stock");
+        let mounted_push: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface mounted lifecycle push"),
+        )
+        .expect("Surface mounted lifecycle JSON");
+        assert_eq!(mounted_push["method"], "surface/lifecycle");
+        assert_eq!(mounted_push["params"]["event"]["state"], "mounted");
+
+        let lifecycle_path = format!("/v1/surfaces/instances/{instance_id}/lifecycle");
+        let lifecycle_body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": instance_id,
+            "attachmentId": attachment_id,
+            "state": "active",
+            "revision": 2,
+        })
+        .to_string();
+        let (status, lifecycle_response) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &lifecycle_path, &[], Some(&lifecycle_body)),
+        )
+        .expect("activate Surface attachment");
+        assert_eq!(status, 200, "{lifecycle_response}");
+        let lifecycle_push: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface lifecycle push"),
+        )
+        .expect("Surface lifecycle JSON");
+        assert_eq!(lifecycle_push["method"], "surface/lifecycle");
+        assert_eq!(lifecycle_push["params"]["event"]["state"], "active");
+
+        let patch_path = format!("/v1/surfaces/instances/{instance_id}/patch");
+        let patch_body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": instance_id,
+            "attachmentId": attachment_id,
+            "baseRevision": 1,
+            "revision": 2,
+            "operations": [{
+                "op": "set",
+                "nodeId": "root",
+                "path": "/props/text",
+                "value": "101"
+            }]
+        })
+        .to_string();
+        let (status, patch_response) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &patch_path, &[], Some(&patch_body)),
+        )
+        .expect("apply Surface patch");
+        assert_eq!(status, 200, "{patch_response}");
+        let patch_push: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface patch push"),
+        )
+        .expect("Surface patch push JSON");
+        assert_eq!(patch_push["method"], "surface/patch");
+        assert_eq!(patch_push["params"]["patch"]["revision"], 2);
+
+        let generation_path = format!("/v1/surfaces/instances/{instance_id}/generation");
+        let (status, body) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &generation_path, &[], Some("{}")),
+        )
+        .expect("begin Surface generation");
+        assert_eq!(status, 200);
+        let generation: Value = serde_json::from_str(&body).expect("generation JSON");
+        assert_eq!(generation["generation"], 1);
+        let generation_push: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface generation push"),
+        )
+        .expect("Surface generation push JSON");
+        assert_eq!(generation_push["method"], "surface/generation");
+        assert_eq!(generation_push["params"]["generation"], 1);
+
+        let preview_path = format!("/v1/surfaces/instances/{instance_id}/preview");
+        let preview_body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": instance_id,
+            "requestId": "request:stock-1",
+            "generation": 1,
+            "previewRevision": 1,
+            "portId": "preview",
+            "value": { "kind": "value", "value": { "price": 101 } },
+        })
+        .to_string();
+        let (status, body) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &preview_path, &[], Some(&preview_body)),
+        )
+        .expect("commit Surface preview");
+        assert_eq!(status, 200);
+        let preview_record: Value = serde_json::from_str(&body).expect("preview record JSON");
+        assert!(preview_record["latestResult"].is_null());
+        assert_eq!(preview_record["latestPreview"]["previewRevision"], 1);
+
+        let result_path = format!("/v1/surfaces/instances/{instance_id}/result");
+        let result_body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": instance_id,
+            "requestId": "request:stock-1",
+            "generation": 1,
+            "resultRevision": 1,
+            "outputs": {
+                "output": { "kind": "value", "value": { "price": 101, "currency": "CNY" } }
+            },
+            "statePatch": { "price": 101 },
+        })
+        .to_string();
+        let (status, body) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &result_path, &[], Some(&result_body)),
+        )
+        .expect("commit Surface result");
+        assert_eq!(status, 200);
+        let formal_record: Value = serde_json::from_str(&body).expect("formal record JSON");
+        assert_eq!(formal_record["latestPreview"]["portId"], "preview");
+        assert_eq!(
+            formal_record["latestResult"]["outputs"]["output"]["value"]["currency"],
+            "CNY"
+        );
+
+        let (status, body) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &result_path, &[], Some(&result_body)),
+        )
+        .expect("reject duplicate formal result");
+        assert_eq!(status, 409);
+        let conflict: Value = serde_json::from_str(&body).expect("conflict JSON");
+        assert_eq!(conflict["error"]["code"], "surface_conflict");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn surface_resource_route_is_content_addressed_and_returns_original_bytes() {
+        let root = unique_temp_dir("surface-resource-route");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let bytes = b"surface-resource-fixture";
+        let body = json!({
+            "kind": "binary",
+            "mime": "application/octet-stream",
+            "dataBase64": BASE64.encode(bytes),
+            "leaseMillis": 60_000,
+        })
+        .to_string();
+        let (status, lease) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/surfaces/resources", &[], Some(&body)),
+        )
+        .expect("register Surface resource");
+        assert_eq!(status, 201, "{lease}");
+        let lease: Value = serde_json::from_str(&lease).expect("resource lease JSON");
+        let resource_id = lease["resource"]["resourceId"]
+            .as_str()
+            .expect("resource id");
+        assert!(resource_id.starts_with("sha256:"));
+        let digest = resource_id.trim_start_matches("sha256:");
+        let lease_id = lease["leaseId"].as_str().expect("lease id");
+        match route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                &format!("/v1/surfaces/resources/{digest}"),
+                &[("X-Loom-Surface-Lease", lease_id)],
+                None,
+            ),
+        ) {
+            RouteResponse::Binary {
+                status,
+                content_type,
+                body,
+            } => {
+                assert_eq!(status, 200);
+                assert_eq!(content_type, "application/octet-stream");
+                assert_eq!(body, bytes);
+            }
+            RouteResponse::Text { status, body } => {
+                panic!("expected resource bytes, got {status}: {body}")
+            }
+        }
+        let (status, _) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "DELETE",
+                &format!("/v1/surfaces/resource-leases/{lease_id}"),
+                &[],
+                None,
+            ),
+        )
+        .expect("release Surface resource lease");
+        assert_eq!(status, 204);
+
+        let shared_body = json!({
+            "kind": "image",
+            "mime": "image/png",
+            "dataBase64": BASE64.encode(test_png_bytes()),
+            "leaseMillis": 60_000,
+            "preferredTransport": "shared_memory",
+        })
+        .to_string();
+        let (status, shared_lease) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/surfaces/resources", &[], Some(&shared_body)),
+        )
+        .expect("register shared-memory Surface resource");
+        assert_eq!(status, 201, "{shared_lease}");
+        let shared_lease: Value =
+            serde_json::from_str(&shared_lease).expect("shared resource lease JSON");
+        assert_eq!(shared_lease["transport"]["kind"], "shared_memory");
+        assert_eq!(
+            shared_lease["resource"]["mime"],
+            "application/x-neuro-rgba8"
+        );
+        assert!(shared_lease["transport"]["handle"]
+            .as_str()
+            .is_some_and(|handle| handle.starts_with("Loom_Buffer_")));
+        assert_eq!(
+            runtime
+                .shared_images
+                .lock()
+                .expect("shared images")
+                .list()
+                .len(),
+            1
+        );
+        let shared_lease_id = shared_lease["leaseId"].as_str().expect("shared lease id");
+        let (status, _) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "DELETE",
+                &format!("/v1/surfaces/resource-leases/{shared_lease_id}"),
+                &[],
+                None,
+            ),
+        )
+        .expect("release shared-memory Surface resource");
+        assert_eq!(status, 204);
+        assert!(runtime
+            .shared_images
+            .lock()
+            .expect("shared images")
+            .list()
+            .is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn surface_confirmation_route_requires_the_bound_approved_device() {
+        let root = unique_temp_dir("surface-confirmation-route");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let (instance_id, attachment_id, request) = {
+            let mut store = runtime
+                .surface_instances
+                .lock()
+                .expect("lock Surface store");
+            let instance = store
+                .create(
+                    "neuro.official/confirmation-test",
+                    "1.0.0",
+                    &"c".repeat(64),
+                    1,
+                    SurfaceInstancePersistence::Persistent,
+                    SurfaceInstanceMode::Independent,
+                )
+                .expect("create Surface instance");
+            let attachment = store
+                .attach(
+                    &instance.descriptor.instance_id,
+                    "hook-node:confirmation-route",
+                    "device-000-local",
+                    None,
+                )
+                .expect("attach Surface instance");
+            store
+                .put_snapshot(
+                    &instance.descriptor.instance_id,
+                    SurfaceSnapshot {
+                        protocol_version: loom_protocol::SURFACE_PROTOCOL_VERSION.to_owned(),
+                        instance_id: instance.descriptor.instance_id.clone(),
+                        attachment_id: attachment.descriptor.attachment_id.clone(),
+                        art_id: instance.descriptor.art_id,
+                        art_version: instance.descriptor.art_version,
+                        revision: 1,
+                        runtime: SurfaceRuntimeKind::Declarative,
+                        entry_resource_id: None,
+                        scene: SurfaceNode {
+                            id: "root".to_owned(),
+                            node_type: "column".to_owned(),
+                            children: vec![SurfaceNode {
+                                id: "submit".to_owned(),
+                                node_type: "button".to_owned(),
+                                events: BTreeMap::from([(
+                                    "click".to_owned(),
+                                    "submit_form".to_owned(),
+                                )]),
+                                ..SurfaceNode::default()
+                            }],
+                            ..SurfaceNode::default()
+                        },
+                        authoritative_state: json!({}),
+                        resources: Vec::new(),
+                        resource_leases: Vec::new(),
+                    },
+                )
+                .expect("mount Surface snapshot");
+            let (_, request) = store
+                .await_confirmation(
+                    &instance.descriptor.instance_id,
+                    SurfaceEvent {
+                        protocol_version: loom_protocol::SURFACE_PROTOCOL_VERSION.to_owned(),
+                        instance_id: instance.descriptor.instance_id.clone(),
+                        attachment_id: attachment.descriptor.attachment_id.clone(),
+                        event_id: "event:confirmation-route".to_owned(),
+                        node_id: "submit".to_owned(),
+                        event: "click".to_owned(),
+                        action: Some("submit_form".to_owned()),
+                        class: loom_protocol::SurfaceEventClass::Discrete,
+                        generation: 0,
+                        base_revision: 1,
+                        payload: json!({}),
+                    },
+                    loom_protocol::SurfaceActionRisk::High,
+                )
+                .expect("create pending confirmation");
+            (
+                instance.descriptor.instance_id,
+                attachment.descriptor.attachment_id,
+                request,
+            )
+        };
+        let (status, unauthorized) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                "/v1/surfaces/confirmations/decision",
+                &[],
+                Some(
+                    &json!({
+                        "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+                        "confirmationId": request.confirmation_id,
+                        "instanceId": instance_id,
+                        "attachmentId": attachment_id,
+                        "deviceId": "device-000-other",
+                        "approved": false
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("reject unapproved confirmation device");
+        assert_eq!(status, 403, "{unauthorized}");
+        assert_eq!(
+            runtime
+                .surface_instances
+                .lock()
+                .expect("lock Surface store")
+                .pending_confirmations()
+                .len(),
+            1
+        );
+
+        let (status, rejected) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                "/v1/surfaces/confirmations/decision",
+                &[],
+                Some(
+                    &json!({
+                        "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+                        "confirmationId": request.confirmation_id,
+                        "instanceId": instance_id,
+                        "attachmentId": attachment_id,
+                        "deviceId": "device-000-local",
+                        "approved": false
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("reject confirmation on bound device");
+        assert_eq!(status, 200, "{rejected}");
+        let rejected: Value = serde_json::from_str(&rejected).expect("rejected ack JSON");
+        assert_eq!(rejected["status"], "cancelled");
+        assert!(runtime
+            .surface_instances
+            .lock()
+            .expect("lock Surface store")
+            .pending_confirmations()
+            .is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn surface_cancel_route_rejects_an_unapproved_device_before_action_lookup() {
+        let root = unique_temp_dir("surface-cancel-route-auth");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": "instance:missing",
+            "requestId": "request:missing",
+            "deviceId": "device-000-other"
+        })
+        .to_string();
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/surfaces/actions/cancel", &[], Some(&body)),
+        )
+        .expect("reject Surface cancellation from unapproved device");
+        assert_eq!(status, 403, "{response}");
+        let response: Value = serde_json::from_str(&response).expect("cancel error JSON");
+        assert_eq!(response["error"]["code"], "surface_device_not_authorized");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn creating_surface_instance_requires_an_installed_package() {
+        let root = unique_temp_dir("surface-instance-package-required");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let body = json!({ "artId": "neuro.official/missing" }).to_string();
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/surfaces/instances", &[], Some(&body)),
+        )
+        .expect("create missing Surface instance");
+        assert_eq!(status, 404);
+        let response: Value = serde_json::from_str(&response).expect("response JSON");
+        assert_eq!(response["error"]["code"], "surface_art_not_found");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn installed_declarative_surface_package_mounts_and_pushes_snapshot() {
+        let root = unique_temp_dir("surface-package-mount");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
+        let scene = json!({
+            "protocolVersion": "loom.surface.v1",
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [
+                    { "id": "price", "type": "text", "props": { "text": "¥101.20" } },
+                    {
+                        "id": "refresh",
+                        "type": "button",
+                        "props": { "label": "刷新" },
+                        "events": { "click": "refresh_price" }
+                    }
+                ]
+            },
+            "authoritativeState": { "price": 101.2 }
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &surface_art_package_zip("surface-stock", "1.0.0", &scene, "independent"),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Surface Art");
+
+        let create_body = json!({
+            "artId": "surface-stock",
+            "expectedVersion": "1.0.0"
+        })
+        .to_string();
+        let (status, created) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/surfaces/instances", &[], Some(&create_body)),
+        )
+        .expect("create Surface instance");
+        assert_eq!(status, 201, "{created}");
+        let created: Value = serde_json::from_str(&created).expect("created JSON");
+        let instance_id = created["descriptor"]["instanceId"]
+            .as_str()
+            .expect("instance id")
+            .to_owned();
+
+        let attach_body = json!({
+            "hookNodeId": "hook-node:surface-stock",
+            "deviceId": "device-000-local",
+            "capabilities": default_declarative_surface_host_capabilities()
+        })
+        .to_string();
+        let attach_path = format!("/v1/surfaces/instances/{instance_id}/attachments");
+        let (status, attached) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &attach_path, &[], Some(&attach_body)),
+        )
+        .expect("attach Surface instance");
+        assert_eq!(status, 201, "{attached}");
+        let attached: Value = serde_json::from_str(&attached).expect("attached JSON");
+        let attachment_id = attached["descriptor"]["attachmentId"]
+            .as_str()
+            .expect("attachment id")
+            .to_owned();
+
+        let (surface_rx, _surface_subscription) = register_hook_bridge_subscription(
+            &runtime
+                .hook_bridge
+                .lock()
+                .expect("lock hook bridge")
+                .broadcast_hub,
+            vec!["surface".to_owned()],
+        );
+        let mount_body = json!({ "attachmentId": attachment_id }).to_string();
+        let mount_path = format!("/v1/surfaces/instances/{instance_id}/mount");
+        let (status, mounted) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &mount_path, &[], Some(&mount_body)),
+        )
+        .expect("mount Surface instance");
+        assert_eq!(status, 200, "{mounted}");
+        let mounted: Value = serde_json::from_str(&mounted).expect("mounted JSON");
+        assert_eq!(mounted["runtime"], "declarative");
+        assert_eq!(mounted["entry"], "surface/main.json");
+        assert_eq!(
+            mounted["instance"]["attachments"][&attachment_id]["snapshot"]["scene"]["children"][0]
+                ["props"]["text"],
+            "¥101.20"
+        );
+
+        let push: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface mount push"),
+        )
+        .expect("Surface push JSON");
+        assert_eq!(push["method"], "surface/snapshot");
+        assert_eq!(push["params"]["hookNodeId"], "hook-node:surface-stock");
+        assert_eq!(push["params"]["snapshot"]["revision"], 1);
+        let lifecycle: Value = serde_json::from_str(
+            &surface_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Surface mounted lifecycle push"),
+        )
+        .expect("Surface lifecycle JSON");
+        assert_eq!(lifecycle["method"], "surface/lifecycle");
+        assert_eq!(lifecycle["params"]["event"]["state"], "mounted");
+
+        let generation_path = format!("/v1/surfaces/instances/{instance_id}/generation");
+        let (status, _) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &generation_path, &[], Some("{}")),
+        )
+        .expect("begin Surface generation");
+        assert_eq!(status, 200);
+        let _ = surface_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("generation push");
+
+        let event_path = format!("/v1/surfaces/instances/{instance_id}/events");
+        let event_body = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "instanceId": instance_id,
+            "attachmentId": attachment_id,
+            "eventId": "event:refresh-price-1",
+            "nodeId": "refresh",
+            "event": "click",
+            "action": "refresh_price",
+            "class": "discrete",
+            "generation": 1,
+            "baseRevision": 1,
+            "payload": {}
+        })
+        .to_string();
+        let (status, ack) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", &event_path, &[], Some(&event_body)),
+        )
+        .expect("accept declared Surface action");
+        assert_eq!(status, 202, "{ack}");
+        let ack: Value = serde_json::from_str(&ack).expect("action ack JSON");
+        assert_eq!(ack["status"], "queued");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn shared_surface_attach_reuses_declared_instance_across_attachments() {
+        let root = unique_temp_dir("shared-surface-instance");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
+        let scene = json!({
+            "protocolVersion": "loom.surface.v1",
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [
+                    { "id": "status", "type": "text", "props": { "text": "ready" } },
+                    {
+                        "id": "refresh",
+                        "type": "button",
+                        "props": { "label": "Refresh" },
+                        "events": { "click": "refresh_price" }
+                    }
+                ]
+            },
+            "authoritativeState": { "refreshes": 0 }
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &surface_art_package_zip("surface-shared", "1.0.0", &scene, "shared"),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install shared Surface Art");
+
+        let attach = |hook_node_id: &str| {
+            let body = json!({
+                "artId": "surface-shared",
+                "hookNodeId": hook_node_id,
+                "deviceId": "device-000-local",
+                "capabilities": default_declarative_surface_host_capabilities()
+            })
+            .to_string();
+            let (status, mounted) = route_with_runtime(
+                &runtime,
+                &parsed_request("POST", "/v1/surfaces/attach", &[], Some(&body)),
+            )
+            .expect("attach shared Surface");
+            assert_eq!(status, 200, "{mounted}");
+            serde_json::from_str::<Value>(&mounted).expect("mounted JSON")
+        };
+
+        let first = attach("hook-node:shared-one");
+        let second = attach("hook-node:shared-two");
+        let first_id = first["instance"]["descriptor"]["instanceId"]
+            .as_str()
+            .expect("first shared instance id");
+        let second_id = second["instance"]["descriptor"]["instanceId"]
+            .as_str()
+            .expect("second shared instance id");
+        assert_eq!(first_id, second_id);
+        assert_eq!(second["instance"]["descriptor"]["instanceMode"], "shared");
+        assert_eq!(
+            second["instance"]["attachments"]
+                .as_object()
+                .expect("shared attachments")
+                .len(),
+            2
+        );
+        assert_eq!(
+            runtime
+                .surface_instances
+                .lock()
+                .expect("Surface store")
+                .list()
+                .len(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn installed_javascript_surface_mounts_with_a_verified_entry_resource_and_fallback() {
+        let root = unique_temp_dir("javascript-surface-package-mount");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
+        let source =
+            br#"NeuroSurface.define({ mount({ root }) { root.textContent = 'price'; } });"#;
+        let fallback = json!({
+            "protocolVersion": "loom.surface.v1",
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [{
+                    "id": "refresh",
+                    "type": "button",
+                    "props": { "label": "刷新" },
+                    "events": { "click": "refresh_price" }
+                }]
+            },
+            "authoritativeState": { "price": 101.2 }
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &javascript_surface_art_package_zip("surface-javascript", "1.0.0", source, &fallback),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install JavaScript Surface Art");
+
+        let (status, created) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                "/v1/surfaces/instances",
+                &[],
+                Some(&json!({ "artId": "surface-javascript" }).to_string()),
+            ),
+        )
+        .expect("create JavaScript Surface instance");
+        assert_eq!(status, 201, "{created}");
+        let created: Value = serde_json::from_str(&created).expect("created JSON");
+        let instance_id = created["descriptor"]["instanceId"]
+            .as_str()
+            .expect("instance id");
+        let mut host = default_declarative_surface_host_capabilities();
+        host.runtimes.push(SurfaceRuntimeKind::Javascript);
+        host.transports.push("loom_resource".to_owned());
+        host.capabilities.push("surface.javascript.v1".to_owned());
+        let attach_path = format!("/v1/surfaces/instances/{instance_id}/attachments");
+        let (status, attached) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &attach_path,
+                &[],
+                Some(
+                    &json!({
+                        "hookNodeId": "hook-node:surface-javascript",
+                        "deviceId": "device-000-local",
+                        "capabilities": host,
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("attach JavaScript Surface instance");
+        assert_eq!(status, 201, "{attached}");
+        let attached: Value = serde_json::from_str(&attached).expect("attached JSON");
+        let attachment_id = attached["descriptor"]["attachmentId"]
+            .as_str()
+            .expect("attachment id");
+
+        let mount_path = format!("/v1/surfaces/instances/{instance_id}/mount");
+        let (status, mounted) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &mount_path,
+                &[],
+                Some(&json!({ "attachmentId": attachment_id }).to_string()),
+            ),
+        )
+        .expect("mount JavaScript Surface instance");
+        assert_eq!(status, 200, "{mounted}");
+        let mounted: Value = serde_json::from_str(&mounted).expect("mounted JSON");
+        assert_eq!(mounted["runtime"], "javascript");
+        assert_eq!(mounted["entry"], "surface/main.js");
+        let snapshot = &mounted["instance"]["attachments"][attachment_id]["snapshot"];
+        assert_eq!(snapshot["runtime"], "javascript");
+        assert_eq!(snapshot["scene"]["children"][0]["id"], "refresh");
+        let resource_id = snapshot["entryResourceId"]
+            .as_str()
+            .expect("entry resource id")
+            .to_owned();
+        assert_eq!(
+            snapshot["resourceLeases"][0]["resource"]["resourceId"],
+            resource_id
+        );
+        assert_eq!(
+            snapshot["resourceLeases"][0]["transport"]["kind"],
+            "loom_resource"
+        );
+        let original_lease_id = snapshot["resourceLeases"][0]["leaseId"]
+            .as_str()
+            .expect("entry lease id")
+            .to_owned();
+        let digest = resource_id.trim_start_matches("sha256:");
+        match route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                &format!("/v1/surfaces/resources/{digest}"),
+                &[("X-Loom-Surface-Lease", original_lease_id.as_str())],
+                None,
+            ),
+        ) {
+            RouteResponse::Binary {
+                status,
+                content_type,
+                body,
+            } => {
+                assert_eq!(status, 200);
+                assert_eq!(content_type, "application/javascript");
+                assert_eq!(body, source);
+            }
+            RouteResponse::Text { status, body } => {
+                panic!("expected JavaScript entry bytes, got {status}: {body}")
+            }
+        }
+        let (status, remounted) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &mount_path,
+                &[],
+                Some(&json!({ "attachmentId": attachment_id }).to_string()),
+            ),
+        )
+        .expect("remount JavaScript Surface instance");
+        assert_eq!(status, 200, "{remounted}");
+        let remounted: Value = serde_json::from_str(&remounted).expect("remounted JSON");
+        let recovered = &remounted["instance"]["attachments"][attachment_id]["snapshot"];
+        assert_eq!(recovered["revision"], 2);
+        assert_eq!(recovered["entryResourceId"], resource_id);
+        assert_eq!(recovered["scene"], snapshot["scene"]);
+        let lease_id = recovered["resourceLeases"][0]["leaseId"]
+            .as_str()
+            .expect("recovered entry lease id")
+            .to_owned();
+        assert_ne!(lease_id, original_lease_id);
+        match route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                &format!("/v1/surfaces/resources/{digest}"),
+                &[("X-Loom-Surface-Lease", lease_id.as_str())],
+                None,
+            ),
+        ) {
+            RouteResponse::Binary {
+                status,
+                content_type,
+                body,
+            } => {
+                assert_eq!(status, 200);
+                assert_eq!(content_type, "application/javascript");
+                assert_eq!(body, source);
+            }
+            RouteResponse::Text { status, body } => {
+                panic!("expected remounted JavaScript entry bytes, got {status}: {body}")
+            }
+        }
+        let lifecycle_path = format!("/v1/surfaces/instances/{instance_id}/lifecycle");
+        let (status, disposed) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &lifecycle_path,
+                &[],
+                Some(
+                    &json!({
+                        "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+                        "instanceId": instance_id,
+                        "attachmentId": attachment_id,
+                        "state": "disposed",
+                        "revision": 2,
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("dispose JavaScript Surface attachment");
+        assert_eq!(status, 200, "{disposed}");
+        match route_request(
+            &runtime,
+            &parsed_request(
+                "GET",
+                &format!("/v1/surfaces/resources/{digest}"),
+                &[("X-Loom-Surface-Lease", lease_id.as_str())],
+                None,
+            ),
+        ) {
+            RouteResponse::Text { status, body } => {
+                assert_eq!(status, 403, "{body}");
+                let body: Value = serde_json::from_str(&body).expect("lease rejection JSON");
+                assert_eq!(body["error"]["code"], "surface_resource_lease_rejected");
+            }
+            RouteResponse::Binary { .. } => panic!("disposed lease still returned bytes"),
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn surface_instance_migration_is_explicit_remounts_and_can_rollback_exactly() {
+        let root = unique_temp_dir("surface-instance-migration");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
+        let scene_v1 = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [{
+                    "id": "version",
+                    "type": "text",
+                    "props": { "text": "v1" }
+                }]
+            },
+            "authoritativeState": {
+                "legacy": "value",
+                "remove": "yes"
+            }
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &migrating_surface_art_package_zip("surface-migrating", "1.0.0", 1, &scene_v1, None),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Surface v1");
+
+        let (status, created) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                "/v1/surfaces/instances",
+                &[],
+                Some(&json!({ "artId": "surface-migrating" }).to_string()),
+            ),
+        )
+        .expect("create Surface v1 instance");
+        assert_eq!(status, 201, "{created}");
+        let created: Value = serde_json::from_str(&created).expect("created JSON");
+        let instance_id = created["descriptor"]["instanceId"]
+            .as_str()
+            .expect("instance id")
+            .to_owned();
+        let digest_v1 = created["descriptor"]["packageDigest"]
+            .as_str()
+            .expect("v1 package digest")
+            .to_owned();
+
+        let attach_path = format!("/v1/surfaces/instances/{instance_id}/attachments");
+        let (status, attached) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &attach_path,
+                &[],
+                Some(
+                    &json!({
+                        "hookNodeId": "hook-node:surface-migrating",
+                        "deviceId": "device-000-local",
+                        "capabilities": default_declarative_surface_host_capabilities()
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("attach Surface v1 instance");
+        assert_eq!(status, 201, "{attached}");
+        let attached: Value = serde_json::from_str(&attached).expect("attached JSON");
+        let attachment_id = attached["descriptor"]["attachmentId"]
+            .as_str()
+            .expect("attachment id")
+            .to_owned();
+        let mount_path = format!("/v1/surfaces/instances/{instance_id}/mount");
+        let (status, mounted_v1) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &mount_path,
+                &[],
+                Some(&json!({ "attachmentId": attachment_id }).to_string()),
+            ),
+        )
+        .expect("mount Surface v1 instance");
+        assert_eq!(status, 200, "{mounted_v1}");
+        let mounted_v1: Value = serde_json::from_str(&mounted_v1).expect("mounted v1 JSON");
+        let revision_v1 = mounted_v1["instance"]["attachments"][&attachment_id]["snapshot"]
+            ["revision"]
+            .as_u64()
+            .expect("v1 revision");
+
+        let scene_v2 = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [{
+                    "id": "version",
+                    "type": "text",
+                    "props": { "text": "v2" }
+                }]
+            },
+            "authoritativeState": { "mustNotReplaceMigratedState": true }
+        });
+        let migration_v2 = json!({
+            "from": 1,
+            "to": 2,
+            "statePatch": {
+                "schema": 2,
+                "remove": null
+            }
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &migrating_surface_art_package_zip(
+                "surface-migrating",
+                "2.0.0",
+                2,
+                &scene_v2,
+                Some(&migration_v2),
+            ),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Surface v2");
+        let tool_v2 = runtime
+            .tool_registry
+            .get_tool("surface-migrating")
+            .expect("read active v2")
+            .expect("active v2 tool");
+        let digest_v2 = tool_v2
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/artPackage/digest"))
+            .and_then(Value::as_str)
+            .expect("v2 package digest")
+            .to_owned();
+
+        let migrate_path = format!("/v1/surfaces/instances/{instance_id}/migrate");
+        let (status, migrated_v2) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &migrate_path,
+                &[],
+                Some(
+                    &json!({
+                        "targetVersion": "2.0.0",
+                        "targetDigest": digest_v2,
+                        "expectedGeneration": 0
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("migrate Surface to v2");
+        assert_eq!(status, 200, "{migrated_v2}");
+        let migrated_v2: Value = serde_json::from_str(&migrated_v2).expect("migrated v2 JSON");
+        assert_eq!(migrated_v2["descriptor"]["artVersion"], "2.0.0");
+        assert_eq!(migrated_v2["descriptor"]["stateSchemaVersion"], 2);
+        assert_eq!(migrated_v2["descriptor"]["generation"], 1);
+        assert_eq!(migrated_v2["authoritativeState"]["legacy"], "value");
+        assert_eq!(migrated_v2["authoritativeState"]["schema"], 2);
+        assert!(migrated_v2["authoritativeState"].get("remove").is_none());
+        assert!(migrated_v2["authoritativeState"]
+            .get("mustNotReplaceMigratedState")
+            .is_none());
+        assert_eq!(
+            migrated_v2["attachments"][&attachment_id]["snapshot"]["artVersion"],
+            "2.0.0"
+        );
+        assert!(
+            migrated_v2["attachments"][&attachment_id]["snapshot"]["revision"]
+                .as_u64()
+                .expect("v2 revision")
+                > revision_v1
+        );
+        assert_eq!(
+            migrated_v2["attachments"][&attachment_id]["lifecycle"],
+            "mounted"
+        );
+        assert_eq!(migrated_v2["migrationHistory"][0]["artVersion"], "1.0.0");
+
+        let (status, rolled_back) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &migrate_path,
+                &[],
+                Some(
+                    &json!({
+                        "targetVersion": "1.0.0",
+                        "targetDigest": digest_v1,
+                        "expectedGeneration": 1
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("roll Surface back to v1");
+        assert_eq!(status, 200, "{rolled_back}");
+        let rolled_back: Value = serde_json::from_str(&rolled_back).expect("rollback JSON");
+        assert_eq!(rolled_back["descriptor"]["artVersion"], "1.0.0");
+        assert_eq!(rolled_back["descriptor"]["stateSchemaVersion"], 1);
+        assert_eq!(rolled_back["descriptor"]["generation"], 2);
+        assert_eq!(rolled_back["authoritativeState"]["legacy"], "value");
+        assert_eq!(rolled_back["authoritativeState"]["remove"], "yes");
+        assert!(rolled_back["authoritativeState"].get("schema").is_none());
+        assert_eq!(
+            rolled_back["attachments"][&attachment_id]["snapshot"]["artVersion"],
+            "1.0.0"
+        );
+
+        let scene_v3 = json!({
+            "protocolVersion": loom_protocol::SURFACE_PROTOCOL_VERSION,
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [{
+                    "id": "version",
+                    "type": "text",
+                    "props": { "text": "v3" }
+                }]
+            },
+            "authoritativeState": {}
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &migrating_surface_art_package_zip("surface-migrating", "3.0.0", 3, &scene_v3, None),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Surface v3 without migration");
+        let tool_v3 = runtime
+            .tool_registry
+            .get_tool("surface-migrating")
+            .expect("read active v3")
+            .expect("active v3 tool");
+        let digest_v3 = tool_v3
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/artPackage/digest"))
+            .and_then(Value::as_str)
+            .expect("v3 package digest")
+            .to_owned();
+        let (status, rejected) = route_with_runtime(
+            &runtime,
+            &parsed_request(
+                "POST",
+                &migrate_path,
+                &[],
+                Some(
+                    &json!({
+                        "targetVersion": "3.0.0",
+                        "targetDigest": digest_v3,
+                        "expectedGeneration": 2
+                    })
+                    .to_string(),
+                ),
+            ),
+        )
+        .expect("reject incomplete Surface migration chain");
+        assert_eq!(status, 409, "{rejected}");
+        let rejected: Value = serde_json::from_str(&rejected).expect("rejection JSON");
+        assert_eq!(rejected["error"]["code"], "surface_state_migration_failed");
+        let persisted = runtime
+            .surface_instances
+            .lock()
+            .expect("Surface instance store")
+            .get(&instance_id)
+            .expect("persisted Surface instance");
+        assert_eq!(persisted.descriptor.art_version, "1.0.0");
+        assert_eq!(persisted.descriptor.generation, 2);
+        assert_eq!(persisted.authoritative_state["remove"], "yes");
+        let _ = fs::remove_dir_all(root);
     }
 
     fn write_fixture_response(stdout: &mut impl Write, response: serde_json::Value) {

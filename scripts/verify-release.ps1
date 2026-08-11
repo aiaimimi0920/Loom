@@ -219,7 +219,13 @@ function Assert-PluginSdkZipPayload {
         "protocol/schemas/framework-authoring.v1.schema.json",
         "protocol/schemas/framework-execute-request.v1.schema.json",
         "protocol/schemas/framework-execute-response.v1.schema.json",
-        "protocol/schemas/framework-manifest.v1.schema.json"
+        "protocol/schemas/framework-manifest.v1.schema.json",
+        "protocol/schemas/device-session.v1.schema.json",
+        "protocol/schemas/surface-manifest.v1.schema.json",
+        "protocol/schemas/surface-message.v1.schema.json",
+        "protocol/schemas/surface-scene.v1.schema.json",
+        "sdk/surface/README.md",
+        "sdk/surface/neuro-surface.d.ts"
     ) | Sort-Object
     $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath | ForEach-Object { $_.Replace("\", "/") } | Sort-Object)
     Assert-Equal -Expected ($expectedEntries -join "`n") -Actual ($actualEntries -join "`n") -Message "Plugin SDK ZIP contents do not match the public SDK contract."
@@ -228,7 +234,7 @@ function Assert-PluginSdkZipPayload {
     Assert-True -Condition ($null -ne $sdkProperty -and $null -ne $sdkProperty.Value) -Message "Manifest is missing pluginSdkArtifact."
     Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$sdkProperty.Value.entryName) -Message "Plugin SDK entry name mismatch."
     Assert-Equal -Expected "loom.framework.v1" -Actual ([string]$sdkProperty.Value.protocolVersion) -Message "Plugin SDK protocol version mismatch."
-    Assert-Equal -Expected 5 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
+    Assert-Equal -Expected 9 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
 }
 
 function Assert-FrameworkPackages {
@@ -569,6 +575,7 @@ $hookCanvasSmokeStatus = "not-run"
 $hookErrorPreviewSmokeStatus = "not-run"
 $frameworkArtStoreHookSmokeStatus = "not-run"
 $pluginBoundarySmokeStatus = "not-run"
+$surfacePrototypeSmokeStatus = "not-run"
 $authoredArtCreationSmokeStatus = "not-run"
 if ($RunSmoke) {
     $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
@@ -652,6 +659,23 @@ if ($RunSmoke) {
     }
     $pluginBoundarySmokeStatus = "passed"
 
+    $surfacePrototypeSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $surfacePrototypeSmokePath -PathType Leaf) -Message "Missing Surface prototype smoke script: $surfacePrototypeSmokePath"
+    $surfacePrototypeEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\surface-prototypes"
+    $surfacePrototypeSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $surfacePrototypeSmokePath,
+        "-PackageDir", $packageFullPath,
+        "-Configuration", "Release",
+        "-EvidenceRoot", $surfacePrototypeEvidenceRoot
+    )
+    $surfacePrototypeSmokeOutput = @($surfacePrototypeSmokeResult.output)
+    if ([int]$surfacePrototypeSmokeResult.exitCode -ne 0) {
+        throw "Surface prototype smoke failed: $($surfacePrototypeSmokeOutput -join [Environment]::NewLine)"
+    }
+    $surfacePrototypeSmokeStatus = "passed"
+
     $authoredArtCreationSmokePath = Join-Path $repoRoot "scripts\tests\Test-LoomAuthoredArtCreateExecution.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $authoredArtCreationSmokePath -PathType Leaf) -Message "Missing authored Art creation smoke script: $authoredArtCreationSmokePath"
     $authoredArtCreationSmokeResult = Invoke-CapturedPowerShell -Arguments @(
@@ -680,6 +704,7 @@ $result = [ordered]@{
     hookErrorPreviewSmoke = $hookErrorPreviewSmokeStatus
     frameworkArtStoreHookSmoke = $frameworkArtStoreHookSmokeStatus
     pluginBoundarySmoke = $pluginBoundarySmokeStatus
+    surfacePrototypeSmoke = $surfacePrototypeSmokeStatus
     authoredArtCreationSmoke = $authoredArtCreationSmokeStatus
 }
 Write-Output ($result | ConvertTo-Json -Depth 10)

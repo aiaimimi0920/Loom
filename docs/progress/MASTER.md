@@ -124,6 +124,10 @@ separate projects.
   [details](./phase-66-image-blend-compress-workflow-art.md)
 - [x] Phase 67: Pluginized Art frameworks (10/10 tasks)
   [details](./phase-67-pluginized-art-frameworks.md)
+- [x] Phase 68: Art plugin platform hardening (10/10 tasks)
+  [details](./phase-68-art-plugin-platform-hardening.md)
+- [ ] Phase 69: Distributed Art Surface phase-one closure (9/10 gates)
+  [details](./phase-69-distributed-art-surface.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -425,8 +429,8 @@ Latest completed phases:
   and independently compiled third-party plugin smokes. Its manifest records
   `gitDirty=true`, so it is evidence for the current worktree rather than a
   clean-source publication artifact.
-- Phase 68 implementation is complete and final validation/publication is in
-  progress. The platform now has a public process+JSON protocol and five v1
+- Phase 68 implementation and clean-source R4 publication are complete. The
+  platform has a public process+JSON protocol and five v1
   Schemas, an independent `loom-plugin` SDK CLI, publisher-qualified identity,
   Ed25519 signing/trust/revocation, secure ZIP and outbound policy, scoped
   write-only credentials, immutable versions and dependency lockfiles,
@@ -438,6 +442,18 @@ Latest completed phases:
   arbitrary filesystem, GPU, and clipboard declarations that are not fully
   OS-enforced. Full details and current test evidence are in
   `docs/progress/phase-68-art-plugin-platform-hardening.md`.
+- Phase 69 implementation and dirty-source native runtime verification are
+  complete. Loom owns persistent/shared Surface instances, ordered snapshots
+  and patches, action execution/cancellation, device sessions, leased resources,
+  and restart recovery; Hook owns bounded declarative/JavaScript rendering and
+  explicit full-snapshot recovery after patch conflicts. The current candidates
+  are `release/Loom/20260811-distributed-art-surface-r8` and
+  `release/Hook/20260811-distributed-art-surface-r8`. Their formal 600-second
+  packaged dual-end gate passed native Surface interaction, bounded memory,
+  normal exit, same-identity restart recovery, and complete service/listener
+  cleanup. Phase-one publication remains open only for scoped commits and
+  clean-source provenance. See
+  `docs/progress/phase-69-distributed-art-surface.md`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local
@@ -481,31 +497,13 @@ Completed Phase 8 tasks:
 
 Last completed phase:
 
-- Phase 42 adds the single-entry Windows release boundary without changing
-  daemon HTTP semantics or merging processes. It separates `Loom.exe`,
-  `runtime\loom-daemon.exe`, and the CLI ZIP, with release verifier and smoke
-  coverage for both artifacts.
+- Phase 68 closed the public Art plugin platform with clean-source R4 evidence.
 
-Previous completed phase:
+Current closure phase:
 
-- Phase 41 added bounded daemon request execution without automatic replay or
-  forced cancellation, preserved serialized compatibility routes, and closed
-  with formal release, unified local, persistence, Gateway, desktop, and
-  concurrency evidence.
-
-Earlier completed phase:
-
-- Phase 40 added durable capability run/event evidence without adding a worker
-  queue or replay semantics, and closed with formal release, unified local,
-  packaged persistence, Gateway, and desktop sibling-daemon evidence.
-
-Earlier foundation phase:
-
-- Phase 39 connected `brain.plan` to the real Gateway only when explicitly
-  configured, retained deterministic local planning by default, made Gateway
-  failures queryable without leaking credentials or prompts, and closed with
-  formal release, unified local, packaged Gateway, and desktop auto-start
-  evidence.
+- Phase 69 has passed implementation, source tests, browser budget smoke, Loom
+  packaged restart/resource smoke, and the formal ten-minute packaged Hook/Loom
+  native gate. Its remaining gate is clean-source publication provenance.
 
 Repository status:
 
@@ -524,19 +522,19 @@ Ongoing maintenance:
 
 ## Next steps
 
-1. Complete the Phase 68 fresh full verification matrix, commit Loom and Hook
-   separately, then build and verify a new clean-source R4/final package with
-   `gitDirty=false` and `sourceGitDirty=false`.
-2. Preserve `20260801-art-plugin-boundary-hardening-r3` unchanged as historical
-   dirty-worktree runtime evidence; never overwrite or relabel it as the clean
-   Phase 68 publication.
-3. Keep the Phase 44 and `20260721-release-integrity-f99e810` candidates and
+1. Commit Loom and Hook separately, rebuild both Phase 69 candidates from clean
+   source, and require `gitDirty=false`/`sourceGitDirty=false` where supported.
+2. Repeat the packaged dual-end gate against those clean-source candidates.
+3. Preserve R8/R8 as immutable dirty-source runtime evidence, with earlier
+   retained as superseded predecessors; do not relabel any candidate as a
+   clean-source publication.
+4. Keep the Phase 44 and `20260721-release-integrity-f99e810` candidates and
    their checksum evidence immutable; regenerate a candidate after any later
    production source, resource, dependency, or release-tooling change.
-4. If further ArtLoom/plugin gaps are reported, classify them as user-visible
+5. If further ArtLoom/plugin gaps are reported, classify them as user-visible
    UI, public protocol/runtime, package lifecycle/supply chain, OS enforcement,
    or intentionally replaced before making changes.
-5. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
+6. Preserve product naming as `Loom`; `loom-desktop.exe` remains only the
    internal Tauri source target, while the packaged user entry is `Loom.exe`.
 
 ## Standalone repository closure

@@ -408,6 +408,16 @@ pub enum McpClient {
 
 impl McpClient {
     pub fn connect(config: &McpServerConfig) -> McpResult<Self> {
+        Self::connect_with_timeout(
+            config,
+            Duration::from_secs(MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed)),
+        )
+    }
+
+    pub fn connect_with_timeout(
+        config: &McpServerConfig,
+        request_timeout: Duration,
+    ) -> McpResult<Self> {
         if !config.enabled {
             return Err(McpError::Disabled {
                 server_id: config.id.clone(),
@@ -415,9 +425,12 @@ impl McpClient {
         }
         config.validate()?;
         match config.transport {
-            McpTransport::Stdio => StdioMcpClient::spawn(config).map(Self::Stdio),
+            McpTransport::Stdio => {
+                StdioMcpClient::spawn_with_timeout(config, request_timeout).map(Self::Stdio)
+            }
             McpTransport::StreamableHttp => {
-                StreamableHttpMcpClient::connect(config).map(Self::StreamableHttp)
+                StreamableHttpMcpClient::connect_with_timeout(config, request_timeout)
+                    .map(Self::StreamableHttp)
             }
             McpTransport::Sse => Err(McpError::UnsupportedTransport("sse".to_owned())),
         }
@@ -724,6 +737,16 @@ pub struct StreamableHttpMcpClient {
 
 impl StreamableHttpMcpClient {
     pub fn connect(config: &McpServerConfig) -> McpResult<Self> {
+        Self::connect_with_timeout(
+            config,
+            Duration::from_secs(MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed)),
+        )
+    }
+
+    pub fn connect_with_timeout(
+        config: &McpServerConfig,
+        request_timeout: Duration,
+    ) -> McpResult<Self> {
         if !config.enabled {
             return Err(McpError::Disabled {
                 server_id: config.id.clone(),
@@ -736,8 +759,7 @@ impl StreamableHttpMcpClient {
             ));
         }
 
-        let request_timeout =
-            Duration::from_secs(MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed));
+        let request_timeout = request_timeout.max(Duration::from_millis(1));
         let client = HttpClient::builder()
             .connect_timeout(request_timeout.min(Duration::from_secs(15)))
             .timeout(request_timeout)

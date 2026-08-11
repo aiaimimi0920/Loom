@@ -74,6 +74,7 @@ Assert-Contains 'configured_webview2_browser_args' $desktopRust "Desktop must va
 Assert-Contains 'context.config_mut().app.windows' $desktopRust "Desktop must inject browser arguments before Tauri creates its configured windows."
 Assert-Contains 'additional_browser_args' $desktopRust "Desktop must pass explicit browser arguments through Tauri/Wry."
 Assert-Contains 'LOOM_CONTROL_PLANE_ROOT' $smoke "Smoke must isolate Loom data."
+Assert-Contains 'LOOM_SMOKE_ALLOW_MULTIPLE_INSTANCES = "1"' $smoke "Smoke must isolate its desktop from a live user instance."
 Assert-Contains 'APPDATA' $smoke "Smoke must isolate the Hook session."
 Assert-Contains 'ExpectedExecutablePath' $smoke "Smoke cleanup must validate exact process paths."
 Assert-Contains 'SmokePortMinimum = 30000' $smoke "Smoke listeners must stay below the Windows dynamic client-port range."

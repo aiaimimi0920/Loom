@@ -1,0 +1,137 @@
+{
+  "protocolVersion": "loom.surface.v1",
+  "scene": {
+    "id": "root",
+    "type": "scroll",
+    "layout": {
+      "maxHeight": 440,
+      "overflowY": "auto"
+    },
+    "children": [
+      {
+        "id": "content",
+        "type": "column",
+        "layout": {
+          "gap": 10,
+          "padding": 12
+        },
+        "children": [
+          {
+            "id": "title",
+            "type": "text",
+            "props": {
+              "text": "创建项目"
+            }
+          },
+          {
+            "id": "project_name_label",
+            "type": "text",
+            "props": {
+              "text": "项目名称 *"
+            }
+          },
+          {
+            "id": "project_name",
+            "type": "input",
+            "props": {
+              "value": "",
+              "placeholder": "必填"
+            },
+            "events": {
+              "input": "form_validate",
+              "change": "form_validate"
+            },
+            "accessibility": {
+              "label": "项目名称，必填"
+            }
+          },
+          {
+            "id": "name_error",
+            "type": "text",
+            "props": {
+              "text": "",
+              "visible": false
+            },
+            "accessibility": {
+              "label": "项目名称错误",
+              "live": "assertive"
+            }
+          },
+          {
+            "id": "notes_label",
+            "type": "text",
+            "props": {
+              "text": "备注（可选）"
+            }
+          },
+          {
+            "id": "notes",
+            "type": "textarea",
+            "props": {
+              "value": "",
+              "placeholder": "可留空"
+            },
+            "events": {
+              "input": "form_notes_input",
+              "change": "form_notes_input"
+            },
+            "accessibility": {
+              "label": "项目备注，可选"
+            }
+          },
+          {
+            "id": "divider",
+            "type": "divider"
+          },
+          {
+            "id": "form_status",
+            "type": "text",
+            "props": {
+              "text": "尚未提交"
+            },
+            "accessibility": {
+              "label": "表单状态",
+              "live": "polite"
+            }
+          },
+          {
+            "id": "actions",
+            "type": "row",
+            "layout": {
+              "gap": 8,
+              "justify": "flex-end"
+            },
+            "children": [
+              {
+                "id": "cancel",
+                "type": "button",
+                "props": {
+                  "label": "取消"
+                },
+                "events": {
+                  "click": "form_cancel"
+                }
+              },
+              {
+                "id": "submit",
+                "type": "button",
+                "props": {
+                  "label": "提交"
+                },
+                "events": {
+                  "click": "form_submit"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "authoritativeState": {
+    "projectName": "",
+    "notes": "",
+    "submitted": false,
+    "valid": false
+  }
+}

@@ -15,12 +15,14 @@ $focusedSmokePaths = @(
     (Join-Path $repoRoot "scripts\Invoke-LoomDaemonConcurrencySmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"),
-    (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1")
+    (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1")
 )
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
 $hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
 $frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
+$surfacePrototypeSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1"
 
 function Assert-True {
     param(
@@ -184,6 +186,8 @@ Assert-ScriptContract `
         'frameworkArtStoreHookSmoke',
         'Invoke-LoomPluginBoundarySmoke.ps1',
         'pluginBoundarySmoke',
+        'Invoke-LoomSurfacePrototypeSmoke.ps1',
+        'surfacePrototypeSmoke',
         'runtime/python/Arts/',
         '-PackageDir',
         '$previousErrorActionPreference = $ErrorActionPreference',
@@ -298,6 +302,18 @@ Assert-ScriptContract `
     -ForbiddenText $commonForbidden
 
 Assert-ScriptContract `
+    -Path $surfacePrototypeSmokePath `
+    -RequiredText @(
+        'build-surface-prototypes.ps1',
+        '/v1/surfaces/attach',
+        '/v1/surfaces/actions/cancel',
+        'instanceReused',
+        'isolatedControlPlane',
+        'shared resource leases must be attachment-scoped'
+    ) `
+    -ForbiddenText $commonForbidden
+
+Assert-ScriptContract `
     -Path $smokePath `
     -RequiredText @(
         '[Parameter(Mandatory = $true)][string]$PackageDir',
@@ -365,7 +381,7 @@ Assert-Equal -Expected "loom.exe" -Actual ([string]$defaultPlan.cliArtifact.entr
 Assert-True -Condition ([string]$defaultPlan.cliArtifact.zipNamePattern -eq "Loom-CLI-{versionId}-windows-x64.zip") -Message "Dry-run CLI ZIP naming contract mismatch."
 Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$defaultPlan.pluginSdkArtifact.pluginCliEntryName) -Message "Dry-run must catalog the plugin developer CLI."
 Assert-True -Condition ([string]$defaultPlan.pluginSdkArtifact.zipNamePattern -eq "Loom-Plugin-SDK-{versionId}-windows-x64.zip") -Message "Dry-run plugin SDK ZIP naming contract mismatch."
-Assert-Equal -Expected 12 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas and developer documentation."
+Assert-Equal -Expected 18 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas, Surface SDK, and developer documentation."
 Assert-Equal -Expected "process,cloud_api,mcp,workflow" -Actual (@($defaultPlan.frameworkPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog all four independent framework packages."
 Assert-Equal -Expected (Join-Path $defaultPlan.destination "packages\frameworks") -Actual ([string]$defaultPlan.frameworkPackageCatalog.outputRoot) -Message "Dry-run framework catalog output must stay inside the candidate."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { -not ([string]$_.destinationRelativePath).StartsWith("runtime\") }).Count -eq 0) -Message "All daemon-owned support files must live under runtime."

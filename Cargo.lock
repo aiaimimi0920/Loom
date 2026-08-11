@@ -1283,6 +1283,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "ed25519-dalek",
  "image",
  "loom_agent",
  "loom_configuration",
@@ -1304,6 +1305,7 @@ dependencies = [
  "loom_workflow",
  "loom_workflow_runtime",
  "loom_workflow_store",
+ "rand_core 0.6.4",
  "reqwest",
  "semver",
  "serde",
@@ -1311,6 +1313,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "tungstenite",
+ "uuid",
  "windows-sys 0.61.2",
  "zip",
 ]
