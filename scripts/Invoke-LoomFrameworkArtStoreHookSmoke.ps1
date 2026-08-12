@@ -906,6 +906,12 @@ New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art.zip") -TextFil
     "manifest.json" = (ConvertTo-NormalizedJson $mcpManifest)
 }
 
+$workflowYaml = @"
+name: Store Script Workflow
+nodes:
+  - id: image
+    uses: store-script-art
+"@
 $workflowManifest = @{
     id = "store-workflow-art"
     name = "Store Workflow Art"
@@ -915,10 +921,14 @@ $workflowManifest = @{
         type = "workflow"
         workflowId = "store-script-workflow"
     }
-    metadata = @{ packageSecurity = @{ version = "1.0.0" } }
+    metadata = @{
+        packageSecurity = @{ version = "1.0.0" }
+        dependencies = @{ framework = "workflow" }
+    }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-workflow-art.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $workflowManifest)
+    "workflow.yaml" = $workflowYaml
 }
 
 $catalogExpectedIds = @(
@@ -1017,18 +1027,6 @@ try {
     $frameworksAfter = Invoke-JsonGet -Uri "$baseUrl/v1/frameworks"
     $summary.frameworksAfter = $frameworksAfter.frameworks
 
-    $workflowYaml = @"
-name: Store Script Workflow
-nodes:
-  - id: image
-    uses: store-script-art
-"@
-    $savedWorkflow = Invoke-JsonPut -Uri "$baseUrl/v1/workflows/store-script-workflow" -Body @{
-        data = $workflowYaml
-    }
-    Assert-Equal "store-script-workflow" ([string]$savedWorkflow.workflow.id) "Workflow save id mismatch."
-    $summary.workflow = $savedWorkflow.workflow
-
     $installOrder = @(
         "store-cli-art",
         "store-script-art",
@@ -1046,6 +1044,10 @@ nodes:
         $installReports[$artId] = $installed.reports
     }
     $summary.installReports = $installReports
+
+    $installedWorkflow = Invoke-JsonGet -Uri "$baseUrl/v1/workflows/store-script-workflow"
+    Assert-Equal "store-script-workflow" ([string]$installedWorkflow.workflow.id) "Packaged workflow registration id mismatch."
+    $summary.workflow = $installedWorkflow.workflow
 
     $readinessChecks = @{}
     foreach ($artId in $installOrder) {
