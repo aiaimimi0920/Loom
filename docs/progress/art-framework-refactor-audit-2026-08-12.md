@@ -28,7 +28,7 @@ the obsolete `cli_wrapper`, `script`, or `python_art` IDs.
 | 7. Hook capability-driven rendering | Complete | The boundary contract forbids all six sample IDs in Hook production source; execution and rendering remain manifest/capability driven. |
 | 8. End-to-end plugin boundary | Complete | Existing third-party no-source-change smoke remains in the release verifier; current six-package install/execution smoke also passes. |
 | 9. Documentation and release leakage guards | Complete after follow-up | README counts, Phase 67/68 follow-ups, release catalog, verifier, source contract, and package contract all agree on four frameworks and six sample Arts. |
-| 10. Formal releases | Complete when R10 verification is green | Hook's combined clean R9 remains the current Hook artifact because this audit changes no Hook source. Loom's clean candidate is `release/Loom/20260812-art-framework-refactor-audit-clean-r10`. |
+| 10. Formal releases | Complete | Hook's combined clean R9 remains the current Hook artifact because this audit changes no Hook source. Loom R12 was the first clean candidate to pass all 49 checksums and all seven formal smoke gates; R13 is the documentation-aligned final package. |
 
 ## Gaps found and closed
 
@@ -106,7 +106,7 @@ directory launch successfully.
 | Art Store global ID publish/install flow | Passed |
 | Malicious archive/signature/dependency/network/process/lifecycle cases | Passed |
 | Standalone release and release-tamper contracts | Passed |
-| Formal clean R10 release verifier and release smokes | Required before closure claim |
+| Formal clean R13 release verifier and release smokes | Passed: 49 files checked; base, Hook canvas, Hook error preview, framework/Art Store/Hook, plugin boundary, surface prototype, and authored-Art creation smokes passed |
 
 ## Explicitly retained non-goals
 
@@ -122,10 +122,15 @@ them as limits or non-goals:
 
 ## Release targets
 
-- Loom: `release/Loom/20260812-art-framework-refactor-audit-clean-r10`
+- Loom: `release/Loom/20260812-art-framework-refactor-audit-clean-r13`
 - Hook: `release/Hook/20260811-distributed-art-surface-clean-r9` (unchanged;
   this audit modifies no Hook source)
 
-The R10 candidate must record `gitDirty=false` and `sourceGitDirty=false`,
-contain four framework ZIPs and six sample Art ZIPs, and pass the full formal
-verifier before this audit is reported as complete.
+R10 and R11 were rejected during formal verification because their source-side
+smoke harnesses exposed, respectively, an obsolete workflow fixture and a linked
+worktree Hook-path assumption. R12 was the first candidate containing both
+harness fixes to pass the full verifier. R13 additionally includes this closed
+audit record, records `gitDirty=false` and `sourceGitDirty=false`, contains four
+framework ZIPs and six sample Art ZIPs, and passes the same full formal verifier.
+The retained lightweight verification evidence is under
+`release/Loom/verification/20260812-art-framework-refactor-audit-clean-r13`.
