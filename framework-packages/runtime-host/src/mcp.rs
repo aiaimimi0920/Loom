@@ -150,7 +150,10 @@ fn build_environment(
             .iter()
             .find(|credential| credential.name == credential_name)
             .ok_or_else(|| {
-                format!("MCP Art requires credential `{credential_name}` for `{environment_name}`")
+                format!(
+                    "MCP Art requires credential `{credential_name}` for `{environment_name}`; available aliases: {}",
+                    available_credential_aliases(request)
+                )
             })?;
         environment.insert(environment_name.clone(), credential.value.clone());
     }
@@ -186,11 +189,28 @@ fn build_headers(
             .iter()
             .find(|credential| credential.name == credential_name)
             .ok_or_else(|| {
-                format!("MCP Art requires credential `{credential_name}` for `{header_name}`")
+                format!(
+                    "MCP Art requires credential `{credential_name}` for `{header_name}`; available aliases: {}",
+                    available_credential_aliases(request)
+                )
             })?;
         headers.insert(header_name.clone(), credential.value.clone());
     }
     Ok(headers)
+}
+
+fn available_credential_aliases(request: &FrameworkExecuteRequest) -> String {
+    let aliases = request
+        .context
+        .credentials
+        .iter()
+        .map(|credential| credential.name.as_str())
+        .collect::<Vec<_>>();
+    if aliases.is_empty() {
+        "<none>".to_owned()
+    } else {
+        aliases.join(", ")
+    }
 }
 
 fn validate_header_name(name: &str) -> Result<(), String> {

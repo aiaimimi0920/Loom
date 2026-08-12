@@ -126,6 +126,8 @@ separate projects.
   [details](./phase-67-pluginized-art-frameworks.md)
 - [x] Phase 68: Art plugin platform hardening (10/10 tasks)
   [details](./phase-68-art-plugin-platform-hardening.md)
+- [x] Art framework refactor completion audit (2026-08-12)
+  [details](./art-framework-refactor-audit-2026-08-12.md)
 - [x] Phase 69: Distributed Art Surface phase-one closure (10/10 gates)
   [details](./phase-69-distributed-art-surface.md)
 - [x] Standalone repository publication and Neuro submodule integration
@@ -442,6 +444,14 @@ Latest completed phases:
   arbitrary filesystem, GPU, and clipboard declarations that are not fully
   OS-enforced. Full details and current test evidence are in
   `docs/progress/phase-68-art-plugin-platform-hardening.md`.
+- The 2026-08-12 Art framework completion audit reconciles the historical plan
+  with the current four-framework architecture, restores all six official
+  sample Art packages, registers packaged workflow definitions through the Art
+  lifecycle, preserves mutable credential bindings during immutable execution,
+  and fixes deep Windows framework process launch paths. The clean Loom target
+  is `release/Loom/20260812-art-framework-refactor-audit-clean-r10`; Hook remains
+  on the unchanged clean R9 artifact. See
+  `docs/progress/art-framework-refactor-audit-2026-08-12.md`.
 - Phase 69 implementation and clean-source publication are complete. Loom owns
   persistent/shared Surface instances, ordered snapshots
   and patches, action execution/cancellation, device sessions, leased resources,

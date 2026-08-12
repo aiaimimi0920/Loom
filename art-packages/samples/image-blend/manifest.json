@@ -1,0 +1,80 @@
+{
+  "id": "custom-image-blend-script",
+  "name": "图片融合",
+  "description": "通过可插拔进程框架按比例混合两张输入图片。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "process"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "label": "源图",
+      "type": "image",
+      "execution_type": "image_buffer"
+    },
+    {
+      "name": "reference",
+      "label": "参考图",
+      "type": "image",
+      "execution_type": "image_buffer",
+      "exposePort": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "label": "融合结果",
+      "type": "image",
+      "execution_type": "image_buffer"
+    }
+  ],
+  "params": [
+    {
+      "id": "mix_ratio",
+      "label": "融合值",
+      "widget": "slider",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "packageSecurity": {
+      "version": "0.1.0",
+      "publisher": {
+        "id": "neuro.official",
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/custom-image-blend-script",
+      "englishName": "custom-image-blend-script",
+      "globalId": "NA20260802005"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "图片融合",
+        "en-US": "Image Blend"
+      },
+      "descriptions": {
+        "zh-CN": "通过可插拔进程框架按比例混合两张输入图片。",
+        "en-US": "Blends two input images by ratio through the pluggable process framework."
+      }
+    },
+    "dependencies": {
+      "framework": "process",
+      "frameworkVersion": "^0.1"
+    },
+    "capabilities": {
+      "preview": "image",
+      "exports": ["image/png"],
+      "parameters": "dynamic"
+    }
+  }
+}

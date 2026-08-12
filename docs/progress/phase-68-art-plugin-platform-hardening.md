@@ -182,3 +182,31 @@ source immutability invariant:
 - [x] Clean commits for Loom and Hook execution-boundary updates.
 - [x] Clean-source R4 build and verifier with `gitDirty=false` and
       `sourceGitDirty=false`.
+
+## 2026-08-12 hardening follow-up
+
+The Art-framework completion audit found three gaps not covered by the older R4
+snapshot:
+
+- Windows framework processes failed with `ERROR_DIRECTORY` when both the
+  executable and working directory lived below a traditional `MAX_PATH`
+  boundary. `loom_process` now prepares both launch paths through one shared
+  command constructor and uses the existing DOS short path for deep Windows
+  paths; a Windows-only regression executes a copied framework runtime from a
+  path longer than 260 characters.
+- Immutable package resolution preserved `enabled` but dropped mutable
+  `artUserSettings`. Credential bindings therefore disappeared immediately
+  before framework execution. The resolved immutable Tool now overlays only the
+  registered mutable settings metadata, retaining package digest/path integrity
+  while restoring scoped credential grants.
+- Workflow Art ZIP installation did not register the bundled `workflow.yaml`.
+  Direct, bundled-catalog, store, upgrade, rollback, and auto-update activation
+  paths now synchronize the active packaged workflow definition. Automatic
+  orphan workflow garbage collection remains intentionally out of scope.
+
+Fresh regression evidence includes `loom_process` (5 tests),
+`loom_tool_registry` (120 tests), `loom_workflow_runtime` (17 tests), the
+framework runtime host (4 tests), and `loom-daemon` (220 tests), plus the six
+malicious-package cases and six-package real install/execution smoke. The clean
+formal candidate is
+`release/Loom/20260812-art-framework-refactor-audit-clean-r10`.

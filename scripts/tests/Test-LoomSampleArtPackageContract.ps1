@@ -46,10 +46,12 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $packagesRoot = Join-Path $repoRoot "art-packages\samples"
 $buildScript = Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"
 $expected = [ordered]@{
-    "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "process"; globalId = "NA20260802001"; version = "0.1.2" }
-    "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; globalId = "NA20260802002"; version = "0.1.1" }
-    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; globalId = "NA20260802003"; version = "0.2.1" }
-    "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; globalId = "NA20260802004"; version = "0.1.4" }
+    "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802001"; version = "0.1.2" }
+    "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; executionType = "framework_art"; globalId = "NA20260802002"; version = "0.1.1" }
+    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802003"; version = "0.2.1" }
+    "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802004"; version = "0.1.4" }
+    "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802005"; version = "0.1.0" }
+    "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow"; executionType = "workflow"; globalId = "NA20260802006"; version = "0.1.0" }
 }
 
 Assert-True (Test-Path -LiteralPath $packagesRoot -PathType Container) "Sample Art package source directory is required: $packagesRoot"
@@ -65,16 +67,24 @@ foreach ($entry in $expected.GetEnumerator()) {
 
     $manifestPath = Join-Path $sourceDirectory "manifest.json"
     $runtimePath = Join-Path $sourceDirectory "art.runtime.json"
+    $workflowPath = Join-Path $sourceDirectory "workflow.yaml"
     Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) "Sample Art manifest is required: $manifestPath"
-    Assert-True (Test-Path -LiteralPath $runtimePath -PathType Leaf) "Sample Art runtime manifest is required: $runtimePath"
 
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$manifest.id)) "Sample Art id is required: $manifestPath"
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$manifest.name)) "Sample Art name is required: $manifestPath"
     Assert-True ([bool]$manifest.enabled) "Sample Art must be enabled by default in its package manifest: $manifestPath"
-    Assert-True ([string]$manifest.execution.type -eq "framework_art") "Sample Art must use framework_art execution: $manifestPath"
+    Assert-True ([string]$manifest.execution.type -eq $entry.Value.executionType) "Sample Art execution type mismatch: $manifestPath"
     Assert-True ([string]$manifest.id -eq $entry.Value.id) "Sample Art id mismatch: $manifestPath"
-    Assert-True ([string]$manifest.execution.framework -eq $entry.Value.framework) "Sample Art framework mismatch: $manifestPath"
+    if ($entry.Value.executionType -eq "framework_art") {
+        Assert-True ([string]$manifest.execution.framework -eq $entry.Value.framework) "Sample Art framework mismatch: $manifestPath"
+        Assert-True (Test-Path -LiteralPath $runtimePath -PathType Leaf) "Sample Art runtime manifest is required: $runtimePath"
+    }
+    else {
+        Assert-True ([string]$manifest.execution.workflowId -eq "image-blend-compress-workflow") "Workflow sample Art id mismatch: $manifestPath"
+        Assert-True (Test-Path -LiteralPath $workflowPath -PathType Leaf) "Workflow sample Art definition is required: $workflowPath"
+        Assert-True (-not (Test-Path -LiteralPath $runtimePath)) "Workflow sample Art must not bundle a local reimplementation runtime: $runtimePath"
+    }
     Assert-True ([string]$manifest.metadata.dependencies.framework -eq $entry.Value.framework) "Sample Art framework dependency mismatch: $manifestPath"
     Assert-True ([string]$manifest.metadata.packageSecurity.version -eq $entry.Value.version) "Sample Art package version mismatch: $manifestPath"
     Assert-ArtIdentityMetadata -Manifest $manifest -Context $manifestPath
@@ -131,20 +141,35 @@ foreach ($entry in $expected.GetEnumerator()) {
             Assert-True ($fragmentShader -match [regex]::Escape("u_$parameterId")) "Color Transfer shader does not expose uniform: $parameterId"
         }
     }
-    $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath | ConvertFrom-Json
-    Assert-True ([string]$runtime.protocolVersion -eq "loom.art.runtime.v1") "Sample Art runtime protocol is invalid: $runtimePath"
-    Assert-True ($null -ne $runtime.entry) "Sample Art runtime entry is required: $runtimePath"
-    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$runtime.entry.command)) "Sample Art runtime entry.command is required: $runtimePath"
-
-    $runtimeCommand = ([string]$runtime.entry.command).Replace('/', '\')
-    $runtimeCommandPath = Join-Path $sourceDirectory $runtimeCommand
-    if ($runtimeCommand -match '\\|/') {
-        Assert-True (Test-Path -LiteralPath $runtimeCommandPath -PathType Leaf) "Sample Art runtime entry is not bundled: $runtimeCommandPath"
+    if ($entry.Key -eq "image-blend-compress") {
+        $dependencyArts = @($manifest.metadata.dependencies.arts | ForEach-Object { [string]$_ })
+        Assert-True ($dependencyArts.Count -eq 2) "Workflow sample Art must declare exactly two child Art dependencies."
+        Assert-True ($dependencyArts -contains "custom-image-blend-script") "Workflow sample Art must depend on image blend."
+        Assert-True ($dependencyArts -contains "custom-1770146354922") "Workflow sample Art must depend on image compression."
+        $workflowSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $workflowPath
+        Assert-True ($workflowSource -match 'uses:\s*custom-image-blend-script') "Workflow sample Art must execute the image-blend child Art."
+        Assert-True ($workflowSource -match 'uses:\s*custom-1770146354922') "Workflow sample Art must execute the image-compress child Art."
+        Assert-True ($workflowSource -notmatch 'Blend-Bitmaps|Save-Png') "Workflow sample Art must not reimplement child Art behavior."
+        Assert-True (@($manifest.execution.workflowBindings.inputs).Count -eq 4) "Workflow sample Art must expose all four workflow bindings."
+        Assert-True ([string]$manifest.execution.workflowBindings.primaryOutput.nodeId -eq "compress") "Workflow sample Art must return the compression child result."
     }
-    else {
-        $runtimeFile = @($runtime.entry.args | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^runtime[\\/]' } | Select-Object -First 1)
-        Assert-True ($runtimeFile.Count -eq 1) "Sample Art runtime must reference a bundled runtime file: $runtimePath"
-        Assert-True (Test-Path -LiteralPath (Join-Path $sourceDirectory ($runtimeFile[0] -replace '/', '\')) -PathType Leaf) "Sample Art runtime file is not bundled: $runtimeFile"
+
+    if ($entry.Value.executionType -eq "framework_art") {
+        $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath | ConvertFrom-Json
+        Assert-True ([string]$runtime.protocolVersion -eq "loom.art.runtime.v1") "Sample Art runtime protocol is invalid: $runtimePath"
+        Assert-True ($null -ne $runtime.entry) "Sample Art runtime entry is required: $runtimePath"
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$runtime.entry.command)) "Sample Art runtime entry.command is required: $runtimePath"
+
+        $runtimeCommand = ([string]$runtime.entry.command).Replace('/', '\')
+        $runtimeCommandPath = Join-Path $sourceDirectory $runtimeCommand
+        if ($runtimeCommand -match '\\|/') {
+            Assert-True (Test-Path -LiteralPath $runtimeCommandPath -PathType Leaf) "Sample Art runtime entry is not bundled: $runtimeCommandPath"
+        }
+        else {
+            $runtimeFile = @($runtime.entry.args | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^runtime[\\/]' } | Select-Object -First 1)
+            Assert-True ($runtimeFile.Count -eq 1) "Sample Art runtime must reference a bundled runtime file: $runtimePath"
+            Assert-True (Test-Path -LiteralPath (Join-Path $sourceDirectory ($runtimeFile[0] -replace '/', '\')) -PathType Leaf) "Sample Art runtime file is not bundled: $runtimeFile"
+        }
     }
 }
 
@@ -179,8 +204,15 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
             }).Count) "Sample Art ZIP must not contain Python cache artifacts: $zipPath"
             $manifestEntry = $archive.Entries | Where-Object { $_.FullName -eq "manifest.json" } | Select-Object -First 1
             $runtimeEntry = $archive.Entries | Where-Object { $_.FullName -eq "art.runtime.json" } | Select-Object -First 1
+            $workflowEntry = $archive.Entries | Where-Object { $_.FullName -eq "workflow.yaml" } | Select-Object -First 1
             Assert-True ($null -ne $manifestEntry) "Sample Art ZIP lacks manifest.json: $zipPath"
-            Assert-True ($null -ne $runtimeEntry) "Sample Art ZIP lacks art.runtime.json: $zipPath"
+            if ($entry.Value.executionType -eq "framework_art") {
+                Assert-True ($null -ne $runtimeEntry) "Sample Art ZIP lacks art.runtime.json: $zipPath"
+            }
+            else {
+                Assert-True ($null -ne $workflowEntry) "Workflow sample Art ZIP lacks workflow.yaml: $zipPath"
+                Assert-True ($null -eq $runtimeEntry) "Workflow sample Art ZIP must not contain art.runtime.json: $zipPath"
+            }
 
             $reader = [System.IO.StreamReader]::new($manifestEntry.Open())
             try {
@@ -189,7 +221,7 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
             finally {
                 $reader.Dispose()
             }
-            Assert-True ([string]$zipManifest.execution.type -eq "framework_art") "Sample Art ZIP execution type is invalid: $zipPath"
+            Assert-True ([string]$zipManifest.execution.type -eq $entry.Value.executionType) "Sample Art ZIP execution type is invalid: $zipPath"
             Assert-True ([string]$zipManifest.id -eq $entry.Value.id) "Sample Art ZIP id mismatch: $zipPath"
             Assert-True ([string]$zipManifest.metadata.dependencies.framework -eq $entry.Value.framework) "Sample Art ZIP framework dependency mismatch: $zipPath"
             Assert-True ([string]$zipManifest.metadata.packageSecurity.version -eq $entry.Value.version) "Sample Art ZIP package version mismatch: $zipPath"
@@ -222,23 +254,36 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                     Assert-True ($packagedParameterIds -contains $parameterId) "Packaged Color Transfer parameter is missing: $parameterId"
                 }
             }
-            $runtimeReader = [System.IO.StreamReader]::new($runtimeEntry.Open())
-            try {
-                $zipRuntime = $runtimeReader.ReadToEnd() | ConvertFrom-Json
-            }
-            finally {
-                $runtimeReader.Dispose()
-            }
-            $command = ([string]$zipRuntime.entry.command).Replace('\', '/')
-            if ($command -match '/') {
-                $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $command } | Select-Object -First 1
-                Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime entry is not bundled: $zipPath -> $command"
+            if ($entry.Value.executionType -eq "framework_art") {
+                $runtimeReader = [System.IO.StreamReader]::new($runtimeEntry.Open())
+                try {
+                    $zipRuntime = $runtimeReader.ReadToEnd() | ConvertFrom-Json
+                }
+                finally {
+                    $runtimeReader.Dispose()
+                }
+                $command = ([string]$zipRuntime.entry.command).Replace('\', '/')
+                if ($command -match '/') {
+                    $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $command } | Select-Object -First 1
+                    Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime entry is not bundled: $zipPath -> $command"
+                }
+                else {
+                    $runtimeFile = @($zipRuntime.entry.args | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^runtime[\\/]' } | Select-Object -First 1)
+                    Assert-True ($runtimeFile.Count -eq 1) "Sample Art ZIP runtime must reference a bundled runtime file: $zipPath"
+                    $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $runtimeFile[0].Replace('\', '/') } | Select-Object -First 1
+                    Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime file is not bundled: $zipPath -> $runtimeFile"
+                }
             }
             else {
-                $runtimeFile = @($zipRuntime.entry.args | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^runtime[\\/]' } | Select-Object -First 1)
-                Assert-True ($runtimeFile.Count -eq 1) "Sample Art ZIP runtime must reference a bundled runtime file: $zipPath"
-                $bundledRuntimeEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $runtimeFile[0].Replace('\', '/') } | Select-Object -First 1
-                Assert-True ($null -ne $bundledRuntimeEntry) "Sample Art ZIP runtime file is not bundled: $zipPath -> $runtimeFile"
+                $workflowReader = [System.IO.StreamReader]::new($workflowEntry.Open())
+                try {
+                    $zipWorkflow = $workflowReader.ReadToEnd()
+                }
+                finally {
+                    $workflowReader.Dispose()
+                }
+                Assert-True ($zipWorkflow -match 'uses:\s*custom-image-blend-script') "Packaged workflow must execute image blend: $zipPath"
+                Assert-True ($zipWorkflow -match 'uses:\s*custom-1770146354922') "Packaged workflow must execute image compression: $zipPath"
             }
         }
         finally {

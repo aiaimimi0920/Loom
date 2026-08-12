@@ -3702,6 +3702,7 @@ fn route(
             &request.body,
             tool_registry,
             framework_registry,
+            workflow_store,
             control_plane_root,
             hook_bridge,
             bundled_art_sha256_allowlist,
@@ -3744,6 +3745,7 @@ fn route(
                 &request.body,
                 tool_registry,
                 framework_registry,
+                workflow_store,
                 control_plane_root,
                 hook_bridge,
             )
@@ -3751,6 +3753,7 @@ fn route(
         ("POST", "/v1/arts/auto-update") => auto_update_arts(
             tool_registry,
             framework_registry,
+            workflow_store,
             control_plane_root,
             hook_bridge,
             artloom_settings,
@@ -3763,6 +3766,7 @@ fn route(
                     .expect("checked path"),
                 tool_registry,
                 framework_registry,
+                workflow_store,
                 control_plane_root,
                 hook_bridge,
             )
@@ -3785,6 +3789,7 @@ fn route(
             &request.body,
             tool_registry,
             framework_registry,
+            workflow_store,
             control_plane_root,
             hook_bridge,
         ),
@@ -7752,10 +7757,60 @@ fn create_authored_art(
 
 // Install an art package (zip) into the registry: extracts to <root>/arts/<id>/,
 // checks the framework is ready, and registers the ToolDefinition.
+fn sync_installed_workflow_definition(
+    tool: &ToolDefinition,
+    workflow_store: &WorkflowStore,
+) -> std::result::Result<(), String> {
+    let ToolExecution::Workflow { workflow_id, .. } = &tool.execution else {
+        return Ok(());
+    };
+    let art_dir = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/artPackage/dir"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            format!(
+                "workflow Art `{}` has no installed package directory",
+                tool.id
+            )
+        })?;
+    let canonical_art_dir = fs::canonicalize(&art_dir)
+        .map_err(|error| format!("cannot resolve workflow Art package: {error}"))?;
+    let workflow_path = fs::canonicalize(art_dir.join("workflow.yaml"))
+        .map_err(|error| format!("workflow Art `{}` has no workflow.yaml: {error}", tool.id))?;
+    if !workflow_path.starts_with(&canonical_art_dir) || !workflow_path.is_file() {
+        return Err(format!(
+            "workflow Art `{}` resolves workflow.yaml outside its package",
+            tool.id
+        ));
+    }
+    let yaml = fs::read_to_string(&workflow_path)
+        .map_err(|error| format!("cannot read workflow Art definition: {error}"))?;
+    workflow_store
+        .save_workflow(workflow_id, &yaml)
+        .map_err(|error| format!("cannot register workflow Art definition: {error}"))?;
+    Ok(())
+}
+
+fn sync_registered_workflow_definition(
+    art_id: &str,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+) -> std::result::Result<(), String> {
+    let tool = tool_registry
+        .get_tool(art_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("installed Art `{art_id}` was not registered"))?;
+    sync_installed_workflow_definition(&tool, workflow_store)
+}
+
 fn install_art(
     body: &str,
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
+    workflow_store: &WorkflowStore,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
     bundled_art_sha256_allowlist: &BTreeSet<String>,
@@ -7795,6 +7850,14 @@ fn install_art(
     };
     match result {
         Ok(report) => {
+            if let Err(message) =
+                sync_registered_workflow_definition(&report.tool_id, tool_registry, workflow_store)
+            {
+                return structured_error(
+                    400,
+                    json!({ "code": "workflow_art_install_failed", "message": message }),
+                );
+            }
             let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "report": report }))?))
         }
@@ -7824,6 +7887,7 @@ fn rollback_art(
     art_id: &str,
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
+    workflow_store: &WorkflowStore,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
@@ -7834,6 +7898,12 @@ fn rollback_art(
         framework_registry,
     ) {
         Ok(tool) => {
+            if let Err(message) = sync_installed_workflow_definition(&tool, workflow_store) {
+                return structured_error(
+                    409,
+                    json!({ "code": "workflow_art_rollback_failed", "message": message }),
+                );
+            }
             let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "tool": tool }))?))
         }
@@ -8341,6 +8411,7 @@ fn update_art_version(
     body: &str,
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
+    workflow_store: &WorkflowStore,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
@@ -8418,6 +8489,12 @@ fn update_art_version(
     }
     if let Ok(Some(mut active)) = tool_registry.get_tool(&identity) {
         apply_settings_metadata(&mut active, &settings);
+        if let Err(message) = sync_installed_workflow_definition(&active, workflow_store) {
+            return structured_error(
+                409,
+                json!({ "code": "workflow_art_update_failed", "message": message }),
+            );
+        }
         if let Err(error) = tool_registry.save_tool(active) {
             return tool_registry_error_response(error);
         }
@@ -8429,6 +8506,7 @@ fn update_art_version(
 fn auto_update_arts(
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
+    workflow_store: &WorkflowStore,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
     settings_store: &SharedArtLoomCompatSettingsStore,
@@ -8509,11 +8587,17 @@ fn auto_update_arts(
             control_plane_root,
             Some(&identity),
         ) {
-            Ok(_) => updated.push(json!({
-                "artId": identity,
-                "from": current,
-                "to": remote.latest_version,
-            })),
+            Ok(_) => {
+                match sync_registered_workflow_definition(&identity, tool_registry, workflow_store)
+                {
+                    Ok(()) => updated.push(json!({
+                        "artId": identity,
+                        "from": current,
+                        "to": remote.latest_version,
+                    })),
+                    Err(message) => errors.push(json!({ "artId": identity, "message": message })),
+                }
+            }
             Err(error) => errors.push(json!({ "artId": identity, "message": error.to_string() })),
         }
     }
@@ -8603,6 +8687,20 @@ fn resolve_registered_tool_package(
         framework_registry,
     )?;
     resolved.enabled = tool.enabled;
+    if let Some(user_settings) = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("artUserSettings"))
+    {
+        let metadata = resolved.metadata.get_or_insert_with(|| json!({}));
+        if !metadata.is_object() {
+            *metadata = json!({});
+        }
+        metadata
+            .as_object_mut()
+            .expect("resolved metadata normalized")
+            .insert("artUserSettings".to_owned(), user_settings.clone());
+    }
     Ok(resolved)
 }
 
@@ -9126,6 +9224,7 @@ fn install_art_from_store(
     body: &str,
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
+    workflow_store: &WorkflowStore,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
@@ -9141,6 +9240,18 @@ fn install_art_from_store(
         None,
     ) {
         Ok(reports) => {
+            for report in &reports {
+                if let Err(message) = sync_registered_workflow_definition(
+                    &report.tool_id,
+                    tool_registry,
+                    workflow_store,
+                ) {
+                    return structured_error(
+                        400,
+                        json!({ "code": "workflow_art_install_failed", "message": message }),
+                    );
+                }
+            }
             let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "reports": reports }))?))
         }
@@ -19137,6 +19248,35 @@ nodes:
         bytes
     }
 
+    fn workflow_art_package_zip(id: &str, workflow_id: &str) -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": "Daemon workflow Art",
+            "description": "daemon workflow package fixture",
+            "enabled": true,
+            "execution": { "type": "workflow", "workflowId": workflow_id },
+            "metadata": {
+                "dependencies": { "framework": "workflow" },
+                "packageSecurity": { "version": "1.0.0" }
+            }
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file("manifest.json", options).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
+            writer.start_file("workflow.yaml", options).unwrap();
+            writer
+                .write_all(b"name: Package Flow\nnodes: []\n")
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        bytes
+    }
+
     fn surface_art_package_zip(
         id: &str,
         version: &str,
@@ -19451,6 +19591,7 @@ nodes:
             &external_body,
             &runtime.tool_registry,
             &runtime.framework_registry,
+            &runtime.workflow_store,
             &root,
             &runtime.hook_bridge,
             &runtime.bundled_art_sha256_allowlist,
@@ -19469,6 +19610,7 @@ nodes:
             &forged_body,
             &runtime.tool_registry,
             &runtime.framework_registry,
+            &runtime.workflow_store,
             &root,
             &runtime.hook_bridge,
             &runtime.bundled_art_sha256_allowlist,
@@ -19486,6 +19628,7 @@ nodes:
             &bundled_body,
             &runtime.tool_registry,
             &runtime.framework_registry,
+            &runtime.workflow_store,
             &root,
             &runtime.hook_bridge,
             &runtime.bundled_art_sha256_allowlist,
@@ -19617,6 +19760,7 @@ nodes:
             "authored-art",
             &runtime.tool_registry,
             &runtime.framework_registry,
+            &runtime.workflow_store,
             &root,
             &runtime.hook_bridge,
         )
@@ -19633,6 +19777,7 @@ nodes:
             r#"{"version":"2.0.0"}"#,
             &runtime.tool_registry,
             &runtime.framework_registry,
+            &runtime.workflow_store,
             &root,
             &runtime.hook_bridge,
         )
@@ -20155,7 +20300,7 @@ nodes:
     }
 
     #[test]
-    fn installed_art_resolution_preserves_registry_enabled_state() {
+    fn installed_art_resolution_preserves_mutable_registry_state() {
         let root = unique_temp_dir("art-package-enabled-state");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         runtime
@@ -20176,6 +20321,15 @@ nodes:
             .expect("read registered Art")
             .expect("registered Art");
         registered.enabled = false;
+        registered
+            .metadata
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .expect("registered metadata")
+            .insert(
+                "artUserSettings".to_owned(),
+                json!({ "credentialBindings": { "api_key": "stored-secret" } }),
+            );
         let resolved = resolve_registered_tool_package(
             &registered,
             &runtime.tool_registry,
@@ -20185,7 +20339,50 @@ nodes:
         .expect("resolve immutable Art package");
 
         assert!(!resolved.enabled);
+        assert_eq!(
+            resolved.metadata.as_ref().and_then(
+                |metadata| metadata.pointer("/artUserSettings/credentialBindings/api_key")
+            ),
+            Some(&Value::String("stored-secret".to_owned()))
+        );
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workflow_art_install_registers_its_packaged_definition() {
+        let root = unique_temp_dir("workflow-art-package-install");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("workflow", "1.0.0"))
+            .expect("install workflow framework");
+        let zip = workflow_art_package_zip("packaged-workflow-art", "packaged-workflow");
+        let body = serde_json::to_string(&json!({
+            "zipBase64": format!("data:application/zip;base64,{}", BASE64.encode(zip))
+        }))
+        .expect("install request");
+
+        let (status, response) = install_art(
+            &body,
+            &runtime.tool_registry,
+            &runtime.framework_registry,
+            &runtime.workflow_store,
+            &root,
+            &runtime.hook_bridge,
+            &runtime.bundled_art_sha256_allowlist,
+        )
+        .expect("install workflow Art");
+
+        assert_eq!(status, 200, "body={response}");
+        assert_eq!(
+            runtime
+                .workflow_store
+                .load_workflow("packaged-workflow")
+                .expect("load packaged workflow"),
+            "name: Package Flow\nnodes: []\n"
+        );
+        drop(runtime);
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -23911,9 +24108,11 @@ def run(args):
         assert!(runtime_log_enabled(RuntimeLogLevel::Error));
         let tool_registry = ToolRegistry::new(root.join("tools"));
         let framework_registry = FrameworkRegistry::new(&root);
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
         let (update_status, update_body) = auto_update_arts(
             &tool_registry,
             &framework_registry,
+            &workflow_store,
             &root,
             &hook_bridge,
             &settings_store,

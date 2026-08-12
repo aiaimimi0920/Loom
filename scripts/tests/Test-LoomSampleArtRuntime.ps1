@@ -68,7 +68,8 @@ $cases = @(
     @{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; params = @{}; inputs = @{ input = $image } },
     @{ id = "custom-image-search"; framework = "mcp"; params = @{ query = "loom smoke"; count = 3 }; inputs = @{}; frameworkData = $imageSearchFrameworkData },
     @{ id = "custom-1770131241684"; framework = "process"; params = $colorTransferParams; inputs = @{ input = $image; reference = $image } },
-    @{ id = "custom-1770131241684"; framework = "process"; params = $colorTransferParams; inputs = @{ input = $image; reference = $image; output_mode = "shader" }; expectShader = $true }
+    @{ id = "custom-1770131241684"; framework = "process"; params = $colorTransferParams; inputs = @{ input = $image; reference = $image; output_mode = "shader" }; expectShader = $true },
+    @{ id = "custom-image-blend-script"; framework = "process"; params = @{ mix_ratio = 50 }; inputs = @{ input = $image; reference = $image } }
 )
 
 function Invoke-Runtime {

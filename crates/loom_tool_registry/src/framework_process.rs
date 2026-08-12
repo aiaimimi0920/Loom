@@ -948,6 +948,65 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
     }
 
     #[test]
+    fn process_request_contains_art_scoped_credential_bindings() {
+        let root = temp_root("credentials");
+        let packages_root = root.join("frameworks");
+        fs::create_dir_all(&packages_root).expect("create framework packages root");
+        let art_dir = write_fixture_package(&packages_root, SUCCESS_SCRIPT);
+        let mut tool = fixture_tool(&art_dir);
+        tool.metadata
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .expect("fixture metadata")
+            .insert(
+                "artUserSettings".to_owned(),
+                json!({ "credentialBindings": { "api_key": "stored-secret" } }),
+            );
+        tool.metadata
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .expect("fixture metadata")
+            .insert(
+                "packageSecurity".to_owned(),
+                json!({
+                    "version": "1.0.0",
+                    "publisher": { "id": "publisher.test", "name": "Publisher" }
+                }),
+            );
+        crate::credentials::CredentialStore::new(&root)
+            .upsert(crate::credentials::CredentialInput {
+                name: "stored-secret".to_owned(),
+                value: "fixture-value".to_owned(),
+                value_type: crate::credentials::CredentialValueType::String,
+                scope: crate::credentials::CredentialScope {
+                    framework_id: None,
+                    art_id: Some(tool.qualified_id()),
+                },
+                expires_at: None,
+            })
+            .expect("store fixture credential");
+
+        let result = execute_framework_art_in_root_with_timeout(
+            &tool,
+            "script",
+            json!({}),
+            &packages_root,
+            Duration::from_secs(10),
+            None,
+        )
+        .expect("framework process credential binding");
+        assert_eq!(
+            result["request"]["context"]["credentials"][0]["name"],
+            "api_key"
+        );
+        assert_eq!(
+            result["request"]["context"]["credentials"][0]["value"],
+            "fixture-value"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn flat_art_arguments_are_partitioned_by_manifest_schema() {
         let root = temp_root("flat-schema");
         let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);

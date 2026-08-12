@@ -65,7 +65,8 @@ In scope:
 - package-backed framework install state;
 - framework package manifest and ZIP format;
 - generic external framework process execution protocol;
-- six repo-owned framework packages built outside the default release payload;
+- four current repo-owned framework packages built outside the default release
+  payload (`process`, `cloud_api`, `mcp`, and `workflow`);
 - six repo-owned sample Art packages built outside the default release payload;
 - Hook generic capability rendering for plugin Arts;
 - release and smoke guards proving a third party can install without host
@@ -93,7 +94,8 @@ remain outside both phases.
 - [x] Task 2: Define framework package manifests and explicit installed state.
 - [x] Task 3: Implement framework package install, disable, upgrade, and uninstall.
 - [x] Task 4: Add the generic external framework execution protocol.
-- [x] Task 5: Convert the six sample frameworks into independent packages.
+- [x] Task 5: Convert the framework runtimes into independent packages
+  (subsequently consolidated from six historical IDs to four current IDs).
 - [x] Task 6: Convert the six sample Arts into external Art packages.
 - [x] Task 7: Make Hook fully capability-driven for plugin Arts.
 - [x] Task 8: Add end-to-end plugin boundary smoke.
@@ -282,7 +284,7 @@ cargo test --manifest-path .\Cargo.toml -p loom-daemon --lib -- --nocapture
 - [x] Framework installation is package-backed rather than a built-in flag flip.
 - [x] Framework disable/enable/upgrade/uninstall are supported.
 - [x] Art disable/enable/upgrade/uninstall are supported.
-- [x] Six sample framework packages install and execute successfully.
+- [x] Four current framework packages install and execute successfully.
 - [x] Six sample Art packages install and execute successfully.
 - [x] A temporary third-party framework package installs and executes.
 - [x] A temporary third-party Art package installs and executes.
@@ -321,18 +323,18 @@ Implemented the six sample Arts as independent package sources under
 
 | Package source | Art id | Framework |
 | --- | --- | --- |
-| `image-compress` | `custom-1770146354922` | `cli_wrapper` |
+| `image-compress` | `custom-1770146354922` | `process` |
 | `remove-bg` | `custom-remove-bg-cloud` | `cloud_api` |
 | `image-search` | `custom-image-search` | `mcp` |
-| `color-transfer` | `custom-1770131241684` | `python_art` |
-| `image-blend` | `custom-image-blend-script` | `script` |
+| `color-transfer` | `custom-1770131241684` | `process` |
+| `image-blend` | `custom-image-blend-script` | `process` |
 | `image-blend-compress` | `custom-image-blend-compress-workflow` | `workflow` |
 
-Each package now owns `manifest.json`, `art.runtime.json`, and its runtime
-adapter. The workflow package also owns its child-Art dependency declaration
-and `workflow.yaml`. The generic `runtime-host` remains the only framework
-broker; it reads the Art package runtime manifest and does not branch on these
-sample IDs.
+Each process/cloud/MCP package owns `manifest.json`, `art.runtime.json`, and its
+runtime adapter. The workflow package instead owns `manifest.json`, its
+child-Art dependency declaration, and `workflow.yaml`; it intentionally has no
+package-local image implementation. The generic host/runtime paths do not
+branch on these sample IDs.
 
 Added:
 
@@ -574,16 +576,41 @@ Current evidence:
 - Current formal framework list comes from
   `crates/loom_tool_registry/src/framework.rs`; it is a repo-owned catalog, not
   a closed allowlist for dynamically installed framework IDs.
-- Loom desktop may expose these six IDs as Art-authoring presets. Those entries
-  are UI/manifest metadata and do not compile or bundle their framework
-  runtimes into the default host.
+- Loom desktop exposes the four current framework IDs as Art-authoring presets.
+  Those entries are UI/manifest metadata and do not compile or bundle their
+  framework runtimes into the default host.
 - The default Loom release contains the host, registry, installer, and broker
   only. Framework and Art ZIPs are built and installed separately.
-- Current Color Transfer is implemented as `python_art` with Hook-facing
-  shader compatibility metadata. Treat "shader" as UI/capability behavior
-  unless product requirements promote it into a seventh framework ID.
+- Current Color Transfer is a `process` framework Art with Hook-facing shader
+  capability metadata. Treat "shader" as UI/capability behavior rather than a
+  separate framework ID.
 - Phase 67's R3 `gitDirty=true` candidate remains immutable historical runtime
   evidence. It must not be relabeled or overwritten as the later clean-source
   Phase 68 publication artifact.
 - Phase 68 implementation and final validation are tracked in
   [phase-68-art-plugin-platform-hardening.md](phase-68-art-plugin-platform-hardening.md).
+
+## 2026-08-12 completion audit
+
+The current four-framework architecture remains the authoritative successor to
+the original six framework IDs. The audit did not restore `cli_wrapper`,
+`script`, or `python_art`; command, PowerShell, and Python Arts remain owned by
+`process`.
+
+The audit found and closed four current-product gaps:
+
+1. Restored `image-blend` as a `process` package.
+2. Restored `image-blend-compress` as a declarative `workflow` package that
+   invokes the blend and compression child Arts and contains no local image
+   implementation.
+3. Updated source, release catalog, verifier, and Desktop bootstrap coverage
+   from four to all six official sample Art ZIPs.
+4. Made package installation register an embedded `workflow.yaml`, so a
+   catalog-installed workflow Art is executable without a separate manual PUT.
+
+Fresh verification includes the six-package source/ZIP contract, six-package
+direct/runtime and install/execution smokes, the generic Hook boundary contract,
+all four framework package contracts, authored Art creation, the Art Store
+global-ID flow, all six malicious-package cases, and the full Rust suites. The
+clean formal candidate is tracked as
+`release/Loom/20260812-art-framework-refactor-audit-clean-r10`.

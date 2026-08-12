@@ -231,6 +231,8 @@ function Get-LoomCatalog {
             [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api" }
             [ordered]@{ id = "custom-image-search"; framework = "mcp" }
             [ordered]@{ id = "custom-1770131241684"; framework = "process" }
+            [ordered]@{ id = "custom-image-blend-script"; framework = "process" }
+            [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow" }
         )
     }
 

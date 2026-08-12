@@ -279,7 +279,7 @@ packaged daemon automatically checks the release's sibling
 `packages\frameworks` directory and verifies each ZIP against its `.sha256`
 sidecar before installation.
 
-The four repo-owned framework packages and seven sample Art packages are built
+The four repo-owned framework packages and six sample Art packages are built
 independently from the Loom binaries:
 
 ```powershell
@@ -296,7 +296,7 @@ The output contains one framework ZIP per framework and one Art ZIP per sample
 Art. Both ZIP types have independent manifests and SHA-256 files. Formal desktop
 release tooling publishes both catalogs under `packages\frameworks` and
 `packages\arts`. On the first launch for a catalog hash, the desktop verifies the
-ZIPs, installs the declared framework dependencies, and installs the four curated Arts
+ZIPs, installs the declared framework dependencies, and installs the six curated Arts
 through the public package APIs. The applied catalog hash is recorded under the
 writable control plane, so deleting an Art later does not make it reappear on
 every startup. This bootstrap never edits Loom or Hook source. The same generic

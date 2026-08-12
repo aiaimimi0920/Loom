@@ -127,17 +127,7 @@ pub struct ManagedChild {
 
 impl ManagedChild {
     pub fn spawn(spec: &ProcessSpec) -> Result<(Self, ManagedChildPipes), ProcessError> {
-        let mut command = Command::new(&spec.program);
-        command
-            .args(&spec.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(current_dir) = &spec.current_dir {
-            command.current_dir(current_dir);
-        }
-        command.envs(&spec.env);
-        configure_process_group(&mut command);
+        let mut command = supervised_command(spec);
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
         let isolation = ProcessIsolation::attach(&child, &spec.limits).map_err(|error| {
             let _ = child.kill();
@@ -201,23 +191,83 @@ pub fn run_with_input_cancellable(
     run_with_input_internal(spec, input, Some(cancellation))
 }
 
-fn run_with_input_internal(
-    spec: &ProcessSpec,
-    input: &[u8],
-    cancellation: Option<&AtomicBool>,
-) -> Result<SupervisedOutput, ProcessError> {
-    let started = Instant::now();
-    let mut command = Command::new(&spec.program);
+fn supervised_command(spec: &ProcessSpec) -> Command {
+    let mut command = Command::new(process_path(&spec.program));
     command
         .args(&spec.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(current_dir) = &spec.current_dir {
-        command.current_dir(current_dir);
+        command.current_dir(process_path(current_dir));
     }
     command.envs(&spec.env);
     configure_process_group(&mut command);
+    command
+}
+
+#[cfg(windows)]
+fn process_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::iter;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    const LEGACY_MAX_DIRECTORY_PATH: usize = 248;
+    if !path.is_absolute() || path.as_os_str().encode_wide().count() < LEGACY_MAX_DIRECTORY_PATH {
+        return path.to_path_buf();
+    }
+
+    // CreateProcessW does not accept a verbatim (\\?\) current directory.
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let wide = canonical
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let mut short = vec![0u16; 32_768];
+    let written =
+        unsafe { GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+    if written == 0 || written as usize >= short.len() {
+        return path.to_path_buf();
+    }
+    let short = &short[..written as usize];
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const VERBATIM_UNC_PREFIX: &[u16] = &[
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+    if let Some(rest) = short.strip_prefix(VERBATIM_UNC_PREFIX) {
+        let ordinary_unc = [b'\\' as u16, b'\\' as u16]
+            .into_iter()
+            .chain(rest.iter().copied())
+            .collect::<Vec<_>>();
+        OsString::from_wide(&ordinary_unc).into()
+    } else if let Some(rest) = short.strip_prefix(VERBATIM_PREFIX) {
+        OsString::from_wide(rest).into()
+    } else {
+        OsString::from_wide(short).into()
+    }
+}
+
+#[cfg(not(windows))]
+fn process_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+fn run_with_input_internal(
+    spec: &ProcessSpec,
+    input: &[u8],
+    cancellation: Option<&AtomicBool>,
+) -> Result<SupervisedOutput, ProcessError> {
+    let started = Instant::now();
+    let mut command = supervised_command(spec);
 
     let mut child = command.spawn().map_err(ProcessError::Spawn)?;
     let isolation = ProcessIsolation::attach(&child, &spec.limits).map_err(|error| {
@@ -551,6 +601,53 @@ pub fn executable_path_within(root: &Path, relative: &Path) -> Result<PathBuf, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn process_runs_from_a_deep_windows_working_directory() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "loom-process-deep-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let mut deep_dir = root.clone();
+        while deep_dir.as_os_str().encode_wide().count() <= 280 {
+            deep_dir.push("framework-package-segment-0123456789");
+        }
+        std::fs::create_dir_all(&deep_dir).expect("create deep working directory");
+        let prepared_dir = process_path(&deep_dir);
+        assert!(
+            prepared_dir.as_os_str().encode_wide().count() < 248,
+            "deep working directory was not shortened: {}",
+            prepared_dir.display()
+        );
+
+        let command = PathBuf::from(std::env::var_os("ComSpec").expect("ComSpec"));
+        let deep_program = deep_dir.join("framework-runtime.exe");
+        std::fs::copy(command, &deep_program).expect("copy deep framework runtime");
+        let mut spec = ProcessSpec::new(deep_program);
+        spec.args = vec![
+            "/D".to_owned(),
+            "/C".to_owned(),
+            "echo deep-path-ok".to_owned(),
+        ];
+        spec.current_dir = Some(deep_dir);
+        spec.limits.timeout = Duration::from_secs(5);
+
+        let output = run_with_input(&spec, b"").expect("run from deep working directory");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "deep-path-ok"
+        );
+
+        std::fs::remove_dir_all(&root).expect("remove deep working directory");
+    }
 
     #[test]
     fn bounded_output_is_reported_as_a_resource_limit() {

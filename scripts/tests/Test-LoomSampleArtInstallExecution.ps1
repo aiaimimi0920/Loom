@@ -247,8 +247,10 @@ $colorTransferParams = @{
 $artCases = @(
     @{ id = "custom-1770146354922"; arguments = @{ inputs = @{ input = $image }; params = @{ quality_num = 90; lossless = $true } } },
     @{ id = "custom-remove-bg-cloud"; arguments = @{ inputs = @{ input = $image }; params = @{} } },
-    @{ id = "custom-image-search"; arguments = @{ inputs = @{}; params = @{ query = "loom package smoke"; count = 3 } } },
-    @{ id = "custom-1770131241684"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = $colorTransferParams } }
+    @{ id = "custom-1770131241684"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = $colorTransferParams } },
+    @{ id = "custom-image-blend-script"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = @{ mix_ratio = 50 } } },
+    @{ id = "custom-image-blend-compress-workflow"; arguments = @{ inputs = @{ input = $image; reference = $image }; params = @{ mix_ratio = 50; quality_num = 90 } } },
+    @{ id = "custom-image-search"; arguments = @{ inputs = @{}; params = @{ query = "loom package smoke"; count = 3 } } }
 )
 
 New-Item -ItemType Directory -Force -Path $controlPlane, $configuration | Out-Null
@@ -307,6 +309,8 @@ try {
         Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Art ZIP missing: $zipPath"
         $null = Install-Zip -Url $baseUrl -ZipPath $zipPath -Prefix "/v1/arts"
     }
+    $installedWorkflow = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/workflows/image-blend-compress-workflow" -Body $null
+    Assert-True ([string]$installedWorkflow.workflow.id -eq "image-blend-compress-workflow") "Workflow sample definition was not registered from its package."
     $tools = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools" -Body $null
     foreach ($case in $artCases) {
         Assert-True (@($tools.tools | Where-Object { [string]$_.id -eq $case.id }).Count -eq 1) "Installed Art is not listed: $($case.id)"
@@ -325,6 +329,13 @@ try {
             secretValues = @{ brave_api_key = "loom-package-smoke-key" }
         }
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$savedManagement.credentialBindings.brave_api_key)) "Image-search Brave API Key was not stored as an Art credential binding."
+    $availableCredential = @($savedManagement.availableCredentials | Where-Object {
+        [string]$_.name -eq [string]$savedManagement.credentialBindings.brave_api_key
+    }) | Select-Object -First 1
+    Assert-True ($null -ne $availableCredential) "Image-search Art credential is not available after saving it."
+    $updatedTools = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools" -Body $null
+    $updatedImageSearch = @($updatedTools.tools | Where-Object { [string]$_.id -eq "custom-image-search" }) | Select-Object -First 1
+    Assert-True ([string]$updatedImageSearch.metadata.artUserSettings.credentialBindings.brave_api_key -eq [string]$savedManagement.credentialBindings.brave_api_key) "Image-search credential binding was not applied to the executable tool metadata."
 
     $colorTransferManagement = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/arts/custom-1770131241684/management" -Body $null
     $colorTransferParameterIds = @($colorTransferManagement.parameters | ForEach-Object { [string]$_.id })

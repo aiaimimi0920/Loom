@@ -79,7 +79,9 @@ $packageNames = @(
     "image-compress",
     "remove-bg",
     "image-search",
-    "color-transfer"
+    "color-transfer",
+    "image-blend",
+    "image-blend-compress"
 )
 
 if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
@@ -105,38 +107,51 @@ try {
         $sourceDirectory = Join-Path $sourceRoot $packageName
         $manifestPath = Join-Path $sourceDirectory "manifest.json"
         $runtimeManifestPath = Join-Path $sourceDirectory "art.runtime.json"
+        $workflowPath = Join-Path $sourceDirectory "workflow.yaml"
         if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
             throw "Sample Art source directory not found: $sourceDirectory"
         }
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
             throw "Sample Art manifest not found: $manifestPath"
         }
-        if (-not (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf)) {
-            throw "Sample Art runtime manifest not found: $runtimeManifestPath"
-        }
-
         $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-        $runtimeManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimeManifestPath | ConvertFrom-Json
         $artId = [string]$manifest.id
         $framework = [string]$manifest.metadata.dependencies.framework
+        $executionType = [string]$manifest.execution.type
         if ([string]::IsNullOrWhiteSpace($artId)) {
             throw "Sample Art manifest id is empty: $manifestPath"
         }
-        if ([string]$manifest.execution.type -ne "framework_art") {
-            throw "Sample Art must use framework_art execution: $manifestPath"
+        if ($executionType -eq "framework_art") {
+            if (-not (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf)) {
+                throw "Sample Art runtime manifest not found: $runtimeManifestPath"
+            }
+            $runtimeManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimeManifestPath | ConvertFrom-Json
+            if ([string]$manifest.execution.framework -ne $framework) {
+                throw "Sample Art execution and dependency framework differ: $manifestPath"
+            }
+            if ([string]$runtimeManifest.protocolVersion -ne "loom.art.runtime.v1") {
+                throw "Sample Art runtime protocol is invalid: $runtimeManifestPath"
+            }
         }
-        if ([string]$manifest.execution.framework -ne $framework) {
-            throw "Sample Art execution and dependency framework differ: $manifestPath"
+        elseif ($executionType -eq "workflow") {
+            if ($framework -ne "workflow") {
+                throw "Workflow sample Art must depend on the workflow framework: $manifestPath"
+            }
+            if (-not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
+                throw "Workflow sample Art definition not found: $workflowPath"
+            }
         }
-        if ([string]$runtimeManifest.protocolVersion -ne "loom.art.runtime.v1") {
-            throw "Sample Art runtime protocol is invalid: $runtimeManifestPath"
+        else {
+            throw "Unsupported sample Art execution type '$executionType': $manifestPath"
         }
 
         $stageDirectory = Join-Path $stagingRoot $packageName
         Assert-PathInside -Path $stageDirectory -Root $stagingRoot -Label "Art stage directory"
         New-Item -ItemType Directory -Force -Path $stageDirectory | Out-Null
         Copy-DirectoryContents -Source $sourceDirectory -Destination $stageDirectory
-        Copy-Item -LiteralPath $sharedRuntime -Destination (Join-Path $stageDirectory "runtime\common.ps1") -Force
+        if ($executionType -eq "framework_art") {
+            Copy-Item -LiteralPath $sharedRuntime -Destination (Join-Path $stageDirectory "runtime\common.ps1") -Force
+        }
 
         $stageManifestPath = Join-Path $stageDirectory "manifest.json"
         $stageManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $stageManifestPath | ConvertFrom-Json

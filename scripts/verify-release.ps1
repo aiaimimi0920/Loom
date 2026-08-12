@@ -330,13 +330,15 @@ function Assert-SampleArtPackages {
     }
 
     $expected = [ordered]@{
-        "custom-1770146354922" = "process"
-        "custom-remove-bg-cloud" = "cloud_api"
-        "custom-image-search" = "mcp"
-        "custom-1770131241684" = "process"
+        "custom-1770146354922" = [ordered]@{ framework = "process"; executionType = "framework_art" }
+        "custom-remove-bg-cloud" = [ordered]@{ framework = "cloud_api"; executionType = "framework_art" }
+        "custom-image-search" = [ordered]@{ framework = "mcp"; executionType = "framework_art" }
+        "custom-1770131241684" = [ordered]@{ framework = "process"; executionType = "framework_art" }
+        "custom-image-blend-script" = [ordered]@{ framework = "process"; executionType = "framework_art" }
+        "custom-image-blend-compress-workflow" = [ordered]@{ framework = "workflow"; executionType = "workflow" }
     }
     $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "sampleArtPackages")
-    Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain four curated Art package records."
+    Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain six curated Art package records."
     $actualIds = @($packageRecords | ForEach-Object { [string]$_.id } | Sort-Object)
     Assert-Equal -Expected ((@($expected.Keys) | Sort-Object) -join ",") -Actual ($actualIds -join ",") -Message "Sample Art package id set mismatch."
 
@@ -344,7 +346,8 @@ function Assert-SampleArtPackages {
     $payloadPaths = @()
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     foreach ($id in $expected.Keys) {
-        $framework = [string]$expected[$id]
+        $framework = [string]$expected[$id].framework
+        $executionType = [string]$expected[$id].executionType
         $zipRecord = @($packageRecords | Where-Object { [string]$_.id -eq $id })
         Assert-Equal -Expected 1 -Actual $zipRecord.Count -Message "Sample Art package record count mismatch for $id."
         Assert-Equal -Expected "sample-art-package-zip" -Actual ([string]$zipRecord[0].kind) -Message "Sample Art package kind mismatch for $id."
@@ -366,8 +369,15 @@ function Assert-SampleArtPackages {
         try {
             $manifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "manifest.json" })
             $runtimeManifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "art.runtime.json" })
+            $workflowEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "workflow.yaml" })
             Assert-Equal -Expected 1 -Actual $manifestEntry.Count -Message "Sample Art ZIP must contain one root manifest: $id"
-            Assert-Equal -Expected 1 -Actual $runtimeManifestEntry.Count -Message "Sample Art ZIP must contain one runtime manifest: $id"
+            if ($executionType -eq "framework_art") {
+                Assert-Equal -Expected 1 -Actual $runtimeManifestEntry.Count -Message "Sample Art ZIP must contain one runtime manifest: $id"
+            }
+            else {
+                Assert-Equal -Expected 0 -Actual $runtimeManifestEntry.Count -Message "Workflow sample Art ZIP must not contain a local runtime manifest: $id"
+                Assert-Equal -Expected 1 -Actual $workflowEntry.Count -Message "Workflow sample Art ZIP must contain one workflow definition: $id"
+            }
             $reader = [System.IO.StreamReader]::new($manifestEntry[0].Open())
             try {
                 $artManifest = $reader.ReadToEnd() | ConvertFrom-Json
@@ -377,8 +387,13 @@ function Assert-SampleArtPackages {
             }
             Assert-Equal -Expected $id -Actual ([string]$artManifest.id) -Message "Sample Art ZIP manifest id mismatch for $id."
             Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$artManifest.name)) -Message "Sample Art ZIP manifest name is empty for $id."
-            Assert-Equal -Expected "framework_art" -Actual ([string]$artManifest.execution.type) -Message "Sample Art ZIP execution type mismatch for $id."
-            Assert-Equal -Expected $framework -Actual ([string]$artManifest.execution.framework) -Message "Sample Art ZIP execution framework mismatch for $id."
+            Assert-Equal -Expected $executionType -Actual ([string]$artManifest.execution.type) -Message "Sample Art ZIP execution type mismatch for $id."
+            if ($executionType -eq "framework_art") {
+                Assert-Equal -Expected $framework -Actual ([string]$artManifest.execution.framework) -Message "Sample Art ZIP execution framework mismatch for $id."
+            }
+            else {
+                Assert-Equal -Expected "image-blend-compress-workflow" -Actual ([string]$artManifest.execution.workflowId) -Message "Workflow sample Art execution id mismatch for $id."
+            }
             Assert-Equal -Expected $framework -Actual ([string]$artManifest.metadata.dependencies.framework) -Message "Sample Art ZIP dependency framework mismatch for $id."
         }
         finally {
