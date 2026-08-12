@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
-    [string]$EvidenceRoot = ".\target\plugin-boundary-smoke"
+    [string]$EvidenceRoot = ".\target\plugin-boundary-smoke",
+    [string]$HookRepository = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +23,45 @@ function Resolve-RepoPath {
         return [System.IO.Path]::GetFullPath($Path)
     }
     return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
+}
+
+function Resolve-HookRepository {
+    param(
+        [string]$LoomRepository,
+        [string]$ExplicitPath
+    )
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        $candidates += Resolve-RepoPath -Path $ExplicitPath
+    } else {
+        $candidates += [System.IO.Path]::GetFullPath((Join-Path $LoomRepository "..\Hook"))
+
+        $superproject = (& git -C $LoomRepository rev-parse --show-superproject-working-tree 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($superproject)) {
+            $candidates += [System.IO.Path]::GetFullPath((Join-Path $superproject "Hook"))
+        }
+
+        $commonGitDir = (& git -C $LoomRepository rev-parse --path-format=absolute --git-common-dir 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commonGitDir)) {
+            $submoduleMatch = [regex]::Match($commonGitDir, '^(?<root>.+)[\\/]\.git[\\/]modules[\\/].+$')
+            if ($submoduleMatch.Success) {
+                $candidates += [System.IO.Path]::GetFullPath((Join-Path $submoduleMatch.Groups['root'].Value "Hook"))
+            }
+        }
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
+            continue
+        }
+        $insideWorkTree = (& git -C $candidate rev-parse --is-inside-work-tree 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and [string]::Equals($insideWorkTree, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $candidate
+        }
+    }
+
+    throw "Hook repository could not be resolved. Checked: $($candidates -join ', ')"
 }
 
 function Write-Utf8NoBomFile {
@@ -367,7 +407,7 @@ function Stop-TestDaemon {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
-$hookRoot = Join-Path $repoRoot "..\Hook"
+$hookRoot = Resolve-HookRepository -LoomRepository $repoRoot -ExplicitPath $HookRepository
 $daemonPath = Resolve-RepoPath -Path $DaemonExecutable
 $evidencePath = Resolve-RepoPath -Path $EvidenceRoot
 $controlPlane = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-plugin-boundary-" + [guid]::NewGuid().ToString("N"))
