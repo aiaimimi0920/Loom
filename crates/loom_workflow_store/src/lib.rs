@@ -659,6 +659,26 @@ fn safe_package_segment(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         && !value.starts_with('.')
         && !value.ends_with('.')
+        && !value.contains("..")
+        && !is_windows_reserved_device_name(value)
+}
+
+fn is_windows_reserved_device_name(value: &str) -> bool {
+    let base = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .trim_end_matches(['.', ' '])
+        .to_ascii_uppercase();
+    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || base
+            .strip_prefix("COM")
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
+        || base
+            .strip_prefix("LPT")
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
 }
 
 fn is_live_workflow_id(id: &str) -> bool {

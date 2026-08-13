@@ -19,17 +19,11 @@ pub struct ProcessResult {
 pub fn is_native_art_id(art_id: &str) -> bool {
     matches!(
         art_id,
-        "pixelate"
-            | "core.image.pixelate"
-            | "blur"
+        "core.image.pixelate"
             | "core.image.blur"
-            | "grayscale"
             | "core.image.grayscale"
-            | "brightness"
             | "core.image.brightness"
-            | "contrast"
             | "core.image.contrast"
-            | "invert"
             | "core.image.invert"
     )
 }
@@ -202,7 +196,7 @@ pub fn process_image(
     params: &HashMap<String, serde_json::Value>,
 ) -> Result<DynamicImage, String> {
     match art_id {
-        "pixelate" | "core.image.pixelate" => {
+        "core.image.pixelate" => {
             let block_size = params
                 .get("pixel_size")
                 .or_else(|| params.get("blockSize"))
@@ -210,29 +204,29 @@ pub fn process_image(
                 .unwrap_or(10) as u32;
             Ok(apply_pixelate(img, block_size))
         }
-        "blur" | "core.image.blur" => {
+        "core.image.blur" => {
             let radius = params
                 .get("radius")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(5) as u32;
             Ok(apply_blur(img, radius))
         }
-        "grayscale" | "core.image.grayscale" => Ok(apply_grayscale(img)),
-        "brightness" | "core.image.brightness" => {
+        "core.image.grayscale" => Ok(apply_grayscale(img)),
+        "core.image.brightness" => {
             let amount = params
                 .get("amount")
                 .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0) as i32;
             Ok(apply_brightness(img, amount))
         }
-        "contrast" | "core.image.contrast" => {
+        "core.image.contrast" => {
             let factor = params
                 .get("factor")
                 .and_then(serde_json::Value::as_f64)
                 .unwrap_or(1.0) as f32;
             Ok(apply_contrast(img, factor))
         }
-        "invert" | "core.image.invert" => Ok(apply_invert(img)),
+        "core.image.invert" => Ok(apply_invert(img)),
         _ => Err(format!("Unknown art_id: {art_id}")),
     }
 }
@@ -343,7 +337,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("pixel_size".to_owned(), serde_json::json!(2));
 
-        let result = process_art("pixelate", &input, params);
+        let result = process_art("core.image.pixelate", &input, params);
 
         assert!(result.success);
         let output = result.output_base64.as_deref().expect("output base64");

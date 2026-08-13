@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use loom_protocol::{PackageSignature, PackageSignatureDocument, PublisherIdentity};
+use loom_protocol::{
+    is_safe_package_id, PackageSignature, PackageSignatureDocument, PublisherIdentity,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -242,13 +244,7 @@ const fn first_publisher_number() -> u64 {
 
 /// Reject ids that aren't safe as a single file-stem (no separators / traversal).
 pub fn is_safe_art_id(id: &str) -> bool {
-    !id.is_empty()
-        && !id.contains('/')
-        && !id.contains('\\')
-        && !id.contains(':')
-        && id != "."
-        && id != ".."
-        && !id.contains("..")
+    is_safe_package_id(id)
 }
 
 /// Reject resource names that could escape the binaries dir. A single level of

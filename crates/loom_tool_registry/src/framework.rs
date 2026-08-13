@@ -1921,13 +1921,7 @@ fn unpack_runtime_zip(
 }
 
 pub(crate) fn is_valid_framework(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        && !id.starts_with('.')
-        && !id.ends_with('.')
+    loom_protocol::is_safe_package_id(id)
 }
 
 pub(crate) fn is_valid_framework_reference(reference: &str) -> bool {

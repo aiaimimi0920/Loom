@@ -238,7 +238,8 @@ impl HookCanvasDocument {
         let mut raw_nodes = HashMap::new();
         let mut nodes = Vec::new();
 
-        for raw_node in canvas_nodes(&root) {
+        let canvas_source = hook_canvas_source(&root);
+        for raw_node in canvas_nodes(&root, canvas_source) {
             let Some(id) = non_empty_string(raw_node.get("id")) else {
                 warnings.push("已跳过缺少有效 ID 的 Hook 节点。".to_owned());
                 continue;
@@ -248,10 +249,12 @@ impl HookCanvasDocument {
                 continue;
             }
 
-            let (x, x_degraded) = normalized_coordinate(node_coordinate(raw_node, "x"));
-            let (y, y_degraded) = normalized_coordinate(node_coordinate(raw_node, "y"));
-            let (width, width_degraded) = normalized_size(node_size(raw_node, "w", "width"));
-            let (height, height_degraded) = normalized_size(node_size(raw_node, "h", "height"));
+            let (x, x_degraded) = normalized_coordinate(node_coordinate(raw_node, "x", canvas_source));
+            let (y, y_degraded) = normalized_coordinate(node_coordinate(raw_node, "y", canvas_source));
+            let (width, width_degraded) =
+                normalized_size(node_size(raw_node, "w", "width", canvas_source));
+            let (height, height_degraded) =
+                normalized_size(node_size(raw_node, "h", "height", canvas_source));
             if x_degraded || y_degraded || width_degraded || height_degraded {
                 warnings.push(format!("Hook 节点 `{id}` 的几何信息已归一化。"));
             }
@@ -331,9 +334,9 @@ impl HookCanvasDocument {
 
         let mut edges = Vec::new();
         let mut session_links = Vec::new();
-        for (index, raw_edge) in canvas_edges(&root).iter().enumerate() {
-            let source_node_id = first_non_empty_string(raw_edge, &["fromUnitId", "source"]);
-            let target_node_id = first_non_empty_string(raw_edge, &["toUnitId", "target"]);
+        for (index, raw_edge) in canvas_edges(&root, canvas_source).iter().enumerate() {
+            let source_node_id = edge_endpoint(raw_edge, canvas_source, EdgeEnd::Source);
+            let target_node_id = edge_endpoint(raw_edge, canvas_source, EdgeEnd::Target);
             let (Some(source_node_id), Some(target_node_id)) = (source_node_id, target_node_id)
             else {
                 warnings.push("已跳过缺少端点的 Hook 连线。".to_owned());
@@ -350,7 +353,7 @@ impl HookCanvasDocument {
             };
             let id =
                 non_empty_string(raw_edge.get("id")).unwrap_or_else(|| format!("edge-{index:04}"));
-            let target_port_id = first_non_empty_string(raw_edge, &["toPortId", "targetHandle"]);
+            let target_port_id = edge_port(raw_edge, canvas_source, EdgeEnd::Target);
             session_links.push(HookCanvasSessionLink {
                 from_unit_id: source_node_id.clone(),
                 to_unit_id: target_node_id.clone(),
@@ -360,7 +363,7 @@ impl HookCanvasDocument {
             edges.push(HookCanvasEdge {
                 id,
                 source_node_id,
-                source_port_id: first_non_empty_string(raw_edge, &["fromPortId", "sourceHandle"]),
+                source_port_id: edge_port(raw_edge, canvas_source, EdgeEnd::Source),
                 source_point,
                 target_node_id,
                 target_port_id,
@@ -717,20 +720,66 @@ where
     }
 }
 
-fn canvas_nodes(root: &Value) -> &[Value] {
-    root.get("stickers")
+#[derive(Clone, Copy)]
+enum HookCanvasSource {
+    Session,
+    Workflow,
+}
+
+#[derive(Clone, Copy)]
+enum EdgeEnd {
+    Source,
+    Target,
+}
+
+fn hook_canvas_source(root: &Value) -> HookCanvasSource {
+    if root.get("stickers").is_some() || root.get("links").is_some() {
+        HookCanvasSource::Session
+    } else {
+        HookCanvasSource::Workflow
+    }
+}
+
+fn canvas_nodes(root: &Value, source: HookCanvasSource) -> &[Value] {
+    let key = match source {
+        HookCanvasSource::Session => "stickers",
+        HookCanvasSource::Workflow => "nodes",
+    };
+    root.get(key)
         .and_then(Value::as_array)
-        .or_else(|| root.get("nodes").and_then(Value::as_array))
         .map(Vec::as_slice)
         .unwrap_or(&[])
 }
 
-fn canvas_edges(root: &Value) -> &[Value] {
-    root.get("links")
+fn canvas_edges(root: &Value, source: HookCanvasSource) -> &[Value] {
+    let key = match source {
+        HookCanvasSource::Session => "links",
+        HookCanvasSource::Workflow => "edges",
+    };
+    root.get(key)
         .and_then(Value::as_array)
-        .or_else(|| root.get("edges").and_then(Value::as_array))
         .map(Vec::as_slice)
         .unwrap_or(&[])
+}
+
+fn edge_endpoint(raw_edge: &Value, source: HookCanvasSource, end: EdgeEnd) -> Option<String> {
+    let key = match (source, end) {
+        (HookCanvasSource::Session, EdgeEnd::Source) => "fromUnitId",
+        (HookCanvasSource::Session, EdgeEnd::Target) => "toUnitId",
+        (HookCanvasSource::Workflow, EdgeEnd::Source) => "source",
+        (HookCanvasSource::Workflow, EdgeEnd::Target) => "target",
+    };
+    first_non_empty_string(raw_edge, &[key])
+}
+
+fn edge_port(raw_edge: &Value, source: HookCanvasSource, end: EdgeEnd) -> Option<String> {
+    let key = match (source, end) {
+        (HookCanvasSource::Session, EdgeEnd::Source) => "fromPortId",
+        (HookCanvasSource::Session, EdgeEnd::Target) => "toPortId",
+        (HookCanvasSource::Workflow, EdgeEnd::Source) => "sourceHandle",
+        (HookCanvasSource::Workflow, EdgeEnd::Target) => "targetHandle",
+    };
+    first_non_empty_string(raw_edge, &[key])
 }
 
 fn node_data(node: &Value) -> Option<&Value> {
@@ -804,18 +853,28 @@ fn node_selected_result_index(node: &Value, params: &Value) -> Option<usize> {
         })
 }
 
-fn node_coordinate(node: &Value, key: &str) -> Option<f64> {
-    value_as_f64(node.get(key))
-        .or_else(|| value_as_f64(node_nested_value(node, "position", key)))
-        .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(key))))
+fn node_coordinate(node: &Value, key: &str, source: HookCanvasSource) -> Option<f64> {
+    match source {
+        HookCanvasSource::Session => value_as_f64(node.get(key))
+            .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(key)))),
+        HookCanvasSource::Workflow => value_as_f64(node_nested_value(node, "position", key)),
+    }
 }
 
-fn node_size(node: &Value, short_key: &str, long_key: &str) -> Option<f64> {
-    value_as_f64(node.get(short_key))
-        .or_else(|| value_as_f64(node.get(long_key)))
-        .or_else(|| value_as_f64(node_nested_value(node, "measured", long_key)))
-        .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(short_key))))
-        .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(long_key))))
+fn node_size(
+    node: &Value,
+    short_key: &str,
+    long_key: &str,
+    source: HookCanvasSource,
+) -> Option<f64> {
+    match source {
+        HookCanvasSource::Session => value_as_f64(node.get(short_key))
+            .or_else(|| value_as_f64(node.get(long_key)))
+            .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(short_key))))
+            .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(long_key)))),
+        HookCanvasSource::Workflow => value_as_f64(node_nested_value(node, "measured", long_key))
+            .or_else(|| value_as_f64(node.get(long_key))),
+    }
 }
 
 // Build the crop viewport for a minified sticker, mirroring Hook's
@@ -2681,6 +2740,63 @@ mod tests {
     }
 
     #[test]
+    fn session_shape_ignores_workflow_containers_and_endpoint_aliases() {
+        let root = test_root("hybrid-session");
+        let session = write_session(
+            &root,
+            r#"{
+              "stickers": [
+                {"id":"session-node","type":"sticker","x":4,"y":8,"w":320,"h":180}
+              ],
+              "nodes": [
+                {"id":"wire-node","type":"artNode","position":{"x":99,"y":99},"measured":{"width":1,"height":1}}
+              ],
+              "links": [
+                {"id":"alias","source":"session-node","target":"session-node","sourceHandle":"out","targetHandle":"in"}
+              ],
+              "edges": [
+                {"id":"wire","source":"wire-node","target":"wire-node"}
+              ]
+            }"#,
+        );
+        let bytes = fs::read(&session).expect("read hybrid session fixture");
+        let root_value = serde_json::from_slice(&bytes).expect("parse hybrid session fixture");
+        let document = HookCanvasDocument::from_serialized_root(&session, bytes, root_value, None);
+
+        assert_eq!(document.snapshot.nodes.len(), 1);
+        assert_eq!(document.snapshot.nodes[0].id, "session-node");
+        assert_eq!(document.snapshot.nodes[0].x, 4.0);
+        assert_eq!(document.snapshot.nodes[0].y, 8.0);
+        assert_eq!(document.snapshot.nodes[0].width, 320.0);
+        assert_eq!(document.snapshot.nodes[0].height, 180.0);
+        assert!(document.snapshot.edges.is_empty());
+    }
+
+    #[test]
+    fn workflow_shape_ignores_session_endpoint_aliases() {
+        let root = test_root("hybrid-workflow");
+        let session = write_session(
+            &root,
+            r#"{
+              "nodes": [
+                {"id":"wire-node","type":"artNode","position":{"x":12,"y":24},"measured":{"width":32,"height":48}}
+              ],
+              "edges": [
+                {"id":"alias","fromUnitId":"wire-node","toUnitId":"wire-node","fromPortId":"out","toPortId":"in"}
+              ]
+            }"#,
+        );
+        let bytes = fs::read(&session).expect("read hybrid workflow fixture");
+        let root_value = serde_json::from_slice(&bytes).expect("parse hybrid workflow fixture");
+        let document = HookCanvasDocument::from_serialized_root(&session, bytes, root_value, None);
+
+        assert_eq!(document.snapshot.nodes.len(), 1);
+        assert_eq!(document.snapshot.nodes[0].id, "wire-node");
+        assert_eq!(document.snapshot.nodes[0].x, 12.0);
+        assert_eq!(document.snapshot.edges.len(), 0);
+    }
+
+    #[test]
     fn retries_a_transient_partial_session_write() {
         let mut reads = VecDeque::from([
             b"{\"stickers\":[".to_vec(),
@@ -2696,8 +2812,9 @@ mod tests {
         .expect("session remains available");
 
         assert_eq!(waits, 1);
-        assert_eq!(canvas_nodes(&root).len(), 1);
-        assert_eq!(canvas_nodes(&root)[0]["id"], "ready");
+        let source = hook_canvas_source(&root);
+        assert_eq!(canvas_nodes(&root, source).len(), 1);
+        assert_eq!(canvas_nodes(&root, source)[0]["id"], "ready");
     }
 
     #[test]

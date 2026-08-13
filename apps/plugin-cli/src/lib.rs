@@ -277,6 +277,17 @@ fn validate_art_package(
         validate_surface_package(directory, surface, require_payload)?;
     }
     let (publisher, signature) = art_security_metadata(&manifest)?;
+    let expected_qualified = format!("{}/{}", publisher.id, id);
+    match manifest
+        .pointer("/metadata/art/qualifiedId")
+        .and_then(Value::as_str)
+    {
+        Some(declared) if declared == expected_qualified => {}
+        Some(declared) => {
+            bail!("metadata.art.qualifiedId `{declared}` does not match `{expected_qualified}`")
+        }
+        None => bail!("metadata.art.qualifiedId is required"),
+    }
     let trust =
         verify_package_signature(directory, Some(&publisher), signature.as_ref(), trust_store)?;
     reject_revoked_package(&trust)?;

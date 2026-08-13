@@ -519,17 +519,38 @@ pub enum ProtocolValidationError {
     UnsafeAuthoringPort(String),
 }
 
+pub fn is_windows_reserved_device_name(value: &str) -> bool {
+    let base = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .trim_end_matches(['.', ' '])
+        .to_ascii_uppercase();
+    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || base
+            .strip_prefix("COM")
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
+        || base
+            .strip_prefix("LPT")
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
+}
+
 pub fn is_safe_package_id(value: &str) -> bool {
-    let value = value.trim();
     !value.is_empty()
         && value.len() <= 128
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.contains("..")
+        && !is_windows_reserved_device_name(value)
 }
 
 pub fn is_safe_publisher_id(value: &str) -> bool {
-    is_safe_package_id(value) && !value.starts_with('.') && !value.ends_with('.')
+    is_safe_package_id(value)
 }
 
 pub fn validate_framework_manifest_contract(
@@ -690,6 +711,20 @@ mod tests {
             negotiate_framework_protocol(&manifest),
             Ok(FRAMEWORK_PROTOCOL_VERSION)
         );
+    }
+
+    #[test]
+    fn package_ids_reject_windows_aliases_and_traversal() {
+        assert!(is_safe_package_id("custom-image-search"));
+        assert!(is_safe_package_id("core.image.pixelate"));
+        assert!(!is_safe_package_id(" art"));
+        assert!(!is_safe_package_id("art."));
+        assert!(!is_safe_package_id(".art"));
+        assert!(!is_safe_package_id("a..b"));
+        assert!(!is_safe_package_id("CON"));
+        assert!(!is_safe_package_id("com1"));
+        assert!(!is_safe_package_id("../escape"));
+        assert!(!is_safe_publisher_id("Pub."));
     }
 
     #[test]

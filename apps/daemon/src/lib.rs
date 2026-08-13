@@ -2182,6 +2182,26 @@ struct HookCacheSettings {
     temp_cache_retention_days: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookCacheSettingsWire {
+    recycle_bin_max_entries: u32,
+    recycle_bin_retention_days: u32,
+    temp_cache_max_bytes: u64,
+    temp_cache_retention_days: u32,
+}
+
+impl From<&HookCacheSettings> for HookCacheSettingsWire {
+    fn from(settings: &HookCacheSettings) -> Self {
+        Self {
+            recycle_bin_max_entries: settings.recycle_bin_max_entries,
+            recycle_bin_retention_days: settings.recycle_bin_retention_days,
+            temp_cache_max_bytes: settings.temp_cache_max_bytes,
+            temp_cache_retention_days: settings.temp_cache_retention_days,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct McpSettings {
     request_timeout_seconds: u64,
@@ -2364,6 +2384,19 @@ impl Default for LoomSettings {
             shortcuts,
         }
     }
+}
+
+fn hook_settings_protocol_value(settings: &LoomSettings) -> serde_json::Value {
+    let mut value = serde_json::to_value(settings).unwrap_or_default();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("hook_cache");
+        object.insert(
+            "hookCache".to_owned(),
+            serde_json::to_value(HookCacheSettingsWire::from(&settings.hook_cache))
+                .unwrap_or_default(),
+        );
+    }
+    value
 }
 
 const CURRENT_APPEARANCE_VERSION: u32 = 1;
@@ -11941,7 +11974,7 @@ fn put_settings(
             method: HOOK_EVENT_CACHE_CONTROL.to_owned(),
             params: json!({
                 "action": "settings",
-                "settings": settings.hook_cache.clone(),
+                "settings": HookCacheSettingsWire::from(&settings.hook_cache),
             }),
         },
     );
@@ -12072,7 +12105,7 @@ fn broadcast_settings_updated(hook_bridge: &SharedHookBridgeRuntime, settings: &
         HookEvent {
             protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
             method: HOOK_EVENT_SETTINGS_UPDATED.to_owned(),
-            params: json!({ "settings": settings }),
+            params: json!({ "settings": hook_settings_protocol_value(settings) }),
         },
     );
 }
@@ -13194,14 +13227,17 @@ fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservati
         .copied()
         .unwrap_or(0);
     if request.generation < latest_generation {
-        return HookArtReservation::Reject(hook_protocol_failure_json(
-            &request.request_id,
-            "stale_generation",
-            format!(
-                "generation {} is older than the current generation {latest_generation}",
-                request.generation
-            ),
-        ));
+        let has_active = state.active_by_node.contains_key(&node_scope);
+        if has_active {
+            return HookArtReservation::Reject(hook_protocol_failure_json(
+                &request.request_id,
+                "stale_generation",
+                format!(
+                    "generation {} is older than the current generation {latest_generation}",
+                    request.generation
+                ),
+            ));
+        }
     }
     if let Some(previous_request_id) = state.active_by_node.get(&node_scope).cloned() {
         let previous_request_scope =
@@ -14287,7 +14323,7 @@ fn handle_hook_protocol_request(
         HookRequest::SettingsGet(request) => match settings.lock() {
             Ok(store) => hook_protocol_success(
                 &request.request_id,
-                serde_json::to_value(&store.settings).unwrap_or_default(),
+                hook_settings_protocol_value(&store.settings),
             ),
             Err(_) => hook_protocol_failure(
                 &request.request_id,
@@ -16531,6 +16567,34 @@ mod tests {
     }
 
     #[test]
+    fn hook_art_generation_resets_after_client_restart_when_node_is_idle() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state();
+        let first = hook_art_request("request:completed", "node:restart", 5);
+        match reserve_hook_art_request(&first) {
+            HookArtReservation::Execute(_) => {}
+            _ => panic!("completed request must execute"),
+        }
+        finish_hook_art_request(
+            &first.request_id,
+            &first.node_id,
+            first.generation,
+            first.device_id.as_deref(),
+            hook_art_request_fingerprint(&first),
+            "{}".to_owned(),
+        );
+
+        let restarted = hook_art_request("request:after-restart", "node:restart", 1);
+        assert!(matches!(
+            reserve_hook_art_request(&restarted),
+            HookArtReservation::Execute(_)
+        ));
+        clear_hook_canvas_runtime_state();
+    }
+
+    #[test]
     fn hook_art_request_coordination_is_scoped_by_device() {
         let _guard = HOOK_ART_REQUEST_TEST_LOCK
             .lock()
@@ -17401,6 +17465,7 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
+                "art": { "qualifiedId": format!("publisher.test/{id}") },
                 "packageSecurity": {
                     "version": version,
                     "publisher": { "id": "publisher.test", "name": "Publisher Test" }
@@ -17437,6 +17502,7 @@ nodes:
             "execution": { "type": "workflow", "workflowId": workflow_id },
             "metadata": {
                 "dependencies": { "framework": "workflow" },
+                "art": { "qualifiedId": format!("publisher.test/{id}") },
                 "packageSecurity": {
                     "version": "1.0.0",
                     "publisher": { "id": "publisher.test", "name": "Publisher Test" }
@@ -17474,6 +17540,7 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
+                "art": { "qualifiedId": format!("publisher.test/{id}") },
                 "packageSecurity": {
                     "version": version,
                     "publisher": { "id": "publisher.test", "name": "Publisher Test" }
@@ -17542,6 +17609,7 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
+                "art": { "qualifiedId": format!("publisher.test/{id}") },
                 "packageSecurity": {
                     "version": version,
                     "publisher": { "id": "publisher.test", "name": "Publisher Test" }
@@ -17623,6 +17691,7 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
+                "art": { "qualifiedId": format!("publisher.test/{id}") },
                 "packageSecurity": {
                     "version": version,
                     "publisher": { "id": "publisher.test", "name": "Publisher Test" }
@@ -21588,7 +21657,7 @@ def run(args):
         assert_eq!(settings_event["method"], HOOK_EVENT_CACHE_CONTROL);
         assert_eq!(settings_event["params"]["action"], "settings");
         assert_eq!(
-            settings_event["params"]["settings"]["recycle_bin_max_entries"],
+            settings_event["params"]["settings"]["recycleBinMaxEntries"],
             15
         );
 

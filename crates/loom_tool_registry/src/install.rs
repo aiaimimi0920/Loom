@@ -144,16 +144,8 @@ fn read_art_package_security(tool: &ToolDefinition) -> ArtPackageSecurityMetadat
         .unwrap_or_default()
 }
 
-/// Reject ids that aren't safe as a single directory name (mirrors
-/// `require_no_path_separator`).
 fn is_safe_art_id(id: &str) -> bool {
-    !id.is_empty()
-        && !id.contains('/')
-        && !id.contains('\\')
-        && !id.contains(':')
-        && id != "."
-        && id != ".."
-        && !id.contains("..")
+    loom_protocol::is_safe_package_id(id)
 }
 
 fn is_safe_art_reference(reference: &str) -> bool {
@@ -227,11 +219,66 @@ fn record_art_package_directory(
     }
 }
 
+fn inject_declared_art_qualified_id(tool: &mut ToolDefinition) -> Result<String, ArtInstallError> {
+    let publisher = tool.publisher_identity().ok_or_else(|| {
+        ArtInstallError::InvalidPackage("Art package publisher is required".to_owned())
+    })?;
+    let expected = format!("{}/{}", publisher.id, tool.id);
+    let root = tool.metadata.get_or_insert_with(|| serde_json::json!({}));
+    if !root.is_object() {
+        *root = serde_json::json!({});
+    }
+    let metadata = root
+        .as_object_mut()
+        .expect("Art metadata was normalized to an object");
+    let art = metadata
+        .entry("art".to_owned())
+        .or_insert_with(|| serde_json::json!({}));
+    if !art.is_object() {
+        *art = serde_json::json!({});
+    }
+    let art = art
+        .as_object_mut()
+        .expect("Art identity metadata was normalized to an object");
+    match art.get("qualifiedId").and_then(serde_json::Value::as_str) {
+        None => {
+            art.insert(
+                "qualifiedId".to_owned(),
+                serde_json::json!(expected.clone()),
+            );
+        }
+        Some(declared) if declared != expected => {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "metadata.art.qualifiedId `{declared}` does not match `{expected}`"
+            )));
+        }
+        Some(_) => {}
+    }
+    Ok(expected)
+}
+
+fn declared_art_qualified_id(tool: &ToolDefinition) -> Option<&str> {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("art"))
+        .and_then(|art| art.get("qualifiedId"))
+        .and_then(serde_json::Value::as_str)
+}
+
 fn qualified_art_id(tool: &ToolDefinition) -> Result<String, ArtInstallError> {
     let publisher = tool.publisher_identity().ok_or_else(|| {
         ArtInstallError::InvalidPackage("Art package publisher is required".to_owned())
     })?;
-    Ok(format!("{}/{}", publisher.id, tool.id))
+    let expected = format!("{}/{}", publisher.id, tool.id);
+    match declared_art_qualified_id(tool) {
+        None => Err(ArtInstallError::InvalidPackage(
+            "metadata.art.qualifiedId is required".to_owned(),
+        )),
+        Some(declared) if declared != expected => Err(ArtInstallError::InvalidPackage(format!(
+            "metadata.art.qualifiedId `{declared}` does not match `{expected}`"
+        ))),
+        Some(_) => Ok(expected),
+    }
 }
 
 fn art_root_for_tool(
@@ -2237,6 +2284,8 @@ pub fn build_authored_art_package_zip(
     files: &[(String, Vec<u8>)],
 ) -> Result<Vec<u8>, ArtInstallError> {
     use std::io::Write;
+    let mut tool = tool.clone();
+    inject_declared_art_qualified_id(&mut tool)?;
     tool.validate()
         .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
     let mut bytes = Vec::new();
@@ -2244,7 +2293,7 @@ pub fn build_authored_art_package_zip(
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
         let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
         writer.start_file(MANIFEST_NAME, options)?;
-        writer.write_all(&serde_json::to_vec_pretty(tool)?)?;
+        writer.write_all(&serde_json::to_vec_pretty(&tool)?)?;
         if let Some(runtime) = runtime {
             writer.start_file("art.runtime.json", options)?;
             writer.write_all(&serde_json::to_vec_pretty(runtime)?)?;
@@ -2330,6 +2379,11 @@ mod tests {
 
     fn build_zip(manifest: &str, extra: &[(&str, &[u8])]) -> Vec<u8> {
         let mut manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        let art_id = manifest
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let metadata = manifest
             .as_object_mut()
             .unwrap()
@@ -2344,6 +2398,18 @@ mod tests {
             .unwrap()
             .entry("publisher")
             .or_insert_with(|| serde_json::json!({ "id": "publisher.test" }));
+        let publisher_id = security
+            .get("publisher")
+            .and_then(|publisher| publisher.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("publisher.test")
+            .to_owned();
+        if !metadata.contains_key("art") {
+            metadata.insert(
+                "art".to_owned(),
+                serde_json::json!({ "qualifiedId": format!("{publisher_id}/{art_id}") }),
+            );
+        }
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
@@ -2378,6 +2444,7 @@ mod tests {
             "enabled": true,
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
+                "art": { "qualifiedId": format!("{publisher}/{id}") },
                 "packageSecurity": {
                     "version": version,
                     "publisher": { "id": publisher, "keyId": key.key_id.clone() },
@@ -2907,6 +2974,63 @@ mod tests {
         let zip = build_zip(manifest, &[]);
         let err = install_art_from_zip(&zip, &root, &framework, &registry).unwrap_err();
         assert!(matches!(err, ArtInstallError::InvalidArtId(_)));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rejects_windows_reserved_and_trailing_dot_art_ids() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        let registry = ToolRegistry::new(root.join("tools"));
+        for id in ["CON", "art.", "a..b"] {
+            let manifest = format!(
+                r#"{{"id":"{id}","name":"E","description":"d","enabled":true,
+            "execution":{{"type":"framework_art","framework":"process"}}}}"#
+            );
+            let zip = build_zip(&manifest, &[]);
+            let err = install_art_from_zip(&zip, &root, &framework, &registry).unwrap_err();
+            assert!(
+                matches!(err, ArtInstallError::InvalidArtId(_)),
+                "{id} should be rejected, got {err:?}"
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rejects_missing_or_mismatched_art_qualified_id() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "process");
+        let registry = ToolRegistry::new(root.join("tools"));
+
+        let missing = r#"{"id":"sample-art","name":"S","description":"d","enabled":true,
+            "execution":{"type":"framework_art","framework":"process"},
+            "metadata":{"packageSecurity":{"publisher":{"id":"publisher.test"}},"art":{}}}"#;
+        let missing_zip = build_zip(missing, &[]);
+        let missing_err =
+            install_art_from_zip(&missing_zip, &root, &framework, &registry).unwrap_err();
+        assert!(
+            matches!(
+                missing_err,
+                ArtInstallError::InvalidPackage(ref reason) if reason.contains("qualifiedId is required")
+            ),
+            "{missing_err:?}"
+        );
+
+        let mismatched = r#"{"id":"sample-art","name":"S","description":"d","enabled":true,
+            "execution":{"type":"framework_art","framework":"process"},
+            "metadata":{"packageSecurity":{"publisher":{"id":"publisher.test"}},"art":{"qualifiedId":"evil.pub/other-art"}}}"#;
+        let mismatched_zip = build_zip(mismatched, &[]);
+        let mismatched_err =
+            install_art_from_zip(&mismatched_zip, &root, &framework, &registry).unwrap_err();
+        assert!(
+            matches!(
+                mismatched_err,
+                ArtInstallError::InvalidPackage(ref reason) if reason.contains("does not match")
+            ),
+            "{mismatched_err:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

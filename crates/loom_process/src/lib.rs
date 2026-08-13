@@ -201,9 +201,47 @@ fn supervised_command(spec: &ProcessSpec) -> Command {
     if let Some(current_dir) = &spec.current_dir {
         command.current_dir(process_path(current_dir));
     }
-    command.envs(&spec.env);
+    apply_supervised_environment(&mut command, spec);
     configure_process_group(&mut command);
     command
+}
+
+fn apply_supervised_environment(command: &mut Command, spec: &ProcessSpec) {
+    command.env_clear();
+    for (key, value) in inherited_runtime_environment() {
+        command.env(key, value);
+    }
+    command.envs(&spec.env);
+}
+
+fn inherited_runtime_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    #[cfg(windows)]
+    const ALLOWED: &[&str] = &[
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "SYSTEMDRIVE",
+        "COMSPEC",
+        "TEMP",
+        "TMP",
+        "OS",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+    ];
+    #[cfg(not(windows))]
+    const ALLOWED: &[&str] = &[
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM", "TZ",
+        "SHELL",
+    ];
+    std::env::vars_os()
+        .filter(|(key, _)| {
+            let key = key.to_string_lossy();
+            ALLOWED
+                .iter()
+                .any(|allowed| key.eq_ignore_ascii_case(allowed))
+        })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -742,5 +780,38 @@ mod tests {
         toggler.join().expect("cancellation toggler");
         assert!(matches!(error, ProcessError::Cancelled { .. }));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn supervised_process_does_not_inherit_host_secrets() {
+        const SECRET: &str = "loom-process-should-not-leak";
+        let previous = std::env::var_os("LOOM_DAEMON_TOKEN");
+        std::env::set_var("LOOM_DAEMON_TOKEN", SECRET);
+        let result = std::panic::catch_unwind(|| {
+            let mut spec = if cfg!(windows) {
+                let mut spec = ProcessSpec::new("cmd.exe");
+                spec.args = vec!["/C".to_owned(), "echo %LOOM_DAEMON_TOKEN%".to_owned()];
+                spec
+            } else {
+                let mut spec = ProcessSpec::new("sh");
+                spec.args = vec![
+                    "-c".to_owned(),
+                    "printf '%s' \"$LOOM_DAEMON_TOKEN\"".to_owned(),
+                ];
+                spec
+            };
+            spec.limits.timeout = Duration::from_secs(5);
+            run_with_input(&spec, b"").expect("echo secret env")
+        });
+        match previous {
+            Some(value) => std::env::set_var("LOOM_DAEMON_TOKEN", value),
+            None => std::env::remove_var("LOOM_DAEMON_TOKEN"),
+        }
+        let output = result.expect("supervised secret probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains(SECRET),
+            "child inherited host secret: {stdout:?}"
+        );
     }
 }
