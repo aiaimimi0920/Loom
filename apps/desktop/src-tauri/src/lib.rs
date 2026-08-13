@@ -338,21 +338,8 @@ async fn wait_for_hook_cache_settings(settings: HookCachePreferences) -> Result<
     .await
 }
 
-fn hook_app_data_contains_user_state(dir: &Path) -> bool {
-    [
-        "session.json",
-        "history.json",
-        "tool-settings.json",
-        "app-settings.json",
-        "images",
-        "saved",
-    ]
-    .iter()
-    .any(|entry| dir.join(entry).exists())
-}
-
 fn hook_effective_app_data_dir() -> PathBuf {
-    let current = std::env::var_os("HOOK_APPDATA_DIR")
+    std::env::var_os("HOOK_APPDATA_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
@@ -361,18 +348,7 @@ fn hook_effective_app_data_dir() -> PathBuf {
                 .map(PathBuf::from)
                 .map(|root| root.join("com.yamiyu.hook"))
         })
-        .unwrap_or_else(|| std::env::temp_dir().join("com.yamiyu.hook"));
-    for identifier in ["io.github.aiaimimi0920.hook", "com.vmjcv.hook"] {
-        let legacy = current.with_file_name(identifier);
-        if legacy.exists()
-            && (!current.exists()
-                || (!hook_app_data_contains_user_state(&current)
-                    && hook_app_data_contains_user_state(&legacy)))
-        {
-            return legacy;
-        }
-    }
-    current
+        .unwrap_or_else(|| std::env::temp_dir().join("com.yamiyu.hook"))
 }
 
 fn hook_clipboard_cache_dir() -> PathBuf {
@@ -490,14 +466,14 @@ fn clear_hook_cache(kind: String) -> Result<HookCacheClearResult, String> {
         "recycleBin" => {
             http_post_json(
                 &configured_loom_daemon_url(),
-                "/v1/artloom-compat/hook/cache-control",
+                "/v1/hook-bridge/cache-control",
                 &serde_json::json!({ "action": "clearRecycleBin" }),
             )?;
         }
         "referenceLibrary" => {
             http_post_json(
                 &configured_loom_daemon_url(),
-                "/v1/artloom-compat/hook/cache-control",
+                "/v1/hook-bridge/cache-control",
                 &serde_json::json!({ "action": "clearReferenceLibrary" }),
             )?;
         }
@@ -558,18 +534,14 @@ pub struct LoomCacheClearResult {
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoomCachePreferences {
-    #[serde(alias = "art_cache_max_bytes")]
     pub art_cache_max_bytes: u64,
-    #[serde(alias = "art_cache_retention_days")]
     pub art_cache_retention_days: u32,
-    #[serde(alias = "framework_temp_retention_days")]
     pub framework_temp_retention_days: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoomGeneralRuntimeSettings {
-    #[serde(alias = "minimize_to_tray")]
     pub minimize_to_tray: bool,
 }
 
@@ -578,7 +550,7 @@ fn read_loom_persisted_general_settings() -> Option<LoomGeneralRuntimeSettings> 
         &fs::read(
             desktop_control_plane_root()
                 .join("settings")
-                .join("artloom-compat-settings.json"),
+                .join("settings.json"),
         )
         .ok()?,
     )
@@ -621,7 +593,7 @@ fn read_loom_persisted_cache_settings() -> Option<LoomCachePreferences> {
         &fs::read(
             desktop_control_plane_root()
                 .join("settings")
-                .join("artloom-compat-settings.json"),
+                .join("settings.json"),
         )
         .ok()?,
     )
@@ -1478,7 +1450,12 @@ fn read_daemon_snapshot(base_url: &str) -> Result<DaemonSnapshot, String> {
         read_optional_daemon_array(base_url, "/v1/mcp/servers", "servers", &mut degraded_errors);
     let tools = read_optional_daemon_array(base_url, "/v1/tools", "tools", &mut degraded_errors);
     let python_arts =
-        read_optional_daemon_array(base_url, "/v1/python-arts", "arts", &mut degraded_errors);
+        read_optional_daemon_array(
+            base_url,
+            "/v1/art-authoring/python/arts",
+            "arts",
+            &mut degraded_errors,
+        );
     let workflows =
         read_optional_daemon_array(base_url, "/v1/workflows", "workflows", &mut degraded_errors);
     let hook_bridge =
@@ -1557,8 +1534,6 @@ fn http_get_json(base_url: &str, path: &str) -> Result<Value, String> {
 fn daemon_get_timeout(path: &str) -> Duration {
     if path == "/v1/mcp/registry"
         || path.starts_with("/v1/mcp/registry?")
-        || path == "/v1/artloom-compat/mcp/registry"
-        || path.starts_with("/v1/artloom-compat/mcp/registry?")
     {
         LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
     } else {
@@ -2629,10 +2604,6 @@ mod tests {
             daemon_get_timeout("/v1/mcp/registry?limit=100&cursor=opaque"),
             LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
         );
-        assert_eq!(
-            daemon_get_timeout("/v1/artloom-compat/mcp/registry"),
-            LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
-        );
         assert_eq!(daemon_get_timeout("/health"), LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT);
         assert!(LOOM_MCP_REGISTRY_REQUEST_TIMEOUT > Duration::from_secs(40));
     }
@@ -2662,7 +2633,7 @@ mod tests {
         let settings_dir = root.join("settings");
         fs::create_dir_all(&settings_dir).expect("settings dir");
         fs::write(
-            settings_dir.join("artloom-compat-settings.json"),
+            settings_dir.join("settings.json"),
             br#"{"general":{"minimize_to_tray":false}}"#,
         )
         .expect("settings file");
@@ -2759,7 +2730,7 @@ mod tests {
             .expect("write framework temporary file");
         let settings_path = control_plane
             .join("settings")
-            .join("artloom-compat-settings.json");
+            .join("settings.json");
         fs::create_dir_all(settings_path.parent().expect("settings parent"))
             .expect("create settings directory");
         fs::write(
@@ -2869,7 +2840,7 @@ mod tests {
                 "/v1/capabilities" => (200, r#"{"capabilities":[]}"#),
                 "/v1/mcp/servers" => (200, r#"{"servers":[]}"#),
                 "/v1/tools" => (500, r#"{"error":{"code":"tool_registry_error"}}"#),
-                "/v1/python-arts" => (200, r#"{"arts":[]}"#),
+                "/v1/art-authoring/python/arts" => (200, r#"{"arts":[]}"#),
                 "/v1/workflows" => (200, r#"{"workflows":[]}"#),
                 "/v1/hook-bridge/status" => (200, r#"{"running":false}"#),
                 other => panic!("unexpected snapshot path: {other}"),

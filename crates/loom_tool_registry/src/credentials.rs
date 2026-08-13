@@ -76,7 +76,6 @@ struct StoredCredential {
     name: String,
     protected_value: String,
     protection: String,
-    #[serde(default)]
     value_type: CredentialValueType,
     #[serde(default)]
     scope: CredentialScope,
@@ -87,7 +86,6 @@ struct StoredCredential {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CredentialFile {
-    #[serde(default = "default_schema_version")]
     schema_version: u32,
     #[serde(default)]
     credentials: Vec<StoredCredential>,
@@ -100,10 +98,6 @@ impl Default for CredentialFile {
             credentials: Vec::new(),
         }
     }
-}
-
-const fn default_schema_version() -> u32 {
-    CREDENTIAL_STORE_SCHEMA_VERSION
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -952,16 +946,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_records_without_value_type_default_to_string() {
+    fn stored_records_require_the_current_schema_and_value_type() {
         let root = temp_root();
         fs::create_dir_all(&root).unwrap();
-        let (protected_value, protection) = protect_value(b"legacy-secret").unwrap();
+        let (protected_value, protection) = protect_value(b"secret").unwrap();
         fs::write(
             root.join(CREDENTIALS_FILE),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "credentials": [{
-                    "name": "legacy",
+                    "name": "missing-type",
                     "protectedValue": protected_value,
                     "protection": protection,
                     "scope": {}
@@ -971,20 +965,7 @@ mod tests {
         )
         .unwrap();
         let store = CredentialStore::new(&root);
-        assert_eq!(
-            store.summaries().unwrap()[0].value_type,
-            CredentialValueType::String
-        );
-        assert_eq!(
-            store
-                .global_values_for_bindings(&BTreeMap::from([(
-                    "value".to_owned(),
-                    "legacy".to_owned(),
-                )]))
-                .unwrap()["value"]
-                .value,
-            serde_json::json!("legacy-secret")
-        );
+        assert!(matches!(store.summaries(), Err(CredentialError::Json(_))));
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -32,8 +32,7 @@ Repository planning source:
 | Headless host | `apps/daemon` | adapt | Local daemon with health/status endpoints. |
 | CLI | `apps/cli` | adapt | Status, fixture listing, and sample workflow run commands. |
 | ArtLoom desktop window shape | `apps/desktop` | adapt | Thin Loom Tauri + React shell connects to current `loom-daemon`; old ArtLoom backend is not copied. |
-| ArtLoom workflow YAML | `crates/loom_workflow/src/artloom.rs` | adapt | Selected YAML subset converts to native Loom graph. |
-| ArtLoom smoke patterns | `examples/artloom`, `crates/loom_workflow/tests/artloom_conversion.rs` | adapt | Success and mixed-failure scenarios run without desktop UI or ArtHook. |
+| Loom<->Hook Art invocation | `crates/loom_protocol/src/hook.rs`, `protocol/schemas/hook-message.v1.schema.json` | replace | `loom.hook.v1` is the only supported bridge; old ArtLoom/AHRP routes and converters were retired in Phase 70. |
 
 ## Completed later parity work
 

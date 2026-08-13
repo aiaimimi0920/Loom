@@ -79,6 +79,7 @@
       "cache": "eager"
     },
     "mcp": {
+      "transport": "stdio",
       "serverId": "brave-search",
       "command": "npx",
       "args": [

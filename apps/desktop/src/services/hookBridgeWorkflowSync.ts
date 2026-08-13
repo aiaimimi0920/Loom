@@ -1,7 +1,6 @@
 import { createHookBridgeBrowserClient, type HookBridgeBrowserClient } from "./hookBridgeBrowserClient.ts";
 
 export const HOOK_LIVE_WORKFLOW_ID = "hook-live";
-const LEGACY_HOOK_LIVE_WORKFLOW_ID = "arthook-live";
 
 export interface HookBridgeWorkflowSyncOptions {
   client?: HookBridgeBrowserClient;
@@ -16,13 +15,12 @@ export interface HookBridgeWorkflowSyncHandle {
 }
 
 function isHookLiveWorkflowId(value: unknown): boolean {
-  return value === HOOK_LIVE_WORKFLOW_ID || value === LEGACY_HOOK_LIVE_WORKFLOW_ID;
+  return value === HOOK_LIVE_WORKFLOW_ID;
 }
 
 function workflowIdFromPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object") return undefined;
   if ("workflowId" in payload) return (payload as { workflowId?: unknown }).workflowId;
-  if ("workflow_id" in payload) return (payload as { workflow_id?: unknown }).workflow_id;
   return undefined;
 }
 
@@ -50,7 +48,7 @@ export function startHookBridgeWorkflowSync(
     }, debounceMs);
   };
 
-  const stopWorkflowUpdated = client.subscribe("art_loom/workflow_updated", (payload) => {
+  const stopWorkflowUpdated = client.subscribe("loom.hook.workflow.updated", (payload) => {
     const workflowId = workflowIdFromPayload(payload);
     if (workflowId !== undefined && !isHookLiveWorkflowId(workflowId)) {
       return;
@@ -58,7 +56,7 @@ export function startHookBridgeWorkflowSync(
     scheduleRefresh();
   });
 
-  const stopArtsUpdated = client.subscribe("art_loom/arts_updated", () => {
+  const stopArtsUpdated = client.subscribe("loom.hook.capabilities.updated", () => {
     scheduleRefresh();
   });
 

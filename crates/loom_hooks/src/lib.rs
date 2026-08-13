@@ -431,7 +431,7 @@ mod tests {
         let run_started = HookEvent::run_started(SessionId::new(), RunId::new());
         let run_payloads = dispatcher
             .dispatch(&run_started)
-            .expect("legacy enabled dispatcher handles all events");
+            .expect("enabled dispatcher handles all events");
         assert_eq!(run_payloads.len(), 2);
         assert!(run_payloads[0].payload.contains("\"kind\":\"run_started\""));
     }

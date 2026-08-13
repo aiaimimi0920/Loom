@@ -1,5 +1,10 @@
 # Phase 66: Image blend and compress workflow Art
 
+> Historical implementation record. The active architecture republishes both
+> child Arts through `process`; the parent remains a package-backed, optional
+> `workflow` Art. Old `script`, `cli_wrapper`, and AHRP names below are not
+> current runtime contracts.
+
 ## Status
 
 Complete.

@@ -1,5 +1,11 @@
 # Loom Image Blend And Compress Workflow Art Implementation Plan
 
+> Historical implementation plan. The implemented child Arts both use the
+> package-backed `process` framework, `workflow` is independently installed,
+> and Hook execution uses `loom.hook.v1`. References below to `cli_wrapper`,
+> `script`, AHRP, or `art/process` describe the old implementation baseline and
+> are superseded by Phase 70.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship and validate an installable `workflow` Art that blends two required images through `custom-image-blend-script`, compresses the blend through `custom-1770146354922`, and returns the compressed image with optional blend and quality parameters.
@@ -273,12 +279,12 @@ Create `resources/workflow-arts/image-blend-compress/workflow.yaml`:
 name: 图片融合并压缩
 nodes:
   - id: blend
-    uses: custom-image-blend-script
+    uses: neuro.official/custom-image-blend-script
     with:
       mix_ratio: 50
 
   - id: compress
-    uses: custom-1770146354922
+    uses: neuro.official/custom-1770146354922
     needs:
       - blend
     with:
@@ -386,8 +392,8 @@ Create `resources/workflow-arts/image-blend-compress/manifest.json`:
     "dependencies": {
       "framework": "workflow",
       "arts": [
-        "custom-image-blend-script",
-        "custom-1770146354922"
+        "neuro.official/custom-image-blend-script",
+        "neuro.official/custom-1770146354922"
       ]
     },
     "artloomCompat": {

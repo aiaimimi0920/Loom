@@ -1,5 +1,8 @@
 # Phase 69: Distributed Art Surface phase-one closure
 
+> Historical release record. The clean R9/R9 pair below is the immutable
+> Phase 69 baseline, not the current Phase 70 Loom<->Hook Art protocol release.
+
 ## Status
 
 Phase one is complete. Hook and Loom were committed independently, rebuilt from

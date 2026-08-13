@@ -374,6 +374,62 @@ function Receive-LoomHookBridgeWebSocketJson {
     return $builder.ToString() | ConvertFrom-Json
 }
 
+function Receive-LoomHookResponse {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Client,
+        [string]$RequestId
+    )
+
+    for ($attempt = 0; $attempt -lt 64; $attempt++) {
+        $message = Receive-LoomHookBridgeWebSocketJson -Client $Client
+        if ([string]$message.protocolVersion -ne "loom.hook.v1") {
+            continue
+        }
+        $requestIdProperty = $message.PSObject.Properties["requestId"]
+        $statusProperty = $message.PSObject.Properties["status"]
+        if (
+            $null -ne $requestIdProperty -and
+            $null -ne $statusProperty -and
+            [string]$requestIdProperty.Value -eq $RequestId -and
+            -not [string]::IsNullOrWhiteSpace([string]$statusProperty.Value)
+        ) {
+            return $message
+        }
+    }
+    throw "Loom Hook did not return a terminal response for requestId $RequestId."
+}
+
+function Invoke-LoomHookArtExecution {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Client,
+        [string]$RequestId,
+        [string]$NodeId,
+        [string]$ArtId,
+        [hashtable]$Inputs,
+        [hashtable]$Parameters
+    )
+
+    Send-LoomHookBridgeWebSocketJson -Client $Client -Json (@{
+        method = "loom.hook.art.execute"
+        params = @{
+            protocolVersion = "loom.hook.v1"
+            requestId = $RequestId
+            nodeId = $NodeId
+            artId = $ArtId
+            generation = 1
+            deviceId = "device:release-smoke"
+            inputs = $Inputs
+            parameters = $Parameters
+            disabledParameters = @()
+        }
+    } | ConvertTo-Json -Depth 30 -Compress)
+    $response = Receive-LoomHookResponse -Client $Client -RequestId $RequestId
+    if ([string]$response.status -ne "succeeded") {
+        throw "Loom Hook Art execution failed for ${ArtId}: $($response | ConvertTo-Json -Depth 30 -Compress)"
+    }
+    return $response
+}
+
 function Close-LoomHookBridgeWebSocket {
     param([System.Net.WebSockets.ClientWebSocket]$Client)
 
@@ -775,14 +831,17 @@ $cliManifest = @{
     enabled = $true
     execution = @{
         type = "framework_art"
-        framework = "process"
+        framework = "neuro.official/process"
     }
+    inputs = @(@{ name = "input"; label = "Input"; type = "image"; execution_type = "image_buffer" })
+    outputs = @(@{ name = "output"; label = "Output"; type = "image"; execution_type = "image_buffer" })
     metadata = @{
-        packageSecurity = @{ version = "1.0.0" }
-        dependencies = @{ framework = "process" }
+        packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
+        art = @{ qualifiedId = "neuro.official/store-cli-art" }
+        dependencies = @{ framework = "neuro.official/process" }
     }
 }
-New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cli-art.zip") -TextFiles @{
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cli-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $cliManifest)
     "art.runtime.json" = (ConvertTo-NormalizedJson $processRuntimeManifest)
     "runtime/main.ps1" = $processImageRuntime
@@ -795,14 +854,17 @@ $scriptManifest = @{
     enabled = $true
     execution = @{
         type = "framework_art"
-        framework = "process"
+        framework = "neuro.official/process"
     }
+    inputs = @(@{ name = "input"; label = "Input"; type = "image"; execution_type = "image_buffer" })
+    outputs = @(@{ name = "output"; label = "Output"; type = "image"; execution_type = "image_buffer" })
     metadata = @{
-        packageSecurity = @{ version = "1.0.0" }
-        dependencies = @{ framework = "process" }
+        packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
+        art = @{ qualifiedId = "neuro.official/store-script-art" }
+        dependencies = @{ framework = "neuro.official/process" }
     }
 }
-New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-script-art.zip") -TextFiles @{
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-script-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $scriptManifest)
     "art.runtime.json" = (ConvertTo-NormalizedJson $processRuntimeManifest)
     "runtime/main.ps1" = $processImageRuntime
@@ -818,9 +880,15 @@ $cloudManifest = @{
         endpoint = "http://127.0.0.1:$cloudPort/image"
         method = "POST"
     }
-    metadata = @{ packageSecurity = @{ version = "1.0.0" } }
+    inputs = @(@{ name = "input"; label = "Input"; type = "image"; execution_type = "image_buffer" })
+    outputs = @(@{ name = "output"; label = "Output"; type = "image"; execution_type = "image_buffer" })
+    metadata = @{
+        packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
+        art = @{ qualifiedId = "neuro.official/store-cloud-art" }
+        dependencies = @{ framework = "neuro.official/cloud_api" }
+    }
 }
-New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cloud-art.zip") -TextFiles @{
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cloud-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $cloudManifest)
 }
 
@@ -856,7 +924,7 @@ $pythonManifest = @{
     enabled = $true
     execution = @{
         type = "framework_art"
-        framework = "process"
+        framework = "neuro.official/process"
     }
     params = @(
         @{
@@ -867,11 +935,12 @@ $pythonManifest = @{
         }
     )
     metadata = @{
-        packageSecurity = @{ version = "1.0.0" }
-        dependencies = @{ framework = "process" }
+        packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
+        art = @{ qualifiedId = "neuro.official/store-python-art" }
+        dependencies = @{ framework = "neuro.official/process" }
     }
 }
-New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-python-art.zip") -TextFiles @{
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-python-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $pythonManifest)
     "art.runtime.json" = (ConvertTo-NormalizedJson $pythonRuntimeManifest)
     "runtime/main.py" = $pythonMain
@@ -900,9 +969,13 @@ $mcpManifest = @{
         @{ id = "count"; default = 2 },
         @{ id = "result_index"; default = 0 }
     )
-    metadata = @{ packageSecurity = @{ version = "1.0.0" } }
+    metadata = @{
+        packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
+        art = @{ qualifiedId = "neuro.official/store-mcp-art" }
+        dependencies = @{ framework = "neuro.official/mcp" }
+    }
 }
-New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art.zip") -TextFiles @{
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $mcpManifest)
 }
 
@@ -910,7 +983,7 @@ $workflowYaml = @"
 name: Store Script Workflow
 nodes:
   - id: image
-    uses: store-script-art
+    uses: neuro.official/store-script-art
 "@
 $workflowManifest = @{
     id = "store-workflow-art"
@@ -921,12 +994,15 @@ $workflowManifest = @{
         type = "workflow"
         workflowId = "store-script-workflow"
     }
+    inputs = @(@{ name = "input"; label = "Input"; type = "image"; execution_type = "image_buffer" })
+    outputs = @(@{ name = "output"; label = "Output"; type = "image"; execution_type = "image_buffer" })
     metadata = @{
-        packageSecurity = @{ version = "1.0.0" }
-        dependencies = @{ framework = "workflow" }
+        packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
+        art = @{ qualifiedId = "neuro.official/store-workflow-art" }
+        dependencies = @{ framework = "neuro.official/workflow" }
     }
 }
-New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-workflow-art.zip") -TextFiles @{
+New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-workflow-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $workflowManifest)
     "workflow.yaml" = $workflowYaml
 }
@@ -1005,6 +1081,7 @@ try {
     $savedServer = Invoke-JsonPut -Uri "$baseUrl/v1/mcp/servers/store-fixture" -Body @{
         id = "store-fixture"
         name = "Store Fixture MCP"
+        transport = "stdio"
         command = $fixturePythonCommand
         args = @($fixturePythonArgsPrefix + @($mcpScriptPath, $mcpEvidencePath, "http://127.0.0.1:$cloudPort/raw-image.png", "http://127.0.0.1:$cloudPort/raw-image-alt.png"))
         env = @{}
@@ -1068,53 +1145,54 @@ try {
         $subscriber = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
         Send-LoomHookBridgeWebSocketJson `
             -Client $subscriber `
-            -Json '{"method":"subscribe","params":{"channels":["art_hook"]}}'
+            -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:release-framework-smoke","events":["loom.hook.workflow.instantiated","loom.hook.workflow.updated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.preview","loom.hook.art.result","loom.hook.art.failure"]}}'
         $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "success" ([string]$subscribed.type) "Hook Bridge subscribe response type mismatch."
-        Assert-Equal $true ([bool]$subscribed.data.subscribed) "Hook Bridge subscribe flag mismatch."
+        Assert-Equal "loom.hook.v1" ([string]$subscribed.protocolVersion) "Hook Bridge subscribe protocol mismatch."
+        Assert-Equal "succeeded" ([string]$subscribed.status) "Hook Bridge subscribe status mismatch."
 
         $nodes = @(
-            @{ id = "node-cli"; type = "artNode"; data = @{ artId = "store-cli-art"; label = "Store CLI Art" } },
-            @{ id = "node-script"; type = "artNode"; data = @{ artId = "store-script-art"; label = "Store Script Art" } },
-            @{ id = "node-cloud"; type = "artNode"; data = @{ artId = "store-cloud-art"; label = "Store Cloud Art" } },
-            @{ id = "node-python"; type = "artNode"; data = @{ artId = "store-python-art"; label = "Store Python Art" } },
-            @{ id = "node-mcp"; type = "artNode"; data = @{ artId = "store-mcp-art"; label = "Store MCP Art" } },
-            @{ id = "node-workflow"; type = "artNode"; data = @{ artId = "store-workflow-art"; label = "Store Workflow Art" } }
+            @{ id = "node-cli"; type = "artNode"; data = @{ artId = "neuro.official/store-cli-art"; label = "Store CLI Art" } },
+            @{ id = "node-script"; type = "artNode"; data = @{ artId = "neuro.official/store-script-art"; label = "Store Script Art" } },
+            @{ id = "node-cloud"; type = "artNode"; data = @{ artId = "neuro.official/store-cloud-art"; label = "Store Cloud Art" } },
+            @{ id = "node-python"; type = "artNode"; data = @{ artId = "neuro.official/store-python-art"; label = "Store Python Art" } },
+            @{ id = "node-mcp"; type = "artNode"; data = @{ artId = "neuro.official/store-mcp-art"; label = "Store MCP Art" } },
+            @{ id = "node-workflow"; type = "artNode"; data = @{ artId = "neuro.official/store-workflow-art"; label = "Store Workflow Art" } }
         )
-        $instantiated = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/instantiate-workflow" -Body @{
+        $instantiated = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/workflows/instantiate" -Body @{
             nodes = $nodes
             edges = @()
             mode = "reference"
             workflowId = "store-framework-smoke"
         }
-        Assert-Equal "instantiate_workflow" ([string]$instantiated.compatCommand) "Instantiate workflow compat command mismatch."
-        Assert-Equal "success" ([string]$instantiated.type) "Instantiate workflow response type mismatch."
+        Assert-Equal "loom.hook.v1" ([string]$instantiated.protocolVersion) "Instantiate workflow protocol mismatch."
+        Assert-Equal "succeeded" ([string]$instantiated.status) "Instantiate workflow response status mismatch."
 
         $broadcast = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "art_hook/instantiate" ([string]$broadcast.method) "Instantiate workflow broadcast method mismatch."
+        Assert-Equal "loom.hook.workflow.instantiated" ([string]$broadcast.method) "Instantiate workflow broadcast method mismatch."
         Assert-Equal 6 (@($broadcast.params.nodes).Count) "Hook broadcast node count mismatch."
         $summary.instantiateWorkflow = @{
-            compatCommand = [string]$instantiated.compatCommand
-            workflowId = [string]$broadcast.params.workflow_id
+            protocolVersion = [string]$instantiated.protocolVersion
+            workflowId = [string]$broadcast.params.workflowId
             nodeCount = @($broadcast.params.nodes).Count
         }
 
         Send-LoomHookBridgeWebSocketJson `
             -Client $subscriber `
             -Json (@{
-                method = "art_loom/overwrite_workflow"
+                method = "loom.hook.workflow.sync"
                 params = @{
-                    workflow_id = "hook-live"
+                    requestId = "workflow-sync:release-framework-smoke"
+                    workflowId = "hook-live"
                     snapshot = @{
                         name = "Hook Live"
                         nodes = @(
                             @{
                                 id = "node-mcp"
-                                type = "art"
+                                type = "artNode"
                                 position = @{ x = 160; y = 40 }
                                 measured = @{ width = 96; height = 96 }
                                 data = @{
-                                    artId = "store-mcp-art"
+                                    artId = "neuro.official/store-mcp-art"
                                     label = "Store MCP Art"
                                     params = @{
                                         query = "smoke mcp image search"
@@ -1130,99 +1208,61 @@ try {
                 }
             } | ConvertTo-Json -Depth 20 -Compress)
         $overwritten = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "success" ([string]$overwritten.type) "Hook live overwrite response type mismatch."
+        Assert-Equal "succeeded" ([string]$overwritten.status) "Hook live workflow sync response status mismatch."
         $summary.liveWorkflowOverwrite = @{
             workflowId = "hook-live"
             nodeCount = 1
         }
 
-        $executeResults = [ordered]@{}
-        $executeResults["store-cli-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "node-cli"
-            artId = "store-cli-art"
-            inputBase64 = $imageData
-            params = @{}
-        }
-        $executeResults["store-script-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "node-script"
-            artId = "store-script-art"
-            inputBase64 = $imageData
-            params = @{}
-        }
-        $executeResults["store-cloud-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "node-cloud"
-            artId = "store-cloud-art"
-            inputBase64 = $imageData
-            params = @{}
-        }
-        $executeResults["store-python-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "node-python"
-            artId = "store-python-art"
-            params = @{ text = "smoke python art" }
-        }
-        $executeResults["store-mcp-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "node-mcp"
-            artId = "store-mcp-art"
-            params = @{
-                query = "smoke mcp image search"
-                count = 2
-                result_index = 1
-                safesearch = "off"
-                spellcheck = $true
+        $imageInput = @{
+            input = @{
+                kind = "inline_resource"
+                mime = "image/png"
+                dataBase64 = $imageData.Split(",", 2)[1]
             }
         }
-        $executeResults["store-workflow-art"] = Invoke-JsonPost -Uri "$baseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "node-workflow"
-            artId = "store-workflow-art"
-            inputBase64 = $imageData
-            params = @{}
+        $executeResults = [ordered]@{}
+        $executeResults["store-cli-art"] = Invoke-LoomHookArtExecution -Client $subscriber -RequestId "execute:store-cli-art" -NodeId "node-cli" -ArtId "store-cli-art" -Inputs $imageInput -Parameters @{}
+        $executeResults["store-script-art"] = Invoke-LoomHookArtExecution -Client $subscriber -RequestId "execute:store-script-art" -NodeId "node-script" -ArtId "store-script-art" -Inputs $imageInput -Parameters @{}
+        $executeResults["store-cloud-art"] = Invoke-LoomHookArtExecution -Client $subscriber -RequestId "execute:store-cloud-art" -NodeId "node-cloud" -ArtId "store-cloud-art" -Inputs $imageInput -Parameters @{}
+        $executeResults["store-python-art"] = Invoke-LoomHookArtExecution -Client $subscriber -RequestId "execute:store-python-art" -NodeId "node-python" -ArtId "store-python-art" -Inputs @{} -Parameters @{ text = "smoke python art" }
+        $executeResults["store-mcp-art"] = Invoke-LoomHookArtExecution -Client $subscriber -RequestId "execute:store-mcp-art" -NodeId "node-mcp" -ArtId "store-mcp-art" -Inputs @{} -Parameters @{
+            query = "smoke mcp image search"
+            count = 2
+            result_index = 1
+            safesearch = "off"
+            spellcheck = $true
         }
+        $executeResults["store-workflow-art"] = Invoke-LoomHookArtExecution -Client $subscriber -RequestId "execute:store-workflow-art" -NodeId "node-workflow" -ArtId "store-workflow-art" -Inputs $imageInput -Parameters @{}
         $summary.executeResults = $executeResults
 
         foreach ($imageArtId in @("store-cli-art", "store-script-art", "store-cloud-art", "store-workflow-art")) {
             $result = $executeResults[$imageArtId]
-            Assert-Equal "success" ([string]$result.type) "$imageArtId execute-art-node response type mismatch."
-            Assert-Equal $true ([bool]$result.data.success) "$imageArtId execute-art-node success mismatch."
-            Assert-Equal $imageData ([string]$result.data.output_base64) "$imageArtId execute-art-node image output mismatch."
+            $output = @($result.data.outputs.PSObject.Properties | ForEach-Object { $_.Value })[0]
+            Assert-True (@("shared_memory", "inline_resource") -contains [string]$output.kind) "$imageArtId formal output kind mismatch: $([string]$output.kind)"
         }
-        Assert-Equal "success" ([string]$executeResults["store-mcp-art"].type) "store-mcp-art execute-art-node response type mismatch."
-        Assert-Equal $true ([bool]$executeResults["store-mcp-art"].data.success) "store-mcp-art execute-art-node success mismatch."
-        Assert-Equal $secondImageData ([string]$executeResults["store-mcp-art"].data.output_base64) "store-mcp-art execute-art-node image output mismatch."
-        Assert-Equal "success" ([string]$executeResults["store-python-art"].type) "store-python-art execute-art-node response type mismatch."
-        Assert-Equal $true ([bool]$executeResults["store-python-art"].data.success) "store-python-art execute-art-node success mismatch."
-        Assert-Equal "python art saw smoke python art" ([string]$executeResults["store-python-art"].data.output_text) "store-python-art output text mismatch."
-
-        $canvasSnapshotBeforeClear = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/canvas"
-        $mcpNodeBeforeClear = @($canvasSnapshotBeforeClear.nodes | Where-Object { [string]$_.id -eq "node-mcp" })[0]
-        Assert-True ($null -ne $mcpNodeBeforeClear) "Hook canvas must include node-mcp."
-        Assert-Equal 1 ([int]$mcpNodeBeforeClear.selectedResultIndex) "node-mcp selected result mismatch before runtime clear."
-        Assert-Equal 2 (@($mcpNodeBeforeClear.resultCandidates).Count) "node-mcp result candidate count mismatch before runtime clear."
-        Assert-Equal $true ([bool]$mcpNodeBeforeClear.previewAvailable) "node-mcp preview must be available before runtime clear."
+        $mcpOutput = @($executeResults["store-mcp-art"].data.outputs.PSObject.Properties | ForEach-Object { $_.Value })[0]
+        Assert-True (@("shared_memory", "inline_resource") -contains [string]$mcpOutput.kind) "store-mcp-art formal output kind mismatch: $([string]$mcpOutput.kind)"
+        $mcpCandidates = $executeResults["store-mcp-art"].data.candidates
+        Assert-Equal "image.candidates" ([string]$mcpCandidates.kind) "store-mcp-art candidate kind mismatch."
+        Assert-Equal 2 (@($mcpCandidates.items).Count) "store-mcp-art candidate count mismatch."
+        Assert-Equal 1 ([int]$mcpCandidates.selectedIndex) "store-mcp-art selected candidate mismatch."
+        $pythonOutput = @($executeResults["store-python-art"].data.outputs.PSObject.Properties | ForEach-Object { $_.Value })[0]
+        Assert-Equal "value" ([string]$pythonOutput.kind) "store-python-art formal output kind mismatch."
+        Assert-Contains "python art saw smoke python art" ($pythonOutput.value | ConvertTo-Json -Depth 20 -Compress) "store-python-art output text mismatch."
 
         $stopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
         $summary.hookBridgeStopped = $stopped
         $hookBridgeRunning = $false
 
-        $canvasSnapshotAfterClear = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/canvas"
-        $mcpNodeAfterClear = @($canvasSnapshotAfterClear.nodes | Where-Object { [string]$_.id -eq "node-mcp" })[0]
-        Assert-True ($null -ne $mcpNodeAfterClear) "Hook canvas must still include node-mcp after runtime clear."
-        Assert-Equal 1 ([int]$mcpNodeAfterClear.selectedResultIndex) "node-mcp selected result mismatch after runtime clear."
-        Assert-Equal 2 (@($mcpNodeAfterClear.resultCandidates).Count) "node-mcp result candidate count mismatch after runtime clear."
-        Assert-Equal 1 ([int]$mcpNodeAfterClear.params.result_index) "node-mcp persisted result_index mismatch after runtime clear."
-        Assert-Equal $true ([bool]$mcpNodeAfterClear.previewAvailable) "node-mcp preview must still be available after runtime clear."
-        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$mcpNodeAfterClear.previewUrl)) "node-mcp preview URL missing after runtime clear."
-
-        $previewBytes = Invoke-BinaryGetBytes -Uri "$baseUrl$([string]$mcpNodeAfterClear.previewUrl)"
-        $expectedPreviewBytes = [Convert]::FromBase64String($secondImageData.Split(",", 2)[1])
-        Assert-Equal ($expectedPreviewBytes.Length) ($previewBytes.Length) "node-mcp preview byte length mismatch after runtime clear."
-        Assert-Equal ([Convert]::ToBase64String($expectedPreviewBytes)) ([Convert]::ToBase64String($previewBytes)) "node-mcp preview bytes mismatch after runtime clear."
-        $summary.mcpSelectionPersistence = [ordered]@{
-            selectedResultIndexBeforeClear = [int]$mcpNodeBeforeClear.selectedResultIndex
-            selectedResultIndexAfterClear = [int]$mcpNodeAfterClear.selectedResultIndex
-            candidateCountBeforeClear = @($mcpNodeBeforeClear.resultCandidates).Count
-            candidateCountAfterClear = @($mcpNodeAfterClear.resultCandidates).Count
-            previewAvailableAfterClear = [bool]$mcpNodeAfterClear.previewAvailable
-            previewBytesMatchedSelectedResult = $true
+        $summary.formalHookExecutions = @{
+            count = $executeResults.Count
+            protocolVersion = "loom.hook.v1"
+            mcpOutputKind = [string]$mcpOutput.kind
+            mcpCandidateKind = [string]$mcpCandidates.kind
+            mcpCandidateCount = @($mcpCandidates.items).Count
+            mcpSelectedIndex = [int]$mcpCandidates.selectedIndex
+            pythonOutputKind = [string]$pythonOutput.kind
         }
     } finally {
         if ($null -ne $subscriber) {

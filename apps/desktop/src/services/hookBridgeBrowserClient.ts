@@ -22,7 +22,7 @@ interface HookBridgeBrowserClientOptions {
 }
 
 export interface HookBridgeBrowserClient {
-  subscribe(channel: string, handler: HookBridgeHandler): () => void;
+  subscribe(event: string, handler: HookBridgeHandler): () => void;
   dispose(): void;
 }
 
@@ -62,13 +62,14 @@ export function createHookBridgeBrowserClient(
 
   const sendSubscription = () => {
     if (!socket || socket.readyState !== SOCKET_OPEN) return;
-    const channels = Array.from(handlers.keys());
-    if (channels.length === 0) return;
+    const events = Array.from(handlers.keys());
+    if (events.length === 0) return;
     socket.send(
       JSON.stringify({
-        method: "subscribe",
+        method: "loom.hook.subscribe",
         params: {
-          channels,
+          requestId: `subscribe:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+          events,
         },
       }),
     );

@@ -1,5 +1,10 @@
 # Final ArtLoom Parity Matrix
 
+> Historical parity audit only. Phase 70 removed the production compatibility
+> routes, method aliases, converter, and AHRP execution path catalogued here.
+> The current Loom<->Hook contracts are `loom.hook.v1` and `loom.surface.v1`;
+> this file must not be used as current API documentation.
+
 Date: 2026-06-18
 
 ## Executive conclusion

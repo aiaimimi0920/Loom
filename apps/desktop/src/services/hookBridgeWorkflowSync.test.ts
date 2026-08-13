@@ -64,8 +64,8 @@ test("subscribes only to Loom update channels and leaves Hook instantiation deli
   const handle = createSync(client, []);
 
   assert.deepEqual(Array.from(client.handlers.keys()).sort(), [
-    "art_loom/arts_updated",
-    "art_loom/workflow_updated",
+    "loom.hook.capabilities.updated",
+    "loom.hook.workflow.updated",
   ]);
 
   handle.dispose();
@@ -77,9 +77,9 @@ test("workflow and Art updates refresh without forced navigation", async () => {
   const events: string[] = [];
   const handle = createSync(client, events);
 
-  client.emit("art_loom/workflow_updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
+  client.emit("loom.hook.workflow.updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
   await waitForDebounce();
-  client.emit("art_loom/arts_updated", {});
+  client.emit("loom.hook.capabilities.updated", {});
   await waitForDebounce();
 
   assert.deepEqual(events, ["refresh", "invalidate", "refresh", "invalidate"]);
@@ -91,8 +91,8 @@ test("events inside one debounce window produce one refresh and invalidation", a
   const events: string[] = [];
   const handle = createSync(client, events);
 
-  client.emit("art_loom/arts_updated", {});
-  client.emit("art_loom/workflow_updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
+  client.emit("loom.hook.capabilities.updated", {});
+  client.emit("loom.hook.workflow.updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
   await waitForDebounce();
 
   assert.deepEqual(events, ["refresh", "invalidate"]);
@@ -104,7 +104,7 @@ test("unrelated workflow updates do nothing", async () => {
   const events: string[] = [];
   const handle = createSync(client, events);
 
-  client.emit("art_loom/workflow_updated", { workflowId: "other-workflow" });
+  client.emit("loom.hook.workflow.updated", { workflowId: "other-workflow" });
   await waitForDebounce();
 
   assert.deepEqual(events, []);
@@ -116,7 +116,7 @@ test("dispose cancels pending debounce work", async () => {
   const events: string[] = [];
   const handle = createSync(client, events);
 
-  client.emit("art_loom/arts_updated", {});
+  client.emit("loom.hook.capabilities.updated", {});
   handle.dispose();
   await waitForDebounce();
 

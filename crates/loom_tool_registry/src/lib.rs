@@ -394,7 +394,6 @@ fn validate_surface_entry_path(tool_id: &str, entry: &str) -> ToolRegistryResult
 pub enum ToolExecution {
     #[serde(rename_all = "camelCase")]
     CloudApi {
-        #[serde(alias = "url")]
         endpoint: String,
         method: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -606,9 +605,7 @@ impl ToolRegistry {
         match serde_json::from_str(&content) {
             Ok(tools) => Ok(tools),
             Err(error) => {
-                let Some(tools) = recover_tools_with_trailing_delimiters(&content)
-                    .or_else(|| recover_tools_without_obsolete_executions(&content))
-                else {
+                let Some(tools) = recover_tools_with_trailing_delimiters(&content) else {
                     return Err(ToolRegistryError::Json(error));
                 };
                 self.write_corruption_backup(&content)?;
@@ -686,32 +683,6 @@ fn recover_tools_with_trailing_delimiters(content: &str) -> Option<Vec<ToolDefin
         return None;
     }
     Some(tools)
-}
-
-pub(crate) fn is_obsolete_execution_type(execution_type: &str) -> bool {
-    matches!(execution_type, "cli_wrapper" | "python_art" | "script")
-}
-
-fn obsolete_execution_type(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get("execution")?
-        .get("type")?
-        .as_str()
-        .filter(|execution_type| is_obsolete_execution_type(execution_type))
-}
-
-fn recover_tools_without_obsolete_executions(content: &str) -> Option<Vec<ToolDefinition>> {
-    let entries = serde_json::from_str::<Vec<serde_json::Value>>(content).ok()?;
-    let mut recovered = Vec::with_capacity(entries.len());
-    let mut removed_obsolete = false;
-    for entry in entries {
-        match serde_json::from_value::<ToolDefinition>(entry.clone()) {
-            Ok(tool) => recovered.push(tool),
-            Err(_) if obsolete_execution_type(&entry).is_some() => removed_obsolete = true,
-            Err(_) => return None,
-        }
-    }
-    removed_obsolete.then_some(recovered)
 }
 
 #[cfg(not(windows))]
@@ -928,7 +899,7 @@ fn find_mcp_tool_input_schema<'a>(
         .and_then(serde_json::Value::as_array)?
         .iter()
         .find(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some(tool_name))
-        .and_then(|tool| tool.get("inputSchema").or_else(|| tool.get("input_schema")))
+        .and_then(|tool| tool.get("inputSchema"))
 }
 
 fn normalize_mcp_call_arguments(
@@ -944,22 +915,15 @@ fn normalize_mcp_call_arguments(
     let mut normalized = serde_json::Map::with_capacity(argument_object.len());
     for (key, value) in argument_object {
         let schema = property_schemas.and_then(|properties| properties.get(key));
-        normalized.insert(
-            key.clone(),
-            normalize_mcp_argument_value(key, value, schema),
-        );
+        normalized.insert(key.clone(), normalize_mcp_argument_value(value, schema));
     }
     serde_json::Value::Object(normalized)
 }
 
 fn normalize_mcp_argument_value(
-    name: &str,
     value: &serde_json::Value,
     schema: Option<&serde_json::Value>,
 ) -> serde_json::Value {
-    if let Some(normalized) = normalize_mcp_search_lang_alias(name, value, schema) {
-        return normalized;
-    }
     if let Some(schema) = schema {
         if schema_type_matches(schema, "integer") {
             if let Some(parsed) = value.as_i64() {
@@ -1007,42 +971,6 @@ fn normalize_mcp_argument_value(
     value.clone()
 }
 
-fn normalize_mcp_search_lang_alias(
-    name: &str,
-    value: &serde_json::Value,
-    schema: Option<&serde_json::Value>,
-) -> Option<serde_json::Value> {
-    if !name.eq_ignore_ascii_case("search_lang") {
-        return None;
-    }
-    let raw = value.as_str()?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if let Some(canonical) = schema_enum_canonical_value(schema, raw) {
-        if canonical == raw {
-            return None;
-        }
-        return Some(serde_json::Value::String(canonical));
-    }
-
-    let lowered = raw.to_ascii_lowercase();
-    let mapped = match lowered.as_str() {
-        "zh" | "zh-cn" => "zh-hans".to_owned(),
-        "zh-tw" | "zh-hant" => "zh-hant".to_owned(),
-        _ => lowered,
-    };
-
-    if let Some(canonical) = schema_enum_canonical_value(schema, &mapped) {
-        if canonical == raw {
-            return None;
-        }
-        return Some(serde_json::Value::String(canonical));
-    }
-
-    (mapped != raw).then_some(serde_json::Value::String(mapped))
-}
-
 fn schema_type_matches(schema: &serde_json::Value, expected: &str) -> bool {
     match schema.get("type") {
         Some(serde_json::Value::String(actual)) => actual == expected,
@@ -1052,22 +980,6 @@ fn schema_type_matches(schema: &serde_json::Value, expected: &str) -> bool {
             .any(|candidate| candidate == expected),
         _ => false,
     }
-}
-
-fn schema_enum_canonical_value(
-    schema: Option<&serde_json::Value>,
-    expected: &str,
-) -> Option<String> {
-    schema
-        .and_then(|schema| schema.get("enum"))
-        .and_then(serde_json::Value::as_array)
-        .and_then(|values| {
-            values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .find(|candidate| candidate.eq_ignore_ascii_case(expected))
-                .map(str::to_owned)
-        })
 }
 
 fn parse_bool_string(value: &str) -> Option<bool> {
@@ -1271,10 +1183,39 @@ fn build_cloud_multipart_form(
             continue;
         }
 
-        if is_cloud_multipart_file_field(&key, &value) && Path::new(&rendered_value).exists() {
-            form = form
-                .file(key, &rendered_value)
-                .map_err(ToolRegistryError::Io)?;
+        if is_cloud_multipart_file_field(&key, &value) {
+            if rendered_value.starts_with("data:") {
+                let mime =
+                    data_url_mime_type(&rendered_value).unwrap_or("application/octet-stream");
+                let extension = match mime {
+                    "image/jpeg" => "jpg",
+                    "image/webp" => "webp",
+                    _ => "png",
+                };
+                let bytes =
+                    loom_image_io::decode_data_url_bytes(&rendered_value).map_err(|error| {
+                        ToolRegistryError::CloudTemplate {
+                            id: tool.id.clone(),
+                            field: "body",
+                            reason: error.to_string(),
+                        }
+                    })?;
+                let part = multipart::Part::bytes(bytes)
+                    .file_name(format!("loom-cloud-input.{extension}"))
+                    .mime_str(mime)
+                    .map_err(|error| ToolRegistryError::CloudTemplate {
+                        id: tool.id.clone(),
+                        field: "body",
+                        reason: error.to_string(),
+                    })?;
+                form = form.part(key, part);
+            } else if Path::new(&rendered_value).exists() {
+                form = form
+                    .file(key, &rendered_value)
+                    .map_err(ToolRegistryError::Io)?;
+            } else {
+                form = form.text(key, rendered_value);
+            }
         } else {
             form = form.text(key, rendered_value);
         }
@@ -1402,7 +1343,7 @@ fn normalize_mcp_result(
                 let selected_index =
                     selected_mcp_image_candidate_index(arguments, candidates.len());
                 let mut response = text_content_response(&message);
-                attach_mcp_image_search_metadata(&mut response, &candidates, selected_index);
+                attach_mcp_image_candidate_metadata(&mut response, &candidates, selected_index);
                 return response;
             }
             return text_content_response(&message);
@@ -1444,15 +1385,6 @@ fn mcp_result_already_contains_image(value: &serde_json::Value) -> bool {
 
 fn tool_expects_image_output(tool: &ToolDefinition) -> bool {
     tool.outputs.iter().any(value_declares_image_output)
-        || tool
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("artloomCompat"))
-            .and_then(|compat| compat.get("execution"))
-            .and_then(|execution| execution.get("outputs"))
-            .and_then(serde_json::Value::as_array)
-            .map(|outputs| outputs.iter().any(value_declares_image_output))
-            .unwrap_or(false)
 }
 
 fn value_declares_image_output(value: &serde_json::Value) -> bool {
@@ -1467,7 +1399,6 @@ fn value_declares_image_output(value: &serde_json::Value) -> bool {
     }
     let execution_type = value
         .get("execution_type")
-        .or_else(|| value.get("executionType"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .trim()
@@ -1486,7 +1417,7 @@ fn normalize_mcp_image_result(
     let requested_index = selected_mcp_image_candidate_index(arguments, candidates.len());
     let (mut normalized, selected_index) =
         image_response_from_mcp_candidates(&candidates, requested_index)?;
-    attach_mcp_image_search_metadata(&mut normalized, &candidates, selected_index);
+    attach_mcp_image_candidate_metadata(&mut normalized, &candidates, selected_index);
     Some(normalized)
 }
 
@@ -1882,7 +1813,7 @@ fn value_as_usize(value: &serde_json::Value) -> Option<usize> {
     }
 }
 
-fn attach_mcp_image_search_metadata(
+fn attach_mcp_image_candidate_metadata(
     image_result: &mut serde_json::Value,
     candidates: &[McpImageCandidate],
     selected_index: usize,
@@ -1893,9 +1824,10 @@ fn attach_mcp_image_search_metadata(
     result_object.insert(
         "loomMetadata".to_owned(),
         serde_json::json!({
-            "imageSearch": {
+            "candidates": {
+                "kind": "image.candidates",
                 "selectedIndex": selected_index,
-                "candidates": candidates
+                "items": candidates
                     .iter()
                     .enumerate()
                     .map(|(index, candidate)| serde_json::json!({
@@ -2687,73 +2619,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_removes_obsolete_execution_entries_and_quarantines_original() {
-        let root = temp_root("obsolete-executions");
-        fs::create_dir_all(&root).expect("create registry root");
-        let current = ToolDefinition::new(
-            "current-art",
-            "Current Art",
-            "Current framework Art",
-            ToolExecution::FrameworkArt {
-                framework: "process".to_owned(),
-            },
-        );
-        let obsolete = serde_json::json!([
-            serde_json::to_value(&current).expect("serialize current tool"),
-            {
-                "id": "legacy-python",
-                "name": "Legacy Python",
-                "description": "obsolete",
-                "enabled": true,
-                "execution": { "type": "python_art", "artId": "legacy" }
-            },
-            {
-                "id": "legacy-cli",
-                "name": "Legacy CLI",
-                "description": "obsolete",
-                "enabled": true,
-                "execution": { "type": "cli_wrapper", "command": "tool.exe" }
-            },
-            {
-                "id": "legacy-script",
-                "name": "Legacy Script",
-                "description": "obsolete",
-                "enabled": true,
-                "execution": { "type": "script", "path": "main.ps1" }
-            }
-        ]);
-        let original = serde_json::to_string_pretty(&obsolete).expect("serialize obsolete tools");
-        fs::write(root.join("tools.json"), &original).expect("write obsolete registry");
-
-        let registry = ToolRegistry::new(&root);
-        assert_eq!(registry.list_tools().expect("recover tools"), vec![current]);
-
-        let canonical =
-            fs::read_to_string(root.join("tools.json")).expect("read repaired registry");
-        let parsed: Vec<ToolDefinition> =
-            serde_json::from_str(&canonical).expect("repaired registry is valid JSON");
-        assert_eq!(parsed.len(), 1);
-
-        let backups = fs::read_dir(&root)
-            .expect("read registry directory")
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("tools.json.corrupt-")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(
-            fs::read_to_string(backups[0].path()).expect("read migration backup"),
-            original
-        );
-
-        fs::remove_dir_all(root).expect("cleanup obsolete registry root");
-    }
-
-    #[test]
     fn registry_does_not_remove_unknown_future_execution_entries() {
         let root = temp_root("future-execution");
         fs::create_dir_all(&root).expect("create registry root");
@@ -2930,15 +2795,9 @@ mod tests {
 
         assert_eq!(result["content"][0]["type"], "image");
         assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE_ALT);
-        assert_eq!(result["loomMetadata"]["imageSearch"]["selectedIndex"], 1);
-        assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["index"],
-            0
-        );
-        assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][1]["index"],
-            1
-        );
+        assert_eq!(result["loomMetadata"]["candidates"]["selectedIndex"], 1);
+        assert_eq!(result["loomMetadata"]["candidates"]["items"][0]["index"], 0);
+        assert_eq!(result["loomMetadata"]["candidates"]["items"][1]["index"], 1);
     }
 
     #[test]
@@ -2977,15 +2836,9 @@ mod tests {
 
         assert_eq!(result["content"][0]["type"], "image");
         assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE_ALT);
-        assert_eq!(result["loomMetadata"]["imageSearch"]["selectedIndex"], 1);
-        assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["index"],
-            0
-        );
-        assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][1]["index"],
-            1
-        );
+        assert_eq!(result["loomMetadata"]["candidates"]["selectedIndex"], 1);
+        assert_eq!(result["loomMetadata"]["candidates"]["items"][0]["index"], 0);
+        assert_eq!(result["loomMetadata"]["candidates"]["items"][1]["index"], 1);
     }
 
     #[test]
@@ -3030,91 +2883,11 @@ mod tests {
             result["content"][0]["text"],
             "图片搜索已返回候选结果，但图片下载失败，请稍后重试。"
         );
-        assert_eq!(result["loomMetadata"]["imageSearch"]["selectedIndex"], 0);
+        assert_eq!(result["loomMetadata"]["candidates"]["selectedIndex"], 0);
         assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            result["loomMetadata"]["candidates"]["items"][0]["imageUrl"],
             "http://127.0.0.1:9/broken.jpg"
         );
-    }
-
-    #[test]
-    fn execute_mcp_image_search_tool_normalizes_legacy_hook_argument_types_and_aliases() {
-        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
-        let mut tool = ToolDefinition::new(
-            "fixture-image-search-legacy-hook",
-            "Fixture Image Search Legacy Hook",
-            "Normalize legacy Hook MCP image-search arguments before the MCP call",
-            ToolExecution::Mcp {
-                server_id: "fixture".to_owned(),
-                tool_name: "brave_image_search".to_owned(),
-            },
-        );
-        tool.outputs = vec![serde_json::json!({
-            "name": "output",
-            "label": "output",
-            "type": "image",
-            "execution_type": "image_buffer"
-        })];
-        let server = current_test_binary_fixture_config().env(
-            "LOOM_MCP_FIXTURE_IMAGE_URL",
-            image_fixture.url("/fixture.png"),
-        );
-
-        let result = execute_tool(
-            &tool,
-            &[server],
-            serde_json::json!({
-                "query": "fixture cat",
-                "count": "1",
-                "search_lang": "ZH",
-                "spellcheck": "true"
-            }),
-        )
-        .expect("execute MCP image-search tool with legacy Hook arguments");
-
-        assert_eq!(result["content"][0]["type"], "image");
-        assert_eq!(result["content"][0]["mimeType"], "image/png");
-        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
-    }
-
-    #[test]
-    fn execute_mcp_image_search_tool_normalizes_legacy_search_lang_without_enum_schema() {
-        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
-        let mut tool = ToolDefinition::new(
-            "fixture-image-search-realshape-legacy-hook",
-            "Fixture Image Search Realshape Legacy Hook",
-            "Normalize legacy Hook MCP image-search arguments even when search_lang schema has no enum",
-            ToolExecution::Mcp {
-                server_id: "fixture".to_owned(),
-                tool_name: "brave_image_search_realshape".to_owned(),
-            },
-        );
-        tool.outputs = vec![serde_json::json!({
-            "name": "output",
-            "label": "output",
-            "type": "image",
-            "execution_type": "image_buffer"
-        })];
-        let server = current_test_binary_fixture_config().env(
-            "LOOM_MCP_FIXTURE_IMAGE_URL",
-            image_fixture.url("/fixture.png"),
-        );
-
-        let result = execute_tool(
-            &tool,
-            &[server],
-            serde_json::json!({
-                "query": "fixture cat",
-                "count": "1",
-                "search_lang": "ZH",
-                "spellcheck": "true"
-            }),
-        )
-        .expect("execute MCP image-search tool with Brave-like string-only search_lang schema");
-
-        assert_eq!(result["content"][0]["type"], "image");
-        assert_eq!(result["content"][0]["mimeType"], "image/png");
-        assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
     }
 
     #[test]
@@ -3151,14 +2924,14 @@ mod tests {
         assert_eq!(result["content"][0]["mimeType"], "image/png");
         assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
         assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"]
+            result["loomMetadata"]["candidates"]["items"]
                 .as_array()
                 .expect("candidate metadata")
                 .len(),
             1
         );
         assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["thumbnailUrl"],
+            result["loomMetadata"]["candidates"]["items"][0]["thumbnailUrl"],
             thumbnail_url
         );
     }
@@ -3219,7 +2992,7 @@ mod tests {
         assert_eq!(result["content"][0]["mimeType"], "image/png");
         assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
         assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            result["loomMetadata"]["candidates"]["items"][0]["imageUrl"],
             image_url
         );
     }
@@ -3287,7 +3060,7 @@ mod tests {
         assert_eq!(result["content"][0]["mimeType"], "image/png");
         assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
         assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            result["loomMetadata"]["candidates"]["items"][0]["imageUrl"],
             image_url
         );
     }
@@ -3326,7 +3099,7 @@ mod tests {
         assert_eq!(result["content"][0]["mimeType"], "image/png");
         assert_eq!(result["content"][0]["data"], CLOUD_FIXTURE_IMAGE);
         assert_eq!(
-            result["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
+            result["loomMetadata"]["candidates"]["items"][0]["imageUrl"],
             image_url
         );
     }
@@ -3521,7 +3294,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_cloud_api_tool_supports_artloom_multipart_template_contract() {
+    fn execute_cloud_api_tool_supports_formal_multipart_template_contract() {
         let root = temp_root("cloud-multipart-template");
         let upload_path = root.join("upload.png");
         fs::write(&upload_path, b"loom-upload").expect("write upload fixture");
@@ -3530,18 +3303,18 @@ mod tests {
         let tool: ToolDefinition = serde_json::from_value(serde_json::json!({
             "id": "fixture-cloud-multipart",
             "name": "Fixture Cloud Multipart",
-            "description": "Call old ArtLoom-style multipart cloud API",
+            "description": "Call a formal multipart cloud API",
             "enabled": true,
             "execution": {
                 "type": "cloud_api",
-                "url": fixture.url("/upload/{{inputs.route.value}}?mode={{mode}}"),
+                "endpoint": fixture.url("/upload/{{inputs.route.value}}?mode={{mode}}"),
                 "method": "POST",
                 "contentType": "multipart/form-data",
                 "headers": "{\"X-Trace\":\"{{inputs.trace.value}}\",\"X-Mode\":\"{{mode}}\"}",
                 "body": "{\"file\":\"{{inputs.image.path}}\",\"prompt\":\"{{inputs.prompt.value}}\",\"literal\":\"fixed\",\"skipEmpty\":\"{{inputs.empty.value}}\",\"skipDisabled\":\"{{inputs.disabled.value}}\"}"
             }
         }))
-        .expect("old ArtLoom-style cloud API execution deserializes");
+        .expect("formal multipart cloud API execution deserializes");
 
         let result = execute_tool(
             &tool,
@@ -3556,7 +3329,7 @@ mod tests {
                 "disabled": "__DISABLED__"
             }),
         )
-        .expect("execute ArtLoom-style multipart cloud API tool");
+        .expect("execute formal multipart cloud API tool");
 
         assert_eq!(result["content"][0]["type"], "text");
         assert_eq!(result["content"][0]["text"], "cloud saw multipart");

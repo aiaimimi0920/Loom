@@ -1,5 +1,10 @@
 # Loom Image Blend And Compress Workflow Art Design
 
+> Historical design input. The implemented architecture uses `process` for both
+> child Arts, an independently installed `workflow` framework package, and
+> `loom.hook.v1` for Hook execution. Old `script`, `cli_wrapper`, and AHRP names
+> below are superseded.
+
 ## Objective
 
 Create an installable Loom Art named `图片融合并压缩` whose execution type is
@@ -92,12 +97,12 @@ The declarative YAML is:
 name: 图片融合并压缩
 nodes:
   - id: blend
-    uses: custom-image-blend-script
+    uses: neuro.official/custom-image-blend-script
     with:
       mix_ratio: 50
 
   - id: compress
-    uses: custom-1770146354922
+    uses: neuro.official/custom-1770146354922
     needs:
       - blend
     with:

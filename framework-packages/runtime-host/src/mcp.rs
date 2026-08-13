@@ -33,7 +33,6 @@ struct McpArtConfig {
     env: BTreeMap<String, String>,
     #[serde(default)]
     credential_env: BTreeMap<String, String>,
-    #[serde(default)]
     transport: McpTransport,
     #[serde(default)]
     url: String,
@@ -74,7 +73,6 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
             format!("{} MCP server", request.art_id),
             expand_runtime_paths(&config.url, request, art_dir),
         ),
-        McpTransport::Sse => return Err("MCP Art legacy SSE transport is not supported".to_owned()),
     };
     server.args = config
         .args
@@ -319,7 +317,7 @@ fn find_tool_input_schema<'a>(tools: &'a Value, tool_name: &str) -> Option<&'a V
         .as_array()?
         .iter()
         .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name))
-        .and_then(|tool| tool.get("inputSchema").or_else(|| tool.get("input_schema")))
+        .and_then(|tool| tool.get("inputSchema"))
 }
 
 fn normalize_arguments(arguments: &Value, schema: &Value) -> Value {

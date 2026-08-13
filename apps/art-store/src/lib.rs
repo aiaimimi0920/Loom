@@ -3,15 +3,13 @@
 //! On-disk layout under the store root:
 //!   <root>/arts/<id>/<version>.zip        immutable versioned art packages
 //!   <root>/arts/<id>/<version>.zip.sha256 package digest sidecars
-//!   <root>/arts/<id>.zip                  latest-version compatibility copy
 //!   <root>/official-art-certifications.json platform-owned package certifications
 //!   <root>/binaries/<name>      third-party portable executables
 //!
 //! The daemon's art-store client (see `loom_tool_registry` / daemon) speaks:
 //!   GET  /catalog               -> { "arts": [ {...,latestVersion,versions} ] }
-//!   GET  /arts/<id>.zip         -> raw art package bytes
 //!   GET  /arts/<id>/<version>.zip -> exact package version
-//!   GET  /arts/<id>.zip.sha256  -> package digest sidecar
+//!   GET  /arts/<id>/<version>.zip.sha256 -> package digest sidecar
 //!   GET  /binaries/<name>       -> raw portable-exe bytes
 //!   POST /publish               -> body = zip, header X-Art-Id: <id>
 //!
@@ -172,6 +170,10 @@ pub enum StoreError {
     ArtIdMismatch { declared: String, manifest: String },
     #[error("published package `{id}` has invalid or missing SemVer version `{version}`")]
     InvalidVersion { id: String, version: String },
+    #[error("published package `{0}` is missing a publisher identity")]
+    MissingPublisher(String),
+    #[error("published package `{0}` is missing its canonical framework dependency")]
+    MissingFramework(String),
     #[error("published package `{id}` version `{version}` already exists with different content")]
     VersionConflict { id: String, version: String },
     #[error(
@@ -265,7 +267,8 @@ pub fn is_safe_resource_name(name: &str) -> bool {
 }
 
 /// Derive catalog metadata and its SemVer from an art package's manifest.json.
-/// `framework` prefers `metadata.dependencies.framework`, else `execution.type`.
+/// The current catalog contract requires `metadata.dependencies.framework` and
+/// `metadata.packageSecurity.publisher.id`.
 pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry, StoreError> {
     let value: serde_json::Value = serde_json::from_slice(manifest_bytes)?;
     let id = value
@@ -289,21 +292,8 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
         .and_then(|d| d.get("framework"))
         .and_then(|v| v.as_str())
         .map(str::to_owned)
-        .or_else(|| {
-            value
-                .get("execution")
-                .and_then(|execution| execution.get("framework"))
-                .and_then(|framework| framework.as_str())
-                .map(str::to_owned)
-        })
-        .or_else(|| {
-            value
-                .get("execution")
-                .and_then(|e| e.get("type"))
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_default();
+        .filter(|framework| !framework.trim().is_empty())
+        .ok_or_else(|| StoreError::MissingFramework(id.clone()))?;
     let version = value
         .get("metadata")
         .and_then(|metadata| metadata.get("packageSecurity"))
@@ -317,7 +307,7 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
             version,
         });
     }
-    let qualified_id = value
+    let publisher = value
         .get("metadata")
         .and_then(|metadata| metadata.get("packageSecurity"))
         .and_then(|security| security.get("publisher"))
@@ -325,8 +315,8 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
         .and_then(|publisher| publisher.as_str())
         .map(str::trim)
         .filter(|publisher| !publisher.is_empty())
-        .map(|publisher| format!("{publisher}/{id}"))
-        .unwrap_or_else(|| id.clone());
+        .ok_or_else(|| StoreError::MissingPublisher(id.clone()))?;
+    let qualified_id = format!("{publisher}/{id}");
     Ok(CatalogEntry {
         id,
         qualified_id,
@@ -695,7 +685,7 @@ pub fn rotate_publisher_key(
     Ok(entry)
 }
 
-/// Build the catalog by scanning legacy/latest ZIPs and immutable version directories.
+/// Build the catalog by scanning immutable version directories.
 /// Packages that fail to parse are skipped (a bad upload shouldn't 500 the list).
 pub fn build_catalog(root: &Path) -> Result<Vec<CatalogEntry>, StoreError> {
     let arts_dir = root.join(ARTS_DIR);
@@ -716,8 +706,6 @@ pub fn build_catalog(root: &Path) -> Result<Vec<CatalogEntry>, StoreError> {
                     merge_catalog_zip(&mut entries, &version_path)?;
                 }
             }
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("zip") {
-            merge_catalog_zip(&mut entries, &path)?;
         }
     }
     let global_ids = load_global_art_id_index(root)?.assignments;
@@ -789,14 +777,6 @@ fn merge_catalog_zip(
     Ok(())
 }
 
-/// Absolute path to an art package zip, validated for a safe id.
-pub fn art_zip_path(root: &Path, id: &str) -> Result<PathBuf, StoreError> {
-    if !is_safe_art_id(id) {
-        return Err(StoreError::InvalidArtId(id.to_owned()));
-    }
-    Ok(root.join(ARTS_DIR).join(format!("{id}.zip")))
-}
-
 pub fn art_version_zip_path(root: &Path, id: &str, version: &str) -> Result<PathBuf, StoreError> {
     if !is_safe_art_id(id) {
         return Err(StoreError::InvalidArtId(id.to_owned()));
@@ -808,25 +788,6 @@ pub fn art_version_zip_path(root: &Path, id: &str, version: &str) -> Result<Path
         });
     }
     Ok(root.join(ARTS_DIR).join(id).join(format!("{version}.zip")))
-}
-
-/// Read an art package zip by id.
-pub fn read_art_zip(root: &Path, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
-    let path = art_zip_path(root, id)?;
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let latest = build_catalog(root)?
-                .into_iter()
-                .find(|entry| entry.id == id)
-                .map(|entry| entry.latest_version);
-            match latest {
-                Some(version) => read_art_zip_version(root, id, &version),
-                None => Ok(None),
-            }
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 
 pub fn read_art_zip_version(
@@ -842,24 +803,6 @@ pub fn read_art_zip_version(
     }
 }
 
-/// Read the adjacent SHA-256 sidecar for an Art package. Legacy store roots
-/// that predate sidecars remain readable: the digest is synthesized from the
-/// ZIP without mutating the store.
-pub fn read_art_zip_sha256(root: &Path, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
-    let zip_path = art_zip_path(root, id)?;
-    let sidecar_path = zip_path.with_extension("zip.sha256");
-    match std::fs::read(&sidecar_path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(zip_bytes) = read_art_zip(root, id)? else {
-                return Ok(None);
-            };
-            Ok(Some(art_zip_sha256_sidecar(id, &zip_bytes).into_bytes()))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 pub fn read_art_zip_version_sha256(
     root: &Path,
     id: &str,
@@ -869,14 +812,7 @@ pub fn read_art_zip_version_sha256(
     let sidecar_path = zip_path.with_extension("zip.sha256");
     match std::fs::read(&sidecar_path) {
         Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(zip_bytes) = read_art_zip_version(root, id, version)? else {
-                return Ok(None);
-            };
-            Ok(Some(
-                art_zip_sha256_sidecar(&format!("{id}/{version}"), &zip_bytes).into_bytes(),
-            ))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -1033,8 +969,7 @@ pub fn store_verified_published_zip(
     store_published_zip(root, declared_id, zip_bytes)
 }
 
-/// Persist a published art package as an immutable version and refresh the
-/// latest-version compatibility copy when the incoming SemVer is newer.
+/// Persist a published art package as an immutable version.
 pub fn store_published_zip(
     root: &Path,
     declared_id: Option<&str>,
@@ -1086,21 +1021,6 @@ pub fn store_published_zip(
         path.with_extension("zip.sha256"),
         art_zip_sha256_sidecar(&format!("{}/{}", entry.id, entry.latest_version), zip_bytes),
     )?;
-    let compatibility_path = art_zip_path(root, &entry.id)?;
-    let should_update_compatibility = read_art_zip(root, &entry.id)?
-        .and_then(|current| read_manifest_bytes(&current).ok())
-        .and_then(|manifest| catalog_entry_from_manifest(&manifest).ok())
-        .and_then(|current| semver::Version::parse(&current.latest_version).ok())
-        .is_none_or(|current| {
-            semver::Version::parse(&entry.latest_version).is_ok_and(|incoming| incoming >= current)
-        });
-    if should_update_compatibility {
-        std::fs::write(&compatibility_path, zip_bytes)?;
-        std::fs::write(
-            compatibility_path.with_extension("zip.sha256"),
-            art_zip_sha256_sidecar(&entry.id, zip_bytes),
-        )?;
-    }
     let global_id = assign_global_art_id(root, &entry.qualified_id)?;
     Ok(PublishedArt {
         art_id: entry.id,
@@ -1126,12 +1046,38 @@ mod tests {
     }
 
     fn build_zip(manifest: &str) -> Vec<u8> {
+        let mut manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        let execution_framework = manifest
+            .get("execution")
+            .and_then(|execution| execution.get("framework"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("process")
+            .to_owned();
+        let metadata = manifest
+            .as_object_mut()
+            .unwrap()
+            .entry("metadata")
+            .or_insert_with(|| serde_json::json!({}));
+        let metadata = metadata.as_object_mut().unwrap();
+        metadata
+            .entry("dependencies")
+            .or_insert_with(|| serde_json::json!({ "framework": execution_framework }));
+        let security = metadata
+            .entry("packageSecurity")
+            .or_insert_with(|| serde_json::json!({}));
+        security
+            .as_object_mut()
+            .unwrap()
+            .entry("publisher")
+            .or_insert_with(|| serde_json::json!({ "id": "publisher.test" }));
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
             writer.start_file(MANIFEST_NAME, opts).unwrap();
-            writer.write_all(manifest.as_bytes()).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
             writer.finish().unwrap();
         }
         buf
@@ -1152,6 +1098,7 @@ mod tests {
             "description": version,
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
+                "dependencies": { "framework": "process" },
                 "packageSecurity": {
                     "version": version,
                     "publisher": { "id": user_id, "keyId": key.key_id },
@@ -1220,28 +1167,29 @@ mod tests {
     }
 
     #[test]
-    fn catalog_entry_prefers_declared_framework() {
+    fn catalog_entry_requires_declared_framework_and_publisher() {
         let manifest = r#"{"id":"wf","name":"WF","description":"d",
             "execution":{"type":"workflow","workflowId":"x"},
-            "metadata":{"packageSecurity":{"version":"1.0.0"},"dependencies":{"framework":"workflow"}}}"#;
+            "metadata":{"packageSecurity":{"version":"1.0.0","publisher":{"id":"publisher.test"}},"dependencies":{"framework":"workflow"}}}"#;
         let entry = catalog_entry_from_manifest(manifest.as_bytes()).unwrap();
         assert_eq!(entry.id, "wf");
         assert_eq!(entry.framework, "workflow");
     }
 
     #[test]
-    fn catalog_entry_falls_back_to_execution_type() {
+    fn catalog_entry_rejects_missing_canonical_framework_dependency() {
         let manifest = r#"{"id":"p","name":"P","description":"d",
             "execution":{"type":"framework_art","framework":"process"},
-            "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#;
-        let entry = catalog_entry_from_manifest(manifest.as_bytes()).unwrap();
-        assert_eq!(entry.framework, "process");
+            "metadata":{"packageSecurity":{"version":"1.0.0","publisher":{"id":"publisher.test"}}}}"#;
+        assert!(matches!(
+            catalog_entry_from_manifest(manifest.as_bytes()),
+            Err(StoreError::MissingFramework(id)) if id == "p"
+        ));
     }
 
     #[test]
     fn build_catalog_lists_published_zips_sorted() {
         let root = temp_root();
-        std::fs::create_dir_all(root.join(ARTS_DIR)).unwrap();
         let a = build_zip(
             r#"{"id":"b-art","name":"B","description":"d",
             "execution":{"type":"framework_art","framework":"process"},
@@ -1252,8 +1200,10 @@ mod tests {
             "execution":{"type":"cloud_api","endpoint":"https://x","method":"POST"},
             "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#,
         );
-        std::fs::write(root.join(ARTS_DIR).join("b-art.zip"), &a).unwrap();
-        std::fs::write(root.join(ARTS_DIR).join("a-art.zip"), &b).unwrap();
+        std::fs::create_dir_all(root.join(ARTS_DIR).join("b-art")).unwrap();
+        std::fs::create_dir_all(root.join(ARTS_DIR).join("a-art")).unwrap();
+        std::fs::write(root.join(ARTS_DIR).join("b-art/1.0.0.zip"), &a).unwrap();
+        std::fs::write(root.join(ARTS_DIR).join("a-art/1.0.0.zip"), &b).unwrap();
         let catalog = build_catalog(&root).unwrap();
         assert_eq!(catalog.len(), 2);
         assert_eq!(catalog[0].id, "a-art");
@@ -1338,14 +1288,20 @@ mod tests {
         assert_eq!(published.art_id, "pingo-art");
         assert!(published.global_id.starts_with("NA"));
         assert_eq!(published.global_id.len(), 13);
-        let read = read_art_zip(&root, "pingo-art").unwrap().unwrap();
+        let read = read_art_zip_version(&root, "pingo-art", "1.0.0")
+            .unwrap()
+            .unwrap();
         assert_eq!(read, zip);
-        let sidecar = read_art_zip_sha256(&root, "pingo-art").unwrap().unwrap();
+        let sidecar = read_art_zip_version_sha256(&root, "pingo-art", "1.0.0")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             String::from_utf8(sidecar).unwrap(),
-            art_zip_sha256_sidecar("pingo-art", &zip)
+            art_zip_sha256_sidecar("pingo-art/1.0.0", &zip)
         );
-        assert!(read_art_zip(&root, "missing").unwrap().is_none());
+        assert!(read_art_zip_version(&root, "missing", "1.0.0")
+            .unwrap()
+            .is_none());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1377,22 +1333,20 @@ mod tests {
     }
 
     #[test]
-    fn digest_sidecar_is_synthesized_for_legacy_art_packages() {
+    fn missing_version_digest_sidecar_is_not_synthesized() {
         let root = temp_root();
         let zip = build_zip(
-            r#"{"id":"legacy-art","name":"Legacy","description":"d",
+            r#"{"id":"canonical-art","name":"Canonical","description":"d",
             "execution":{"type":"framework_art","framework":"process"},
             "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#,
         );
-        std::fs::create_dir_all(root.join(ARTS_DIR)).unwrap();
-        std::fs::write(root.join(ARTS_DIR).join("legacy-art.zip"), &zip).unwrap();
+        let directory = root.join(ARTS_DIR).join("canonical-art");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("1.0.0.zip"), &zip).unwrap();
 
-        let sidecar = read_art_zip_sha256(&root, "legacy-art").unwrap().unwrap();
-        assert_eq!(
-            String::from_utf8(sidecar).unwrap(),
-            art_zip_sha256_sidecar("legacy-art", &zip)
-        );
-        assert!(!root.join(ARTS_DIR).join("legacy-art.zip.sha256").exists());
+        assert!(read_art_zip_version_sha256(&root, "canonical-art", "1.0.0")
+            .unwrap()
+            .is_none());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1463,11 +1417,9 @@ mod tests {
             "execution":{"type":"framework_art","framework":"process"},
             "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#,
         );
-        std::fs::create_dir_all(root.join(ARTS_DIR).join("conflict-art")).unwrap();
-        std::fs::write(root.join(ARTS_DIR).join("conflict-art.zip"), first).unwrap();
-        std::fs::write(root.join(ARTS_DIR).join("conflict-art/1.0.0.zip"), second).unwrap();
+        store_published_zip(&root, Some("conflict-art"), &first).unwrap();
         assert!(matches!(
-            build_catalog(&root).unwrap_err(),
+            store_published_zip(&root, Some("conflict-art"), &second).unwrap_err(),
             StoreError::VersionConflict { .. }
         ));
         std::fs::remove_dir_all(&root).ok();

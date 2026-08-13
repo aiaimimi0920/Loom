@@ -65,7 +65,7 @@ from typing import Any, Dict, Optional, List
 # Configuration
 # =============================================================================
 
-# Status codes (aligned with AHRP protocol)
+# Stable process-runtime status codes.
 STATUS_SUCCESS = 200
 STATUS_BAD_REQUEST = 400
 STATUS_NOT_FOUND = 404

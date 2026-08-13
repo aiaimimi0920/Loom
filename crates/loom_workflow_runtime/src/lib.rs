@@ -2,12 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use loom_tool_registry::{
-    execute_tool, execute_tool_with_timeout, prepare_tool_arguments, ToolDefinition, ToolExecution,
-    ToolRegistry, ToolRegistryError, WorkflowExecutionBindings, WorkflowInputBinding,
-    WorkflowOutputBinding,
+    execute_tool, execute_tool_with_timeout, execute_tool_with_timeout_and_cancellation,
+    prepare_tool_arguments, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
+    WorkflowExecutionBindings, WorkflowInputBinding, WorkflowOutputBinding,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use serde::Deserialize;
@@ -47,6 +48,8 @@ pub enum WorkflowRuntimeError {
     InvalidPreviewPolicy { workflow_id: String, reason: String },
     #[error("workflow execution exceeded its caller-owned timeout")]
     Timeout,
+    #[error("workflow execution was cancelled")]
+    Cancelled,
 }
 
 pub type WorkflowRuntimeResult<T> = Result<T, WorkflowRuntimeError>;
@@ -65,6 +68,7 @@ pub fn execute_tool_with_workflows(
         tool_registry,
         arguments,
         &mut |_| {},
+        None,
         None,
     )
 }
@@ -85,6 +89,7 @@ pub fn execute_tool_with_workflows_timeout(
         arguments,
         &mut |_| {},
         Some(Instant::now() + timeout.max(Duration::from_millis(1))),
+        None,
     )
 }
 
@@ -107,6 +112,32 @@ where
         arguments,
         &mut preview_callback,
         None,
+        None,
+    )
+}
+
+pub fn execute_tool_with_workflows_and_preview_timeout_and_cancellation<F>(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    workflow_store: &WorkflowStore,
+    tool_registry: &ToolRegistry,
+    arguments: JsonValue,
+    timeout: Duration,
+    cancellation: &AtomicBool,
+    mut preview_callback: F,
+) -> WorkflowRuntimeResult<serde_json::Value>
+where
+    F: FnMut(JsonValue),
+{
+    execute_tool_with_workflows_internal(
+        tool,
+        mcp_servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        &mut preview_callback,
+        Some(Instant::now() + timeout.max(Duration::from_millis(1))),
+        Some(cancellation),
     )
 }
 
@@ -118,7 +149,9 @@ fn execute_tool_with_workflows_internal(
     arguments: JsonValue,
     preview_callback: &mut dyn FnMut(JsonValue),
     deadline: Option<Instant>,
+    cancellation: Option<&AtomicBool>,
 ) -> WorkflowRuntimeResult<serde_json::Value> {
+    check_cancelled(cancellation)?;
     let arguments = prepare_tool_arguments(tool, arguments)?;
     match &tool.execution {
         ToolExecution::Workflow {
@@ -134,12 +167,26 @@ fn execute_tool_with_workflows_internal(
             arguments,
             preview_callback,
             deadline,
+            cancellation,
         ),
-        _ => match remaining_timeout(deadline)? {
-            Some(timeout) => execute_tool_with_timeout(tool, mcp_servers, arguments, timeout)
-                .map_err(WorkflowRuntimeError::from),
-            None => execute_tool(tool, mcp_servers, arguments).map_err(WorkflowRuntimeError::from),
-        },
+        _ => {
+            let result = match (remaining_timeout(deadline)?, cancellation) {
+                (Some(timeout), Some(cancellation)) => execute_tool_with_timeout_and_cancellation(
+                    tool,
+                    mcp_servers,
+                    arguments,
+                    timeout,
+                    cancellation,
+                ),
+                (Some(timeout), None) => {
+                    execute_tool_with_timeout(tool, mcp_servers, arguments, timeout)
+                }
+                (None, _) => execute_tool(tool, mcp_servers, arguments),
+            }
+            .map_err(WorkflowRuntimeError::from)?;
+            check_cancelled(cancellation)?;
+            Ok(result)
+        }
     }
 }
 
@@ -202,11 +249,10 @@ fn execute_workflow_tool(
     arguments: JsonValue,
     preview_callback: &mut dyn FnMut(JsonValue),
     deadline: Option<Instant>,
+    cancellation: Option<&AtomicBool>,
 ) -> WorkflowRuntimeResult<JsonValue> {
+    check_cancelled(cancellation)?;
     let workflow = load_stored_workflow(workflow_store, workflow_id)?;
-    let normalized_bindings = workflow_bindings
-        .map(|bindings| normalize_workflow_image_input_bindings(&workflow, bindings));
-    let workflow_bindings = normalized_bindings.as_ref();
     let preview_policy = workflow_bindings
         .and_then(|bindings| bindings.preview_output.as_ref())
         .map(|preview_output| {
@@ -243,6 +289,7 @@ fn execute_workflow_tool(
     let mut preview_emitted = false;
 
     while !pending.is_empty() {
+        check_cancelled(cancellation)?;
         let mut ready = order
             .iter()
             .filter(|node_id| pending.contains_key(*node_id))
@@ -266,6 +313,7 @@ fn execute_workflow_tool(
         }
 
         for node_id in ready {
+            check_cancelled(cancellation)?;
             remaining_timeout(deadline)?;
             let node = pending
                 .remove(&node_id)
@@ -282,7 +330,9 @@ fn execute_workflow_tool(
                 workflow_store,
                 tool_registry,
                 deadline,
+                cancellation,
             )?;
+            check_cancelled(cancellation)?;
             results.insert(node_id, result);
             if !preview_emitted {
                 if let Some(policy) = &preview_policy {
@@ -411,81 +461,6 @@ fn validate_preview_policy(
     })
 }
 
-fn normalize_workflow_image_input_bindings(
-    workflow: &StoredWorkflow,
-    bindings: &WorkflowExecutionBindings,
-) -> WorkflowExecutionBindings {
-    let mut normalized = bindings.clone();
-    let mut binding_indices = normalized
-        .inputs
-        .iter()
-        .enumerate()
-        .filter(|(_, binding)| binding.kind == "input_image")
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    if binding_indices.len() < 2 {
-        return normalized;
-    }
-
-    binding_indices
-        .sort_by_key(|index| workflow_image_param_order(&normalized.inputs[*index].workflow_param));
-    let mut targets = binding_indices
-        .iter()
-        .map(|index| {
-            let binding = &normalized.inputs[*index];
-            (
-                binding.node_id.clone(),
-                binding.target.clone(),
-                workflow_image_node_role(workflow, &binding.node_id),
-            )
-        })
-        .collect::<Vec<_>>();
-    if targets.iter().all(|(_, _, role)| *role == 1) {
-        return normalized;
-    }
-    targets.sort_by_key(|(_, _, role)| *role);
-
-    for (binding_index, (node_id, target, _)) in binding_indices.into_iter().zip(targets) {
-        normalized.inputs[binding_index].node_id = node_id;
-        normalized.inputs[binding_index].target = target;
-    }
-    normalized
-}
-
-fn workflow_image_param_order(param: &str) -> usize {
-    if param == "input" {
-        return 0;
-    }
-    param
-        .strip_prefix("input_")
-        .and_then(|suffix| suffix.parse::<usize>().ok())
-        .unwrap_or(usize::MAX)
-}
-
-fn workflow_image_node_role(workflow: &StoredWorkflow, node_id: &str) -> u8 {
-    let reference = format!("nodes.{node_id}.outputs.");
-    workflow
-        .nodes
-        .iter()
-        .flat_map(|node| node.params.iter())
-        .filter_map(|(target, value)| {
-            value
-                .as_str()
-                .filter(|value| value.contains(&reference))
-                .map(|_| workflow_image_target_role(target))
-        })
-        .min()
-        .unwrap_or(1)
-}
-
-fn workflow_image_target_role(target: &str) -> u8 {
-    match target.trim().to_ascii_lowercase().as_str() {
-        "input" | "image" | "input_image" | "source" | "source_image" => 0,
-        "reference" | "reference_image" | "ref" | "style" | "style_image" => 2,
-        _ => 1,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn execute_workflow_node(
     workflow_id: &str,
@@ -499,7 +474,9 @@ fn execute_workflow_node(
     workflow_store: &WorkflowStore,
     tool_registry: &ToolRegistry,
     deadline: Option<Instant>,
+    cancellation: Option<&AtomicBool>,
 ) -> WorkflowRuntimeResult<JsonValue> {
+    check_cancelled(cancellation)?;
     let (mut child_args, mut child_input) = resolve_node_params(node, results);
 
     let missing_explicit_image_binding = workflow_bindings
@@ -597,7 +574,15 @@ fn execute_workflow_node(
         JsonValue::Object(child_args),
         &mut |_| {},
         deadline,
+        cancellation,
     )
+}
+
+fn check_cancelled(cancellation: Option<&AtomicBool>) -> WorkflowRuntimeResult<()> {
+    if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+        return Err(WorkflowRuntimeError::Cancelled);
+    }
+    Ok(())
 }
 
 fn remaining_timeout(deadline: Option<Instant>) -> WorkflowRuntimeResult<Option<Duration>> {
@@ -640,7 +625,7 @@ fn resolve_workflow_child_tool(
                         reason: format!("locked workflow child is invalid: {error}"),
                     }
                 })?;
-            if candidate.id == child_id || candidate.qualified_id() == child_id {
+            if candidate.qualified_id() == child_id {
                 return Ok(Some(candidate));
             }
         }
@@ -654,15 +639,9 @@ fn resolve_workflow_child_tool(
         .and_then(JsonValue::as_array)
         .is_some_and(|arts| {
             arts.iter().any(|dependency| {
-                dependency.as_str().is_some_and(|dependency| {
-                    dependency == child_id
-                        || dependency
-                            .rsplit_once('/')
-                            .is_some_and(|(_, local)| local == child_id)
-                        || child_id
-                            .rsplit_once('/')
-                            .is_some_and(|(_, local)| local == dependency)
-                })
+                dependency
+                    .as_str()
+                    .is_some_and(|dependency| dependency == child_id)
             })
         });
     if parent_tool
@@ -957,10 +936,7 @@ fn insert_child_argument(
     target: &str,
     value: JsonValue,
 ) {
-    let target = target
-        .strip_prefix("params.")
-        .or_else(|| target.strip_prefix("with."))
-        .unwrap_or(target);
+    let target = target.strip_prefix("params.").unwrap_or(target);
     child_args.insert(target.to_owned(), value);
 }
 
@@ -1033,7 +1009,7 @@ fn normalize_image_reference(value: &str) -> Option<String> {
 }
 
 fn is_sticker_art(uses: &str) -> bool {
-    matches!(uses, "__sticker__" | "sticker")
+    uses == "__sticker__"
 }
 
 fn is_image_like(value: &str) -> bool {
@@ -1080,6 +1056,7 @@ fn text_content_response(text: &str) -> JsonValue {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use loom_tool_registry::{
@@ -1105,7 +1082,7 @@ mod tests {
     }
 
     fn workflow_tool(workflow_id: &str) -> ToolDefinition {
-        ToolDefinition::new(
+        let mut tool = ToolDefinition::new(
             "fixture-workflow",
             "Fixture Workflow",
             "Workflow child runner",
@@ -1113,14 +1090,20 @@ mod tests {
                 workflow_id: workflow_id.to_owned(),
                 workflow_bindings: None,
             },
-        )
+        );
+        tool.metadata = Some(json!({
+            "packageSecurity": {
+                "publisher": { "id": "test.publisher", "name": "Test Publisher" }
+            }
+        }));
+        tool
     }
 
     #[test]
     fn packaged_workflow_resolves_its_immutable_locked_child_instead_of_active_registry() {
         let root = temp_root("locked-child-resolution");
         let registry = ToolRegistry::new(root.join("tools"));
-        let active = ToolDefinition::new(
+        let mut active = ToolDefinition::new(
             "child",
             "Active v2",
             "active child",
@@ -1132,8 +1115,13 @@ mod tests {
                 body: None,
             },
         );
+        active.metadata = Some(json!({
+            "packageSecurity": {
+                "publisher": { "id": "test.publisher", "name": "Test Publisher" }
+            }
+        }));
         registry.save_tool(active).expect("save active child");
-        let locked = ToolDefinition::new(
+        let mut locked = ToolDefinition::new(
             "child",
             "Locked v1",
             "locked child",
@@ -1145,24 +1133,31 @@ mod tests {
                 body: None,
             },
         );
+        locked.metadata = Some(json!({
+            "packageSecurity": {
+                "publisher": { "id": "test.publisher", "name": "Test Publisher" }
+            }
+        }));
         let mut parent = workflow_tool("locked-workflow");
         parent.metadata = Some(json!({
-            "dependencies": { "arts": ["child"] },
+            "dependencies": { "arts": ["test.publisher/child"] },
             "artPackage": {
-                "lockedArts": { "child": locked }
+                "lockedArts": { "test.publisher/child": locked }
             }
         }));
 
-        let resolved = resolve_workflow_child_tool(&parent, "child", &registry)
+        let resolved = resolve_workflow_child_tool(&parent, "test.publisher/child", &registry)
             .expect("resolve child")
             .expect("locked child");
         assert_eq!(resolved.name, "Locked v1");
 
         let mut missing = parent.clone();
         missing.metadata.as_mut().unwrap()["artPackage"]["lockedArts"] = json!({});
-        assert!(resolve_workflow_child_tool(&missing, "child", &registry)
-            .expect("resolve missing lock")
-            .is_none());
+        assert!(
+            resolve_workflow_child_tool(&missing, "test.publisher/child", &registry)
+                .expect("resolve missing lock")
+                .is_none()
+        );
         fs::remove_dir_all(root).expect("cleanup locked child resolution root");
     }
 
@@ -1231,12 +1226,12 @@ nodes:
                 r#"name: Sticker Chain
 nodes:
   - id: a
-    uses: sticker
+    uses: __sticker__
   - id: b
-    uses: sticker
+    uses: __sticker__
     needs: [a]
   - id: c
-    uses: sticker
+    uses: __sticker__
     needs: [b]
 "#,
             )
@@ -1267,9 +1262,9 @@ nodes:
                 r#"name: Preview Before Final
 nodes:
   - id: formal
-    uses: missing-formal-tool
+    uses: test.publisher/missing-formal-tool
   - id: preview
-    uses: sticker
+    uses: __sticker__
 "#,
             )
             .expect("save workflow");
@@ -1311,9 +1306,9 @@ nodes:
                 r#"name: Required Blocks Preview
 nodes:
   - id: required
-    uses: missing-required-tool
+    uses: test.publisher/missing-required-tool
   - id: preview
-    uses: sticker
+    uses: __sticker__
 "#,
             )
             .expect("save workflow");
@@ -1353,9 +1348,9 @@ nodes:
                 r#"name: Separate Preview And Formal
 nodes:
   - id: preview
-    uses: sticker
+    uses: __sticker__
   - id: formal
-    uses: sticker
+    uses: __sticker__
 "#,
             )
             .expect("save workflow");
@@ -1407,7 +1402,7 @@ nodes:
         workflow_store
             .save_workflow(
                 "no-preview-binding",
-                "name: No Preview\nnodes:\n  - id: only\n    uses: sticker\n",
+                "name: No Preview\nnodes:\n  - id: only\n    uses: __sticker__\n",
             )
             .expect("save workflow");
         let mut preview_count = 0;
@@ -1435,7 +1430,7 @@ nodes:
         workflow_store
             .save_workflow(
                 "invalid-preview-policy",
-                "name: Invalid Preview\nnodes:\n  - id: child\n    uses: child-tool\n",
+                "name: Invalid Preview\nnodes:\n  - id: child\n    uses: test.publisher/child-tool\n",
             )
             .expect("save workflow");
         let mut child = ToolDefinition::new(
@@ -1450,6 +1445,11 @@ nodes:
                 body: None,
             },
         );
+        child.metadata = Some(json!({
+            "packageSecurity": {
+                "publisher": { "id": "test.publisher", "name": "Test Publisher" }
+            }
+        }));
         child.outputs = vec![json!({ "name": "image", "type": "image" })];
         tool_registry.save_tool(child).expect("save child tool");
 
@@ -1521,109 +1521,6 @@ nodes:
         assert_eq!(
             child_args.get("input"),
             Some(&JsonValue::String(TEST_IMAGE.to_owned()))
-        );
-    }
-
-    #[test]
-    fn legacy_reversed_workflow_image_bindings_follow_workflow_semantics() {
-        let workflow = StoredWorkflow {
-            nodes: vec![StoredWorkflowNode {
-                id: "transfer".to_owned(),
-                uses: "color-transfer".to_owned(),
-                needs: vec!["input-source".to_owned(), "reference-source".to_owned()],
-                params: BTreeMap::from([
-                    (
-                        "input".to_owned(),
-                        serde_yaml::Value::String(
-                            "${{ nodes.input-source.outputs.output_image }}".to_owned(),
-                        ),
-                    ),
-                    (
-                        "reference".to_owned(),
-                        serde_yaml::Value::String(
-                            "${{ nodes.reference-source.outputs.output_image }}".to_owned(),
-                        ),
-                    ),
-                ]),
-                meta: None,
-            }],
-        };
-        let bindings = WorkflowExecutionBindings {
-            inputs: vec![
-                WorkflowInputBinding {
-                    workflow_param: "input".to_owned(),
-                    node_id: "reference-source".to_owned(),
-                    target: "image".to_owned(),
-                    kind: "input_image".to_owned(),
-                },
-                WorkflowInputBinding {
-                    workflow_param: "strength".to_owned(),
-                    node_id: "transfer".to_owned(),
-                    target: "strength".to_owned(),
-                    kind: "param".to_owned(),
-                },
-                WorkflowInputBinding {
-                    workflow_param: "input_2".to_owned(),
-                    node_id: "input-source".to_owned(),
-                    target: "image".to_owned(),
-                    kind: "input_image".to_owned(),
-                },
-            ],
-            primary_output: None,
-            ..WorkflowExecutionBindings::default()
-        };
-
-        let normalized = normalize_workflow_image_input_bindings(&workflow, &bindings);
-
-        assert_eq!(normalized.inputs[0].node_id, "input-source");
-        assert_eq!(normalized.inputs[0].target, "image");
-        assert_eq!(normalized.inputs[1], bindings.inputs[1]);
-        assert_eq!(normalized.inputs[2].node_id, "reference-source");
-        assert_eq!(normalized.inputs[2].target, "image");
-    }
-
-    #[test]
-    fn ambiguous_workflow_image_bindings_are_left_unchanged() {
-        let workflow = StoredWorkflow {
-            nodes: vec![StoredWorkflowNode {
-                id: "consumer".to_owned(),
-                uses: "fixture".to_owned(),
-                needs: vec!["first".to_owned(), "second".to_owned()],
-                params: BTreeMap::from([
-                    (
-                        "mask".to_owned(),
-                        serde_yaml::Value::String("${{ nodes.first.outputs.image }}".to_owned()),
-                    ),
-                    (
-                        "overlay".to_owned(),
-                        serde_yaml::Value::String("${{ nodes.second.outputs.image }}".to_owned()),
-                    ),
-                ]),
-                meta: None,
-            }],
-        };
-        let bindings = WorkflowExecutionBindings {
-            inputs: vec![
-                WorkflowInputBinding {
-                    workflow_param: "input".to_owned(),
-                    node_id: "second".to_owned(),
-                    target: "image".to_owned(),
-                    kind: "input_image".to_owned(),
-                },
-                WorkflowInputBinding {
-                    workflow_param: "input_2".to_owned(),
-                    node_id: "first".to_owned(),
-                    target: "image".to_owned(),
-                    kind: "input_image".to_owned(),
-                },
-            ],
-            primary_output: None,
-            ..WorkflowExecutionBindings::default()
-        };
-
-        assert_eq!(
-            normalize_workflow_image_input_bindings(&workflow, &bindings),
-            bindings
         );
     }
 
@@ -1746,7 +1643,7 @@ nodes:
         let tool_registry = ToolRegistry::new(root.join("tools"));
         let node = StoredWorkflowNode {
             id: "reference-source".to_owned(),
-            uses: "sticker".to_owned(),
+            uses: "__sticker__".to_owned(),
             needs: vec![],
             params: BTreeMap::new(),
             meta: None,
@@ -1777,6 +1674,7 @@ nodes:
             &workflow_store,
             &tool_registry,
             None,
+            None,
         )
         .expect("resolve local path binding");
 
@@ -1796,7 +1694,7 @@ nodes:
         let tool_registry = ToolRegistry::new(root.join("tools"));
         let node = StoredWorkflowNode {
             id: "reference-source".to_owned(),
-            uses: "sticker".to_owned(),
+            uses: "__sticker__".to_owned(),
             needs: vec![],
             params: BTreeMap::new(),
             meta: None,
@@ -1825,6 +1723,7 @@ nodes:
             &workflow_store,
             &tool_registry,
             None,
+            None,
         )
         .expect_err("missing input_2 must not reuse the root input");
 
@@ -1839,6 +1738,32 @@ nodes:
     }
 
     #[test]
+    fn workflow_runtime_rejects_an_already_cancelled_request() {
+        let root = temp_root("already-cancelled");
+        let workflow_store = WorkflowStore::new(root.join("workflows"));
+        workflow_store
+            .save_workflow("cancelled-flow", "name: Cancelled\nnodes: []\n")
+            .expect("save cancelled workflow");
+        let tool_registry = ToolRegistry::new(root.join("tools"));
+        let cancellation = AtomicBool::new(true);
+
+        let error = execute_tool_with_workflows_and_preview_timeout_and_cancellation(
+            &workflow_tool("cancelled-flow"),
+            &[],
+            &workflow_store,
+            &tool_registry,
+            json!({}),
+            Duration::from_secs(1),
+            &cancellation,
+            |_| {},
+        )
+        .expect_err("cancelled workflow must not execute");
+
+        assert!(matches!(error, WorkflowRuntimeError::Cancelled));
+        fs::remove_dir_all(root).expect("cleanup cancelled workflow root");
+    }
+
+    #[test]
     fn workflow_runtime_reports_unresolved_dependencies() {
         let root = temp_root("cycle");
         let workflow_store = WorkflowStore::new(root.join("workflows"));
@@ -1849,10 +1774,10 @@ nodes:
                 r#"name: Cycle Flow
 nodes:
   - id: a
-    uses: fixture-script
+    uses: test.publisher/fixture-script
     needs: [b]
   - id: b
-    uses: fixture-script
+    uses: test.publisher/fixture-script
     needs: [a]
 "#,
             )

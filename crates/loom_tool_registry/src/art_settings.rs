@@ -183,12 +183,10 @@ impl ArtSettingsStore {
 
 #[must_use]
 pub fn art_is_locally_authored(tool: &ToolDefinition) -> bool {
-    tool.publisher_identity().is_none()
-        && tool
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("authoring"))
-            .is_some_and(Value::is_object)
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("authoring"))
+        .is_some_and(Value::is_object)
 }
 
 pub fn apply_settings_metadata(tool: &mut ToolDefinition, settings: &ArtUserSettings) {
@@ -231,15 +229,6 @@ pub fn merge_tool_arguments(tool: &ToolDefinition, arguments: Value) -> Value {
     let value_binding_ids = tool_value_bindings(tool)
         .into_keys()
         .collect::<std::collections::BTreeSet<_>>();
-    if let Some(compat_defaults) = tool
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(|compat| compat.get("defaults"))
-        .and_then(Value::as_object)
-    {
-        defaults.extend(compat_defaults.clone());
-    }
     if let Some(user_defaults) = tool
         .metadata
         .as_ref()
@@ -266,7 +255,6 @@ pub fn merge_tool_arguments(tool: &ToolDefinition, arguments: Value) -> Value {
         defaults.extend(explicit_params);
         for disabled in explicit
             .get("disabledParams")
-            .or_else(|| explicit.get("disabled_params"))
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
@@ -307,7 +295,6 @@ pub fn resolve_tool_value_bindings(
     })?;
     let disabled = arguments
         .get("disabledParams")
-        .or_else(|| arguments.get("disabled_params"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -358,19 +345,13 @@ pub fn art_parameter_definitions(tool: &ToolDefinition) -> Vec<ArtParameterDefin
         .iter()
         .filter_map(|parameter| {
             let parameter = parameter.as_object()?;
-            let id = parameter
-                .get("id")
-                .or_else(|| parameter.get("name"))
-                .or_else(|| parameter.get("key"))
-                .and_then(Value::as_str)?
-                .trim();
+            let id = parameter.get("id").and_then(Value::as_str)?.trim();
             if id.is_empty() {
                 return None;
             }
             let widget = parameter.get("widget").and_then(Value::as_str);
             let parameter_type = parameter
                 .get("type")
-                .or_else(|| parameter.get("dataType"))
                 .or_else(|| parameter.get("data_type"))
                 .and_then(Value::as_str)
                 .or_else(|| match widget {
@@ -391,7 +372,6 @@ pub fn art_parameter_definitions(tool: &ToolDefinition) -> Vec<ArtParameterDefin
                 id: id.to_owned(),
                 label: parameter
                     .get("label")
-                    .or_else(|| parameter.get("title"))
                     .and_then(Value::as_str)
                     .unwrap_or(id)
                     .to_owned(),
@@ -548,12 +528,7 @@ fn manifest_parameter_defaults(tool: &ToolDefinition) -> Map<String, Value> {
         let Some(parameter) = parameter.as_object() else {
             continue;
         };
-        let Some(id) = parameter
-            .get("id")
-            .or_else(|| parameter.get("name"))
-            .or_else(|| parameter.get("key"))
-            .and_then(Value::as_str)
-        else {
+        let Some(id) = parameter.get("id").and_then(Value::as_str) else {
             continue;
         };
         if parameter_is_secret(parameter) {
@@ -574,8 +549,6 @@ fn secret_parameter_ids(tool: &ToolDefinition) -> std::collections::BTreeSet<Str
         .filter_map(|parameter| {
             parameter
                 .get("id")
-                .or_else(|| parameter.get("name"))
-                .or_else(|| parameter.get("key"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
@@ -589,7 +562,6 @@ fn parameter_is_secret(parameter: &Map<String, Value>) -> bool {
         .unwrap_or(false)
         || parameter
             .get("type")
-            .or_else(|| parameter.get("dataType"))
             .or_else(|| parameter.get("data_type"))
             .and_then(Value::as_str)
             == Some("secret")
@@ -678,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn local_authorship_requires_authoring_metadata_and_no_publisher() {
+    fn local_authorship_requires_authoring_metadata() {
         let mut tool = ToolDefinition::new(
             "local",
             "Local",
@@ -694,7 +666,7 @@ mod tests {
             "authoring": { "origin": "local" },
             "packageSecurity": { "publisher": { "id": "neuro.official", "name": "Neuro" } }
         }));
-        assert!(!art_is_locally_authored(&tool));
+        assert!(art_is_locally_authored(&tool));
     }
 
     #[test]

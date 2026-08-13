@@ -681,13 +681,12 @@ test("buildWorkflowArtBundle exposes selected params and bakes the rest into wit
   // primaryOutput points at the terminal node (b) via workflowNodeId.
   assert.equal(bindings.primaryOutput?.nodeId, "b");
   // Image input goes in `inputs` (1), exposed params go in `params` (2) — Loom's
-  // artloom_compat_art_json maps tool.params → Hook's ArtParameter list.
+  // The formal capability mapper preserves tool params as Hook Art parameters.
   assert.equal(tool.inputs?.length, 1);
   assert.equal(tool.params?.length, 2);
   assert.equal(tool.id, "hook-wf-wf-1");
-  // ArtLoom-compat metadata so it surfaces in Hook's Art node list.
-  const metadata = tool.metadata as { artloomCompat?: { source?: string } };
-  assert.equal(metadata.artloomCompat?.source, "artloom-compat");
+  const metadata = tool.metadata as { hookWorkflow?: { managedBy?: string } };
+  assert.equal(metadata.hookWorkflow?.managedBy, "hook-workflow");
   // Every param carries id + widget so Hook's ArtParameter can deserialize it.
   for (const param of tool.params as Array<{ id?: string; widget?: string }>) {
     assert.ok(param.id, "param must have id");

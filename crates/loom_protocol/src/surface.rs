@@ -13,6 +13,31 @@ use thiserror::Error;
 
 pub const SURFACE_PROTOCOL_VERSION: &str = "loom.surface.v1";
 pub const SURFACE_API_VERSION: &str = "1.0";
+pub const SURFACE_EVENT_SNAPSHOT: &str = "loom.surface.snapshot";
+pub const SURFACE_EVENT_PATCH: &str = "loom.surface.patch";
+pub const SURFACE_EVENT_GENERATION: &str = "loom.surface.generation";
+pub const SURFACE_EVENT_ACTION_ACK: &str = "loom.surface.action.ack";
+pub const SURFACE_EVENT_CONFIRMATION_REQUEST: &str = "loom.surface.confirmation.request";
+pub const SURFACE_EVENT_ACTION_PROGRESS: &str = "loom.surface.action.progress";
+pub const SURFACE_EVENT_PREVIEW: &str = "loom.surface.preview";
+pub const SURFACE_EVENT_RESULT: &str = "loom.surface.result";
+pub const SURFACE_EVENT_FAILURE: &str = "loom.surface.failure";
+pub const SURFACE_EVENT_LIFECYCLE: &str = "loom.surface.lifecycle";
+pub const SURFACE_EVENT_DISPOSE: &str = "loom.surface.dispose";
+
+pub const SURFACE_EVENT_METHODS: &[&str] = &[
+    SURFACE_EVENT_SNAPSHOT,
+    SURFACE_EVENT_PATCH,
+    SURFACE_EVENT_GENERATION,
+    SURFACE_EVENT_ACTION_ACK,
+    SURFACE_EVENT_CONFIRMATION_REQUEST,
+    SURFACE_EVENT_ACTION_PROGRESS,
+    SURFACE_EVENT_PREVIEW,
+    SURFACE_EVENT_RESULT,
+    SURFACE_EVENT_FAILURE,
+    SURFACE_EVENT_LIFECYCLE,
+    SURFACE_EVENT_DISPOSE,
+];
 pub const DECLARATIVE_SURFACE_NODE_TYPES: &[&str] = &[
     "view", "row", "column", "stack", "scroll", "text", "image", "icon", "button", "input",
     "textarea", "number", "slider", "switch", "select", "progress", "divider", "spacer",

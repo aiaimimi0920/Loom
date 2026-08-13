@@ -9,6 +9,12 @@ authors must not depend on private Loom or Hook source code.
 
 - `loom.framework.v1` is stable. Existing field names and one-request/one-result
   JSON semantics will not change incompatibly.
+- `loom.hook.v1` is the standardized Loom<->Hook Art bridge contract. It owns
+  connection negotiation, capability discovery, Art execution requests and
+  results, Surface attachment/resource operations, and structured failures.
+  Loom and Hook negotiate from `protocolVersion` plus
+  `supportedProtocolVersions`; package authors must use the brokered contract
+  rather than calling Hook or Loom implementation APIs directly.
 - Hosts negotiate from `protocolVersion` plus `supportedProtocolVersions`.
   Packages must not infer behavior from the Loom application version.
 - `loom.art.execute.v1` and `loom.art.result.v1` describe framework execution.
@@ -20,6 +26,39 @@ authors must not depend on private Loom or Hook source code.
   secure defaults defined by `loom_protocol`.
 - Streaming or persistent workers require a separately named protocol and
   explicit negotiation; they cannot silently change v1 framing.
+
+### Loom<->Hook Art contract and legacy retirement
+
+Phase 71 canonical-only cleanup is the current production baseline. Obsolete
+wire aliases, persisted forms, package layouts, provider/process fields, and
+app-data identities are rejected rather than discovered or migrated.
+
+The canonical cross-application Art path is `loom.hook.v1` together with the
+`loom.surface.v1` Surface payload protocol. Loom owns package installation,
+execution, resource brokering, formal-result commits, and device/session
+authorization; Hook owns capability-driven rendering and user interaction. The
+wire contract does not expose private Rust types, Hook DOM handles, Tauri IPC,
+or package source paths.
+
+There are no legacy compatibility inputs on the production Loom<->Hook Art
+bridge. Requests and ordinary events use only the exact `loom.hook.*` names
+defined by `loom.hook.v1`; Surface pushes use only the exact
+`loom.surface.snapshot`, `loom.surface.patch`, `loom.surface.generation`,
+`loom.surface.action.ack`, `loom.surface.confirmation.request`,
+`loom.surface.action.progress`, `loom.surface.preview`, `loom.surface.result`,
+`loom.surface.failure`, `loom.surface.lifecycle`, and `loom.surface.dispose`
+names. Unnamespaced names such as `surface` and `surface/snapshot`, ArtLoom/AHRP
+routes, old direct per-Art methods, and short Art-ID catalog aliases are not
+accepted. Bridge Art identity is publisher-qualified, for example
+`neuro.official/surface-device-dashboard`.
+
+Hook translates formal `loom.surface.*` pushes into private `surface/...` Tauri
+events for its frontend. Those process-internal UI events are not wire aliases.
+Framework and Art storage use only publisher-qualified immutable layouts; the
+Art Store exposes exact versioned packages; Hook reads only its current app-data
+identity; and framework processes accept only the current ABI fields. Hook's
+WGC-to-GDI screenshot fallback is a current capture reliability mechanism, not
+a package, persistence, or bridge compatibility path.
 
 ## Distributed Art Surface v1
 
@@ -112,8 +151,8 @@ publisher-owned packages have the canonical identity `publisher/id`.
 4. The process writes exactly one UTF-8 JSON response to stdout. Protocol data
    must not be mixed with banners or logs.
 5. Logs and diagnostics belong on stderr.
-6. A successful response uses status `success`; `ok` and `completed` remain
-   accepted compatibility aliases.
+6. A successful framework-process response uses status `success`; no alternate
+   status spelling is accepted.
 7. A failed response uses the structured `error.code`, `error.message`, and
    optional `error.detail` fields. A non-zero exit, timeout, invalid JSON, or
    output limit is also a structured host failure.
@@ -149,8 +188,8 @@ frameworks/<publisher>/<id>/
   locks/<package-digest>.json
 ```
 
-Unsigned legacy packages omit the publisher directory. Version directories are
-read-only after activation. `active.json` changes atomically. Startup recovers
+The publisher directory is mandatory. Version directories are read-only after
+activation. `active.json` changes atomically. Startup recovers
 or quarantines lifecycle journals, verifies the active lockfile, and refuses a
 tampered package.
 
@@ -202,7 +241,7 @@ Packages use Ed25519 and a canonical SHA-256 digest. Signature metadata is in
 the manifest and the detached document defaults to `signature.json`.
 
 Trust states are `unsigned`, `verified`, `trusted`, `invalid`, and `revoked`.
-The compatibility default is `LOOM_PLUGIN_TRUST_POLICY=allow-unsigned`.
+The current development default is `LOOM_PLUGIN_TRUST_POLICY=allow-unsigned`.
 Production installations should use `require-trusted`. Revoked keys are always
 rejected by `loom-plugin validate --trust-store ...` and are rechecked during
 rollback and execution readiness.
@@ -228,7 +267,7 @@ and Unix. Memory and active-process-count limits are enforced by Windows Job
 Objects; the current Unix process-group backend reports those declarations as
 advisory.
 
-`LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatibility default.
+`LOOM_PLUGIN_PERMISSION_MODE=audit` is the current default.
 `LOOM_PLUGIN_PERMISSION_MODE=strict` rejects a framework before self-test or Art
 execution when it requests those direct, currently unenforceable capabilities.
 Doctor output reports the selected mode, enforcement matrix, and per-framework
@@ -236,7 +275,7 @@ findings.
 
 ## Diagnostics
 
-HTTP, ArtLoom compatibility HTTP, Hook Bridge, and AHRP Art executions create durable `art.execute` run
+HTTP and `loom.hook.v1` Art executions create durable `art.execute` run
 evidence with started/completed/failed events. Diagnostics and support bundles
 redact tokens, passwords, private keys, authorization headers, cookies,
 credential values, URL credentials/query/fragment, and oversized strings.
@@ -252,8 +291,8 @@ credential values, URL credentials/query/fragment, and oversized strings.
 Use the independently released `loom-plugin.exe`:
 
 ```text
-loom-plugin init framework <DIR> <ID>
-loom-plugin init art <DIR> <ID> <FRAMEWORK>
+loom-plugin init framework <DIR> <ID> <PUBLISHER>
+loom-plugin init art <DIR> <ID> <FRAMEWORK> <PUBLISHER>
 loom-plugin validate <PATH> [--trust-store <STORE>]
 loom-plugin pack <SOURCE_DIR> <OUTPUT_ZIP>
 loom-plugin conformance <EXE> <FRAMEWORK> <ART_DIR>

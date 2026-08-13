@@ -1,4 +1,4 @@
-//! Workflow persistence and ArtLoom graph codec contracts for Loom.
+//! Workflow persistence and graph codec contracts for Loom.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -13,8 +13,6 @@ use thiserror::Error;
 const WORKFLOW_INDEX_FILE: &str = "workflow_index.json";
 const LIVE_WORKFLOW_FILE: &str = "latest.yaml";
 const STICKER_USES: &str = "__sticker__";
-const LEGACY_STICKER_USES: &str = "sticker";
-const LEGACY_PARAM_BAG_KEY: &str = "params";
 const VISUAL_META_KEYS: [&str; 7] = [
     "src",
     "previewSrc",
@@ -33,6 +31,8 @@ pub enum WorkflowStoreError {
     NotFound(String),
     #[error("workflow YAML is invalid: {0}")]
     InvalidWorkflowYaml(String),
+    #[error("workflow graph is invalid: {0}")]
+    InvalidWorkflowGraph(String),
     #[error("filesystem error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -66,6 +66,7 @@ impl WorkflowStore {
     }
 
     pub fn save_workflow(&self, id: &str, yaml: &str) -> WorkflowStoreResult<WorkflowMetadata> {
+        workflow_yaml_to_graph_json(yaml)?;
         self.ensure_root()?;
         let path = self.workflow_path(id)?;
         fs::write(&path, yaml)?;
@@ -97,7 +98,9 @@ impl WorkflowStore {
             return Err(WorkflowStoreError::NotFound(id.to_owned()));
         }
 
-        fs::read_to_string(path).map_err(WorkflowStoreError::from)
+        let yaml = fs::read_to_string(path)?;
+        workflow_yaml_to_graph_json(&yaml)?;
+        Ok(yaml)
     }
 
     pub fn list_workflows(&self) -> WorkflowStoreResult<Vec<WorkflowMetadata>> {
@@ -268,24 +271,36 @@ pub fn graph_json_to_workflow_yaml(
         let node_type = node
             .get("type")
             .and_then(JsonValue::as_str)
-            .or_else(|| {
-                node.get("data")
-                    .and_then(|data| data.get("type"))
-                    .and_then(JsonValue::as_str)
-            })
-            .unwrap_or("artNode");
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidWorkflowGraph(format!(
+                    "node `{node_id}` is missing canonical type `sticker` or `artNode`"
+                ))
+            })?;
+        if !matches!(node_type, "sticker" | "artNode") {
+            return Err(WorkflowStoreError::InvalidWorkflowGraph(format!(
+                "node `{node_id}` has unsupported type `{node_type}`"
+            )));
+        }
         let is_sticker = node_type == "sticker";
         let art_id = if is_sticker {
             STICKER_USES.to_owned()
         } else {
-            node.get("data")
+            let art_id = node
+                .get("data")
                 .and_then(|data| data.get("artId"))
                 .and_then(JsonValue::as_str)
-                .unwrap_or("unknown")
-                .to_owned()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    WorkflowStoreError::InvalidWorkflowGraph(format!(
+                        "Art node `{node_id}` is missing data.artId"
+                    ))
+                })?;
+            validate_art_id(art_id)?;
+            art_id.to_owned()
         };
 
-        let mut with_payload = normalized_param_map(
+        let mut with_payload = clone_param_map(
             node.get("data")
                 .and_then(|data| data.get("params"))
                 .and_then(JsonValue::as_object),
@@ -343,7 +358,6 @@ pub fn graph_json_to_workflow_yaml(
             .get("data")
             .and_then(|data| data.get("w"))
             .and_then(JsonValue::as_f64)
-            .or_else(|| node.get("width").and_then(JsonValue::as_f64))
         {
             size.insert("w".to_owned(), serde_json::json!(width));
         }
@@ -351,7 +365,6 @@ pub fn graph_json_to_workflow_yaml(
             .get("data")
             .and_then(|data| data.get("h"))
             .and_then(JsonValue::as_f64)
-            .or_else(|| node.get("height").and_then(JsonValue::as_f64))
         {
             size.insert("h".to_owned(), serde_json::json!(height));
         }
@@ -363,11 +376,6 @@ pub fn graph_json_to_workflow_yaml(
             .get("data")
             .and_then(|data| data.get("executionType"))
             .and_then(JsonValue::as_str)
-            .or_else(|| {
-                node.get("data")
-                    .and_then(|data| data.get("execution_type"))
-                    .and_then(JsonValue::as_str)
-            })
         {
             meta.insert(
                 "executionType".to_owned(),
@@ -428,7 +436,7 @@ pub fn collect_workflow_uses(yaml: &str) -> WorkflowStoreResult<Vec<String>> {
     if let Some(nodes) = parsed.get("nodes").and_then(YamlValue::as_sequence) {
         for node in nodes {
             if let Some(value) = node.get("uses").and_then(YamlValue::as_str) {
-                if value == STICKER_USES || value == LEGACY_STICKER_USES {
+                if value == STICKER_USES {
                     continue;
                 }
                 if seen.insert(value.to_owned()) {
@@ -451,22 +459,29 @@ pub fn workflow_yaml_to_graph_json(yaml: &str) -> WorkflowStoreResult<JsonValue>
     let mut edges = Vec::new();
 
     for yaml_node in yaml_nodes {
-        let Some(node_id) = yaml_node.get("id").and_then(YamlValue::as_str) else {
-            continue;
-        };
+        let node_id = yaml_node
+            .get("id")
+            .and_then(YamlValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidWorkflowYaml(
+                    "every workflow node requires a non-empty id".to_owned(),
+                )
+            })?;
 
         let uses = yaml_node
             .get("uses")
             .and_then(YamlValue::as_str)
-            .unwrap_or("unknown");
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidWorkflowYaml(format!("node `{node_id}` is missing uses"))
+            })?;
+        validate_workflow_uses(uses)
+            .map_err(|error| WorkflowStoreError::InvalidWorkflowYaml(error.to_string()))?;
         let meta = yaml_node.get("meta");
-        let node_type = if uses == STICKER_USES
-            || uses == LEGACY_STICKER_USES
-            || meta
-                .and_then(|value| value.get("type"))
-                .and_then(YamlValue::as_str)
-                == Some("sticker")
-        {
+        let node_type = if uses == STICKER_USES {
             "sticker"
         } else {
             "artNode"
@@ -505,26 +520,13 @@ pub fn workflow_yaml_to_graph_json(yaml: &str) -> WorkflowStoreResult<JsonValue>
                     }
                 }
 
-                if target_handle == LEGACY_PARAM_BAG_KEY {
-                    if let Some(legacy_params) = json_value.as_object() {
-                        for (legacy_key, legacy_value) in legacy_params {
-                            params.insert(legacy_key.clone(), legacy_value.clone());
-                        }
-                    }
-                    continue;
-                }
-
-                if hoist_legacy_with_field(&mut data, target_handle, &json_value) {
-                    continue;
-                }
-
                 params.insert(target_handle.to_owned(), json_value);
             }
         }
 
         data.insert(
             "params".to_owned(),
-            JsonValue::Object(normalized_param_map(Some(&params))),
+            JsonValue::Object(clone_param_map(Some(&params))),
         );
 
         if let Some(execution_type) = meta
@@ -610,8 +612,57 @@ fn validate_workflow_id(id: &str) -> WorkflowStoreResult<()> {
     Ok(())
 }
 
+fn validate_qualified_art_id(value: &str) -> WorkflowStoreResult<()> {
+    let mut parts = value.split('/');
+    let publisher = parts.next().unwrap_or_default();
+    let package = parts.next().unwrap_or_default();
+    if parts.next().is_some() || !safe_package_segment(publisher) || !safe_package_segment(package)
+    {
+        return Err(WorkflowStoreError::InvalidWorkflowGraph(format!(
+            "Art identity `{value}` must be publisher-qualified as `<publisher>/<id>`"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_workflow_uses(value: &str) -> WorkflowStoreResult<()> {
+    if value == STICKER_USES {
+        return Ok(());
+    }
+    validate_art_id(value)
+}
+
+pub fn validate_art_id(value: &str) -> WorkflowStoreResult<()> {
+    if is_native_art_id(value) {
+        return Ok(());
+    }
+    validate_qualified_art_id(value)
+}
+
+fn is_native_art_id(value: &str) -> bool {
+    matches!(
+        value,
+        "core.image.pixelate"
+            | "core.image.blur"
+            | "core.image.grayscale"
+            | "core.image.brightness"
+            | "core.image.contrast"
+            | "core.image.invert"
+    )
+}
+
+fn safe_package_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+}
+
 fn is_live_workflow_id(id: &str) -> bool {
-    matches!(id, "arthook-live" | "hook-live")
+    id == "hook-live"
 }
 
 fn now_string() -> String {
@@ -655,65 +706,8 @@ fn sort_metadata(workflows: &mut [WorkflowMetadata]) {
     });
 }
 
-fn normalized_param_map(params: Option<&JsonMap<String, JsonValue>>) -> JsonMap<String, JsonValue> {
-    let Some(params) = params else {
-        return JsonMap::new();
-    };
-
-    let mut normalized = JsonMap::new();
-
-    if let Some(legacy_params) = params
-        .get(LEGACY_PARAM_BAG_KEY)
-        .and_then(JsonValue::as_object)
-    {
-        for (key, value) in legacy_params {
-            normalized.insert(key.clone(), value.clone());
-        }
-    }
-
-    for (key, value) in params {
-        if key == LEGACY_PARAM_BAG_KEY {
-            continue;
-        }
-        normalized.insert(key.clone(), value.clone());
-    }
-
-    normalized
-}
-
-fn hoist_legacy_with_field(
-    data: &mut JsonMap<String, JsonValue>,
-    key: &str,
-    value: &JsonValue,
-) -> bool {
-    match key {
-        "art_id" | "artId" => {
-            if data.get("artId").is_none() {
-                if let Some(art_id) = value.as_str() {
-                    data.insert("artId".to_owned(), serde_json::json!(art_id));
-                }
-            }
-            true
-        }
-        "w" | "h" => {
-            if value.is_number() {
-                data.insert(key.to_owned(), value.clone());
-            }
-            true
-        }
-        "executionConfig" => {
-            if value.is_object() {
-                data.insert("executionConfig".to_owned(), value.clone());
-            }
-            true
-        }
-        "src" | "previewSrc" | "minified" | "savedRect" | "cropOffset" | "opacityNormal"
-        | "opacityMini" => {
-            data.insert(key.to_owned(), value.clone());
-            true
-        }
-        _ => false,
-    }
+fn clone_param_map(params: Option<&JsonMap<String, JsonValue>>) -> JsonMap<String, JsonValue> {
+    params.cloned().unwrap_or_default()
 }
 
 fn parse_workflow_output_reference(value: &str) -> Option<(String, String)> {
@@ -742,16 +736,22 @@ nodes:
   - id: a
     uses: __sticker__
   - id: b
-    uses: resize
+    uses: neuro.official/resize
   - id: c
-    uses: ocr
+    uses: neuro.official/ocr
     needs: [b]
   - id: d
-    uses: resize
+    uses: neuro.official/resize
     needs: [c]
 "#;
         let uses = super::collect_workflow_uses(yaml).expect("collect uses");
-        assert_eq!(uses, vec!["resize".to_owned(), "ocr".to_owned()]);
+        assert_eq!(
+            uses,
+            vec![
+                "neuro.official/resize".to_owned(),
+                "neuro.official/ocr".to_owned()
+            ]
+        );
     }
 
     use super::*;
@@ -772,7 +772,6 @@ nodes:
         let store = WorkflowStore::new(&root);
         let yaml = "name: Live\nnodes: []\n";
 
-        assert_eq!(workflow_file_name("arthook-live"), "latest.yaml");
         assert_eq!(workflow_file_name("hook-live"), "latest.yaml");
 
         store
@@ -783,8 +782,8 @@ nodes:
         assert!(!root.join("hook-live.yaml").exists());
         assert_eq!(
             store
-                .load_workflow("arthook-live")
-                .expect("load legacy live alias"),
+                .load_workflow("hook-live")
+                .expect("load live workflow"),
             yaml
         );
 
@@ -795,7 +794,7 @@ nodes:
     fn list_workflows_includes_hook_live_alias_when_latest_yaml_exists() {
         let root = temp_root("hook-live-list");
         let store = WorkflowStore::new(&root);
-        let yaml = "name: Hook 实时工作流\nnodes:\n  - id: screenshot\n    uses: hook.capture\n";
+        let yaml = "name: Hook 实时工作流\nnodes:\n  - id: screenshot\n    uses: __sticker__\n";
 
         store
             .save_workflow("hook-live", yaml)
@@ -822,9 +821,9 @@ nodes:
 description: demo
 nodes:
   - id: prompt
-    uses: text.prompt
+    uses: neuro.official/text-prompt
   - id: image
-    uses: image.generate
+    uses: neuro.official/image-generate
     needs: [prompt]
 "#;
 
@@ -868,7 +867,7 @@ nodes:
                     "type": "artNode",
                     "position": { "x": 10, "y": 20 },
                     "data": {
-                        "artId": "text.prompt",
+                        "artId": "neuro.official/text-prompt",
                         "label": "Prompt",
                         "params": { "prompt": "castle", "strength": 0.75 }
                     }
@@ -878,7 +877,7 @@ nodes:
                     "type": "artNode",
                     "position": { "x": 300, "y": 20 },
                     "data": {
-                        "artId": "image.generate",
+                        "artId": "neuro.official/image-generate",
                         "label": "Generate",
                         "params": { "steps": 20 }
                     }
@@ -898,8 +897,8 @@ nodes:
             .expect("graph to yaml");
         assert!(yaml.contains("name: Roundtrip"));
         assert!(yaml.contains("description: demo"));
-        assert!(yaml.contains("uses: text.prompt"));
-        assert!(yaml.contains("uses: image.generate"));
+        assert!(yaml.contains("uses: neuro.official/text-prompt"));
+        assert!(yaml.contains("uses: neuro.official/image-generate"));
 
         let parsed = workflow_yaml_to_graph_json(&yaml).expect("yaml to graph");
         let nodes = parsed["nodes"].as_array().expect("nodes array");
@@ -924,5 +923,33 @@ nodes:
         assert_eq!(edges[0]["target"], "image");
         assert_eq!(edges[0]["sourceHandle"], "text");
         assert_eq!(edges[0]["targetHandle"], "prompt");
+    }
+
+    #[test]
+    fn graph_codec_rejects_noncanonical_node_types_and_unqualified_art_ids() {
+        for graph in [
+            serde_json::json!({ "nodes": [{ "id": "missing", "data": {} }], "edges": [] }),
+            serde_json::json!({ "nodes": [{ "id": "old", "type": "art", "data": { "artId": "neuro.official/demo" } }], "edges": [] }),
+            serde_json::json!({ "nodes": [{ "id": "bare", "type": "artNode", "data": { "artId": "demo" } }], "edges": [] }),
+            serde_json::json!({ "nodes": [{ "id": "empty", "type": "artNode", "data": {} }], "edges": [] }),
+        ] {
+            assert!(matches!(
+                graph_json_to_workflow_yaml(&graph, None, None),
+                Err(WorkflowStoreError::InvalidWorkflowGraph(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn workflow_yaml_codec_rejects_missing_or_unqualified_uses() {
+        for yaml in [
+            "name: invalid\nnodes:\n  - id: missing\n",
+            "name: invalid\nnodes:\n  - id: bare\n    uses: demo\n",
+        ] {
+            assert!(matches!(
+                workflow_yaml_to_graph_json(yaml),
+                Err(WorkflowStoreError::InvalidWorkflowYaml(_))
+            ));
+        }
     }
 }

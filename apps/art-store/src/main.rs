@@ -4,14 +4,12 @@
 //! art catalog, raw art packages, third-party portable binaries, and accepts
 //! published packages. Data lives under a store root:
 //!   <root>/arts/<id>/<version>.zip immutable art package versions
-//!   <root>/arts/<id>.zip           latest-version compatibility copy
 //!   <root>/binaries/<name>      third-party portable executables
 //!
 //! Endpoints (matching the daemon's client contract):
 //!   GET  /catalog               -> version-aware Art catalog
-//!   GET  /arts/<id>.zip         -> raw art package bytes (application/zip)
 //!   GET  /arts/<id>/<version>.zip -> exact package version
-//!   GET  /arts/<id>.zip.sha256  -> package digest sidecar (text/plain)
+//!   GET  /arts/<id>/<version>.zip.sha256 -> package digest sidecar (text/plain)
 //!   GET  /binaries/<name>       -> raw binary bytes (application/octet-stream)
 //!   POST /publish               -> body = zip, header X-Art-Id: <id>
 //!   GET  /health                -> { "ok": true }
@@ -26,10 +24,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use loom_art_store::{
-    build_catalog, read_art_zip, read_art_zip_sha256, read_art_zip_version,
-    read_art_zip_version_sha256, read_binary, read_framework_package, read_publisher,
-    register_publisher_with_id, rotate_publisher_key, store_verified_published_zip,
-    PublisherRotationRequest, StoreError,
+    build_catalog, read_art_zip_version, read_art_zip_version_sha256, read_binary,
+    read_framework_package, read_publisher, register_publisher_with_id, rotate_publisher_key,
+    store_verified_published_zip, PublisherRotationRequest, StoreError,
 };
 
 fn main() -> Result<()> {
@@ -273,30 +270,10 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
                     Err(error) => store_error_response(error),
                 };
             }
-            if let Some(id) = file.strip_suffix(".zip.sha256") {
-                return match read_art_zip_sha256(root, id) {
-                    Ok(Some(bytes)) => Response::bytes(200, "text/plain; charset=utf-8", bytes),
-                    Ok(None) => Response::json(
-                        404,
-                        serde_json::json!({ "error": format!("art `{id}` not found") }),
-                    ),
-                    Err(error) => store_error_response(error),
-                };
-            }
-            let Some(id) = file.strip_suffix(".zip") else {
-                return Response::json(
-                    404,
-                    serde_json::json!({ "error": "art package must end with .zip" }),
-                );
-            };
-            match read_art_zip(root, id) {
-                Ok(Some(bytes)) => Response::bytes(200, "application/zip", bytes),
-                Ok(None) => Response::json(
-                    404,
-                    serde_json::json!({ "error": format!("art `{id}` not found") }),
-                ),
-                Err(error) => store_error_response(error),
-            }
+            Response::json(
+                404,
+                serde_json::json!({ "error": "art package requests require an exact version" }),
+            )
         }
         ("GET", path) if path.starts_with("/binaries/") => {
             let name = &path["/binaries/".len()..];
@@ -394,6 +371,8 @@ fn store_error_response(error: StoreError) -> Response {
         StoreError::InvalidArtId(_)
         | StoreError::InvalidResourceName(_)
         | StoreError::MissingManifest
+        | StoreError::MissingPublisher(_)
+        | StoreError::MissingFramework(_)
         | StoreError::ArtIdMismatch { .. }
         | StoreError::InvalidVersion { .. }
         | StoreError::VersionConflict { .. }

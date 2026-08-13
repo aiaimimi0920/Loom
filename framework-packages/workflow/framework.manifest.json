@@ -16,7 +16,8 @@
   "entry": {
     "kind": "process",
     "command": "runtime/loom-framework-workflow.exe",
-    "args": ["--stdio"]
+    "args": ["--stdio"],
+    "processModel": "per_execution"
   },
   "permissions": ["process.spawn", "file.read", "file.write"],
   "permissionPolicy": {

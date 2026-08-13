@@ -16,7 +16,8 @@
   "entry": {
     "kind": "process",
     "command": "runtime/loom-framework-cloud-api.exe",
-    "args": ["--stdio"]
+    "args": ["--stdio"],
+    "processModel": "per_execution"
   },
   "permissions": ["network.connect", "file.read", "file.write"],
   "permissionPolicy": {

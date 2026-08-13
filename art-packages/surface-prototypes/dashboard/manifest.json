@@ -71,7 +71,7 @@
             "idempotent": false,
             "confirmation": false,
             "cancelable": true,
-            "timeoutMs": 8000,
+            "timeoutMs": 15000,
             "progress": true
           },
           {
@@ -82,7 +82,7 @@
             "idempotent": true,
             "confirmation": false,
             "cancelable": false,
-            "timeoutMs": 2000,
+            "timeoutMs": 10000,
             "progress": false
           }
         ]

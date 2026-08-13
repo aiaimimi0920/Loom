@@ -114,8 +114,8 @@
       "framework": "workflow",
       "frameworkVersion": "^0.1",
       "arts": [
-        "custom-image-blend-script",
-        "custom-1770146354922"
+        "neuro.official/custom-image-blend-script",
+        "neuro.official/custom-1770146354922"
       ]
     },
     "capabilities": {

@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Loom workflow persistence and ArtLoom graph codec contracts"
+description = "Loom workflow persistence and graph codec contracts"
 
 [dependencies]
 serde.workspace = true

@@ -23,7 +23,7 @@ import {
 } from "../../services/hookCanvas.ts";
 import {
   deleteCanvasWorkflow,
-  instantiateArtLoomWorkflow,
+  instantiateHookWorkflow,
   renameCanvasWorkflow,
   saveHookCanvasWorkflow,
   saveWorkflowBundle,
@@ -578,7 +578,7 @@ export function HookCanvasThumbnail({
     setArtMessage(null);
     try {
       const graph = buildHookWorkflowInstantiationGraph(activeSnapshot, baseUrl);
-      await instantiateArtLoomWorkflow(baseUrl, {
+      await instantiateHookWorkflow(baseUrl, {
         ...graph,
         mode: "reference",
         workflowId: selectedWorkflow,

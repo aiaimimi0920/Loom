@@ -8,6 +8,7 @@
     "name",
     "description",
     "version",
+    "publisher",
     "protocolVersion",
     "platforms",
     "entry",

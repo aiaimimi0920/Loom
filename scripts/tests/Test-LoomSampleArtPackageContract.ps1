@@ -144,11 +144,11 @@ foreach ($entry in $expected.GetEnumerator()) {
     if ($entry.Key -eq "image-blend-compress") {
         $dependencyArts = @($manifest.metadata.dependencies.arts | ForEach-Object { [string]$_ })
         Assert-True ($dependencyArts.Count -eq 2) "Workflow sample Art must declare exactly two child Art dependencies."
-        Assert-True ($dependencyArts -contains "custom-image-blend-script") "Workflow sample Art must depend on image blend."
-        Assert-True ($dependencyArts -contains "custom-1770146354922") "Workflow sample Art must depend on image compression."
+        Assert-True ($dependencyArts -contains "neuro.official/custom-image-blend-script") "Workflow sample Art must depend on publisher-qualified image blend."
+        Assert-True ($dependencyArts -contains "neuro.official/custom-1770146354922") "Workflow sample Art must depend on publisher-qualified image compression."
         $workflowSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $workflowPath
-        Assert-True ($workflowSource -match 'uses:\s*custom-image-blend-script') "Workflow sample Art must execute the image-blend child Art."
-        Assert-True ($workflowSource -match 'uses:\s*custom-1770146354922') "Workflow sample Art must execute the image-compress child Art."
+        Assert-True ($workflowSource -match 'uses:\s*neuro\.official/custom-image-blend-script') "Workflow sample Art must execute the publisher-qualified image-blend child Art."
+        Assert-True ($workflowSource -match 'uses:\s*neuro\.official/custom-1770146354922') "Workflow sample Art must execute the publisher-qualified image-compress child Art."
         Assert-True ($workflowSource -notmatch 'Blend-Bitmaps|Save-Png') "Workflow sample Art must not reimplement child Art behavior."
         Assert-True (@($manifest.execution.workflowBindings.inputs).Count -eq 4) "Workflow sample Art must expose all four workflow bindings."
         Assert-True ([string]$manifest.execution.workflowBindings.primaryOutput.nodeId -eq "compress") "Workflow sample Art must return the compression child result."
@@ -282,8 +282,8 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 finally {
                     $workflowReader.Dispose()
                 }
-                Assert-True ($zipWorkflow -match 'uses:\s*custom-image-blend-script') "Packaged workflow must execute image blend: $zipPath"
-                Assert-True ($zipWorkflow -match 'uses:\s*custom-1770146354922') "Packaged workflow must execute image compression: $zipPath"
+                Assert-True ($zipWorkflow -match 'uses:\s*neuro\.official/custom-image-blend-script') "Packaged workflow must execute publisher-qualified image blend: $zipPath"
+                Assert-True ($zipWorkflow -match 'uses:\s*neuro\.official/custom-1770146354922') "Packaged workflow must execute publisher-qualified image compression: $zipPath"
             }
         }
         finally {

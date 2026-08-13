@@ -1,0 +1,513 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/loom/hook-message.v1.schema.json",
+  "title": "Loom Hook control messages v1",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/handshakeResponse" }
+  ],
+  "$defs": {
+    "safeIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._:/-]+$"
+    },
+    "protocolVersion": { "const": "loom.hook.v1" },
+    "subscriptionEvent": {
+      "enum": [
+        "loom.hook.workflow.instantiated",
+        "loom.hook.workflow.updated",
+        "loom.hook.capabilities.updated",
+        "loom.hook.art.ack",
+        "loom.hook.art.progress",
+        "loom.hook.art.preview",
+        "loom.hook.art.result",
+        "loom.hook.art.failure",
+        "loom.hook.settings.updated",
+        "loom.hook.cache.control",
+        "loom.surface.snapshot",
+        "loom.surface.patch",
+        "loom.surface.generation",
+        "loom.surface.action.ack",
+        "loom.surface.confirmation.request",
+        "loom.surface.action.progress",
+        "loom.surface.preview",
+        "loom.surface.result",
+        "loom.surface.failure",
+        "loom.surface.lifecycle",
+        "loom.surface.dispose"
+      ]
+    },
+    "transport": {
+      "enum": ["websocket", "shared_memory", "cloudflare_relay"]
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/safeIdentifier" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "detail": { "type": "string", "maxLength": 8000 }
+      },
+      "additionalProperties": false
+    },
+    "surfaceHostCapabilities": {
+      "type": "object",
+      "required": ["apiVersion", "runtimes", "nodes", "transports", "capabilities", "input"],
+      "properties": {
+        "apiVersion": { "type": "string", "minLength": 1 },
+        "runtimes": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "nodes": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "transports": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "input": {
+          "type": "object",
+          "required": ["pointer", "hover", "touch", "keyboard"],
+          "properties": {
+            "pointer": { "type": "boolean" },
+            "hover": { "type": "boolean" },
+            "touch": { "type": "boolean" },
+            "keyboard": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "portValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "value" },
+            "value": true
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "mime", "dataBase64"],
+          "properties": {
+            "kind": { "const": "inline_resource" },
+            "mime": { "type": "string", "minLength": 1, "maxLength": 160 },
+            "dataBase64": { "type": "string", "minLength": 1 },
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "handle", "size", "width", "height", "format"],
+          "properties": {
+            "kind": { "const": "shared_memory" },
+            "handle": { "$ref": "#/$defs/safeIdentifier" },
+            "size": { "type": "integer", "minimum": 1 },
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 },
+            "format": { "const": "rgba8" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "resource"],
+          "properties": {
+            "kind": { "const": "resource" },
+            "resource": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "artResultCandidate": {
+      "type": "object",
+      "required": ["index", "imageUrl"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "title": { "type": "string" },
+        "imageUrl": { "type": "string", "minLength": 1 },
+        "thumbnail": { "type": "string" },
+        "preview": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "sourcePageUrl": { "type": "string" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "artResultCandidates": {
+      "type": "object",
+      "required": ["kind", "items"],
+      "properties": {
+        "kind": { "const": "image.candidates" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artResultCandidate" }
+        },
+        "selectedIndex": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "handshakeRequest": {
+      "type": "object",
+      "required": ["protocolVersion", "clientId", "clientVersion", "platform", "transports"],
+      "properties": {
+        "protocolVersion": { "type": "string", "minLength": 1 },
+        "supportedProtocolVersions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "clientId": { "$ref": "#/$defs/safeIdentifier" },
+        "clientVersion": { "$ref": "#/$defs/safeIdentifier" },
+        "platform": { "$ref": "#/$defs/safeIdentifier" },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "transports": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/transport" },
+          "uniqueItems": true
+        },
+        "surface": { "$ref": "#/$defs/surfaceHostCapabilities" }
+      },
+      "additionalProperties": false
+    },
+    "handshakeResponse": {
+      "type": "object",
+      "required": ["protocolVersion", "serverName", "serverVersion", "sessionId", "transport", "capabilities"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "serverName": { "$ref": "#/$defs/safeIdentifier" },
+        "serverVersion": { "$ref": "#/$defs/safeIdentifier" },
+        "sessionId": { "$ref": "#/$defs/safeIdentifier" },
+        "transport": { "$ref": "#/$defs/transport" },
+        "capabilities": {
+          "type": "object",
+          "required": ["artDefinitions", "surface", "operations"],
+          "properties": {
+            "artDefinitions": { "type": "array", "items": { "type": "object" } },
+            "surface": { "$ref": "#/$defs/surfaceHostCapabilities" },
+            "operations": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^loom\\.hook\\." },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilitiesList": {
+      "type": "object",
+      "required": ["requestId"],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "enabledOnly": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "subscribe": {
+      "type": "object",
+      "required": ["requestId"],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subscriptionEvent" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflowSync": {
+      "type": "object",
+      "required": ["requestId", "workflowId", "snapshot"],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "workflowId": { "$ref": "#/$defs/safeIdentifier" },
+        "snapshot": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "workflowNodeUpdate": {
+      "type": "object",
+      "required": ["requestId", "workflowId", "nodeId", "parameterId", "value"],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "workflowId": { "$ref": "#/$defs/safeIdentifier" },
+        "nodeId": { "$ref": "#/$defs/safeIdentifier" },
+        "parameterId": { "$ref": "#/$defs/safeIdentifier" },
+        "value": true
+      },
+      "additionalProperties": false
+    },
+    "workflowInstantiate": {
+      "type": "object",
+      "required": ["requestId", "mode", "nodes", "edges"],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "workflowId": { "$ref": "#/$defs/safeIdentifier" },
+        "mode": { "$ref": "#/$defs/safeIdentifier" },
+        "nodes": { "type": "array", "items": { "type": "object" } },
+        "edges": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "artExecute": {
+      "type": "object",
+      "required": ["protocolVersion", "requestId", "nodeId", "artId", "generation", "inputs", "parameters", "disabledParameters"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "nodeId": { "$ref": "#/$defs/safeIdentifier" },
+        "artId": { "$ref": "#/$defs/safeIdentifier" },
+        "generation": { "type": "integer", "minimum": 0 },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/portValue" }
+        },
+        "parameters": { "type": "object" },
+        "disabledParameters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/safeIdentifier" },
+          "uniqueItems": true
+        },
+        "deadlineAtMs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "artCancel": {
+      "type": "object",
+      "required": ["protocolVersion", "requestId", "nodeId", "generation"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "nodeId": { "$ref": "#/$defs/safeIdentifier" },
+        "generation": { "type": "integer", "minimum": 0 },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "oneOf": [
+        { "$ref": "#/$defs/handshakeRequestEnvelope" },
+        { "$ref": "#/$defs/capabilitiesListEnvelope" },
+        { "$ref": "#/$defs/subscribeEnvelope" },
+        { "$ref": "#/$defs/workflowSyncEnvelope" },
+        { "$ref": "#/$defs/workflowNodeUpdateEnvelope" },
+        { "$ref": "#/$defs/workflowInstantiateEnvelope" },
+        { "$ref": "#/$defs/artExecuteEnvelope" },
+        { "$ref": "#/$defs/artCancelEnvelope" },
+        { "$ref": "#/$defs/settingsGetEnvelope" },
+        { "$ref": "#/$defs/enhancementsGetEnvelope" },
+        { "$ref": "#/$defs/ocrExecuteEnvelope" },
+        { "$ref": "#/$defs/translationExecuteEnvelope" }
+      ]
+    },
+    "handshakeRequestEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.handshake" },
+        "params": { "$ref": "#/$defs/handshakeRequest" }
+      },
+      "additionalProperties": false
+    },
+    "capabilitiesListEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.capabilities.list" },
+        "params": { "$ref": "#/$defs/capabilitiesList" }
+      },
+      "additionalProperties": false
+    },
+    "subscribeEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.subscribe" },
+        "params": { "$ref": "#/$defs/subscribe" }
+      },
+      "additionalProperties": false
+    },
+    "workflowSyncEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.workflow.sync" },
+        "params": { "$ref": "#/$defs/workflowSync" }
+      },
+      "additionalProperties": false
+    },
+    "workflowNodeUpdateEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.workflow.node.update" },
+        "params": { "$ref": "#/$defs/workflowNodeUpdate" }
+      },
+      "additionalProperties": false
+    },
+    "workflowInstantiateEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.workflow.instantiate" },
+        "params": { "$ref": "#/$defs/workflowInstantiate" }
+      },
+      "additionalProperties": false
+    },
+    "artExecuteEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.art.execute" },
+        "params": { "$ref": "#/$defs/artExecute" }
+      },
+      "additionalProperties": false
+    },
+    "artCancelEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.art.cancel" },
+        "params": { "$ref": "#/$defs/artCancel" }
+      },
+      "additionalProperties": false
+    },
+    "settingsGetEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.settings.get" },
+        "params": {
+          "type": "object",
+          "required": ["requestId"],
+          "properties": { "requestId": { "$ref": "#/$defs/safeIdentifier" } },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "enhancementsGetEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.enhancements.get" },
+        "params": {
+          "type": "object",
+          "required": ["requestId"],
+          "properties": { "requestId": { "$ref": "#/$defs/safeIdentifier" } },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ocrExecuteEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.ocr.execute" },
+        "params": {
+          "type": "object",
+          "required": ["requestId", "imageBase64"],
+          "properties": {
+            "requestId": { "$ref": "#/$defs/safeIdentifier" },
+            "imageBase64": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "translationExecuteEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.translation.execute" },
+        "params": {
+          "type": "object",
+          "required": ["requestId", "text", "targetLanguage"],
+          "properties": {
+            "requestId": { "$ref": "#/$defs/safeIdentifier" },
+            "text": { "type": "string" },
+            "targetLanguage": { "$ref": "#/$defs/safeIdentifier" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["protocolVersion", "requestId", "status", "data"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "status": { "enum": ["accepted", "running", "cancel_requested", "cancelled", "succeeded", "failed"] },
+        "data": true,
+        "error": { "$ref": "#/$defs/error" }
+      },
+      "additionalProperties": false
+    },
+    "artResultCommit": {
+      "type": "object",
+      "required": ["protocolVersion", "requestId", "nodeId", "generation", "resultRevision", "outputs"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "nodeId": { "$ref": "#/$defs/safeIdentifier" },
+        "generation": { "type": "integer", "minimum": 0 },
+        "resultRevision": { "type": "integer", "minimum": 1 },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/portValue" }
+        },
+        "candidates": { "$ref": "#/$defs/artResultCandidates" }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["protocolVersion", "method", "params"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "method": {
+          "enum": [
+            "loom.hook.workflow.instantiated",
+            "loom.hook.workflow.updated",
+            "loom.hook.capabilities.updated",
+            "loom.hook.art.ack",
+            "loom.hook.art.progress",
+            "loom.hook.art.preview",
+            "loom.hook.art.result",
+            "loom.hook.art.failure",
+            "loom.hook.settings.updated",
+            "loom.hook.cache.control"
+          ]
+        },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "method": { "const": "loom.hook.art.result" } },
+            "required": ["method"]
+          },
+          "then": {
+            "properties": { "params": { "$ref": "#/$defs/artResultCommit" } }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -4,7 +4,7 @@
 //! optional `metadata.dependencies` block). Installing it:
 //!   1. reads the manifest,
 //!   2. checks the art's framework is installed + ready,
-//!   3. extracts every zip entry into `<control-plane>/arts/<artId>/`,
+//!   3. extracts every zip entry into the publisher-scoped immutable Art tree,
 //!   4. rewrites bundled binary/script paths to point inside that art dir,
 //!   5. registers the `ToolDefinition` in the tool registry.
 //! Dependent arts (workflow `uses` / `dependencies.arts`) are returned for the
@@ -26,7 +26,7 @@ use loom_protocol::{
 };
 
 use crate::framework::{read_dependencies, ArtBinary, FrameworkRegistry};
-use crate::{is_obsolete_execution_type, ToolDefinition, ToolRegistry};
+use crate::{ToolDefinition, ToolRegistry};
 
 const MANIFEST_NAME: &str = "manifest.json";
 const ART_LIFECYCLE_FILE: &str = "lifecycle.json";
@@ -174,7 +174,6 @@ fn art_root_for_reference(control_plane_root: &Path, reference: &str) -> Option<
     reference
         .split_once('/')
         .map(|(publisher, id)| arts.join(publisher).join(id))
-        .or_else(|| Some(arts.join(reference)))
 }
 
 /// Read the `manifest.json` (a `ToolDefinition`) from an art package zip without
@@ -188,48 +187,6 @@ pub fn read_manifest_from_zip(zip_bytes: &[u8]) -> Result<ToolDefinition, ArtIns
     file.read_to_string(&mut text)?;
     let tool: ToolDefinition = serde_json::from_str(&text)?;
     Ok(tool)
-}
-
-/// If a bundled path is a bare relative path (not absolute), resolve it inside
-/// the art dir so the executor finds the extracted binary/script.
-fn resolve_bundled_path(raw: &str, art_dir: &Path) -> String {
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        return raw.to_owned();
-    }
-    // Skip templated tokens (e.g. "{{output}}") — only rewrite real file refs.
-    if raw.contains("{{") || raw.contains('}') {
-        return raw.to_owned();
-    }
-    let bundled = art_dir.join(raw);
-    if bundled.exists() {
-        return bundled.to_string_lossy().to_string();
-    }
-    raw.to_owned()
-}
-
-fn rewrite_artloom_compat_execution_paths(
-    metadata: &mut Option<serde_json::Value>,
-    art_dir: &Path,
-) {
-    let Some(root) = metadata.as_mut().and_then(serde_json::Value::as_object_mut) else {
-        return;
-    };
-    let Some(execution) = root
-        .get_mut("artloomCompat")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|compat| compat.get_mut("execution"))
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-
-    for key in ["command", "path", "artPath", "pythonPath"] {
-        if let Some(value) = execution.get(key).and_then(serde_json::Value::as_str) {
-            let rewritten = resolve_bundled_path(value, art_dir);
-            execution.insert(key.to_owned(), serde_json::Value::String(rewritten));
-        }
-    }
 }
 
 struct ArtPackagePaths<'a> {
@@ -267,176 +224,25 @@ fn record_art_package_directory(
                 "trustStatus": paths.trust_status
             }),
         );
-        let compat = object
-            .entry("artloomCompat".to_owned())
-            .or_insert_with(|| serde_json::json!({}));
-        if !compat.is_object() {
-            *compat = serde_json::json!({});
-        }
-        if let Some(compat) = compat.as_object_mut() {
-            // Package-installed Arts are Loom-owned and Hook-visible. Never let
-            // an untrusted package claim the sync-owned `artloom-compat` source.
-            compat.insert(
-                "source".to_owned(),
-                serde_json::Value::String("loom-local".to_owned()),
-            );
-        }
     }
 }
 
-fn qualified_art_id(tool: &ToolDefinition) -> String {
-    tool.publisher_identity()
-        .map(|publisher| format!("{}/{}", publisher.id, tool.id))
-        .unwrap_or_else(|| tool.id.clone())
+fn qualified_art_id(tool: &ToolDefinition) -> Result<String, ArtInstallError> {
+    let publisher = tool.publisher_identity().ok_or_else(|| {
+        ArtInstallError::InvalidPackage("Art package publisher is required".to_owned())
+    })?;
+    Ok(format!("{}/{}", publisher.id, tool.id))
 }
 
-fn art_root_for_tool(control_plane_root: &Path, tool: &ToolDefinition) -> PathBuf {
-    let arts_root = control_plane_root.join("arts");
-    match tool.publisher_identity() {
-        Some(publisher) => arts_root.join(publisher.id).join(&tool.id),
-        None => arts_root.join(&tool.id),
-    }
-}
-
-fn migrate_art_namespace(
+fn art_root_for_tool(
     control_plane_root: &Path,
     tool: &ToolDefinition,
-    target: &Path,
-) -> Result<(), ArtInstallError> {
-    if tool.publisher_identity().is_none() || target.exists() {
-        return Ok(());
-    }
-    let legacy = control_plane_root.join("arts").join(&tool.id);
-    if !legacy.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::rename(legacy, target)?;
-    Ok(())
-}
-
-fn migrate_legacy_art_layout(
-    control_plane_root: &Path,
-    art_root: &Path,
-    framework_registry: &FrameworkRegistry,
-    tool_registry: &ToolRegistry,
-) -> Result<(), ArtInstallError> {
-    if art_root.join("active.json").is_file() || !art_root.join(MANIFEST_NAME).is_file() {
-        return Ok(());
-    }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let legacy = control_plane_root.join(format!(".loom-art-legacy-{nonce}"));
-    std::fs::rename(art_root, &legacy)?;
-    let result = (|| {
-        let manifest_bytes = std::fs::read(legacy.join(MANIFEST_NAME))?;
-        let manifest_value: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
-        if manifest_value
-            .get("execution")
-            .and_then(|execution| execution.get("type"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(is_obsolete_execution_type)
-        {
-            remove_tree(&legacy)?;
-            return Ok(());
-        }
-        let tool: ToolDefinition = serde_json::from_value(manifest_value)?;
-        let security = read_art_package_security(&tool);
-        let trust_store = TrustStore::load(&control_plane_root.join("plugin-trust.json"))
-            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
-        let trust_status = verify_package_signature(
-            &legacy,
-            security.publisher.as_ref(),
-            security.signature.as_ref(),
-            &trust_store,
-        )
-        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
-        trust_store
-            .effective_policy()
-            .enforce(trust_status)
-            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
-        let digest = canonical_package_digest(
-            &legacy,
-            security
-                .signature
-                .as_ref()
-                .map(|signature| signature.file.as_str()),
-        )
-        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
-        let version = security.version.unwrap_or_else(|| "0.0.0".to_owned());
-        let relative = Path::new("versions").join(format!(
-            "{}-{}",
-            sanitize_version_for_path(&version),
-            &digest[..12]
-        ));
-        let target = art_root.join(&relative);
-        std::fs::create_dir_all(target.parent().expect("legacy Art version parent"))?;
-        std::fs::rename(&legacy, &target)?;
-        let locks_dir = art_root.join("locks");
-        for directory in [
-            art_root.join("state"),
-            art_root.join("cache"),
-            art_root.join("outputs"),
-            locks_dir.clone(),
-        ] {
-            std::fs::create_dir_all(directory)?;
-        }
-        let lockfile = locks_dir.join(format!("{digest}.json"));
-        let dependencies = read_dependencies(&tool);
-        let framework = dependencies.framework.as_deref().ok_or_else(|| {
-            ArtInstallError::InvalidPackage("legacy Art has no framework dependency".to_owned())
-        })?;
-        let locked_arts = resolve_art_dependency_locks(
-            control_plane_root,
-            &dependencies.arts,
-            framework_registry,
-            tool_registry,
-        )?;
-        write_art_lockfile(
-            &lockfile,
-            &qualified_art_id(&tool),
-            &version,
-            framework,
-            framework_registry,
-            &dependencies.binaries,
-            &target,
-            &locked_arts,
-        )?;
-        set_tree_readonly(&target, true)?;
-        write_art_activation(
-            &art_root.join("active.json"),
-            &ArtActivationState {
-                active: ArtVersionPointer {
-                    path: relative.to_string_lossy().replace('\\', "/"),
-                    version,
-                    digest,
-                    lockfile: lockfile.to_string_lossy().to_string(),
-                },
-                previous: None,
-                local_authoring: false,
-                bundled_catalog: false,
-            },
-        )
-    })();
-    if result.is_err() {
-        let migrated = std::fs::read_dir(art_root.join("versions"))
-            .ok()
-            .and_then(|mut entries| entries.next())
-            .and_then(Result::ok)
-            .map(|entry| entry.path());
-        if let Some(migrated) = migrated {
-            let _ = std::fs::rename(migrated, &legacy);
-        }
-        let _ = std::fs::remove_dir_all(art_root);
-        if legacy.exists() {
-            let _ = std::fs::rename(&legacy, art_root);
-        }
-    }
-    result
+) -> Result<PathBuf, ArtInstallError> {
+    let arts_root = control_plane_root.join("arts");
+    let publisher = tool.publisher_identity().ok_or_else(|| {
+        ArtInstallError::InvalidPackage("Art package publisher is required".to_owned())
+    })?;
+    Ok(arts_root.join(publisher.id).join(&tool.id))
 }
 
 fn set_tree_readonly(path: &Path, readonly: bool) -> Result<(), ArtInstallError> {
@@ -554,6 +360,9 @@ fn install_art_from_zip_with_source(
     if !is_safe_art_id(&tool.id) {
         return Err(ArtInstallError::InvalidArtId(tool.id.clone()));
     }
+    tool.validate()
+        .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+    let qualified_id = qualified_art_id(&tool)?;
 
     // Framework must be installed + ready before we lay down files.
     let deps = read_dependencies(&tool);
@@ -609,15 +418,7 @@ fn install_art_from_zip_with_source(
 
     let arts_root = control_plane_root.join("arts");
     std::fs::create_dir_all(&arts_root)?;
-    let art_root = art_root_for_tool(control_plane_root, &tool);
-    migrate_art_namespace(control_plane_root, &tool, &art_root)?;
-    migrate_legacy_art_layout(
-        control_plane_root,
-        &art_root,
-        framework_registry,
-        tool_registry,
-    )?;
-    let qualified_id = qualified_art_id(&tool);
+    let art_root = art_root_for_tool(control_plane_root, &tool)?;
     let locked_arts = resolve_art_dependency_locks(
         control_plane_root,
         &deps.arts,
@@ -742,7 +543,6 @@ fn install_art_from_zip_with_source(
             return Err(error);
         }
 
-        rewrite_artloom_compat_execution_paths(&mut tool.metadata, &art_dir);
         record_art_package_directory(
             &mut tool.metadata,
             ArtPackagePaths {
@@ -913,11 +713,13 @@ pub fn recover_art_lifecycle(control_plane_root: &Path) -> Result<(), ArtInstall
     let mut roots = Vec::new();
     for first in std::fs::read_dir(&arts_root)? {
         let first = first?.path();
-        if !first.is_dir() {
+        if !first.is_dir()
+            || !first
+                .file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(loom_protocol::is_safe_publisher_id)
+        {
             continue;
-        }
-        if first.join(ART_LIFECYCLE_FILE).is_file() {
-            roots.push(first.clone());
         }
         for second in std::fs::read_dir(&first).into_iter().flatten().flatten() {
             let second = second.path();
@@ -963,14 +765,14 @@ pub fn recover_art_uninstall_tombstones(control_plane_root: &Path) -> Result<(),
     if !arts_root.is_dir() {
         return Ok(());
     }
-    let mut parents = vec![arts_root.clone()];
+    let mut parents = Vec::new();
     for entry in std::fs::read_dir(&arts_root)? {
         let path = entry?.path();
         if path.is_dir()
-            && !path
+            && path
                 .file_name()
                 .and_then(OsStr::to_str)
-                .is_some_and(|name| name.starts_with(ART_UNINSTALL_TOMBSTONE_PREFIX))
+                .is_some_and(loom_protocol::is_safe_publisher_id)
         {
             parents.push(path);
         }
@@ -987,14 +789,10 @@ pub fn recover_art_uninstall_tombstones(control_plane_root: &Path) -> Result<(),
             else {
                 continue;
             };
-            let reference = if parent == arts_root {
-                original_name.clone()
-            } else {
-                let Some(publisher) = parent.file_name().and_then(OsStr::to_str) else {
-                    continue;
-                };
-                format!("{publisher}/{original_name}")
+            let Some(publisher) = parent.file_name().and_then(OsStr::to_str) else {
+                continue;
             };
+            let reference = format!("{publisher}/{original_name}");
             if !is_safe_art_reference(&reference) {
                 continue;
             }
@@ -1060,7 +858,7 @@ pub fn resolve_installed_art_package(
             ArtInstallError::InvalidPackage(format!("Art `{art_id}` is not installed"))
         })?;
     let identity = current.qualified_id();
-    let art_root = art_root_for_tool(control_plane_root, &current);
+    let art_root = art_root_for_tool(control_plane_root, &current)?;
     let activation = read_art_activation(&art_root.join("active.json"))
         .ok_or_else(|| ArtInstallError::InvalidPackage("Art has no activation state".to_owned()))?;
     if !art_activation_is_safe(&activation) {
@@ -1147,8 +945,7 @@ pub fn resolve_installed_art_package(
     let state_dir = art_root.join("state");
     let cache_dir = art_root.join("cache");
     let output_dir = art_root.join("outputs");
-    let qualified_id = qualified_art_id(&tool);
-    rewrite_artloom_compat_execution_paths(&mut tool.metadata, &art_dir);
+    let qualified_id = qualified_art_id(&tool)?;
     record_art_package_directory(
         &mut tool.metadata,
         ArtPackagePaths {
@@ -1220,7 +1017,7 @@ fn verify_art_package_integrity_inner(
         )));
     }
     let result = (|| {
-        let art_root = art_root_for_tool(control_plane_root, tool);
+        let art_root = art_root_for_tool(control_plane_root, tool)?;
         let activation = read_art_activation(&art_root.join("active.json")).ok_or_else(|| {
             ArtInstallError::InvalidPackage(format!("Art `{}` has no activation state", tool.id))
         })?;
@@ -1302,7 +1099,7 @@ pub fn list_installed_art_versions(
             ArtInstallError::InvalidPackage(format!("Art `{art_id}` is not installed"))
         })?;
     let identity = current.qualified_id();
-    let art_root = art_root_for_tool(control_plane_root, &current);
+    let art_root = art_root_for_tool(control_plane_root, &current)?;
     let activation = read_art_activation(&art_root.join("active.json"))
         .ok_or_else(|| ArtInstallError::InvalidPackage("Art has no activation state".to_owned()))?;
     if !art_activation_is_safe(&activation) {
@@ -1380,7 +1177,7 @@ pub fn activate_art_version(
         .ok_or_else(|| {
             ArtInstallError::InvalidPackage(format!("Art `{art_id}` is not installed"))
         })?;
-    let art_root = art_root_for_tool(control_plane_root, &current);
+    let art_root = art_root_for_tool(control_plane_root, &current)?;
     let active_path = art_root.join("active.json");
     let activation = read_art_activation(&active_path)
         .ok_or_else(|| ArtInstallError::InvalidPackage("Art has no activation state".to_owned()))?;
@@ -1469,7 +1266,7 @@ pub fn rollback_art_package(
         .ok_or_else(|| {
             ArtInstallError::InvalidPackage(format!("Art `{art_id}` is not installed"))
         })?;
-    let art_root = art_root_for_tool(control_plane_root, &current);
+    let art_root = art_root_for_tool(control_plane_root, &current)?;
     let active_path = art_root.join("active.json");
     let activation = read_art_activation(&active_path)
         .ok_or_else(|| ArtInstallError::InvalidPackage("Art has no activation state".to_owned()))?;
@@ -1557,8 +1354,7 @@ fn activate_art_pointer(
     let state_dir = art_root.join("state");
     let cache_dir = art_root.join("cache");
     let output_dir = art_root.join("outputs");
-    let qualified_id = qualified_art_id(&tool);
-    rewrite_artloom_compat_execution_paths(&mut tool.metadata, &target_dir);
+    let qualified_id = qualified_art_id(&tool)?;
     record_art_package_directory(
         &mut tool.metadata,
         ArtPackagePaths {
@@ -1617,10 +1413,8 @@ fn verify_art_lockfile(
     let security = read_art_package_security(tool);
     let expected_version = security.version.as_deref().unwrap_or("0.0.0");
     let expected_identity = tool.qualified_id();
-    let legacy_unpublished_identity =
-        tool.publisher_identity().is_none() && lockfile.package_id == tool.id;
     if lockfile.schema_version != loom_protocol::PLUGIN_LOCKFILE_SCHEMA_VERSION
-        || (lockfile.package_id != expected_identity && !legacy_unpublished_identity)
+        || lockfile.package_id != expected_identity
         || lockfile.package_version != expected_version
     {
         return Err(ArtInstallError::InvalidPackage(
@@ -1862,18 +1656,19 @@ fn resolve_art_root_for_uninstall(
     tool: Option<&ToolDefinition>,
 ) -> Result<PathBuf, ArtInstallError> {
     if let Some(tool) = tool {
-        return Ok(art_root_for_tool(control_plane_root, tool));
+        return art_root_for_tool(control_plane_root, tool);
     }
 
-    let direct = art_root_for_reference(control_plane_root, art_id)
-        .ok_or_else(|| ArtInstallError::InvalidArtId(art_id.to_owned()))?;
-    if art_id.contains('/') || direct.exists() {
-        return Ok(direct);
+    if art_id.contains('/') {
+        return art_root_for_reference(control_plane_root, art_id)
+            .ok_or_else(|| ArtInstallError::InvalidArtId(art_id.to_owned()));
     }
 
     let arts_root = control_plane_root.join("arts");
     if !arts_root.is_dir() {
-        return Ok(direct);
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "Art `{art_id}` is not installed"
+        )));
     }
     let mut publisher_matches = Vec::new();
     for entry in std::fs::read_dir(&arts_root)? {
@@ -1893,7 +1688,9 @@ fn resolve_art_root_for_uninstall(
         }
     }
     match publisher_matches.len() {
-        0 => Ok(direct),
+        0 => Err(ArtInstallError::InvalidPackage(format!(
+            "Art `{art_id}` is not installed"
+        ))),
         1 => Ok(publisher_matches.remove(0)),
         _ => Err(ArtInstallError::InvalidPackage(format!(
             "Art id `{art_id}` is installed by multiple publishers; use a publisher-qualified id"
@@ -2187,8 +1984,8 @@ fn resolve_binaries(
 /// Install an art package and, recursively, its dependent arts. `fetch_dependent`
 /// returns the zip bytes for a dependent art id (wired to the store over HTTP).
 /// Dependencies are installed before their parent so the parent's lockfile can
-/// pin each child to its exact qualified id, version, and digest. Reports remain
-/// root-first for API compatibility.
+/// pin each child to its exact qualified id, version, and digest. Reports use
+/// root-first traversal order as part of the current install API.
 pub fn install_art_recursive<F>(
     root_zip: &[u8],
     control_plane_root: &Path,
@@ -2310,7 +2107,7 @@ where
 }
 
 /// Package an art into a publishable zip: a `manifest.json` (the ToolDefinition)
-/// plus every file in the art's resource dir (`<control-plane>/arts/<id>/`).
+/// plus every file in the active immutable Art package directory.
 /// Inverse of `install_art_from_zip`. Returns the zip bytes.
 pub fn package_art_to_zip(
     tool: &ToolDefinition,
@@ -2532,12 +2329,29 @@ mod tests {
     }
 
     fn build_zip(manifest: &str, extra: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        let metadata = manifest
+            .as_object_mut()
+            .unwrap()
+            .entry("metadata")
+            .or_insert_with(|| serde_json::json!({}));
+        let metadata = metadata.as_object_mut().unwrap();
+        let security = metadata
+            .entry("packageSecurity")
+            .or_insert_with(|| serde_json::json!({}));
+        security
+            .as_object_mut()
+            .unwrap()
+            .entry("publisher")
+            .or_insert_with(|| serde_json::json!({ "id": "publisher.test" }));
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
             let opts = SimpleFileOptions::default();
             writer.start_file(MANIFEST_NAME, opts).unwrap();
-            writer.write_all(manifest.as_bytes()).unwrap();
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .unwrap();
             for (name, bytes) in extra {
                 writer.start_file(*name, opts).unwrap();
                 writer.write_all(bytes).unwrap();
@@ -2612,9 +2426,15 @@ mod tests {
             "name": format!("{id} test framework"),
             "description": "test framework",
             "version": "0.1.0",
+            "publisher": { "id": "publisher.test", "name": "Publisher Test" },
             "protocolVersion": "loom.framework.v1",
             "platforms": ["windows-x64"],
-            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "entry": {
+                "kind": "process",
+                "command": command,
+                "args": ["--stdio"],
+                "processModel": "per_execution"
+            },
             "permissions": ["process.spawn"],
             "artExecution": {
                 "requestSchema": "loom.art.execute.v1",
@@ -2648,15 +2468,45 @@ mod tests {
     }
 
     #[test]
+    fn install_rejects_art_package_without_publisher() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "process");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"unpublished-art","name":"Unpublished","description":"test","enabled":true,
+            "execution":{"type":"framework_art","framework":"process"}}"#;
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options = SimpleFileOptions::default();
+            writer.start_file(MANIFEST_NAME, options).unwrap();
+            writer.write_all(manifest.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let error = install_art_from_zip(&bytes, &root, &framework, &registry)
+            .expect_err("publisherless Art package must fail closed");
+        assert!(matches!(
+            error,
+            ArtInstallError::InvalidPackage(reason) if reason.contains("publisher is required")
+        ));
+        assert!(!root.join("arts").join("unpublished-art").exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn authored_package_includes_runtime_and_package_local_files() {
-        let tool = ToolDefinition::new(
+        let mut tool = ToolDefinition::new(
             "authored-process-art",
             "Authored Process Art",
             "authored package fixture",
             ToolExecution::FrameworkArt {
-                framework: "process".to_owned(),
+                framework: "publisher.test/process".to_owned(),
             },
         );
+        tool.metadata = Some(serde_json::json!({
+            "packageSecurity": { "version": "0.1.0", "publisher": { "id": "publisher.test" } }
+        }));
         let runtime: ArtRuntimeManifest = serde_json::from_value(serde_json::json!({
             "protocolVersion": "loom.art.runtime.v1",
             "entry": {
@@ -2695,14 +2545,17 @@ mod tests {
 
     #[test]
     fn authored_package_rejects_reserved_unsafe_and_duplicate_paths() {
-        let tool = ToolDefinition::new(
+        let mut tool = ToolDefinition::new(
             "invalid-authored-process-art",
             "Invalid Authored Process Art",
             "invalid authored package fixture",
             ToolExecution::FrameworkArt {
-                framework: "process".to_owned(),
+                framework: "publisher.test/process".to_owned(),
             },
         );
+        tool.metadata = Some(serde_json::json!({
+            "packageSecurity": { "version": "0.1.0", "publisher": { "id": "publisher.test" } }
+        }));
 
         for path in [
             "manifest.json",
@@ -2751,10 +2604,6 @@ mod tests {
 
         // Registered tool keeps the generic process framework identity.
         let saved = registry.get_tool("pingo-art").unwrap().unwrap();
-        assert_eq!(
-            saved.metadata.as_ref().unwrap()["artloomCompat"]["source"],
-            "loom-local"
-        );
         assert!(matches!(
             saved.execution,
             crate::ToolExecution::FrameworkArt { ref framework } if framework == "process"
@@ -2795,8 +2644,9 @@ mod tests {
             .expect("local draft registered");
         verify_art_package_integrity(&root, &saved, &framework)
             .expect("local draft integrity must remain verifiable");
-        let activation = read_art_activation(&root.join("arts/local-draft/active.json"))
-            .expect("local draft activation");
+        let activation =
+            read_art_activation(&root.join("arts/publisher.test/local-draft/active.json"))
+                .expect("local draft activation");
         assert!(activation.local_authoring);
         assert!(!activation.bundled_catalog);
 
@@ -2814,104 +2664,12 @@ mod tests {
             .expect("bundled draft registered");
         verify_art_package_integrity(&root, &bundled, &framework)
             .expect("bundled catalog package integrity must remain verifiable");
-        let bundled_activation = read_art_activation(&root.join("arts/bundled-draft/active.json"))
-            .expect("bundled draft activation");
+        let bundled_activation =
+            read_art_activation(&root.join("arts/publisher.test/bundled-draft/active.json"))
+                .expect("bundled draft activation");
         assert!(!bundled_activation.local_authoring);
         assert!(bundled_activation.bundled_catalog);
         std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn install_replaces_obsolete_legacy_layout_and_registry_entry() {
-        let root = temp_root();
-        let framework = FrameworkRegistry::new(&root);
-        install_test_framework(&framework, "process");
-        let registry_root = root.join("tools");
-        std::fs::create_dir_all(&registry_root).expect("registry directory");
-        let registry = ToolRegistry::new(&registry_root);
-
-        let legacy_manifest = serde_json::json!({
-            "id": "legacy-art",
-            "name": "Legacy Art",
-            "description": "obsolete CLI package",
-            "enabled": true,
-            "execution": { "type": "cli_wrapper", "command": "bin/legacy.exe" },
-            "metadata": { "dependencies": { "framework": "cli_wrapper" } }
-        });
-        std::fs::write(
-            registry_root.join("tools.json"),
-            serde_json::to_vec_pretty(&serde_json::json!([legacy_manifest.clone()]))
-                .expect("serialize legacy registry"),
-        )
-        .expect("legacy registry");
-        let legacy_root = root.join("arts/legacy-art");
-        std::fs::create_dir_all(legacy_root.join("bin")).expect("legacy Art directory");
-        std::fs::write(
-            legacy_root.join(MANIFEST_NAME),
-            serde_json::to_vec_pretty(&legacy_manifest).expect("serialize legacy manifest"),
-        )
-        .expect("legacy manifest");
-        std::fs::write(legacy_root.join("bin/legacy.exe"), b"obsolete").expect("legacy payload");
-
-        let current_manifest = serde_json::json!({
-            "id": "legacy-art",
-            "name": "Current Art",
-            "description": "current process framework package",
-            "enabled": true,
-            "execution": { "type": "framework_art", "framework": "process" },
-            "metadata": {
-                "packageSecurity": {
-                    "version": "0.1.0",
-                    "publisher": { "id": "neuro.official", "name": "Neuro" }
-                },
-                "dependencies": { "framework": "process" }
-            }
-        });
-        let zip = build_zip(
-            &serde_json::to_string(&current_manifest).expect("serialize current manifest"),
-            &[("runtime/current.txt", b"current")],
-        );
-
-        let report =
-            install_art_from_zip(&zip, &root, &framework, &registry).expect("replace obsolete Art");
-        assert!(report
-            .art_dir
-            .starts_with(root.join("arts/neuro.official/legacy-art")));
-        assert!(report.art_dir.join("runtime/current.txt").is_file());
-        assert!(!root.join("arts/legacy-art").exists());
-        assert!(!report.art_dir.join("bin/legacy.exe").exists());
-
-        let tools = registry.list_tools().expect("list migrated tools");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].qualified_id(), "neuro.official/legacy-art");
-        assert!(matches!(
-            tools[0].execution,
-            ToolExecution::FrameworkArt { ref framework } if framework == "process"
-        ));
-        assert_eq!(
-            std::fs::read_dir(&registry_root)
-                .expect("registry backups")
-                .filter_map(Result::ok)
-                .filter(|entry| entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("tools.json.corrupt-"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            std::fs::read_dir(&root)
-                .expect("control-plane root")
-                .filter_map(Result::ok)
-                .filter(|entry| entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".loom-art-legacy-"))
-                .count(),
-            0
-        );
-
-        remove_tree(&root).ok();
     }
 
     #[test]
@@ -3211,7 +2969,8 @@ mod tests {
         assert!(registry.get_tool("dep-2").unwrap().is_some());
 
         let root_activation =
-            read_art_activation(&root.join("arts/root-wf/active.json")).expect("root activation");
+            read_art_activation(&root.join("arts/publisher.test/root-wf/active.json"))
+                .expect("root activation");
         let root_lock: PluginLockfile = serde_json::from_slice(
             &std::fs::read(&root_activation.active.lockfile).expect("root lockfile"),
         )
@@ -3222,8 +2981,9 @@ mod tests {
             .find(|dependency| dependency.kind == "art")
             .expect("root child lock");
         let dep_activation =
-            read_art_activation(&root.join("arts/dep-1/active.json")).expect("dep activation");
-        assert_eq!(locked_dep.id, "dep-1");
+            read_art_activation(&root.join("arts/publisher.test/dep-1/active.json"))
+                .expect("dep activation");
+        assert_eq!(locked_dep.id, "publisher.test/dep-1");
         assert_eq!(locked_dep.version, dep_activation.active.version);
         assert_eq!(locked_dep.sha256, dep_activation.active.digest);
 
@@ -3279,7 +3039,7 @@ mod tests {
         assert!(matches!(error, ArtInstallError::FrameworkNotReady { .. }));
         assert!(registry.get_tool("new-child").unwrap().is_none());
         assert!(registry.get_tool("failing-parent").unwrap().is_none());
-        assert!(!root.join("arts/new-child").exists());
+        assert!(!root.join("arts/publisher.test/new-child").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -3376,7 +3136,7 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| {
                     metadata
-                        .pointer("/artPackage/lockedArts/locked-child/metadata/artPackage/version")
+                        .pointer("/artPackage/lockedArts/publisher.test~1locked-child/metadata/artPackage/version")
                 })
                 .and_then(serde_json::Value::as_str),
             Some("1.0.0")
@@ -3398,7 +3158,7 @@ mod tests {
         verify_art_package_integrity(&root, &parent_rolled_back, &framework)
             .expect("verify rolled-back parent and child lock");
 
-        let child_root = root.join("arts/locked-child");
+        let child_root = root.join("arts/publisher.test/locked-child");
         let child_activation =
             read_art_activation(&child_root.join("active.json")).expect("child activation");
         let child_dir = child_root.join(&child_activation.active.path);
@@ -3617,7 +3377,8 @@ mod tests {
             .expect("rollback Art");
         verify_art_package_integrity(&root, &rolled_back, &framework)
             .expect("verify rolled-back Art");
-        let active = resolve_active_art_package(&root, "rollback-art").expect("active Art");
+        let active =
+            resolve_active_art_package(&root, "publisher.test/rollback-art").expect("active Art");
         assert_eq!(
             std::fs::read(active.join("bin/tool.exe")).unwrap(),
             b"version-one"
@@ -3685,7 +3446,7 @@ mod tests {
         assert!(verify_art_package_integrity(&root, &tool, &framework).is_err());
 
         std::fs::write(report.art_dir.join("bin/tool.exe"), b"original").unwrap();
-        let art_root = root.join("arts/tamper-art");
+        let art_root = root.join("arts/publisher.test/tamper-art");
         let activation = read_art_activation(&art_root.join("active.json")).unwrap();
         let mut lock: PluginLockfile = serde_json::from_slice(
             &std::fs::read(&activation.active.lockfile).expect("read Art lockfile"),
@@ -3726,7 +3487,7 @@ mod tests {
             &registry,
         )
         .expect("install Art");
-        let art_root = root.join("arts/recover-art");
+        let art_root = root.join("arts/publisher.test/recover-art");
         let active_path = art_root.join("active.json");
         let old = read_art_activation(&active_path).unwrap();
         let orphan_relative = "versions/interrupted-orphan".to_owned();
@@ -3801,7 +3562,7 @@ mod tests {
             &registry,
         )
         .unwrap();
-        let art_root = root.join("arts/unsafe-rollback-art");
+        let art_root = root.join("arts/publisher.test/unsafe-rollback-art");
         let active_path = art_root.join("active.json");
         let mut activation = read_art_activation(&active_path).unwrap();
         activation.previous.as_mut().unwrap().path = "../../outside".to_owned();
@@ -3841,7 +3602,7 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("install {version}: {error}"));
         }
-        let art_root = root.join("arts/retained-art");
+        let art_root = root.join("arts/publisher.test/retained-art");
         let activation = read_art_activation(&art_root.join("active.json")).expect("activation");
         let versions = std::fs::read_dir(art_root.join("versions"))
             .expect("versions")
@@ -3888,7 +3649,7 @@ mod tests {
             &registry,
         )
         .expect("install Art");
-        let live = root.join("arts/recover-uninstall-art");
+        let live = root.join("arts/publisher.test/recover-uninstall-art");
         let interrupted = uninstall_tombstone_path(&live, ART_UNINSTALL_TOMBSTONE_PREFIX).unwrap();
         std::fs::rename(&live, &interrupted).expect("simulate pre-registry crash");
         recover_art_uninstall_tombstones(&root).expect("restore tombstone");

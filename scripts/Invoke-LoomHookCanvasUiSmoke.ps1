@@ -308,19 +308,19 @@ function Wait-ForDesktopDaemon {
 
 function Write-HookFixture {
     param([string]$AppDataRoot, [int]$NodeCount)
-    $sessionDir = Join-Path $AppDataRoot "com.vmjcv.arthook-next"
+    $sessionDir = Join-Path $AppDataRoot "com.yamiyu.hook"
     $imageDir = Join-Path $sessionDir "images"
     New-Item -ItemType Directory -Force -Path $imageDir | Out-Null
     $nodes = @(
         [ordered]@{ id = "capture"; type = "sticker"; src = "images/capture.png"; x = 120; y = 80; w = 360; h = 210 },
-        [ordered]@{ id = "failed-art"; type = "art"; artId = "fixture-art"; status = "error"; errorMessage = $quotaExceededErrorMessage; src = "images/failed-art.png"; x = 600; y = 190; w = 190; h = 150 },
+        [ordered]@{ id = "failed-art"; type = "art"; artId = "test.publisher/fixture-art"; status = "error"; errorMessage = $quotaExceededErrorMessage; src = "images/failed-art.png"; x = 600; y = 190; w = 190; h = 150 },
         [ordered]@{ id = "missing"; type = "sticker"; src = "images/missing.png"; x = 860; y = 360; w = 150; h = 110 }
     )
     if ($NodeCount -ge 4) {
-        $nodes += [ordered]@{ id = "extra"; type = "art"; artId = "fixture-extra"; src = "images/art.png"; x = 1040; y = 120; w = 160; h = 120 }
+        $nodes += [ordered]@{ id = "extra"; type = "art"; artId = "test.publisher/fixture-extra"; src = "images/art.png"; x = 1040; y = 120; w = 160; h = 120 }
     }
     $links = @(
-        [ordered]@{ id = "capture-to-failed-art"; fromUnitId = "capture"; fromPortId = "output_image"; toUnitId = "failed-art"; toPortId = "input_image" }
+        [ordered]@{ id = "capture-to-failed-art"; fromUnitId = "capture"; fromPortId = "output"; toUnitId = "failed-art"; toPortId = "input" }
     )
     $payload = [ordered]@{
         workflowId = "hook-live"
@@ -576,9 +576,9 @@ try {
     Assert-Equal $quotaExceededErrorMessage ([string]$initialFailedArtNode.placeholderDetailText) "failed-art thumbnail must show the Hook failure reason."
 
     Write-HookFixture -AppDataRoot $appDataRoot -NodeCount 4
-    $refreshBroadcast = Invoke-JsonPost -Uri "$daemonUrl/v1/artloom-compat/arts/broadcast-updated" -Body @{}
-    Assert-Equal $true ([bool]$refreshBroadcast.broadcasted) "Hook canvas refresh broadcast failed."
-    Write-JsonFile -Path (Join-Path $runDir "refresh-broadcast.json") -Value $refreshBroadcast
+    $refreshStatus = Invoke-JsonGet -Uri "$daemonUrl/v1/hook-bridge/status"
+    Assert-Equal "loom.hook.v1" ([string]$refreshStatus.protocol) "Hook canvas refresh protocol mismatch."
+    Write-JsonFile -Path (Join-Path $runDir "refresh-status.json") -Value $refreshStatus
 
     $updatedUi = Wait-ForHookCanvasUi `
         -InspectorPath $inspectorPath `

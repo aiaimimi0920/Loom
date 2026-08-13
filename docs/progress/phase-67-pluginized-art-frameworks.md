@@ -4,6 +4,9 @@
 > catalog below with four packages: `process`, `cloud_api`, `mcp`, and
 > `workflow`. Former command, script, and Python Art packages are republished as
 > `framework_art` packages owned by `process`; no old execution IDs are retained.
+> All references below to six frameworks are retained as historical evidence.
+> The current system has four framework packages and six sample Art packages;
+> see Phase 70 and the 2026-08-12 completion audit for the active contract.
 
 ## Status
 

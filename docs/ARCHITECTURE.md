@@ -22,8 +22,7 @@ daemon, CLI, and desktop remain application shells.
   run-evidence store boundary, bundled SQLite persistence, and actor mesh.
 - `loom_agent`: markdown/YAML-frontmatter agent definitions and scoped
   resolution.
-- `loom_workflow`: workflow graph model, validation, executor, and ArtLoom
-  conversion adapters.
+- `loom_workflow`: workflow graph model, validation, and deterministic executor.
 - `loom_memory`: memory/retrieval contracts.
 - `loom_sandbox`: deny-by-default safe execution policy and explicit allow
   contracts.
@@ -75,7 +74,9 @@ packaged layout.
 Framework and Art ZIPs stay outside both executables. The desktop validates the
 packaged catalogs and applies the six repo-owned sample Arts once per catalog
 hash through the public framework and Art install APIs. The migration marker is
-stored in the writable control plane, not in the release directory. This gives
+stored in the writable control plane, not in the release directory. It records
+completion of the current catalog bootstrap; it does not translate an obsolete
+package layout. This gives
 the registry useful initial cards without introducing framework or Art-specific
 branches into Loom execution.
 
@@ -143,9 +144,9 @@ and daemon integration stabilize.
 5. The executor records run start, actor-node events, and run finish events in
    the durable event store.
 
-The v1 executor is deterministic and test-first. It is suitable for CLI smoke,
-ArtLoom migration fixtures, and daemon integration before persistent storage or
-real agent/model dispatch is introduced.
+The v1 executor is deterministic and test-first. It is suitable for CLI smoke
+and daemon integration before persistent storage or real agent/model dispatch
+is introduced.
 
 ## Plugin runtime model
 
@@ -160,12 +161,12 @@ The package roots are:
 
 ```text
 <control-plane>/
-  frameworks/<publisher?>/<id>/
+  frameworks/<publisher>/<id>/
     versions/<version>-<digest-prefix>/
     active.json
     locks/
     lifecycle.json
-  arts/<publisher?>/<id>/
+  arts/<publisher>/<id>/
     versions/<version>-<digest-prefix>/
     active.json
     locks/
@@ -183,8 +184,8 @@ then commits registry removal; startup restores or deletes interrupted
 tombstones according to the durable registry state.
 
 Hook does not load plugin code and does not contain per-plugin branches. It
-consumes generic capability metadata from Loom. HTTP, ArtLoom compatibility,
-Hook Bridge, and AHRP executions all run inside Loom and create durable run
+consumes generic capability metadata from Loom. HTTP and `loom.hook.v1`
+executions all run inside Loom and create durable run
 evidence. Package-backed Arts are revalidated immediately before every launch,
 so an active pointer, payload, lockfile, signature, or revocation change cannot
 bypass the normal HTTP execution path.
@@ -202,7 +203,7 @@ host-mediated HTTP policy. Direct arbitrary process network/filesystem access,
 GPU, and clipboard are not fully OS-denied by current Job Object/process-group
 isolation. Windows Job Objects also enforce memory and active-process limits;
 Unix process groups currently expose those declarations as advisory.
-`LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatible default;
+`LOOM_PLUGIN_PERMISSION_MODE=audit` is the current default;
 `strict` fails closed for those unenforceable declarations. The doctor API and
 Desktop expose the same enforcement matrix rather than claiming a complete OS
 sandbox.
@@ -260,10 +261,10 @@ Concurrent-safe routes are `/health`, `/status`,
 `/v1/capabilities`, run reads/events, run creation, run stop/retry, and
 `/v1/invoke` for `brain.plan` and `tea.ticket.decompose.v1`. `/health` and
 `/status` are reserved probes and bypass the normal queue so they remain
-available during worker pressure. All other file-backed control-plane and
-compatibility routes use one serialized route lock while still running on a
-worker. This preserves legacy ordering for configuration, MCP, tool, workflow,
-Hook, image, OCR, Python, cloud, and compatibility stores.
+available during worker pressure. All other file-backed control-plane routes
+use one serialized route lock while still running on a worker. This preserves
+deterministic ordering for configuration, MCP, tool, workflow, Hook, image, OCR,
+Python, and cloud stores.
 
 The queue capacity counts jobs waiting in addition to active worker jobs.
 Queue saturation returns HTTP 503 with `daemon_busy` and `retryable: true`
@@ -305,17 +306,11 @@ can continue to respond whenever reserved or remaining worker capacity exists.
 This is bounded request execution, not automatic replay or forced cancellation.
 Gateway provider routing remains outside Loom.
 
-## ArtLoom adapter model
+## Loom and Hook Art protocol
 
-`loom_workflow::artloom` converts the selected ArtLoom YAML shape into Loom's
-native workflow graph. It supports:
-
-- document metadata: `name`, `description`;
-- node ids from `nodes[].id`;
-- actor mapping from `nodes[].uses`;
-- dependency edges from `nodes[].needs`;
-- dependency edges inferred from ArtLoom output references such as
-  `${{ nodes.root.outputs.output }}`.
-
-The adapter does not migrate ArtHook, desktop UI state, visual canvas metadata,
-OCR, or embedded Python runtime behavior.
+Loom and Hook communicate through `loom.hook.v1`, with `loom.surface.v1` for
+distributed interactive surfaces. Loom is the execution and resource authority;
+Hook renders capability-declared nodes and sends typed actions. The public Rust
+types and JSON Schema are in `crates/loom_protocol/src/hook.rs` and
+`protocol/schemas/hook-message.v1.schema.json`. There is no alternate ArtLoom
+workflow or execution adapter.

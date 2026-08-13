@@ -51,7 +51,6 @@ export interface LoomMcpServersResponse {
 }
 
 export interface LoomMcpTestResult {
-  compatCommand?: string;
   success?: boolean;
   tools?: unknown[];
   error?: string;
@@ -59,21 +58,7 @@ export interface LoomMcpTestResult {
   serverInfo?: unknown;
 }
 
-export interface ArtLoomMcpRegistryResponse extends McpRegistryResponse {
-  compatCommand?: string;
-}
-
-export interface ArtLoomMcpServersResponse extends LoomMcpServersResponse {
-  compatCommand?: string;
-  count?: number;
-  message?: string;
-  server?: LoomMcpServer;
-  serverId?: string;
-  deleted?: boolean;
-}
-
-export interface ArtLoomMcpCallToolResponse {
-  compatCommand?: string;
+export interface LoomMcpCallToolResponse {
   status?: string;
   jsonrpc?: string;
   id?: number;
@@ -175,30 +160,7 @@ export interface LoomWorkflowBundleResponse {
   workflow?: LoomWorkflowBundle;
 }
 
-export interface ArtLoomWorkflowMetadata extends LoomWorkflowMetadata {
-  compatCommand?: string;
-  created_at?: string;
-  createdAt?: string;
-  updated_at?: string;
-  status?: string;
-  node_count?: number;
-  last_run_at?: string | null;
-  lastRunAt?: string | null;
-  tags?: string[];
-}
-
-export interface ArtLoomWorkflowStoreResponse {
-  compatCommand?: string;
-  workflows?: ArtLoomWorkflowMetadata[];
-  workflow?: ArtLoomWorkflowMetadata;
-  workflowId?: string;
-  data?: string;
-  saved?: boolean;
-  deleted?: boolean;
-}
-
 export interface LoomHookBridgeStatus {
-  compatCommand?: string;
   running?: boolean;
   port?: number;
   ipcPort?: number;
@@ -230,55 +192,23 @@ export interface LoomDevicesResponse {
   connectedClients: number;
 }
 
-export interface ArtLoomInstantiateWorkflowResponse {
-  compatCommand?: string;
-  type?: string;
+export interface HookWorkflowInstantiateResponse {
+  protocolVersion?: string;
+  status?: string;
   method?: string;
   broadcasted?: boolean;
   subscribedClients?: number;
   params?: unknown;
 }
 
-export interface ArtLoomExecuteArtNodeResponse {
-  compatCommand?: string;
-  type?: string;
-  data?: unknown;
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === "object" && !Array.isArray(value);
-
-export function artLoomExecuteArtNodeErrorMessage(
-  response: ArtLoomExecuteArtNodeResponse | null | undefined,
-): string | null {
-  if (!response || response.type === "success") {
-    return null;
-  }
-  const data = response.data;
-  if (typeof data === "string") {
-    const trimmed = data.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (!isRecord(data)) {
-    return null;
-  }
-  for (const key of ["message", "error", "detail"]) {
-    const candidate = data[key];
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate.trim();
-    }
-  }
-  return null;
-}
-
-export interface ArtLoomShortcutConfig {
+export interface LoomShortcutConfig {
   id: string;
   label: string;
   keys: string;
   enabled: boolean;
 }
 
-export interface ArtLoomCompatSettings {
+export interface LoomSettings {
   appearance_version: number;
   general: {
     theme: string;
@@ -302,13 +232,13 @@ export interface ArtLoomCompatSettings {
     history_retention: string;
   };
   network: {
-    loom: ArtLoomProxySettings;
-    hook: ArtLoomProxySettings;
+    loom: LoomProxySettings;
+    hook: LoomProxySettings;
   };
-  mcp: ArtLoomMcpSettings;
-  art_store: ArtLoomArtStoreSettings;
-  loom_cache: ArtLoomCacheSettings;
-  hook_cache: ArtLoomHookCacheSettings;
+  mcp: LoomMcpSettings;
+  art_store: LoomArtStoreSettings;
+  loom_cache: LoomCacheSettings;
+  hook_cache: HookCacheSettings;
   engine: {
     comfyui_url: string;
     python_interpreter: string;
@@ -321,47 +251,45 @@ export interface ArtLoomCompatSettings {
     art: string;
     key: string;
   }>;
-  shortcuts: Record<string, ArtLoomShortcutConfig>;
+  shortcuts: Record<string, LoomShortcutConfig>;
 }
 
-export interface ArtLoomMcpSettings {
+export interface LoomMcpSettings {
   request_timeout_seconds: number;
   memory_limit_bytes: number;
 }
 
-export interface ArtLoomArtStoreSettings {
+export interface LoomArtStoreSettings {
   auto_update: boolean;
   official_only: boolean;
 }
 
-export interface ArtLoomCacheSettings {
+export interface LoomCacheSettings {
   art_cache_max_bytes: number;
   art_cache_retention_days: number;
   framework_temp_retention_days: number;
 }
 
-export interface ArtLoomHookCacheSettings {
+export interface HookCacheSettings {
   recycle_bin_max_entries: number;
   recycle_bin_retention_days: number;
   temp_cache_max_bytes: number;
   temp_cache_retention_days: number;
 }
 
-export interface ArtLoomProxySettings {
+export interface LoomProxySettings {
   mode: "system" | "custom" | "disabled";
   protocol: "http" | "https" | "socks5";
   address: string;
 }
 
-export interface ArtLoomAppPaths {
+export interface LoomAppPaths {
   dataDir: string;
   configDir: string;
   logDir: string;
 }
 
-export interface ArtHookSessionSnapshot {
-  method?: string;
-  compatCommand?: string;
+export interface HookSessionSnapshot {
   running?: boolean;
   port?: number;
   connectedClients?: number;
@@ -378,7 +306,6 @@ export interface ArtHookSessionSnapshot {
 }
 
 export interface McpPackageCheckResult {
-  compatCommand?: string;
   installed?: boolean;
   module?: string;
   python?: string;
@@ -388,75 +315,11 @@ export interface McpPackageCheckResult {
 }
 
 export interface McpPackageInstallPlan {
-  compatCommand?: string;
   package?: string;
   sideEffect?: boolean;
   mode?: string;
   command?: string[];
   message?: string;
-}
-
-export interface ArtLoomCompatArt {
-  id?: string;
-  art_id?: string;
-  name?: string;
-  label?: string;
-  description?: string;
-  icon?: unknown;
-  enabled?: boolean;
-  execution_type?: string;
-  execution?: LoomToolExecution;
-  inputs?: unknown[];
-  outputs?: unknown[];
-  params?: unknown[];
-  defaults?: Record<string, unknown>;
-  metadata?: unknown;
-}
-
-export interface ArtLoomCompatArtsResponse {
-  compatCommand?: string;
-  arts?: ArtLoomCompatArt[];
-  tools?: LoomToolDefinition[];
-  count?: number;
-  synced?: boolean;
-  sideEffect?: boolean;
-  syncedCount?: number;
-  message?: string;
-}
-
-export interface ArtLoomCompatArtResponse {
-  compatCommand?: string;
-  artId?: string;
-  enabled?: boolean;
-  art?: ArtLoomCompatArt;
-  tool?: LoomToolDefinition;
-}
-
-export interface ArtLoomNativeProcessArtResponse {
-  compatCommand?: string;
-  success?: boolean;
-  output_base64?: string | null;
-  error?: string | null;
-  processing_time_ms?: number;
-}
-
-export interface PythonEngineStatus {
-  compatCommand?: string;
-  available?: boolean;
-  python_exe?: string;
-  pythonExe?: string;
-  launcher_path?: string;
-  launcherPath?: string | null;
-  launcherAvailable?: boolean;
-  arts_dir?: string;
-  artsDirs?: string[];
-  installedArtCount?: number;
-}
-
-export interface PythonShaderPrefetchResponse {
-  compatCommand?: string;
-  artId?: string;
-  result?: unknown;
 }
 
 export interface SharedMemoryBufferInfo {
@@ -470,7 +333,6 @@ export interface SharedMemoryBufferInfo {
 }
 
 export interface SharedMemoryBufferResponse {
-  compatCommand?: string;
   handle?: string;
   handle_name?: string;
   buffer?: SharedMemoryBufferInfo;
@@ -479,7 +341,7 @@ export interface SharedMemoryBufferResponse {
   deleted?: boolean;
 }
 
-export const DEFAULT_ARTLOOM_COMPAT_SETTINGS: ArtLoomCompatSettings = {
+export const DEFAULT_LOOM_SETTINGS: LoomSettings = {
   appearance_version: 1,
   general: {
     theme: "dark",
@@ -660,6 +522,9 @@ export async function waitForLoomOnline(
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 export function retainAvailableSnapshotData(previous: LoomSnapshot, next: LoomSnapshot): LoomSnapshot {
   if (previous.connectionState !== "online") return next;
   if (next.connectionState === "offline") {
@@ -681,7 +546,7 @@ export function retainAvailableSnapshotData(previous: LoomSnapshot, next: LoomSn
     capabilities: moduleFailed("/v1/capabilities") ? previous.capabilities : next.capabilities,
     mcpServers: moduleFailed("/v1/mcp/servers") ? previous.mcpServers : next.mcpServers,
     tools: moduleFailed("/v1/tools") ? previous.tools : next.tools,
-    pythonArts: moduleFailed("/v1/python-arts") ? previous.pythonArts : next.pythonArts,
+    pythonArts: moduleFailed("/v1/art-authoring/python/arts") ? previous.pythonArts : next.pythonArts,
     workflows: moduleFailed("/v1/workflows") ? previous.workflows : next.workflows,
     hookBridge: moduleFailed("/v1/hook-bridge/status") ? previous.hookBridge : next.hookBridge,
   };
@@ -957,17 +822,11 @@ export async function removeManagedDevice(
   );
 }
 
-export async function readArtHookSession(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise<ArtHookSessionSnapshot> {
-  return await getJson<ArtHookSessionSnapshot>(baseUrl, "/v1/hook-bridge/session");
+export async function readHookSession(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise<HookSessionSnapshot> {
+  return await getJson<HookSessionSnapshot>(baseUrl, "/v1/hook-bridge/session");
 }
 
-export async function getArtLoomCompatIpcStatus(
-  baseUrl = DEFAULT_LOOM_DAEMON_URL,
-): Promise<LoomHookBridgeStatus> {
-  return await getJson<LoomHookBridgeStatus>(baseUrl, "/v1/artloom-compat/ipc/status");
-}
-
-export async function instantiateArtLoomWorkflow(
+export async function instantiateHookWorkflow(
   baseUrl: string,
   request: {
     nodes: unknown[];
@@ -975,31 +834,15 @@ export async function instantiateArtLoomWorkflow(
     mode?: string;
     workflowId?: string | null;
   },
-): Promise<ArtLoomInstantiateWorkflowResponse> {
-  return await postJson<ArtLoomInstantiateWorkflowResponse>(
+): Promise<HookWorkflowInstantiateResponse> {
+  return await postJson<HookWorkflowInstantiateResponse>(
     baseUrl,
-    "/v1/artloom-compat/ipc/instantiate-workflow",
+    "/v1/hook-bridge/workflows/instantiate",
     request,
   );
 }
 
-export async function executeArtLoomArtNode(
-  baseUrl: string,
-  request: {
-    nodeId: string;
-    artId: string;
-    inputBase64?: string | null;
-    params?: Record<string, unknown>;
-  },
-): Promise<ArtLoomExecuteArtNodeResponse> {
-  return await postJson<ArtLoomExecuteArtNodeResponse>(
-    baseUrl,
-    "/v1/artloom-compat/ipc/execute-art-node",
-    request,
-  );
-}
-
-export async function updateArtLoomWorkflowNode(
+export async function updateHookWorkflowNode(
   baseUrl: string,
   request: {
     workflowId: string;
@@ -1010,7 +853,7 @@ export async function updateArtLoomWorkflowNode(
 ): Promise<Record<string, unknown>> {
   return await postJson<Record<string, unknown>>(
     baseUrl,
-    "/v1/artloom-compat/ipc/update-workflow-node",
+    "/v1/hook-bridge/workflows/nodes/update",
     request,
   );
 }
@@ -1616,54 +1459,6 @@ export async function deleteWorkflowBundle(baseUrl: string, workflowId: string):
   await deleteJson(baseUrl, `/v1/workflows/${encodeURIComponent(workflowId)}`);
 }
 
-export async function listArtLoomCompatWorkflows(baseUrl: string): Promise<ArtLoomWorkflowStoreResponse> {
-  return await getJson<ArtLoomWorkflowStoreResponse>(baseUrl, "/v1/artloom-compat/workflows");
-}
-
-export async function saveArtLoomCompatWorkflowMetadata(
-  baseUrl: string,
-  workflowId: string,
-  metadata: Partial<ArtLoomWorkflowMetadata>,
-): Promise<ArtLoomWorkflowStoreResponse> {
-  return await putJson<ArtLoomWorkflowStoreResponse>(
-    baseUrl,
-    `/v1/artloom-compat/workflows/${encodeURIComponent(workflowId)}/metadata`,
-    { ...metadata, id: metadata.id ?? workflowId },
-  );
-}
-
-export async function saveArtLoomCompatWorkflowData(
-  baseUrl: string,
-  workflowId: string,
-  data: string,
-): Promise<ArtLoomWorkflowStoreResponse> {
-  return await putJson<ArtLoomWorkflowStoreResponse>(
-    baseUrl,
-    `/v1/artloom-compat/workflows/${encodeURIComponent(workflowId)}/data`,
-    { data },
-  );
-}
-
-export async function loadArtLoomCompatWorkflowData(
-  baseUrl: string,
-  workflowId: string,
-): Promise<ArtLoomWorkflowStoreResponse> {
-  return await getJson<ArtLoomWorkflowStoreResponse>(
-    baseUrl,
-    `/v1/artloom-compat/workflows/${encodeURIComponent(workflowId)}/data`,
-  );
-}
-
-export async function deleteArtLoomCompatWorkflowData(
-  baseUrl: string,
-  workflowId: string,
-): Promise<ArtLoomWorkflowStoreResponse> {
-  return await deleteJson<ArtLoomWorkflowStoreResponse>(
-    baseUrl,
-    `/v1/artloom-compat/workflows/${encodeURIComponent(workflowId)}/data`,
-  );
-}
-
 export async function saveToolDefinition(
   baseUrl: string,
   tool: LoomToolDefinition,
@@ -1684,75 +1479,6 @@ export async function uninstallArtPackage(baseUrl: string, artIdentity: string):
   await postJson(baseUrl, `/v1/arts/${encodeURIComponent(artIdentity)}/uninstall`, {});
 }
 
-export async function listArtLoomCompatArts(baseUrl: string): Promise<ArtLoomCompatArtsResponse> {
-  return await getJson<ArtLoomCompatArtsResponse>(baseUrl, "/v1/artloom-compat/arts");
-}
-
-export async function listEnabledArtLoomCompatArts(baseUrl: string): Promise<ArtLoomCompatArtsResponse> {
-  return await getJson<ArtLoomCompatArtsResponse>(baseUrl, "/v1/artloom-compat/arts/enabled");
-}
-
-export async function getArtLoomCompatArt(
-  baseUrl: string,
-  artId: string,
-): Promise<ArtLoomCompatArtResponse> {
-  return await getJson<ArtLoomCompatArtResponse>(
-    baseUrl,
-    `/v1/artloom-compat/arts/${encodeURIComponent(artId)}`,
-  );
-}
-
-export async function enableArtLoomCompatArt(
-  baseUrl: string,
-  artId: string,
-): Promise<ArtLoomCompatArtResponse> {
-  return await postJson<ArtLoomCompatArtResponse>(
-    baseUrl,
-    `/v1/artloom-compat/arts/${encodeURIComponent(artId)}/enable`,
-    {},
-  );
-}
-
-export async function disableArtLoomCompatArt(
-  baseUrl: string,
-  artId: string,
-): Promise<ArtLoomCompatArtResponse> {
-  return await postJson<ArtLoomCompatArtResponse>(
-    baseUrl,
-    `/v1/artloom-compat/arts/${encodeURIComponent(artId)}/disable`,
-    {},
-  );
-}
-
-export async function updateArtLoomCompatArtDefaults(
-  baseUrl: string,
-  artId: string,
-  defaults: Record<string, unknown>,
-): Promise<ArtLoomCompatArtResponse> {
-  return await putJson<ArtLoomCompatArtResponse>(
-    baseUrl,
-    `/v1/artloom-compat/arts/${encodeURIComponent(artId)}/defaults`,
-    { defaults },
-  );
-}
-
-export async function syncArtLoomCompatArts(baseUrl: string): Promise<ArtLoomCompatArtsResponse> {
-  return await postJson<ArtLoomCompatArtsResponse>(baseUrl, "/v1/artloom-compat/arts/sync", {});
-}
-
-export async function nativeProcessArt(
-  baseUrl: string,
-  artId: string,
-  inputBase64: string,
-  params: Record<string, unknown> = {},
-): Promise<ArtLoomNativeProcessArtResponse> {
-  return await postJson<ArtLoomNativeProcessArtResponse>(
-    baseUrl,
-    "/v1/artloom-compat/native/process-art",
-    { artId, inputBase64, params },
-  );
-}
-
 export async function deleteMcpServer(baseUrl: string, serverId: string): Promise<void> {
   await deleteJson(baseUrl, `/v1/mcp/servers/${encodeURIComponent(serverId)}`);
 }
@@ -1764,27 +1490,6 @@ export async function saveMcpServer(baseUrl: string, server: LoomMcpServer): Pro
     server,
   );
   return response.server ?? server;
-}
-
-export async function listArtLoomMcpServers(baseUrl: string): Promise<ArtLoomMcpServersResponse> {
-  return await getJson<ArtLoomMcpServersResponse>(baseUrl, "/v1/artloom-compat/mcp/servers");
-}
-
-export async function saveArtLoomMcpServer(
-  baseUrl: string,
-  server: LoomMcpServer,
-): Promise<ArtLoomMcpServersResponse> {
-  return await postJson<ArtLoomMcpServersResponse>(baseUrl, "/v1/artloom-compat/mcp/servers", server);
-}
-
-export async function deleteArtLoomMcpServer(
-  baseUrl: string,
-  serverId: string,
-): Promise<ArtLoomMcpServersResponse> {
-  return await deleteJson<ArtLoomMcpServersResponse>(
-    baseUrl,
-    `/v1/artloom-compat/mcp/servers/${encodeURIComponent(serverId)}`,
-  );
 }
 
 export async function fetchMcpRegistry(
@@ -1810,32 +1515,6 @@ export async function fetchMcpRegistry(
   return await getJson<McpRegistryResponse>(baseUrl, `/v1/mcp/registry${suffix ? `?${suffix}` : ""}`);
 }
 
-export async function fetchArtLoomMcpRegistry(
-  baseUrl: string,
-  options: {
-    search?: string;
-    limit?: number;
-    cursor?: string | null;
-    updatedSince?: string;
-    includeDeleted?: boolean;
-    refresh?: boolean;
-  } = {},
-): Promise<ArtLoomMcpRegistryResponse> {
-  const params = new URLSearchParams();
-  if (options.search?.trim()) params.set("search", options.search.trim());
-  if (typeof options.limit === "number") params.set("limit", String(options.limit));
-  if (options.cursor?.trim()) params.set("cursor", options.cursor.trim());
-  params.set("version", "latest");
-  if (options.updatedSince?.trim()) params.set("updated_since", options.updatedSince.trim());
-  if (options.includeDeleted) params.set("include_deleted", "true");
-  if (options.refresh) params.set("refresh", "true");
-  const suffix = params.toString();
-  return await getJson<ArtLoomMcpRegistryResponse>(
-    baseUrl,
-    `/v1/artloom-compat/mcp/registry${suffix ? `?${suffix}` : ""}`,
-  );
-}
-
 export async function testMcpConnection(
   baseUrl: string,
   server: LoomMcpServer,
@@ -1848,8 +1527,8 @@ export async function callMcpTool(
   server: Pick<LoomMcpServer, "transport" | "command" | "args" | "env" | "url" | "headers">,
   toolName: string,
   toolArgs: Record<string, unknown> = {},
-): Promise<ArtLoomMcpCallToolResponse> {
-  return await postJson<ArtLoomMcpCallToolResponse>(baseUrl, "/v1/artloom-compat/mcp/call-tool", {
+): Promise<LoomMcpCallToolResponse> {
+  return await postJson<LoomMcpCallToolResponse>(baseUrl, "/v1/mcp/call", {
     transport: server.transport ?? "stdio",
     command: server.command,
     args: server.args ?? [],
@@ -1873,22 +1552,6 @@ export async function buildMcpPackageInstallPlan(
   packageName: string,
 ): Promise<McpPackageInstallPlan> {
   return await postJson<McpPackageInstallPlan>(baseUrl, "/v1/mcp/package/install-plan", { packageName });
-}
-
-export async function getPythonEngineStatus(baseUrl: string): Promise<PythonEngineStatus> {
-  return await getJson<PythonEngineStatus>(baseUrl, "/v1/python-arts/engine/status");
-}
-
-export async function prefetchPythonArtShader(
-  baseUrl: string,
-  artId: string,
-  artPath?: string,
-): Promise<PythonShaderPrefetchResponse> {
-  return await postJson<PythonShaderPrefetchResponse>(baseUrl, "/v1/python-arts/shader/prefetch", {
-    artId,
-    artPath,
-    params: { mode: "shader", output_mode: "shader" },
-  });
 }
 
 export async function createSharedMemoryBuffer(
@@ -1922,114 +1585,47 @@ export async function releaseSharedMemoryBuffer(
   );
 }
 
-export async function getArtLoomCompatSettings(
-  baseUrl: string,
-): Promise<ArtLoomCompatSettings> {
-  const response = await getJson<{ settings?: ArtLoomCompatSettings }>(baseUrl, "/v1/artloom-compat/settings");
-  return response.settings ?? DEFAULT_ARTLOOM_COMPAT_SETTINGS;
+export async function getLoomSettings(baseUrl: string): Promise<LoomSettings> {
+  const response = await getJson<{ settings?: LoomSettings }>(baseUrl, "/v1/settings");
+  return response.settings ?? DEFAULT_LOOM_SETTINGS;
 }
 
-export async function saveArtLoomCompatSettings(
+export async function saveLoomSettings(
   baseUrl: string,
-  settings: ArtLoomCompatSettings,
-): Promise<ArtLoomCompatSettings> {
-  const response = await putJson<{ settings?: ArtLoomCompatSettings }>(
+  settings: LoomSettings,
+): Promise<LoomSettings> {
+  const response = await putJson<{ settings?: LoomSettings }>(
     baseUrl,
-    "/v1/artloom-compat/settings",
+    "/v1/settings",
     settings,
   );
   return response.settings ?? settings;
 }
 
-export async function getArtLoomCompatShortcuts(
-  baseUrl: string,
-): Promise<ArtLoomShortcutConfig[]> {
-  const response = await getJson<{ shortcuts?: ArtLoomShortcutConfig[] }>(
+export async function getLoomShortcuts(baseUrl: string): Promise<LoomShortcutConfig[]> {
+  const response = await getJson<{ shortcuts?: LoomShortcutConfig[] }>(
     baseUrl,
-    "/v1/artloom-compat/shortcuts",
+    "/v1/settings/shortcuts",
   );
-  return response.shortcuts ?? Object.values(DEFAULT_ARTLOOM_COMPAT_SETTINGS.shortcuts);
+  return response.shortcuts ?? Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
 }
 
-export async function updateArtLoomCompatShortcut(
-  baseUrl: string,
-  shortcut: ArtLoomShortcutConfig,
-): Promise<ArtLoomShortcutConfig> {
-  const response = await putJson<{ shortcut?: ArtLoomShortcutConfig }>(
-    baseUrl,
-    `/v1/artloom-compat/shortcuts/${encodeURIComponent(shortcut.id)}`,
-    shortcut,
-  );
-  return response.shortcut ?? shortcut;
-}
-
-export async function getArtLoomCompatAppPaths(baseUrl: string): Promise<ArtLoomAppPaths> {
-  return await getJson<ArtLoomAppPaths>(baseUrl, "/v1/artloom-compat/app-paths");
-}
-
-export async function getArtLoomCompatAutostart(
-  baseUrl: string,
-): Promise<{ enabled?: boolean; sideEffect?: boolean; mode?: string }> {
-  return await getJson<{ enabled?: boolean; sideEffect?: boolean; mode?: string }>(
-    baseUrl,
-    "/v1/artloom-compat/system/autostart",
-  );
-}
-
-export async function setArtLoomCompatAutostart(
-  baseUrl: string,
-  enabled: boolean,
-): Promise<{ enabled?: boolean; sideEffect?: boolean; mode?: string }> {
-  return await postJson<{ enabled?: boolean; sideEffect?: boolean; mode?: string }>(
-    baseUrl,
-    "/v1/artloom-compat/system/autostart",
-    { enabled },
-  );
-}
-
-export async function enableArtLoomCompatAutostart(
-  baseUrl: string,
-): Promise<{ enabled?: boolean; sideEffect?: boolean; mode?: string }> {
-  return await postJson<{ enabled?: boolean; sideEffect?: boolean; mode?: string }>(
-    baseUrl,
-    "/v1/artloom-compat/system/autostart/enable",
-    {},
-  );
-}
-
-export async function disableArtLoomCompatAutostart(
-  baseUrl: string,
-): Promise<{ enabled?: boolean; sideEffect?: boolean; mode?: string }> {
-  return await postJson<{ enabled?: boolean; sideEffect?: boolean; mode?: string }>(
-    baseUrl,
-    "/v1/artloom-compat/system/autostart/disable",
-    {},
-  );
-}
-
-export async function setArtLoomCompatMinimizeToTray(
-  baseUrl: string,
-  enabled: boolean,
-): Promise<{ enabled?: boolean; sideEffect?: boolean; mode?: string }> {
-  return await postJson<{ enabled?: boolean; sideEffect?: boolean; mode?: string }>(
-    baseUrl,
-    "/v1/artloom-compat/system/minimize-to-tray",
-    { enabled },
-  );
+export async function getLoomAppPaths(baseUrl: string): Promise<LoomAppPaths> {
+  return await getJson<LoomAppPaths>(baseUrl, "/v1/runtime/app-paths");
 }
 
 export async function readPythonArtSource(
   baseUrl: string,
   path: string,
 ): Promise<LoomPythonSourceReadResponse> {
-  return await postJson<LoomPythonSourceReadResponse>(baseUrl, "/v1/python-arts/source/read", { path });
+  return await postJson<LoomPythonSourceReadResponse>(baseUrl, "/v1/art-authoring/source/read", { path });
 }
 
 export async function readPythonArtJson(
   baseUrl: string,
   artPath: string,
 ): Promise<LoomPythonArtJsonResponse> {
-  return await postJson<LoomPythonArtJsonResponse>(baseUrl, "/v1/python-arts/source/read-art-json", { artPath });
+  return await postJson<LoomPythonArtJsonResponse>(baseUrl, "/v1/art-authoring/source/read-art-json", { artPath });
 }
 
 export async function checkPythonArtJsonNearby(
@@ -2038,7 +1634,7 @@ export async function checkPythonArtJsonNearby(
 ): Promise<LoomPythonNearbyArtJsonResponse> {
   return await postJson<LoomPythonNearbyArtJsonResponse>(
     baseUrl,
-    "/v1/python-arts/source/check-art-json",
+    "/v1/art-authoring/source/check-art-json",
     { pythonPath },
   );
 }
@@ -2049,7 +1645,7 @@ export async function inferPythonArtPorts(
 ): Promise<LoomPythonPortInferenceResponse> {
   return await postJson<LoomPythonPortInferenceResponse>(
     baseUrl,
-    "/v1/python-arts/source/infer-ports",
+    "/v1/art-authoring/source/infer-ports",
     request,
   );
 }
@@ -2095,7 +1691,7 @@ export async function readLoomSnapshot(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promi
     readOptionalSnapshotArray<LoomCapability>(normalizedBaseUrl, "/v1/capabilities", "capabilities"),
     readOptionalSnapshotArray<LoomMcpServer>(normalizedBaseUrl, "/v1/mcp/servers", "servers"),
     readOptionalSnapshotArray<LoomToolDefinition>(normalizedBaseUrl, "/v1/tools", "tools"),
-    readOptionalSnapshotArray<LoomPythonArt>(normalizedBaseUrl, "/v1/python-arts", "arts"),
+    readOptionalSnapshotArray<LoomPythonArt>(normalizedBaseUrl, "/v1/art-authoring/python/arts", "arts"),
     readOptionalSnapshotArray<LoomWorkflowMetadata>(normalizedBaseUrl, "/v1/workflows", "workflows"),
     readOptionalSnapshotObject<LoomHookBridgeStatus>(normalizedBaseUrl, "/v1/hook-bridge/status"),
   ]);

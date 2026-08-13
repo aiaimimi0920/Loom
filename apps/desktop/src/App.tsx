@@ -5,16 +5,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import desktopPackage from "../package.json";
 import {
-  ArtLoomAppPaths,
-  ArtLoomArtStoreSettings,
-  ArtLoomCacheSettings,
-  ArtLoomCompatSettings,
-  ArtLoomHookCacheSettings,
-  ArtLoomMcpSettings,
-  ArtLoomProxySettings,
-  ArtLoomShortcutConfig,
+  LoomAppPaths,
+  LoomArtStoreSettings,
+  LoomCacheSettings,
+  LoomSettings,
+  HookCacheSettings,
+  LoomMcpSettings,
+  LoomProxySettings,
+  LoomShortcutConfig,
   DEFAULT_LOOM_DAEMON_URL,
-  DEFAULT_ARTLOOM_COMPAT_SETTINGS,
+  DEFAULT_LOOM_SETTINGS,
   LoomHookBridgeStatus,
   LoomMcpServer,
   LoomPythonPortDefinition,
@@ -30,15 +30,15 @@ import {
   checkPythonArtJsonNearby,
   createAuthoredArtPackage,
   deleteToolDefinition,
-  getArtLoomCompatAppPaths,
-  getArtLoomCompatSettings,
-  getArtLoomCompatShortcuts,
+  getLoomAppPaths,
+  getLoomSettings,
+  getLoomShortcuts,
   inferPythonArtPorts,
   readLoomSnapshot,
   retainAvailableSnapshotData,
   readPythonArtJson,
   readPythonArtSource,
-  saveArtLoomCompatSettings,
+  saveLoomSettings,
   saveToolDefinition,
   startHookBridge,
   startLoomDaemon,
@@ -4726,7 +4726,7 @@ function ArtPanel({
 
   useEffect(() => {
     let cancelled = false;
-    void getArtLoomCompatSettings(baseUrl)
+    void getLoomSettings(baseUrl)
       .then((settings) => {
         if (!cancelled) setStoreOfficialOnly(settings.art_store?.official_only === true);
       })
@@ -5495,8 +5495,8 @@ function McpSettingsPanel({
   value,
   onChange,
 }: {
-  value: ArtLoomMcpSettings;
-  onChange: (patch: Partial<ArtLoomMcpSettings>) => void;
+  value: LoomMcpSettings;
+  onChange: (patch: Partial<LoomMcpSettings>) => void;
 }) {
   return (
     <section className="settings-mcp-panel" aria-label="MCP 设置">
@@ -5550,10 +5550,10 @@ function ArtStoreSettingsPanel({
   onChange,
   onTrustPolicyChange,
 }: {
-  value: ArtLoomArtStoreSettings;
+  value: LoomArtStoreSettings;
   trustPolicy: LoomPluginTrustPolicy;
   trustPolicyBusy: boolean;
-  onChange: (patch: Partial<ArtLoomArtStoreSettings>) => void;
+  onChange: (patch: Partial<LoomArtStoreSettings>) => void;
   onTrustPolicyChange: (policy: LoomPluginTrustPolicy) => void;
 }) {
   return (
@@ -5609,8 +5609,8 @@ function NetworkSettingsPanel({
   onChange,
 }: {
   appName: string;
-  value: ArtLoomProxySettings;
-  onChange: (patch: Partial<ArtLoomProxySettings>) => void;
+  value: LoomProxySettings;
+  onChange: (patch: Partial<LoomProxySettings>) => void;
 }) {
   return (
     <section className="settings-network-panel" aria-label={`${appName} 网络设置`}>
@@ -5627,7 +5627,7 @@ function NetworkSettingsPanel({
           className="studio-input settings-network-row__control"
           aria-label={`${appName} 代理模式`}
           value={value.mode}
-          onChange={(event) => onChange({ mode: event.target.value as ArtLoomProxySettings["mode"] })}
+          onChange={(event) => onChange({ mode: event.target.value as LoomProxySettings["mode"] })}
         >
           <option value="system">跟随系统</option>
           <option value="custom">自定义</option>
@@ -5645,7 +5645,7 @@ function NetworkSettingsPanel({
               className="studio-input"
               aria-label={`${appName} 代理协议`}
               value={value.protocol}
-              onChange={(event) => onChange({ protocol: event.target.value as ArtLoomProxySettings["protocol"] })}
+              onChange={(event) => onChange({ protocol: event.target.value as LoomProxySettings["protocol"] })}
             >
               <option value="http">http://</option>
               <option value="https">https://</option>
@@ -5674,8 +5674,8 @@ function formatCacheBytes(bytes: number): string {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function loomCacheSettingsForUi(value?: Partial<ArtLoomCacheSettings>): ArtLoomCacheSettings {
-  const merged = { ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.loom_cache, ...value };
+function loomCacheSettingsForUi(value?: Partial<LoomCacheSettings>): LoomCacheSettings {
+  const merged = { ...DEFAULT_LOOM_SETTINGS.loom_cache, ...value };
   return {
     art_cache_max_bytes: [0, 256 * 1024 * 1024, 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024]
       .includes(merged.art_cache_max_bytes)
@@ -5691,7 +5691,7 @@ function loomCacheSettingsForUi(value?: Partial<ArtLoomCacheSettings>): ArtLoomC
   };
 }
 
-function loomCachePreferencesForRuntime(settings: ArtLoomCacheSettings) {
+function loomCachePreferencesForRuntime(settings: LoomCacheSettings) {
   return {
     artCacheMaxBytes: settings.art_cache_max_bytes,
     artCacheRetentionDays: settings.art_cache_retention_days,
@@ -5707,11 +5707,11 @@ function LoomCacheSettingsPanel({
   onSettingsChange,
   onClear,
 }: {
-  settings: ArtLoomCacheSettings;
+  settings: LoomCacheSettings;
   snapshot: LoomCacheSnapshotInfo | null;
   loading: boolean;
   busyKind: string | null;
-  onSettingsChange: (patch: Partial<ArtLoomCacheSettings>) => void;
+  onSettingsChange: (patch: Partial<LoomCacheSettings>) => void;
   onClear: (kind: "artRuntime" | "frameworkTemporary") => void;
 }) {
   const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
@@ -5767,8 +5767,8 @@ function LoomCacheSettingsPanel({
   );
 }
 
-function hookCacheSettingsForUi(value?: Partial<ArtLoomHookCacheSettings>): ArtLoomHookCacheSettings {
-  const merged = { ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.hook_cache, ...value };
+function hookCacheSettingsForUi(value?: Partial<HookCacheSettings>): HookCacheSettings {
+  const merged = { ...DEFAULT_LOOM_SETTINGS.hook_cache, ...value };
   return {
     recycle_bin_max_entries: [0, 15, 50].includes(merged.recycle_bin_max_entries)
       ? merged.recycle_bin_max_entries
@@ -5786,7 +5786,7 @@ function hookCacheSettingsForUi(value?: Partial<ArtLoomHookCacheSettings>): ArtL
   };
 }
 
-function hookCachePreferencesForRuntime(settings: ArtLoomHookCacheSettings) {
+function hookCachePreferencesForRuntime(settings: HookCacheSettings) {
   return {
     recycleBinMaxEntries: settings.recycle_bin_max_entries,
     recycleBinRetentionDays: settings.recycle_bin_retention_days,
@@ -5803,11 +5803,11 @@ function HookCacheSettingsPanel({
   onSettingsChange,
   onClear,
 }: {
-  settings: ArtLoomHookCacheSettings;
+  settings: HookCacheSettings;
   snapshot: HookCacheSnapshotInfo | null;
   loading: boolean;
   busyKind: string | null;
-  onSettingsChange: (patch: Partial<ArtLoomHookCacheSettings>) => void;
+  onSettingsChange: (patch: Partial<HookCacheSettings>) => void;
   onClear: (kind: "recycleBin" | "temporary" | "referenceLibrary") => void;
 }) {
   const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
@@ -5875,11 +5875,11 @@ function HookCacheSettingsPanel({
 }
 
 function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
-  const [draft, setDraft] = useState<ArtLoomCompatSettings>(DEFAULT_ARTLOOM_COMPAT_SETTINGS);
-  const [shortcuts, setShortcuts] = useState<ArtLoomShortcutConfig[]>(
-    Object.values(DEFAULT_ARTLOOM_COMPAT_SETTINGS.shortcuts),
+  const [draft, setDraft] = useState<LoomSettings>(DEFAULT_LOOM_SETTINGS);
+  const [shortcuts, setShortcuts] = useState<LoomShortcutConfig[]>(
+    Object.values(DEFAULT_LOOM_SETTINGS.shortcuts),
   );
-  const [appPaths, setAppPaths] = useState<ArtLoomAppPaths | null>(null);
+  const [appPaths, setAppPaths] = useState<LoomAppPaths | null>(null);
   const [appDiagnostics, setAppDiagnostics] = useState<Record<SettingsAppId, ApplicationDiagnosticsInfo>>(
     FALLBACK_APPLICATION_DIAGNOSTICS,
   );
@@ -5901,8 +5901,8 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
   const settingsSaveTimerRef = useRef<number | null>(null);
   const settingsSaveActiveRef = useRef(false);
   const settingsMountedRef = useRef(true);
-  const pendingSettingsRef = useRef<ArtLoomCompatSettings | null>(null);
-  const lastSavedSettingsRef = useRef<ArtLoomCompatSettings>(DEFAULT_ARTLOOM_COMPAT_SETTINGS);
+  const pendingSettingsRef = useRef<LoomSettings | null>(null);
+  const lastSavedSettingsRef = useRef<LoomSettings>(DEFAULT_LOOM_SETTINGS);
   const settingsBaseUrlRef = useRef(snapshot.baseUrl);
   const shortcutsRef = useRef(shortcuts);
   const availableArtTools = useMemo(
@@ -5930,7 +5930,7 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
           !== JSON.stringify(lastSavedSettingsRef.current.loom_cache);
         const hookCacheChanged = JSON.stringify(nextSettings.hook_cache)
           !== JSON.stringify(lastSavedSettingsRef.current.hook_cache);
-        const saved = await saveArtLoomCompatSettings(baseUrl, nextSettings);
+        const saved = await saveLoomSettings(baseUrl, nextSettings);
         if (settingsBaseUrlRef.current === baseUrl) {
           lastSavedSettingsRef.current = saved;
         }
@@ -6036,44 +6036,44 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     const loadSettings = async () => {
       try {
         const [loadedSettings, loadedShortcuts, loadedPaths] = await Promise.all([
-          getArtLoomCompatSettings(snapshot.baseUrl),
-          getArtLoomCompatShortcuts(snapshot.baseUrl),
-          getArtLoomCompatAppPaths(snapshot.baseUrl),
+          getLoomSettings(snapshot.baseUrl),
+          getLoomShortcuts(snapshot.baseUrl),
+          getLoomAppPaths(snapshot.baseUrl),
         ]);
         if (cancelled) return;
         const nextShortcuts = loadedShortcuts.length
           ? loadedShortcuts
-          : Object.values(DEFAULT_ARTLOOM_COMPAT_SETTINGS.shortcuts);
+          : Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
         const hydratedSettings = {
           ...loadedSettings,
           general: {
-            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.general,
+            ...DEFAULT_LOOM_SETTINGS.general,
             ...loadedSettings.general,
           },
           hook_general: {
-            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.hook_general,
+            ...DEFAULT_LOOM_SETTINGS.hook_general,
             ...loadedSettings.hook_general,
           },
           system: {
-            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.system,
+            ...DEFAULT_LOOM_SETTINGS.system,
             ...loadedSettings.system,
           },
           network: {
             loom: {
-              ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.network.loom,
+              ...DEFAULT_LOOM_SETTINGS.network.loom,
               ...loadedSettings.network?.loom,
             },
             hook: {
-              ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.network.hook,
+              ...DEFAULT_LOOM_SETTINGS.network.hook,
               ...loadedSettings.network?.hook,
             },
           },
           mcp: {
-            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.mcp,
+            ...DEFAULT_LOOM_SETTINGS.mcp,
             ...loadedSettings.mcp,
           },
           art_store: {
-            ...DEFAULT_ARTLOOM_COMPAT_SETTINGS.art_store,
+            ...DEFAULT_LOOM_SETTINGS.art_store,
             ...loadedSettings.art_store,
           },
           loom_cache: loomCacheSettingsForUi(loadedSettings.loom_cache),
@@ -6089,18 +6089,18 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
         settingsHydratedRef.current = true;
       } catch (error) {
         if (cancelled) return;
-        const fallbackShortcuts = Object.values(DEFAULT_ARTLOOM_COMPAT_SETTINGS.shortcuts);
-        lastSavedSettingsRef.current = DEFAULT_ARTLOOM_COMPAT_SETTINGS;
+        const fallbackShortcuts = Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
+        lastSavedSettingsRef.current = DEFAULT_LOOM_SETTINGS;
         shortcutsRef.current = fallbackShortcuts;
         suppressNextSettingsSaveRef.current = true;
-        setDraft(DEFAULT_ARTLOOM_COMPAT_SETTINGS);
+        setDraft(DEFAULT_LOOM_SETTINGS);
         setShortcuts(fallbackShortcuts);
         settingsHydratedRef.current = true;
         pushAppToast({
           level: "error",
           text: error instanceof Error
-            ? `使用 ArtLoom 兼容默认设置：${error.message}`
-            : "使用 ArtLoom 兼容默认设置。",
+            ? `使用 Loom 默认设置：${error.message}`
+            : "使用 Loom 默认设置。",
         });
       }
     };
@@ -6198,7 +6198,7 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
 
   const updateShortcutDraft = (id: string, label: string, keys: string) => {
     const existing = shortcutsRef.current.find((shortcut) => shortcut.id === id);
-    const updated: ArtLoomShortcutConfig = {
+    const updated: LoomShortcutConfig = {
       id,
       label: existing?.label || label,
       keys,
@@ -6215,7 +6215,7 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     }));
   };
 
-  const updateNetworkDraft = (app: SettingsAppId, patch: Partial<ArtLoomProxySettings>) => {
+  const updateNetworkDraft = (app: SettingsAppId, patch: Partial<LoomProxySettings>) => {
     setDraft((current) => ({
       ...current,
       network: {
@@ -6237,21 +6237,21 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     }));
   };
 
-  const updateLoomCacheDraft = (patch: Partial<ArtLoomCacheSettings>) => {
+  const updateLoomCacheDraft = (patch: Partial<LoomCacheSettings>) => {
     setDraft((current) => ({
       ...current,
       loom_cache: { ...current.loom_cache, ...patch },
     }));
   };
 
-  const updateMcpDraft = (patch: Partial<ArtLoomMcpSettings>) => {
+  const updateMcpDraft = (patch: Partial<LoomMcpSettings>) => {
     setDraft((current) => ({
       ...current,
       mcp: { ...current.mcp, ...patch },
     }));
   };
 
-  const updateArtStoreDraft = (patch: Partial<ArtLoomArtStoreSettings>) => {
+  const updateArtStoreDraft = (patch: Partial<LoomArtStoreSettings>) => {
     setDraft((current) => ({
       ...current,
       art_store: { ...current.art_store, ...patch },
@@ -6277,7 +6277,7 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     }
   };
 
-  const updateHookCacheDraft = (patch: Partial<ArtLoomHookCacheSettings>) => {
+  const updateHookCacheDraft = (patch: Partial<HookCacheSettings>) => {
     setDraft((current) => ({
       ...current,
       hook_cache: { ...current.hook_cache, ...patch },
@@ -6401,11 +6401,11 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     if (!item.sourceId) return item.keys;
     const configured = shortcuts.find((shortcut) => shortcut.id === item.sourceId)?.keys.trim();
     const normalizedConfigured = configured?.replace(/\s+/g, "").toLocaleLowerCase();
-    const legacyContextualDefault = (
+    const contextualDefaultOverride = (
       (item.sourceId === "cancel" && normalizedConfigured === "escape")
       || (item.sourceId === "delete_unit" && normalizedConfigured === "delete/backspace")
     );
-    if (legacyContextualDefault) return item.keys;
+    if (contextualDefaultOverride) return item.keys;
     return configured ? splitShortcutAlternatives(configured) : item.keys;
   };
 
@@ -6503,7 +6503,7 @@ function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     pushAppToast({ level: "info", text: `${shortcutEditor.item.label}快捷键已更新` });
   };
 
-  const openQuickBindingEditor = (binding?: ArtLoomCompatSettings["quick_bindings"][number]) => {
+  const openQuickBindingEditor = (binding?: LoomSettings["quick_bindings"][number]) => {
     const keys = binding ? splitShortcutAlternatives(binding.key) : [];
     setQuickBindingEditor({
       id: binding?.id || `${Date.now()}`,
@@ -7277,7 +7277,7 @@ export default function App() {
   useEffect(() => {
     if (snapshot.connectionState !== "online") return;
     let cancelled = false;
-    void getArtLoomCompatSettings(snapshot.baseUrl)
+    void getLoomSettings(snapshot.baseUrl)
       .then(async (settings) => {
         if (cancelled) return;
         applyLoomGeneralSettings(settings.general);

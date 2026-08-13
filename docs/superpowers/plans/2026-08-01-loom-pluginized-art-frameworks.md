@@ -1,5 +1,13 @@
 # Loom Pluginized Art Frameworks Implementation Plan
 
+> Historical implementation plan. Its original six-framework catalog and
+> AHRP/`art/process` examples are superseded. The implemented framework catalog
+> is `process`, `cloud_api`, `mcp`, and `workflow`; command, script, and Python
+> Arts use `process`, and the only current Loom<->Hook Art wire protocol is
+> `loom.hook.v1`. Use `docs/progress/art-framework-refactor-audit-2026-08-12.md`
+> and Phase 70 for current acceptance state. Remaining old names below document
+> the plan's starting point and must not be used as runtime contracts.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn Loom's current installable-Art proof line into a true plugin boundary where Art frameworks and Art nodes are independently packaged, installed, discovered, enabled, disabled, upgraded, and uninstalled without modifying Loom or Hook source.

@@ -5,10 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Loom ArtHook compatibility bridge protocol contracts"
+description = "Loom-to-Hook workflow bridge services"
 
 [dependencies]
+loom_protocol.workspace = true
 loom_workflow_store.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

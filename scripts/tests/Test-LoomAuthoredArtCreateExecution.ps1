@@ -292,6 +292,7 @@ try {
         id = "authored-art-fixture"
         name = "Authored Art Fixture"
         description = "MCP fixture for authored Art creation"
+        transport = "stdio"
         command = "powershell.exe"
         args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $mcpFixturePath)
         env = @{}
@@ -325,11 +326,13 @@ try {
         )
     }
 
+    $publisherIdentity = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/publisher-identity" -Body $null
+    $qualifiedScriptId = "$([string]$publisherIdentity.identity.userId)/$($repositoryNames.script)"
     $workflowYaml = @"
 name: Authored Workflow Creation Test
 nodes:
   - id: script
-    uses: $($repositoryNames.script)
+    uses: $qualifiedScriptId
     with:
       message: workflow-created
 "@

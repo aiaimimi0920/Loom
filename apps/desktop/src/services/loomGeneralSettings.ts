@@ -1,7 +1,7 @@
-import type { ArtLoomCompatSettings } from "./loomApi";
+import type { LoomSettings } from "./loomApi";
 
 export type LoomGeneralSettings = Pick<
-  ArtLoomCompatSettings["general"],
+  LoomSettings["general"],
   "theme" | "language" | "minimize_to_tray"
 >;
 

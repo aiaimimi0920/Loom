@@ -23,6 +23,11 @@ $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1
 $hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
 $frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
 $surfacePrototypeSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1"
+$surfacePrototypeManifestPaths = @(
+    (Join-Path $repoRoot "art-packages\surface-prototypes\stock-card\manifest.json"),
+    (Join-Path $repoRoot "art-packages\surface-prototypes\dashboard\manifest.json"),
+    (Join-Path $repoRoot "art-packages\surface-prototypes\form\manifest.json")
+)
 
 function Assert-True {
     param(
@@ -70,7 +75,7 @@ function Assert-ScriptContract {
         Assert-True -Condition $raw.Contains($needle) -Message "Missing required release contract text in ${Path}: $needle"
     }
     foreach ($needle in $ForbiddenText) {
-        Assert-True -Condition (-not $raw.Contains($needle)) -Message "Forbidden parent release dependency in ${Path}: $needle"
+        Assert-True -Condition (-not $raw.Contains($needle)) -Message "Forbidden release contract text in ${Path}: $needle"
     }
 }
 
@@ -173,6 +178,9 @@ Assert-ScriptContract `
         'Desktop ZIP name does not match the manifest version.',
         'CLI ZIP name does not match the manifest version.',
         'Plugin SDK ZIP path does not match its name.',
+        'function Get-Sha256HexForBytes',
+        'Plugin SDK protocol README does not match the release source.',
+        '$sourceReadmePath = Join-Path $repoRoot "protocol\README.md"',
         '[System.StringComparison]::Ordinal',
         '$expectedLine = "$actualZipHash  $zipName"',
         'checksums.sha256',
@@ -291,13 +299,15 @@ Assert-ScriptContract `
     -Path $frameworkArtStoreHookSmokePath `
     -RequiredText @(
         'raw-image-alt.png',
-        'mcpSelectionPersistence',
-        'selectedResultIndex',
-        'resultCandidates',
+        '"image.candidates"',
+        '$mcpCandidates.items',
+        '$mcpCandidates.selectedIndex',
+        'mcpCandidateCount',
         'result_index',
         'Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256',
         'Write-Utf8NoBomFile -Path "$ZipPath.sha256"',
-        '/v1/hook-bridge/canvas'
+        'method = "loom.hook.art.execute"',
+        'protocolVersion = "loom.hook.v1"'
     ) `
     -ForbiddenText $commonForbidden
 
@@ -309,9 +319,12 @@ Assert-ScriptContract `
         '/v1/surfaces/actions/cancel',
         'instanceReused',
         'isolatedControlPlane',
-        'shared resource leases must be attachment-scoped'
+        'shared resource leases must be attachment-scoped',
+        'loom.surface.snapshot'
     ) `
-    -ForbiddenText $commonForbidden
+    -ForbiddenText @($commonForbidden) + @(
+        '"surface/snapshot"'
+    )
 
 Assert-ScriptContract `
     -Path $smokePath `
@@ -323,8 +336,6 @@ Assert-ScriptContract `
         'Invoke-LoomGatewayBrainPlanSmoke.ps1',
         'Invoke-LoomRunPersistenceSmoke.ps1',
         'Invoke-LoomDaemonConcurrencySmoke.ps1',
-        'runtime\resources\ocr',
-        'Default Loom release unexpectedly contains legacy host Python runtime',
         'LoomSmokePorts.ps1',
         'Get-LoomSmokePort',
         '/v1/mcp/servers',
@@ -332,8 +343,6 @@ Assert-ScriptContract `
         '/v1/hook-bridge/status',
         'function Initialize-SmokeEvidenceRun',
         'function Write-SmokeJsonEvidence',
-        'function Assert-SameExistingPath',
-        'Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.path)',
         '$EvidenceRoot'
     ) `
     -ForbiddenText $commonForbidden
@@ -368,6 +377,17 @@ foreach ($focusedSmokePath in @($smokePath) + $focusedSmokePaths) {
     Assert-True -Condition (-not $focusedSmokeRaw.Contains('function Get-FreeTcpPort')) -Message "Smoke must not retain a local TCP port allocator: $focusedSmokePath"
 }
 
+foreach ($surfacePrototypeManifestPath in $surfacePrototypeManifestPaths) {
+    $surfacePrototypeManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $surfacePrototypeManifestPath | ConvertFrom-Json
+    $surfaceActions = @($surfacePrototypeManifest.metadata.capabilities.surface.actions)
+    Assert-True -Condition ($surfaceActions.Count -gt 0) -Message "Surface prototype must declare actions: $surfacePrototypeManifestPath"
+    foreach ($surfaceAction in $surfaceActions) {
+        Assert-True `
+            -Condition ([int64]$surfaceAction.timeoutMs -ge 10000) `
+            -Message "Surface process action timeout must cover framework and Art runtime startup: $surfacePrototypeManifestPath action=$($surfaceAction.id) timeoutMs=$($surfaceAction.timeoutMs)"
+    }
+}
+
 $versionId = "standalone-contract"
 $defaultOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $buildPath -VersionId $versionId -NoZip -DryRun 2>&1
 Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Message "Default standalone build dry-run failed: $($defaultOutput -join [Environment]::NewLine)"
@@ -381,7 +401,7 @@ Assert-Equal -Expected "loom.exe" -Actual ([string]$defaultPlan.cliArtifact.entr
 Assert-True -Condition ([string]$defaultPlan.cliArtifact.zipNamePattern -eq "Loom-CLI-{versionId}-windows-x64.zip") -Message "Dry-run CLI ZIP naming contract mismatch."
 Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$defaultPlan.pluginSdkArtifact.pluginCliEntryName) -Message "Dry-run must catalog the plugin developer CLI."
 Assert-True -Condition ([string]$defaultPlan.pluginSdkArtifact.zipNamePattern -eq "Loom-Plugin-SDK-{versionId}-windows-x64.zip") -Message "Dry-run plugin SDK ZIP naming contract mismatch."
-Assert-Equal -Expected 18 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas, Surface SDK, and developer documentation."
+Assert-Equal -Expected 19 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas, Surface SDK, and developer documentation."
 Assert-Equal -Expected "process,cloud_api,mcp,workflow" -Actual (@($defaultPlan.frameworkPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog all four independent framework packages."
 Assert-Equal -Expected (Join-Path $defaultPlan.destination "packages\frameworks") -Actual ([string]$defaultPlan.frameworkPackageCatalog.outputRoot) -Message "Dry-run framework catalog output must stay inside the candidate."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { -not ([string]$_.destinationRelativePath).StartsWith("runtime\") }).Count -eq 0) -Message "All daemon-owned support files must live under runtime."

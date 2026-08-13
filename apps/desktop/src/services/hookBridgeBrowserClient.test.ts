@@ -41,7 +41,7 @@ class FakeWebSocket {
   }
 }
 
-test("subscribes to requested hook bridge channels when the socket opens", () => {
+test("subscribes to requested Hook protocol events when the socket opens", () => {
   const sockets: FakeWebSocket[] = [];
   const client = createHookBridgeBrowserClient({
     websocketFactory: (url) => {
@@ -51,7 +51,7 @@ test("subscribes to requested hook bridge channels when the socket opens", () =>
     },
   });
 
-  const stop = client.subscribe("art_loom/workflow_updated", () => {});
+  const stop = client.subscribe("loom.hook.workflow.updated", () => {});
 
   assert.equal(sockets.length, 1);
   assert.deepEqual(sockets[0].sent, []);
@@ -59,12 +59,10 @@ test("subscribes to requested hook bridge channels when the socket opens", () =>
   sockets[0].open();
 
   assert.equal(sockets[0].sent.length, 1);
-  assert.deepEqual(JSON.parse(sockets[0].sent[0]), {
-    method: "subscribe",
-    params: {
-      channels: ["art_loom/workflow_updated"],
-    },
-  });
+  const subscription = JSON.parse(sockets[0].sent[0]);
+  assert.equal(subscription.method, "loom.hook.subscribe");
+  assert.deepEqual(subscription.params.events, ["loom.hook.workflow.updated"]);
+  assert.match(subscription.params.requestId, /^subscribe:/);
 
   stop();
   client.dispose();
@@ -81,7 +79,7 @@ test("uses an isolated Hook Bridge URL when one is configured", () => {
     },
   });
 
-  client.subscribe("art_hook/instantiate", () => {});
+  client.subscribe("loom.hook.workflow.instantiated", () => {});
 
   assert.equal(sockets[0].url, "ws://127.0.0.1:43127");
   client.dispose();
@@ -100,10 +98,10 @@ test("dispatches hook bridge payloads to matching desktop listeners", () => {
   const instantiatePayloads: unknown[] = [];
   const workflowUpdatedPayloads: unknown[] = [];
 
-  client.subscribe("art_hook/instantiate", (payload) => {
+  client.subscribe("loom.hook.workflow.instantiated", (payload) => {
     instantiatePayloads.push(payload);
   });
-  client.subscribe("art_loom/workflow_updated", (payload) => {
+  client.subscribe("loom.hook.workflow.updated", (payload) => {
     workflowUpdatedPayloads.push(payload);
   });
 
@@ -111,14 +109,14 @@ test("dispatches hook bridge payloads to matching desktop listeners", () => {
   sockets[0].open();
 
   sockets[0].emitMessage({
-    method: "art_hook/instantiate",
+    method: "loom.hook.workflow.instantiated",
     params: {
-      workflow_id: "hook-live",
+      workflowId: "hook-live",
       mode: "reference",
     },
   });
   sockets[0].emitMessage({
-    method: "art_loom/workflow_updated",
+    method: "loom.hook.workflow.updated",
     params: {
       workflowId: "hook-live",
       nodeId: "prompt",
@@ -133,7 +131,7 @@ test("dispatches hook bridge payloads to matching desktop listeners", () => {
 
   assert.deepEqual(instantiatePayloads, [
     {
-      workflow_id: "hook-live",
+      workflowId: "hook-live",
       mode: "reference",
     },
   ]);

@@ -60,7 +60,7 @@ Assert-NotContains 'data-testid="hook-canvas-open-workflow"' $thumbnail "The rem
 Assert-Contains 'data-testid="hook-canvas-node"' $node "Hook canvas nodes need stable smoke targets."
 Assert-NotContains $visualWorkflowLabel $thumbnail "The removed visual-workflow label must not return."
 Assert-Contains $saveWorkflowLabel $thumbnail "Hook Sync must expose the compact save-workflow action."
-Assert-Contains 'const nextSnapshot = await waitForLoomOnline(refreshSnapshot);' $app "Daemon start must always poll the complete snapshot until online."
+Assert-Contains 'await waitForLoomOnline(refreshSnapshot);' $app "Daemon start must always poll the complete snapshot until online."
 Assert-NotContains '? await waitForLoomOnline' $app "Daemon readiness polling must not depend on whether a new process was spawned."
 
 Assert-PathExists $smokePath

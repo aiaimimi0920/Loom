@@ -65,6 +65,13 @@ Assert-PathInside -Path $stagingRoot -Root $outputRootPath -Label "framework sta
 if (Test-Path -LiteralPath $stagingRoot) {
     Remove-Item -LiteralPath $stagingRoot -Recurse -Force
 }
+foreach ($existingZip in Get-ChildItem -LiteralPath $outputRootPath -File -Filter "*.zip") {
+    Remove-Item -LiteralPath $existingZip.FullName -Force
+    $sidecar = "$($existingZip.FullName).sha256"
+    if (Test-Path -LiteralPath $sidecar -PathType Leaf) {
+        Remove-Item -LiteralPath $sidecar -Force
+    }
+}
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
 $cargoArguments = @("build", "--manifest-path", $runtimeHostManifest)
@@ -95,6 +102,9 @@ try {
         $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourceManifestPath | ConvertFrom-Json
         if ([string]$manifest.id -ne $id) {
             throw "Framework manifest id mismatch: expected $id, got $($manifest.id)"
+        }
+        if ($null -eq $manifest.publisher -or [string]::IsNullOrWhiteSpace([string]$manifest.publisher.id)) {
+            throw "Framework manifest publisher id is required: $id"
         }
         $command = ([string]$manifest.entry.command).Replace('/', '\')
         if ([string]::IsNullOrWhiteSpace($command)) {

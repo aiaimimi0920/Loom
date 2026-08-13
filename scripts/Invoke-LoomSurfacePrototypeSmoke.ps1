@@ -324,7 +324,12 @@ try {
         form = @{ source = "surface-prototype-form.zip"; id = "surface-project-form" }
     }
     foreach ($entry in $artNames.Values) {
-        Copy-Item -LiteralPath (Join-Path $artSourceRoot $entry.source) -Destination (Join-Path $storeRoot "arts\$($entry.id).zip") -Force
+        $versionDirectory = Join-Path $storeRoot "arts\$($entry.id)"
+        New-Item -ItemType Directory -Force -Path $versionDirectory | Out-Null
+        $versionZip = Join-Path $versionDirectory "1.0.0.zip"
+        Copy-Item -LiteralPath (Join-Path $artSourceRoot $entry.source) -Destination $versionZip -Force
+        $digest = (Get-FileHash -LiteralPath $versionZip -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText("$versionZip.sha256", "$digest  1.0.0.zip`n", [Text.UTF8Encoding]::new($false))
     }
 
     $storePort = Get-LoomSmokePort
@@ -475,7 +480,7 @@ try {
 
         $streamRecovery = Invoke-JsonGet "$baseUrl/v1/surfaces/stream?after=0&timeoutMs=1"
         $dashboardRecovery = @($streamRecovery.messages | Where-Object {
-            [string]$_.method -eq "surface/snapshot" -and [string]$_.params.hookNodeId -eq "hook-node:dashboard-one"
+            [string]$_.method -eq "loom.surface.snapshot" -and [string]$_.params.hookNodeId -eq "hook-node:dashboard-one"
         } | Select-Object -First 1)
         Assert-Equal 1 $dashboardRecovery.Count "Surface stream did not replay the dashboard snapshot after restart"
         Assert-Equal $preRestartRevision ([int64]$dashboardRecovery[0].params.snapshot.revision) "replayed Surface snapshot revision mismatch"

@@ -136,7 +136,7 @@ function Write-JsonFile {
 
 function Write-HookFixture {
     param([string]$AppDataRoot)
-    $sessionDir = Join-Path $AppDataRoot "com.vmjcv.arthook-next"
+    $sessionDir = Join-Path $AppDataRoot "com.yamiyu.hook"
     $imageDir = Join-Path $sessionDir "images"
     New-Item -ItemType Directory -Force -Path $imageDir | Out-Null
     $upstreamPath = [System.IO.Path]::GetFullPath((Join-Path $imageDir "upstream.png"))
@@ -257,8 +257,8 @@ try {
 
     Invoke-WebRequest -Uri ($daemonUrl + $previewUrl) -OutFile $downloadPath -TimeoutSec 15 | Out-Null
 
-    $failedArtSourcePath = Join-Path $appDataRoot "com.vmjcv.arthook-next\images\failed-art.png"
-    $upstreamSourcePath = Join-Path $appDataRoot "com.vmjcv.arthook-next\images\upstream.png"
+    $failedArtSourcePath = Join-Path $appDataRoot "com.yamiyu.hook\images\failed-art.png"
+    $upstreamSourcePath = Join-Path $appDataRoot "com.yamiyu.hook\images\upstream.png"
     $downloadHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $failedArtSourceHash = (Get-FileHash -LiteralPath $failedArtSourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $upstreamSourceHash = (Get-FileHash -LiteralPath $upstreamSourcePath -Algorithm SHA256).Hash.ToLowerInvariant()

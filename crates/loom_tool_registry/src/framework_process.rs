@@ -10,8 +10,8 @@ use loom_process::{ProcessError, ProcessSpec};
 use serde_json::{json, Map, Value};
 
 use crate::framework::{
-    enforce_framework_permission_policy, is_valid_framework, resolve_framework_package_dir,
-    FrameworkPackageManifest, FRAMEWORK_PROTOCOL_VERSION,
+    enforce_framework_permission_policy, resolve_framework_package_dir, FrameworkPackageManifest,
+    FRAMEWORK_PROTOCOL_VERSION,
 };
 use crate::{ToolDefinition, ToolRegistryError, ToolRegistryResult};
 
@@ -126,7 +126,7 @@ fn execute_framework_art_in_root_with_timeout(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
 ) -> ToolRegistryResult<Value> {
-    if !is_valid_framework(framework) {
+    if !crate::framework::is_valid_framework_reference(framework) {
         return Err(ToolRegistryError::FrameworkProcessProtocol {
             id: tool.id.clone(),
             framework: framework.to_owned(),
@@ -134,8 +134,13 @@ fn execute_framework_art_in_root_with_timeout(
         });
     }
 
-    let package_dir = resolve_framework_package_dir(packages_root, framework)
-        .unwrap_or_else(|| packages_root.join(framework));
+    let package_dir = resolve_framework_package_dir(packages_root, framework).ok_or_else(|| {
+        ToolRegistryError::FrameworkPackageNotFound {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            path: packages_root.display().to_string(),
+        }
+    })?;
     let manifest_path = package_dir.join("framework.manifest.json");
     let canonical_packages_root = fs::canonicalize(packages_root).map_err(|_error| {
         ToolRegistryError::FrameworkPackageNotFound {
@@ -182,7 +187,7 @@ fn execute_framework_art_in_root_with_timeout(
                 reason: error.to_string(),
             }
         })?;
-    if manifest.id != framework {
+    if manifest.id != framework && manifest.qualified_id() != framework {
         return Err(ToolRegistryError::FrameworkProcessProtocol {
             id: tool.id.clone(),
             framework: framework.to_owned(),
@@ -227,7 +232,7 @@ fn execute_framework_art_in_root_with_timeout(
     let art_dir =
         art_directory(tool).ok_or_else(|| ToolRegistryError::FrameworkArtDirectoryNotFound {
             id: tool.id.clone(),
-            path: format!("<control-plane>/arts/{}", tool.id),
+            path: "<metadata.artPackage.dir>".to_owned(),
         })?;
     if !art_dir.is_dir() {
         return Err(ToolRegistryError::FrameworkArtDirectoryNotFound {
@@ -287,7 +292,7 @@ fn execute_framework_art_in_root_with_timeout(
     let request = FrameworkExecuteRequest {
         protocol_version: negotiated_protocol.to_owned(),
         supported_protocol_versions: vec![FRAMEWORK_PROTOCOL_VERSION.to_owned()],
-        framework_id: framework.to_owned(),
+        framework_id: manifest.id.clone(),
         art_id: tool.id.clone(),
         art_dir: art_dir.clone(),
         inputs,
@@ -599,15 +604,11 @@ fn framework_io_error(
 }
 
 fn framework_packages_root() -> Option<PathBuf> {
-    ["LOOM_FRAMEWORK_PACKAGES_DIR", "LOOM_FRAMEWORK_RUNTIMES_DIR"]
-        .into_iter()
-        .find_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        })
+    std::env::var("LOOM_FRAMEWORK_PACKAGES_DIR")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
         .or_else(|| {
             std::env::var("LOOM_CONTROL_PLANE_ROOT")
                 .ok()
@@ -621,13 +622,8 @@ fn art_directory(tool: &ToolDefinition) -> Option<PathBuf> {
         .get("artPackage")
         .and_then(Value::as_object)
         .and_then(|value| value.get("dir"))
-        .and_then(Value::as_str)
-        .or_else(|| metadata.get("artDir").and_then(Value::as_str));
-    package.map(PathBuf::from).or_else(|| {
-        std::env::var("LOOM_CONTROL_PLANE_ROOT")
-            .ok()
-            .map(|root| PathBuf::from(root).join("arts").join(&tool.id))
-    })
+        .and_then(Value::as_str);
+    package.map(PathBuf::from)
 }
 
 fn art_package_path(tool: &ToolDefinition, key: &str) -> Option<PathBuf> {
@@ -669,7 +665,6 @@ fn split_arguments(tool: &ToolDefinition, arguments: &Value) -> (Value, Value, V
     };
     let disabled = object
         .get("disabledParams")
-        .or_else(|| object.get("disabled_params"))
         .and_then(Value::as_array)
         .map(|values| {
             values
@@ -689,17 +684,12 @@ fn split_arguments(tool: &ToolDefinition, arguments: &Value) -> (Value, Value, V
         .params
         .iter()
         .filter_map(Value::as_object)
-        .filter_map(|parameter| {
-            parameter
-                .get("id")
-                .or_else(|| parameter.get("name"))
-                .and_then(Value::as_str)
-        })
+        .filter_map(|parameter| parameter.get("id").and_then(Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
     let mut inputs = Map::new();
     let mut params = Map::new();
     for (key, value) in object {
-        if matches!(key.as_str(), "disabledParams" | "disabled_params") {
+        if key == "disabledParams" {
             continue;
         }
         if parameter_ids.contains(key.as_str()) {
@@ -798,11 +788,17 @@ mod tests {
     }
 
     fn write_fixture_package(root: &Path, script: &str) -> PathBuf {
-        let package_dir = root.join("script");
+        let package_root = root.join("publisher.test").join("script");
+        let package_dir = package_root.join("versions").join("0.1.0-fixture");
         let runtime_dir = package_dir.join("runtime");
         let art_dir = root.join("arts").join("fixture-art");
         fs::create_dir_all(&runtime_dir).expect("create fixture runtime");
         fs::create_dir_all(&art_dir).expect("create fixture art");
+        fs::write(
+            package_root.join("active.json"),
+            serde_json::to_vec_pretty(&json!({ "active": "versions/0.1.0-fixture" })).unwrap(),
+        )
+        .expect("write fixture activation");
         fs::copy(powershell_executable(), runtime_dir.join("powershell.exe"))
             .expect("copy PowerShell fixture");
         fs::write(runtime_dir.join("fixture.ps1"), script).expect("write fixture script");
@@ -813,12 +809,14 @@ mod tests {
                 "name": "Fixture Script Framework",
                 "description": "test",
                 "version": "0.1.0",
+                "publisher": { "id": "publisher.test", "name": "Publisher Test" },
                 "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
                 "platforms": ["windows-x64"],
                 "entry": {
                     "kind": "process",
                     "command": "runtime/powershell.exe",
-                    "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "runtime/fixture.ps1"]
+                    "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "runtime/fixture.ps1"],
+                    "processModel": "per_execution"
                 },
                 "permissions": ["process.spawn"],
                 "resources": {
@@ -843,7 +841,7 @@ mod tests {
             description: "External framework fixture".to_owned(),
             enabled: true,
             execution: crate::ToolExecution::FrameworkArt {
-                framework: "script".to_owned(),
+                framework: "publisher.test/script".to_owned(),
             },
             inputs: Vec::new(),
             outputs: Vec::new(),
@@ -920,7 +918,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
         let result = execute_framework_art_in_root_with_timeout(
             &fixture_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({
                 "inputs": { "image": "input.png" },
                 "params": { "strength": 0.5 },
@@ -988,7 +986,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
 
         let result = execute_framework_art_in_root_with_timeout(
             &tool,
-            "script",
+            "publisher.test/script",
             json!({}),
             &packages_root,
             Duration::from_secs(10),
@@ -1012,7 +1010,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
         let result = execute_framework_art_in_root_with_timeout(
             &fixture_tool_with_schema(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({
                 "input": "source.png",
                 "reference": "reference.png",
@@ -1064,7 +1062,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, ERROR_SCRIPT);
         let error = execute_framework_art_in_root_with_timeout(
             &fixture_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({}),
             &root,
             Duration::from_secs(10),
@@ -1115,7 +1113,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, INVALID_SCRIPT);
         let error = execute_framework_art_in_root_with_timeout(
             &fixture_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({}),
             &root,
             Duration::from_secs(10),
@@ -1136,7 +1134,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, TIMEOUT_SCRIPT);
         let error = execute_framework_art_in_root_with_timeout(
             &fixture_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({}),
             &root,
             Duration::from_millis(50),
@@ -1156,7 +1154,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, LARGE_OUTPUT_SCRIPT);
         let result = execute_framework_art_in_root_with_timeout(
             &fixture_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({}),
             &root,
             Duration::from_secs(10),
@@ -1176,7 +1174,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, PATH_IMAGE_OUTPUT_SCRIPT);
         let result = execute_framework_art_in_root_with_timeout(
             &fixture_image_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({}),
             &root,
             Duration::from_secs(10),
@@ -1199,7 +1197,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         let art_dir = write_fixture_package(&root, OUTSIDE_PATH_IMAGE_OUTPUT_SCRIPT);
         let error = execute_framework_art_in_root_with_timeout(
             &fixture_image_tool(&art_dir),
-            "script",
+            "publisher.test/script",
             json!({}),
             &root,
             Duration::from_secs(10),
@@ -1211,6 +1209,30 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             error,
             ToolRegistryError::FrameworkProcessProtocol { reason, .. }
                 if reason.contains("outside the execution output roots")
+        ));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn framework_art_requires_installed_package_directory_metadata() {
+        let root = temp_root("missing-art-directory");
+        let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
+        let mut tool = fixture_tool(&art_dir);
+        tool.metadata = Some(json!({}));
+        let error = execute_framework_art_in_root_with_timeout(
+            &tool,
+            "publisher.test/script",
+            json!({}),
+            &root,
+            Duration::from_secs(10),
+            None,
+        )
+        .expect_err("missing artPackage.dir must fail closed");
+
+        assert!(matches!(
+            error,
+            ToolRegistryError::FrameworkArtDirectoryNotFound { path, .. }
+                if path == "<metadata.artPackage.dir>"
         ));
         fs::remove_dir_all(root).ok();
     }

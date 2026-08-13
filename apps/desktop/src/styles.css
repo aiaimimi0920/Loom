@@ -28,7 +28,7 @@
   --neuro-focus-ink: #20252b;
   --neuro-focus-muted: #656b72;
 
-  /* Loom compatibility aliases. */
+  /* Loom semantic tokens mapped onto the canonical Neuro palette. */
   --loom-theme-bg: var(--neuro-bg);
   --loom-theme-surface: var(--neuro-surface);
   --loom-theme-panel: var(--neuro-panel);

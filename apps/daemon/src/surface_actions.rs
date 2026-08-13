@@ -13,6 +13,8 @@ use loom_protocol::{
     SurfaceActionProgress, SurfaceActionResponse, SurfaceActionStatus, SurfaceConfirmationDecision,
     SurfaceConfirmationRequest, SurfaceEvent, SurfaceExecutionError, SurfaceExecutionFailure,
     SurfaceInstanceMode, SurfacePatch, SurfacePreviewCommit, SurfaceResultCommit,
+    SURFACE_EVENT_ACTION_ACK, SURFACE_EVENT_ACTION_PROGRESS, SURFACE_EVENT_CONFIRMATION_REQUEST,
+    SURFACE_EVENT_FAILURE, SURFACE_EVENT_PATCH, SURFACE_EVENT_PREVIEW, SURFACE_EVENT_RESULT,
     SURFACE_PROTOCOL_VERSION,
 };
 use loom_tool_registry::{framework::FrameworkRegistry, ToolDefinition, ToolRegistry};
@@ -469,7 +471,7 @@ fn broadcast_confirmation(
     broadcast_hook_bridge_json(
         hook_bridge,
         json!({
-            "method": "surface/confirmation",
+            "method": SURFACE_EVENT_CONFIRMATION_REQUEST,
             "params": confirmation,
         }),
     );
@@ -728,7 +730,7 @@ fn execute_surface_action_job(
             broadcast_hook_bridge_json(
                 hook_bridge,
                 json!({
-                    "method": "surface/failure",
+                    "method": SURFACE_EVENT_FAILURE,
                     "params": {
                         "hookNodeId": hook_node_id(surface_instances, &job.event.instance_id, &job.event.attachment_id),
                         "failure": failure,
@@ -863,7 +865,7 @@ fn apply_action_response(
             broadcast_hook_bridge_json(
                 hook_bridge,
                 json!({
-                    "method": "surface/patch",
+                    "method": SURFACE_EVENT_PATCH,
                     "params": {
                         "hookNodeId": hook_node_id,
                         "patch": patch,
@@ -905,7 +907,7 @@ fn apply_action_response(
             broadcast_hook_bridge_json(
                 hook_bridge,
                 json!({
-                    "method": "surface/preview",
+                    "method": SURFACE_EVENT_PREVIEW,
                     "params": { "hookNodeId": hook_node_id, "commit": &commit }
                 }),
             );
@@ -943,7 +945,7 @@ fn apply_action_response(
             broadcast_hook_bridge_json(
                 hook_bridge,
                 json!({
-                    "method": "surface/result",
+                    "method": SURFACE_EVENT_RESULT,
                     "params": { "hookNodeId": hook_node_id, "commit": &commit }
                 }),
             );
@@ -1154,7 +1156,7 @@ fn persist_ack(
 fn broadcast_ack(hook_bridge: &SharedHookBridgeRuntime, ack: &SurfaceActionAck) {
     broadcast_hook_bridge_json(
         hook_bridge,
-        json!({ "method": "surface/action_ack", "params": ack }),
+        json!({ "method": SURFACE_EVENT_ACTION_ACK, "params": ack }),
     );
 }
 
@@ -1178,7 +1180,7 @@ fn broadcast_progress(
     };
     broadcast_hook_bridge_json(
         hook_bridge,
-        json!({ "method": "surface/progress", "params": progress }),
+        json!({ "method": SURFACE_EVENT_ACTION_PROGRESS, "params": progress }),
     );
 }
 
@@ -1506,7 +1508,10 @@ mod tests {
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
         let (rx, _subscription) = register_hook_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
-            vec!["surface".to_owned()],
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
         );
         let executions = Arc::new(AtomicUsize::new(0));
         let runner_executions = Arc::clone(&executions);
@@ -1575,9 +1580,9 @@ mod tests {
                 .expect("Surface action broadcast");
             let message: Value = serde_json::from_str(&message).expect("broadcast JSON");
             match message["method"].as_str() {
-                Some("surface/patch") => saw_patch = true,
-                Some("surface/result") => saw_result = true,
-                Some("surface/action_ack") if message["params"]["status"] == "succeeded" => {
+                Some(SURFACE_EVENT_PATCH) => saw_patch = true,
+                Some(SURFACE_EVENT_RESULT) => saw_result = true,
+                Some(SURFACE_EVENT_ACTION_ACK) if message["params"]["status"] == "succeeded" => {
                     saw_success = true;
                 }
                 _ => {}
@@ -1692,7 +1697,10 @@ mod tests {
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
         let (rx, _subscription) = register_hook_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
-            vec!["surface".to_owned()],
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
         );
         let event = fixture_event(
             &instance_id,
@@ -1772,7 +1780,7 @@ mod tests {
                     .expect("shared patch broadcast"),
             )
             .expect("shared patch JSON");
-            assert_eq!(message["method"], "surface/patch");
+            assert_eq!(message["method"], SURFACE_EVENT_PATCH);
             hook_nodes.insert(
                 message["params"]["hookNodeId"]
                     .as_str()
@@ -1944,7 +1952,10 @@ mod tests {
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
         let (rx, _subscription) = register_hook_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
-            vec!["surface".to_owned()],
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
         );
         let executions = Arc::new(AtomicUsize::new(0));
         let runner_executions = Arc::clone(&executions);
@@ -2006,7 +2017,10 @@ mod tests {
                 .expect("confirmation broadcast"),
         )
         .expect("confirmation JSON");
-        assert_eq!(confirmation_push["method"], "surface/confirmation");
+        assert_eq!(
+            confirmation_push["method"],
+            SURFACE_EVENT_CONFIRMATION_REQUEST
+        );
         assert_eq!(confirmation_push["params"]["risk"], "high");
 
         let approved = executor

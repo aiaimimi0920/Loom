@@ -147,6 +147,7 @@ function New-IntegrityFixture {
         [switch]$CliKindCaseMismatch,
         [switch]$ArtifactNamingMismatch,
         [switch]$PluginSdkPathMismatch,
+        [switch]$PluginSdkReadmeMismatch,
         [switch]$ForwardSlashPaths,
         [ValidateSet("valid", "desktop-wrong", "cli-wrong", "no-newline", "extra-line")]
         [string]$SidecarMode = "valid"
@@ -178,15 +179,26 @@ function New-IntegrityFixture {
     $cliEntries = @(@{ path = "loom.exe"; content = "cli-fixture" })
     if ($ExtraCliEntry) { $cliEntries += @{ path = "extra.txt"; content = "unexpected-entry" } }
     New-FixtureZip -PackageDir $packageDir -RelativeZipPath $cliZipRelative -Entries $cliEntries
+    $sourceProtocolReadme = [System.IO.File]::ReadAllText(
+        (Join-Path $repoRoot "protocol\README.md"),
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    $protocolReadmeContent = if ($PluginSdkReadmeMismatch) {
+        "!" + $sourceProtocolReadme.Substring(1)
+    }
+    else {
+        $sourceProtocolReadme
+    }
     $pluginSdkEntries = @(
         @{ path = "loom-plugin.exe"; content = "plugin-cli-fixture" },
-        @{ path = "protocol/README.md"; content = "protocol" },
+        @{ path = "protocol/README.md"; content = $protocolReadmeContent },
         @{ path = "protocol/schemas/framework-manifest.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/framework-execute-request.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/framework-execute-response.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/framework-authoring.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/art-runtime.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/device-session.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/hook-message.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-manifest.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-message.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-scene.v1.schema.json"; content = "{}" },
@@ -262,7 +274,7 @@ function New-IntegrityFixture {
         bytes = $pluginSdkRecord.bytes
         sha256 = $pluginSdkRecord.sha256
         protocolVersion = "loom.framework.v1"
-        schemaCount = 9
+        schemaCount = 10
     }
 
     $manifest = [ordered]@{
@@ -371,6 +383,9 @@ try {
 
     $extraCli = New-IntegrityFixture -Name "extra-cli" -ExtraCliEntry
     Invoke-VerifierFailure -PackageDir $extraCli -ExpectedMessage "Loom CLI ZIP must contain exactly one loom.exe entry."
+
+    $sdkReadmeMismatch = New-IntegrityFixture -Name "sdk-readme-mismatch" -PluginSdkReadmeMismatch
+    Invoke-VerifierFailure -PackageDir $sdkReadmeMismatch -ExpectedMessage "Plugin SDK protocol README does not match the release source."
 
     . $layoutPath
     $layoutError = $null

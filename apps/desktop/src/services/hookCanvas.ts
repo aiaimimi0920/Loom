@@ -190,8 +190,8 @@ export interface HookWorkflowInstantiationGraph {
   edges: Array<Record<string, unknown>>;
 }
 
-// Restore a frozen Loom canvas snapshot to the graph payload consumed by Hook's
-// `art_hook/instantiate` handler. Keep the original ids and geometry so
+// Restore a frozen Loom canvas snapshot to the graph payload consumed by
+// `loom.hook.workflow.instantiated`. Keep the original ids and geometry so
 // reference-mode re-instantiation updates an existing desktop copy in place.
 export function buildHookWorkflowInstantiationGraph(
   snapshot: HookCanvasSnapshot,
@@ -480,9 +480,8 @@ export function buildWorkflowArtBundle(options: {
     kind: "input_image" | "param";
   }> = [];
   // Image inputs go into the tool's `inputs`; exposed params go into `params`.
-  // Loom's artloom_compat_art_json maps tool.params → art `params` (Hook's
-  // ArtParameter list) and tool.inputs → art `inputs`, so keeping them separate
-  // is what makes the exposed params show up as Hook node parameters.
+  // Hook capabilities map tool.params to parameters and tool.inputs to inputs,
+  // so keeping them separate exposes the correct Hook node parameters.
   const toolInputs: Array<{
     id: string;
     name: string;
@@ -569,10 +568,8 @@ export function buildWorkflowArtBundle(options: {
     outputs: [
       { name: "result", label: "输出图像", type: "image", executionType: "image_buffer" },
     ],
-    // Mark as ArtLoom-compat managed so it surfaces in Hook's Art node list
-    // (GET /v1/artloom-compat/arts filters on this metadata).
     metadata: {
-      artloomCompat: { source: "artloom-compat", managedBy: "hook-workflow" },
+      hookWorkflow: { managedBy: "hook-workflow" },
     },
   };
   return { yaml, tool };

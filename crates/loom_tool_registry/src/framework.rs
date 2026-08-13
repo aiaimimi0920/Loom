@@ -370,7 +370,7 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     };
     let trust_status = match verify_package_signature(
         &package_dir,
-        manifest.publisher.as_ref(),
+        Some(&manifest.publisher),
         manifest.signature.as_ref(),
         &trust_store,
     ) {
@@ -394,19 +394,11 @@ pub fn resolve_framework_package_dir(runtime_root: &Path, id: &str) -> Option<Pa
     if !is_valid_framework_reference(id) {
         return None;
     }
-    let direct = framework_storage_path(id).map(|path| runtime_root.join(path));
-    if let Some(package) = direct
-        .as_ref()
-        .and_then(|root| resolve_framework_package_root(root))
-    {
-        return Some(package);
-    }
     if id.contains('/') {
-        return None;
-    }
-    let legacy = runtime_root.join(id);
-    if let Some(package) = resolve_framework_package_root(&legacy) {
-        return Some(package);
+        return framework_storage_path(id)
+            .map(|path| runtime_root.join(path))
+            .as_deref()
+            .and_then(resolve_framework_package_root);
     }
     let mut matches = Vec::new();
     for publisher in fs::read_dir(runtime_root).ok()? {
@@ -440,10 +432,7 @@ fn resolve_framework_package_root(package_root: &Path) -> Option<PathBuf> {
             .is_file()
             .then_some(resolved);
     }
-    package_root
-        .join(FRAMEWORK_MANIFEST_FILE)
-        .is_file()
-        .then(|| package_root.to_path_buf())
+    None
 }
 
 fn framework_storage_path(reference: &str) -> Option<PathBuf> {
@@ -455,8 +444,6 @@ fn framework_storage_path(reference: &str) -> Option<PathBuf> {
             return None;
         }
         Some(Path::new(publisher).join(id))
-    } else if is_valid_framework(reference) {
-        Some(PathBuf::from(reference))
     } else {
         None
     }
@@ -520,7 +507,7 @@ fn validate_framework_manifest(
 
 /// Tracks which framework packages the user has installed, persisted to
 /// `<control-plane>/frameworks.json`. `root` also anchors installed framework
-/// packages under `<root>/frameworks/<id>/`.
+/// packages under `<root>/frameworks/<publisher>/<id>/`.
 #[derive(Debug, Clone)]
 pub struct FrameworkRegistry {
     root: PathBuf,
@@ -542,9 +529,8 @@ impl FrameworkRegistry {
         registry
     }
 
-    /// Directory holding this framework's installed package:
-    /// `<root>/frameworks/<id>/versions/<version-digest>/` for versioned
-    /// packages, with a legacy fallback to `<root>/frameworks/<id>/`.
+    /// Directory holding this framework's active immutable package version:
+    /// `<root>/frameworks/<publisher>/<id>/versions/<version-digest>/`.
     pub fn runtime_dir(&self, id: &str) -> PathBuf {
         resolve_framework_package_dir(&self.root.join(FRAMEWORK_PACKAGES_DIR), id)
             .unwrap_or_else(|| self.package_root(id))
@@ -556,9 +542,10 @@ impl FrameworkRegistry {
             .ok()
             .flatten()
             .unwrap_or_else(|| reference.to_owned());
-        self.root
-            .join(FRAMEWORK_PACKAGES_DIR)
-            .join(framework_storage_path(&storage_key).unwrap_or_else(|| PathBuf::from(reference)))
+        self.root.join(FRAMEWORK_PACKAGES_DIR).join(
+            framework_storage_path(&storage_key)
+                .unwrap_or_else(|| Path::new(".unresolved").join(framework_local_id(reference))),
+        )
     }
 
     fn activation_path(&self, id: &str) -> PathBuf {
@@ -571,19 +558,7 @@ impl FrameworkRegistry {
 
     fn resolve_state_key(&self, reference: &str) -> Result<Option<String>, FrameworkError> {
         let states = self.installation_states();
-        if let Some(state) = states.get(reference) {
-            if !reference.contains('/') && state.version.is_empty() {
-                let qualified_matches = states
-                    .keys()
-                    .filter(|key| key.contains('/') && framework_local_id(key) == reference)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                match qualified_matches.as_slice() {
-                    [] => {}
-                    [only] => return Ok(Some(only.clone())),
-                    _ => return Err(FrameworkError::AmbiguousFramework(reference.to_owned())),
-                }
-            }
+        if states.contains_key(reference) {
             return Ok(Some(reference.to_owned()));
         }
         if reference.contains('/') {
@@ -658,9 +633,6 @@ impl FrameworkRegistry {
             if !first.is_dir() {
                 continue;
             }
-            if first.join(FRAMEWORK_LIFECYCLE_FILE).is_file() {
-                package_roots.push(first.clone());
-            }
             for second in fs::read_dir(&first).into_iter().flatten().flatten() {
                 let second = second.path();
                 if second.is_dir() && second.join(FRAMEWORK_LIFECYCLE_FILE).is_file() {
@@ -712,14 +684,14 @@ impl FrameworkRegistry {
         if !root.is_dir() {
             return Ok(());
         }
-        let mut parents = vec![root.clone()];
+        let mut parents = Vec::new();
         for entry in fs::read_dir(&root)? {
             let path = entry?.path();
             if path.is_dir()
-                && !path
+                && path
                     .file_name()
                     .and_then(OsStr::to_str)
-                    .is_some_and(|name| name.starts_with(FRAMEWORK_UNINSTALL_TOMBSTONE_PREFIX))
+                    .is_some_and(loom_protocol::is_safe_publisher_id)
             {
                 parents.push(path);
             }
@@ -737,14 +709,10 @@ impl FrameworkRegistry {
                 ) else {
                     continue;
                 };
-                let reference = if parent == root {
-                    original_name.clone()
-                } else {
-                    let Some(publisher) = parent.file_name().and_then(OsStr::to_str) else {
-                        continue;
-                    };
-                    format!("{publisher}/{original_name}")
+                let Some(publisher) = parent.file_name().and_then(OsStr::to_str) else {
+                    continue;
                 };
+                let reference = format!("{publisher}/{original_name}");
                 if !is_valid_framework_reference(&reference) {
                     continue;
                 }
@@ -1012,7 +980,7 @@ impl FrameworkRegistry {
             let trust_store = self.trust_store()?;
             let trust_status = verify_package_signature(
                 &staging,
-                manifest.publisher.as_ref(),
+                Some(&manifest.publisher),
                 manifest.signature.as_ref(),
                 &trust_store,
             )?;
@@ -1022,7 +990,6 @@ impl FrameworkRegistry {
             let storage_key = manifest.qualified_id();
             let packages_root = self.root.join(FRAMEWORK_PACKAGES_DIR);
             fs::create_dir_all(&packages_root)?;
-            self.migrate_legacy_layout(&storage_key, &manifest)?;
             let package_root = self.package_root(&storage_key);
             let versions_root = package_root.join(FRAMEWORK_VERSIONS_DIR);
             fs::create_dir_all(&versions_root)?;
@@ -1095,13 +1062,6 @@ impl FrameworkRegistry {
             }
 
             let mut installed = self.installation_states();
-            if storage_key != manifest.id
-                && installed
-                    .get(&manifest.id)
-                    .is_some_and(|state| state.version.is_empty())
-            {
-                installed.remove(&manifest.id);
-            }
             installed.insert(
                 storage_key.clone(),
                 FrameworkInstallationState {
@@ -1138,85 +1098,6 @@ impl FrameworkRegistry {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         self.root.join(format!(".loom-framework-{id}-{nonce}"))
-    }
-
-    fn backup_dir(&self, id: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        self.root
-            .join(format!(".loom-framework-backup-{id}-{nonce}"))
-    }
-
-    fn migrate_legacy_layout(
-        &self,
-        storage_key: &str,
-        expected_manifest: &FrameworkPackageManifest,
-    ) -> Result<(), FrameworkError> {
-        let package_root = self.package_root(storage_key);
-        if storage_key.contains('/') && !package_root.exists() {
-            let legacy_root = self
-                .root
-                .join(FRAMEWORK_PACKAGES_DIR)
-                .join(&expected_manifest.id);
-            if legacy_root.exists() {
-                let same_publisher = resolve_framework_package_root(&legacy_root)
-                    .and_then(|directory| {
-                        read_framework_manifest(&directory.join(FRAMEWORK_MANIFEST_FILE)).ok()
-                    })
-                    .is_some_and(|manifest| manifest.publisher == expected_manifest.publisher);
-                if same_publisher {
-                    if let Some(parent) = package_root.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::rename(&legacy_root, &package_root)?;
-                }
-            }
-        }
-        if self.activation_path(storage_key).is_file()
-            || !package_root.join(FRAMEWORK_MANIFEST_FILE).is_file()
-        {
-            return Ok(());
-        }
-        let legacy = self.backup_dir(framework_local_id(storage_key));
-        fs::rename(&package_root, &legacy)?;
-        let result = (|| {
-            let manifest = read_framework_manifest(&legacy.join(FRAMEWORK_MANIFEST_FILE)).map_err(
-                |reason| FrameworkError::InvalidPackage {
-                    id: storage_key.to_owned(),
-                    reason,
-                },
-            )?;
-            let digest = canonical_package_digest(
-                &legacy,
-                manifest
-                    .signature
-                    .as_ref()
-                    .map(|signature| signature.file.as_str()),
-            )?;
-            let relative = Path::new(FRAMEWORK_VERSIONS_DIR).join(format!(
-                "{}-{}",
-                sanitize_version_for_path(&manifest.version),
-                &digest[..12]
-            ));
-            let target = package_root.join(&relative);
-            fs::create_dir_all(target.parent().expect("version parent"))?;
-            fs::rename(&legacy, &target)?;
-            set_framework_tree_readonly(&target, true)?;
-            self.write_activation(
-                storage_key,
-                &FrameworkActivationState {
-                    active: relative.to_string_lossy().replace('\\', "/"),
-                    previous: None,
-                },
-            )
-        })();
-        if result.is_err() && legacy.exists() {
-            let _ = fs::remove_dir_all(&package_root);
-            let _ = fs::rename(&legacy, &package_root);
-        }
-        result
     }
 
     pub fn rollback(&self, id: &str) -> Result<FrameworkStatus, FrameworkError> {
@@ -1261,7 +1142,7 @@ impl FrameworkRegistry {
         let trust_store = self.trust_store()?;
         let trust_status = verify_package_signature(
             &target,
-            manifest.publisher.as_ref(),
+            Some(&manifest.publisher),
             manifest.signature.as_ref(),
             &trust_store,
         )?;
@@ -1375,7 +1256,7 @@ impl FrameworkRegistry {
                 self.trust_store().ok().and_then(|trust_store| {
                     verify_package_signature(
                         &self.runtime_dir(id),
-                        manifest.publisher.as_ref(),
+                        Some(&manifest.publisher),
                         manifest.signature.as_ref(),
                         &trust_store,
                     )
@@ -1400,7 +1281,7 @@ impl FrameworkRegistry {
             ready_detail,
             version,
             runtime_dir: installed.then(|| self.runtime_dir(state_key.as_deref().unwrap_or(id))),
-            publisher: manifest.as_ref().and_then(|value| value.publisher.clone()),
+            publisher: manifest.as_ref().map(|value| value.publisher.clone()),
             permission_policy: manifest
                 .as_ref()
                 .map(|value| value.permission_policy.clone())
@@ -1434,28 +1315,8 @@ impl FrameworkRegistry {
         let Ok(text) = fs::read_to_string(&self.path) else {
             return BTreeMap::new();
         };
-        if let Ok(states) =
-            serde_json::from_str::<BTreeMap<String, FrameworkInstallationState>>(&text)
-        {
-            return states;
-        }
-        // Read the pre-pluginization array once so an old control plane does
-        // not crash. Entries still remain unavailable until package manifests
-        // are installed, so this cannot silently restore built-in runtimes.
-        serde_json::from_str::<Vec<String>>(&text)
+        serde_json::from_str::<BTreeMap<String, FrameworkInstallationState>>(&text)
             .unwrap_or_default()
-            .into_iter()
-            .filter(|id| is_valid_framework(id))
-            .map(|id| {
-                (
-                    id,
-                    FrameworkInstallationState {
-                        version: String::new(),
-                        enabled: true,
-                    },
-                )
-            })
-            .collect()
     }
 
     fn write_installed(
@@ -1730,13 +1591,11 @@ fn verify_framework_lockfile(
     package_dir: &Path,
     manifest: &FrameworkPackageManifest,
 ) -> Result<(), String> {
-    let Some(versions_root) = package_dir.parent() else {
-        return Ok(());
-    };
+    let versions_root = package_dir
+        .parent()
+        .ok_or_else(|| "framework package has no versions directory".to_owned())?;
     if versions_root.file_name() != Some(OsStr::new(FRAMEWORK_VERSIONS_DIR)) {
-        // Legacy flat packages remain readable until a later install migrates
-        // them. Every immutable versioned install must have a lockfile.
-        return Ok(());
+        return Err("framework package is not an immutable versioned install".to_owned());
     }
     let package_root = versions_root
         .parent()
@@ -2072,7 +1931,12 @@ pub(crate) fn is_valid_framework(id: &str) -> bool {
 }
 
 pub(crate) fn is_valid_framework_reference(reference: &str) -> bool {
-    framework_storage_path(reference).is_some()
+    is_valid_framework(reference)
+        || reference.split_once('/').is_some_and(|(publisher, id)| {
+            !publisher.contains('/')
+                && loom_protocol::is_safe_publisher_id(publisher)
+                && is_valid_framework(id)
+        })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2217,80 +2081,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_local_state_alias_does_not_duplicate_a_qualified_framework() {
-        let root = temp_root();
-        let registry = FrameworkRegistry::new(&root);
-        registry
-            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
-                "cloud_api",
-                "0.1.0",
-                Some("neuro.official"),
-            ))
-            .expect("install qualified official framework");
-
-        let mut states = registry.installation_states();
-        states.insert(
-            "cloud_api".to_owned(),
-            FrameworkInstallationState {
-                version: String::new(),
-                enabled: true,
-            },
-        );
-        registry
-            .write_installed(&states)
-            .expect("write legacy local alias");
-
-        assert_eq!(
-            registry
-                .resolve_state_key("cloud_api")
-                .expect("resolve legacy alias"),
-            Some("neuro.official/cloud_api".to_owned())
-        );
-        assert_eq!(
-            registry.installed_ids(),
-            BTreeSet::from(["neuro.official/cloud_api".to_owned()])
-        );
-        let statuses = registry.statuses();
-        assert_eq!(statuses.len(), FRAMEWORK_IDS.len());
-        assert_eq!(
-            statuses
-                .iter()
-                .filter(|status| status.qualified_id == "neuro.official/cloud_api")
-                .count(),
-            1
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn qualified_framework_install_removes_a_blank_legacy_alias() {
-        let root = temp_root();
-        let registry = FrameworkRegistry::new(&root);
-        registry
-            .write_installed(&BTreeMap::from([(
-                "process".to_owned(),
-                FrameworkInstallationState {
-                    version: String::new(),
-                    enabled: true,
-                },
-            )]))
-            .expect("write legacy process alias");
-
-        registry
-            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
-                "process",
-                "0.1.0",
-                Some("neuro.official"),
-            ))
-            .expect("install qualified process framework");
-
-        let states = registry.installation_states();
-        assert!(!states.contains_key("process"));
-        assert!(states.contains_key("neuro.official/process"));
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
     fn unknown_framework_rejected() {
         let root = temp_root();
         let registry = FrameworkRegistry::new(&root);
@@ -2397,7 +2187,7 @@ mod tests {
     }
 
     fn fake_framework_package_zip_with_version(id: &str, version: &str) -> Vec<u8> {
-        fake_framework_package_zip_with_identity(id, version, None)
+        fake_framework_package_zip_with_identity(id, version, Some("publisher.test"))
     }
 
     fn fake_framework_package_zip_with_identity(
@@ -2420,7 +2210,12 @@ mod tests {
             "version": version,
             "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
             "platforms": [WINDOWS_X64_PLATFORM],
-            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "entry": {
+                "kind": "process",
+                "command": command,
+                "args": ["--stdio"],
+                "processModel": "per_execution"
+            },
             "permissions": ["process.spawn"],
             "artExecution": {
                 "requestSchema": "loom.art.execute.v1",
@@ -2469,7 +2264,12 @@ mod tests {
             "version": version,
             "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
             "platforms": [WINDOWS_X64_PLATFORM],
-            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "entry": {
+                "kind": "process",
+                "command": command,
+                "args": ["--stdio"],
+                "processModel": "per_execution"
+            },
             "permissions": ["process.spawn"],
             "artExecution": {
                 "requestSchema": "loom.art.execute.v1",
@@ -2630,6 +2430,7 @@ mod tests {
         let activation = unsigned.activation("process").expect("activation");
         let previous = unsigned_root
             .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
             .join("process")
             .join(activation.previous.expect("previous"));
         set_framework_tree_readonly(&previous, false).expect("unlock previous");
@@ -2714,7 +2515,11 @@ mod tests {
         // Uninstall reclaims the runtime dir.
         registry.uninstall("process").expect("uninstall");
         assert!(!registry.is_installed("process"));
-        assert!(!root.join(FRAMEWORK_PACKAGES_DIR).join("process").exists());
+        assert!(!root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process")
+            .exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -2759,7 +2564,10 @@ mod tests {
         registry
             .install_framework_package_from_zip(&fake_framework_package_zip("process"))
             .expect("install framework");
-        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
+        let package_root = root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process");
         let old = registry.activation("process").expect("activation");
         let orphan_relative = "versions/interrupted-orphan".to_owned();
         let orphan = package_root.join(&orphan_relative);
@@ -2789,7 +2597,10 @@ mod tests {
     #[test]
     fn framework_recovery_quarantines_unsafe_journal_paths() {
         let root = temp_root();
-        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
+        let package_root = root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process");
         std::fs::create_dir_all(&package_root).expect("package root");
         let outside = root.join("outside.txt");
         std::fs::write(&outside, b"keep").expect("outside sentinel");
@@ -2819,6 +2630,7 @@ mod tests {
             .expect("install framework");
         let locks = root
             .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
             .join("process")
             .join("locks");
         let lockfile = std::fs::read_dir(&locks)
@@ -2849,7 +2661,10 @@ mod tests {
                 ))
                 .unwrap_or_else(|error| panic!("install {version}: {error}"));
         }
-        let package_root = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
+        let package_root = root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process");
         let activation = registry.activation("process").expect("activation");
         let versions = std::fs::read_dir(package_root.join(FRAMEWORK_VERSIONS_DIR))
             .expect("versions")
@@ -2872,7 +2687,10 @@ mod tests {
         registry
             .install_framework_package_from_zip(&fake_framework_package_zip("process"))
             .expect("install framework");
-        let live = root.join(FRAMEWORK_PACKAGES_DIR).join("process");
+        let live = root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process");
         let interrupted = uninstall_tombstone_path(&live, FRAMEWORK_UNINSTALL_TOMBSTONE_PREFIX)
             .expect("tombstone path");
         std::fs::rename(&live, &interrupted).expect("simulate pre-state crash");
@@ -2896,6 +2714,29 @@ mod tests {
     }
 
     #[test]
+    fn flat_framework_directory_is_not_resolved() {
+        let root = temp_root();
+        let flat = root.join("frameworks").join("flat-framework");
+        let active = flat.join("versions").join("1.0.0-flat");
+        std::fs::create_dir_all(&active).expect("flat framework directory");
+        std::fs::write(
+            flat.join(FRAMEWORK_ACTIVE_FILE),
+            serde_json::to_vec(&FrameworkActivationState {
+                active: "versions/1.0.0-flat".to_owned(),
+                previous: None,
+            })
+            .unwrap(),
+        )
+        .expect("flat activation");
+        std::fs::write(active.join(FRAMEWORK_MANIFEST_FILE), b"{}").expect("flat manifest");
+
+        assert!(
+            resolve_framework_package_dir(&root.join("frameworks"), "flat-framework").is_none()
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn permission_modes_audit_by_default_and_strictly_reject_unenforced_capabilities() {
         assert_eq!(
             parse_plugin_permission_mode(None).unwrap(),
@@ -2911,9 +2752,15 @@ mod tests {
             "name": "Permission Test",
             "description": "permission fixture",
             "version": "1.0.0",
+            "publisher": { "id": "publisher.test" },
             "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
             "platforms": [WINDOWS_X64_PLATFORM],
-            "entry": { "kind": "process", "command": "runtime.exe", "args": [] },
+            "entry": {
+                "kind": "process",
+                "command": "runtime.exe",
+                "args": [],
+                "processModel": "per_execution"
+            },
             "permissions": ["network.connect", "file.read", "process.spawn"],
             "permissionPolicy": {
                 "network": { "domains": ["example.com"] },

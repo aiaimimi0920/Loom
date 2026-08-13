@@ -1393,8 +1393,8 @@ dependencies = [
 name = "loom_hook_bridge"
 version = "0.1.0"
 dependencies = [
+ "loom_protocol",
  "loom_workflow_store",
- "serde",
  "serde_json",
  "thiserror 1.0.69",
 ]
@@ -1551,7 +1551,6 @@ dependencies = [
  "loom_hooks",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
 ]

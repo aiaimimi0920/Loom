@@ -105,22 +105,8 @@ export function buildImageSearchArtDefinition(
       dependencies: {
         framework: "mcp",
       },
-      artloomCompat: {
-        source: "loom-local",
-        executionType: "mcp",
+      presentation: {
         icon: "#1677ff",
-        execution: {
-          serverId,
-          toolName: "brave_image_search",
-          outputs: [
-            {
-              name: "output",
-              label: "output",
-              type: "image",
-              execution_type: "image_buffer",
-            },
-          ],
-        },
       },
     },
   };

@@ -19,6 +19,7 @@ const MINIFIED_EDGE_PORT_GAP: f64 = 4.0;
 const SESSION_READ_ATTEMPTS: usize = 3;
 const SESSION_READ_RETRY_DELAY: Duration = Duration::from_millis(20);
 const DISABLED_PREFIX: &str = "__DISABLED__";
+const STICKER_WORKFLOW_USES: &str = "__sticker__";
 const DEFAULT_IMAGE_INPUTS: &[&str] = &["image", "input_image", "input"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,16 +55,6 @@ pub(crate) enum HookCanvasNodeKind {
     Screenshot,
     Art,
     Unknown,
-}
-
-impl HookCanvasNodeKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            HookCanvasNodeKind::Screenshot => "screenshot",
-            HookCanvasNodeKind::Art => "art",
-            HookCanvasNodeKind::Unknown => "unknown",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -215,6 +206,8 @@ pub(crate) enum HookCanvasError {
 pub(crate) enum HookCanvasWorkflowExportError {
     #[error("Hook canvas node `{0}` was not found")]
     NodeNotFound(String),
+    #[error("Hook canvas node `{0}` is not canonical and cannot be exported")]
+    InvalidNode(String),
 }
 
 impl HookCanvasDocument {
@@ -263,9 +256,12 @@ impl HookCanvasDocument {
                 warnings.push(format!("Hook 节点 `{id}` 的几何信息已归一化。"));
             }
 
-            let art_id = node_string(raw_node, "artId");
+            let raw_art_id = node_string(raw_node, "artId");
             let node_type = node_type(raw_node);
-            let kind = classify_node(node_type.as_deref(), art_id.as_deref());
+            let kind = classify_node(node_type.as_deref(), raw_art_id.as_deref());
+            let art_id = matches!(kind, HookCanvasNodeKind::Art)
+                .then_some(raw_art_id)
+                .flatten();
             let label = match kind {
                 HookCanvasNodeKind::Screenshot => "截图节点",
                 HookCanvasNodeKind::Art => "Art 节点",
@@ -298,7 +294,7 @@ impl HookCanvasDocument {
             let params = node_value(raw_node, "params")
                 .cloned()
                 .unwrap_or(Value::Null);
-            let result_candidates = node_image_search_candidates(raw_node);
+            let result_candidates = node_result_candidates(raw_node);
             let selected_result_index = node_selected_result_index(raw_node, &params);
 
             raw_nodes.insert(id.clone(), raw_node.clone());
@@ -336,10 +332,8 @@ impl HookCanvasDocument {
         let mut edges = Vec::new();
         let mut session_links = Vec::new();
         for (index, raw_edge) in canvas_edges(&root).iter().enumerate() {
-            let source_node_id =
-                first_non_empty_string(raw_edge, &["fromUnitId", "sourceNodeId", "source"]);
-            let target_node_id =
-                first_non_empty_string(raw_edge, &["toUnitId", "targetNodeId", "target"]);
+            let source_node_id = first_non_empty_string(raw_edge, &["fromUnitId", "source"]);
+            let target_node_id = first_non_empty_string(raw_edge, &["toUnitId", "target"]);
             let (Some(source_node_id), Some(target_node_id)) = (source_node_id, target_node_id)
             else {
                 warnings.push("已跳过缺少端点的 Hook 连线。".to_owned());
@@ -356,8 +350,7 @@ impl HookCanvasDocument {
             };
             let id =
                 non_empty_string(raw_edge.get("id")).unwrap_or_else(|| format!("edge-{index:04}"));
-            let target_port_id =
-                first_non_empty_string(raw_edge, &["toPortId", "targetPortId", "targetHandle"]);
+            let target_port_id = first_non_empty_string(raw_edge, &["toPortId", "targetHandle"]);
             session_links.push(HookCanvasSessionLink {
                 from_unit_id: source_node_id.clone(),
                 to_unit_id: target_node_id.clone(),
@@ -367,10 +360,7 @@ impl HookCanvasDocument {
             edges.push(HookCanvasEdge {
                 id,
                 source_node_id,
-                source_port_id: first_non_empty_string(
-                    raw_edge,
-                    &["fromPortId", "sourcePortId", "sourceHandle"],
-                ),
+                source_port_id: first_non_empty_string(raw_edge, &["fromPortId", "sourceHandle"]),
                 source_point,
                 target_node_id,
                 target_port_id,
@@ -434,7 +424,7 @@ impl HookCanvasDocument {
             available: true,
             revision: revision_for(&bytes, &preview_versions),
             updated_at,
-            workflow_id: first_non_empty_string(&root, &["workflowId", "workflow_id"]),
+            workflow_id: non_empty_string(root.get("workflowId")),
             bounds: canvas_bounds(&nodes),
             nodes,
             edges,
@@ -535,10 +525,16 @@ impl HookCanvasDocument {
             .collect::<HashMap<_, _>>();
         for node in members {
             lines.push(format!("  - id: {}", node.workflow_node_id));
-            let uses = node.art_id.as_deref().unwrap_or_else(|| match &node.kind {
-                HookCanvasNodeKind::Screenshot => "sticker",
-                _ => node.kind.as_str(),
-            });
+            let uses = match &node.kind {
+                HookCanvasNodeKind::Screenshot => STICKER_WORKFLOW_USES,
+                HookCanvasNodeKind::Art => node
+                    .art_id
+                    .as_deref()
+                    .ok_or_else(|| HookCanvasWorkflowExportError::InvalidNode(node.id.clone()))?,
+                HookCanvasNodeKind::Unknown => {
+                    return Err(HookCanvasWorkflowExportError::InvalidNode(node.id.clone()));
+                }
+            };
             lines.push(format!("    uses: {}", yaml_single_quoted(uses)));
             let needs = node
                 .upstream_workflow_node_ids
@@ -722,17 +718,17 @@ where
 }
 
 fn canvas_nodes(root: &Value) -> &[Value] {
-    first_non_empty_array(root, &["stickers", "nodes", "units"])
+    root.get("stickers")
+        .and_then(Value::as_array)
+        .or_else(|| root.get("nodes").and_then(Value::as_array))
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 fn canvas_edges(root: &Value) -> &[Value] {
-    first_non_empty_array(root, &["links", "edges"])
-}
-
-fn first_non_empty_array<'a>(root: &'a Value, keys: &[&str]) -> &'a [Value] {
-    keys.iter()
-        .filter_map(|key| root.get(key).and_then(Value::as_array))
-        .find(|values| !values.is_empty())
+    root.get("links")
+        .and_then(Value::as_array)
+        .or_else(|| root.get("edges").and_then(Value::as_array))
         .map(Vec::as_slice)
         .unwrap_or(&[])
 }
@@ -752,17 +748,13 @@ fn node_nested_value<'a>(node: &'a Value, container: &str, key: &str) -> Option<
 }
 
 fn node_art_result_metadata(node: &Value) -> Option<&Value> {
-    node_value(node, "loomMetadata").and_then(|metadata| {
-        metadata
-            .get("candidates")
-            .or_else(|| metadata.get("imageSearch"))
-    })
+    node_value(node, "loomMetadata").and_then(|metadata| metadata.get("candidates"))
 }
 
-fn node_image_search_candidates(node: &Value) -> Vec<HookCanvasResultCandidate> {
+fn node_result_candidates(node: &Value) -> Vec<HookCanvasResultCandidate> {
     let metadata = node_art_result_metadata(node);
     let items = metadata
-        .and_then(|metadata| metadata.get("items").or_else(|| metadata.get("candidates")))
+        .and_then(|metadata| metadata.get("items"))
         .and_then(Value::as_array)
         .map(|items| {
             items
@@ -896,12 +888,7 @@ fn node_string(node: &Value, key: &str) -> Option<String> {
 }
 
 fn node_type(node: &Value) -> Option<String> {
-    let outer = non_empty_string(node.get("type"));
-    let inner = node_data(node).and_then(|data| non_empty_string(data.get("type")));
-    match outer.as_deref() {
-        None | Some("node" | "unit") => inner.or(outer),
-        Some(_) => outer,
-    }
+    non_empty_string(node.get("type"))
 }
 
 fn is_image_like_port_name(name: &str) -> bool {
@@ -1286,14 +1273,11 @@ fn normalized_size(value: Option<f64>) -> (f64, bool) {
 }
 
 fn classify_node(node_type: Option<&str>, art_id: Option<&str>) -> HookCanvasNodeKind {
-    if art_id.is_some() || node_type.is_some_and(|value| value.eq_ignore_ascii_case("art")) {
+    if matches!(node_type, Some("art" | "artNode"))
+        && art_id.is_some_and(|value| loom_workflow_store::validate_art_id(value).is_ok())
+    {
         HookCanvasNodeKind::Art
-    } else if node_type.is_some_and(|value| {
-        matches!(
-            value.to_ascii_lowercase().as_str(),
-            "sticker" | "screenshot" | "capture"
-        )
-    }) {
+    } else if node_type == Some("sticker") {
         HookCanvasNodeKind::Screenshot
     } else {
         HookCanvasNodeKind::Unknown
@@ -1312,8 +1296,8 @@ fn normalized_status(value: Option<&str>, kind: &HookCanvasNodeKind) -> &'static
 }
 
 // Directories the daemon is allowed to serve preview images from. Hook stores
-// canvas images in two places: the session's own `images/` directory (older
-// saved sessions) and the shared `clipboard_cache` under `%LOCALAPPDATA%\Hook`
+// canvas images in two places: the session's own `images/` directory and the
+// shared `clipboard_cache` under `%LOCALAPPDATA%\Hook`
 // (current live captures referenced by absolute path or Tauri asset URL). Both
 // are canonicalized so the preview endpoint can enforce a strict prefix check
 // and never read outside them.
@@ -1585,7 +1569,12 @@ fn workflow_export_metadata_for(
 }
 
 fn workflow_node_id_base(node: &HookCanvasNode) -> String {
-    sanitize_workflow_node_id(node.art_id.as_deref().unwrap_or(node.id.as_str()))
+    let base = node
+        .art_id
+        .as_deref()
+        .and_then(|art_id| art_id.rsplit('/').next())
+        .unwrap_or(node.id.as_str());
+    sanitize_workflow_node_id(base)
 }
 
 fn yaml_single_quoted(value: &str) -> String {
@@ -1655,7 +1644,7 @@ mod tests {
     }
 
     fn write_session(root: &Path, json: &str) -> PathBuf {
-        let session_dir = root.join("com.vmjcv.arthook-next");
+        let session_dir = root.join("com.yamiyu.hook");
         fs::create_dir_all(session_dir.join("images")).expect("create Hook fixture dirs");
         let path = session_dir.join("session.json");
         fs::write(&path, json).expect("write Hook session fixture");
@@ -1686,7 +1675,7 @@ mod tests {
               "stickers": [
                 {"id":"capture","type":"sticker","src":"images/capture.png","x":1816.0,"y":201.0,"w":500.0,"h":750.0},
                 {"id":"small","type":"sticker","src":"images/missing.png","x":1792.0,"y":346.0,"w":60.0,"h":60.0},
-                {"id":"art","type":"art","artId":"custom-image","src":"images/art.png","x":1576.0,"y":499.0,"w":60.0,"h":60.0}
+                {"id":"art","type":"art","artId":"neuro.official/custom-image","src":"images/art.png","x":1576.0,"y":499.0,"w":60.0,"h":60.0}
               ],
               "links": [
                 {"id":"edge-1","fromUnitId":"capture","fromPortId":"output_image","toUnitId":"art","toPortId":"input_image"}
@@ -1713,7 +1702,7 @@ mod tests {
             .find(|node| node.id == "art")
             .expect("art node");
         assert_eq!(art.kind, HookCanvasNodeKind::Art);
-        assert_eq!(art.art_id.as_deref(), Some("custom-image"));
+        assert_eq!(art.art_id.as_deref(), Some("neuro.official/custom-image"));
         assert!(art.preview_available);
         assert!(art
             .preview_url
@@ -1740,8 +1729,8 @@ mod tests {
             r#"{
               "stickers": [
                 {"id":"a","type":"sticker","x":0,"y":0,"w":80,"h":80},
-                {"id":"b","type":"art","x":200,"y":0,"w":80,"h":80},
-                {"id":"c","type":"art","x":400,"y":0,"w":80,"h":80},
+                {"id":"b","type":"art","artId":"neuro.official/geometry-b","x":200,"y":0,"w":80,"h":80},
+                {"id":"c","type":"art","artId":"neuro.official/geometry-c","x":400,"y":0,"w":80,"h":80},
                 {"id":"mini","type":"sticker","x":0,"y":200,"w":80,"h":80,"minified":true}
               ],
               "links": [
@@ -1796,8 +1785,8 @@ mod tests {
             r#"{
               "stickers": [
                 {"id":"capture","type":"sticker","x":0,"y":0,"w":80,"h":80},
-                {"id":"resize-a","type":"art","artId":"resize","x":200,"y":0,"w":80,"h":80},
-                {"id":"resize-b","type":"art","artId":"resize","x":400,"y":0,"w":80,"h":80}
+                {"id":"resize-a","type":"art","artId":"neuro.official/resize","x":200,"y":0,"w":80,"h":80},
+                {"id":"resize-b","type":"art","artId":"neuro.official/resize","x":400,"y":0,"w":80,"h":80}
               ],
               "links": [
                 {"id":"e1","fromUnitId":"capture","toUnitId":"resize-a"},
@@ -1848,8 +1837,8 @@ mod tests {
             r#"{
               "stickers": [
                 {"id":"a","type":"sticker","x":0,"y":0,"w":80,"h":80},
-                {"id":"b","type":"art","artId":"resize","x":200,"y":0,"w":80,"h":80},
-                {"id":"c","type":"art","artId":"resize","x":400,"y":0,"w":80,"h":80},
+                {"id":"b","type":"art","artId":"neuro.official/resize","x":200,"y":0,"w":80,"h":80},
+                {"id":"c","type":"art","artId":"neuro.official/resize","x":400,"y":0,"w":80,"h":80},
                 {"id":"lonely","type":"sticker","x":0,"y":200,"w":80,"h":80}
               ],
               "links": [
@@ -1866,8 +1855,8 @@ mod tests {
 
         assert!(yaml.contains("name: 'hook-export'"));
         assert!(yaml.contains("- id: a"));
-        assert!(yaml.contains("uses: 'sticker'"));
-        assert!(!yaml.contains("uses: 'screenshot'"));
+        assert!(yaml.contains("uses: '__sticker__'"));
+        assert!(yaml.contains("uses: 'neuro.official/resize'"));
         assert!(yaml.contains("- id: resize"));
         assert!(yaml.contains("- id: resize-2"));
         assert!(yaml.contains("needs: [a]"));
@@ -1886,8 +1875,8 @@ mod tests {
               "stickers": [
                 {"id":"input","type":"sticker","x":0,"y":0,"w":80,"h":80},
                 {"id":"reference","type":"sticker","x":0,"y":200,"w":80,"h":80},
-                {"id":"color","type":"art","artId":"color-transfer","x":200,"y":100,"w":80,"h":80},
-                {"id":"compress","type":"art","artId":"compress","x":400,"y":100,"w":80,"h":80}
+                {"id":"color","type":"art","artId":"neuro.official/color-transfer","x":200,"y":100,"w":80,"h":80},
+                {"id":"compress","type":"art","artId":"neuro.official/compress","x":400,"y":100,"w":80,"h":80}
               ],
               "links": [
                 {"id":"e1","fromUnitId":"input","fromPortId":"output","toUnitId":"color","toPortId":"input"},
@@ -1909,7 +1898,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_workflow_yaml_with_yaml_safe_scalar_quoting() {
+    fn rejects_workflow_export_with_noncanonical_art_identity() {
         let root = test_root("workflow-yaml-quoting");
         let session = write_session(
             &root,
@@ -1925,12 +1914,14 @@ mod tests {
         );
 
         let document = HookCanvasDocument::read(&session).expect("normalize workflow yaml");
-        let yaml = document
+        let error = document
             .export_workflow_yaml_for_selected_node("a", "Hook: Export's")
-            .expect("export workflow yaml");
+            .expect_err("unsafe Art identity must fail closed");
 
-        assert!(yaml.contains("name: 'Hook: Export''s'"));
-        assert!(yaml.contains("uses: 'resize:smart''s'"));
+        assert!(matches!(
+            error,
+            HookCanvasWorkflowExportError::InvalidNode(node_id) if node_id == "b"
+        ));
     }
 
     #[test]
@@ -2104,14 +2095,16 @@ mod tests {
     }
 
     #[test]
-    fn classifies_art_screenshot_and_unknown_nodes() {
+    fn classifies_only_canonical_art_and_sticker_nodes() {
         let root = test_root("classification");
         let session = write_session(
             &root,
             r#"{
               "stickers": [
-                {"id":"art-by-id","artId":"resize"},
+                {"id":"art-by-id","artId":"neuro.official/resize"},
                 {"id":"capture","type":"capture"},
+                {"id":"art","type":"art","artId":"neuro.official/resize"},
+                {"id":"sticker","type":"sticker"},
                 {"id":"unknown","type":"custom"}
               ],
               "links": []
@@ -2129,8 +2122,10 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                ("art-by-id", &HookCanvasNodeKind::Art, "Art 节点"),
-                ("capture", &HookCanvasNodeKind::Screenshot, "截图节点"),
+                ("art", &HookCanvasNodeKind::Art, "Art 节点"),
+                ("art-by-id", &HookCanvasNodeKind::Unknown, "未知节点"),
+                ("capture", &HookCanvasNodeKind::Unknown, "未知节点"),
+                ("sticker", &HookCanvasNodeKind::Screenshot, "截图节点"),
                 ("unknown", &HookCanvasNodeKind::Unknown, "未知节点"),
             ]
         );
@@ -2143,7 +2138,7 @@ mod tests {
             &root,
             r#"{
               "stickers": [
-                {"id":"art","artId":"resize","params":{"width":512,"mode":"fit"}},
+                {"id":"art","type":"art","artId":"neuro.official/resize","params":{"width":512,"mode":"fit"}},
                 {"id":"plain","type":"sticker"}
               ],
               "links": []
@@ -2299,7 +2294,7 @@ mod tests {
                 {
                   "id":"failed-art",
                   "type":"art",
-                  "artId":"cloud-upscale",
+                  "artId":"neuro.official/cloud-upscale",
                   "status":"error",
                   "src":"images/failed-art-error.png",
                   "x":200,"y":0,"w":200,"h":100
@@ -2334,7 +2329,7 @@ mod tests {
     #[test]
     fn error_art_preview_prefers_realistic_src_only_shape_over_upstream_input() {
         let root = test_root("error-art-realistic-shape");
-        let session_dir = root.join("com.vmjcv.arthook-next");
+        let session_dir = root.join("com.yamiyu.hook");
         let image_dir = session_dir.join("images");
         fs::create_dir_all(&image_dir).expect("create image dir");
         let upstream_path = fs::canonicalize({
@@ -2365,7 +2360,7 @@ mod tests {
                     {{
                       "id":"failed-art",
                       "type":"art",
-                      "artId":"custom-1770131241684",
+                      "artId":"neuro.official/custom-1770131241684",
                       "status":"error",
                       "src":"{failed_art_src}",
                       "x":600,"y":190,"w":190,"h":150,
@@ -2632,7 +2627,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_nested_hook_bridge_broadcast_shapes() {
+    fn accepts_current_hook_workflow_sync_shape() {
         let root = test_root("nested");
         let session = write_session(
             &root,
@@ -2641,10 +2636,10 @@ mod tests {
               "nodes": [
                 {
                   "id":"nested",
-                  "type":"node",
+                  "type":"artNode",
                   "position":{"x":12,"y":24},
                   "measured":{"width":320,"height":180},
-                  "data":{"type":"art","artId":"ocr","previewSrc":"images/nested.png","status":"processing"}
+                  "data":{"artId":"neuro.official/ocr","previewSrc":"images/nested.png","status":"processing"}
                 }
               ],
               "edges": [
@@ -2662,7 +2657,9 @@ mod tests {
         )
         .expect("write nested preview");
 
-        let document = HookCanvasDocument::read(&session).expect("normalize nested broadcast");
+        let bytes = fs::read(&session).expect("read workflow sync fixture");
+        let root_value = serde_json::from_slice(&bytes).expect("parse workflow sync fixture");
+        let document = HookCanvasDocument::from_serialized_root(&session, bytes, root_value, None);
         let node = &document.snapshot.nodes[0];
 
         assert_eq!(document.snapshot.workflow_id.as_deref(), Some("hook-live"));
@@ -2681,32 +2678,6 @@ mod tests {
             document.snapshot.edges[0].target_port_id.as_deref(),
             Some("in")
         );
-    }
-
-    #[test]
-    fn empty_primary_arrays_do_not_hide_non_empty_compatibility_arrays() {
-        let root = test_root("compat-array-fallback");
-        let session = write_session(
-            &root,
-            r#"{
-              "stickers": [],
-              "nodes": [
-                {"id":"source","type":"sticker","x":10,"y":20},
-                {"id":"target","type":"art","x":120,"y":20}
-              ],
-              "links": [],
-              "edges": [
-                {"id":"source-target","source":"source","target":"target"}
-              ]
-            }"#,
-        );
-
-        let document = HookCanvasDocument::read(&session).expect("normalize compatibility arrays");
-
-        assert_eq!(document.snapshot.nodes.len(), 2);
-        assert_eq!(document.snapshot.edges.len(), 1);
-        assert_eq!(document.snapshot.edges[0].source_node_id, "source");
-        assert_eq!(document.snapshot.edges[0].target_node_id, "target");
     }
 
     #[test]

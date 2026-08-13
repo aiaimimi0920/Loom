@@ -91,13 +91,16 @@ where
             revoke_publisher(Path::new(store_path), publisher_id, key_id)?;
             writeln!(writer, "revoked publisher `{publisher_id}` key `{key_id}`")?;
         }
-        ["init", "framework", directory, id] => {
-            init_framework(Path::new(directory), id)?;
-            writeln!(writer, "initialized framework `{id}` at {directory}")?;
+        ["init", "framework", directory, id, publisher] => {
+            init_framework(Path::new(directory), id, publisher)?;
+            writeln!(
+                writer,
+                "initialized framework `{publisher}/{id}` at {directory}"
+            )?;
         }
-        ["init", "art", directory, id, framework] => {
-            init_art(Path::new(directory), id, framework)?;
-            writeln!(writer, "initialized Art `{id}` at {directory}")?;
+        ["init", "art", directory, id, framework, publisher] => {
+            init_art(Path::new(directory), id, framework, publisher)?;
+            writeln!(writer, "initialized Art `{publisher}/{id}` at {directory}")?;
         }
         ["conformance", executable, framework_id, art_dir] => {
             let report = run_conformance(Path::new(executable), framework_id, Path::new(art_dir))?;
@@ -121,8 +124,8 @@ fn help_text() -> &'static str {
         "Usage: loom-plugin <COMMAND>\n",
         "\n",
         "Commands:\n",
-        "  init framework <DIR> <ID>              Create a framework package skeleton\n",
-        "  init art <DIR> <ID> <FRAMEWORK>         Create an Art package skeleton\n",
+        "  init framework <DIR> <ID> <PUBLISHER>  Create a framework package skeleton\n",
+        "  init art <DIR> <ID> <FRAMEWORK> <PUBLISHER> Create an Art package skeleton\n",
         "  validate <PATH> [--trust-store <STORE>] Validate a package directory or manifest\n",
         "  pack <SOURCE_DIR> <OUTPUT_ZIP>          Validate and build a deterministic package ZIP\n",
         "  conformance <EXE> <FRAMEWORK> <ART_DIR> Run the v1 process contract against a runtime\n",
@@ -132,7 +135,7 @@ fn help_text() -> &'static str {
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",
-        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, device-session\n",
+        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, device-session, hook-message\n",
     )
 }
 
@@ -147,6 +150,7 @@ fn schema(name: &str) -> Result<&'static str> {
         "surface-message" => Ok(schemas::SURFACE_MESSAGE_V1),
         "surface-scene" => Ok(schemas::SURFACE_SCENE_V1),
         "device-session" => Ok(schemas::DEVICE_SESSION_V1),
+        "hook-message" => Ok(schemas::HOOK_MESSAGE_V1),
         _ => bail!("unknown schema `{name}`"),
     }
 }
@@ -206,17 +210,14 @@ fn validate_framework_package(
     if let Some(signature) = &manifest.signature {
         validate_relative_package_path(directory, &signature.file, true)
             .context("validate signature file")?;
-        let publisher_key = manifest
-            .publisher
-            .as_ref()
-            .and_then(|publisher| publisher.key_id.as_deref());
+        let publisher_key = manifest.publisher.key_id.as_deref();
         if publisher_key != Some(signature.key_id.as_str()) {
             bail!("signature keyId must match publisher.keyId");
         }
     }
     let trust = verify_package_signature(
         directory,
-        manifest.publisher.as_ref(),
+        Some(&manifest.publisher),
         manifest.signature.as_ref(),
         trust_store,
     )?;
@@ -276,12 +277,8 @@ fn validate_art_package(
         validate_surface_package(directory, surface, require_payload)?;
     }
     let (publisher, signature) = art_security_metadata(&manifest)?;
-    let trust = verify_package_signature(
-        directory,
-        publisher.as_ref(),
-        signature.as_ref(),
-        trust_store,
-    )?;
+    let trust =
+        verify_package_signature(directory, Some(&publisher), signature.as_ref(), trust_store)?;
     reject_revoked_package(&trust)?;
     Ok(format!(
         "Art package valid: {id} -> {framework} (trust={trust:?})"
@@ -405,15 +402,19 @@ fn validate_declarative_surface_scene(
 
 fn art_security_metadata(
     manifest: &Value,
-) -> Result<(Option<PublisherIdentity>, Option<PackageSignature>)> {
+) -> Result<(PublisherIdentity, Option<PackageSignature>)> {
     let security = manifest
         .get("metadata")
         .and_then(Value::as_object)
         .and_then(|metadata| metadata.get("packageSecurity"));
-    let publisher = security
+    let publisher: PublisherIdentity = security
         .and_then(|security| security.get("publisher"))
         .map(|value| serde_json::from_value(value.clone()))
-        .transpose()?;
+        .transpose()?
+        .ok_or_else(|| anyhow!("Art package publisher metadata is required"))?;
+    if !is_safe_publisher_id(&publisher.id) {
+        bail!("Art publisher id is not safe: {}", publisher.id);
+    }
     let signature = security
         .and_then(|security| security.get("signature"))
         .map(|value| serde_json::from_value(value.clone()))
@@ -663,9 +664,9 @@ fn collect_package_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn init_framework(directory: &Path, id: &str) -> Result<()> {
-    if !is_safe_package_id(id) {
-        bail!("framework id is not a safe package id: {id}");
+fn init_framework(directory: &Path, id: &str, publisher: &str) -> Result<()> {
+    if !is_safe_package_id(id) || !is_safe_publisher_id(publisher) {
+        bail!("framework or publisher id is not safe: {publisher}/{id}");
     }
     ensure_empty_directory(directory)?;
     fs::create_dir_all(directory.join("runtime"))?;
@@ -676,11 +677,13 @@ fn init_framework(directory: &Path, id: &str) -> Result<()> {
         "version": "0.1.0",
         "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
         "supportedProtocolVersions": [FRAMEWORK_PROTOCOL_VERSION],
+        "publisher": { "id": publisher },
         "platforms": ["windows-x64"],
         "entry": {
             "kind": "process",
             "command": format!("runtime/{id}.exe"),
-            "args": []
+            "args": [],
+            "processModel": "per_execution"
         },
         "permissionPolicy": {},
         "resources": {
@@ -703,9 +706,12 @@ fn init_framework(directory: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn init_art(directory: &Path, id: &str, framework: &str) -> Result<()> {
-    if !is_safe_package_id(id) || !is_safe_package_reference(framework) {
-        bail!("Art and framework ids must be safe package ids");
+fn init_art(directory: &Path, id: &str, framework: &str, publisher: &str) -> Result<()> {
+    if !is_safe_package_id(id)
+        || !is_safe_package_reference(framework)
+        || !is_safe_publisher_id(publisher)
+    {
+        bail!("Art, framework, and publisher ids must be safe package ids");
     }
     ensure_empty_directory(directory)?;
     fs::create_dir_all(directory.join("runtime"))?;
@@ -721,6 +727,11 @@ fn init_art(directory: &Path, id: &str, framework: &str) -> Result<()> {
             "outputs": [],
             "params": [],
             "metadata": {
+                "packageSecurity": {
+                    "version": "0.1.0",
+                    "publisher": { "id": publisher }
+                },
+                "art": { "qualifiedId": format!("{publisher}/{id}") },
                 "dependencies": { "framework": framework }
             }
         }),
@@ -939,6 +950,7 @@ mod tests {
             schemas::SURFACE_MESSAGE_V1,
             schemas::SURFACE_SCENE_V1,
             schemas::DEVICE_SESSION_V1,
+            schemas::HOOK_MESSAGE_V1,
         ] {
             serde_json::from_str::<Value>(schema).expect("schema JSON");
         }
@@ -953,6 +965,7 @@ mod tests {
         assert!(output.contains("conformance"));
         assert!(output.contains("pack"));
         assert!(output.contains("surface-manifest"));
+        assert!(output.contains("hook-message"));
     }
 
     #[test]
@@ -991,6 +1004,11 @@ mod tests {
             "id": "surface-validator-fixture",
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
+                "packageSecurity": {
+                    "version": "1.0.0",
+                    "publisher": { "id": "publisher.test" }
+                },
+                "art": { "qualifiedId": "publisher.test/surface-validator-fixture" },
                 "capabilities": {
                     "surface": {
                         "protocolVersion": "loom.surface.v1",
@@ -1049,7 +1067,68 @@ mod tests {
     fn unsafe_package_ids_are_rejected() {
         let root = std::env::temp_dir().join("loom-plugin-cli-unsafe-id");
         let _ = fs::remove_dir_all(&root);
-        assert!(init_framework(&root, "../escape").is_err());
+        assert!(init_framework(&root, "../escape", "publisher.example").is_err());
+        assert!(init_framework(&root, "safe-id", "../publisher").is_err());
+    }
+
+    #[test]
+    fn initialized_packages_are_publisher_qualified_and_validate() {
+        let root = temp_root("publisher-qualified-init");
+        let framework_dir = root.join("framework");
+        init_framework(&framework_dir, "process", "publisher.example").expect("init framework");
+        let framework = validate_path_with_payload(&framework_dir, false, &TrustStore::default())
+            .expect("validate initialized framework");
+        assert!(
+            framework.contains("publisher.example/process"),
+            "{framework}"
+        );
+
+        let art_dir = root.join("art");
+        init_art(
+            &art_dir,
+            "sample-art",
+            "publisher.example/process",
+            "publisher.example",
+        )
+        .expect("init Art");
+        let art = validate_path_with_payload(&art_dir, false, &TrustStore::default())
+            .expect("validate initialized Art");
+        assert!(art.contains("Art package valid"), "{art}");
+        let manifest: Value = read_json(&art_dir.join("manifest.json")).expect("Art manifest");
+        assert_eq!(
+            manifest.pointer("/metadata/art/qualifiedId"),
+            Some(&json!("publisher.example/sample-art"))
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn art_validation_rejects_missing_publisher() {
+        let root = temp_root("missing-art-publisher");
+        init_art(
+            &root,
+            "sample-art",
+            "publisher.example/process",
+            "publisher.example",
+        )
+        .expect("init Art");
+        let manifest_path = root.join("manifest.json");
+        let mut manifest: Value = read_json(&manifest_path).expect("Art manifest");
+        manifest["metadata"]["packageSecurity"]
+            .as_object_mut()
+            .expect("packageSecurity object")
+            .remove("publisher");
+        write_pretty_json(manifest_path, &manifest).expect("write Art manifest");
+
+        let error = validate_path_with_payload(&root, false, &TrustStore::default())
+            .expect_err("publisher-less Art must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Art package publisher metadata is required"),
+            "{error:#}"
+        );
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -1063,7 +1142,13 @@ mod tests {
         let root = temp_root("sign-art-metadata");
         let art_dir = root.join("art-package");
         let key_path = root.join("publisher-key.json");
-        init_art(&art_dir, "signed-art", "publisher.example/process").expect("init Art");
+        init_art(
+            &art_dir,
+            "signed-art",
+            "publisher.example/process",
+            "publisher.example",
+        )
+        .expect("init Art");
 
         let manifest_path = art_dir.join("manifest.json");
         let mut manifest: Value = read_json(&manifest_path).expect("read manifest");
@@ -1110,6 +1195,7 @@ mod tests {
             "framework".to_owned(),
             framework_dir.to_string_lossy().into_owned(),
             framework_id.to_owned(),
+            "publisher.example".to_owned(),
         ])
         .expect("init framework");
         fs::write(
@@ -1183,6 +1269,7 @@ mod tests {
             art_dir.to_string_lossy().into_owned(),
             "e2e-art".to_owned(),
             qualified_framework_id.to_owned(),
+            "publisher.example".to_owned(),
         ])
         .expect("init Art");
         fs::write(art_dir.join("runtime/main.exe"), b"MZ-art-fixture").expect("Art payload");

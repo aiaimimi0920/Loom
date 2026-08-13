@@ -96,6 +96,13 @@ Assert-PathInside -Path $stagingRoot -Root $outputRootPath -Label "staging root"
 if (Test-Path -LiteralPath $stagingRoot) {
     Remove-Item -LiteralPath $stagingRoot -Recurse -Force
 }
+foreach ($existingZip in Get-ChildItem -LiteralPath $outputRootPath -File -Filter "*.zip") {
+    Remove-Item -LiteralPath $existingZip.FullName -Force
+    $sidecar = "$($existingZip.FullName).sha256"
+    if (Test-Path -LiteralPath $sidecar -PathType Leaf) {
+        Remove-Item -LiteralPath $sidecar -Force
+    }
+}
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
 $summary = @()
@@ -181,12 +188,10 @@ try {
         if ($null -ne $publisherProperty -and $null -ne $publisherProperty.Value) {
             $publisherId = [string]$publisherProperty.Value.id
         }
-        $qualifiedId = if ([string]::IsNullOrWhiteSpace($publisherId)) {
-            $artId
+        if ([string]::IsNullOrWhiteSpace($publisherId)) {
+            throw "Sample Art package publisher id is empty: $manifestPath"
         }
-        else {
-            "$publisherId/$artId"
-        }
+        $qualifiedId = "$publisherId/$artId"
         if (-not $officialCertifications.Contains($qualifiedId)) {
             $officialCertifications[$qualifiedId] = [ordered]@{}
         }

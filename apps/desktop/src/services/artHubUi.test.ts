@@ -569,7 +569,7 @@ test("auto-saves Loom fields and Hook shortcuts without a manual save action", (
   assert.match(appSource, /pendingSettingsRef\.current = draft/);
   assert.match(appSource, /window\.setTimeout\(\(\) => \{[\s\S]*?void flushSettingsQueue\(\);[\s\S]*?\}, 360\)/);
   assert.match(appSource, /while \(pendingSettingsRef\.current\)/);
-  assert.match(appSource, /await saveArtLoomCompatSettings\(baseUrl, nextSettings\)/);
+  assert.match(appSource, /await saveLoomSettings\(baseUrl, nextSettings\)/);
   assert.match(appSource, /const updateShortcutDraft[\s\S]*?shortcuts: Object\.fromEntries\(nextShortcuts\.map/);
   assert.doesNotMatch(appSource, /saveSettingsDraft|saveShortcutDraft|保存兼容设置/);
 });

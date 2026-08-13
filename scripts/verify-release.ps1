@@ -41,6 +41,18 @@ function Assert-Equal {
     }
 }
 
+function Get-Sha256HexForBytes {
+    param([byte[]]$Bytes)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [System.BitConverter]::ToString($sha256.ComputeHash($Bytes)).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
 function Invoke-CapturedPowerShell {
     param([string[]]$Arguments)
 
@@ -221,6 +233,7 @@ function Assert-PluginSdkZipPayload {
         "protocol/schemas/framework-execute-response.v1.schema.json",
         "protocol/schemas/framework-manifest.v1.schema.json",
         "protocol/schemas/device-session.v1.schema.json",
+        "protocol/schemas/hook-message.v1.schema.json",
         "protocol/schemas/surface-manifest.v1.schema.json",
         "protocol/schemas/surface-message.v1.schema.json",
         "protocol/schemas/surface-scene.v1.schema.json",
@@ -230,11 +243,43 @@ function Assert-PluginSdkZipPayload {
     $actualEntries = @(Get-LoomArchiveFileEntries -ZipPath $zipPath | ForEach-Object { $_.Replace("\", "/") } | Sort-Object)
     Assert-Equal -Expected ($expectedEntries -join "`n") -Actual ($actualEntries -join "`n") -Message "Plugin SDK ZIP contents do not match the public SDK contract."
 
+    $sourceReadmePath = Join-Path $repoRoot "protocol\README.md"
+    Assert-True -Condition (Test-Path -LiteralPath $sourceReadmePath -PathType Leaf) -Message "Release source protocol README is missing."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $readmeEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "protocol/README.md" })
+        Assert-Equal -Expected 1 -Actual $readmeEntry.Count -Message "Plugin SDK ZIP must contain one protocol README."
+        $memory = [System.IO.MemoryStream]::new()
+        try {
+            $entryStream = $readmeEntry[0].Open()
+            try {
+                $entryStream.CopyTo($memory)
+            }
+            finally {
+                $entryStream.Dispose()
+            }
+            $sdkReadmeBytes = $memory.ToArray()
+        }
+        finally {
+            $memory.Dispose()
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+    $sourceReadmeBytes = [System.IO.File]::ReadAllBytes($sourceReadmePath)
+    Assert-Equal -Expected $sourceReadmeBytes.Length -Actual $sdkReadmeBytes.Length -Message "Plugin SDK protocol README byte count does not match the release source."
+    Assert-Equal `
+        -Expected (Get-Sha256HexForBytes -Bytes $sourceReadmeBytes) `
+        -Actual (Get-Sha256HexForBytes -Bytes $sdkReadmeBytes) `
+        -Message "Plugin SDK protocol README does not match the release source."
+
     $sdkProperty = $Manifest.PSObject.Properties["pluginSdkArtifact"]
     Assert-True -Condition ($null -ne $sdkProperty -and $null -ne $sdkProperty.Value) -Message "Manifest is missing pluginSdkArtifact."
     Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$sdkProperty.Value.entryName) -Message "Plugin SDK entry name mismatch."
     Assert-Equal -Expected "loom.framework.v1" -Actual ([string]$sdkProperty.Value.protocolVersion) -Message "Plugin SDK protocol version mismatch."
-    Assert-Equal -Expected 9 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
+    Assert-Equal -Expected 10 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
 }
 
 function Assert-FrameworkPackages {

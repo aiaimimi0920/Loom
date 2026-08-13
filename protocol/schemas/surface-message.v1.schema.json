@@ -4,6 +4,9 @@
   "title": "Loom Surface Message v1",
   "oneOf": [
     {
+      "$ref": "#/$defs/bridgeEvent"
+    },
+    {
       "$ref": "#/$defs/snapshot"
     },
     {
@@ -47,6 +50,31 @@
     }
   ],
   "$defs": {
+    "bridgeEvent": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": {
+          "enum": [
+            "loom.surface.snapshot",
+            "loom.surface.patch",
+            "loom.surface.generation",
+            "loom.surface.action.ack",
+            "loom.surface.confirmation.request",
+            "loom.surface.action.progress",
+            "loom.surface.preview",
+            "loom.surface.result",
+            "loom.surface.failure",
+            "loom.surface.lifecycle",
+            "loom.surface.dispose"
+          ]
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
     "safeIdentifier": {
       "type": "string",
       "minLength": 1,

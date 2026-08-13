@@ -47,20 +47,6 @@ function Assert-Contains {
     }
 }
 
-function Assert-SameExistingPath {
-    param(
-        [string]$Expected,
-        [string]$Actual,
-        [string]$Message
-    )
-
-    $expectedPath = (Get-Item -LiteralPath $Expected -Force).FullName
-    $actualPath = (Get-Item -LiteralPath $Actual -Force).FullName
-    if (-not $expectedPath.Equals($actualPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "$Message Expected=[$expectedPath] Actual=[$actualPath]"
-    }
-}
-
 function Assert-PathExists {
     param([string]$Path)
 
@@ -168,424 +154,27 @@ function Invoke-JsonDelete {
     return Invoke-RestMethod -Uri $Uri -Method Delete -Headers $Headers -TimeoutSec 20
 }
 
-function New-LoomHookBridgeWebSocket {
-    param(
-        [int]$Port
-    )
 
-    $client = [System.Net.WebSockets.ClientWebSocket]::new()
-    $uri = [Uri]::new("ws://127.0.0.1:$Port")
-    $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    try {
-        [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
-    } finally {
-        $connectCts.Dispose()
-    }
 
-    return $client
-}
 
-function Send-LoomHookBridgeWebSocketJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
-        [string]$Json
-    )
 
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
-    $sendCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    try {
-        [void]$Client.SendAsync(
-            [ArraySegment[byte]]::new($bytes),
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            $sendCts.Token
-        ).GetAwaiter().GetResult()
-    } finally {
-        $sendCts.Dispose()
-    }
-}
 
-function Receive-LoomHookBridgeWebSocketJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client
-    )
 
-    $buffer = New-Object byte[] 4096
-    $builder = [System.Text.StringBuilder]::new()
-    do {
-        $receiveCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-        try {
-            $result = $Client.ReceiveAsync(
-                [ArraySegment[byte]]::new($buffer),
-                $receiveCts.Token
-            ).GetAwaiter().GetResult()
-        } finally {
-            $receiveCts.Dispose()
-        }
 
-        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-            throw "Loom Hook Bridge WebSocket closed before sending JSON response."
-        }
 
-        [void]$builder.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count))
-    } while (-not $result.EndOfMessage)
 
-    return $builder.ToString() | ConvertFrom-Json
-}
 
-function Close-LoomHookBridgeWebSocket {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client
-    )
 
-    if ($null -eq $Client) {
-        return
-    }
 
-    try {
-        if ($Client.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
-            $closeCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-            try {
-                [void]$Client.CloseAsync(
-                    [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
-                    "done",
-                    $closeCts.Token
-                ).GetAwaiter().GetResult()
-            } finally {
-                $closeCts.Dispose()
-            }
-        }
-    } finally {
-        $Client.Dispose()
-    }
-}
 
-function Connect-LoomHookBridgeWebSocket {
-    param(
-        [int]$Port
-    )
 
-    $client = New-LoomHookBridgeWebSocket -Port $Port
-    try {
-        $request = '{"method":"handshake","params":{"client_version":"release-smoke"}}'
-        Send-LoomHookBridgeWebSocketJson -Client $client -Json $request
-        return Receive-LoomHookBridgeWebSocketJson -Client $client
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
 
-function Test-LoomHookBridgeSettingsCompatibility {
-    param(
-        [int]$Port,
-        [string]$TranslateFixtureDir
-    )
 
-    $client = $null
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"get_settings"}'
-        $settings = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "settings" ([string]$settings.type) "Loom Hook Bridge get_settings response type mismatch."
-        Assert-Equal "dark" ([string]$settings.data.general.theme) "Loom Hook Bridge get_settings theme mismatch."
-        Assert-Equal "python.exe" ([string]$settings.data.engine.python_interpreter) "Loom Hook Bridge get_settings Python interpreter mismatch."
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"get_shortcuts"}'
-        $shortcuts = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "shortcuts" ([string]$shortcuts.type) "Loom Hook Bridge get_shortcuts response type mismatch."
-        $shortcutIds = @($shortcuts.data) | ForEach-Object { [string]$_.id }
-        Assert-Contains "capture" ($shortcutIds -join ",") "Loom Hook Bridge get_shortcuts must include capture."
-        Assert-Equal 7 (@($shortcuts.data).Count) "Loom Hook Bridge get_shortcuts Hook shortcut count mismatch."
-        Assert-Contains "toggle_translation" ($shortcutIds -join ",") "Loom Hook Bridge get_shortcuts must include toggle_translation."
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"art_loom/translate_text","params":{"text":"release loom translate","target_lang":"zh"}}'
-        $translated = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "success" ([string]$translated.type) "Loom Hook Bridge translate_text response type mismatch."
-        Assert-Equal "translated:release loom translate:zh" ([string]$translated.data.translated_text) "Loom Hook Bridge translate_text provider translation mismatch."
-        Assert-Equal "loom-translate-provider" ([string]$translated.data.source) "Loom Hook Bridge translate_text source mismatch."
-        if (-not [string]::IsNullOrWhiteSpace($TranslateFixtureDir)) {
-            $translateRequestPath = Join-Path $TranslateFixtureDir "translate-request.json"
-            Wait-ForPath -Path $translateRequestPath -TimeoutSeconds 20
-            $translateRequest = Get-Content -Raw -LiteralPath $translateRequestPath | ConvertFrom-Json
-            Assert-Equal "release loom translate" ([string]$translateRequest.text) "Loom translate fixture request text mismatch."
-            Assert-Equal "zh" ([string]$translateRequest.target_lang) "Loom translate fixture target_lang mismatch."
-            Assert-Equal "auto" ([string]$translateRequest.source_lang) "Loom translate fixture source_lang mismatch."
-        }
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"update_art_param","params":{"art_id":"fixture-artloom-compat","param_id":"strength","value":0.5}}'
-        $updated = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "success" ([string]$updated.type) "Loom Hook Bridge update_art_param response type mismatch."
-        Assert-Equal "update_art_param" ([string]$updated.data.compatCommand) "Loom Hook Bridge update_art_param command mismatch."
-        Assert-Equal "fixture-artloom-compat" ([string]$updated.data.art_id) "Loom Hook Bridge update_art_param art id mismatch."
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"list_arts"}'
-        $artsAfterParamUpdate = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "arts" ([string]$artsAfterParamUpdate.type) "Loom Hook Bridge list_arts after update_art_param response type mismatch."
-        $updatedArt = @($artsAfterParamUpdate.data) | Where-Object { [string]$_.art_id -eq "fixture-artloom-compat" } | Select-Object -First 1
-        if ($null -eq $updatedArt) {
-            throw "Loom Hook Bridge list_arts after update_art_param did not include fixture-artloom-compat."
-        }
-        Assert-Equal 0.5 ([double]$updatedArt.defaults.strength) "Loom Hook Bridge update_art_param did not persist default."
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"sync_shortcuts"}'
-        $synced = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "shortcuts" ([string]$synced.type) "Loom Hook Bridge sync_shortcuts response type mismatch."
-        Assert-Equal 7 (@($synced.data).Count) "Loom Hook Bridge sync_shortcuts Hook shortcut count mismatch."
-
-        return [ordered]@{
-            settingsTheme = [string]$settings.data.general.theme
-            shortcutCount = @($shortcuts.data).Count
-            translatedText = [string]$translated.data.translated_text
-            translationSource = [string]$translated.data.source
-            updatedArtId = [string]$updated.data.art_id
-            updatedStrength = [double]$updatedArt.defaults.strength
-            syncedShortcutCount = @($synced.data).Count
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeWebSocketBroadcast {
-    param(
-        [int]$Port
-    )
-
-    $subscriber = $null
-    $publisher = $null
-    try {
-        $subscriber = New-LoomHookBridgeWebSocket -Port $Port
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $subscriber `
-            -Json '{"method":"subscribe","params":{"channels":["art_hook"]}}'
-        $subscribe = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "success" ([string]$subscribe.type) "Loom Hook Bridge WebSocket subscribe response type mismatch."
-        Assert-Equal $true ([bool]$subscribe.data.subscribed) "Loom Hook Bridge WebSocket subscribe flag mismatch."
-
-        $publisher = New-LoomHookBridgeWebSocket -Port $Port
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $publisher `
-            -Json '{"method":"art_loom/instantiate_workflow","params":{"nodes":[{"id":"release-node"}],"edges":[{"source":"release-node","target":"release-output"}],"mode":"reference","workflow_id":"wf-release-broadcast"}}'
-        $publishResponse = Receive-LoomHookBridgeWebSocketJson -Client $publisher
-        Assert-Equal "success" ([string]$publishResponse.type) "Loom Hook Bridge WebSocket instantiate response type mismatch."
-
-        $broadcast = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "art_hook/instantiate" ([string]$broadcast.method) "Loom Hook Bridge WebSocket broadcast method mismatch."
-        Assert-Equal "wf-release-broadcast" ([string]$broadcast.params.workflow_id) "Loom Hook Bridge WebSocket broadcast workflow id mismatch."
-        Assert-Equal "release-node" ([string]$broadcast.params.nodes[0].id) "Loom Hook Bridge WebSocket broadcast node id mismatch."
-        Assert-Equal "release-output" ([string]$broadcast.params.edges[0].target) "Loom Hook Bridge WebSocket broadcast edge target mismatch."
-
-        return [ordered]@{
-            method = [string]$broadcast.method
-            workflowId = [string]$broadcast.params.workflow_id
-            nodeId = [string]$broadcast.params.nodes[0].id
-            edgeTarget = [string]$broadcast.params.edges[0].target
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $publisher
-        Close-LoomHookBridgeWebSocket -Client $subscriber
-    }
-}
-
-function Test-LoomArtLoomIpcWorkflowCompat {
-    param(
-        [string]$BaseUrl,
-        [int]$Port
-    )
-
-    $subscriber = $null
-    try {
-        $subscriber = New-LoomHookBridgeWebSocket -Port $Port
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $subscriber `
-            -Json '{"method":"subscribe","params":{"channels":["art_hook"]}}'
-        $subscribe = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "success" ([string]$subscribe.type) "Loom instantiate_workflow HTTP alias subscribe response type mismatch."
-
-        $instantiated = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/ipc/instantiate-workflow" -Body @{
-            nodes = @(
-                @{
-                    id = "release-http-node"
-                }
-            )
-            edges = @(
-                @{
-                    source = "release-http-node"
-                    target = "release-http-output"
-                }
-            )
-            mode = "reference"
-            workflowId = "wf-release-http-alias"
-        }
-        Assert-Equal "instantiate_workflow" ([string]$instantiated.compatCommand) "Loom instantiate_workflow compat command mismatch."
-        Assert-Equal "success" ([string]$instantiated.type) "Loom instantiate_workflow response type mismatch."
-        Assert-Equal "art_hook/instantiate" ([string]$instantiated.method) "Loom instantiate_workflow broadcast method mismatch."
-
-        $broadcast = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
-        Assert-Equal "art_hook/instantiate" ([string]$broadcast.method) "Loom instantiate_workflow HTTP alias broadcast method mismatch."
-        Assert-Equal "wf-release-http-alias" ([string]$broadcast.params.workflow_id) "Loom instantiate_workflow HTTP alias workflow id mismatch."
-        Assert-Equal "release-http-node" ([string]$broadcast.params.nodes[0].id) "Loom instantiate_workflow HTTP alias node id mismatch."
-
-        $executed = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/ipc/execute-art-node" -Body @{
-            nodeId = "release-http-execute-node"
-            artId = "fixture-echo"
-            inputBase64 = "data:text/plain;base64,cmVsZWFzZQ=="
-            params = @{
-                text = "release execute art node http alias"
-            }
-        }
-        Assert-Equal "execute_art_node" ([string]$executed.compatCommand) "Loom execute_art_node compat command mismatch."
-        Assert-Equal "success" ([string]$executed.type) "Loom execute_art_node HTTP alias response type mismatch."
-        Assert-Equal $true ([bool]$executed.data.success) "Loom execute_art_node HTTP alias success mismatch."
-        Assert-Equal "release-http-execute-node" ([string]$executed.data.node_id) "Loom execute_art_node HTTP alias node id mismatch."
-        Assert-Equal "release execute art node http alias" ([string]$executed.data.output_text) "Loom execute_art_node HTTP alias output mismatch."
-
-        return [ordered]@{
-            instantiateCommand = [string]$instantiated.compatCommand
-            instantiateType = [string]$instantiated.type
-            broadcastMethod = [string]$broadcast.method
-            workflowId = [string]$broadcast.params.workflow_id
-            executeCommand = [string]$executed.compatCommand
-            executeType = [string]$executed.type
-            executeNodeId = [string]$executed.data.node_id
-            executeOutputText = [string]$executed.data.output_text
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $subscriber
-    }
-}
-
-function Test-LoomHookLiveWorkflowPersistence {
-    param(
-        [int]$Port,
-        [string]$BaseUrl
-    )
-
-    $client = $null
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"art_loom/instantiate_workflow","params":{"nodes":[{"id":"hook-live-release-node","type":"artNode","data":{"artId":"hook.capture","label":"Hook Screenshot"}},{"id":"hook-live-release-output","type":"artNode","data":{"artId":"hook.output","label":"Hook Output"}}],"edges":[{"source":"hook-live-release-node","target":"hook-live-release-output","sourceHandle":"screenshot","targetHandle":"image"}],"mode":"reference","workflow_id":"wf-release-hook-live"}}'
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "success" ([string]$response.type) "Loom Hook Bridge live workflow instantiate response type mismatch."
-
-        $workflows = Invoke-JsonGet -Uri "$BaseUrl/v1/workflows"
-        $hookLive = @($workflows.workflows | Where-Object { [string]$_.id -eq "hook-live" })
-        Assert-Equal 1 $hookLive.Count "Loom workflow list must include canonical Hook live workflow."
-        $hookLiveWorkflowLabel = "Hook " + (-join @([char]0x5B9E, [char]0x65F6, [char]0x5DE5, [char]0x4F5C, [char]0x6D41))
-        Assert-Equal $hookLiveWorkflowLabel ([string]$hookLive[0].name) "Loom Hook live workflow list label mismatch."
-
-        $loaded = Invoke-JsonGet -Uri "$BaseUrl/v1/workflows/hook-live"
-        Assert-Equal "hook-live" ([string]$loaded.workflow.id) "Loom Hook live workflow load id mismatch."
-        Assert-Contains "hook-live-release-node" ([string]$loaded.workflow.data) "Loom Hook live workflow load data missing node."
-        Assert-Contains "hook-live-release-output" ([string]$loaded.workflow.data) "Loom Hook live workflow load data missing target node."
-        Assert-Contains "nodes.hook-live-release-node.outputs.screenshot" ([string]$loaded.workflow.data) "Loom Hook live workflow load data missing edge binding."
-
-        return [ordered]@{
-            workflowId = [string]$loaded.workflow.id
-            listName = [string]$hookLive[0].name
-            nodePersisted = ([string]$loaded.workflow.data).Contains("hook-live-release-node")
-            targetNodePersisted = ([string]$loaded.workflow.data).Contains("hook-live-release-output")
-            edgePersisted = ([string]$loaded.workflow.data).Contains("nodes.hook-live-release-node.outputs.screenshot")
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeExecuteArtNode {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json '{"method":"art_loom/execute_art_node","params":{"node_id":"release-node-mcp","art_id":"fixture-echo","input_base64":"data:text/plain;base64,cmVsZWFzZQ==","params":{"text":"release execute art node"}}}'
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "success" ([string]$response.type) "Loom Hook Bridge execute_art_node response type mismatch."
-        Assert-Equal $true ([bool]$response.data.success) "Loom Hook Bridge execute_art_node success flag mismatch."
-        Assert-Equal "release-node-mcp" ([string]$response.data.node_id) "Loom Hook Bridge execute_art_node node id mismatch."
-        Assert-Equal "release execute art node" ([string]$response.data.output_text) "Loom Hook Bridge execute_art_node output text mismatch."
-
-        return [ordered]@{
-            type = [string]$response.type
-            success = [bool]$response.data.success
-            nodeId = [string]$response.data.node_id
-            outputText = [string]$response.data.output_text
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeAhrpProcess {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art/process"
-            params = [ordered]@{
-                request_id = "release-ahrp-process"
-                art_id = "fixture-echo"
-                input = [ordered]@{
-                    type = "base64"
-                    data = $imageData
-                    width = 1
-                    height = 1
-                    format = "rgba8"
-                }
-                params = [ordered]@{
-                    text = $imageData
-                    ignored = "remove me"
-                }
-                disabled_params = @("ignored")
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "release-ahrp-process" ([string]$response.request_id) "Loom Hook Bridge AHRP process request id mismatch."
-        Assert-Equal "Success" ([string]$response.status) "Loom Hook Bridge AHRP process status mismatch."
-        Assert-Equal "result" ([string]$response.data.type) "Loom Hook Bridge AHRP process data type mismatch."
-        Assert-Equal "base64" ([string]$response.data.output.type) "Loom Hook Bridge AHRP process output type mismatch."
-        Assert-Equal $imageData ([string]$response.data.output.data) "Loom Hook Bridge AHRP process output data mismatch."
-        Assert-Equal 1 ([int]$response.data.output.width) "Loom Hook Bridge AHRP process output width mismatch."
-        Assert-Equal 1 ([int]$response.data.output.height) "Loom Hook Bridge AHRP process output height mismatch."
-
-        return [ordered]@{
-            requestId = [string]$response.request_id
-            status = [string]$response.status
-            outputType = [string]$response.data.output.type
-            width = [int]$response.data.output.width
-            height = [int]$response.data.output.height
-            outputData = [string]$response.data.output.data
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
 
 function New-LoomNativeImageSmokePngDataUrl {
     Add-Type -AssemblyName System.Drawing
@@ -608,269 +197,15 @@ function New-LoomNativeImageSmokePngDataUrl {
     }
 }
 
-function Test-LoomArtLoomNativeProcessArtCompat {
-    param(
-        [string]$BaseUrl
-    )
 
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    $response = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/native/process-art" -Body @{
-        artId = "core.image.invert"
-        inputBase64 = $imageData
-        params = @{}
-    }
 
-    Assert-Equal "native_process_art" ([string]$response.compatCommand) "Loom native_process_art compat command mismatch."
-    Assert-Equal $true ([bool]$response.success) "Loom native_process_art success mismatch."
-    $outputData = [string]$response.output_base64
-    if (-not $outputData.StartsWith("data:image/png;base64,", [System.StringComparison]::Ordinal)) {
-        throw "Loom native_process_art output must be a PNG data URL."
-    }
-    if ($outputData -eq $imageData) {
-        throw "Loom native_process_art output should differ from input after invert."
-    }
-    if ($null -ne (Get-JsonPropertyOrNull -Object $response -Name "error")) {
-        throw "Loom native_process_art should return null error for successful native processing."
-    }
 
-    return [ordered]@{
-        command = [string]$response.compatCommand
-        artId = "core.image.invert"
-        success = [bool]$response.success
-        inputLength = [int]$imageData.Length
-        outputLength = [int]$outputData.Length
-        outputChanged = $true
-    }
-}
 
-function Test-LoomMcpDirectCompat {
-    param(
-        [string]$BaseUrl,
-        [string]$FixtureMcpScript
-    )
 
-    $called = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/mcp/call-tool" -Body @{
-        command = "powershell.exe"
-        args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FixtureMcpScript)
-        env = @{}
-        toolName = "echo"
-        toolArgs = @{
-            text = "release direct mcp runtime"
-        }
-    }
 
-    Assert-Equal "call_mcp_tool" ([string]$called.compatCommand) "Loom call_mcp_tool compat command mismatch."
-    Assert-Equal "succeeded" ([string]$called.status) "Loom call_mcp_tool status mismatch."
-    Assert-Equal "2.0" ([string]$called.jsonrpc) "Loom call_mcp_tool JSON-RPC version mismatch."
-    Assert-Equal "release direct mcp runtime" ([string]$called.result.content[0].text) "Loom call_mcp_tool content mismatch."
 
-    return [ordered]@{
-        command = [string]$called.compatCommand
-        status = [string]$called.status
-        jsonrpc = [string]$called.jsonrpc
-        resultText = [string]$called.result.content[0].text
-    }
-}
 
-function Test-LoomArtLoomMcpServerStoreCompat {
-    param(
-        [string]$BaseUrl
-    )
 
-    $empty = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/mcp/servers"
-    Assert-Equal "get_mcp_servers" ([string]$empty.compatCommand) "Loom get_mcp_servers compat command mismatch."
-    if ($null -eq $empty.servers) {
-        throw "Loom get_mcp_servers must return a servers array."
-    }
-
-    $saved = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/mcp/servers" -Body @{
-        id = "release-artloom-mcp"
-        name = "Release ArtLoom MCP"
-        description = "Release smoke old MCP server store compatibility"
-        command = "powershell.exe"
-        args = @("-NoProfile")
-        env = @{
-            RELEASE_ARTLOOM_MCP = "1"
-        }
-        enabled = $true
-    }
-    Assert-Equal "save_mcp_server" ([string]$saved.compatCommand) "Loom save_mcp_server compat command mismatch."
-    Assert-Equal "Saved successfully" ([string]$saved.message) "Loom save_mcp_server message mismatch."
-    Assert-Equal "release-artloom-mcp" ([string]$saved.server.id) "Loom save_mcp_server id mismatch."
-
-    $listed = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/mcp/servers"
-    Assert-Equal "get_mcp_servers" ([string]$listed.compatCommand) "Loom get_mcp_servers after save command mismatch."
-    $serverIds = @($listed.servers | ForEach-Object { [string]$_.id })
-    Assert-Contains "release-artloom-mcp" ($serverIds -join ",") "Loom get_mcp_servers did not include saved fixture."
-
-    $registry = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/mcp/registry?search=fixture&limit=250&cursor=cursor-1"
-    Assert-Equal "fetch_mcp_registry" ([string]$registry.compatCommand) "Loom fetch_mcp_registry compat command mismatch."
-    Assert-Equal "io.modelcontextprotocol/fixture" ([string]$registry.servers[0].server.name) "Loom fetch_mcp_registry server name mismatch."
-
-    $deleted = Invoke-JsonDelete -Uri "$BaseUrl/v1/artloom-compat/mcp/servers/release-artloom-mcp"
-    Assert-Equal "delete_mcp_server" ([string]$deleted.compatCommand) "Loom delete_mcp_server compat command mismatch."
-    Assert-Equal "Deleted successfully" ([string]$deleted.message) "Loom delete_mcp_server message mismatch."
-    Assert-Equal $true ([bool]$deleted.deleted) "Loom delete_mcp_server deleted flag mismatch."
-
-    return [ordered]@{
-        listCommand = [string]$empty.compatCommand
-        saveCommand = [string]$saved.compatCommand
-        registryCommand = [string]$registry.compatCommand
-        deleteCommand = [string]$deleted.compatCommand
-        savedServerId = [string]$saved.server.id
-        registryServerName = [string]$registry.servers[0].server.name
-        deleted = [bool]$deleted.deleted
-    }
-}
-
-function Test-LoomHookBridgeNativeImageFilter {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art/process"
-            params = [ordered]@{
-                request_id = "release-native-image-filter"
-                art_id = "core.image.invert"
-                input = [ordered]@{
-                    type = "base64"
-                    data = $imageData
-                    width = 1
-                    height = 1
-                    format = "rgba8"
-                }
-                params = [ordered]@{}
-                disabled_params = @()
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "release-native-image-filter" ([string]$response.request_id) "Loom native image filter request id mismatch."
-        Assert-Equal "Success" ([string]$response.status) "Loom native image filter status mismatch."
-        Assert-Equal "result" ([string]$response.data.type) "Loom native image filter data type mismatch."
-        Assert-Equal "base64" ([string]$response.data.output.type) "Loom native image filter output type mismatch."
-        $outputData = [string]$response.data.output.data
-        if (-not $outputData.StartsWith("data:image/png;base64,", [System.StringComparison]::Ordinal)) {
-            throw "Loom native image filter output must be a PNG data URL."
-        }
-        if ($outputData -eq $imageData) {
-            throw "Loom native image filter output should differ from input after invert."
-        }
-        Assert-Equal 1 ([int]$response.data.output.width) "Loom native image filter output width mismatch."
-        Assert-Equal 1 ([int]$response.data.output.height) "Loom native image filter output height mismatch."
-
-        return [ordered]@{
-            requestId = [string]$response.request_id
-            status = [string]$response.status
-            artId = "core.image.invert"
-            outputType = [string]$response.data.output.type
-            width = [int]$response.data.output.width
-            height = [int]$response.data.output.height
-            outputChanged = $true
-            inputLength = [int]$imageData.Length
-            outputLength = [int]$outputData.Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeSharedImageAhrpProcess {
-    param(
-        [int]$Port,
-        [string]$BaseUrl
-    )
-
-    $created = Invoke-JsonPost -Uri "$BaseUrl/v1/shared-images" -Body @{
-        width = 1
-        height = 1
-        format = "rgba8"
-        data = @(10, 20, 30, 255)
-    }
-    Assert-Equal 1 ([int]$created.image.width) "Loom shared image create width mismatch."
-    Assert-Equal 1 ([int]$created.image.height) "Loom shared image create height mismatch."
-    Assert-Equal 4 ([int]$created.image.size) "Loom shared image create size mismatch."
-    Assert-Equal "rgba8" ([string]$created.image.format) "Loom shared image create format mismatch."
-    $inputHandle = [string]$created.image.handle
-    if ([string]::IsNullOrWhiteSpace($inputHandle)) {
-        throw "Loom shared image create did not return a handle."
-    }
-
-    $listed = Invoke-JsonGet -Uri "$BaseUrl/v1/shared-images"
-    if (@($listed.images).Count -lt 1) {
-        throw "Loom shared image list did not include the created image."
-    }
-
-    $client = $null
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art/process"
-            params = [ordered]@{
-                request_id = "release-shared-image-ahrp-process"
-                art_id = "core.image.invert"
-                input = [ordered]@{
-                    type = "shared_memory"
-                    handle = $inputHandle
-                    size = 4
-                    width = 1
-                    height = 1
-                    format = "rgba8"
-                }
-                params = [ordered]@{}
-                disabled_params = @()
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "release-shared-image-ahrp-process" ([string]$response.request_id) "Loom shared image AHRP request id mismatch."
-        Assert-Equal "Success" ([string]$response.status) "Loom shared image AHRP status mismatch."
-        Assert-Equal "result" ([string]$response.data.type) "Loom shared image AHRP data type mismatch."
-        Assert-Equal "shared_memory" ([string]$response.data.output.type) "Loom shared image AHRP output type mismatch."
-        Assert-Equal 1 ([int]$response.data.output.width) "Loom shared image AHRP output width mismatch."
-        Assert-Equal 1 ([int]$response.data.output.height) "Loom shared image AHRP output height mismatch."
-        Assert-Equal 4 ([int]$response.data.output.size) "Loom shared image AHRP output size mismatch."
-        Assert-Equal "rgba8" ([string]$response.data.output.format) "Loom shared image AHRP output format mismatch."
-        $outputHandle = [string]$response.data.output.handle
-        if ([string]::IsNullOrWhiteSpace($outputHandle)) {
-            throw "Loom shared image AHRP output handle missing."
-        }
-        if ($outputHandle -eq $inputHandle) {
-            throw "Loom shared image AHRP output should use a distinct shared image handle."
-        }
-
-        $output = Invoke-JsonGet -Uri "$BaseUrl/v1/shared-images/$outputHandle"
-        $outputBytes = @($output.data | ForEach-Object { [int]$_ })
-        Assert-Equal "245,235,225,255" ($outputBytes -join ",") "Loom shared image AHRP output RGBA mismatch."
-
-        return [ordered]@{
-            requestId = [string]$response.request_id
-            status = [string]$response.status
-            artId = "core.image.invert"
-            inputHandle = $inputHandle
-            outputHandle = $outputHandle
-            outputType = [string]$response.data.output.type
-            width = [int]$response.data.output.width
-            height = [int]$response.data.output.height
-            size = [int]$response.data.output.size
-            format = [string]$response.data.output.format
-            outputRgba = ($outputBytes -join ",")
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
 
 function Test-LoomImageHelperConvert {
     param(
@@ -915,921 +250,33 @@ function Test-LoomImageHelperConvert {
     }
 }
 
-function Test-LoomHookBridgeOcrImage {
-    param(
-        [int]$Port
-    )
 
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json (@{
-                method = "art_loom/get_capabilities"
-            } | ConvertTo-Json -Depth 20 -Compress)
-        $capabilities = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "success" ([string]$capabilities.type) "Loom OCR capabilities response type mismatch."
-        Assert-Equal $true ([bool]$capabilities.data.ocr) "Loom OCR fixture capability should be available in release smoke."
 
-        $request = [ordered]@{
-            method = "art_loom/ocr_image"
-            params = [ordered]@{
-                image_base64 = $imageData
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
 
-        Assert-Equal "success" ([string]$response.type) "Loom OCR response type mismatch."
-        Assert-Equal "release loom ocr" ([string]$response.data.fullText) "Loom OCR fixture text mismatch."
-        Assert-Equal 1 ([int]$response.data.width) "Loom OCR image width mismatch."
-        Assert-Equal 1 ([int]$response.data.height) "Loom OCR image height mismatch."
-        Assert-Equal "release loom ocr" ([string]$response.data.textBlocks[0].text) "Loom OCR first text block mismatch."
 
-        return [ordered]@{
-            type = [string]$response.type
-            method = "art_loom/ocr_image"
-            ocrAvailable = [bool]$capabilities.data.ocr
-            fullText = [string]$response.data.fullText
-            width = [int]$response.data.width
-            height = [int]$response.data.height
-            blockCount = @($response.data.textBlocks).Count
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
 
-function Test-LoomHookBridgeRealOcrImage {
-    param(
-        [int]$Port,
-        [string]$PackageDir
-    )
 
-    $fixturePath = Join-Path $PackageDir "runtime\resources\ocr\fixtures\test_1.png"
-    Assert-PathExists $fixturePath
-    $imageBytes = [System.IO.File]::ReadAllBytes($fixturePath)
-    $imageData = "data:image/png;base64,$([Convert]::ToBase64String($imageBytes))"
 
-    $client = $null
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
 
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json (@{
-                method = "art_loom/get_capabilities"
-            } | ConvertTo-Json -Depth 20 -Compress)
-        $capabilities = Receive-LoomHookBridgeWebSocketJson -Client $client
-        Assert-Equal "success" ([string]$capabilities.type) "Loom real OCR capabilities response type mismatch."
-        Assert-Equal $true ([bool]$capabilities.data.ocr) "Loom real OCR capability should be available from packaged resources."
 
-        $request = [ordered]@{
-            method = "art_loom/ocr_image"
-            params = [ordered]@{
-                image_base64 = $imageData
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
 
-        Assert-Equal "success" ([string]$response.type) "Loom real OCR response type mismatch."
-        $fullText = ([string]$response.data.fullText).Trim()
-        if ([string]::IsNullOrWhiteSpace($fullText)) {
-            throw "Loom real OCR fullText should not be empty."
-        }
-        $textBlocks = @($response.data.textBlocks)
-        if ($textBlocks.Count -lt 1) {
-            throw "Loom real OCR should return at least one text block."
-        }
-        Assert-Equal 678 ([int]$response.data.width) "Loom real OCR fixture width mismatch."
-        Assert-Equal 108 ([int]$response.data.height) "Loom real OCR fixture height mismatch."
 
-        return [ordered]@{
-            type = [string]$response.type
-            method = "art_loom/ocr_image"
-            ocrAvailable = [bool]$capabilities.data.ocr
-            fullTextLength = [int]$fullText.Length
-            width = [int]$response.data.width
-            height = [int]$response.data.height
-            blockCount = [int]$textBlocks.Count
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
 
-function Test-LoomReleaseRealOcr {
-    param(
-        [string]$LoomDaemonExe,
-        [string]$PackageDir,
-        [string]$TempRoot
-    )
 
-    $ocrDir = Join-Path $PackageDir "runtime\resources\ocr"
-    Assert-PathExists (Join-Path $ocrDir "ch_PP-OCRv4_det_infer.onnx")
-    Assert-PathExists (Join-Path $ocrDir "ch_ppocr_mobile_v2.0_cls_infer.onnx")
-    Assert-PathExists (Join-Path $ocrDir "ch_PP-OCRv4_rec_infer.onnx")
-    Assert-PathExists (Join-Path $ocrDir "onnxruntime.dll")
-    Assert-PathExists (Join-Path $ocrDir "onnxruntime_providers_shared.dll")
 
-    $realOcrProcess = $null
-    $port = Get-LoomSmokePort
-    $manifestDir = Join-Path $TempRoot "real-ocr-capabilities"
-    New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
-    $stdout = Join-Path $TempRoot "loom-daemon-real-ocr.stdout.log"
-    $stderr = Join-Path $TempRoot "loom-daemon-real-ocr.stderr.log"
-    $controlPlaneRoot = Join-Path $TempRoot "loom-real-ocr-control-plane"
 
-    $oldHost = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_HOST", "Process")
-    $oldPort = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_PORT", "Process")
-    $oldToken = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_TOKEN", "Process")
-    $oldControlPlaneRoot = [Environment]::GetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", "Process")
-    $oldOcrFixtureText = [Environment]::GetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", "Process")
-    $oldOcrModelDir = [Environment]::GetEnvironmentVariable("LOOM_OCR_MODEL_DIR", "Process")
-    [Environment]::SetEnvironmentVariable("LOOM_DAEMON_HOST", "127.0.0.1", "Process")
-    [Environment]::SetEnvironmentVariable("LOOM_DAEMON_PORT", [string]$port, "Process")
-    [Environment]::SetEnvironmentVariable("LOOM_DAEMON_TOKEN", $null, "Process")
-    [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $controlPlaneRoot, "Process")
-    [Environment]::SetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", $null, "Process")
-    [Environment]::SetEnvironmentVariable("LOOM_OCR_MODEL_DIR", $null, "Process")
-    try {
-        $realOcrProcess = Start-SmokeProcess `
-            -FilePath $LoomDaemonExe `
-            -ArgumentList @("--manifest-dir", $manifestDir) `
-            -StdoutPath $stdout `
-            -StderrPath $stderr
-    } finally {
-        [Environment]::SetEnvironmentVariable("LOOM_DAEMON_HOST", $oldHost, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_DAEMON_PORT", $oldPort, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_DAEMON_TOKEN", $oldToken, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $oldControlPlaneRoot, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", $oldOcrFixtureText, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_OCR_MODEL_DIR", $oldOcrModelDir, "Process")
-    }
 
-    try {
-        $manifest = Wait-ForFileJson -Path (Join-Path $manifestDir "loom.json")
-        $baseUrl = [string]$manifest.transport.baseUrl
-        Assert-Equal "http://127.0.0.1:$port" $baseUrl "Real OCR Loom manifest baseUrl mismatch."
-        Wait-LoomDaemonHealth -BaseUrl $baseUrl -Message "Timed out waiting for real OCR Loom daemon" | Out-Null
 
-        $hookBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Body @{
-            port = 0
-        }
-        Assert-Equal $true ([bool]$hookBridgeStarted.running) "Real OCR Hook Bridge start state mismatch."
-        if ([int]$hookBridgeStarted.port -le 0) {
-            throw "Real OCR Hook Bridge start should allocate a port."
-        }
 
-        $result = Test-LoomHookBridgeRealOcrImage -Port ([int]$hookBridgeStarted.port) -PackageDir $PackageDir
-        $hookBridgeStopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
-        Assert-Equal $false ([bool]$hookBridgeStopped.running) "Real OCR Hook Bridge stop state mismatch."
-        return $result
-    } finally {
-        Stop-SpawnedProcess $realOcrProcess
-    }
-}
 
-function Test-LoomPythonArtCatalog {
-    param(
-        [string]$BaseUrl,
-        [string]$PackageDir,
-        [string]$FixtureRoot
-    )
 
-    $legacyPythonRuntime = Join-Path $PackageDir "runtime\bin\python-embed"
-    $legacyPythonRoot = Join-Path $PackageDir "runtime\python"
-    if (Test-Path -LiteralPath $legacyPythonRuntime) {
-        throw "Default Loom release unexpectedly contains legacy host Python runtime: $legacyPythonRuntime"
-    }
-    if (Test-Path -LiteralPath $legacyPythonRoot) {
-        throw "Default Loom release unexpectedly contains legacy host Python resources: $legacyPythonRoot"
-    }
 
-    $catalog = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts"
-    $catalogArts = @($catalog.arts)
-    Assert-Equal 0 $catalogArts.Count "Fresh default release must not expose preinstalled Python Arts."
 
-    $fixtureArtDir = Join-Path $FixtureRoot "Art_LoomEcho"
-    New-Item -ItemType Directory -Force -Path $fixtureArtDir | Out-Null
-    $fixtureArtJson = @'
-{
-  "art_id": "loom_echo",
-  "label": "Loom Echo",
-  "description": "Explicit release smoke Python Art fixture.",
-  "version": "1.0.0",
-  "execution": { "engine": "python", "entry": "main.py" },
-  "signature": {
-    "inputs": [{ "id": "text", "label": "Text", "type": "String" }],
-    "outputs": [{ "id": "text", "label": "Text", "type": "String" }]
-  },
-  "variables": []
-}
-'@
-    $fixtureMain = @'
-import sys
 
-def main(args):
-    text = args.get("text", "")
-    return {
-        "content": [{"type": "text", "text": f"python art saw {text}"}],
-        "pythonExecutable": sys.executable,
-    }
-'@
-    [System.IO.File]::WriteAllText((Join-Path $fixtureArtDir "art.json"), $fixtureArtJson, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText((Join-Path $fixtureArtDir "main.py"), $fixtureMain, [System.Text.UTF8Encoding]::new($false))
 
-    $installedCatalog = Invoke-JsonGet -Uri "$BaseUrl/v1/python-arts"
-    $installedCatalogArts = @($installedCatalog.arts)
-    $loomEcho = $installedCatalogArts | Where-Object { [string]$_.art_id -eq "loom_echo" } | Select-Object -First 1
-    if ($null -eq $loomEcho) {
-        throw "Explicit Python Art fixture was not discovered."
-    }
 
 
-    return [ordered]@{
-        count = [int]$catalogArts.Count
-        defaultEmpty = $true
-        installedArtId = [string]$loomEcho.art_id
-        installedArtPath = [string]$loomEcho.path
-        installedCount = [int]$installedCatalogArts.Count
-    }
-}
-
-function Test-LoomArtLoomRegistryCompat {
-    param(
-        [string]$BaseUrl
-    )
-
-    $native = Invoke-JsonPut -Uri "$BaseUrl/v1/tools/fixture-native-tool" -Body @{
-        id = "fixture-native-tool"
-        name = "Fixture Native Tool"
-        description = "Release smoke native Loom tool preserved across ArtLoom sync"
-        enabled = $true
-        execution = @{
-            type = "workflow"
-            workflowId = "fixture-native-workflow"
-        }
-    }
-    Assert-Equal "fixture-native-tool" ([string]$native.tool.id) "Loom native tool save mismatch before ArtLoom sync."
-
-    $saved = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/arts/sync" -Body @{
-        arts = @(
-            @{
-                id = "fixture-artloom-compat"
-                name = "Fixture ArtLoom Compat"
-                description = "Release smoke Art registry compatibility aliases"
-                iconColor = "#52c41a"
-                enabled = $true
-                autoProcess = $true
-                defaults = @{
-                    seed = 1234
-                }
-                execution = @{
-                    type = "framework_art"
-                    framework = "process"
-                }
-                inputs = @(
-                    @{
-                        name = "image"
-                        type = "image"
-                    }
-                )
-                outputs = @(
-                    @{
-                        name = "result"
-                        type = "image"
-                    }
-                )
-                params = @(
-                    @{
-                        id = "strength"
-                        default = 0.25
-                    }
-                )
-            }
-        )
-    }
-    Assert-Equal "sync_user_arts" ([string]$saved.compatCommand) "Loom ArtLoom registry compat import command mismatch."
-    Assert-Equal $true ([bool]$saved.sideEffect) "Loom ArtLoom registry compat import sideEffect mismatch."
-    Assert-Equal 1 ([int]$saved.syncedCount) "Loom ArtLoom registry compat import count mismatch."
-
-    $toolsAfterCompatImport = Invoke-JsonGet -Uri "$BaseUrl/v1/tools"
-    $toolIdsAfterCompatImport = @($toolsAfterCompatImport.tools | ForEach-Object { [string]$_.id })
-    Assert-Contains "fixture-native-tool" ($toolIdsAfterCompatImport -join ",") "Loom native tool was cleared by ArtLoom sync."
-
-    $listed = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/arts"
-    Assert-Equal "list_arts" ([string]$listed.compatCommand) "Loom ArtLoom list_arts compat command mismatch."
-    $listedIds = @($listed.arts | ForEach-Object { [string]$_.id })
-    Assert-Contains "fixture-artloom-compat" ($listedIds -join ",") "Loom ArtLoom list_arts did not include fixture."
-    $listedArt = @($listed.arts)[0]
-    Assert-Equal "framework_art" ([string]$listedArt.execution_type) "Loom ArtLoom list_arts execution_type mismatch."
-    Assert-Equal "process" ([string]$listedArt.execution.framework) "Loom ArtLoom list_arts process framework mismatch."
-    Assert-Equal "result" ([string]@($listedArt.outputs)[0].name) "Loom ArtLoom list_arts outputs mismatch."
-    Assert-Equal $true ([bool]$listedArt.auto_process) "Loom ArtLoom list_arts auto_process mismatch."
-    Assert-Equal 1234 ([int]$listedArt.defaults.seed) "Loom ArtLoom list_arts independent defaults mismatch."
-
-    $enabledArts = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/arts/enabled"
-    Assert-Equal "get_enabled_arts" ([string]$enabledArts.compatCommand) "Loom ArtLoom get_enabled_arts compat command mismatch."
-    Assert-Equal "arts" ([string]$enabledArts.type) "Loom ArtLoom get_enabled_arts type mismatch."
-    Assert-Equal 1 (@($enabledArts.arts).Count) "Loom ArtLoom get_enabled_arts enabled count mismatch."
-    Assert-Equal "fixture-artloom-compat" ([string]@($enabledArts.arts)[0].id) "Loom ArtLoom get_enabled_arts id mismatch."
-
-    $userArts = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/user-arts"
-    Assert-Equal "get_user_arts" ([string]$userArts.compatCommand) "Loom ArtLoom get_user_arts compat command mismatch."
-    $userArt = @($userArts.arts)[0]
-    Assert-Equal "fixture-artloom-compat" ([string]$userArt.id) "Loom ArtLoom get_user_arts id mismatch."
-    Assert-Equal "Fixture ArtLoom Compat" ([string]$userArt.name) "Loom ArtLoom get_user_arts name mismatch."
-    Assert-Equal "Adapter" ([string]$userArt.category) "Loom ArtLoom get_user_arts category mismatch."
-    Assert-Equal "1.0.0" ([string]$userArt.version) "Loom ArtLoom get_user_arts version mismatch."
-    Assert-Equal "User" ([string]$userArt.author) "Loom ArtLoom get_user_arts author mismatch."
-    Assert-Equal "active" ([string]$userArt.status) "Loom ArtLoom get_user_arts status mismatch."
-    Assert-Equal "#52c41a" ([string]$userArt.iconColor) "Loom ArtLoom get_user_arts iconColor mismatch."
-    Assert-Equal 0 ([int]$userArt.downloads) "Loom ArtLoom get_user_arts downloads mismatch."
-    Assert-Equal $true ([bool]$userArt.owned) "Loom ArtLoom get_user_arts owned mismatch."
-    Assert-Equal "framework_art" ([string]$userArt.executionType) "Loom ArtLoom get_user_arts executionType mismatch."
-    Assert-Equal "process" ([string]$userArt.execution.framework) "Loom ArtLoom get_user_arts process framework mismatch."
-    $autoProcess = Get-JsonPropertyOrNull -Object $userArt -Name "autoProcess"
-    if ($null -eq $autoProcess) {
-        throw "Loom ArtLoom get_user_arts autoProcess field missing."
-    }
-    Assert-Equal $true ([bool]$autoProcess) "Loom ArtLoom get_user_arts autoProcess mismatch."
-    $userArtInputs = @($userArt.inputs)
-    $userArtOutputs = @($userArt.outputs)
-    Assert-Equal "image" ([string]$userArtInputs[0].name) "Loom ArtLoom get_user_arts inputs mismatch."
-    Assert-Equal "result" ([string]$userArtOutputs[0].name) "Loom ArtLoom get_user_arts outputs mismatch."
-
-    $loaded = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/arts/fixture-artloom-compat"
-    Assert-Equal "get_art" ([string]$loaded.compatCommand) "Loom ArtLoom get_art compat command mismatch."
-    Assert-Equal "fixture-artloom-compat" ([string]$loaded.art.id) "Loom ArtLoom get_art id mismatch."
-    Assert-Equal $true ([bool]$loaded.art.auto_process) "Loom ArtLoom get_art auto_process mismatch."
-    Assert-Equal 1234 ([int]$loaded.art.defaults.seed) "Loom ArtLoom get_art independent defaults mismatch."
-
-    $disabled = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/arts/fixture-artloom-compat/disable" -Body @{}
-    Assert-Equal "disable_art" ([string]$disabled.compatCommand) "Loom ArtLoom disable_art compat command mismatch."
-    Assert-Equal $false ([bool]$disabled.enabled) "Loom ArtLoom disable_art enabled flag mismatch."
-
-    $enabledArtsAfterDisable = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/arts/enabled"
-    Assert-Equal "get_enabled_arts" ([string]$enabledArtsAfterDisable.compatCommand) "Loom ArtLoom get_enabled_arts after disable command mismatch."
-    Assert-Equal 0 (@($enabledArtsAfterDisable.arts).Count) "Loom ArtLoom get_enabled_arts after disable count mismatch."
-
-    $enabled = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/arts/fixture-artloom-compat/enable" -Body @{}
-    Assert-Equal "enable_art" ([string]$enabled.compatCommand) "Loom ArtLoom enable_art compat command mismatch."
-    Assert-Equal $true ([bool]$enabled.enabled) "Loom ArtLoom enable_art enabled flag mismatch."
-
-    $defaults = Invoke-JsonPut -Uri "$BaseUrl/v1/artloom-compat/arts/fixture-artloom-compat/defaults" -Body @{
-        defaults = @{
-            strength = 0.75
-        }
-    }
-    Assert-Equal "update_art_defaults" ([string]$defaults.compatCommand) "Loom ArtLoom update_art_defaults compat command mismatch."
-    Assert-Equal 0.75 ([double]$defaults.tool.params[0].default) "Loom ArtLoom update_art_defaults value mismatch."
-
-    $synced = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/arts/sync" -Body @{}
-    Assert-Equal "sync_user_arts" ([string]$synced.compatCommand) "Loom ArtLoom sync_user_arts compat command mismatch."
-    Assert-Equal $true ([bool]$synced.synced) "Loom ArtLoom sync_user_arts synced flag mismatch."
-
-    $broadcasted = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/arts/broadcast-updated" -Body @{}
-    Assert-Equal "broadcast_arts_updated" ([string]$broadcasted.compatCommand) "Loom ArtLoom broadcast_arts_updated compat command mismatch."
-    Assert-Equal $true ([bool]$broadcasted.broadcasted) "Loom ArtLoom broadcast_arts_updated flag mismatch."
-
-    $ipc = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/ipc/status"
-    Assert-Equal "get_ipc_status" ([string]$ipc.compatCommand) "Loom ArtLoom get_ipc_status compat command mismatch."
-    Assert-Equal "artloom-compat" ([string]$ipc.protocol) "Loom ArtLoom get_ipc_status protocol mismatch."
-
-    return [ordered]@{
-        listCommand = [string]$listed.compatCommand
-        listExecutionType = [string]$listedArt.execution_type
-        listFramework = [string]$listedArt.execution.framework
-        listAutoProcess = [bool]$listedArt.auto_process
-        listDefaultSeed = [int]$listedArt.defaults.seed
-        getCommand = [string]$loaded.compatCommand
-        userArtsCommand = [string]$userArts.compatCommand
-        userArtsCategory = [string]$userArt.category
-        userArtsExecutionType = [string]$userArt.executionType
-        userArtsFramework = [string]$userArt.execution.framework
-        userArtsAutoProcess = [bool]$autoProcess
-        userArtsInput = [string]$userArtInputs[0].name
-        userArtsOutput = [string]$userArtOutputs[0].name
-        enabledArtsCommand = [string]$enabledArts.compatCommand
-        enabledArtsCount = @($enabledArts.arts).Count
-        enabledArtsAfterDisableCount = @($enabledArtsAfterDisable.arts).Count
-        disableCommand = [string]$disabled.compatCommand
-        enableCommand = [string]$enabled.compatCommand
-        defaultsCommand = [string]$defaults.compatCommand
-        syncCommand = [string]$synced.compatCommand
-        broadcastCommand = [string]$broadcasted.compatCommand
-        ipcCommand = [string]$ipc.compatCommand
-        count = @($listed.arts).Count
-    }
-}
-
-function Test-LoomArtLoomSystemCompat {
-    param(
-        [string]$BaseUrl
-    )
-
-    $initialAutostart = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/system/autostart"
-    Assert-Equal "is_autostart_enabled" ([string]$initialAutostart.compatCommand) "Loom ArtLoom is_autostart_enabled compat command mismatch."
-    Assert-Equal $false ([bool]$initialAutostart.sideEffect) "Loom ArtLoom is_autostart_enabled sideEffect mismatch."
-
-    $setAutostart = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/system/autostart" -Body @{
-        enabled = $true
-    }
-    Assert-Equal "set_autostart" ([string]$setAutostart.compatCommand) "Loom ArtLoom set_autostart compat command mismatch."
-    Assert-Equal $true ([bool]$setAutostart.enabled) "Loom ArtLoom set_autostart enabled mismatch."
-    Assert-Equal $false ([bool]$setAutostart.sideEffect) "Loom ArtLoom set_autostart sideEffect mismatch."
-
-    $updatedAutostart = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/system/autostart"
-    Assert-Equal "is_autostart_enabled" ([string]$updatedAutostart.compatCommand) "Loom ArtLoom is_autostart_enabled after set command mismatch."
-    Assert-Equal $true ([bool]$updatedAutostart.enabled) "Loom ArtLoom is_autostart_enabled after set mismatch."
-    Assert-Equal $false ([bool]$updatedAutostart.sideEffect) "Loom ArtLoom is_autostart_enabled after set sideEffect mismatch."
-
-    $disabledAutostart = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/system/autostart/disable" -Body @{}
-    Assert-Equal "disable_autostart" ([string]$disabledAutostart.compatCommand) "Loom ArtLoom disable_autostart compat command mismatch."
-    Assert-Equal $false ([bool]$disabledAutostart.enabled) "Loom ArtLoom disable_autostart enabled mismatch."
-    Assert-Equal $false ([bool]$disabledAutostart.sideEffect) "Loom ArtLoom disable_autostart sideEffect mismatch."
-
-    $enabledAutostart = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/system/autostart/enable" -Body @{}
-    Assert-Equal "enable_autostart" ([string]$enabledAutostart.compatCommand) "Loom ArtLoom enable_autostart compat command mismatch."
-    Assert-Equal $true ([bool]$enabledAutostart.enabled) "Loom ArtLoom enable_autostart enabled mismatch."
-    Assert-Equal $false ([bool]$enabledAutostart.sideEffect) "Loom ArtLoom enable_autostart sideEffect mismatch."
-
-    $tray = Invoke-JsonPost -Uri "$BaseUrl/v1/artloom-compat/system/minimize-to-tray" -Body @{
-        enabled = $false
-    }
-    Assert-Equal "set_minimize_to_tray" ([string]$tray.compatCommand) "Loom ArtLoom set_minimize_to_tray compat command mismatch."
-    Assert-Equal $false ([bool]$tray.enabled) "Loom ArtLoom set_minimize_to_tray enabled mismatch."
-    Assert-Equal $false ([bool]$tray.sideEffect) "Loom ArtLoom set_minimize_to_tray sideEffect mismatch."
-
-    return [ordered]@{
-        queryCommand = [string]$initialAutostart.compatCommand
-        initialEnabled = [bool]$initialAutostart.enabled
-        setCommand = [string]$setAutostart.compatCommand
-        updatedEnabled = [bool]$updatedAutostart.enabled
-        disableCommand = [string]$disabledAutostart.compatCommand
-        enableCommand = [string]$enabledAutostart.compatCommand
-        trayCommand = [string]$tray.compatCommand
-        sideEffect = [bool]$setAutostart.sideEffect
-    }
-}
-
-function Test-LoomArtLoomWorkflowStoreCompat {
-    param(
-        [string]$BaseUrl
-    )
-
-    $workflowId = "release-artloom-workflow"
-    $metadata = Invoke-JsonPut -Uri "$BaseUrl/v1/artloom-compat/workflows/$workflowId/metadata" -Body @{
-        id = $workflowId
-        name = "Release ArtLoom Workflow"
-        description = "Old workflow_store metadata"
-        created_at = "1"
-        updated_at = ""
-        status = "draft"
-        node_count = 0
-        tags = @("release", "compat")
-    }
-    Assert-Equal "save_workflow_metadata" ([string]$metadata.compatCommand) "Loom save_workflow_metadata compat command mismatch."
-    Assert-Equal $workflowId ([string]$metadata.workflow.id) "Loom save_workflow_metadata id mismatch."
-    Assert-Equal "Release ArtLoom Workflow" ([string]$metadata.workflow.name) "Loom save_workflow_metadata name mismatch."
-    Assert-Equal "Old workflow_store metadata" ([string]$metadata.workflow.description) "Loom save_workflow_metadata description mismatch."
-    Assert-Equal "draft" ([string]$metadata.workflow.status) "Loom save_workflow_metadata status mismatch."
-    Assert-Equal "release" ([string]@($metadata.workflow.tags)[0]) "Loom save_workflow_metadata tags mismatch."
-
-    $workflowYaml = @"
-name: Release ArtLoom Workflow
-nodes:
-  - id: prompt
-    uses: text.prompt
-"@
-    $saved = Invoke-JsonPut -Uri "$BaseUrl/v1/artloom-compat/workflows/$workflowId/data" -Body @{
-        data = $workflowYaml
-    }
-    Assert-Equal "save_workflow_data" ([string]$saved.compatCommand) "Loom save_workflow_data compat command mismatch."
-    Assert-Equal $workflowId ([string]$saved.workflowId) "Loom save_workflow_data id mismatch."
-    Assert-Equal $true ([bool]$saved.saved) "Loom save_workflow_data saved flag mismatch."
-
-    $listed = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/workflows"
-    Assert-Equal "list_workflows" ([string]$listed.compatCommand) "Loom list_workflows compat command mismatch."
-    $listedWorkflow = @($listed.workflows) | Where-Object { [string]$_.id -eq $workflowId } | Select-Object -First 1
-    if ($null -eq $listedWorkflow) {
-        throw "Loom list_workflows did not include $workflowId."
-    }
-    Assert-Equal "Release ArtLoom Workflow" ([string]$listedWorkflow.name) "Loom list_workflows name mismatch."
-    Assert-Equal 1 ([int]$listedWorkflow.node_count) "Loom list_workflows node_count mismatch."
-    Assert-Equal 1 ([int]$listedWorkflow.nodeCount) "Loom list_workflows nodeCount mismatch."
-
-    $loaded = Invoke-JsonGet -Uri "$BaseUrl/v1/artloom-compat/workflows/$workflowId/data"
-    Assert-Equal "load_workflow_data" ([string]$loaded.compatCommand) "Loom load_workflow_data compat command mismatch."
-    Assert-Equal $workflowId ([string]$loaded.workflowId) "Loom load_workflow_data id mismatch."
-    Assert-Contains "uses: text.prompt" ([string]$loaded.data) "Loom load_workflow_data YAML mismatch."
-
-    $deleted = Invoke-JsonDelete -Uri "$BaseUrl/v1/artloom-compat/workflows/$workflowId/data"
-    Assert-Equal "delete_workflow_data" ([string]$deleted.compatCommand) "Loom delete_workflow_data compat command mismatch."
-    Assert-Equal $workflowId ([string]$deleted.workflowId) "Loom delete_workflow_data id mismatch."
-    Assert-Equal $true ([bool]$deleted.deleted) "Loom delete_workflow_data deleted flag mismatch."
-
-    return [ordered]@{
-        metadataCommand = [string]$metadata.compatCommand
-        saveDataCommand = [string]$saved.compatCommand
-        listCommand = [string]$listed.compatCommand
-        loadDataCommand = [string]$loaded.compatCommand
-        deleteDataCommand = [string]$deleted.compatCommand
-        listedNodeCount = [int]$listedWorkflow.node_count
-        loadedContainsPrompt = ([string]$loaded.data).Contains("uses: text.prompt")
-    }
-}
-
-function Test-LoomArtLoomSharedMemoryCompat {
-    param(
-        [string]$BaseUrl
-    )
-
-    $created = Invoke-JsonPost -Uri "$BaseUrl/v1/shared-memory/buffers" -Body @{
-        width = 1
-        height = 1
-        channels = 4
-    }
-    Assert-Equal "shm_create_buffer" ([string]$created.compatCommand) "Loom shm_create_buffer compat command mismatch."
-    $handle = [string]$created.handle
-    if ([string]::IsNullOrWhiteSpace($handle)) {
-        throw "Loom shm_create_buffer did not return a handle."
-    }
-
-    $listed = Invoke-JsonGet -Uri "$BaseUrl/v1/shared-memory/buffers"
-    Assert-Equal "shm_list_buffers" ([string]$listed.compatCommand) "Loom shm_list_buffers compat command mismatch."
-    Assert-Contains $handle ((@($listed.buffers) | ForEach-Object { [string]$_.handle_name }) -join ",") "Loom shm_list_buffers did not include created handle."
-
-    $info = Invoke-JsonGet -Uri "$BaseUrl/v1/shared-memory/buffers/$handle"
-    Assert-Equal "shm_get_buffer_info" ([string]$info.compatCommand) "Loom shm_get_buffer_info compat command mismatch."
-    Assert-Equal "rgba8" ([string]$info.buffer.format) "Loom shm_get_buffer_info format mismatch."
-    Assert-Equal 1 ([int]$info.buffer.ref_count) "Loom shm_get_buffer_info ref_count mismatch."
-
-    $released = Invoke-JsonDelete -Uri "$BaseUrl/v1/shared-memory/buffers/$handle"
-    Assert-Equal "shm_release_buffer" ([string]$released.compatCommand) "Loom shm_release_buffer compat command mismatch."
-    Assert-Equal $true ([bool]$released.released) "Loom shm_release_buffer released flag mismatch."
-
-    return [ordered]@{
-        createCommand = [string]$created.compatCommand
-        listCommand = [string]$listed.compatCommand
-        infoCommand = [string]$info.compatCommand
-        releaseCommand = [string]$released.compatCommand
-        handle = $handle
-        format = [string]$info.buffer.format
-    }
-}
-
-function Test-LoomPythonArtSourceImport {
-    param(
-        [string]$BaseUrl,
-        [string]$TempRoot
-    )
-
-    $sourceDir = Join-Path $TempRoot "python-source-import"
-    New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
-    $sourcePath = Join-Path $sourceDir "source_import_fixture.py"
-    $artJsonPath = Join-Path $sourceDir "art.json"
-    $source = @'
-import json
-import sys
-
-def run(args):
-    text = args.get("text", "")
-    strength = args["strength"]
-    return {"text": text, "confidence": strength}
-
-payload = json.loads(sys.argv[1])
-arguments = payload.get("arguments", {})
-response = {
-    "content": [
-        {
-            "type": "text",
-            "text": "source import saw " + str(arguments.get("text", "")),
-        }
-    ],
-    "pythonExecutable": sys.executable,
-}
-print(json.dumps(response, ensure_ascii=False))
-'@
-    [System.IO.File]::WriteAllText($sourcePath, $source, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($artJsonPath, @'
-{
-  "art_id": "source_import_fixture",
-  "label": "Source Import Fixture",
-  "description": "Release smoke nearby art.json fixture",
-  "signature": {
-    "inputs": [
-      { "id": "text", "label": "Text", "type": "String" }
-    ],
-    "outputs": [
-      { "id": "text", "label": "Text", "type": "String" }
-    ]
-  },
-  "variables": [
-    { "id": "strength", "label": "Strength", "widget": "slider", "default": 0.5 }
-  ]
-}
-'@, [System.Text.UTF8Encoding]::new($false))
-
-    # POST /v1/python-arts/source/read
-    $read = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/source/read" -Body @{
-        path = $sourcePath
-    }
-    Assert-Contains 'args.get("text"' ([string]$read.content) "Loom Python source read did not return fixture code."
-    Assert-SameExistingPath -Expected $sourcePath -Actual ([string]$read.path) -Message "Loom Python source path mismatch."
-
-    # POST /v1/python-arts/source/check-art-json
-    $nearby = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/source/check-art-json" -Body @{
-        pythonPath = $sourcePath
-    }
-    Assert-Equal $true ([bool]$nearby.found) "Loom nearby art.json detection failed."
-    Assert-Equal "Source Import Fixture" ([string]$nearby.artJson.label) "Loom nearby art.json label mismatch."
-
-    # POST /v1/python-arts/source/read-art-json
-    $artJson = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/source/read-art-json" -Body @{
-        artPath = $sourceDir
-    }
-    Assert-Equal "source_import_fixture" ([string]$artJson.artJson.art_id) "Loom read-art-json art id mismatch."
-
-    # POST /v1/python-arts/source/infer-ports
-    $inferred = Invoke-JsonPost -Uri "$BaseUrl/v1/python-arts/source/infer-ports" -Body @{
-        path = $sourcePath
-    }
-    Assert-Equal "text" ([string]$inferred.inputs[0].name) "Loom Python source inferred input mismatch."
-    Assert-Equal "strength" ([string]$inferred.inputs[1].name) "Loom Python source inferred variable input mismatch."
-    Assert-Equal "text" ([string]$inferred.outputs[0].name) "Loom Python source inferred output mismatch."
-
-    return [ordered]@{
-        sourcePath = [string]$read.path
-        nearbyArtJsonFound = [bool]$nearby.found
-        nearbyArtJsonLabel = [string]$nearby.artJson.label
-        inferredInputs = @($inferred.inputs).Count
-        inferredOutputs = @($inferred.outputs).Count
-    }
-}
-
-function Test-LoomHookBridgeCloudArtNode {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art_loom/execute_art_node"
-            params = [ordered]@{
-                node_id = "release-node-cloud"
-                art_id = "fixture-cloud-art"
-                input_base64 = $imageData
-                params = [ordered]@{}
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "success" ([string]$response.type) "Loom cloud API Art node response type mismatch."
-        Assert-Equal $true ([bool]$response.data.success) "Loom cloud API Art node success flag mismatch."
-        Assert-Equal "release-node-cloud" ([string]$response.data.node_id) "Loom cloud API Art node id mismatch."
-        $outputData = [string]$response.data.output_base64
-        Assert-Equal $imageData $outputData "Loom cloud API Art node output data mismatch."
-
-        return [ordered]@{
-            type = [string]$response.type
-            success = [bool]$response.data.success
-            nodeId = [string]$response.data.node_id
-            outputType = "base64"
-            outputLength = [int]$outputData.Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeCloudMultipartArtNode {
-    param(
-        [int]$Port,
-        [string]$FixtureOutputDir
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art_loom/execute_art_node"
-            params = [ordered]@{
-                node_id = "release-node-cloud-multipart"
-                art_id = "fixture-cloud-multipart-art"
-                input_base64 = $imageData
-                params = [ordered]@{
-                    route = "image"
-                    trace = "release-trace"
-                    prompt = "release cloud multipart"
-                }
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "success" ([string]$response.type) "Loom cloud multipart Art node response type mismatch."
-        Assert-Equal $true ([bool]$response.data.success) "Loom cloud multipart Art node success flag mismatch."
-        Assert-Equal "release-node-cloud-multipart" ([string]$response.data.node_id) "Loom cloud multipart Art node id mismatch."
-        $outputData = [string]$response.data.output_base64
-        if ([string]::IsNullOrWhiteSpace($outputData)) {
-            throw "Loom cloud multipart Art node output data missing."
-        }
-
-        $evidencePath = Join-Path $FixtureOutputDir "multipart-request.json"
-        Wait-ForPath -Path $evidencePath -TimeoutSeconds 20
-        $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
-        Assert-Equal "/multipart/image" ([string]$evidence.path) "Loom cloud multipart request path mismatch."
-        Assert-Equal $true ([bool]$evidence.multipartSeen) "Loom cloud multipart request content type missing."
-        Assert-Equal $true ([bool]$evidence.fileFieldSeen) "Loom cloud multipart request file field missing."
-        Assert-Equal $true ([bool]$evidence.tempFilenameSeen) "Loom cloud multipart request temp filename missing."
-        Assert-Equal $true ([bool]$evidence.promptSeen) "Loom cloud multipart request prompt template missing."
-        Assert-Equal $true ([bool]$evidence.traceSeen) "Loom cloud multipart request header template missing."
-        Assert-Equal $false ([bool]$evidence.unresolvedTemplateSeen) "Loom cloud multipart request still contains unresolved templates."
-
-        return [ordered]@{
-            type = [string]$response.type
-            success = [bool]$response.data.success
-            nodeId = [string]$response.data.node_id
-            outputType = "base64"
-            outputLength = [int]$outputData.Length
-            multipartSeen = [bool]$evidence.multipartSeen
-            fileFieldSeen = [bool]$evidence.fileFieldSeen
-            tempFilenameSeen = [bool]$evidence.tempFilenameSeen
-            promptSeen = [bool]$evidence.promptSeen
-            traceSeen = [bool]$evidence.traceSeen
-            unresolvedTemplateSeen = [bool]$evidence.unresolvedTemplateSeen
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeCloudAhrpProcess {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art/process"
-            params = [ordered]@{
-                request_id = "release-cloud-ahrp-process"
-                art_id = "fixture-cloud-art"
-                input = [ordered]@{
-                    type = "base64"
-                    data = $imageData
-                    width = 1
-                    height = 1
-                    format = "rgba8"
-                }
-                params = [ordered]@{}
-                disabled_params = @()
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "release-cloud-ahrp-process" ([string]$response.request_id) "Loom cloud API AHRP request id mismatch."
-        Assert-Equal "Success" ([string]$response.status) "Loom cloud API AHRP status mismatch."
-        Assert-Equal "result" ([string]$response.data.type) "Loom cloud API AHRP data type mismatch."
-        Assert-Equal "base64" ([string]$response.data.output.type) "Loom cloud API AHRP output type mismatch."
-        Assert-Equal $imageData ([string]$response.data.output.data) "Loom cloud API AHRP output data mismatch."
-        Assert-Equal 1 ([int]$response.data.output.width) "Loom cloud API AHRP output width mismatch."
-        Assert-Equal 1 ([int]$response.data.output.height) "Loom cloud API AHRP output height mismatch."
-
-        return [ordered]@{
-            requestId = [string]$response.request_id
-            status = [string]$response.status
-            outputType = [string]$response.data.output.type
-            width = [int]$response.data.output.width
-            height = [int]$response.data.output.height
-            outputLength = [int]([string]$response.data.output.data).Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeWorkflowArtNode {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art_loom/execute_art_node"
-            params = [ordered]@{
-                node_id = "release-node-workflow"
-                art_id = "release-workflow-tool"
-                input_base64 = $imageData
-                params = [ordered]@{}
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "success" ([string]$response.type) "Loom workflow Art node response type mismatch."
-        Assert-Equal $true ([bool]$response.data.success) "Loom workflow Art node success flag mismatch."
-        Assert-Equal "release-node-workflow" ([string]$response.data.node_id) "Loom workflow Art node id mismatch."
-        $outputData = [string]$response.data.output_base64
-        if ([string]::IsNullOrWhiteSpace($outputData) -or $outputData -eq $imageData) {
-            throw "Loom workflow Art node must return a transformed image."
-        }
-
-        return [ordered]@{
-            type = [string]$response.type
-            success = [bool]$response.data.success
-            nodeId = [string]$response.data.node_id
-            outputType = "base64"
-            outputLength = [int]$outputData.Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
-
-function Test-LoomHookBridgeWorkflowAhrpProcess {
-    param(
-        [int]$Port
-    )
-
-    $client = $null
-    $imageData = New-LoomNativeImageSmokePngDataUrl
-    try {
-        $client = New-LoomHookBridgeWebSocket -Port $Port
-        $request = [ordered]@{
-            method = "art/process"
-            params = [ordered]@{
-                request_id = "release-workflow-ahrp-process"
-                art_id = "release-workflow-tool"
-                input = [ordered]@{
-                    type = "base64"
-                    data = $imageData
-                    width = 1
-                    height = 1
-                    format = "rgba8"
-                }
-                params = [ordered]@{}
-                disabled_params = @()
-            }
-        }
-        Send-LoomHookBridgeWebSocketJson `
-            -Client $client `
-            -Json ($request | ConvertTo-Json -Depth 20 -Compress)
-        $response = Receive-LoomHookBridgeWebSocketJson -Client $client
-
-        Assert-Equal "release-workflow-ahrp-process" ([string]$response.request_id) "Loom workflow AHRP request id mismatch."
-        Assert-Equal "Success" ([string]$response.status) "Loom workflow AHRP status mismatch."
-        Assert-Equal "result" ([string]$response.data.type) "Loom workflow AHRP data type mismatch."
-        Assert-Equal "base64" ([string]$response.data.output.type) "Loom workflow AHRP output type mismatch."
-        $outputData = [string]$response.data.output.data
-        if ([string]::IsNullOrWhiteSpace($outputData) -or $outputData -eq $imageData) {
-            throw "Loom workflow AHRP must return a transformed image."
-        }
-        Assert-Equal 1 ([int]$response.data.output.width) "Loom workflow AHRP output width mismatch."
-        Assert-Equal 1 ([int]$response.data.output.height) "Loom workflow AHRP output height mismatch."
-
-        return [ordered]@{
-            requestId = [string]$response.request_id
-            status = [string]$response.status
-            outputType = [string]$response.data.output.type
-            width = [int]$response.data.output.width
-            height = [int]$response.data.output.height
-            outputLength = [int]$outputData.Length
-        }
-    } finally {
-        Close-LoomHookBridgeWebSocket -Client $client
-    }
-}
 
 function Assert-HttpStatus {
     param(
@@ -2420,111 +867,7 @@ function Start-LoomCloudApiFixtureJob {
     }
 }
 
-function Start-LoomTranslateFixtureJob {
-    param(
-        [int]$Port,
-        [string]$OutputDir
-    )
 
-    New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-    $readyPath = Join-Path $OutputDir "ready.txt"
-
-    return Start-Job -ArgumentList $Port, $OutputDir, $readyPath -ScriptBlock {
-        param(
-            [int]$FixturePort,
-            [string]$FixtureOutputDir,
-            [string]$FixtureReadyPath
-        )
-
-        Set-StrictMode -Version Latest
-        $ErrorActionPreference = "Stop"
-
-        function Read-LoomTranslateRequest {
-            param([System.Net.Sockets.NetworkStream]$Stream)
-
-            $buffer = New-Object byte[] 2048
-            $bytes = New-Object System.Collections.Generic.List[byte]
-            while ($true) {
-                $read = $Stream.Read($buffer, 0, $buffer.Length)
-                if ($read -le 0) {
-                    break
-                }
-                for ($i = 0; $i -lt $read; $i++) {
-                    $bytes.Add($buffer[$i])
-                }
-                $raw = [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
-                $headerEnd = $raw.IndexOf("`r`n`r`n")
-                if ($headerEnd -lt 0) {
-                    continue
-                }
-                $headers = $raw.Substring(0, $headerEnd)
-                $contentLength = 0
-                foreach ($line in ($headers -split "`r`n")) {
-                    $parts = $line.Split(":", 2)
-                    if ($parts.Count -eq 2 -and $parts[0].Trim().Equals("content-length", [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $contentLength = [int]$parts[1].Trim()
-                    }
-                }
-                $body = $raw.Substring($headerEnd + 4)
-                if (($bytes.Count - ($headerEnd + 4)) -ge $contentLength) {
-                    return [ordered]@{
-                        raw = $raw
-                        body = [string]$body
-                    }
-                }
-            }
-            return [ordered]@{ raw = ""; body = "" }
-        }
-
-        function Write-LoomTranslateJsonResponse {
-            param(
-                [System.Net.Sockets.NetworkStream]$Stream,
-                [string]$Body
-            )
-
-            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
-            $header = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
-            $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
-            $Stream.Write($headerBytes, 0, $headerBytes.Length)
-            $Stream.Write($bodyBytes, 0, $bodyBytes.Length)
-            $Stream.Flush()
-        }
-
-        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), $FixturePort)
-        $listener.Start()
-        try {
-            [System.IO.File]::WriteAllText($FixtureReadyPath, "ready", [System.Text.UTF8Encoding]::new($false))
-            $client = $listener.AcceptTcpClient()
-            try {
-                $stream = $client.GetStream()
-                $stream.ReadTimeout = 30000
-                $request = Read-LoomTranslateRequest -Stream $stream
-                [System.IO.File]::WriteAllText(
-                    (Join-Path $FixtureOutputDir "translate-request.txt"),
-                    [string]$request.raw,
-                    [System.Text.UTF8Encoding]::new($false)
-                )
-                [System.IO.File]::WriteAllText(
-                    (Join-Path $FixtureOutputDir "translate-request.json"),
-                    [string]$request.body,
-                    [System.Text.UTF8Encoding]::new($false)
-                )
-                $payload = [string]$request.body | ConvertFrom-Json
-                $text = [string]$payload.text
-                $targetLang = [string]$payload.target_lang
-                $response = [ordered]@{
-                    code = 200
-                    data = "translated:${text}:${targetLang}"
-                }
-                Write-LoomTranslateJsonResponse -Stream $stream -Body ($response | ConvertTo-Json -Depth 10 -Compress)
-            } finally {
-                $client.Close()
-            }
-        } finally {
-            $listener.Stop()
-        }
-    }
-}
 
 function Start-LoomMcpRegistryFixtureJob {
     param(
@@ -2620,8 +963,6 @@ function Test-LoomRelease {
     $tokenProcess = $null
     $cloudJob = $null
     $mcpRegistryJob = $null
-    $translateJob = $null
-    $realOcrImage = $null
     $tempRoot = New-SmokeTempRoot -Prefix "loom-release-smoke"
     try {
         $cliExtractRoot = Join-Path $tempRoot "cli"
@@ -2663,29 +1004,15 @@ function Test-LoomRelease {
         $oldHost = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_HOST", "Process")
         $oldPort = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_PORT", "Process")
         $oldControlPlaneRoot = [Environment]::GetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", "Process")
-        $oldOcrFixtureText = [Environment]::GetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", "Process")
-        $oldLoomPython = [Environment]::GetEnvironmentVariable("LOOM_PYTHON", "Process")
-        $oldPythonArtsDir = [Environment]::GetEnvironmentVariable("LOOM_PYTHON_ARTS_DIR", "Process")
         $oldMcpRegistryEndpoint = [Environment]::GetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", "Process")
-        $oldTranslateEndpoint = [Environment]::GetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", "Process")
         $mcpRegistryFixtureDir = Join-Path $tempRoot "mcp-registry-fixture"
         $mcpRegistryPort = Get-LoomSmokePort
         $mcpRegistryJob = Start-LoomMcpRegistryFixtureJob -Port $mcpRegistryPort -OutputDir $mcpRegistryFixtureDir
         Wait-ForPath -Path (Join-Path $mcpRegistryFixtureDir "ready.txt") -TimeoutSeconds 20
-        $translateFixtureDir = Join-Path $tempRoot "translate-fixture"
-        $translatePort = Get-LoomSmokePort
-        $translateJob = Start-LoomTranslateFixtureJob -Port $translatePort -OutputDir $translateFixtureDir
-        Wait-ForPath -Path (Join-Path $translateFixtureDir "ready.txt") -TimeoutSeconds 20
-        $pythonArtsRoot = Join-Path $tempRoot "python-arts"
-        New-Item -ItemType Directory -Force -Path $pythonArtsRoot | Out-Null
         [Environment]::SetEnvironmentVariable("LOOM_DAEMON_HOST", "127.0.0.1", "Process")
         [Environment]::SetEnvironmentVariable("LOOM_DAEMON_PORT", [string]$port, "Process")
         [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $controlPlaneRoot, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", "release loom ocr", "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_PYTHON", $null, "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_PYTHON_ARTS_DIR", $pythonArtsRoot, "Process")
         [Environment]::SetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", "http://127.0.0.1:$mcpRegistryPort/v0/servers", "Process")
-        [Environment]::SetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", "http://127.0.0.1:$translatePort/translate", "Process")
         try {
             $process = Start-SmokeProcess `
                 -FilePath $loomDaemonExe `
@@ -2696,11 +1023,7 @@ function Test-LoomRelease {
             [Environment]::SetEnvironmentVariable("LOOM_DAEMON_HOST", $oldHost, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_DAEMON_PORT", $oldPort, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $oldControlPlaneRoot, "Process")
-            [Environment]::SetEnvironmentVariable("LOOM_OCR_FIXTURE_TEXT", $oldOcrFixtureText, "Process")
-            [Environment]::SetEnvironmentVariable("LOOM_PYTHON", $oldLoomPython, "Process")
-            [Environment]::SetEnvironmentVariable("LOOM_PYTHON_ARTS_DIR", $oldPythonArtsDir, "Process")
             [Environment]::SetEnvironmentVariable("LOOM_MCP_REGISTRY_ENDPOINT", $oldMcpRegistryEndpoint, "Process")
-            [Environment]::SetEnvironmentVariable("LOOM_TRANSLATE_ENDPOINT", $oldTranslateEndpoint, "Process")
         }
 
         $manifest = Wait-ForFileJson -Path (Join-Path $manifestDir "loom.json")
@@ -2742,6 +1065,7 @@ function Test-LoomRelease {
         $savedMcpServer = Invoke-JsonPut -Uri "$baseUrl/v1/mcp/servers/release-mcp" -Body @{
             id = "release-mcp"
             name = "Release MCP"
+            transport = "stdio"
             command = "npx"
             args = @("-y", "@example/release-mcp")
             env = @{}
@@ -2845,42 +1169,37 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         $mcpConnectionTest = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/test" -Body @{
             id = "fixture-test"
             name = "Fixture Test MCP"
+            transport = "stdio"
             command = "powershell.exe"
             args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fixtureMcpScript)
             env = @{}
             enabled = $true
         }
         Assert-Equal $true ([bool]$mcpConnectionTest.success) "Loom MCP connection test success mismatch."
-        Assert-Equal "test_mcp_connection" ([string]$mcpConnectionTest.compatCommand) "Loom MCP connection test compat command mismatch."
         Assert-Equal "echo" ([string]$mcpConnectionTest.tools[0].name) "Loom MCP connection test tool name mismatch."
         Assert-Equal "release-fixture" ([string]$mcpConnectionTest.server_info.serverInfo.name) "Loom MCP connection test server info mismatch."
-        $mcpDirectCompat = Test-LoomMcpDirectCompat `
-            -BaseUrl $baseUrl `
-            -FixtureMcpScript $fixtureMcpScript
-        $artLoomMcpServerStoreCompat = Test-LoomArtLoomMcpServerStoreCompat -BaseUrl $baseUrl
 
         # POST /v1/mcp/package/check and POST /v1/mcp/package/install-plan
         $mcpPackageCheck = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/package/check" -Body @{
             moduleName = "json"
         }
-        Assert-Equal "check_mcp_package_installed" ([string]$mcpPackageCheck.compatCommand) "Loom MCP package check compat command mismatch."
         Assert-Equal "json" ([string]$mcpPackageCheck.module) "Loom MCP package check module mismatch."
         $mcpPackageInstallPlan = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/package/install-plan" -Body @{
             packageName = "mcp-server-demo"
         }
-        Assert-Equal "install_mcp_package" ([string]$mcpPackageInstallPlan.compatCommand) "Loom MCP package install plan compat command mismatch."
         Assert-Equal $false ([bool]$mcpPackageInstallPlan.sideEffect) "Loom MCP package install plan must be side-effect free."
         Assert-Contains "pip" (($mcpPackageInstallPlan.command | ForEach-Object { [string]$_ }) -join " ") "Loom MCP package install plan should include pip command."
 
 
         $cloudFixtureDir = Join-Path $tempRoot "cloud-api-fixture"
         $cloudPort = Get-LoomSmokePort
-        $cloudJob = Start-LoomCloudApiFixtureJob -Port $cloudPort -OutputDir $cloudFixtureDir -MaxRequests 4
+    $cloudJob = Start-LoomCloudApiFixtureJob -Port $cloudPort -OutputDir $cloudFixtureDir -MaxRequests 1
         Wait-ForPath -Path (Join-Path $cloudFixtureDir "ready.txt") -TimeoutSeconds 20
 
         $savedFixtureMcpServer = Invoke-JsonPut -Uri "$baseUrl/v1/mcp/servers/fixture" -Body @{
             id = "fixture"
             name = "Fixture MCP"
+            transport = "stdio"
             command = "powershell.exe"
             args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fixtureMcpScript)
             env = @{}
@@ -2891,6 +1210,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         $savedDeleteMcpServer = Invoke-JsonPut -Uri "$baseUrl/v1/mcp/servers/fixture-delete" -Body @{
             id = "fixture-delete"
             name = "Fixture Delete MCP"
+            transport = "stdio"
             command = "powershell.exe"
             args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fixtureMcpScript)
             env = @{}
@@ -2950,19 +1270,6 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         }
         Assert-Equal "succeeded" $executedMcpTool.status "Loom MCP-backed tool execution status mismatch."
         Assert-Equal "release mcp runtime" ([string]$executedMcpTool.result.content[0].text) "Loom MCP-backed tool execution content mismatch."
-
-
-        $pythonArtCatalog = Test-LoomPythonArtCatalog `
-            -BaseUrl $baseUrl `
-            -PackageDir $PackageDir `
-            -FixtureRoot $pythonArtsRoot
-        $artLoomRegistryCompat = Test-LoomArtLoomRegistryCompat -BaseUrl $baseUrl
-        $artLoomNativeProcessArt = Test-LoomArtLoomNativeProcessArtCompat -BaseUrl $baseUrl
-        $artLoomSystemCompat = Test-LoomArtLoomSystemCompat -BaseUrl $baseUrl
-        $pythonArtSourceImport = Test-LoomPythonArtSourceImport `
-            -BaseUrl $baseUrl `
-            -TempRoot $tempRoot
-
         $savedCloudTextTool = Invoke-JsonPut -Uri "$baseUrl/v1/tools/fixture-cloud-text" -Body @{
             id = "fixture-cloud-text"
             name = "Fixture Cloud Text"
@@ -3001,11 +1308,11 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         $savedCloudMultipartArtTool = Invoke-JsonPut -Uri "$baseUrl/v1/tools/fixture-cloud-multipart-art" -Body @{
             id = "fixture-cloud-multipart-art"
             name = "Fixture Cloud Multipart Art"
-            description = "Release smoke old ArtLoom multipart cloud API image Art"
+            description = "Release smoke multipart cloud API image Art"
             enabled = $true
             execution = @{
                 type = "cloud_api"
-                url = "http://127.0.0.1:$cloudPort/multipart/{{inputs.route.value}}"
+                endpoint = "http://127.0.0.1:$cloudPort/multipart/{{inputs.route.value}}"
                 method = "POST"
                 contentType = "multipart/form-data"
                 headers = '{"X-Trace":"{{inputs.trace.value}}"}'
@@ -3048,8 +1355,6 @@ nodes:
         # DELETE /v1/workflows/fixture-delete-workflow
         $deletedWorkflow = Invoke-JsonDelete -Uri "$baseUrl/v1/workflows/fixture-delete-workflow"
         Assert-Equal $true ([bool]$deletedWorkflow.deleted) "Loom workflow deletion mismatch."
-        $artLoomWorkflowStoreCompat = Test-LoomArtLoomWorkflowStoreCompat -BaseUrl $baseUrl
-
         $workflowInput = New-LoomNativeImageSmokePngDataUrl
         $executedWorkflowTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/release-workflow-tool/execute" -Body @{
             arguments = @{ input_base64 = $workflowInput }
@@ -3061,24 +1366,18 @@ nodes:
         }
 
         $imageHelperConvert = Test-LoomImageHelperConvert -BaseUrl $baseUrl
-        $sharedMemoryCompat = Test-LoomArtLoomSharedMemoryCompat -BaseUrl $baseUrl
 
         $hookBridge = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/status"
-        Assert-Equal 19820 ([int]$hookBridge.port) "Loom Hook Bridge compatibility port mismatch."
+        Assert-Equal 19820 ([int]$hookBridge.port) "Loom Hook Bridge default port mismatch."
         Assert-Equal $false ([bool]$hookBridge.running) "Loom Hook Bridge protocol-only smoke state mismatch."
+        Assert-Equal "loom.hook.v1" ([string]$hookBridge.protocol) "Loom Hook Bridge protocol mismatch."
         $hookBridgeMethods = @($hookBridge.methods | ForEach-Object { [string]$_ })
-        $legacyHookSessionMethod = "read_art" + "hook_session"
-        Assert-Contains "art_loom/update_workflow_node" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing workflow node update."
-        Assert-Contains "art_hook/instantiate" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing legacy instantiate."
-        Assert-Contains $legacyHookSessionMethod ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing legacy session reader."
-        $hookSessionCompat = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/session"
-        Assert-Equal $legacyHookSessionMethod ([string]$hookSessionCompat.method) "Loom Hook session compatibility method mismatch."
-        Assert-Equal "artloom-compat" ([string]$hookSessionCompat.protocol) "Loom Hook session protocol mismatch."
-        $hookSessionStickerCount = @($hookSessionCompat.session.stickers).Count
-        $hookSessionLinkCount = @($hookSessionCompat.session.links).Count
-        if ($hookSessionStickerCount -lt 0 -or $hookSessionLinkCount -lt 0) {
-            throw "Loom Hook session counts should be readable."
-        }
+        Assert-Contains "loom.hook.handshake" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing handshake."
+        Assert-Contains "loom.hook.workflow.node.update" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing workflow node update."
+        Assert-Contains "loom.hook.workflow.instantiate" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing workflow instantiate."
+        Assert-Contains "loom.hook.art.execute" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing Art execution."
+        $hookSession = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/session"
+        Assert-Equal "loom.hook.v1" ([string]$hookSession.protocolVersion) "Loom Hook session protocol mismatch."
 
         $hookBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Body @{
             port = 0
@@ -3090,30 +1389,6 @@ nodes:
         $hookBridgeRunning = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/status"
         Assert-Equal $true ([bool]$hookBridgeRunning.running) "Loom Hook Bridge running status mismatch."
         Assert-Equal ([int]$hookBridgeStarted.port) ([int]$hookBridgeRunning.port) "Loom Hook Bridge running port mismatch."
-        $websocketHandshake = Connect-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
-        Assert-Equal "handshake" ([string]$websocketHandshake.type) "Loom Hook Bridge WebSocket handshake response type mismatch."
-        Assert-Equal "0.1.0" ([string]$websocketHandshake.data.server_version) "Loom Hook Bridge WebSocket server version mismatch."
-        if ([string]::IsNullOrWhiteSpace([string]$websocketHandshake.data.session_id)) {
-            throw "Loom Hook Bridge WebSocket handshake session_id missing."
-        }
-        $hookBridgeSettings = Test-LoomHookBridgeSettingsCompatibility `
-            -Port ([int]$hookBridgeStarted.port) `
-            -TranslateFixtureDir $translateFixtureDir
-        $websocketBroadcast = Test-LoomHookBridgeWebSocketBroadcast -Port ([int]$hookBridgeStarted.port)
-        $artLoomIpcWorkflowCompat = Test-LoomArtLoomIpcWorkflowCompat `
-            -BaseUrl $baseUrl `
-            -Port ([int]$hookBridgeStarted.port)
-        $hookLiveWorkflow = Test-LoomHookLiveWorkflowPersistence -Port ([int]$hookBridgeStarted.port) -BaseUrl $baseUrl
-        $executeArtNode = Test-LoomHookBridgeExecuteArtNode -Port ([int]$hookBridgeStarted.port)
-        $ahrpProcess = Test-LoomHookBridgeAhrpProcess -Port ([int]$hookBridgeStarted.port)
-        $nativeImageFilter = Test-LoomHookBridgeNativeImageFilter -Port ([int]$hookBridgeStarted.port)
-        $sharedImageAhrpProcess = Test-LoomHookBridgeSharedImageAhrpProcess -Port ([int]$hookBridgeStarted.port) -BaseUrl $baseUrl
-        $ocrImage = Test-LoomHookBridgeOcrImage -Port ([int]$hookBridgeStarted.port)
-        $cloudArtNode = Test-LoomHookBridgeCloudArtNode -Port ([int]$hookBridgeStarted.port)
-        $cloudAhrpProcess = Test-LoomHookBridgeCloudAhrpProcess -Port ([int]$hookBridgeStarted.port)
-        $cloudMultipartArtNode = Test-LoomHookBridgeCloudMultipartArtNode -Port ([int]$hookBridgeStarted.port) -FixtureOutputDir $cloudFixtureDir
-        $workflowArtNode = Test-LoomHookBridgeWorkflowArtNode -Port ([int]$hookBridgeStarted.port)
-        $workflowAhrpProcess = Test-LoomHookBridgeWorkflowAhrpProcess -Port ([int]$hookBridgeStarted.port)
         $hookBridgeStopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
         Assert-Equal $false ([bool]$hookBridgeStopped.running) "Loom Hook Bridge stop state mismatch."
 
@@ -3150,11 +1425,6 @@ nodes:
 
         Stop-SpawnedProcess $process
         $process = $null
-
-        $realOcrImage = Test-LoomReleaseRealOcr `
-            -LoomDaemonExe $loomDaemonExe `
-            -PackageDir $PackageDir `
-            -TempRoot $tempRoot
 
         $tokenPort = Get-LoomSmokePort
         $tokenValue = "release-smoke-token-$PID"
@@ -3212,7 +1482,6 @@ nodes:
         Assert-HttpStatus -Uri "$tokenBaseUrl/v1/mcp/test" -Method "Post" -Body @{ id = "fixture-test" } -ExpectedStatus 401
         Assert-HttpStatus -Uri "$tokenBaseUrl/v1/mcp/servers/fixture-delete" -Method "Delete" -ExpectedStatus 401
         Assert-HttpStatus -Uri "$tokenBaseUrl/v1/tools/fixture-delete-tool" -Method "Delete" -ExpectedStatus 401
-        Assert-HttpStatus -Uri "$tokenBaseUrl/v1/python-arts" -ExpectedStatus 401
         Assert-HttpStatus -Uri "$tokenBaseUrl/v1/workflows" -ExpectedStatus 401
         Assert-HttpStatus -Uri "$tokenBaseUrl/v1/workflows/fixture-delete-workflow" -Method "Delete" -ExpectedStatus 401
         Assert-HttpStatus -Uri "$tokenBaseUrl/v1/hook-bridge/status" -ExpectedStatus 401
@@ -3277,15 +1546,9 @@ nodes:
                 hookBridgePort = [int]$hookBridge.port
                 hookBridgeRuntimePort = [int]$hookBridgeStarted.port
                 hookBridgeMethods = $hookBridgeMethods
+                hookProtocol = [string]$hookBridge.protocol
+                hookSessionAvailable = [bool]$hookSession.available
                 mcpToolExecution = [string]$executedMcpTool.result.content[0].text
-                pythonArtCatalog = $pythonArtCatalog
-                mcpDirectCompat = $mcpDirectCompat
-                artLoomMcpServerStoreCompat = $artLoomMcpServerStoreCompat
-                artLoomRegistryCompat = $artLoomRegistryCompat
-                artLoomNativeProcessArt = $artLoomNativeProcessArt
-                artLoomSystemCompat = $artLoomSystemCompat
-                artLoomWorkflowStoreCompat = $artLoomWorkflowStoreCompat
-                pythonArtSourceImport = $pythonArtSourceImport
                 managementCrud = [ordered]@{
                     mcpServerDeleted = [bool]$deletedMcpServer.deleted
                     toolDeleted = [bool]$deletedTool.deleted
@@ -3295,46 +1558,15 @@ nodes:
                 mcpMarketplace = [ordered]@{
                     registryServerCount = @($mcpRegistry.servers).Count
                     registryServerName = [string]$mcpRegistry.servers[0].server.name
-                    connectionTestCommand = [string]$mcpConnectionTest.compatCommand
                     connectionTestSuccess = [bool]$mcpConnectionTest.success
                     connectionTestTool = [string]$mcpConnectionTest.tools[0].name
                     connectionTestServer = [string]$mcpConnectionTest.server_info.serverInfo.name
-                    packageCheckCommand = [string]$mcpPackageCheck.compatCommand
                     packageCheckModule = [string]$mcpPackageCheck.module
-                    packageInstallCommand = [string]$mcpPackageInstallPlan.compatCommand
                     packageInstallSideEffect = [bool]$mcpPackageInstallPlan.sideEffect
                 }
                 cloudToolExecution = [string]$executedCloudTool.result.content[0].text
                 workflowToolExecution = [string]$executedWorkflowTool.result.content[0].type
-                websocketHandshake = [ordered]@{
-                    type = [string]$websocketHandshake.type
-                    serverVersion = [string]$websocketHandshake.data.server_version
-                    hasSessionId = -not [string]::IsNullOrWhiteSpace([string]$websocketHandshake.data.session_id)
-                }
-                hookBridgeSettings = $hookBridgeSettings
-                hookSessionCompat = [ordered]@{
-                    method = [string]$hookSessionCompat.method
-                    protocol = [string]$hookSessionCompat.protocol
-                    available = [bool]$hookSessionCompat.available
-                    stickerCount = $hookSessionStickerCount
-                    linkCount = $hookSessionLinkCount
-                }
-                websocketBroadcast = $websocketBroadcast
-                artLoomIpcWorkflowCompat = $artLoomIpcWorkflowCompat
-                hookLiveWorkflow = $hookLiveWorkflow
-                executeArtNode = $executeArtNode
-                ahrpProcess = $ahrpProcess
-                nativeImageFilter = $nativeImageFilter
-                sharedMemoryCompat = $sharedMemoryCompat
-                sharedImageAhrpProcess = $sharedImageAhrpProcess
                 imageHelperConvert = $imageHelperConvert
-                ocrImage = $ocrImage
-                realOcrImage = $realOcrImage
-                cloudArtNode = $cloudArtNode
-                cloudAhrpProcess = $cloudAhrpProcess
-                cloudMultipartArtNode = $cloudMultipartArtNode
-                workflowArtNode = $workflowArtNode
-                workflowAhrpProcess = $workflowAhrpProcess
             }
             invoke = $invoke.status
             runCapability = $run.capability
@@ -3358,10 +1590,6 @@ nodes:
         if ($null -ne $mcpRegistryJob) {
             Stop-Job -Job $mcpRegistryJob -ErrorAction SilentlyContinue
             Remove-Job -Job $mcpRegistryJob -Force -ErrorAction SilentlyContinue
-        }
-        if ($null -ne $translateJob) {
-            Stop-Job -Job $translateJob -ErrorAction SilentlyContinue
-            Remove-Job -Job $translateJob -Force -ErrorAction SilentlyContinue
         }
         Start-Sleep -Milliseconds 300
         Remove-SmokeTempRoot -Path $tempRoot

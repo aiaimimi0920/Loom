@@ -1,4 +1,4 @@
-//! Image helper conversion contracts for Loom ArtLoom compatibility.
+//! Image helper conversion contracts for Loom Art execution.
 
 use std::io::Cursor;
 use std::path::Path;

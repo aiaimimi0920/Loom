@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ArtLoom-compatible OCR engine and model discovery for Loom"
+description = "OCR engine and model discovery for Loom"
 
 [dependencies]
 image.workspace = true

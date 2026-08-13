@@ -1,7 +1,7 @@
 //! Stable, language-neutral contracts for independently packaged Loom plugins.
 //!
-//! Keep v1 field names and wire semantics backwards compatible. New protocol
-//! behavior must be negotiated explicitly instead of changing these envelopes.
+//! V1 envelopes are strict. New protocol behavior must be negotiated explicitly
+//! instead of accepting alternative historical field names.
 
 use std::path::PathBuf;
 
@@ -11,9 +11,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub mod device;
+pub mod hook;
 pub mod surface;
 
 pub use device::*;
+pub use hook::*;
 pub use surface::*;
 
 pub const FRAMEWORK_PROTOCOL_VERSION: &str = "loom.framework.v1";
@@ -42,6 +44,8 @@ pub mod schemas {
         include_str!("../../../protocol/schemas/surface-scene.v1.schema.json");
     pub const DEVICE_SESSION_V1: &str =
         include_str!("../../../protocol/schemas/device-session.v1.schema.json");
+    pub const HOOK_MESSAGE_V1: &str =
+        include_str!("../../../protocol/schemas/hook-message.v1.schema.json");
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,12 +122,7 @@ pub struct FrameworkRuntimeEntry {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
-    #[serde(default = "default_process_model")]
     pub process_model: String,
-}
-
-fn default_process_model() -> String {
-    "per_execution".to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,28 +192,13 @@ pub struct PermissionPolicy {
 pub struct ResourceLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
-    #[serde(
-        rename = "memoryMiB",
-        alias = "memoryMib",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "memoryMiB", default, skip_serializing_if = "Option::is_none")]
     pub memory_mib: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_processes: Option<u32>,
-    #[serde(
-        rename = "stdoutMiB",
-        alias = "stdoutMib",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "stdoutMiB", default, skip_serializing_if = "Option::is_none")]
     pub stdout_mib: Option<u64>,
-    #[serde(
-        rename = "stderrMiB",
-        alias = "stderrMib",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "stderrMiB", default, skip_serializing_if = "Option::is_none")]
     pub stderr_mib: Option<u64>,
 }
 
@@ -333,8 +317,7 @@ pub struct FrameworkPackageManifest {
     pub permission_policy: PermissionPolicy,
     #[serde(default)]
     pub resources: ResourceLimits,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publisher: Option<PublisherIdentity>,
+    pub publisher: PublisherIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<PackageSignature>,
     #[serde(default)]
@@ -360,10 +343,7 @@ impl FrameworkPackageManifest {
     }
 
     pub fn qualified_id(&self) -> String {
-        match self.publisher.as_ref().map(|publisher| publisher.id.trim()) {
-            Some(publisher) if !publisher.is_empty() => format!("{publisher}/{}", self.id),
-            _ => self.id.clone(),
-        }
+        format!("{}/{}", self.publisher.id.trim(), self.id)
     }
 }
 
@@ -560,12 +540,11 @@ pub fn validate_framework_manifest_contract(
             manifest.id.clone(),
         ));
     }
-    if let Some(publisher) = &manifest.publisher {
-        if !is_safe_publisher_id(&publisher.id) {
-            return Err(ProtocolValidationError::UnsafePublisherId(
-                publisher.id.clone(),
-            ));
-        }
+    let publisher = &manifest.publisher;
+    if !is_safe_publisher_id(&publisher.id) {
+        return Err(ProtocolValidationError::UnsafePublisherId(
+            publisher.id.clone(),
+        ));
     }
     Version::parse(manifest.version.trim()).map_err(|error| {
         ProtocolValidationError::InvalidVersion {
@@ -649,7 +628,7 @@ pub fn validate_authoring_schema(
 }
 
 pub fn response_status_is_success(status: &str) -> bool {
-    matches!(status, "success" | "ok" | "completed")
+    status == "success"
 }
 
 #[cfg(test)]
@@ -669,15 +648,15 @@ mod tests {
                 kind: "process".to_owned(),
                 command: "runtime/framework.exe".to_owned(),
                 args: Vec::new(),
-                process_model: default_process_model(),
+                process_model: "per_execution".to_owned(),
             },
             permissions: Vec::new(),
             permission_policy: PermissionPolicy::default(),
             resources: ResourceLimits::default(),
-            publisher: Some(PublisherIdentity {
+            publisher: PublisherIdentity {
                 id: "example.vendor".to_owned(),
                 ..PublisherIdentity::default()
-            }),
+            },
             signature: None,
             host_compatibility: HostCompatibility {
                 minimum: Some(">=0.1.0".to_owned()),
@@ -696,6 +675,13 @@ mod tests {
     }
 
     #[test]
+    fn framework_response_requires_canonical_success_status() {
+        assert!(response_status_is_success("success"));
+        assert!(!response_status_is_success("ok"));
+        assert!(!response_status_is_success("completed"));
+    }
+
+    #[test]
     fn supported_protocol_versions_can_negotiate_v1() {
         let mut manifest = manifest();
         manifest.protocol_version = "loom.framework.v2".to_owned();
@@ -709,7 +695,7 @@ mod tests {
     #[test]
     fn invalid_publisher_and_semver_are_rejected() {
         let mut invalid = manifest();
-        invalid.publisher.as_mut().expect("publisher").id = "../vendor".to_owned();
+        invalid.publisher.id = "../vendor".to_owned();
         assert!(matches!(
             validate_framework_manifest_contract(&invalid),
             Err(ProtocolValidationError::UnsafePublisherId(_))
@@ -721,32 +707,6 @@ mod tests {
             validate_framework_manifest_contract(&invalid),
             Err(ProtocolValidationError::InvalidVersion { .. })
         ));
-    }
-
-    #[test]
-    fn old_manifest_shape_deserializes_with_secure_defaults() {
-        let parsed: FrameworkPackageManifest = serde_json::from_value(serde_json::json!({
-            "id": "script",
-            "name": "Script",
-            "description": "Script framework",
-            "version": "0.1.0",
-            "protocolVersion": "loom.framework.v1",
-            "platforms": ["windows-x64"],
-            "entry": {
-                "kind": "process",
-                "command": "runtime/script.exe",
-                "args": []
-            },
-            "permissions": ["process.spawn"],
-            "artExecution": {
-                "requestSchema": "loom.art.execute.v1",
-                "responseSchema": "loom.art.result.v1"
-            }
-        }))
-        .expect("legacy manifest");
-        assert_eq!(parsed.entry.process_model, "per_execution");
-        assert!(!parsed.permission_policy.process.spawn);
-        assert!(parsed.publisher.is_none());
     }
 
     #[test]

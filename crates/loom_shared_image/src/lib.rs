@@ -1,4 +1,4 @@
-//! Shared image buffer contracts for Loom AHRP compatibility.
+//! Shared image buffer contracts for Loom Art execution.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -77,8 +77,12 @@ impl Default for SharedImageStore {
 impl SharedImageStore {
     #[must_use]
     pub fn new() -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
         Self {
-            prefix: format!("Loom_Buffer_{}", std::process::id()),
+            prefix: format!("Loom_Buffer_{}_{unique}", std::process::id()),
             next_id: 0,
             buffers: BTreeMap::new(),
         }

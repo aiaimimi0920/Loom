@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
-pub mod artloom;
-
 /// Version of the workflow crate.
 pub const LOOM_WORKFLOW_VERSION: &str = env!("CARGO_PKG_VERSION");
 

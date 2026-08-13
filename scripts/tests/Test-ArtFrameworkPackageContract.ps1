@@ -48,6 +48,7 @@ foreach ($manifestFile in $manifestFiles) {
 
     Assert-True ($null -ne $manifest.id -and [string]$manifest.id -ne "") "Manifest id is required: $($manifestFile.FullName)"
     Assert-True ([string]$manifest.id -eq $directoryId) "Manifest id '$($manifest.id)' must equal directory '$directoryId'."
+    Assert-True ($null -ne $manifest.publisher -and -not [string]::IsNullOrWhiteSpace([string]$manifest.publisher.id)) "Manifest publisher id is required: $($manifestFile.FullName)"
     Assert-True ($null -ne $manifest.version -and [string]$manifest.version -ne "") "Manifest version is required: $($manifestFile.FullName)"
     Assert-True ([string]$manifest.protocolVersion -eq "loom.framework.v1") "Manifest protocolVersion must be loom.framework.v1: $($manifestFile.FullName)"
     Assert-True ($null -ne $manifest.platforms -and @($manifest.platforms) -contains "windows-x64") "Manifest platforms must contain windows-x64: $($manifestFile.FullName)"

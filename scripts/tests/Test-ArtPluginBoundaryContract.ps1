@@ -23,7 +23,7 @@ $readme = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "REA
 Assert-True (-not $readme.Contains("installed by default")) "README must describe explicit framework installation only."
 
 $releaseBuilder = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\build-release.ps1")
-Assert-True (-not $releaseBuilder.Contains("Arts\Art_LoomEcho")) "Default release must not package the legacy Python sample Art."
+Assert-True (-not $releaseBuilder.Contains("Arts\Art_")) "Default release must not package source-tree Python Arts."
 $releaseVerifier = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\verify-release.ps1")
 Assert-True ($releaseVerifier.Contains("runtime/python/Arts/")) "Release verification must reject packaged optional Python Arts."
 $pluginSmoke = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1")
@@ -33,8 +33,8 @@ foreach ($requiredText in @(
     "/upgrade",
     "frameworkLockRefreshRequired",
     "art_package_integrity_failed",
-    "art_hook/instantiate",
-    "art_loom/execute_art_node",
+    "loom.hook.workflow.instantiated",
+    "loom.hook.art.execute",
     "hookBridgeExecuted"
 )) {
     Assert-True ($pluginSmoke.Contains($requiredText)) "Plugin boundary smoke is missing required proof: $requiredText"

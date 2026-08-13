@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -26,13 +26,8 @@ use loom_durable::{
     SqliteRunEvidenceStore,
 };
 use loom_hook_bridge::{
-    ahrp_error_response, ahrp_process_base64_success_response,
-    ahrp_process_shared_memory_success_response, arts_updated_broadcast,
-    execute_art_node_error_response, execute_art_node_image_success_response,
-    execute_art_node_success_response, extract_ahrp_base64_output, extract_execution_text_content,
-    handle_request as handle_hook_bridge_request, instantiate_workflow_broadcast,
-    legacy_method_names, ocr_image_error_response, ocr_image_success_response, parse_request,
-    HookBridgeRequest, HookBridgeRuntimeInput, HOOK_BRIDGE_PORT,
+    capabilities_updated_event, instantiate_workflow, sync_workflow, update_workflow_node,
+    HOOK_BRIDGE_PORT,
 };
 use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
@@ -40,12 +35,18 @@ use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocumen
 use loom_protocol::{
     device_session_signature_message, is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest,
     DeviceSessionChallengeRequest, DeviceSessionChallengeResponse, DeviceSessionIssueRequest,
-    DeviceSessionIssueResponse, PublisherTrustRecord, SurfaceActionCancelRequest,
-    SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure, SurfaceHostCapabilities,
-    SurfaceInstanceMode, SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode,
-    SurfacePatch, SurfacePortValue, SurfacePreviewCommit, SurfaceResourceDescriptor,
-    SurfaceResourceKind, SurfaceResourceTransport, SurfaceResourceTransportKind,
-    SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot, DEVICE_SESSION_PROTOCOL_VERSION,
+    DeviceSessionIssueResponse, HookArtAck, HookArtCancelRequest, HookArtCapability,
+    HookArtExecuteRequest, HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
+    HookArtResultCommit, HookCapabilities, HookEvent, HookHandshakeResponse, HookRequest,
+    HookRequestStatus, HookResponse, HookTransportMode, PublisherTrustRecord,
+    SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure,
+    SurfaceHostCapabilities, SurfaceInstanceMode, SurfaceInstancePersistence,
+    SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue, SurfacePreviewCommit,
+    SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
+    SurfaceResourceTransportKind, SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot,
+    DEVICE_SESSION_PROTOCOL_VERSION, HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED,
+    SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION,
+    SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH, SURFACE_EVENT_SNAPSHOT,
 };
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
 use loom_tool_registry::art_settings::{
@@ -59,13 +60,14 @@ use loom_tool_registry::credentials::{
 use loom_tool_registry::network_policy::{
     get_bounded, secure_client, validate_outbound_url, OutboundPolicy,
 };
+#[cfg(test)]
+use loom_tool_registry::WorkflowExecutionBindings;
 use loom_tool_registry::{
-    execute_tool, framework::FrameworkRegistry, ToolDefinition, ToolExecution, ToolRegistry,
-    ToolRegistryError, WorkflowExecutionBindings,
+    framework::FrameworkRegistry, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
 };
 use loom_workflow_runtime::{
-    execute_tool_with_workflows, execute_tool_with_workflows_and_preview, workflow_node_tool_ids,
-    WorkflowRuntimeError,
+    execute_tool_with_workflows, execute_tool_with_workflows_and_preview_timeout_and_cancellation,
+    workflow_node_tool_ids, WorkflowRuntimeError,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use rand_core::{OsRng, RngCore};
@@ -187,6 +189,7 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /v1/mcp/servers\n",
         "  GET  /v1/mcp/registry\n",
         "  POST /v1/mcp/test\n",
+        "  POST /v1/mcp/call\n",
         "  POST /v1/mcp/package/check\n",
         "  POST /v1/mcp/package/install-plan\n",
         "  PUT  /v1/mcp/servers/{serverId}\n",
@@ -195,29 +198,16 @@ pub fn daemon_help_text() -> &'static str {
         "  PUT  /v1/tools/{toolId}\n",
         "  DELETE /v1/tools/{toolId}\n",
         "  POST /v1/tools/{toolId}/execute\n",
-        "  POST /v1/artloom-compat/mcp/call-tool\n",
-        "  GET  /v1/artloom-compat/mcp/registry\n",
-        "  GET  /v1/artloom-compat/mcp/servers\n",
-        "  POST /v1/artloom-compat/mcp/servers\n",
-        "  DELETE /v1/artloom-compat/mcp/servers/{serverId}\n",
-        "  GET  /v1/artloom-compat/arts\n",
-        "  GET  /v1/artloom-compat/arts/enabled\n",
-        "  GET  /v1/artloom-compat/user-arts\n",
-        "  GET  /v1/artloom-compat/arts/{artId}\n",
-        "  POST /v1/artloom-compat/arts/sync\n",
-        "  POST /v1/artloom-compat/arts/broadcast-updated\n",
-        "  POST /v1/artloom-compat/native/process-art\n",
-        "  POST /v1/artloom-compat/arts/{artId}/enable\n",
-        "  POST /v1/artloom-compat/arts/{artId}/disable\n",
-        "  PUT  /v1/artloom-compat/arts/{artId}/defaults\n",
-        "  GET  /v1/python-arts\n",
-        "  GET  /v1/python-arts/{artId}\n",
-        "  GET  /v1/python-arts/engine/status\n",
-        "  POST /v1/python-arts/shader/prefetch\n",
-        "  POST /v1/python-arts/source/read\n",
-        "  POST /v1/python-arts/source/read-art-json\n",
-        "  POST /v1/python-arts/source/check-art-json\n",
-        "  POST /v1/python-arts/source/infer-ports\n",
+        "  GET  /v1/tools/enabled\n",
+        "  POST /v1/tools/{toolId}/enable\n",
+        "  POST /v1/tools/{toolId}/disable\n",
+        "  PUT  /v1/tools/{toolId}/defaults\n",
+        "  GET  /v1/art-authoring/python/status\n",
+        "  GET  /v1/art-authoring/python/arts\n",
+        "  POST /v1/art-authoring/source/read\n",
+        "  POST /v1/art-authoring/source/read-art-json\n",
+        "  POST /v1/art-authoring/source/check-art-json\n",
+        "  POST /v1/art-authoring/source/infer-ports\n",
         "  POST /v1/shared-memory/buffers\n",
         "  GET  /v1/shared-memory/buffers\n",
         "  GET  /v1/shared-memory/buffers/{handle}\n",
@@ -233,26 +223,17 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview\n",
         "  POST /v1/hook-bridge/start\n",
         "  POST /v1/hook-bridge/stop\n",
-        "  GET  /v1/artloom-compat/settings\n",
-        "  PUT  /v1/artloom-compat/settings\n",
-        "  POST /v1/artloom-compat/hook/cache-control\n",
-        "  GET  /v1/artloom-compat/shortcuts\n",
-        "  PUT  /v1/artloom-compat/shortcuts/{shortcutId}\n",
-        "  GET  /v1/artloom-compat/app-paths\n",
-        "  GET  /v1/artloom-compat/ipc/status\n",
-        "  POST /v1/artloom-compat/ipc/instantiate-workflow\n",
-        "  POST /v1/artloom-compat/ipc/update-workflow-node\n",
-        "  POST /v1/artloom-compat/ipc/execute-art-node\n",
-        "  GET  /v1/artloom-compat/workflows\n",
-        "  PUT  /v1/artloom-compat/workflows/{workflowId}/metadata\n",
-        "  PUT  /v1/artloom-compat/workflows/{workflowId}/data\n",
-        "  GET  /v1/artloom-compat/workflows/{workflowId}/data\n",
-        "  DELETE /v1/artloom-compat/workflows/{workflowId}/data\n",
-        "  GET  /v1/artloom-compat/system/autostart\n",
-        "  POST /v1/artloom-compat/system/autostart\n",
-        "  POST /v1/artloom-compat/system/autostart/enable\n",
-        "  POST /v1/artloom-compat/system/autostart/disable\n",
-        "  POST /v1/artloom-compat/system/minimize-to-tray\n",
+        "  POST /v1/hook-bridge/workflows/instantiate\n",
+        "  POST /v1/hook-bridge/workflows/nodes/update\n",
+        "  POST /v1/hook-bridge/cache-control\n",
+        "  GET  /v1/settings\n",
+        "  PUT  /v1/settings\n",
+        "  GET  /v1/settings/shortcuts\n",
+        "  PUT  /v1/settings/shortcuts/{shortcutId}\n",
+        "  GET  /v1/runtime/app-paths\n",
+        "  GET  /v1/runtime/autostart\n",
+        "  POST /v1/runtime/autostart\n",
+        "  POST /v1/runtime/minimize-to-tray\n",
         "  POST /v1/image-helpers/convert\n",
         "  GET  /v1/runs/{runId}\n",
         "  GET  /v1/runs/{runId}/events\n",
@@ -446,7 +427,7 @@ struct DaemonRuntime {
     surface_instances: SharedSurfaceInstanceStore,
     surface_actions: SharedSurfaceActionExecutor,
     surface_resources: SharedSurfaceResourceStore,
-    artloom_settings: SharedArtLoomCompatSettingsStore,
+    settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
     settings_base_url: String,
@@ -508,7 +489,7 @@ impl LoomDaemon {
             .unwrap_or_else(default_control_plane_root);
         let framework_runtime_root = control_plane_root.join("frameworks");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
-        std::env::set_var("LOOM_FRAMEWORK_RUNTIMES_DIR", &framework_runtime_root);
+        std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", &framework_runtime_root);
         let mut run_store: Box<dyn RunEvidenceStore> = match &config.run_store {
             RunStoreConfig::Memory => Box::new(InMemoryRunEvidenceStore::default()),
             RunStoreConfig::Sqlite(path) => {
@@ -531,12 +512,9 @@ impl LoomDaemon {
             }
         }
         let request_executor = config.request_executor;
-        let artloom_settings_store = ArtLoomCompatSettingsStore::new(
-            control_plane_root
-                .join("settings")
-                .join("artloom-compat-settings.json"),
-        );
-        apply_artloom_runtime_settings(&artloom_settings_store.settings);
+        let settings_store =
+            LoomSettingsStore::new(control_plane_root.join("settings").join("settings.json"));
+        apply_runtime_settings(&settings_store.settings);
         let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root)));
         let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
         let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
@@ -590,7 +568,7 @@ impl LoomDaemon {
             surface_instances,
             surface_actions,
             surface_resources,
-            artloom_settings: Arc::new(Mutex::new(artloom_settings_store)),
+            settings: Arc::new(Mutex::new(settings_store)),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
             settings_base_url,
@@ -781,7 +759,7 @@ fn route_with_runtime(
         &runtime.surface_instances,
         &runtime.surface_actions,
         &runtime.surface_resources,
-        &runtime.artloom_settings,
+        &runtime.settings,
         &runtime.shared_images,
         &runtime.ocr_provider,
         &runtime.settings_base_url,
@@ -996,9 +974,7 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), route_path) {
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
-        ("GET", "/v1/mcp/registry" | "/v1/artloom-compat/mcp/registry") => {
-            RequestConcurrencyClass::Concurrent
-        }
+        ("GET", "/v1/mcp/registry") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/hook-bridge/canvas") => RequestConcurrencyClass::Concurrent,
         ("GET", path) if hook_canvas_preview_node_id("GET", path).is_some() => {
             RequestConcurrencyClass::Concurrent
@@ -1500,56 +1476,16 @@ fn mcp_registry_cache_path(control_plane_root: &Path) -> PathBuf {
     control_plane_root.join("mcp").join("registry-cache.json")
 }
 
-fn normalize_mcp_server_config(mut server: McpServerConfig) -> McpServerConfig {
-    if server.transport == McpTransport::Stdio
-        && is_npx_command(&server.command)
-        && server_uses_brave_search_package(&server.args)
-    {
-        server.args = vec![
-            "-y".to_owned(),
-            "@brave/brave-search-mcp-server".to_owned(),
-            "--transport".to_owned(),
-            "stdio".to_owned(),
-        ];
-    }
-    server
-}
-
-fn is_npx_command(command: &str) -> bool {
-    Path::new(command)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("npx"))
-}
-
-fn server_uses_brave_search_package(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        matches!(
-            arg.trim(),
-            "github:brave/brave-search-mcp-server" | "@brave/brave-search-mcp-server"
-        )
-    })
-}
-
 fn load_persisted_mcp_servers(control_plane_root: &Path) -> HashMap<String, McpServerConfig> {
     let path = mcp_server_store_path(control_plane_root);
     let Some(content) = fs::read_to_string(path).ok() else {
         return HashMap::new();
     };
 
-    let parsed = serde_json::from_str::<Vec<McpServerConfig>>(&content)
+    serde_json::from_str::<Vec<McpServerConfig>>(&content)
         .ok()
-        .or_else(|| {
-            serde_json::from_str::<Value>(&content)
-                .ok()
-                .and_then(|value| value.get("servers").cloned())
-                .and_then(|servers| serde_json::from_value::<Vec<McpServerConfig>>(servers).ok())
-        });
-
-    parsed
         .unwrap_or_default()
         .into_iter()
-        .map(normalize_mcp_server_config)
         .map(|server| (server.id.clone(), server))
         .collect()
 }
@@ -1915,7 +1851,6 @@ struct InvokeCapabilityRequest {
 
 #[derive(Debug, Deserialize)]
 struct PutWorkflowRequest {
-    #[serde(alias = "yaml")]
     data: String,
 }
 
@@ -1941,27 +1876,27 @@ struct ExecuteToolRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FrameworkPackageRequest {
-    #[serde(default, alias = "zip_base64")]
+    #[serde(default)]
     zip_base64: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct PythonSourceReadRequest {
-    #[serde(default, alias = "filePath")]
+    #[serde(default)]
     path: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PythonArtJsonReadRequest {
-    #[serde(default, alias = "art_path", alias = "path")]
+    #[serde(default)]
     art_path: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PythonNearbyArtJsonRequest {
-    #[serde(default, alias = "python_path", alias = "path")]
+    #[serde(default)]
     python_path: String,
 }
 
@@ -1969,17 +1904,8 @@ struct PythonNearbyArtJsonRequest {
 struct PythonInferPortsRequest {
     #[serde(default)]
     code: String,
-    #[serde(default, alias = "filePath")]
-    path: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PythonShaderPrefetchRequest {
-    #[serde(default, alias = "art_id")]
-    art_id: String,
     #[serde(default)]
-    params: Value,
+    path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1990,20 +1916,20 @@ struct StartHookBridgeRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpPackageCheckRequest {
-    #[serde(default, alias = "module_name", alias = "module")]
+    #[serde(default)]
     module_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpPackageInstallPlanRequest {
-    #[serde(default, alias = "package_name", alias = "package")]
+    #[serde(default)]
     package_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ArtLoomCompatCallMcpToolRequest {
+struct McpToolCallRequest {
     #[serde(default)]
     transport: McpTransport,
     #[serde(default)]
@@ -2016,47 +1942,36 @@ struct ArtLoomCompatCallMcpToolRequest {
     url: String,
     #[serde(default)]
     headers: BTreeMap<String, String>,
-    #[serde(default, alias = "tool_name")]
+    #[serde(default)]
     tool_name: String,
-    #[serde(default, alias = "tool_args")]
+    #[serde(default)]
     tool_args: Value,
 }
 
 #[derive(Debug, Deserialize)]
-struct ArtLoomCompatToggleRequest {
+struct ToggleRequest {
     enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ArtLoomCompatNativeProcessArtRequest {
-    #[serde(default, alias = "art_id")]
-    art_id: String,
-    #[serde(default, alias = "input_base64")]
-    input_base64: String,
-    #[serde(default)]
-    params: HashMap<String, Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ArtLoomCompatInstantiateWorkflowRequest {
+struct HookWorkflowInstantiateHttpRequest {
     #[serde(default)]
     nodes: Vec<Value>,
     #[serde(default)]
     edges: Vec<Value>,
     #[serde(default)]
     mode: String,
-    #[serde(default, alias = "workflow_id")]
+    #[serde(default)]
     workflow_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ArtLoomCompatUpdateWorkflowNodeRequest {
-    #[serde(default, alias = "workflow_id")]
+struct HookWorkflowNodeUpdateHttpRequest {
+    #[serde(default)]
     workflow_id: String,
-    #[serde(default, alias = "node_id")]
+    #[serde(default)]
     node_id: String,
     #[serde(default)]
     param: String,
@@ -2065,18 +1980,6 @@ struct ArtLoomCompatUpdateWorkflowNodeRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ArtLoomCompatExecuteArtNodeRequest {
-    #[serde(default, alias = "node_id")]
-    node_id: String,
-    #[serde(default, alias = "art_id")]
-    art_id: String,
-    #[serde(default, alias = "input_base64")]
-    input_base64: Option<String>,
-    #[serde(default)]
-    params: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Deserialize)]
 struct SharedMemoryCreateBufferRequest {
     width: u32,
     height: u32,
@@ -2100,10 +2003,10 @@ type SharedMcpServerStore = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 type SharedHookBridgeRuntime = Arc<Mutex<HookBridgeRuntime>>;
 type SharedImageStoreHandle = Arc<Mutex<SharedImageStore>>;
 type OcrProviderHandle = Arc<Mutex<OcrProvider>>;
-type SharedArtLoomCompatSettingsStore = Arc<Mutex<ArtLoomCompatSettingsStore>>;
+type SharedLoomSettingsStore = Arc<Mutex<LoomSettingsStore>>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomShortcutConfig {
+struct LoomShortcutConfig {
     id: String,
     label: String,
     keys: String,
@@ -2111,7 +2014,7 @@ struct ArtLoomShortcutConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomGeneralSettings {
+struct LoomGeneralSettings {
     theme: String,
     language: String,
     auto_start: bool,
@@ -2120,13 +2023,13 @@ struct ArtLoomGeneralSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomHookGeneralSettings {
+struct HookGeneralSettings {
     theme: String,
     language: String,
     close_to_tray: bool,
 }
 
-impl Default for ArtLoomHookGeneralSettings {
+impl Default for HookGeneralSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_owned(),
@@ -2137,19 +2040,19 @@ impl Default for ArtLoomHookGeneralSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomSystemPreferences {
+struct LoomSystemPreferences {
     auto_check_updates: bool,
     enable_run_log: bool,
-    #[serde(default = "default_artloom_log_level")]
+    #[serde(default = "default_log_level")]
     loom_log_level: String,
-    #[serde(default = "default_artloom_log_level")]
+    #[serde(default = "default_log_level")]
     hook_log_level: String,
     run_as_admin: bool,
     record_screenshot_history: bool,
     history_retention: String,
 }
 
-fn default_artloom_log_level() -> String {
+fn default_log_level() -> String {
     "info".to_owned()
 }
 
@@ -2223,13 +2126,13 @@ fn runtime_log_debug(message: impl AsRef<str>) {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomProxySettings {
+struct ProxySettings {
     mode: String,
     protocol: String,
     address: String,
 }
 
-impl Default for ArtLoomProxySettings {
+impl Default for ProxySettings {
     fn default() -> Self {
         Self {
             mode: "system".to_owned(),
@@ -2239,7 +2142,7 @@ impl Default for ArtLoomProxySettings {
     }
 }
 
-impl ArtLoomProxySettings {
+impl ProxySettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if !matches!(self.mode.as_str(), "system" | "custom" | "disabled") {
             return Err("代理模式必须是跟随系统、自定义或不使用代理".to_owned());
@@ -2264,15 +2167,15 @@ impl ArtLoomProxySettings {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-struct ArtLoomNetworkSettings {
+struct NetworkSettings {
     #[serde(default)]
-    loom: ArtLoomProxySettings,
+    loom: ProxySettings,
     #[serde(default)]
-    hook: ArtLoomProxySettings,
+    hook: ProxySettings,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomHookCacheSettings {
+struct HookCacheSettings {
     recycle_bin_max_entries: u32,
     recycle_bin_retention_days: u32,
     temp_cache_max_bytes: u64,
@@ -2280,12 +2183,12 @@ struct ArtLoomHookCacheSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomMcpSettings {
+struct McpSettings {
     request_timeout_seconds: u64,
     memory_limit_bytes: u64,
 }
 
-impl Default for ArtLoomMcpSettings {
+impl Default for McpSettings {
     fn default() -> Self {
         Self {
             request_timeout_seconds: 60,
@@ -2294,7 +2197,7 @@ impl Default for ArtLoomMcpSettings {
     }
 }
 
-impl ArtLoomMcpSettings {
+impl McpSettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if !(5..=600).contains(&self.request_timeout_seconds) {
             return Err("MCP 请求超时必须介于 5 秒到 10 分钟之间".to_owned());
@@ -2307,12 +2210,12 @@ impl ArtLoomMcpSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomArtStoreSettings {
+struct ArtStoreSettings {
     auto_update: bool,
     official_only: bool,
 }
 
-impl Default for ArtLoomArtStoreSettings {
+impl Default for ArtStoreSettings {
     fn default() -> Self {
         Self {
             auto_update: true,
@@ -2322,13 +2225,13 @@ impl Default for ArtLoomArtStoreSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomCacheSettings {
+struct LoomCacheSettings {
     art_cache_max_bytes: u64,
     art_cache_retention_days: u32,
     framework_temp_retention_days: u32,
 }
 
-impl Default for ArtLoomCacheSettings {
+impl Default for LoomCacheSettings {
     fn default() -> Self {
         Self {
             art_cache_max_bytes: 1024 * 1024 * 1024,
@@ -2338,7 +2241,7 @@ impl Default for ArtLoomCacheSettings {
     }
 }
 
-impl ArtLoomCacheSettings {
+impl LoomCacheSettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if self.art_cache_max_bytes != 0
             && !(64 * 1024 * 1024..=64 * 1024 * 1024 * 1024).contains(&self.art_cache_max_bytes)
@@ -2355,7 +2258,7 @@ impl ArtLoomCacheSettings {
     }
 }
 
-impl Default for ArtLoomHookCacheSettings {
+impl Default for HookCacheSettings {
     fn default() -> Self {
         Self {
             recycle_bin_max_entries: 15,
@@ -2368,7 +2271,7 @@ impl Default for ArtLoomHookCacheSettings {
     }
 }
 
-impl ArtLoomHookCacheSettings {
+impl HookCacheSettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if self.recycle_bin_max_entries > 500 {
             return Err("回收站上限必须为无限或不超过 500 项".to_owned());
@@ -2389,7 +2292,7 @@ impl ArtLoomHookCacheSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomEngineSettings {
+struct EngineSettings {
     comfyui_url: String,
     python_interpreter: String,
     virtual_env_path: String,
@@ -2398,68 +2301,59 @@ struct ArtLoomEngineSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomQuickBinding {
+struct QuickBinding {
     id: String,
     art: String,
     key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct ArtLoomCompatSettings {
-    #[serde(default)]
+struct LoomSettings {
     appearance_version: u32,
-    general: ArtLoomGeneralSettings,
-    #[serde(default)]
-    hook_general: ArtLoomHookGeneralSettings,
-    system: ArtLoomSystemPreferences,
-    #[serde(default)]
-    network: ArtLoomNetworkSettings,
-    #[serde(default)]
-    mcp: ArtLoomMcpSettings,
-    #[serde(default)]
-    art_store: ArtLoomArtStoreSettings,
-    #[serde(default)]
-    loom_cache: ArtLoomCacheSettings,
-    #[serde(default)]
-    hook_cache: ArtLoomHookCacheSettings,
-    engine: ArtLoomEngineSettings,
-    #[serde(default)]
-    quick_bindings: Vec<ArtLoomQuickBinding>,
-    #[serde(default)]
-    shortcuts: HashMap<String, ArtLoomShortcutConfig>,
+    general: LoomGeneralSettings,
+    hook_general: HookGeneralSettings,
+    system: LoomSystemPreferences,
+    network: NetworkSettings,
+    mcp: McpSettings,
+    art_store: ArtStoreSettings,
+    loom_cache: LoomCacheSettings,
+    hook_cache: HookCacheSettings,
+    engine: EngineSettings,
+    quick_bindings: Vec<QuickBinding>,
+    shortcuts: HashMap<String, LoomShortcutConfig>,
 }
 
-impl Default for ArtLoomCompatSettings {
+impl Default for LoomSettings {
     fn default() -> Self {
         let mut shortcuts = HashMap::new();
-        for shortcut in default_artloom_shortcuts() {
+        for shortcut in default_shortcuts() {
             shortcuts.insert(shortcut.id.clone(), shortcut);
         }
         Self {
             appearance_version: CURRENT_APPEARANCE_VERSION,
-            general: ArtLoomGeneralSettings {
+            general: LoomGeneralSettings {
                 theme: "dark".to_owned(),
                 language: "zh-Hans".to_owned(),
                 auto_start: false,
                 minimize_to_tray: true,
                 enable_tray_icon: true,
             },
-            hook_general: ArtLoomHookGeneralSettings::default(),
-            system: ArtLoomSystemPreferences {
+            hook_general: HookGeneralSettings::default(),
+            system: LoomSystemPreferences {
                 auto_check_updates: true,
                 enable_run_log: true,
-                loom_log_level: default_artloom_log_level(),
-                hook_log_level: default_artloom_log_level(),
+                loom_log_level: default_log_level(),
+                hook_log_level: default_log_level(),
                 run_as_admin: false,
                 record_screenshot_history: true,
                 history_retention: "7d".to_owned(),
             },
-            network: ArtLoomNetworkSettings::default(),
-            mcp: ArtLoomMcpSettings::default(),
-            art_store: ArtLoomArtStoreSettings::default(),
-            loom_cache: ArtLoomCacheSettings::default(),
-            hook_cache: ArtLoomHookCacheSettings::default(),
-            engine: ArtLoomEngineSettings {
+            network: NetworkSettings::default(),
+            mcp: McpSettings::default(),
+            art_store: ArtStoreSettings::default(),
+            loom_cache: LoomCacheSettings::default(),
+            hook_cache: HookCacheSettings::default(),
+            engine: EngineSettings {
                 comfyui_url: "http://127.0.0.1:8188".to_owned(),
                 python_interpreter: "python.exe".to_owned(),
                 virtual_env_path: "./venv".to_owned(),
@@ -2474,23 +2368,7 @@ impl Default for ArtLoomCompatSettings {
 
 const CURRENT_APPEARANCE_VERSION: u32 = 1;
 
-impl ArtLoomCompatSettings {
-    fn migrate_appearance_defaults(&mut self) -> bool {
-        if self.appearance_version >= CURRENT_APPEARANCE_VERSION {
-            return false;
-        }
-        if self.general.theme == "system" {
-            self.general.theme = "dark".to_owned();
-        }
-        if self.hook_general.theme == "system" {
-            self.hook_general.theme = "dark".to_owned();
-        }
-        self.appearance_version = CURRENT_APPEARANCE_VERSION;
-        true
-    }
-}
-
-fn apply_artloom_runtime_settings(settings: &ArtLoomCompatSettings) {
+fn apply_runtime_settings(settings: &LoomSettings) {
     loom_mcp::configure_runtime_limits(
         settings.mcp.request_timeout_seconds,
         settings.mcp.memory_limit_bytes,
@@ -2512,43 +2390,32 @@ fn apply_artloom_runtime_settings(settings: &ArtLoomCompatSettings) {
     configure_runtime_log_level(&settings.system.loom_log_level);
 }
 
-struct ArtLoomCompatSettingsStore {
+struct LoomSettingsStore {
     path: PathBuf,
-    settings: ArtLoomCompatSettings,
+    settings: LoomSettings,
 }
 
-impl ArtLoomCompatSettingsStore {
+impl LoomSettingsStore {
     fn new(path: PathBuf) -> Self {
-        let mut settings = fs::read_to_string(&path)
+        let settings = fs::read_to_string(&path)
             .ok()
-            .and_then(|content| serde_json::from_str::<ArtLoomCompatSettings>(&content).ok())
+            .and_then(|content| serde_json::from_str::<LoomSettings>(&content).ok())
             .unwrap_or_default();
-        let appearance_migrated = settings.migrate_appearance_defaults();
-        settings.quick_bindings.retain(|binding| {
-            !(binding.id == "1"
-                && binding.art == "ComfyUI Workflow"
-                && binding.key == "Ctrl+Shift+1")
-        });
-        let store = Self { path, settings };
-        if appearance_migrated {
-            let _ = store.save();
-        }
-        store
+        Self { path, settings }
     }
 
     fn save(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("create ArtLoom compat settings dir {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create Loom settings dir {}", parent.display()))?;
         }
         fs::write(&self.path, serde_json::to_string_pretty(&self.settings)?)
-            .with_context(|| format!("write ArtLoom compat settings {}", self.path.display()))?;
+            .with_context(|| format!("write Loom settings {}", self.path.display()))?;
         Ok(())
     }
 }
 
-fn default_artloom_shortcuts() -> Vec<ArtLoomShortcutConfig> {
+fn default_shortcuts() -> Vec<LoomShortcutConfig> {
     [
         ("cancel", "Cancel / Deselect", "Escape"),
         ("capture", "Screenshot", "Ctrl+1"),
@@ -2559,7 +2426,7 @@ fn default_artloom_shortcuts() -> Vec<ArtLoomShortcutConfig> {
         ("toggle_translation", "Toggle Translation", "Alt+3"),
     ]
     .into_iter()
-    .map(|(id, label, keys)| ArtLoomShortcutConfig {
+    .map(|(id, label, keys)| LoomShortcutConfig {
         id: id.to_owned(),
         label: label.to_owned(),
         keys: keys.to_owned(),
@@ -2619,6 +2486,63 @@ impl HookBridgeRuntime {
             workflow_root,
         }
     }
+}
+
+#[derive(Default)]
+struct HookArtRequestState {
+    active_by_request: BTreeMap<HookArtRequestScope, HookArtRequestEntry>,
+    active_by_node: BTreeMap<HookArtNodeScope, String>,
+    latest_generation_by_node: BTreeMap<HookArtNodeScope, u64>,
+    preview_revision_by_node: BTreeMap<HookArtNodeScope, u64>,
+    result_revision_by_node: BTreeMap<HookArtNodeScope, u64>,
+    terminal_by_request: BTreeMap<HookArtRequestScope, HookArtTerminalEntry>,
+    terminal_order: VecDeque<HookArtRequestScope>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct HookArtNodeScope {
+    device_id: Option<String>,
+    node_id: String,
+}
+
+impl HookArtNodeScope {
+    fn new(device_id: Option<&str>, node_id: &str) -> Self {
+        Self {
+            device_id: device_id.map(str::to_owned),
+            node_id: node_id.to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct HookArtRequestScope {
+    device_id: Option<String>,
+    request_id: String,
+}
+
+impl HookArtRequestScope {
+    fn new(device_id: Option<&str>, request_id: &str) -> Self {
+        Self {
+            device_id: device_id.map(str::to_owned),
+            request_id: request_id.to_owned(),
+        }
+    }
+}
+
+struct HookArtRequestEntry {
+    node_id: String,
+    generation: u64,
+    request_fingerprint: String,
+    cancellation: Arc<AtomicBool>,
+    status: HookRequestStatus,
+    device_id: Option<String>,
+}
+
+struct HookArtTerminalEntry {
+    node_id: String,
+    generation: u64,
+    request_fingerprint: String,
+    response: String,
 }
 
 #[derive(Clone)]
@@ -3305,7 +3229,7 @@ fn route(
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
     surface_resources: &SharedSurfaceResourceStore,
-    artloom_settings: &SharedArtLoomCompatSettingsStore,
+    settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
     settings_base_url: &str,
@@ -3614,27 +3538,9 @@ fn route(
             &mcp_registry_cache_path(control_plane_root),
         ),
         ("POST", "/v1/mcp/test") => test_mcp_connection(&request.body),
+        ("POST", "/v1/mcp/call") => call_mcp_tool(&request.body),
         ("POST", "/v1/mcp/package/check") => check_mcp_package_installed(&request.body),
         ("POST", "/v1/mcp/package/install-plan") => build_mcp_package_install_plan(&request.body),
-        ("POST", "/v1/artloom-compat/mcp/call-tool") => artloom_compat_call_mcp_tool(&request.body),
-        ("GET", "/v1/artloom-compat/mcp/registry") => artloom_compat_fetch_mcp_registry(
-            &request.path,
-            mcp_registry_endpoint,
-            &mcp_registry_cache_path(control_plane_root),
-        ),
-        ("GET", "/v1/artloom-compat/mcp/servers") => artloom_compat_list_mcp_servers(mcp_servers),
-        ("POST", "/v1/artloom-compat/mcp/servers") => artloom_compat_save_mcp_server(
-            &request.body,
-            mcp_servers,
-            &mcp_server_store_path(control_plane_root),
-        ),
-        ("DELETE", path) if path_id(path, "/v1/artloom-compat/mcp/servers/").is_some() => {
-            artloom_compat_delete_mcp_server(
-                path_id(path, "/v1/artloom-compat/mcp/servers/").expect("checked path"),
-                mcp_servers,
-                &mcp_server_store_path(control_plane_root),
-            )
-        }
         ("PUT", path) if path_id(path, "/v1/mcp/servers/").is_some() => put_mcp_server(
             path_id(path, "/v1/mcp/servers/").expect("checked path"),
             &request.body,
@@ -3756,7 +3662,7 @@ fn route(
             workflow_store,
             control_plane_root,
             hook_bridge,
-            artloom_settings,
+            settings,
         ),
         ("POST", path)
             if decoded_package_path_id_with_suffix(path, "/v1/arts/", "/rollback").is_some() =>
@@ -3879,6 +3785,45 @@ fn route(
                 framework_registry,
             )
         }
+        ("POST", path) if tool_execute_path_id(path).is_some() => execute_registered_tool(
+            &tool_execute_path_id(path).expect("checked path"),
+            &request.body,
+            mcp_servers,
+            tool_registry,
+            workflow_store,
+            framework_registry,
+            run_store,
+            control_plane_root,
+        ),
+        ("GET", "/v1/tools/enabled") => list_enabled_tools(tool_registry),
+        ("GET", path) if path_id(path, "/v1/tools/").is_some() => get_tool(
+            path_id(path, "/v1/tools/").expect("checked path"),
+            tool_registry,
+        ),
+        ("POST", path) if path_id_with_suffix(path, "/v1/tools/", "/enable").is_some() => {
+            set_tool_enabled(
+                path_id_with_suffix(path, "/v1/tools/", "/enable").expect("checked path"),
+                true,
+                tool_registry,
+                hook_bridge,
+            )
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/tools/", "/disable").is_some() => {
+            set_tool_enabled(
+                path_id_with_suffix(path, "/v1/tools/", "/disable").expect("checked path"),
+                false,
+                tool_registry,
+                hook_bridge,
+            )
+        }
+        ("PUT", path) if path_id_with_suffix(path, "/v1/tools/", "/defaults").is_some() => {
+            update_tool_defaults(
+                path_id_with_suffix(path, "/v1/tools/", "/defaults").expect("checked path"),
+                &request.body,
+                tool_registry,
+                hook_bridge,
+            )
+        }
         ("PUT", path) if decoded_package_path_id(path, "/v1/tools/").is_some() => put_tool(
             &decoded_package_path_id(path, "/v1/tools/").expect("checked path"),
             &request.body,
@@ -3890,88 +3835,14 @@ fn route(
             tool_registry,
             hook_bridge,
         ),
-        ("POST", path) if tool_execute_path_id(path).is_some() => execute_registered_tool(
-            &tool_execute_path_id(path).expect("checked path"),
-            &request.body,
-            mcp_servers,
-            tool_registry,
-            workflow_store,
-            framework_registry,
-            run_store,
-            control_plane_root,
-        ),
-        ("GET", "/v1/artloom-compat/arts") => {
-            list_artloom_compat_arts("list_arts", tool_registry, workflow_store)
-        }
-        ("GET", "/v1/artloom-compat/arts/enabled") => {
-            list_enabled_artloom_compat_arts(tool_registry, workflow_store)
-        }
-        ("GET", "/v1/artloom-compat/user-arts") => {
-            list_artloom_compat_arts("get_user_arts", tool_registry, workflow_store)
-        }
-        ("POST", "/v1/artloom-compat/arts/sync") => {
-            sync_artloom_compat_arts(&request.body, tool_registry, hook_bridge)
-        }
-        ("POST", "/v1/artloom-compat/arts/broadcast-updated") => {
-            broadcast_artloom_compat_arts_updated(hook_bridge)
-        }
-        ("POST", "/v1/artloom-compat/native/process-art") => {
-            artloom_compat_native_process_art(&request.body)
-        }
-        ("GET", path) if path_id(path, "/v1/artloom-compat/arts/").is_some() => {
-            get_artloom_compat_art(
-                path_id(path, "/v1/artloom-compat/arts/").expect("checked path"),
-                tool_registry,
-                workflow_store,
-            )
-        }
-        ("POST", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/arts/", "/enable").is_some() =>
-        {
-            set_artloom_compat_art_enabled(
-                path_id_with_suffix(path, "/v1/artloom-compat/arts/", "/enable")
-                    .expect("checked path"),
-                true,
-                tool_registry,
-                hook_bridge,
-            )
-        }
-        ("POST", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/arts/", "/disable").is_some() =>
-        {
-            set_artloom_compat_art_enabled(
-                path_id_with_suffix(path, "/v1/artloom-compat/arts/", "/disable")
-                    .expect("checked path"),
-                false,
-                tool_registry,
-                hook_bridge,
-            )
-        }
-        ("PUT", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/arts/", "/defaults").is_some() =>
-        {
-            update_artloom_compat_art_defaults(
-                path_id_with_suffix(path, "/v1/artloom-compat/arts/", "/defaults")
-                    .expect("checked path"),
-                &request.body,
-                tool_registry,
-                hook_bridge,
-            )
-        }
-        ("GET", "/v1/python-arts/engine/status") => python_engine_status(framework_registry),
-        ("POST", "/v1/python-arts/shader/prefetch") => {
-            prefetch_python_art_shader(&request.body, tool_registry, workflow_store)
-        }
-        ("GET", "/v1/python-arts") => list_python_arts(),
-        ("GET", path) if path_id(path, "/v1/python-arts/").is_some() => {
-            get_python_art(path_id(path, "/v1/python-arts/").expect("checked path"))
-        }
-        ("POST", "/v1/python-arts/source/read") => read_python_art_source(&request.body),
-        ("POST", "/v1/python-arts/source/read-art-json") => read_python_art_json(&request.body),
-        ("POST", "/v1/python-arts/source/check-art-json") => {
+        ("GET", "/v1/art-authoring/python/status") => python_engine_status(framework_registry),
+        ("GET", "/v1/art-authoring/python/arts") => list_python_arts(),
+        ("POST", "/v1/art-authoring/source/read") => read_python_art_source(&request.body),
+        ("POST", "/v1/art-authoring/source/read-art-json") => read_python_art_json(&request.body),
+        ("POST", "/v1/art-authoring/source/check-art-json") => {
             check_python_art_json_nearby(&request.body)
         }
-        ("POST", "/v1/python-arts/source/infer-ports") => infer_python_art_ports(&request.body),
+        ("POST", "/v1/art-authoring/source/infer-ports") => infer_python_art_ports(&request.body),
         ("GET", "/v1/shared-memory/buffers") => list_shared_memory_buffers(shared_images),
         ("POST", "/v1/shared-memory/buffers") => {
             create_shared_memory_buffer(&request.body, shared_images)
@@ -3999,94 +3870,22 @@ fn route(
             path_id(path, "/v1/shared-images/").expect("checked path"),
             shared_images,
         ),
-        ("GET", "/v1/artloom-compat/settings") => get_artloom_compat_settings(artloom_settings),
-        ("PUT", "/v1/artloom-compat/settings") => {
-            put_artloom_compat_settings(&request.body, artloom_settings, hook_bridge)
-        }
-        ("POST", "/v1/artloom-compat/hook/cache-control") => {
+        ("POST", "/v1/hook-bridge/cache-control") => {
             broadcast_hook_cache_control(&request.body, hook_bridge)
         }
-        ("GET", "/v1/artloom-compat/shortcuts") => get_artloom_compat_shortcuts(artloom_settings),
-        ("PUT", path) if path_id(path, "/v1/artloom-compat/shortcuts/").is_some() => {
-            put_artloom_compat_shortcut(
-                path_id(path, "/v1/artloom-compat/shortcuts/").expect("checked path"),
-                &request.body,
-                artloom_settings,
-                hook_bridge,
-            )
-        }
-        ("GET", "/v1/artloom-compat/app-paths") => get_artloom_compat_app_paths(),
-        ("GET", "/v1/artloom-compat/ipc/status") => artloom_compat_ipc_status(hook_bridge),
-        ("POST", "/v1/artloom-compat/ipc/instantiate-workflow") => {
-            artloom_compat_instantiate_workflow(&request.body, hook_bridge)
-        }
-        ("POST", "/v1/artloom-compat/ipc/update-workflow-node") => {
-            artloom_compat_update_workflow_node(&request.body, hook_bridge, tool_registry)
-        }
-        ("POST", "/v1/artloom-compat/ipc/execute-art-node") => artloom_compat_execute_art_node(
+        ("GET", "/v1/settings") => get_settings(settings),
+        ("PUT", "/v1/settings") => put_settings(&request.body, settings, hook_bridge),
+        ("GET", "/v1/settings/shortcuts") => get_shortcuts(settings),
+        ("PUT", path) if path_id(path, "/v1/settings/shortcuts/").is_some() => put_shortcut(
+            path_id(path, "/v1/settings/shortcuts/").expect("checked path"),
             &request.body,
-            mcp_servers,
-            tool_registry,
-            workflow_store,
-            framework_registry,
-            control_plane_root,
-            run_store,
+            settings,
+            hook_bridge,
         ),
-        ("GET", "/v1/artloom-compat/system/autostart") => {
-            get_artloom_compat_autostart(artloom_settings)
-        }
-        ("POST", "/v1/artloom-compat/system/autostart") => {
-            set_artloom_compat_autostart(&request.body, artloom_settings)
-        }
-        ("POST", "/v1/artloom-compat/system/autostart/enable") => {
-            set_artloom_compat_autostart_preference("enable_autostart", true, artloom_settings)
-        }
-        ("POST", "/v1/artloom-compat/system/autostart/disable") => {
-            set_artloom_compat_autostart_preference("disable_autostart", false, artloom_settings)
-        }
-        ("POST", "/v1/artloom-compat/system/minimize-to-tray") => {
-            set_artloom_compat_minimize_to_tray(&request.body, artloom_settings)
-        }
-        ("GET", "/v1/artloom-compat/workflows") => list_artloom_compat_workflows(workflow_store),
-        ("PUT", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/metadata")
-                .is_some() =>
-        {
-            save_artloom_compat_workflow_metadata(
-                path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/metadata")
-                    .expect("checked path"),
-                &request.body,
-                workflow_store,
-            )
-        }
-        ("PUT", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/data").is_some() =>
-        {
-            save_artloom_compat_workflow_data(
-                path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/data")
-                    .expect("checked path"),
-                &request.body,
-                workflow_store,
-            )
-        }
-        ("GET", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/data").is_some() =>
-        {
-            load_artloom_compat_workflow_data(
-                path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/data")
-                    .expect("checked path"),
-                workflow_store,
-            )
-        }
-        ("DELETE", path)
-            if path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/data").is_some() =>
-        {
-            delete_artloom_compat_workflow_data(
-                path_id_with_suffix(path, "/v1/artloom-compat/workflows/", "/data")
-                    .expect("checked path"),
-                workflow_store,
-            )
-        }
+        ("GET", "/v1/runtime/app-paths") => get_app_paths(),
+        ("GET", "/v1/runtime/autostart") => get_autostart(settings),
+        ("POST", "/v1/runtime/autostart") => set_autostart(&request.body, settings),
+        ("POST", "/v1/runtime/minimize-to-tray") => set_minimize_to_tray(&request.body, settings),
         ("GET", "/v1/workflows") => list_workflows(workflow_store),
         ("GET", path) if path_id(path, "/v1/workflows/").is_some() => get_workflow(
             path_id(path, "/v1/workflows/").expect("checked path"),
@@ -4102,6 +3901,12 @@ fn route(
             workflow_store,
         ),
         ("GET", "/v1/hook-bridge/status") => hook_bridge_status(hook_bridge),
+        ("POST", "/v1/hook-bridge/workflows/instantiate") => {
+            instantiate_hook_workflow(&request.body, hook_bridge)
+        }
+        ("POST", "/v1/hook-bridge/workflows/nodes/update") => {
+            update_hook_workflow_node(&request.body, hook_bridge)
+        }
         ("GET", "/v1/devices") => list_managed_devices(device_registry, hook_bridge),
         ("POST", "/v1/devices") => {
             add_managed_device(&request.body, "approved", device_registry, hook_bridge)
@@ -4167,7 +3972,7 @@ fn route(
             mcp_servers,
             tool_registry,
             workflow_store,
-            artloom_settings,
+            settings,
             shared_images,
             ocr_provider,
             framework_registry,
@@ -5166,7 +4971,7 @@ fn delete_surface_instance(
                     broadcast_hook_bridge_json(
                         hook_bridge,
                         json!({
-                            "method": "surface/lifecycle",
+                            "method": SURFACE_EVENT_LIFECYCLE,
                             "params": {
                                 "hookNodeId": attachment.descriptor.hook_node_id,
                                 "event": {
@@ -5182,7 +4987,7 @@ fn delete_surface_instance(
                     broadcast_hook_bridge_json(
                         hook_bridge,
                         json!({
-                            "method": "surface/dispose",
+                            "method": SURFACE_EVENT_DISPOSE,
                             "params": {
                                 "hookNodeId": attachment.descriptor.hook_node_id,
                                 "instanceId": instance_id,
@@ -5377,7 +5182,7 @@ fn put_surface_snapshot(
                     broadcast_hook_bridge_json(
                         hook_bridge,
                         json!({
-                            "method": "surface/snapshot",
+                            "method": SURFACE_EVENT_SNAPSHOT,
                             "params": {
                                 "hookNodeId": attachment.descriptor.hook_node_id,
                                 "snapshot": snapshot,
@@ -5389,7 +5194,7 @@ fn put_surface_snapshot(
                 broadcast_hook_bridge_json(
                     hook_bridge,
                     json!({
-                        "method": "surface/lifecycle",
+                        "method": SURFACE_EVENT_LIFECYCLE,
                         "params": {
                             "hookNodeId": attachment.descriptor.hook_node_id,
                             "event": {
@@ -5440,7 +5245,7 @@ fn apply_surface_patch(
                 broadcast_hook_bridge_json(
                     hook_bridge,
                     json!({
-                        "method": "surface/patch",
+                        "method": SURFACE_EVENT_PATCH,
                         "params": {
                             "hookNodeId": attachment.descriptor.hook_node_id,
                             "patch": outbound_patch,
@@ -5484,7 +5289,7 @@ fn begin_surface_generation(
                 broadcast_hook_bridge_json(
                     hook_bridge,
                     json!({
-                        "method": "surface/generation",
+                        "method": SURFACE_EVENT_GENERATION,
                         "params": {
                             "hookNodeId": attachment.descriptor.hook_node_id,
                             "instanceId": instance_id,
@@ -5548,7 +5353,7 @@ fn transition_surface_lifecycle(
             broadcast_hook_bridge_json(
                 hook_bridge,
                 json!({
-                    "method": "surface/lifecycle",
+                    "method": SURFACE_EVENT_LIFECYCLE,
                     "params": {
                         "hookNodeId": attachment.descriptor.hook_node_id,
                         "event": event,
@@ -5559,7 +5364,7 @@ fn transition_surface_lifecycle(
                 broadcast_hook_bridge_json(
                     hook_bridge,
                     json!({
-                        "method": "surface/dispose",
+                        "method": SURFACE_EVENT_DISPOSE,
                         "params": {
                             "hookNodeId": attachment.descriptor.hook_node_id,
                             "instanceId": attachment.descriptor.instance_id,
@@ -6510,7 +6315,7 @@ fn mount_surface_instance(
                     broadcast_hook_bridge_json(
                         hook_bridge,
                         json!({
-                            "method": "surface/snapshot",
+                            "method": SURFACE_EVENT_SNAPSHOT,
                             "params": {
                                 "hookNodeId": attachment.descriptor.hook_node_id,
                                 "snapshot": snapshot,
@@ -6522,7 +6327,7 @@ fn mount_surface_instance(
                 broadcast_hook_bridge_json(
                     hook_bridge,
                     json!({
-                        "method": "surface/lifecycle",
+                        "method": SURFACE_EVENT_LIFECYCLE,
                         "params": {
                             "hookNodeId": attachment.descriptor.hook_node_id,
                             "event": {
@@ -7001,7 +6806,6 @@ fn put_mcp_server(
         Ok(server) => server,
         Err(error) => return invalid_request(error.to_string()),
     };
-    let server = normalize_mcp_server_config(server);
     if server.id != path_id {
         return id_mismatch("server", path_id, &server.id);
     }
@@ -7059,132 +6863,6 @@ fn delete_mcp_server(
         200,
         serde_json::to_string(&json!({ "serverId": path_id, "deleted": true }))?,
     ))
-}
-
-fn artloom_compat_list_mcp_servers(mcp_servers: &SharedMcpServerStore) -> Result<(u16, String)> {
-    let mut servers = mcp_servers
-        .lock()
-        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    servers.sort_by(|left, right| left.id.cmp(&right.id));
-    let count = servers.len();
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "get_mcp_servers",
-            "servers": servers,
-            "count": count,
-        }))?,
-    ))
-}
-
-fn artloom_compat_save_mcp_server(
-    body: &str,
-    mcp_servers: &SharedMcpServerStore,
-    store_path: &Path,
-) -> Result<(u16, String)> {
-    let server = match serde_json::from_str::<McpServerConfig>(body) {
-        Ok(server) => server,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let server = normalize_mcp_server_config(server);
-    if server.id.trim().is_empty() {
-        return invalid_request("MCP server id is required");
-    }
-    if let Err(error) = server.validate() {
-        return invalid_request(error.to_string());
-    }
-
-    {
-        let mut guard = mcp_servers
-            .lock()
-            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
-        let previous = guard.insert(server.id.clone(), server.clone());
-        if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
-            match previous {
-                Some(previous_server) => {
-                    guard.insert(server.id.clone(), previous_server);
-                }
-                None => {
-                    guard.remove(&server.id);
-                }
-            }
-            return Err(error);
-        }
-    }
-
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "save_mcp_server",
-            "message": "Saved successfully",
-            "server": server,
-        }))?,
-    ))
-}
-
-fn artloom_compat_delete_mcp_server(
-    path_id: &str,
-    mcp_servers: &SharedMcpServerStore,
-    store_path: &Path,
-) -> Result<(u16, String)> {
-    {
-        let mut guard = mcp_servers
-            .lock()
-            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
-        let Some(removed) = guard.remove(path_id) else {
-            return structured_error(
-                404,
-                json!({
-                    "compatCommand": "delete_mcp_server",
-                    "code": "mcp_server_not_found",
-                    "message": "Server not found",
-                    "server_id": path_id,
-                }),
-            );
-        };
-        if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
-            guard.insert(path_id.to_owned(), removed);
-            return Err(error);
-        }
-    }
-
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "delete_mcp_server",
-            "serverId": path_id,
-            "deleted": true,
-            "message": "Deleted successfully",
-        }))?,
-    ))
-}
-
-fn artloom_compat_fetch_mcp_registry(
-    path: &str,
-    endpoint: &str,
-    cache_path: &Path,
-) -> Result<(u16, String)> {
-    let (status, body) = fetch_mcp_registry(path, endpoint, cache_path)?;
-    if status != 200 {
-        return Ok((status, body));
-    }
-    let mut value =
-        serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({ "data": body }));
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "compatCommand".to_owned(),
-            Value::String("fetch_mcp_registry".to_owned()),
-        );
-    } else {
-        value = json!({
-            "compatCommand": "fetch_mcp_registry",
-            "data": value,
-        });
-    }
-    Ok((200, serde_json::to_string(&value)?))
 }
 
 fn fetch_mcp_registry(path: &str, endpoint: &str, cache_path: &Path) -> Result<(u16, String)> {
@@ -7309,14 +6987,12 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
             return structured_error(
                 400,
                 json!({
-                    "compatCommand": "test_mcp_connection",
                     "code": "invalid_mcp_server",
                     "message": format!("invalid MCP server config: {error}"),
                 }),
             );
         }
     };
-    let config = normalize_mcp_server_config(config);
 
     let mut client = match McpClient::connect(&config) {
         Ok(client) => client,
@@ -7324,7 +7000,6 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
             return Ok((
                 200,
                 serde_json::to_string(&json!({
-                    "compatCommand": "test_mcp_connection",
                     "success": false,
                     "tools": [],
                     "error": error.to_string(),
@@ -7338,7 +7013,6 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
             return Ok((
                 200,
                 serde_json::to_string(&json!({
-                    "compatCommand": "test_mcp_connection",
                     "success": false,
                     "tools": [],
                     "error": error.to_string(),
@@ -7352,7 +7026,6 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
             return Ok((
                 200,
                 serde_json::to_string(&json!({
-                    "compatCommand": "test_mcp_connection",
                     "success": false,
                     "tools": [],
                     "server_info": server_info,
@@ -7370,7 +7043,6 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "test_mcp_connection",
             "success": true,
             "tools": tools,
             "server_info": server_info,
@@ -7379,8 +7051,8 @@ fn test_mcp_connection(body: &str) -> Result<(u16, String)> {
     ))
 }
 
-fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
-    let request: ArtLoomCompatCallMcpToolRequest = match serde_json::from_str(body) {
+fn call_mcp_tool(body: &str) -> Result<(u16, String)> {
+    let request: McpToolCallRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -7390,9 +7062,9 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
     }
 
     let config = McpServerConfig {
-        id: "artloom-compat-direct".to_owned(),
-        name: "ArtLoom Compat Direct MCP".to_owned(),
-        description: "One-shot ArtLoom call_mcp_tool compatibility server".to_owned(),
+        id: "loom-direct".to_owned(),
+        name: "Loom Direct MCP".to_owned(),
+        description: "One-shot Loom MCP tool call".to_owned(),
         command: request.command.trim().to_owned(),
         args: request.args,
         env: request.env,
@@ -7410,7 +7082,6 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
             return structured_error(
                 502,
                 json!({
-                    "compatCommand": "call_mcp_tool",
                     "code": "mcp_spawn_failed",
                     "message": error.to_string(),
                 }),
@@ -7421,7 +7092,6 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
         return structured_error(
             502,
             json!({
-                "compatCommand": "call_mcp_tool",
                 "code": "mcp_initialize_failed",
                 "message": error.to_string(),
             }),
@@ -7433,7 +7103,6 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
             return structured_error(
                 502,
                 json!({
-                    "compatCommand": "call_mcp_tool",
                     "code": "mcp_tool_call_failed",
                     "message": error.to_string(),
                 }),
@@ -7444,7 +7113,6 @@ fn artloom_compat_call_mcp_tool(body: &str) -> Result<(u16, String)> {
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "call_mcp_tool",
             "status": "succeeded",
             "jsonrpc": "2.0",
             "id": 3,
@@ -7472,7 +7140,6 @@ fn check_mcp_package_installed(body: &str) -> Result<(u16, String)> {
 
     let value = match output {
         Ok(output) => json!({
-            "compatCommand": "check_mcp_package_installed",
             "installed": output.status.success(),
             "module": module_name,
             "python": python.to_string_lossy(),
@@ -7480,7 +7147,6 @@ fn check_mcp_package_installed(body: &str) -> Result<(u16, String)> {
             "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
         }),
         Err(error) => json!({
-            "compatCommand": "check_mcp_package_installed",
             "installed": false,
             "module": module_name,
             "python": python.to_string_lossy(),
@@ -7513,12 +7179,11 @@ fn build_mcp_package_install_plan(body: &str) -> Result<(u16, String)> {
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "install_mcp_package",
             "package": package_name,
             "sideEffect": false,
             "mode": "safe-preview",
             "command": command,
-            "message": "Install plan prepared. Loom does not run arbitrary package installation from this compatibility preview.",
+            "message": "Install plan prepared. Loom does not run arbitrary package installation from this preview.",
         }))?,
     ))
 }
@@ -7696,10 +7361,41 @@ fn create_authored_art(
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
-    let request: CreateAuthoredArtRequest = match serde_json::from_str(body) {
+    let mut request: CreateAuthoredArtRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
+    let (identity, _) = match ensure_local_publisher_identity(control_plane_root) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return structured_error(
+                500,
+                json!({ "code": "publisher_identity_failed", "message": error }),
+            )
+        }
+    };
+    let metadata = request
+        .tool
+        .metadata
+        .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !metadata.is_object() {
+        *metadata = Value::Object(serde_json::Map::new());
+    }
+    let package_security = metadata
+        .as_object_mut()
+        .expect("authored Art metadata was normalized")
+        .entry("packageSecurity".to_owned())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !package_security.is_object() {
+        *package_security = Value::Object(serde_json::Map::new());
+    }
+    package_security
+        .as_object_mut()
+        .expect("authored Art package security was normalized")
+        .insert(
+            "publisher".to_owned(),
+            json!({ "id": identity.user_id, "name": "Local Loom user" }),
+        );
     if matches!(&request.tool.execution, ToolExecution::FrameworkArt { .. })
         && request.runtime.is_none()
     {
@@ -7725,7 +7421,7 @@ fn create_authored_art(
         tool_registry,
     ) {
         Ok(report) => {
-            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            broadcast_tool_capabilities_updated(hook_bridge);
             let tool = tool_registry
                 .get_tool(&qualified_id)
                 .ok()
@@ -7858,7 +7554,7 @@ fn install_art(
                     json!({ "code": "workflow_art_install_failed", "message": message }),
                 );
             }
-            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            broadcast_tool_capabilities_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "report": report }))?))
         }
         Err(loom_tool_registry::install::ArtInstallError::FrameworkNotReady {
@@ -7904,7 +7600,7 @@ fn rollback_art(
                     json!({ "code": "workflow_art_rollback_failed", "message": message }),
                 );
             }
-            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            broadcast_tool_capabilities_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "tool": tool }))?))
         }
         Err(error) => structured_error(
@@ -7927,7 +7623,7 @@ fn uninstall_art(
     ) {
         Ok(()) => {
             let _ = ArtSettingsStore::new(control_plane_root).delete(art_id);
-            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            broadcast_tool_capabilities_updated(hook_bridge);
             Ok((
                 200,
                 serde_json::to_string(&json!({ "artId": art_id, "uninstalled": true }))?,
@@ -8253,7 +7949,7 @@ fn put_art_management_settings(
             );
         }
     }
-    let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+    broadcast_tool_capabilities_updated(hook_bridge);
     get_art_management(&identity, tool_registry, control_plane_root)
 }
 
@@ -8499,7 +8195,7 @@ fn update_art_version(
             return tool_registry_error_response(error);
         }
     }
-    let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+    broadcast_tool_capabilities_updated(hook_bridge);
     get_art_management(&identity, tool_registry, control_plane_root)
 }
 
@@ -8509,11 +8205,11 @@ fn auto_update_arts(
     workflow_store: &WorkflowStore,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
-    settings_store: &SharedArtLoomCompatSettingsStore,
+    settings_store: &SharedLoomSettingsStore,
 ) -> Result<(u16, String)> {
     let auto_update_enabled = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?
         .settings
         .art_store
         .auto_update;
@@ -8602,7 +8298,7 @@ fn auto_update_arts(
         }
     }
     if !updated.is_empty() {
-        let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+        broadcast_tool_capabilities_updated(hook_bridge);
     }
     Ok((
         200,
@@ -9160,6 +8856,33 @@ fn normalize_sha256(value: &str) -> Option<String> {
     (digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(digest)
 }
 
+fn resolve_art_store_package_version(
+    catalog: Option<&RemoteArtStoreCatalog>,
+    id: &str,
+    requested: Option<&str>,
+) -> std::result::Result<String, String> {
+    if let Some(version) = requested {
+        if semver::Version::parse(version).is_err() {
+            return Err(format!("store package `{id}` target version is invalid"));
+        }
+        return Ok(version.to_owned());
+    }
+    let entry = catalog
+        .and_then(|catalog| catalog.arts.iter().find(|entry| entry.id == id))
+        .ok_or_else(|| format!("store catalog does not contain Art `{id}`"))?;
+    if semver::Version::parse(&entry.latest_version).is_err()
+        || !entry
+            .versions
+            .iter()
+            .any(|version| version.version == entry.latest_version)
+    {
+        return Err(format!(
+            "store catalog has no valid latest version for Art `{id}`"
+        ));
+    }
+    Ok(entry.latest_version.clone())
+}
+
 fn fetch_art_store_package(
     client: &reqwest::blocking::Client,
     policy: &OutboundPolicy,
@@ -9173,16 +8896,18 @@ fn fetch_art_store_package(
             id.to_owned(),
         ));
     }
-    if version.is_some_and(|version| semver::Version::parse(version).is_err()) {
-        return Err(
+    let catalog = version
+        .is_none()
+        .then(|| fetch_remote_art_store_catalog(store))
+        .transpose()
+        .map_err(|error| {
             loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
-                "store package `{id}` target version is invalid"
-            )),
-        );
-    }
-    let url = version
-        .map(|version| format!("{store}/arts/{id}/{version}.zip"))
-        .unwrap_or_else(|| format!("{store}/arts/{id}.zip"));
+                "resolve latest version for `{id}` from store: {error}"
+            ))
+        })?;
+    let version = resolve_art_store_package_version(catalog.as_ref(), id, version)
+        .map_err(loom_tool_registry::install::ArtInstallError::InvalidPackage)?;
+    let url = format!("{store}/arts/{id}/{version}.zip");
     let expected = if let Some(expected) = expected_sha256 {
         normalize_sha256(expected)
     } else {
@@ -9252,7 +8977,7 @@ fn install_art_from_store(
                     );
                 }
             }
-            let _ = broadcast_artloom_compat_arts_updated(hook_bridge);
+            broadcast_tool_capabilities_updated(hook_bridge);
             Ok((200, serde_json::to_string(&json!({ "reports": reports }))?))
         }
         Err(loom_tool_registry::install::ArtInstallError::FrameworkNotReady {
@@ -9442,7 +9167,12 @@ fn installed_art_package_dir(tool: &ToolDefinition, control_plane_root: &Path) -
         .and_then(Value::as_str)
         .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| control_plane_root.join("arts").join(&tool.id))
+        .unwrap_or_else(|| {
+            control_plane_root
+                .join("arts")
+                .join(".unresolved")
+                .join(&tool.id)
+        })
 }
 
 fn is_platform_global_art_id(value: &str) -> bool {
@@ -10608,7 +10338,7 @@ fn put_tool(
         Ok(saved) => saved,
         Err(error) => return tool_registry_error_response(error),
     };
-    broadcast_hook_bridge_json(hook_bridge, arts_updated_broadcast());
+    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
     Ok((200, serde_json::to_string(&json!({ "tool": saved }))?))
 }
 
@@ -10633,260 +10363,47 @@ fn delete_tool(
         );
     }
 
-    broadcast_hook_bridge_json(hook_bridge, arts_updated_broadcast());
+    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
     Ok((
         200,
         serde_json::to_string(&json!({ "toolId": path_id, "deleted": true }))?,
     ))
 }
 
-fn list_artloom_compat_arts(
-    compat_command: &str,
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
+fn list_enabled_tools(tool_registry: &ToolRegistry) -> Result<(u16, String)> {
     let tools = match tool_registry.list_tools() {
-        Ok(tools) => tools,
-        Err(error) => return tool_registry_error_response(error),
-    };
-    let compat_tools: Vec<ToolDefinition> = tools
-        .iter()
-        .filter(|tool| is_artloom_compat_visible_tool(tool))
-        .cloned()
-        .collect();
-    let arts: Vec<Value> = compat_tools
-        .iter()
-        .map(|tool| {
-            if compat_command == "get_user_arts" {
-                artloom_frontend_user_art_json(tool)
-            } else {
-                artloom_compat_art_json_for_hook(tool, &tools, workflow_store)
-            }
-        })
-        .collect();
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": compat_command,
-            "arts": arts,
-            "tools": compat_tools,
-            "count": arts.len(),
-        }))?,
-    ))
-}
-
-fn list_enabled_artloom_compat_arts(
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    let tools = match tool_registry.list_tools() {
-        Ok(tools) => tools,
-        Err(error) => return tool_registry_error_response(error),
-    };
-    let compat_tools: Vec<ToolDefinition> = tools
-        .iter()
-        .filter(|tool| is_artloom_compat_visible_tool(tool) && tool.enabled)
-        .cloned()
-        .collect();
-    let arts: Vec<Value> = compat_tools
-        .iter()
-        .map(|tool| artloom_compat_art_json_for_hook(tool, &tools, workflow_store))
-        .collect();
-    let count = arts.len();
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "get_enabled_arts",
-            "type": "arts",
-            "data": arts.clone(),
-            "arts": arts,
-            "tools": compat_tools,
-            "count": count,
-        }))?,
-    ))
-}
-
-fn sync_artloom_compat_arts(
-    body: &str,
-    tool_registry: &ToolRegistry,
-    hook_bridge: &SharedHookBridgeRuntime,
-) -> Result<(u16, String)> {
-    let request = match serde_json::from_str::<Value>(body) {
-        Ok(value) => value,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-
-    let response = match sync_artloom_compat_arts_value(&request, tool_registry) {
-        Ok(response) => response,
-        Err(response) => return response,
-    };
-    broadcast_hook_bridge_json(hook_bridge, arts_updated_broadcast());
-    Ok((200, serde_json::to_string(&response)?))
-}
-
-fn broadcast_artloom_compat_arts_updated(
-    hook_bridge: &SharedHookBridgeRuntime,
-) -> Result<(u16, String)> {
-    broadcast_hook_bridge_json(hook_bridge, arts_updated_broadcast());
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "broadcast_arts_updated",
-            "broadcasted": true,
-        }))?,
-    ))
-}
-
-fn artloom_compat_native_process_art(body: &str) -> Result<(u16, String)> {
-    let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request = match serde_json::from_str::<ArtLoomCompatNativeProcessArtRequest>(request_body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    if request.art_id.trim().is_empty() {
-        return invalid_request("native_process_art requires art_id");
-    }
-    if request.input_base64.trim().is_empty() {
-        return invalid_request("native_process_art requires input_base64");
-    }
-
-    let result = loom_native_image::process_art(
-        request.art_id.trim(),
-        request.input_base64.trim(),
-        request.params,
-    );
-
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "native_process_art",
-            "success": result.success,
-            "output_base64": result.output_base64,
-            "error": result.error,
-            "processing_time_ms": result.processing_time_ms,
-        }))?,
-    ))
-}
-
-fn sync_artloom_compat_arts_value(
-    request: &Value,
-    tool_registry: &ToolRegistry,
-) -> std::result::Result<Value, Result<(u16, String)>> {
-    if let Some(arts) = request.get("arts").and_then(Value::as_array) {
-        let existing_tools = match tool_registry.list_tools() {
-            Ok(tools) => tools,
-            Err(error) => return Err(tool_registry_error_response(error)),
-        };
-
-        let compat_ids: Vec<String> = existing_tools
-            .iter()
-            .filter(|tool| is_artloom_sync_managed_tool(tool))
-            .map(|tool| tool.id.clone())
-            .collect();
-
-        for tool_id in compat_ids {
-            if let Err(error) = tool_registry.delete_tool(&tool_id) {
-                return Err(tool_registry_error_response(error));
-            }
-        }
-
-        let mut synced_count = 0usize;
-        let mut preserved_count = 0usize;
-        for art in arts {
-            let tool = match artloom_sync_art_to_tool(art) {
-                Ok(tool) => tool,
-                Err(response) => return Err(response),
-            };
-            if existing_tools
-                .iter()
-                .any(|existing| existing.id == tool.id && is_artloom_loom_local_tool(existing))
-            {
-                preserved_count += 1;
-                continue;
-            }
-            match tool_registry.save_tool(tool) {
-                Ok(_) => synced_count += 1,
-                Err(error) => return Err(tool_registry_error_response(error)),
-            }
-        }
-
-        let tools = match tool_registry.list_tools() {
-            Ok(tools) => tools,
-            Err(error) => return Err(tool_registry_error_response(error)),
-        };
-        let compat_tools: Vec<ToolDefinition> = tools
+        Ok(tools) => tools
             .into_iter()
-            .filter(is_artloom_compat_visible_tool)
-            .collect();
-        let compat_arts: Vec<Value> = compat_tools.iter().map(artloom_compat_art_json).collect();
-
-        return Ok(json!({
-            "compatCommand": "sync_user_arts",
-            "synced": true,
-            "sideEffect": true,
-            "syncedCount": synced_count,
-            "preservedCount": preserved_count,
-            "arts": compat_arts,
-            "tools": compat_tools,
-            "count": compat_arts.len(),
-            "message": if preserved_count > 0 {
-                "Imported ArtLoom compat Arts into the Loom registry, preserved non-compat Loom tools, and kept Loom-local compat Arts as the source of truth on id collisions."
-            } else {
-                "Imported ArtLoom compat Arts into the Loom registry and preserved non-compat Loom tools."
-            },
-        }));
-    }
-
-    let tools = match tool_registry.list_tools() {
-        Ok(tools) => tools,
-        Err(error) => return Err(tool_registry_error_response(error)),
+            .filter(|tool| tool.enabled)
+            .collect::<Vec<_>>(),
+        Err(error) => return tool_registry_error_response(error),
     };
-    let compat_tools: Vec<ToolDefinition> = tools
-        .into_iter()
-        .filter(is_artloom_compat_visible_tool)
-        .collect();
-    let arts: Vec<Value> = compat_tools.iter().map(artloom_compat_art_json).collect();
-    Ok(json!({
-        "compatCommand": "sync_user_arts",
-        "synced": true,
-        "sideEffect": false,
-        "arts": arts,
-        "tools": compat_tools,
-        "count": arts.len(),
-        "message": "Loom registry is the source of truth for ArtLoom compat Arts; sync_user_arts only mirrors the current compat Arts and broadcasts arts_updated.",
-    }))
+    let count = tools.len();
+    Ok((
+        200,
+        serde_json::to_string(&json!({ "tools": tools, "count": count }))?,
+    ))
 }
 
-fn get_artloom_compat_art(
-    art_id: &str,
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    let tool = match get_artloom_tool(art_id, tool_registry) {
+fn broadcast_tool_capabilities_updated(hook_bridge: &SharedHookBridgeRuntime) {
+    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+}
+
+fn get_tool(tool_id: &str, tool_registry: &ToolRegistry) -> Result<(u16, String)> {
+    let tool = match get_registered_tool(tool_id, tool_registry) {
         Ok(tool) => tool,
         Err(response) => return response,
     };
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "get_art",
-            "art": artloom_compat_art_json_for_hook(
-                &tool,
-                &tool_registry.list_tools().unwrap_or_default(),
-                workflow_store,
-            ),
-            "tool": tool,
-        }))?,
-    ))
+    Ok((200, serde_json::to_string(&json!({ "tool": tool }))?))
 }
 
-fn set_artloom_compat_art_enabled(
-    art_id: &str,
+fn set_tool_enabled(
+    tool_id: &str,
     enabled: bool,
     tool_registry: &ToolRegistry,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
-    let mut tool = match get_artloom_tool(art_id, tool_registry) {
+    let mut tool = match get_registered_tool(tool_id, tool_registry) {
         Ok(tool) => tool,
         Err(response) => return response,
     };
@@ -10895,21 +10412,12 @@ fn set_artloom_compat_art_enabled(
         Ok(saved) => saved,
         Err(error) => return tool_registry_error_response(error),
     };
-    broadcast_hook_bridge_json(hook_bridge, arts_updated_broadcast());
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": if enabled { "enable_art" } else { "disable_art" },
-            "artId": art_id,
-            "enabled": enabled,
-            "art": artloom_compat_art_json(&saved),
-            "tool": saved,
-        }))?,
-    ))
+    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+    Ok((200, serde_json::to_string(&json!({ "tool": saved }))?))
 }
 
-fn update_artloom_compat_art_defaults(
-    art_id: &str,
+fn update_tool_defaults(
+    tool_id: &str,
     body: &str,
     tool_registry: &ToolRegistry,
     hook_bridge: &SharedHookBridgeRuntime,
@@ -10918,34 +10426,25 @@ fn update_artloom_compat_art_defaults(
         Ok(value) => value,
         Err(error) => return invalid_request(error.to_string()),
     };
-    let mut tool = match get_artloom_tool(art_id, tool_registry) {
+    let mut tool = match get_registered_tool(tool_id, tool_registry) {
         Ok(tool) => tool,
         Err(response) => return response,
     };
-    apply_artloom_defaults_update(&mut tool, &request);
+    apply_tool_defaults_update(&mut tool, &request);
     let saved = match tool_registry.save_tool(tool) {
         Ok(saved) => saved,
         Err(error) => return tool_registry_error_response(error),
     };
-    broadcast_hook_bridge_json(hook_bridge, arts_updated_broadcast());
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "update_art_defaults",
-            "artId": art_id,
-            "art": artloom_compat_art_json(&saved),
-            "tool": saved,
-        }))?,
-    ))
+    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+    Ok((200, serde_json::to_string(&json!({ "tool": saved }))?))
 }
 
-fn get_artloom_tool(
+fn get_registered_tool(
     tool_id: &str,
     tool_registry: &ToolRegistry,
 ) -> std::result::Result<ToolDefinition, Result<(u16, String)>> {
     match tool_registry.get_tool(tool_id) {
-        Ok(Some(tool)) if is_artloom_compat_visible_tool(&tool) => Ok(tool),
-        Ok(Some(_)) => Err(tool_not_found_response(tool_id)),
+        Ok(Some(tool)) => Ok(tool),
         Ok(None) => Err(tool_not_found_response(tool_id)),
         Err(error) => Err(tool_registry_error_response(error)),
     }
@@ -10962,68 +10461,16 @@ fn tool_not_found_response(tool_id: &str) -> Result<(u16, String)> {
     )
 }
 
-fn artloom_compat_art_json(tool: &ToolDefinition) -> Value {
-    json!({
-        "id": &tool.id,
-        "art_id": &tool.id,
-        "name": &tool.name,
-        "label": &tool.name,
-        "description": &tool.description,
-        "icon": artloom_compat_icon(tool),
-        "enabled": tool.enabled,
-        "auto_process": artloom_compat_auto_process(tool),
-        "execution_type": artloom_compat_execution_type(tool),
-        "execution": artloom_compat_execution(tool),
-        "inputs": &tool.inputs,
-        "outputs": &tool.outputs,
-        "params": &tool.params,
-        "defaults": artloom_compat_defaults_json(tool),
-        "metadata": &tool.metadata,
-    })
-}
-
-fn artloom_compat_art_json_for_hook(
-    tool: &ToolDefinition,
-    tools: &[ToolDefinition],
-    workflow_store: &WorkflowStore,
-) -> Value {
-    let mut art = artloom_compat_art_json(tool);
-    art["params"] = Value::Array(artloom_compat_hook_params(tool, tools, workflow_store));
-    if workflow_preview_tool(tool, tools, workflow_store).is_some_and(tool_supports_shader_preview)
-    {
-        if !art["metadata"].is_object() {
-            art["metadata"] = json!({});
-        }
-        if !art["metadata"]["capabilities"].is_object() {
-            art["metadata"]["capabilities"] = json!({});
-        }
-        art["metadata"]["capabilities"]["preview"] = json!("shader");
-        art["metadata"]["capabilities"]["requiresFormalExecution"] = json!(true);
-        let image_inputs = artloom_compat_image_input_names(tool);
-        if let Some(input) = image_inputs.first() {
-            art["metadata"]["capabilities"]["shaderInput"] = json!(input);
-        }
-        if let Some(reference) = image_inputs.get(1) {
-            art["metadata"]["capabilities"]["shaderReferenceInput"] = json!(reference);
-        }
-    }
-    art
-}
-
-fn artloom_compat_image_input_names(tool: &ToolDefinition) -> Vec<String> {
+fn hook_image_input_names(tool: &ToolDefinition) -> Vec<String> {
     tool.inputs
         .iter()
         .filter_map(|input| {
             let object = input.as_object()?;
-            let name = object
-                .get("name")
-                .or_else(|| object.get("id"))
-                .and_then(Value::as_str)?
-                .trim();
+            let name = object.get("name").and_then(Value::as_str)?.trim();
             if name.is_empty() {
                 return None;
             }
-            let image_like = ["type", "data_type", "executionType", "execution_type"]
+            let image_like = ["type", "data_type", "execution_type"]
                 .iter()
                 .filter_map(|key| object.get(*key).and_then(Value::as_str))
                 .any(|value| value.to_ascii_lowercase().contains("image"))
@@ -11063,7 +10510,7 @@ fn tool_supports_shader_preview(tool: &ToolDefinition) -> bool {
         })
 }
 
-fn artloom_compat_hook_params(
+fn hook_capability_parameters(
     tool: &ToolDefinition,
     tools: &[ToolDefinition],
     workflow_store: &WorkflowStore,
@@ -11082,7 +10529,7 @@ fn artloom_compat_hook_params(
     tool.params
         .iter()
         .map(|param| {
-            let Some(param_id) = artloom_param_id(param) else {
+            let Some(param_id) = hook_parameter_id(param) else {
                 return param.clone();
             };
             let Some(binding) = bindings.inputs.iter().find(|binding| {
@@ -11099,25 +10546,21 @@ fn artloom_compat_hook_params(
             let target = binding
                 .target
                 .strip_prefix("params.")
-                .or_else(|| binding.target.strip_prefix("with."))
                 .unwrap_or(&binding.target);
             let Some(node_param) = node_tool
                 .params
                 .iter()
-                .find(|candidate| artloom_param_id(candidate) == Some(target))
+                .find(|candidate| hook_parameter_id(candidate) == Some(target))
             else {
                 return param.clone();
             };
-            merge_artloom_param_ui_schema(param, node_param)
+            merge_hook_parameter_ui_schema(param, node_param)
         })
         .collect()
 }
 
-fn artloom_param_id(param: &Value) -> Option<&str> {
-    param
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| param.get("name").and_then(Value::as_str))
+fn hook_parameter_id(param: &Value) -> Option<&str> {
+    param.get("id").and_then(Value::as_str)
 }
 
 fn find_workflow_node_tool<'a>(
@@ -11132,12 +10575,11 @@ fn find_workflow_node_tool<'a>(
     matches.next().is_none().then_some(first)
 }
 
-fn merge_artloom_param_ui_schema(param: &Value, source: &Value) -> Value {
+fn merge_hook_parameter_ui_schema(param: &Value, source: &Value) -> Value {
     const UI_SCHEMA_KEYS: &[&str] = &[
         "widget",
         "type",
         "data_type",
-        "dataType",
         "min",
         "minimum",
         "max",
@@ -11162,47 +10604,26 @@ fn merge_artloom_param_ui_schema(param: &Value, source: &Value) -> Value {
     Value::Object(merged)
 }
 
-fn artloom_frontend_user_art_json(tool: &ToolDefinition) -> Value {
-    json!({
-        "id": &tool.id,
-        "name": &tool.name,
-        "description": &tool.description,
-        "category": "Adapter",
-        "version": "1.0.0",
-        "author": "User",
-        "status": if tool.enabled { "active" } else { "inactive" },
-        "iconColor": artloom_compat_icon(tool),
-        "downloads": 0,
-        "owned": true,
-        "executionType": artloom_frontend_execution_type(tool),
-        "execution": artloom_frontend_execution(tool),
-        "autoProcess": artloom_compat_auto_process(tool),
-        "inputs": &tool.inputs,
-        "outputs": artloom_frontend_outputs(tool),
-    })
-}
-
-fn artloom_compat_defaults_json(tool: &ToolDefinition) -> Value {
-    tool.metadata
+fn tool_defaults_json(tool: &ToolDefinition) -> Value {
+    if let Some(defaults) = tool
+        .metadata
         .as_ref()
         .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(Value::as_object)
-        .and_then(|compat| compat.get("defaults"))
-        .cloned()
-        .unwrap_or_else(|| artloom_param_defaults_json(tool))
+        .and_then(|metadata| metadata.get("artUserSettings"))
+        .and_then(|settings| settings.get("defaults"))
+    {
+        return defaults.clone();
+    }
+    manifest_parameter_defaults_json(tool)
 }
 
-fn artloom_param_defaults_json(tool: &ToolDefinition) -> Value {
+fn manifest_parameter_defaults_json(tool: &ToolDefinition) -> Value {
     let mut defaults = serde_json::Map::new();
     for param in &tool.params {
         let Some(param_object) = param.as_object() else {
             continue;
         };
-        let key = param_object
-            .get("id")
-            .and_then(Value::as_str)
-            .or_else(|| param_object.get("name").and_then(Value::as_str));
+        let key = param_object.get("id").and_then(Value::as_str);
         let Some(key) = key else {
             continue;
         };
@@ -11213,433 +10634,7 @@ fn artloom_param_defaults_json(tool: &ToolDefinition) -> Value {
     Value::Object(defaults)
 }
 
-fn artloom_compat_icon(tool: &ToolDefinition) -> Value {
-    tool.metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(Value::as_object)
-        .and_then(|compat| compat.get("icon"))
-        .cloned()
-        // Empty string (not null) so string-typed consumers like Hook's
-        // ArtDefinition.icon deserialize cleanly.
-        .unwrap_or_else(|| Value::String(String::new()))
-}
-
-fn artloom_compat_auto_process(tool: &ToolDefinition) -> bool {
-    tool.metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(Value::as_object)
-        .and_then(|compat| compat.get("autoProcess"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn artloom_frontend_execution_type(tool: &ToolDefinition) -> Value {
-    artloom_compat_execution_type(tool)
-}
-
-fn artloom_compat_execution_type(tool: &ToolDefinition) -> Value {
-    tool.metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(Value::as_object)
-        .and_then(|compat| compat.get("executionType"))
-        .cloned()
-        .unwrap_or_else(|| json!(artloom_execution_type_name(&tool.execution)))
-}
-
-fn artloom_frontend_execution(tool: &ToolDefinition) -> Value {
-    artloom_compat_execution(tool)
-}
-
-fn artloom_compat_execution(tool: &ToolDefinition) -> Value {
-    tool.metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(Value::as_object)
-        .and_then(|compat| compat.get("execution"))
-        .cloned()
-        .unwrap_or_else(|| json!(&tool.execution))
-}
-
-fn artloom_frontend_outputs(tool: &ToolDefinition) -> Value {
-    artloom_frontend_execution(tool)
-        .as_object()
-        .and_then(|execution| execution.get("outputs"))
-        .cloned()
-        .unwrap_or_else(|| json!(&tool.outputs))
-}
-
-fn artloom_execution_type_name(execution: &ToolExecution) -> &'static str {
-    match execution {
-        ToolExecution::CloudApi { .. } => "cloud_api",
-        ToolExecution::Mcp { .. } => "mcp",
-        ToolExecution::Workflow { .. } => "workflow",
-        ToolExecution::FrameworkArt { .. } => "framework_art",
-    }
-}
-
-fn artloom_compat_metadata(
-    icon: Option<Value>,
-    auto_process: bool,
-    defaults: Option<Value>,
-    legacy_execution_type: Option<String>,
-    legacy_execution: Option<Value>,
-) -> Value {
-    let mut compat = serde_json::Map::new();
-    compat.insert("source".to_owned(), json!("artloom-compat"));
-    compat.insert("managedBy".to_owned(), json!("sync_user_arts"));
-    if let Some(icon) = icon {
-        compat.insert("icon".to_owned(), icon);
-    }
-    if auto_process {
-        compat.insert("autoProcess".to_owned(), json!(true));
-    }
-    if let Some(defaults) = defaults {
-        compat.insert("defaults".to_owned(), defaults);
-    }
-    if let Some(execution_type) = legacy_execution_type {
-        compat.insert("executionType".to_owned(), Value::String(execution_type));
-    }
-    if let Some(execution) = legacy_execution {
-        compat.insert("execution".to_owned(), execution);
-    }
-
-    let mut root = serde_json::Map::new();
-    root.insert("artloomCompat".to_owned(), Value::Object(compat));
-    Value::Object(root)
-}
-
-fn artloom_compat_source(tool: &ToolDefinition) -> Option<&str> {
-    tool.metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("artloomCompat"))
-        .and_then(Value::as_object)
-        .and_then(|compat| compat.get("source"))
-        .and_then(Value::as_str)
-}
-
-fn is_artloom_compat_visible_tool(tool: &ToolDefinition) -> bool {
-    matches!(
-        artloom_compat_source(tool),
-        Some("artloom-compat") | Some("loom-local")
-    )
-}
-
-fn is_artloom_sync_managed_tool(tool: &ToolDefinition) -> bool {
-    artloom_compat_source(tool) == Some("artloom-compat")
-}
-
-fn is_artloom_loom_local_tool(tool: &ToolDefinition) -> bool {
-    artloom_compat_source(tool) == Some("loom-local")
-}
-
-fn artloom_object_str<'a>(
-    object: &'a serde_json::Map<String, Value>,
-    keys: &[&str],
-) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| object.get(*key).and_then(Value::as_str))
-}
-
-fn artloom_value_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    value.as_object().and_then(|object| {
-        keys.iter()
-            .find_map(|key| object.get(*key).and_then(Value::as_str))
-    })
-}
-
-fn artloom_legacy_execution_type(
-    object: &serde_json::Map<String, Value>,
-    execution: &Value,
-) -> Option<String> {
-    artloom_object_str(object, &["execution_type", "executionType"])
-        .or_else(|| artloom_value_str(execution, &["type"]))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-// Convert an ArtLoom `headers` value into the JSON-string form the cloud_api
-// executor expects (`serde_json::from_str::<HashMap<String,String>>`). ArtLoom
-// sends headers as an object (`{"x-api-key":"{api_key}"}`) with `{api_key}`
-// placeholders resolved from the execution's `api_key` field; the executor
-// wants a JSON string. A value already a string is passed through untouched.
-fn artloom_headers_to_json_string(execution: &Value) -> Option<String> {
-    let headers = execution.get("headers")?;
-    if let Some(text) = headers.as_str() {
-        let trimmed = text.trim();
-        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
-    }
-    let object = headers.as_object()?;
-    let api_key = execution
-        .get("api_key")
-        .or_else(|| execution.get("apiKey"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let mut map = serde_json::Map::new();
-    for (name, value) in object {
-        let Some(raw) = value.as_str() else {
-            continue;
-        };
-        // Resolve the ArtLoom `{api_key}` placeholder against the execution's key.
-        let resolved = raw.replace("{api_key}", api_key);
-        map.insert(name.clone(), Value::String(resolved));
-    }
-    if map.is_empty() {
-        return None;
-    }
-    Some(Value::Object(map).to_string())
-}
-
-// Convert an ArtLoom `body` value into the JSON-string form the cloud_api
-// executor expects: a flat `{ "<field>": "<template-or-value>" }` map encoded
-// as a JSON string. ArtLoom sends `body` as an array of field descriptors:
-//   - the input image field (`execution_type: image_buffer` / `source: input`)
-//     becomes `"<name>": "{{inputs.input.path}}"` so the executor uploads the
-//     temp input file (the `.path}}` suffix marks it a file field);
-//   - every other field becomes `"<name>": "<default>"` (falling back to a
-//     `{{name}}` template so a runtime arg can fill it).
-// A value already a JSON string is passed through untouched.
-fn artloom_body_to_json_string(execution: &Value) -> Option<String> {
-    let body = execution.get("body")?;
-    if let Some(text) = body.as_str() {
-        let trimmed = text.trim();
-        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
-    }
-    let array = body.as_array()?;
-    let mut map = serde_json::Map::new();
-    for field in array {
-        let Some(field_object) = field.as_object() else {
-            continue;
-        };
-        let Some(name) = field_object.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let execution_type = field_object
-            .get("execution_type")
-            .or_else(|| field_object.get("executionType"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let source = field_object
-            .get("source")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let is_input_image = execution_type == "image_buffer"
-            || execution_type == "image_path"
-            || execution_type == "image_base64"
-            || source == "input";
-        let template = if is_input_image {
-            // `.path}}` suffix makes the executor treat it as a file upload.
-            "{{inputs.input.path}}".to_owned()
-        } else if let Some(default) = field_object.get("default").and_then(Value::as_str) {
-            default.to_owned()
-        } else {
-            format!("{{{{{name}}}}}")
-        };
-        map.insert(name.to_owned(), Value::String(template));
-    }
-    if map.is_empty() {
-        return None;
-    }
-    Some(Value::Object(map).to_string())
-}
-
-fn artloom_sync_execution_to_tool_execution(
-    tool_id: &str,
-    object: &serde_json::Map<String, Value>,
-) -> std::result::Result<ToolExecution, Result<(u16, String)>> {
-    let execution = object.get("execution").ok_or_else(|| {
-        invalid_request(format!(
-            "sync_user_arts art `{tool_id}` is missing `execution`"
-        ))
-    })?;
-
-    match serde_json::from_value::<ToolExecution>(execution.clone()) {
-        Ok(execution) => return Ok(execution),
-        Err(parse_error) => {
-            let Some(execution_type) = artloom_legacy_execution_type(object, execution) else {
-                return Err(invalid_request(format!(
-                    "sync_user_arts art `{tool_id}` has invalid `execution`: {parse_error}"
-                )));
-            };
-
-            let execution_object = execution.as_object().ok_or_else(|| {
-                invalid_request(format!(
-                    "sync_user_arts art `{tool_id}` has invalid `execution`: expected object"
-                ))
-            })?;
-
-            match execution_type.as_str() {
-                "cloud_api" => Ok(ToolExecution::CloudApi {
-                    endpoint: artloom_value_str(execution, &["endpoint", "url"])
-                        .unwrap_or_default()
-                        .to_owned(),
-                    method: artloom_value_str(execution, &["method"])
-                        .unwrap_or("POST")
-                        .to_owned(),
-                    content_type: artloom_value_str(execution, &["contentType", "content_type"])
-                        .map(str::to_owned),
-                    headers: artloom_headers_to_json_string(execution),
-                    body: artloom_body_to_json_string(execution),
-                }),
-                "mcp" => Ok(ToolExecution::Mcp {
-                    server_id: artloom_value_str(execution, &["serverId", "server_id", "server"])
-                        .unwrap_or_default()
-                        .to_owned(),
-                    tool_name: artloom_value_str(execution, &["toolName", "tool_name"])
-                        .unwrap_or_default()
-                        .to_owned(),
-                }),
-                "workflow" => {
-                    let workflow_bindings = execution_object
-                        .get("workflowBindings")
-                        .or_else(|| execution_object.get("workflow_bindings"))
-                        .cloned()
-                        .and_then(|value| {
-                            serde_json::from_value::<WorkflowExecutionBindings>(value).ok()
-                        });
-                    Ok(ToolExecution::Workflow {
-                        workflow_id: artloom_value_str(execution, &["workflowId", "workflow_id"])
-                            .unwrap_or_default()
-                            .to_owned(),
-                        workflow_bindings,
-                    })
-                }
-                other => Err(invalid_request(format!(
-                    "sync_user_arts art `{tool_id}` has unsupported legacy `execution_type`: {other}"
-                ))),
-            }
-        }
-    }
-}
-
-fn artloom_sync_art_to_tool(
-    art: &Value,
-) -> std::result::Result<ToolDefinition, Result<(u16, String)>> {
-    let object = match art.as_object() {
-        Some(object) => object,
-        None => {
-            return Err(invalid_request(
-                "sync_user_arts expects each art to be a JSON object".to_owned(),
-            ))
-        }
-    };
-
-    let tool_id = object
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| object.get("art_id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            invalid_request("sync_user_arts art is missing a non-empty `id`".to_owned())
-        })?;
-
-    let tool_name = object
-        .get("label")
-        .and_then(Value::as_str)
-        .or_else(|| object.get("name").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(tool_id);
-
-    let tool_description = object
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-
-    let execution = artloom_sync_execution_to_tool_execution(tool_id, object)?;
-    let legacy_execution_type = object
-        .get("execution")
-        .and_then(|execution| artloom_legacy_execution_type(object, execution));
-    let legacy_execution = object.get("execution").cloned();
-
-    let mut tool = ToolDefinition::new(tool_id, tool_name, tool_description, execution);
-    tool.enabled = object
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    tool.inputs = object
-        .get("inputs")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    tool.outputs = object
-        .get("outputs")
-        .and_then(Value::as_array)
-        .cloned()
-        .or_else(|| {
-            object
-                .get("execution")
-                .and_then(Value::as_object)
-                .and_then(|execution| execution.get("outputs"))
-                .and_then(Value::as_array)
-                .cloned()
-        })
-        .unwrap_or_default();
-    tool.params = object
-        .get("params")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    apply_artloom_defaults_update(&mut tool, art);
-    let auto_process = object
-        .get("autoProcess")
-        .and_then(Value::as_bool)
-        .or_else(|| object.get("auto_process").and_then(Value::as_bool))
-        .unwrap_or(false);
-    tool.metadata = Some(artloom_compat_metadata(
-        object
-            .get("icon")
-            .cloned()
-            .or_else(|| object.get("iconColor").cloned()),
-        auto_process,
-        object.get("defaults").cloned(),
-        legacy_execution_type,
-        legacy_execution,
-    ));
-
-    match tool.validate() {
-        Ok(()) => Ok(tool),
-        Err(error) => Err(tool_registry_error_response(error)),
-    }
-}
-
-fn set_artloom_compat_defaults_metadata(tool: &mut ToolDefinition, defaults: Value) {
-    let metadata = tool
-        .metadata
-        .get_or_insert_with(|| json!({}))
-        .as_object_mut();
-    let Some(metadata) = metadata else {
-        tool.metadata = Some(json!({ "artloomCompat": { "defaults": defaults } }));
-        return;
-    };
-    let compat = metadata
-        .entry("artloomCompat".to_owned())
-        .or_insert_with(|| json!({}))
-        .as_object_mut();
-    let Some(compat) = compat else {
-        metadata.insert("artloomCompat".to_owned(), json!({ "defaults": defaults }));
-        return;
-    };
-    compat
-        .entry("source".to_owned())
-        .or_insert_with(|| json!("artloom-compat"));
-    compat
-        .entry("managedBy".to_owned())
-        .or_insert_with(|| json!("sync_user_arts"));
-    compat.insert("defaults".to_owned(), defaults);
-}
-
-fn apply_artloom_defaults_update(tool: &mut ToolDefinition, request: &Value) {
+fn apply_tool_defaults_update(tool: &mut ToolDefinition, request: &Value) {
     if let Some(params) = request.get("params").and_then(Value::as_array) {
         tool.params = params.clone();
     }
@@ -11661,15 +10656,12 @@ fn apply_artloom_defaults_update(tool: &mut ToolDefinition, request: &Value) {
         return;
     }
 
-    set_artloom_compat_defaults_metadata(tool, Value::Object(defaults.clone()));
-
     if tool.params.is_empty() {
         tool.params = defaults
             .iter()
             .map(|(key, value)| {
                 json!({
                     "id": key,
-                    "name": key,
                     "default": value,
                 })
             })
@@ -11684,8 +10676,6 @@ fn apply_artloom_defaults_update(tool: &mut ToolDefinition, request: &Value) {
         let key = param_object
             .get("id")
             .and_then(Value::as_str)
-            .or_else(|| param_object.get("name").and_then(Value::as_str))
-            .or_else(|| param_object.get("key").and_then(Value::as_str))
             .map(str::to_owned);
         if let Some(key) = key {
             if let Some(default_value) = defaults.get(&key) {
@@ -11727,121 +10717,6 @@ fn python_engine_status(framework_registry: &FrameworkRegistry) -> Result<(u16, 
             "installedArtCount": collect_python_arts().len(),
         }))?,
     ))
-}
-
-fn get_python_art(art_id: &str) -> Result<(u16, String)> {
-    if let Some(art) = collect_python_arts().into_iter().find(|art| {
-        art.get("art_id")
-            .and_then(Value::as_str)
-            .is_some_and(|candidate| candidate == art_id)
-    }) {
-        return Ok((200, serde_json::to_string(&json!({ "art": art }))?));
-    }
-
-    structured_error(
-        404,
-        json!({
-            "code": "python_art_not_found",
-            "message": format!("Python Art `{art_id}` was not found"),
-            "art_id": art_id,
-        }),
-    )
-}
-
-fn prefetch_python_art_shader(
-    body: &str,
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    let request: PythonShaderPrefetchRequest = match serde_json::from_str(body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let art_id = request.art_id.trim();
-    if art_id.is_empty() {
-        return invalid_request("artId is required");
-    }
-
-    let mut params = request
-        .params
-        .as_object()
-        .cloned()
-        .unwrap_or_else(serde_json::Map::new);
-    params
-        .entry("output_mode".to_owned())
-        .or_insert_with(|| json!("shader"));
-    params
-        .entry("mode".to_owned())
-        .or_insert_with(|| json!("shader"));
-    params
-        .entry("reference_path".to_owned())
-        .or_insert_with(|| json!(""));
-
-    let tool = match tool_registry.get_tool(art_id) {
-        Ok(Some(tool)) => tool,
-        Ok(None) => {
-            return structured_error(
-                404,
-                json!({
-                    "code": "art_not_found",
-                    "message": format!("Art `{art_id}` was not found"),
-                    "artId": art_id,
-                }),
-            )
-        }
-        Err(error) => return tool_registry_error_response(error),
-    };
-    let tools = tool_registry.list_tools().unwrap_or_default();
-    let execution_tool = workflow_preview_tool(&tool, &tools, workflow_store).unwrap_or(&tool);
-    let result = match execute_tool(execution_tool, &[], Value::Object(params)) {
-        Ok(result) => result,
-        Err(error) => return tool_registry_error_response(error),
-    };
-    let result = unwrap_prefetch_shader_payload(result);
-
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "prefetch_shader",
-            "artId": art_id,
-            "result": result,
-        }))?,
-    ))
-}
-
-fn unwrap_prefetch_shader_payload(result: Value) -> Value {
-    if result.get("type").and_then(Value::as_str) == Some("shader") {
-        return result;
-    }
-
-    let Some(text) = result
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("text"))
-        .and_then(Value::as_str)
-    else {
-        return result;
-    };
-
-    let Ok(parsed) = serde_json::from_str::<Value>(text) else {
-        return result;
-    };
-
-    if parsed.get("type").and_then(Value::as_str) == Some("shader")
-        && parsed
-            .get("vertex_shader")
-            .and_then(Value::as_str)
-            .is_some()
-        && parsed
-            .get("fragment_shader")
-            .and_then(Value::as_str)
-            .is_some()
-    {
-        parsed
-    } else {
-        result
-    }
 }
 
 fn read_python_art_source(body: &str) -> Result<(u16, String)> {
@@ -12360,50 +11235,36 @@ fn external_tool_run(run_id: &str, tool: &ToolDefinition, arguments: &Value) -> 
     })
 }
 
-fn record_compat_art_execution(
+fn record_hook_art_run(
     run_store: &SharedRunStore,
     tool_registry: &ToolRegistry,
-    surface: &str,
-    external_request_id: &str,
-    art_id: &str,
+    request: &HookArtExecuteRequest,
     started_at: Instant,
-    result: &mut HookBridgeWebSocketTextResult,
-) {
+    succeeded: bool,
+    error: Option<&loom_protocol::SurfaceExecutionError>,
+) -> String {
     let run_id = loom_core::RunId::new().to_string();
-    let mut response = serde_json::from_str::<Value>(&result.response).unwrap_or(Value::Null);
-    let success = response
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(|status| status.eq_ignore_ascii_case("success"))
-        || response
-            .get("status")
-            .and_then(Value::as_str)
-            .is_some_and(|status| status.eq_ignore_ascii_case("success"));
-    if let Some(object) = response.as_object_mut() {
-        object.insert("executionId".to_owned(), Value::String(run_id.clone()));
-        if let Ok(serialized) = serde_json::to_string(&response) {
-            result.response = serialized;
-        }
-    }
     let duration_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    let tool = tool_registry.get_tool(art_id).ok().flatten();
+    let tool = tool_registry.get_tool(&request.art_id).ok().flatten();
     let qualified_id = tool
         .as_ref()
         .map(ToolDefinition::qualified_id)
-        .unwrap_or_else(|| art_id.to_owned());
+        .unwrap_or_else(|| request.art_id.clone());
     let framework_id = tool.as_ref().map(framework_id_for_tool);
     let package = tool
         .as_ref()
         .and_then(|tool| tool.metadata.as_ref())
         .and_then(|metadata| metadata.get("artPackage"));
-    let status = if success { "succeeded" } else { "failed" };
+    let status = if succeeded { "succeeded" } else { "failed" };
     let run = json!({
         "id": run_id,
         "capability": "art.execute",
         "status": status,
-        "surface": surface,
-        "externalRequestId": external_request_id,
-        "toolId": art_id,
+        "surface": "loom_hook_v1",
+        "externalRequestId": request.request_id,
+        "nodeId": request.node_id,
+        "generation": request.generation,
+        "toolId": request.art_id,
         "qualifiedId": qualified_id,
         "frameworkId": framework_id,
         "package": package.map(|package| json!({
@@ -12412,43 +11273,40 @@ fn record_compat_art_execution(
             "trustStatus": package.get("trustStatus").cloned(),
         })),
         "durationMs": duration_ms,
-        "outputSummary": {
-            "jsonBytes": result.response.len(),
-            "responseStatus": response.get("status").or_else(|| response.get("type")).cloned(),
-        },
-        "error": (!success).then(|| json!({ "code": "hook_bridge_execution_failed" })),
+        "error": error.map(|error| json!({ "code": error.code, "message": error.message })),
     });
     let started = RunEventDraft::new(
         "external_tool_started",
         json!({
-            "surface": surface,
-            "externalRequestId": external_request_id,
-            "toolId": art_id,
+            "surface": "loom_hook_v1",
+            "externalRequestId": request.request_id,
+            "toolId": request.art_id,
             "qualifiedId": qualified_id,
             "status": "running",
         }),
     );
     let finished = RunEventDraft::new(
-        if success {
+        if succeeded {
             "external_tool_completed"
         } else {
             "external_tool_failed"
         },
         json!({
-            "surface": surface,
-            "externalRequestId": external_request_id,
-            "toolId": art_id,
+            "surface": "loom_hook_v1",
+            "externalRequestId": request.request_id,
+            "toolId": request.art_id,
             "qualifiedId": qualified_id,
             "status": status,
             "durationMs": duration_ms,
         }),
     );
     let (Ok(started), Ok(finished)) = (started, finished) else {
-        return;
+        return run_id;
     };
     if let Ok(mut store) = run_store.lock() {
         let _ = store.insert_run(run, vec![started, finished]);
     }
+    run_id
 }
 
 fn execute_registered_tool(
@@ -12642,7 +11500,6 @@ fn list_shared_memory_buffers(shared_images: &SharedImageStoreHandle) -> Result<
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "shm_list_buffers",
             "buffers": buffers,
             "images": images,
         }))?,
@@ -12658,9 +11515,7 @@ fn create_shared_memory_buffer(
         Err(error) => return invalid_request(error.to_string()),
     };
     if request.channels != 4 {
-        return invalid_request(
-            "Loom shared-memory compatibility buffers require rgba8 channels=4",
-        );
+        return invalid_request("Loom shared-memory buffers require rgba8 channels=4");
     }
     let size = match rgba8_buffer_size(request.width, request.height) {
         Ok(size) => size,
@@ -12678,7 +11533,6 @@ fn create_shared_memory_buffer(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "shm_create_buffer",
             "handle": &image.handle,
             "handle_name": &image.handle,
             "buffer": shared_memory_buffer_info_json(&image),
@@ -12700,7 +11554,6 @@ fn get_shared_memory_buffer_info(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "shm_get_buffer_info",
             "handle": handle,
             "buffer": shared_memory_buffer_info_json(&image),
             "image": &image,
@@ -12722,7 +11575,6 @@ fn release_shared_memory_buffer(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "shm_release_buffer",
             "handle": handle,
             "released": true,
             "deleted": true,
@@ -13026,31 +11878,28 @@ fn shared_image_error_response(error: SharedImageError) -> Result<(u16, String)>
     }
 }
 
-fn get_artloom_compat_settings(
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> Result<(u16, String)> {
+fn get_settings(settings_store: &SharedLoomSettingsStore) -> Result<(u16, String)> {
     let store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "get_settings",
             "settings": store.settings,
         }))?,
     ))
 }
 
-fn put_artloom_compat_settings(
+fn put_settings(
     body: &str,
-    settings_store: &SharedArtLoomCompatSettingsStore,
+    settings_store: &SharedLoomSettingsStore,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
-    let mut settings: ArtLoomCompatSettings = match serde_json::from_str(body) {
+    let mut settings: LoomSettings = match serde_json::from_str(body) {
         Ok(settings) => settings,
         Err(error) => return invalid_request(error.to_string()),
     };
-    settings.migrate_appearance_defaults();
+    settings.appearance_version = CURRENT_APPEARANCE_VERSION;
     if let Err(error) = settings.hook_cache.validate() {
         return invalid_request(error);
     }
@@ -13077,29 +11926,29 @@ fn put_artloom_compat_settings(
     }
     let mut store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     let previous = std::mem::replace(&mut store.settings, settings.clone());
     if let Err(error) = store.save() {
         store.settings = previous;
         return Err(error);
     }
     drop(store);
-    apply_artloom_runtime_settings(&settings);
+    apply_runtime_settings(&settings);
     broadcast_hook_bridge_json(
         hook_bridge,
-        json!({
-            "method": "art_hook/cache_control",
-            "params": {
+        HookEvent {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            method: HOOK_EVENT_CACHE_CONTROL.to_owned(),
+            params: json!({
                 "action": "settings",
                 "settings": settings.hook_cache.clone(),
-            }
-        }),
+            }),
+        },
     );
-    broadcast_artloom_compat_settings_updated(hook_bridge, &settings);
+    broadcast_settings_updated(hook_bridge, &settings);
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "update_settings",
             "settings": settings,
             "saved": true,
         }))?,
@@ -13124,10 +11973,11 @@ fn broadcast_hook_cache_control(
     if !matches!(action, "clearRecycleBin" | "clearReferenceLibrary") {
         return invalid_request("不支持的 Hook 缓存控制操作");
     }
-    let broadcast = json!({
-        "method": "art_hook/cache_control",
-        "params": { "action": action },
-    });
+    let broadcast = HookEvent {
+        protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+        method: HOOK_EVENT_CACHE_CONTROL.to_owned(),
+        params: json!({ "action": action }),
+    };
     let serialized = serde_json::to_string(&broadcast)?;
     let hub = {
         let runtime = hook_bridge
@@ -13154,12 +12004,10 @@ fn broadcast_hook_cache_control(
     ))
 }
 
-fn get_artloom_compat_shortcuts(
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> Result<(u16, String)> {
+fn get_shortcuts(settings_store: &SharedLoomSettingsStore) -> Result<(u16, String)> {
     let store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     let mut shortcuts = store
         .settings
         .shortcuts
@@ -13170,19 +12018,18 @@ fn get_artloom_compat_shortcuts(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "get_shortcuts",
             "shortcuts": shortcuts,
         }))?,
     ))
 }
 
-fn put_artloom_compat_shortcut(
+fn put_shortcut(
     path_id: &str,
     body: &str,
-    settings_store: &SharedArtLoomCompatSettingsStore,
+    settings_store: &SharedLoomSettingsStore,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
-    let shortcut: ArtLoomShortcutConfig = match serde_json::from_str(body) {
+    let shortcut: LoomShortcutConfig = match serde_json::from_str(body) {
         Ok(shortcut) => shortcut,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -13191,7 +12038,7 @@ fn put_artloom_compat_shortcut(
     }
     let mut store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     let previous = store
         .settings
         .shortcuts
@@ -13209,31 +12056,28 @@ fn put_artloom_compat_shortcut(
     }
     let settings = store.settings.clone();
     drop(store);
-    broadcast_artloom_compat_settings_updated(hook_bridge, &settings);
+    broadcast_settings_updated(hook_bridge, &settings);
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "update_shortcut",
             "shortcut": shortcut,
             "saved": true,
         }))?,
     ))
 }
 
-fn broadcast_artloom_compat_settings_updated(
-    hook_bridge: &SharedHookBridgeRuntime,
-    settings: &ArtLoomCompatSettings,
-) {
+fn broadcast_settings_updated(hook_bridge: &SharedHookBridgeRuntime, settings: &LoomSettings) {
     broadcast_hook_bridge_json(
         hook_bridge,
-        json!({
-            "method": "art_hook/settings_updated",
-            "params": { "settings": settings },
-        }),
+        HookEvent {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            method: HOOK_EVENT_SETTINGS_UPDATED.to_owned(),
+            params: json!({ "settings": settings }),
+        },
     );
 }
 
-fn get_artloom_compat_app_paths() -> Result<(u16, String)> {
+fn get_app_paths() -> Result<(u16, String)> {
     let data_dir = std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(default_control_plane_root);
@@ -13244,7 +12088,6 @@ fn get_artloom_compat_app_paths() -> Result<(u16, String)> {
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "get_app_paths",
             "dataDir": data_dir.to_string_lossy(),
             "configDir": config_dir.to_string_lossy(),
             "logDir": log_dir.to_string_lossy(),
@@ -13252,42 +12095,34 @@ fn get_artloom_compat_app_paths() -> Result<(u16, String)> {
     ))
 }
 
-fn get_artloom_compat_autostart(
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> Result<(u16, String)> {
+fn get_autostart(settings_store: &SharedLoomSettingsStore) -> Result<(u16, String)> {
     let store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "is_autostart_enabled",
             "enabled": store.settings.general.auto_start,
             "sideEffect": false,
-            "mode": "compat-preview",
         }))?,
     ))
 }
 
-fn set_artloom_compat_autostart(
-    body: &str,
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> Result<(u16, String)> {
-    let request: ArtLoomCompatToggleRequest = match serde_json::from_str(body) {
+fn set_autostart(body: &str, settings_store: &SharedLoomSettingsStore) -> Result<(u16, String)> {
+    let request: ToggleRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
-    set_artloom_compat_autostart_preference("set_autostart", request.enabled, settings_store)
+    set_autostart_preference(request.enabled, settings_store)
 }
 
-fn set_artloom_compat_autostart_preference(
-    compat_command: &str,
+fn set_autostart_preference(
     enabled: bool,
-    settings_store: &SharedArtLoomCompatSettingsStore,
+    settings_store: &SharedLoomSettingsStore,
 ) -> Result<(u16, String)> {
     let mut store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     let previous = store.settings.general.auto_start;
     store.settings.general.auto_start = enabled;
     if let Err(error) = store.save() {
@@ -13297,26 +12132,24 @@ fn set_artloom_compat_autostart_preference(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": compat_command,
             "enabled": enabled,
             "sideEffect": false,
-            "mode": "compat-preview",
-            "message": "Loom saved the requested autostart preference but did not mutate Windows startup entries from the compatibility endpoint.",
+            "message": "Loom saved the requested autostart preference but did not mutate Windows startup entries.",
         }))?,
     ))
 }
 
-fn set_artloom_compat_minimize_to_tray(
+fn set_minimize_to_tray(
     body: &str,
-    settings_store: &SharedArtLoomCompatSettingsStore,
+    settings_store: &SharedLoomSettingsStore,
 ) -> Result<(u16, String)> {
-    let request: ArtLoomCompatToggleRequest = match serde_json::from_str(body) {
+    let request: ToggleRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
     let mut store = settings_store
         .lock()
-        .map_err(|_| anyhow::anyhow!("lock ArtLoom compat settings"))?;
+        .map_err(|_| anyhow::anyhow!("lock Loom settings"))?;
     let previous = store.settings.general.minimize_to_tray;
     store.settings.general.minimize_to_tray = request.enabled;
     if let Err(error) = store.save() {
@@ -13326,241 +12159,13 @@ fn set_artloom_compat_minimize_to_tray(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "set_minimize_to_tray",
             "enabled": request.enabled,
             "sideEffect": false,
-            "mode": "compat-preview",
         }))?,
     ))
 }
 
-fn list_artloom_compat_workflows(workflow_store: &WorkflowStore) -> Result<(u16, String)> {
-    let workflows = match workflow_store.list_workflows() {
-        Ok(workflows) => workflows,
-        Err(error) => return workflow_store_error_response(error),
-    };
-    let workflows: Vec<Value> = workflows
-        .iter()
-        .map(artloom_compat_workflow_metadata_json)
-        .collect();
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "list_workflows",
-            "workflows": workflows,
-        }))?,
-    ))
-}
-
-fn save_artloom_compat_workflow_metadata(
-    workflow_id: &str,
-    body: &str,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: Value = match serde_json::from_str(request_body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let Some(object) = request.as_object() else {
-        return invalid_request("save_workflow_metadata body must be a JSON object");
-    };
-    let name = object
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(workflow_id);
-
-    if workflow_store.load_workflow(workflow_id).is_err() {
-        let placeholder = format!(
-            "name: {}\nnodes: []\n",
-            serde_json::to_string(name).unwrap_or_else(|_| format!("{name:?}"))
-        );
-        if let Err(error) = workflow_store.save_workflow(workflow_id, &placeholder) {
-            return workflow_store_error_response(error);
-        }
-    }
-
-    let node_count = workflow_store
-        .list_workflows()
-        .ok()
-        .and_then(|workflows| {
-            workflows
-                .into_iter()
-                .find(|workflow| workflow.id == workflow_id)
-        })
-        .map(|workflow| workflow.node_count)
-        .or_else(|| {
-            object
-                .get("node_count")
-                .and_then(Value::as_u64)
-                .map(|count| count as usize)
-        })
-        .or_else(|| {
-            object
-                .get("nodeCount")
-                .and_then(Value::as_u64)
-                .map(|count| count as usize)
-        })
-        .unwrap_or(0);
-    let updated_at = object
-        .get("updated_at")
-        .or_else(|| object.get("updatedAt"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(artloom_workflow_timestamp);
-    let created_at = object
-        .get("created_at")
-        .or_else(|| object.get("createdAt"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&updated_at)
-        .to_owned();
-    let description = object
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let status = object
-        .get("status")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("draft");
-    let tags = object.get("tags").cloned().unwrap_or_else(|| json!([]));
-    let workflow = artloom_compat_workflow_metadata_value(
-        workflow_id,
-        name,
-        description,
-        &created_at,
-        &updated_at,
-        status,
-        node_count,
-        tags,
-    );
-
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "save_workflow_metadata",
-            "workflow": workflow,
-        }))?,
-    ))
-}
-
-fn save_artloom_compat_workflow_data(
-    workflow_id: &str,
-    body: &str,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    let request = match serde_json::from_str::<PutWorkflowRequest>(body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let workflow = match workflow_store.save_workflow(workflow_id, &request.data) {
-        Ok(workflow) => workflow,
-        Err(error) => return workflow_store_error_response(error),
-    };
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "save_workflow_data",
-            "workflowId": workflow_id,
-            "saved": true,
-            "workflow": artloom_compat_workflow_metadata_json(&workflow),
-        }))?,
-    ))
-}
-
-fn load_artloom_compat_workflow_data(
-    workflow_id: &str,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    let data = match workflow_store.load_workflow(workflow_id) {
-        Ok(data) => data,
-        Err(error) => return workflow_store_error_response(error),
-    };
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "load_workflow_data",
-            "workflowId": workflow_id,
-            "data": data,
-        }))?,
-    ))
-}
-
-fn delete_artloom_compat_workflow_data(
-    workflow_id: &str,
-    workflow_store: &WorkflowStore,
-) -> Result<(u16, String)> {
-    if let Err(error) = workflow_store.load_workflow(workflow_id) {
-        return workflow_store_error_response(error);
-    }
-    if let Err(error) = workflow_store.delete_workflow(workflow_id) {
-        return workflow_store_error_response(error);
-    }
-    Ok((
-        200,
-        serde_json::to_string(&json!({
-            "compatCommand": "delete_workflow_data",
-            "workflowId": workflow_id,
-            "deleted": true,
-        }))?,
-    ))
-}
-
-fn artloom_compat_workflow_metadata_json(
-    workflow: &loom_workflow_store::WorkflowMetadata,
-) -> Value {
-    let updated_at = if workflow.updated_at.trim().is_empty() {
-        artloom_workflow_timestamp()
-    } else {
-        workflow.updated_at.clone()
-    };
-    artloom_compat_workflow_metadata_value(
-        &workflow.id,
-        &workflow.name,
-        "",
-        &updated_at,
-        &updated_at,
-        "draft",
-        workflow.node_count,
-        json!([]),
-    )
-}
-
-fn artloom_compat_workflow_metadata_value(
-    id: &str,
-    name: &str,
-    description: &str,
-    created_at: &str,
-    updated_at: &str,
-    status: &str,
-    node_count: usize,
-    tags: Value,
-) -> Value {
-    json!({
-        "id": id,
-        "name": name,
-        "description": description,
-        "created_at": created_at,
-        "createdAt": created_at,
-        "updated_at": updated_at,
-        "updatedAt": updated_at,
-        "status": status,
-        "node_count": node_count,
-        "nodeCount": node_count,
-        "last_run_at": Value::Null,
-        "lastRunAt": Value::Null,
-        "tags": tags,
-    })
-}
-
-fn artloom_workflow_timestamp() -> String {
+fn workflow_timestamp() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().to_string())
@@ -13721,6 +12326,15 @@ fn save_hook_canvas_workflow(
                 }),
             );
         }
+        Err(hook_canvas::HookCanvasWorkflowExportError::InvalidNode(node_id)) => {
+            return structured_error(
+                400,
+                json!({
+                    "code": "hook_canvas_node_invalid",
+                    "message": format!("Hook canvas node `{node_id}` is not canonical"),
+                }),
+            );
+        }
     };
 
     // Frozen full snapshot (geometry + crop) scoped to the selected component.
@@ -13733,6 +12347,15 @@ fn save_hook_canvas_workflow(
                     json!({
                         "code": "hook_canvas_node_not_found",
                         "message": format!("Hook canvas node `{node_id}` was not found"),
+                    }),
+                );
+            }
+            Err(hook_canvas::HookCanvasWorkflowExportError::InvalidNode(node_id)) => {
+                return structured_error(
+                    400,
+                    json!({
+                        "code": "hook_canvas_node_invalid",
+                        "message": format!("Hook canvas node `{node_id}` is not canonical"),
                     }),
                 );
             }
@@ -13829,7 +12452,7 @@ fn save_hook_canvas_workflow(
         );
     }
 
-    // Keep the topology in the existing workflow store too (studio compatibility).
+    // Persist the topology in the workflow store consumed by Workflow Studio.
     let workflow = match workflow_store.save_workflow(path_id, &data) {
         Ok(workflow) => workflow,
         Err(error) => return workflow_store_error_response(error),
@@ -14060,28 +12683,12 @@ fn hook_bridge_status(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, Str
     ))
 }
 
-fn artloom_compat_ipc_status(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, String)> {
-    let runtime = hook_bridge
-        .lock()
-        .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
-    let mut status = hook_bridge_status_json(&runtime);
-    if let Some(object) = status.as_object_mut() {
-        object.insert("compatCommand".to_owned(), json!("get_ipc_status"));
-        object.insert(
-            "ipcPort".to_owned(),
-            json!(runtime.port.unwrap_or(HOOK_BRIDGE_PORT)),
-        );
-    }
-    Ok((200, serde_json::to_string(&status)?))
-}
-
-fn artloom_compat_instantiate_workflow(
+fn instantiate_hook_workflow(
     body: &str,
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: ArtLoomCompatInstantiateWorkflowRequest = match serde_json::from_str(request_body)
-    {
+    let request: HookWorkflowInstantiateHttpRequest = match serde_json::from_str(request_body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -14090,51 +12697,51 @@ fn artloom_compat_instantiate_workflow(
     } else {
         request.mode.trim().to_owned()
     };
-    let broadcast = instantiate_workflow_broadcast(
-        request.nodes.clone(),
-        request.edges.clone(),
-        mode,
-        request.workflow_id.clone(),
-    );
-    let serialized = serde_json::to_string(&broadcast)?;
-    let hub = {
+    let (workflow_root, hub) = {
         let runtime = hook_bridge
             .lock()
             .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
-        runtime.broadcast_hub.clone()
+        (runtime.workflow_root.clone(), runtime.broadcast_hub.clone())
     };
+    let event = instantiate_workflow(
+        &workflow_root,
+        request.nodes,
+        request.edges,
+        &mode,
+        request.workflow_id,
+    )
+    .map_err(|error| anyhow::anyhow!("instantiate Hook workflow: {error}"))?;
+    let serialized = serde_json::to_string(&event)?;
     let delivered_clients = broadcast_hook_bridge_messages_with_count(&hub, &[serialized]);
     if delivered_clients == 0 {
         return structured_error(
             409,
             json!({
-                "compatCommand": "instantiate_workflow",
-                "code": "no_art_hook_client",
-                "message": "No ArtHook desktop client is connected to receive workflow instantiation",
+                "code": "no_hook_client",
+                "message": "No Hook client is connected to receive workflow instantiation",
             }),
         );
     }
     Ok((
         200,
         serde_json::to_string(&json!({
-            "compatCommand": "instantiate_workflow",
-            "type": "success",
-            "method": "art_hook/instantiate",
+            "protocolVersion": loom_protocol::HOOK_PROTOCOL_VERSION,
+            "status": "succeeded",
+            "method": loom_protocol::HOOK_EVENT_WORKFLOW_INSTANTIATED,
             "broadcasted": true,
             "subscribedClients": delivered_clients,
             "deliveredClients": delivered_clients,
-            "params": broadcast.get("params").cloned().unwrap_or_else(|| json!({})),
+            "params": event.params,
         }))?,
     ))
 }
 
-fn artloom_compat_update_workflow_node(
+fn update_hook_workflow_node(
     body: &str,
     hook_bridge: &SharedHookBridgeRuntime,
-    tool_registry: &ToolRegistry,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: ArtLoomCompatUpdateWorkflowNodeRequest = match serde_json::from_str(request_body) {
+    let request: HookWorkflowNodeUpdateHttpRequest = match serde_json::from_str(request_body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -14157,129 +12764,59 @@ fn artloom_compat_update_workflow_node(
             .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
         (runtime.workflow_root.clone(), runtime.broadcast_hub.clone())
     };
-    let tools = tool_registry
-        .list_tools()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(is_artloom_compat_visible_tool)
-        .map(|tool| artloom_compat_art_json(&tool))
-        .collect::<Vec<_>>();
-    let input = HookBridgeRuntimeInput::new(tools, workflow_root);
-    let result = handle_hook_bridge_request(
-        HookBridgeRequest::UpdateWorkflowNode {
-            workflow_id: workflow_id.to_owned(),
-            node_id: node_id.to_owned(),
-            param: param.to_owned(),
-            value: request.value.clone(),
-        },
-        input,
-    )
-    .map_err(|error| anyhow::anyhow!("update Hook workflow node: {error}"))?;
+    let event = match update_workflow_node(
+        &workflow_root,
+        workflow_id,
+        node_id,
+        param,
+        request.value.clone(),
+    ) {
+        Ok(event) => event,
+        Err(error) => {
+            return structured_error(
+                422,
+                json!({
+                    "code": "workflow_update_failed",
+                    "message": error.to_string(),
+                }),
+            )
+        }
+    };
 
-    let success = result.response.get("type").and_then(Value::as_str) == Some("success");
-    if success && is_hook_live_workflow_id(workflow_id) {
+    if is_hook_live_workflow_id(workflow_id) {
         let mut patch = HookCanvasPersistPatch::default();
         patch
             .param_updates
             .push((param.to_owned(), request.value.clone()));
         let _ = persist_hook_canvas_live_node_patch(node_id, &patch);
     }
-
-    let broadcasts = result
-        .broadcasts
-        .iter()
-        .filter_map(|broadcast| serde_json::to_string(broadcast).ok())
-        .collect::<Vec<_>>();
-    broadcast_hook_bridge_messages(&broadcast_hub, &broadcasts);
-
-    let mut response = result.response;
-    if let Some(object) = response.as_object_mut() {
-        object.insert(
-            "compatCommand".to_owned(),
-            Value::String("update_workflow_node".to_owned()),
-        );
-        object.insert(
-            "workflowId".to_owned(),
-            Value::String(workflow_id.to_owned()),
-        );
-        object.insert("nodeId".to_owned(), Value::String(node_id.to_owned()));
-        object.insert("param".to_owned(), Value::String(param.to_owned()));
-        object.insert("value".to_owned(), request.value);
-    }
-    Ok((200, serde_json::to_string(&response)?))
-}
-
-fn artloom_compat_execute_art_node(
-    body: &str,
-    mcp_servers: &SharedMcpServerStore,
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-    framework_registry: &FrameworkRegistry,
-    control_plane_root: &Path,
-    run_store: &SharedRunStore,
-) -> Result<(u16, String)> {
-    let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: ArtLoomCompatExecuteArtNodeRequest = match serde_json::from_str(request_body) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(error.to_string()),
-    };
-    let node_id = request.node_id.trim();
-    let art_id = request.art_id.trim();
-    if node_id.is_empty() {
-        return invalid_request("execute_art_node requires node_id");
-    }
-    if art_id.is_empty() {
-        return invalid_request("execute_art_node requires art_id");
-    }
-    let started = Instant::now();
-    let mut ignore_intermediate = |_| {};
-    let mut result = execute_hook_bridge_art_node(
-        node_id,
-        art_id,
-        request.input_base64,
-        request.params,
-        mcp_servers,
-        tool_registry,
-        workflow_store,
-        framework_registry,
-        control_plane_root,
-        &mut ignore_intermediate,
-    );
-    record_compat_art_execution(
-        run_store,
-        tool_registry,
-        "artloom_compat_http",
-        node_id,
-        art_id,
-        started,
-        &mut result,
-    );
-    let mut response = serde_json::from_str::<Value>(&result.response)
-        .unwrap_or_else(|_| json!({ "type": "error", "data": { "message": result.response } }));
-    if let Some(object) = response.as_object_mut() {
-        object.insert(
-            "compatCommand".to_owned(),
-            Value::String("execute_art_node".to_owned()),
-        );
-    }
-    Ok((200, serde_json::to_string(&response)?))
+    broadcast_hook_bridge_messages(&broadcast_hub, &[serde_json::to_string(&event)?]);
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "protocolVersion": loom_protocol::HOOK_PROTOCOL_VERSION,
+            "status": "succeeded",
+            "workflowId": workflow_id,
+            "nodeId": node_id,
+            "parameterId": param,
+            "value": request.value,
+        }))?,
+    ))
 }
 
 fn hook_bridge_session(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, String)> {
     let runtime = hook_bridge
         .lock()
         .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
-    let (session_path, available, session, error) = read_arthook_session_snapshot();
+    let (session_path, available, session, error) = read_hook_session_snapshot();
     Ok((
         200,
         serde_json::to_string(&json!({
-            "method": "read_arthook_session",
-            "compatCommand": "read_arthook_session",
             "running": runtime.worker.is_some(),
             "port": runtime.port.unwrap_or(HOOK_BRIDGE_PORT),
             "connectedClients": runtime.connected_clients.load(Ordering::SeqCst),
             "subscribedClients": runtime.broadcast_hub.subscriber_count(),
-            "protocol": "artloom-compat",
+            "protocolVersion": loom_protocol::HOOK_PROTOCOL_VERSION,
             "sessionPath": session_path.to_string_lossy(),
             "available": available,
             "error": error,
@@ -14497,8 +13034,8 @@ fn hook_canvas_preview_content_type(body: &[u8]) -> Option<&'static str> {
     None
 }
 
-fn read_arthook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
-    let session_path = arthook_session_path();
+fn read_hook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
+    let session_path = hook_session_path();
     if !session_path.exists() {
         return (
             session_path,
@@ -14514,33 +13051,20 @@ fn read_arthook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
                 session_path,
                 false,
                 json!({ "stickers": [], "links": [] }),
-                Some(format!("Invalid ArtHook session JSON: {error}")),
+                Some(format!("Invalid Hook session JSON: {error}")),
             ),
         },
         Err(error) => (
             session_path,
             false,
             json!({ "stickers": [], "links": [] }),
-            Some(format!("Unable to read ArtHook session: {error}")),
+            Some(format!("Unable to read Hook session: {error}")),
         ),
     }
 }
 
-// Hook has shipped under several Tauri identifiers over time. Its own runtime
-// resolves the active app-data directory by falling back from the current
-// identifier to a legacy directory that still holds user state, so the file the
-// daemon must read is not always `com.vmjcv.arthook-next`. Loom mirrors that by
-// scanning every known identifier and selecting the session file Hook is
-// actually writing (the most recently modified one).
-const HOOK_SESSION_IDENTIFIERS: &[&str] = &[
-    "com.yamiyu.hook",
-    "com.vmjcv.hook",
-    "io.github.aiaimimi0920.hook",
-    "com.vmjcv.arthook-next",
-    "com.vmjcv.arthook",
-];
 const HOOK_LIVE_WORKFLOW_ID: &str = "hook-live";
-const LEGACY_HOOK_LIVE_WORKFLOW_ID: &str = "arthook-live";
+const MAX_HOOK_ART_TERMINAL_REQUESTS: usize = 256;
 
 #[derive(Clone, Debug)]
 struct HookLiveWorkflowSnapshot {
@@ -14552,7 +13076,6 @@ struct HookLiveWorkflowSnapshot {
 
 #[derive(Clone, Debug, Default)]
 struct HookCanvasRuntimeNodeState {
-    active_request_id: Option<String>,
     status: String,
     error_message: Option<String>,
     preview_data_url: Option<String>,
@@ -14564,14 +13087,13 @@ struct HookCanvasRuntimeNodeState {
 #[derive(Default)]
 struct HookCanvasPersistPatch {
     param_updates: Vec<(String, Value)>,
-    image_search_metadata: Option<Option<Value>>,
-    preview_data_url: Option<Option<String>>,
 }
 
 static HOOK_LIVE_WORKFLOW_SNAPSHOTS: OnceLock<Mutex<HashMap<String, HookLiveWorkflowSnapshot>>> =
     OnceLock::new();
 static HOOK_CANVAS_RUNTIME_STATUSES: OnceLock<Mutex<HashMap<String, HookCanvasRuntimeNodeState>>> =
     OnceLock::new();
+static HOOK_ART_REQUESTS: OnceLock<Mutex<HookArtRequestState>> = OnceLock::new();
 
 fn hook_live_workflow_snapshots() -> &'static Mutex<HashMap<String, HookLiveWorkflowSnapshot>> {
     HOOK_LIVE_WORKFLOW_SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -14581,8 +13103,12 @@ fn hook_canvas_runtime_statuses() -> &'static Mutex<HashMap<String, HookCanvasRu
     HOOK_CANVAS_RUNTIME_STATUSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn hook_art_requests() -> &'static Mutex<HookArtRequestState> {
+    HOOK_ART_REQUESTS.get_or_init(|| Mutex::new(HookArtRequestState::default()))
+}
+
 fn is_hook_live_workflow_id(workflow_id: &str) -> bool {
-    workflow_id == HOOK_LIVE_WORKFLOW_ID || workflow_id == LEGACY_HOOK_LIVE_WORKFLOW_ID
+    workflow_id == HOOK_LIVE_WORKFLOW_ID
 }
 
 fn clear_hook_canvas_runtime_state() {
@@ -14592,6 +13118,294 @@ fn clear_hook_canvas_runtime_state() {
     if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
         statuses.clear();
     }
+    if let Ok(mut requests) = hook_art_requests().lock() {
+        for entry in requests.active_by_request.values() {
+            entry.cancellation.store(true, Ordering::Release);
+        }
+        requests.active_by_request.clear();
+        requests.active_by_node.clear();
+        requests.latest_generation_by_node.clear();
+        requests.preview_revision_by_node.clear();
+        requests.result_revision_by_node.clear();
+        requests.terminal_by_request.clear();
+        requests.terminal_order.clear();
+    }
+}
+
+enum HookArtReservation {
+    Execute(Arc<AtomicBool>),
+    Replay(String),
+    Reject(String),
+}
+
+fn hook_art_request_fingerprint(request: &HookArtExecuteRequest) -> String {
+    serde_json::to_string(request).expect("Hook Art execution requests must serialize")
+}
+
+fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservation {
+    let mut state = match hook_art_requests().lock() {
+        Ok(state) => state,
+        Err(_) => {
+            return HookArtReservation::Reject(hook_protocol_failure_json(
+                &request.request_id,
+                "request_state_unavailable",
+                "lock Hook Art request state",
+            ))
+        }
+    };
+    let request_scope = HookArtRequestScope::new(request.device_id.as_deref(), &request.request_id);
+    let node_scope = HookArtNodeScope::new(request.device_id.as_deref(), &request.node_id);
+    let request_fingerprint = hook_art_request_fingerprint(request);
+    if let Some(terminal) = state.terminal_by_request.get(&request_scope) {
+        if terminal.node_id == request.node_id
+            && terminal.generation == request.generation
+            && terminal.request_fingerprint == request_fingerprint
+        {
+            return HookArtReservation::Replay(terminal.response.clone());
+        }
+        return HookArtReservation::Reject(hook_protocol_failure_json(
+            &request.request_id,
+            "request_id_conflict",
+            "requestId was already used for a different Art execution",
+        ));
+    }
+    if let Some(active) = state.active_by_request.get(&request_scope) {
+        if active.node_id == request.node_id
+            && active.generation == request.generation
+            && active.request_fingerprint == request_fingerprint
+        {
+            return HookArtReservation::Replay(hook_protocol_response_json(
+                &request.request_id,
+                active.status.clone(),
+                json!({ "nodeId": active.node_id, "generation": active.generation }),
+                None,
+            ));
+        }
+        return HookArtReservation::Reject(hook_protocol_failure_json(
+            &request.request_id,
+            "request_id_conflict",
+            "requestId is active for a different Art execution",
+        ));
+    }
+
+    let latest_generation = state
+        .latest_generation_by_node
+        .get(&node_scope)
+        .copied()
+        .unwrap_or(0);
+    if request.generation < latest_generation {
+        return HookArtReservation::Reject(hook_protocol_failure_json(
+            &request.request_id,
+            "stale_generation",
+            format!(
+                "generation {} is older than the current generation {latest_generation}",
+                request.generation
+            ),
+        ));
+    }
+    if let Some(previous_request_id) = state.active_by_node.get(&node_scope).cloned() {
+        let previous_request_scope =
+            HookArtRequestScope::new(request.device_id.as_deref(), &previous_request_id);
+        if let Some(previous) = state.active_by_request.get(&previous_request_scope) {
+            if request.generation == previous.generation {
+                return HookArtReservation::Reject(hook_protocol_failure_json(
+                    &request.request_id,
+                    "generation_conflict",
+                    "another request already owns this node generation",
+                ));
+            }
+            previous.cancellation.store(true, Ordering::Release);
+        }
+    }
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    state
+        .latest_generation_by_node
+        .insert(node_scope.clone(), request.generation);
+    state
+        .active_by_node
+        .insert(node_scope, request.request_id.clone());
+    state.active_by_request.insert(
+        request_scope,
+        HookArtRequestEntry {
+            node_id: request.node_id.clone(),
+            generation: request.generation,
+            request_fingerprint,
+            cancellation: Arc::clone(&cancellation),
+            status: HookRequestStatus::Running,
+            device_id: request.device_id.clone(),
+        },
+    );
+    HookArtReservation::Execute(cancellation)
+}
+
+fn hook_art_request_is_current(
+    request_id: &str,
+    node_id: &str,
+    generation: u64,
+    device_id: Option<&str>,
+) -> bool {
+    hook_art_requests().lock().ok().is_some_and(|state| {
+        let request_scope = HookArtRequestScope::new(device_id, request_id);
+        let node_scope = HookArtNodeScope::new(device_id, node_id);
+        state
+            .active_by_request
+            .get(&request_scope)
+            .is_some_and(|entry| {
+                entry.node_id == node_id
+                    && entry.generation == generation
+                    && !entry.cancellation.load(Ordering::Acquire)
+                    && state.active_by_node.get(&node_scope).map(String::as_str) == Some(request_id)
+            })
+    })
+}
+
+fn next_hook_art_preview_revision(
+    request_id: &str,
+    node_id: &str,
+    generation: u64,
+    device_id: Option<&str>,
+) -> Option<u64> {
+    let mut state = hook_art_requests().lock().ok()?;
+    let request_scope = HookArtRequestScope::new(device_id, request_id);
+    let node_scope = HookArtNodeScope::new(device_id, node_id);
+    let current = state
+        .active_by_request
+        .get(&request_scope)
+        .is_some_and(|entry| {
+            entry.node_id == node_id
+                && entry.generation == generation
+                && !entry.cancellation.load(Ordering::Acquire)
+                && state.active_by_node.get(&node_scope).map(String::as_str) == Some(request_id)
+        });
+    if !current {
+        return None;
+    }
+    let revision = state
+        .preview_revision_by_node
+        .entry(node_scope)
+        .or_default();
+    *revision = revision.saturating_add(1);
+    Some(*revision)
+}
+
+fn next_hook_art_result_revision(
+    request_id: &str,
+    node_id: &str,
+    generation: u64,
+    device_id: Option<&str>,
+) -> Option<u64> {
+    let mut state = hook_art_requests().lock().ok()?;
+    let request_scope = HookArtRequestScope::new(device_id, request_id);
+    let node_scope = HookArtNodeScope::new(device_id, node_id);
+    let current = state
+        .active_by_request
+        .get(&request_scope)
+        .is_some_and(|entry| {
+            entry.node_id == node_id
+                && entry.generation == generation
+                && !entry.cancellation.load(Ordering::Acquire)
+                && state.active_by_node.get(&node_scope).map(String::as_str) == Some(request_id)
+        });
+    if !current {
+        return None;
+    }
+    let revision = state.result_revision_by_node.entry(node_scope).or_default();
+    *revision = revision.saturating_add(1);
+    Some(*revision)
+}
+
+fn finish_hook_art_request(
+    request_id: &str,
+    node_id: &str,
+    generation: u64,
+    device_id: Option<&str>,
+    request_fingerprint: String,
+    response: String,
+) {
+    let Ok(mut state) = hook_art_requests().lock() else {
+        return;
+    };
+    let request_scope = HookArtRequestScope::new(device_id, request_id);
+    let node_scope = HookArtNodeScope::new(device_id, node_id);
+    let matches = state
+        .active_by_request
+        .get(&request_scope)
+        .is_some_and(|entry| entry.node_id == node_id && entry.generation == generation);
+    if !matches {
+        return;
+    }
+    state.active_by_request.remove(&request_scope);
+    if state.active_by_node.get(&node_scope).map(String::as_str) == Some(request_id) {
+        state.active_by_node.remove(&node_scope);
+    }
+    state.terminal_by_request.insert(
+        request_scope.clone(),
+        HookArtTerminalEntry {
+            node_id: node_id.to_owned(),
+            generation,
+            request_fingerprint,
+            response,
+        },
+    );
+    state.terminal_order.push_back(request_scope);
+    while state.terminal_order.len() > MAX_HOOK_ART_TERMINAL_REQUESTS {
+        if let Some(expired) = state.terminal_order.pop_front() {
+            state.terminal_by_request.remove(&expired);
+        }
+    }
+}
+
+fn cancel_hook_art_request(request: &HookArtCancelRequest) -> String {
+    let Ok(mut state) = hook_art_requests().lock() else {
+        return hook_protocol_failure_json(
+            &request.request_id,
+            "request_state_unavailable",
+            "lock Hook Art request state",
+        );
+    };
+    let request_scope = HookArtRequestScope::new(request.device_id.as_deref(), &request.request_id);
+    if !state.active_by_request.contains_key(&request_scope)
+        && state
+            .active_by_request
+            .keys()
+            .any(|scope| scope.request_id == request.request_id)
+    {
+        return hook_protocol_failure_json(
+            &request.request_id,
+            "cancellation_device_mismatch",
+            "deviceId does not own the active request",
+        );
+    }
+    let Some(entry) = state.active_by_request.get_mut(&request_scope) else {
+        return hook_protocol_failure_json(
+            &request.request_id,
+            "request_not_found",
+            "no active Art request matches requestId",
+        );
+    };
+    if entry.node_id != request.node_id || entry.generation != request.generation {
+        return hook_protocol_failure_json(
+            &request.request_id,
+            "cancellation_identity_mismatch",
+            "nodeId or generation does not match the active request",
+        );
+    }
+    if entry.device_id != request.device_id {
+        return hook_protocol_failure_json(
+            &request.request_id,
+            "cancellation_device_mismatch",
+            "deviceId does not own the active request",
+        );
+    }
+    entry.status = HookRequestStatus::CancelRequested;
+    entry.cancellation.store(true, Ordering::Release);
+    hook_protocol_response_json(
+        &request.request_id,
+        HookRequestStatus::CancelRequested,
+        json!({ "nodeId": request.node_id, "generation": request.generation }),
+        None,
+    )
 }
 
 fn store_hook_live_workflow_snapshot(source_path: &Path, workflow_id: &str, snapshot: &Value) {
@@ -14599,7 +13413,7 @@ fn store_hook_live_workflow_snapshot(source_path: &Path, workflow_id: &str, snap
     let Some(object) = root.as_object_mut() else {
         return;
     };
-    if !object.contains_key("workflowId") && !object.contains_key("workflow_id") {
+    if !object.contains_key("workflowId") {
         object.insert(
             "workflowId".to_owned(),
             Value::String(workflow_id.to_owned()),
@@ -14617,35 +13431,19 @@ fn store_hook_live_workflow_snapshot(source_path: &Path, workflow_id: &str, snap
             source_path: source_path.to_path_buf(),
             bytes,
             root,
-            updated_at: Some(artloom_workflow_timestamp()),
+            updated_at: Some(workflow_timestamp()),
         },
     );
 }
 
 fn hook_canvas_root_nodes_mut(root: &mut Value) -> Option<&mut Vec<Value>> {
-    let key = {
-        let object = root.as_object()?;
-        if object
-            .get("stickers")
-            .and_then(Value::as_array)
-            .is_some_and(|nodes| !nodes.is_empty())
-        {
-            "stickers"
-        } else if object
-            .get("nodes")
-            .and_then(Value::as_array)
-            .is_some_and(|nodes| !nodes.is_empty())
-        {
-            "nodes"
-        } else if object.get("units").and_then(Value::as_array).is_some() {
-            "units"
-        } else if object.get("nodes").and_then(Value::as_array).is_some() {
-            "nodes"
-        } else if object.get("stickers").and_then(Value::as_array).is_some() {
-            "stickers"
-        } else {
-            return None;
-        }
+    let object = root.as_object()?;
+    let key = if object.get("stickers").and_then(Value::as_array).is_some() {
+        "stickers"
+    } else if object.get("nodes").and_then(Value::as_array).is_some() {
+        "nodes"
+    } else {
+        return None;
     };
     root.get_mut(key).and_then(Value::as_array_mut)
 }
@@ -14687,36 +13485,6 @@ fn hook_canvas_set_node_param(node: &mut Value, param: &str, value: Value) -> bo
     true
 }
 
-fn hook_canvas_set_image_search_metadata(node: &mut Value, metadata: Value) -> bool {
-    let Some(owner) = hook_canvas_node_field_owner_mut(node, "loomMetadata") else {
-        return false;
-    };
-    let loom_metadata = owner.entry("loomMetadata").or_insert_with(|| json!({}));
-    if !loom_metadata.is_object() {
-        *loom_metadata = json!({});
-    }
-    let generic_metadata = json!({
-        "kind": "image.candidates",
-        "items": metadata
-            .get("candidates")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-        "selectedIndex": metadata.get("selectedIndex").cloned().unwrap_or(Value::Null),
-    });
-    let object = loom_metadata.as_object_mut().expect("loomMetadata object");
-    object.insert("candidates".to_owned(), generic_metadata);
-    object.insert("imageSearch".to_owned(), metadata);
-    true
-}
-
-fn hook_canvas_set_preview_data_url(node: &mut Value, preview_data_url: String) -> bool {
-    let Some(owner) = hook_canvas_node_field_owner_mut(node, "previewSrc") else {
-        return false;
-    };
-    owner.insert("previewSrc".to_owned(), Value::String(preview_data_url));
-    true
-}
-
 fn apply_hook_canvas_persist_patch(
     root: &mut Value,
     node_id: &str,
@@ -14728,26 +13496,6 @@ fn apply_hook_canvas_persist_patch(
     let mut changed = false;
     for (param, value) in &patch.param_updates {
         changed |= hook_canvas_set_node_param(node, param, value.clone());
-    }
-    if let Some(metadata) = &patch.image_search_metadata {
-        match metadata {
-            Some(metadata) => {
-                changed |= hook_canvas_set_image_search_metadata(node, metadata.clone());
-            }
-            None => {
-                changed |= hook_canvas_set_image_search_metadata(node, Value::Null);
-            }
-        }
-    }
-    if let Some(preview_data_url) = &patch.preview_data_url {
-        match preview_data_url {
-            Some(preview_data_url) => {
-                changed |= hook_canvas_set_preview_data_url(node, preview_data_url.clone());
-            }
-            None => {
-                changed |= hook_canvas_set_preview_data_url(node, String::new());
-            }
-        }
     }
     changed
 }
@@ -14766,7 +13514,7 @@ fn write_hook_canvas_root(path: &Path, root: &Value) -> Result<Vec<u8>> {
 fn persist_hook_canvas_live_node_patch(node_id: &str, patch: &HookCanvasPersistPatch) -> bool {
     let mut updated = false;
     if let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() {
-        for workflow_id in [HOOK_LIVE_WORKFLOW_ID, LEGACY_HOOK_LIVE_WORKFLOW_ID] {
+        for workflow_id in [HOOK_LIVE_WORKFLOW_ID] {
             let Some(snapshot) = snapshots.get_mut(workflow_id) else {
                 continue;
             };
@@ -14776,7 +13524,7 @@ fn persist_hook_canvas_live_node_patch(node_id: &str, patch: &HookCanvasPersistP
             match write_hook_canvas_root(&snapshot.source_path, &snapshot.root) {
                 Ok(bytes) => {
                     snapshot.bytes = bytes;
-                    snapshot.updated_at = Some(artloom_workflow_timestamp());
+                    snapshot.updated_at = Some(workflow_timestamp());
                     updated = true;
                 }
                 Err(error) => {
@@ -14793,7 +13541,7 @@ fn persist_hook_canvas_live_node_patch(node_id: &str, patch: &HookCanvasPersistP
         return true;
     }
 
-    let session_path = arthook_session_path();
+    let session_path = hook_session_path();
     let Ok(content) = fs::read_to_string(&session_path) else {
         return false;
     };
@@ -14817,9 +13565,7 @@ fn persist_hook_canvas_live_node_patch(node_id: &str, patch: &HookCanvasPersistP
 
 fn load_hook_live_workflow_document() -> Option<hook_canvas::HookCanvasDocument> {
     let snapshots = hook_live_workflow_snapshots().lock().ok()?;
-    let snapshot = snapshots
-        .get(HOOK_LIVE_WORKFLOW_ID)
-        .or_else(|| snapshots.get(LEGACY_HOOK_LIVE_WORKFLOW_ID))?;
+    let snapshot = snapshots.get(HOOK_LIVE_WORKFLOW_ID)?;
     Some(hook_canvas::HookCanvasDocument::from_serialized_root(
         &snapshot.source_path,
         snapshot.bytes.clone(),
@@ -14904,337 +13650,13 @@ fn apply_hook_canvas_runtime_overlays(document: &mut hook_canvas::HookCanvasDocu
 fn load_active_hook_canvas_document() -> Result<hook_canvas::HookCanvasDocument> {
     let mut document = match load_hook_live_workflow_document() {
         Some(document) => document,
-        None => hook_canvas::HookCanvasDocument::read(&arthook_session_path())?,
+        None => hook_canvas::HookCanvasDocument::read(&hook_session_path())?,
     };
     apply_hook_canvas_runtime_overlays(&mut document);
     Ok(document)
 }
 
-fn set_hook_canvas_runtime_status(node_id: &str, status: &str, error_message: Option<String>) {
-    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses.entry(node_id.to_owned()).or_default();
-        state.status = status.to_owned();
-        state.error_message = error_message;
-    }
-}
-
-fn begin_hook_canvas_runtime_request(node_id: &str, request_id: &str) {
-    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses.entry(node_id.to_owned()).or_default();
-        state.active_request_id = Some(request_id.to_owned());
-        state.status = "processing".to_owned();
-        state.error_message = None;
-    }
-}
-
-fn update_hook_canvas_runtime_request(
-    node_id: &str,
-    request_id: &str,
-    update: impl FnOnce(&mut HookCanvasRuntimeNodeState),
-) -> bool {
-    let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() else {
-        return false;
-    };
-    let Some(state) = statuses.get_mut(node_id) else {
-        return false;
-    };
-    if state.active_request_id.as_deref() != Some(request_id) {
-        return false;
-    }
-    update(state);
-    true
-}
-
-fn hook_canvas_runtime_request_is_current(node_id: &str, request_id: &str) -> bool {
-    hook_canvas_runtime_statuses()
-        .lock()
-        .ok()
-        .and_then(|statuses| {
-            statuses
-                .get(node_id)
-                .map(|state| state.active_request_id.as_deref() == Some(request_id))
-        })
-        .unwrap_or(false)
-}
-
-fn hook_canvas_preview_cache_token(data_url: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    data_url.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-fn set_hook_canvas_runtime_preview(node_id: &str, preview_data_url: Option<String>) {
-    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses.entry(node_id.to_owned()).or_default();
-        state.preview_cache_token = preview_data_url
-            .as_deref()
-            .map(hook_canvas_preview_cache_token);
-        state.preview_data_url = preview_data_url;
-    }
-}
-
-fn set_hook_canvas_runtime_preview_for_request(
-    node_id: &str,
-    request_id: &str,
-    preview_data_url: Option<String>,
-) -> bool {
-    update_hook_canvas_runtime_request(node_id, request_id, |state| {
-        state.preview_cache_token = preview_data_url
-            .as_deref()
-            .map(hook_canvas_preview_cache_token);
-        state.preview_data_url = preview_data_url;
-    })
-}
-
-fn clear_hook_canvas_runtime_preview(node_id: &str) {
-    set_hook_canvas_runtime_preview(node_id, None);
-}
-
-fn set_hook_canvas_runtime_result_candidates(
-    node_id: &str,
-    candidates: Vec<hook_canvas::HookCanvasResultCandidate>,
-    selected_result_index: Option<usize>,
-) {
-    if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
-        let state = statuses.entry(node_id.to_owned()).or_default();
-        state.result_candidates = candidates;
-        state.selected_result_index = selected_result_index;
-    }
-}
-
-fn set_hook_canvas_runtime_result_candidates_for_request(
-    node_id: &str,
-    request_id: &str,
-    candidates: Vec<hook_canvas::HookCanvasResultCandidate>,
-    selected_result_index: Option<usize>,
-) -> bool {
-    update_hook_canvas_runtime_request(node_id, request_id, |state| {
-        state.result_candidates = candidates;
-        state.selected_result_index = selected_result_index;
-    })
-}
-
-fn clear_hook_canvas_runtime_result_candidates(node_id: &str) {
-    set_hook_canvas_runtime_result_candidates(node_id, Vec::new(), None);
-}
-
-fn extract_hook_canvas_result_candidates(
-    execution_result: &Value,
-) -> Option<(Vec<hook_canvas::HookCanvasResultCandidate>, Option<usize>)> {
-    let loom_metadata = execution_result.get("loomMetadata")?;
-    let metadata = loom_metadata
-        .get("candidates")
-        .or_else(|| loom_metadata.get("imageSearch"))?;
-    let candidates = metadata
-        .get("items")
-        .or_else(|| metadata.get("candidates"))
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let image_url = item.get("imageUrl").and_then(Value::as_str)?.to_owned();
-                    Some(hook_canvas::HookCanvasResultCandidate {
-                        index: item.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
-                        title: item.get("title").and_then(Value::as_str).map(str::to_owned),
-                        image_url,
-                        thumbnail: item
-                            .get("thumbnail")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        preview: item
-                            .get("preview")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        thumbnail_url: item
-                            .get("thumbnailUrl")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        source_page_url: item
-                            .get("sourcePageUrl")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        width: item.get("width").and_then(Value::as_u64),
-                        height: item.get("height").and_then(Value::as_u64),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let selected_result_index = metadata
-        .get("selectedIndex")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
-    Some((candidates, selected_result_index))
-}
-
-fn hook_canvas_image_search_metadata_value(
-    candidates: &[hook_canvas::HookCanvasResultCandidate],
-    selected_result_index: Option<usize>,
-) -> Value {
-    json!({
-        "candidates": candidates
-            .iter()
-            .map(|candidate| {
-                json!({
-                    "index": candidate.index,
-                    "title": candidate.title,
-                    "imageUrl": candidate.image_url,
-                    "thumbnail": candidate.thumbnail,
-                    "preview": candidate.preview,
-                    "thumbnailUrl": candidate.thumbnail_url,
-                    "sourcePageUrl": candidate.source_page_url,
-                    "width": candidate.width,
-                    "height": candidate.height,
-                })
-            })
-            .collect::<Vec<_>>(),
-        "selectedIndex": selected_result_index,
-    })
-}
-
-fn attach_ahrp_image_search_metadata(response: &mut Value, metadata: Value) {
-    if response.get("data").is_none() {
-        if let Some(object) = response.as_object_mut() {
-            object.insert("data".to_owned(), json!({}));
-        }
-    }
-    let Some(data) = response.get_mut("data").and_then(Value::as_object_mut) else {
-        return;
-    };
-    let generic_metadata = json!({
-        "kind": "image.candidates",
-        "items": metadata
-            .get("candidates")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-        "selectedIndex": metadata.get("selectedIndex").cloned().unwrap_or(Value::Null),
-    });
-    data.insert(
-        "loomMetadata".to_owned(),
-        json!({
-            "candidates": generic_metadata,
-            "imageSearch": metadata,
-        }),
-    );
-}
-
-fn persist_hook_canvas_image_search_state(
-    node_id: &str,
-    candidates: &[hook_canvas::HookCanvasResultCandidate],
-    selected_result_index: Option<usize>,
-    preview_data_url: Option<&str>,
-) {
-    let mut patch = HookCanvasPersistPatch {
-        image_search_metadata: Some(Some(hook_canvas_image_search_metadata_value(
-            candidates,
-            selected_result_index,
-        ))),
-        ..HookCanvasPersistPatch::default()
-    };
-    if let Some(selected_result_index) = selected_result_index {
-        patch
-            .param_updates
-            .push(("result_index".to_owned(), json!(selected_result_index)));
-    }
-    if let Some(preview_data_url) = preview_data_url {
-        patch.preview_data_url = Some(Some(preview_data_url.to_owned()));
-    }
-    let _ = persist_hook_canvas_live_node_patch(node_id, &patch);
-}
-
-fn finalize_execute_art_node_runtime_status(node_id: &str, response: &Value) {
-    match response.get("type").and_then(Value::as_str) {
-        Some("success") => set_hook_canvas_runtime_status(node_id, "ready", None),
-        _ => set_hook_canvas_runtime_status(
-            node_id,
-            "error",
-            response
-                .get("data")
-                .and_then(|value| value.get("message"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        ),
-    }
-}
-
-fn finalize_ahrp_runtime_status(node_id: Option<&str>, request_id: &str, response: &Value) {
-    let Some(node_id) = node_id else {
-        return;
-    };
-    let succeeded = response.get("status").and_then(Value::as_str) == Some("Success");
-    let error_message = (!succeeded)
-        .then(|| {
-            response
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .flatten();
-    update_hook_canvas_runtime_request(node_id, request_id, |state| {
-        state.status = if succeeded { "ready" } else { "error" }.to_owned();
-        state.error_message = error_message;
-        state.active_request_id = None;
-    });
-}
-
-fn params_match_score(node_params: &Value, params: &BTreeMap<String, Value>) -> usize {
-    let Some(object) = node_params.as_object() else {
-        return 0;
-    };
-    params
-        .iter()
-        .filter(|(key, value)| {
-            object
-                .get(*key)
-                .is_some_and(|candidate| candidate == *value)
-        })
-        .count()
-}
-
-fn resolve_hook_runtime_node_id_from_document(
-    document: &hook_canvas::HookCanvasDocument,
-    art_id: &str,
-    params: &BTreeMap<String, Value>,
-) -> Option<String> {
-    let candidates = document
-        .snapshot
-        .nodes
-        .iter()
-        .filter(|node| node.art_id.as_deref() == Some(art_id))
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return None;
-    }
-    if candidates.len() == 1 {
-        return Some(candidates[0].id.clone());
-    }
-
-    let mut scored = candidates
-        .iter()
-        .map(|node| ((*node).id.clone(), params_match_score(&node.params, params)))
-        .collect::<Vec<_>>();
-    scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-    let best = scored.first()?;
-    let second_score = scored.get(1).map(|entry| entry.1).unwrap_or(0);
-    if best.1 == 0 || best.1 == second_score {
-        return None;
-    }
-    Some(best.0.clone())
-}
-
-fn resolve_hook_runtime_node_id(art_id: &str, params: &BTreeMap<String, Value>) -> Option<String> {
-    if let Some(document) = load_hook_live_workflow_document() {
-        if let Some(node_id) = resolve_hook_runtime_node_id_from_document(&document, art_id, params)
-        {
-            return Some(node_id);
-        }
-    }
-    let document = hook_canvas::HookCanvasDocument::read(&arthook_session_path()).ok()?;
-    resolve_hook_runtime_node_id_from_document(&document, art_id, params)
-}
-
-fn arthook_session_path() -> PathBuf {
+fn hook_session_path() -> PathBuf {
     // An explicit full-path override wins so isolated smokes and advanced setups
     // can point Loom at a specific session file.
     if let Some(path) = std::env::var_os("LOOM_HOOK_SESSION_PATH") {
@@ -15258,26 +13680,7 @@ fn arthook_session_path() -> PathBuf {
 }
 
 fn resolve_hook_session_path(appdata: &Path) -> PathBuf {
-    let default_path = appdata.join("com.vmjcv.arthook-next").join("session.json");
-    let mut best: Option<(SystemTime, PathBuf)> = None;
-    for identifier in HOOK_SESSION_IDENTIFIERS {
-        let candidate = appdata.join(identifier).join("session.json");
-        let Ok(metadata) = fs::metadata(&candidate) else {
-            continue;
-        };
-        if !metadata.is_file() {
-            continue;
-        }
-        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
-        let is_newer = match &best {
-            Some((best_modified, _)) => modified > *best_modified,
-            None => true,
-        };
-        if is_newer {
-            best = Some((modified, candidate));
-        }
-    }
-    best.map(|(_, path)| path).unwrap_or(default_path)
+    appdata.join("com.yamiyu.hook").join("session.json")
 }
 
 fn start_hook_bridge(
@@ -15286,7 +13689,7 @@ fn start_hook_bridge(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    artloom_settings: &SharedArtLoomCompatSettingsStore,
+    settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
     framework_registry: &FrameworkRegistry,
@@ -15343,7 +13746,7 @@ fn start_hook_bridge(
     let worker_mcp_servers = Arc::clone(mcp_servers);
     let worker_tool_registry = tool_registry.clone();
     let worker_workflow_store = workflow_store.clone();
-    let worker_artloom_settings = Arc::clone(artloom_settings);
+    let worker_settings = Arc::clone(settings);
     let worker_shared_images = Arc::clone(shared_images);
     let worker_ocr_provider = Arc::clone(ocr_provider);
     let worker_framework_registry = framework_registry.clone();
@@ -15361,7 +13764,7 @@ fn start_hook_bridge(
             worker_mcp_servers,
             worker_tool_registry,
             worker_workflow_store,
-            worker_artloom_settings,
+            worker_settings,
             worker_shared_images,
             worker_ocr_provider,
             worker_framework_registry,
@@ -15405,14 +13808,19 @@ fn stop_hook_bridge(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, Strin
 
 fn hook_bridge_status_json(runtime: &HookBridgeRuntime) -> Value {
     let running = runtime.worker.is_some();
+    let events = loom_protocol::HOOK_EVENT_METHODS
+        .iter()
+        .chain(loom_protocol::SURFACE_EVENT_METHODS.iter())
+        .copied()
+        .collect::<Vec<_>>();
     json!({
         "running": running,
         "port": runtime.port.unwrap_or(HOOK_BRIDGE_PORT),
         "connectedClients": runtime.connected_clients.load(Ordering::SeqCst),
         "subscribedClients": runtime.broadcast_hub.subscriber_count(),
-        "protocol": "artloom-compat",
-        "sessionMethod": "read_arthook_session",
-        "methods": legacy_method_names(),
+        "protocol": loom_protocol::HOOK_PROTOCOL_VERSION,
+        "methods": loom_protocol::HOOK_REQUEST_METHODS,
+        "events": events,
     })
 }
 
@@ -15424,7 +13832,7 @@ fn run_hook_bridge_websocket_server(
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
-    artloom_settings: SharedArtLoomCompatSettingsStore,
+    settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
     framework_registry: FrameworkRegistry,
@@ -15446,7 +13854,7 @@ fn run_hook_bridge_websocket_server(
                 let mcp_servers = Arc::clone(&mcp_servers);
                 let tool_registry = tool_registry.clone();
                 let workflow_store = workflow_store.clone();
-                let artloom_settings = Arc::clone(&artloom_settings);
+                let settings = Arc::clone(&settings);
                 let shared_images = Arc::clone(&shared_images);
                 let ocr_provider = Arc::clone(&ocr_provider);
                 let framework_registry = framework_registry.clone();
@@ -15463,7 +13871,7 @@ fn run_hook_bridge_websocket_server(
                         mcp_servers,
                         tool_registry,
                         workflow_store,
-                        artloom_settings,
+                        settings,
                         shared_images,
                         ocr_provider,
                         framework_registry,
@@ -15490,7 +13898,7 @@ fn handle_hook_bridge_websocket_connection(
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
-    artloom_settings: SharedArtLoomCompatSettingsStore,
+    settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,
     framework_registry: FrameworkRegistry,
@@ -15538,7 +13946,7 @@ fn handle_hook_bridge_websocket_connection(
                     &mcp_servers,
                     &tool_registry,
                     &workflow_store,
-                    &artloom_settings,
+                    &settings,
                     &shared_images,
                     &ocr_provider,
                     &framework_registry,
@@ -15569,7 +13977,7 @@ fn handle_hook_bridge_websocket_connection(
                 if recovery_channels.as_ref().is_some_and(|channels| {
                     channels
                         .iter()
-                        .any(|channel| channel_accepts_method(channel, "surface/snapshot"))
+                        .any(|channel| channel_accepts_method(channel, SURFACE_EVENT_SNAPSHOT))
                 }) {
                     let recovery = surface_snapshot_recovery_messages(&surface_instances);
                     for message in recovery {
@@ -15631,19 +14039,13 @@ impl HookBridgeWebSocketTextResult {
     }
 }
 
-#[derive(Clone, Copy)]
-enum AhrpOutputPreference {
-    Base64,
-    SharedMemory,
-}
-
 #[cfg(test)]
 fn handle_hook_bridge_websocket_text(
     text: &str,
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    artloom_settings: &SharedArtLoomCompatSettingsStore,
+    settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
     framework_registry: &FrameworkRegistry,
@@ -15656,7 +14058,7 @@ fn handle_hook_bridge_websocket_text(
         mcp_servers,
         tool_registry,
         workflow_store,
-        artloom_settings,
+        settings,
         shared_images,
         ocr_provider,
         framework_registry,
@@ -15674,376 +14076,959 @@ fn handle_hook_bridge_websocket_text_with_intermediate(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    artloom_settings: &SharedArtLoomCompatSettingsStore,
+    settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
     ocr_provider: &OcrProviderHandle,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     workflow_root: &Path,
     run_store: &SharedRunStore,
-    surface_actions: Option<&SharedSurfaceActionExecutor>,
+    _surface_actions: Option<&SharedSurfaceActionExecutor>,
     emit_intermediate: &mut dyn FnMut(String),
 ) -> HookBridgeWebSocketTextResult {
-    if let Ok(envelope) = serde_json::from_str::<Value>(text) {
-        if envelope.get("method").and_then(Value::as_str) == Some("surface/event") {
-            let Some(surface_actions) = surface_actions else {
-                return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(
-                    "Surface action executor is unavailable",
-                ));
-            };
-            let event = match serde_json::from_value::<SurfaceEvent>(
-                envelope.get("params").cloned().unwrap_or(Value::Null),
-            ) {
-                Ok(event) => event,
-                Err(error) => {
-                    return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(
-                        format!("Invalid Surface event: {error}"),
-                    ))
-                }
-            };
-            let instance_id = event.instance_id.clone();
-            return match surface_actions.submit(&instance_id, event) {
-                Ok(ack) => HookBridgeWebSocketTextResult::response(
-                    json!({ "type": "surface_action_ack", "data": ack }).to_string(),
-                ),
-                Err(error) => HookBridgeWebSocketTextResult::response(
-                    json!({
-                        "type": "error",
-                        "data": {
-                            "code": error.code(),
-                            "message": error.to_string(),
-                        },
-                    })
-                    .to_string(),
-                ),
-            };
-        }
-    }
-    let request = match parse_request(text) {
+    let request = match serde_json::from_str::<HookRequest>(text) {
         Ok(request) => request,
         Err(error) => {
-            return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(format!(
-                "Invalid request: {error}"
-            )))
+            return HookBridgeWebSocketTextResult::response(hook_protocol_failure_json(
+                "invalid-request",
+                "invalid_hook_request",
+                error,
+            ))
         }
     };
-    let subscription_channels = match &request {
-        HookBridgeRequest::Subscribe { channels } => Some(channels.clone()),
-        _ => None,
-    };
-    let workflow_node_param_persist = match &request {
-        HookBridgeRequest::UpdateWorkflowNode {
-            workflow_id,
-            node_id,
-            param,
-            value,
-        } if is_hook_live_workflow_id(workflow_id) => {
-            Some((node_id.clone(), param.clone(), value.clone()))
-        }
-        _ => None,
-    };
-    if let HookBridgeRequest::SyncUserArts { arts }
-    | HookBridgeRequest::SyncUserArtsNamespaced { arts } = request
-    {
-        return execute_hook_bridge_sync_user_arts(arts, tool_registry);
-    }
-    if let HookBridgeRequest::UpdateArtParam {
-        art_id,
-        param_id,
-        value,
-    } = request
-    {
-        return execute_hook_bridge_update_art_param(&art_id, &param_id, value, tool_registry);
-    }
-    if let HookBridgeRequest::GetSettings = request {
-        return execute_hook_bridge_get_settings(artloom_settings);
-    }
-    if let HookBridgeRequest::GetShortcuts = request {
-        return execute_hook_bridge_get_shortcuts(artloom_settings);
-    }
-    if let HookBridgeRequest::SyncShortcuts = request {
-        return execute_hook_bridge_sync_shortcuts(artloom_settings);
-    }
-    if let HookBridgeRequest::TranslateText { text, target_lang } = request {
-        return execute_hook_bridge_translate_text(&text, &target_lang);
-    }
-    if let HookBridgeRequest::OcrImage { image_base64 } = request {
-        return execute_hook_bridge_ocr_image(&image_base64, ocr_provider);
-    }
-    if let HookBridgeRequest::ExecuteArtNode {
-        node_id,
-        art_id,
-        input_base64,
-        params,
-    } = request
-    {
-        let started = Instant::now();
-        let mut result = execute_hook_bridge_art_node(
-            &node_id,
-            &art_id,
-            input_base64,
-            params,
-            mcp_servers,
-            tool_registry,
-            workflow_store,
-            framework_registry,
-            control_plane_root,
-            emit_intermediate,
-        );
-        result.response = hook_bridge_response_with_phase(&result.response, "final");
-        record_compat_art_execution(
-            run_store,
-            tool_registry,
-            "hook_bridge_websocket",
-            &node_id,
-            &art_id,
-            started,
-            &mut result,
-        );
-        return result;
-    }
-    if let HookBridgeRequest::Process {
-        request_id,
-        art_id,
-        input,
-        params,
-        input_images,
-        disabled_params,
-    } = request
-    {
-        let started = Instant::now();
-        let mut result = execute_hook_bridge_ahrp_process(
-            &request_id,
-            &art_id,
-            input,
-            params,
-            input_images,
-            disabled_params,
+    match request {
+        HookRequest::ArtExecute(request) => handle_hook_art_execute(
+            request,
             mcp_servers,
             tool_registry,
             workflow_store,
             shared_images,
             framework_registry,
             control_plane_root,
-            emit_intermediate,
-        );
-        result.response = hook_bridge_response_with_phase(&result.response, "final");
-        record_compat_art_execution(
             run_store,
+            emit_intermediate,
+        ),
+        HookRequest::ArtCancel(request) => {
+            HookBridgeWebSocketTextResult::response(cancel_hook_art_request(&request))
+        }
+        request => handle_hook_protocol_request(
+            request,
             tool_registry,
-            "ahrp_websocket",
-            &request_id,
-            &art_id,
-            started,
-            &mut result,
-        );
-        return result;
-    }
-    if let HookBridgeRequest::OverwriteWorkflow {
-        workflow_id,
-        snapshot,
-    } = &request
-    {
-        if is_hook_live_workflow_id(workflow_id) {
-            store_hook_live_workflow_snapshot(&arthook_session_path(), workflow_id, snapshot);
-        }
-    }
-    let tools = tool_registry
-        .list_tools()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(is_artloom_compat_visible_tool)
-        .map(|tool| artloom_compat_art_json(&tool))
-        .collect::<Vec<_>>();
-    let ocr_available = ocr_provider
-        .lock()
-        .map(|provider| provider.is_available())
-        .unwrap_or(false);
-    let input = HookBridgeRuntimeInput::new(tools, workflow_root.to_path_buf())
-        .with_ocr_available(ocr_available);
-    let result = match handle_hook_bridge_request(request, input) {
-        Ok(result) => result,
-        Err(error) => {
-            return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(
-                error.to_string(),
-            ))
-        }
-    };
-    if result.response.get("type").and_then(Value::as_str) == Some("success") {
-        if let Some((node_id, param, value)) = workflow_node_param_persist {
-            let mut patch = HookCanvasPersistPatch::default();
-            patch.param_updates.push((param, value));
-            let _ = persist_hook_canvas_live_node_patch(&node_id, &patch);
-        }
-    }
-    let response = serde_json::to_string(&result.response)
-        .unwrap_or_else(|_| hook_bridge_error_json("Serialization failed"));
-    let broadcasts = result
-        .broadcasts
-        .into_iter()
-        .filter_map(|broadcast| serde_json::to_string(&broadcast).ok())
-        .collect();
-    HookBridgeWebSocketTextResult {
-        response,
-        broadcasts,
-        subscription_channels,
+            workflow_store,
+            settings,
+            ocr_provider,
+            workflow_root,
+        ),
     }
 }
 
-fn hook_bridge_response_with_phase(response: &str, phase: &str) -> String {
-    let Ok(mut value) = serde_json::from_str::<Value>(response) else {
-        return response.to_owned();
-    };
-    if let Some(object) = value.as_object_mut() {
-        object.insert("phase".to_owned(), Value::String(phase.to_owned()));
-    }
-    value.to_string()
-}
-
-fn execute_hook_bridge_sync_user_arts(
-    arts: Vec<Value>,
+fn handle_hook_protocol_request(
+    request: HookRequest,
     tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+    settings: &SharedLoomSettingsStore,
+    ocr_provider: &OcrProviderHandle,
+    workflow_root: &Path,
 ) -> HookBridgeWebSocketTextResult {
-    let request = json!({ "arts": arts });
-    match sync_artloom_compat_arts_value(&request, tool_registry) {
-        Ok(data) => HookBridgeWebSocketTextResult {
-            response: json!({
-                "type": "success",
-                "data": data,
-            })
-            .to_string(),
-            broadcasts: vec![arts_updated_broadcast().to_string()],
-            subscription_channels: None,
-        },
-        Err(response) => {
-            HookBridgeWebSocketTextResult::response(hook_bridge_control_error_json(response))
-        }
-    }
-}
-
-fn execute_hook_bridge_update_art_param(
-    art_id: &str,
-    param_id: &str,
-    value: Value,
-    tool_registry: &ToolRegistry,
-) -> HookBridgeWebSocketTextResult {
-    let mut tool = match get_artloom_tool(art_id, tool_registry) {
-        Ok(tool) => tool,
-        Err(response) => {
-            return HookBridgeWebSocketTextResult::response(hook_bridge_control_error_json(
-                response,
-            ))
-        }
-    };
-
-    apply_artloom_defaults_update(&mut tool, &json!({ param_id: value.clone() }));
-    let saved = match tool_registry.save_tool(tool) {
-        Ok(saved) => saved,
-        Err(error) => {
-            return HookBridgeWebSocketTextResult::response(hook_bridge_control_error_json(
-                tool_registry_error_response(error),
-            ))
-        }
-    };
-
-    HookBridgeWebSocketTextResult {
-        response: json!({
-            "type": "success",
-            "data": {
-                "compatCommand": "update_art_param",
-                "art_id": art_id,
-                "param_id": param_id,
-                "value": value,
-                "art": artloom_compat_art_json(&saved),
-                "tool": saved,
+    match request {
+        HookRequest::Handshake(request) => {
+            if let Err(error) = loom_protocol::validate_hook_handshake(&request) {
+                return hook_protocol_failure("handshake", "protocol_negotiation_failed", error);
             }
-        })
-        .to_string(),
-        broadcasts: vec![arts_updated_broadcast().to_string()],
-        subscription_channels: None,
+            let transport = if request
+                .transports
+                .contains(&HookTransportMode::SharedMemory)
+            {
+                HookTransportMode::SharedMemory
+            } else if request.transports.contains(&HookTransportMode::Websocket) {
+                HookTransportMode::Websocket
+            } else {
+                HookTransportMode::CloudflareRelay
+            };
+            let capabilities = hook_protocol_capabilities(
+                tool_registry,
+                workflow_store,
+                request
+                    .surface
+                    .unwrap_or_else(default_declarative_surface_host_capabilities),
+                true,
+            );
+            let response = HookHandshakeResponse {
+                protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+                server_name: "loom-daemon".to_owned(),
+                server_version: env!("CARGO_PKG_VERSION").to_owned(),
+                session_id: format!("hook:{}", Uuid::new_v4()),
+                transport,
+                capabilities,
+            };
+            HookBridgeWebSocketTextResult::response(
+                serde_json::to_string(&response).unwrap_or_else(|error| {
+                    hook_protocol_failure_json("handshake", "serialization_failed", error)
+                }),
+            )
+        }
+        HookRequest::CapabilitiesList(request) => {
+            let capabilities = hook_protocol_capabilities(
+                tool_registry,
+                workflow_store,
+                default_declarative_surface_host_capabilities(),
+                request.enabled_only,
+            );
+            hook_protocol_success(&request.request_id, serde_json::json!(capabilities))
+        }
+        HookRequest::Subscribe(request) => {
+            let invalid = request
+                .events
+                .iter()
+                .find(|event| !loom_protocol::hook_subscription_event_supported(event));
+            if let Some(invalid) = invalid {
+                return hook_protocol_failure(
+                    &request.request_id,
+                    "unsupported_event",
+                    format!("unsupported Hook event `{invalid}`"),
+                );
+            }
+            let mut result =
+                hook_protocol_success(&request.request_id, json!({ "events": request.events }));
+            result.subscription_channels = Some(
+                serde_json::from_str::<HookResponse>(&result.response)
+                    .ok()
+                    .and_then(|response| response.data.get("events").cloned())
+                    .and_then(|events| serde_json::from_value(events).ok())
+                    .unwrap_or_default(),
+            );
+            result
+        }
+        HookRequest::WorkflowSync(request) => {
+            match sync_workflow(workflow_root, &request.workflow_id, &request.snapshot) {
+                Ok(event) => {
+                    if is_hook_live_workflow_id(&request.workflow_id) {
+                        store_hook_live_workflow_snapshot(
+                            &hook_session_path(),
+                            &request.workflow_id,
+                            &request.snapshot,
+                        );
+                    }
+                    HookBridgeWebSocketTextResult {
+                        response: hook_protocol_response_json(
+                            &request.request_id,
+                            HookRequestStatus::Succeeded,
+                            json!({ "workflowId": request.workflow_id }),
+                            None,
+                        ),
+                        broadcasts: serde_json::to_string(&event).into_iter().collect(),
+                        subscription_channels: None,
+                    }
+                }
+                Err(error) => {
+                    hook_protocol_failure(&request.request_id, "workflow_sync_failed", error)
+                }
+            }
+        }
+        HookRequest::WorkflowNodeUpdate(request) => {
+            match update_workflow_node(
+                workflow_root,
+                &request.workflow_id,
+                &request.node_id,
+                &request.parameter_id,
+                request.value.clone(),
+            ) {
+                Ok(event) => {
+                    if is_hook_live_workflow_id(&request.workflow_id) {
+                        let mut patch = HookCanvasPersistPatch::default();
+                        patch
+                            .param_updates
+                            .push((request.parameter_id.clone(), request.value.clone()));
+                        let _ = persist_hook_canvas_live_node_patch(&request.node_id, &patch);
+                    }
+                    HookBridgeWebSocketTextResult {
+                        response: hook_protocol_response_json(
+                            &request.request_id,
+                            HookRequestStatus::Succeeded,
+                            json!({
+                                "workflowId": request.workflow_id,
+                                "nodeId": request.node_id,
+                                "parameterId": request.parameter_id,
+                            }),
+                            None,
+                        ),
+                        broadcasts: serde_json::to_string(&event).into_iter().collect(),
+                        subscription_channels: None,
+                    }
+                }
+                Err(error) => {
+                    hook_protocol_failure(&request.request_id, "workflow_update_failed", error)
+                }
+            }
+        }
+        HookRequest::WorkflowInstantiate(request) => {
+            match instantiate_workflow(
+                workflow_root,
+                request.nodes,
+                request.edges,
+                &request.mode,
+                request.workflow_id,
+            ) {
+                Ok(event) => HookBridgeWebSocketTextResult {
+                    response: hook_protocol_response_json(
+                        &request.request_id,
+                        HookRequestStatus::Succeeded,
+                        json!({}),
+                        None,
+                    ),
+                    broadcasts: serde_json::to_string(&event).into_iter().collect(),
+                    subscription_channels: None,
+                },
+                Err(error) => {
+                    hook_protocol_failure(&request.request_id, "workflow_instantiate_failed", error)
+                }
+            }
+        }
+        HookRequest::SettingsGet(request) => match settings.lock() {
+            Ok(store) => hook_protocol_success(
+                &request.request_id,
+                serde_json::to_value(&store.settings).unwrap_or_default(),
+            ),
+            Err(_) => hook_protocol_failure(
+                &request.request_id,
+                "settings_unavailable",
+                "lock Loom settings",
+            ),
+        },
+        HookRequest::EnhancementsGet(request) => {
+            let ocr = ocr_provider
+                .lock()
+                .map(|provider| provider.is_available())
+                .unwrap_or(false);
+            hook_protocol_success(
+                &request.request_id,
+                json!({ "ocr": ocr, "translation": true }),
+            )
+        }
+        HookRequest::OcrExecute(request) => {
+            match execute_hook_ocr(&request.image_base64, ocr_provider) {
+                Ok(result) => hook_protocol_success(&request.request_id, result),
+                Err(error) => hook_protocol_failure(&request.request_id, "ocr_failed", error),
+            }
+        }
+        HookRequest::TranslationExecute(request) => {
+            match translate_text_via_provider(&request.text, &request.target_language) {
+                Ok(translated_text) => hook_protocol_success(
+                    &request.request_id,
+                    json!({
+                        "translatedText": translated_text.unwrap_or(request.text),
+                        "targetLanguage": request.target_language,
+                    }),
+                ),
+                Err(error) => {
+                    hook_protocol_failure(&request.request_id, "translation_failed", error)
+                }
+            }
+        }
+        HookRequest::ArtExecute(_) | HookRequest::ArtCancel(_) => hook_protocol_failure(
+            "hook.art",
+            "internal_routing_error",
+            "Art requests must be handled by the execution-aware dispatcher",
+        ),
     }
 }
 
-fn execute_hook_bridge_get_settings(
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> HookBridgeWebSocketTextResult {
-    let store = match settings_store.lock() {
-        Ok(store) => store,
-        Err(_) => {
-            return HookBridgeWebSocketTextResult::response(hook_bridge_error_json(
-                "lock ArtLoom compat settings",
-            ))
-        }
-    };
+fn hook_protocol_capabilities(
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+    surface: SurfaceHostCapabilities,
+    enabled_only: bool,
+) -> HookCapabilities {
+    let tools = tool_registry.list_tools().unwrap_or_default();
+    let art_definitions = tools
+        .iter()
+        .filter(|tool| !enabled_only || tool.enabled)
+        .map(|tool| hook_protocol_art_capability(tool, &tools, workflow_store))
+        .collect();
+    HookCapabilities {
+        art_definitions,
+        surface,
+        operations: loom_protocol::HOOK_REQUEST_METHODS
+            .iter()
+            .map(|method| (*method).to_owned())
+            .collect(),
+    }
+}
 
-    HookBridgeWebSocketTextResult::response(
-        json!({
-            "type": "settings",
-            "data": store.settings,
-        })
-        .to_string(),
+fn hook_protocol_art_capability(
+    tool: &ToolDefinition,
+    tools: &[ToolDefinition],
+    workflow_store: &WorkflowStore,
+) -> HookArtCapability {
+    let parameters = hook_capability_parameters(tool, tools, workflow_store);
+    let mut metadata = tool.metadata.clone().unwrap_or_else(|| json!({}));
+    if workflow_preview_tool(tool, tools, workflow_store).is_some_and(tool_supports_shader_preview)
+    {
+        if !metadata.is_object() {
+            metadata = json!({});
+        }
+        let object = metadata.as_object_mut().expect("metadata normalized");
+        let capabilities = object
+            .entry("capabilities".to_owned())
+            .or_insert_with(|| json!({}));
+        if !capabilities.is_object() {
+            *capabilities = json!({});
+        }
+        let capabilities = capabilities
+            .as_object_mut()
+            .expect("capabilities normalized");
+        capabilities.insert("preview".to_owned(), json!("shader"));
+        capabilities.insert("requiresFormalExecution".to_owned(), json!(true));
+        let image_inputs = hook_image_input_names(tool);
+        if let Some(input) = image_inputs.first() {
+            capabilities.insert("shaderInput".to_owned(), json!(input));
+        }
+        if let Some(reference) = image_inputs.get(1) {
+            capabilities.insert("shaderReferenceInput".to_owned(), json!(reference));
+        }
+    }
+    HookArtCapability {
+        id: tool.qualified_id(),
+        label: tool.name.clone(),
+        description: tool.description.clone(),
+        enabled: tool.enabled,
+        auto_process: metadata
+            .get("autoProcess")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        supported_transports: vec![
+            HookTransportMode::SharedMemory,
+            HookTransportMode::Websocket,
+        ],
+        parameters,
+        inputs: tool.inputs.clone(),
+        outputs: tool.outputs.clone(),
+        execution: serde_json::to_value(&tool.execution).unwrap_or_default(),
+        defaults: tool_defaults_json(tool),
+        default_visibility: metadata
+            .get("defaultVisibility")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default(),
+        metadata,
+    }
+}
+
+fn hook_protocol_success(request_id: &str, data: Value) -> HookBridgeWebSocketTextResult {
+    HookBridgeWebSocketTextResult::response(hook_protocol_response_json(
+        request_id,
+        HookRequestStatus::Succeeded,
+        data,
+        None,
+    ))
+}
+
+fn hook_protocol_failure(
+    request_id: &str,
+    code: &str,
+    error: impl std::fmt::Display,
+) -> HookBridgeWebSocketTextResult {
+    HookBridgeWebSocketTextResult::response(hook_protocol_failure_json(request_id, code, error))
+}
+
+fn hook_protocol_failure_json(
+    request_id: &str,
+    code: &str,
+    error: impl std::fmt::Display,
+) -> String {
+    hook_protocol_response_json(
+        request_id,
+        HookRequestStatus::Failed,
+        Value::Null,
+        Some(loom_protocol::SurfaceExecutionError {
+            code: code.to_owned(),
+            message: error.to_string(),
+            detail: None,
+        }),
     )
 }
 
-fn execute_hook_bridge_get_shortcuts(
-    settings_store: &SharedArtLoomCompatSettingsStore,
+fn hook_protocol_response_json(
+    request_id: &str,
+    status: HookRequestStatus,
+    data: Value,
+    error: Option<loom_protocol::SurfaceExecutionError>,
+) -> String {
+    serde_json::to_string(&HookResponse {
+        protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+        request_id: request_id.to_owned(),
+        status,
+        data,
+        error,
+    })
+    .unwrap_or_else(|serialize_error| {
+        json!({
+            "protocolVersion": loom_protocol::HOOK_PROTOCOL_VERSION,
+            "requestId": request_id,
+            "status": "failed",
+            "data": null,
+            "error": {
+                "code": "serialization_failed",
+                "message": serialize_error.to_string(),
+            }
+        })
+        .to_string()
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_hook_art_execute(
+    request: HookArtExecuteRequest,
+    mcp_servers: &SharedMcpServerStore,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+    shared_images: &SharedImageStoreHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    run_store: &SharedRunStore,
+    emit_intermediate: &mut dyn FnMut(String),
 ) -> HookBridgeWebSocketTextResult {
-    match artloom_compat_shortcuts_value(settings_store) {
-        Ok(shortcuts) => HookBridgeWebSocketTextResult::response(
-            json!({
-                "type": "shortcuts",
-                "data": shortcuts,
-            })
-            .to_string(),
-        ),
-        Err(error) => HookBridgeWebSocketTextResult::response(hook_bridge_error_json(error)),
+    if request.protocol_version != loom_protocol::HOOK_PROTOCOL_VERSION {
+        return hook_protocol_failure(
+            &request.request_id,
+            "unsupported_protocol",
+            format!("unsupported Hook protocol `{}`", request.protocol_version),
+        );
+    }
+    if !loom_protocol::is_safe_hook_identifier(&request.request_id)
+        || !loom_protocol::is_safe_hook_identifier(&request.node_id)
+        || request.art_id.trim().is_empty()
+    {
+        return hook_protocol_failure(
+            &request.request_id,
+            "invalid_identity",
+            "requestId, nodeId, and artId must be valid Hook identities",
+        );
+    }
+    let cancellation = match reserve_hook_art_request(&request) {
+        HookArtReservation::Execute(cancellation) => cancellation,
+        HookArtReservation::Replay(response) | HookArtReservation::Reject(response) => {
+            return HookBridgeWebSocketTextResult::response(response)
+        }
+    };
+
+    let ack = HookArtAck {
+        protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+        request_id: request.request_id.clone(),
+        node_id: request.node_id.clone(),
+        generation: request.generation,
+        accepted: true,
+        status: HookRequestStatus::Running,
+        error: None,
+    };
+    emit_intermediate(hook_protocol_event_json(
+        loom_protocol::HOOK_EVENT_ART_ACK,
+        &ack,
+    ));
+    let progress = HookArtProgress {
+        protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+        request_id: request.request_id.clone(),
+        node_id: request.node_id.clone(),
+        generation: request.generation,
+        value: Some(0.0),
+        stage: Some("running".to_owned()),
+        message_key: None,
+    };
+    emit_intermediate(hook_protocol_event_json(
+        loom_protocol::HOOK_EVENT_ART_PROGRESS,
+        &progress,
+    ));
+
+    let started = Instant::now();
+    let result = execute_hook_art_request(
+        &request,
+        cancellation.as_ref(),
+        mcp_servers,
+        tool_registry,
+        workflow_store,
+        shared_images,
+        framework_registry,
+        control_plane_root,
+        emit_intermediate,
+    );
+    let terminal_response = match result {
+        Ok((outputs, candidates)) => {
+            let Some(result_revision) = next_hook_art_result_revision(
+                &request.request_id,
+                &request.node_id,
+                request.generation,
+                request.device_id.as_deref(),
+            ) else {
+                let response = hook_protocol_failure_json(
+                    &request.request_id,
+                    "cancelled",
+                    "Art result was discarded after cancellation or replacement",
+                );
+                finish_hook_art_request(
+                    &request.request_id,
+                    &request.node_id,
+                    request.generation,
+                    request.device_id.as_deref(),
+                    hook_art_request_fingerprint(&request),
+                    response.clone(),
+                );
+                return HookBridgeWebSocketTextResult::response(response);
+            };
+            let commit = HookArtResultCommit {
+                protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+                request_id: request.request_id.clone(),
+                node_id: request.node_id.clone(),
+                generation: request.generation,
+                result_revision,
+                outputs,
+                candidates,
+            };
+            emit_intermediate(hook_protocol_event_json(
+                loom_protocol::HOOK_EVENT_ART_RESULT,
+                &commit,
+            ));
+            let run_id =
+                record_hook_art_run(run_store, tool_registry, &request, started, true, None);
+            let mut data = serde_json::to_value(commit).unwrap_or_default();
+            if let Some(object) = data.as_object_mut() {
+                object.insert("executionId".to_owned(), json!(run_id));
+            }
+            let response = hook_protocol_response_json(
+                &request.request_id,
+                HookRequestStatus::Succeeded,
+                data,
+                None,
+            );
+            response
+        }
+        Err(error) => {
+            let cancelled = cancellation.load(Ordering::Acquire)
+                || matches!(error, WorkflowRuntimeError::Cancelled);
+            let code = if cancelled {
+                "cancelled"
+            } else {
+                "art_execution_failed"
+            };
+            let failure = HookArtFailure {
+                protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+                request_id: request.request_id.clone(),
+                node_id: request.node_id.clone(),
+                generation: request.generation,
+                error: loom_protocol::SurfaceExecutionError {
+                    code: code.to_owned(),
+                    message: error.to_string(),
+                    detail: None,
+                },
+                last_successful_result_revision: hook_art_requests().lock().ok().and_then(
+                    |state| {
+                        state
+                            .result_revision_by_node
+                            .get(&HookArtNodeScope::new(
+                                request.device_id.as_deref(),
+                                &request.node_id,
+                            ))
+                            .copied()
+                    },
+                ),
+            };
+            let status = if cancelled {
+                HookRequestStatus::Cancelled
+            } else {
+                HookRequestStatus::Failed
+            };
+            emit_intermediate(hook_protocol_event_json(
+                loom_protocol::HOOK_EVENT_ART_FAILURE,
+                &failure,
+            ));
+            let run_id = record_hook_art_run(
+                run_store,
+                tool_registry,
+                &request,
+                started,
+                false,
+                Some(&failure.error),
+            );
+            let mut data = serde_json::to_value(&failure).unwrap_or_default();
+            if let Some(object) = data.as_object_mut() {
+                object.insert("executionId".to_owned(), json!(run_id));
+            }
+            let response = hook_protocol_response_json(
+                &request.request_id,
+                status,
+                data,
+                Some(failure.error.clone()),
+            );
+            response
+        }
+    };
+    finish_hook_art_request(
+        &request.request_id,
+        &request.node_id,
+        request.generation,
+        request.device_id.as_deref(),
+        hook_art_request_fingerprint(&request),
+        terminal_response.clone(),
+    );
+    HookBridgeWebSocketTextResult::response(terminal_response)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_hook_art_request(
+    request: &HookArtExecuteRequest,
+    cancellation: &AtomicBool,
+    mcp_servers: &SharedMcpServerStore,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+    shared_images: &SharedImageStoreHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    emit_intermediate: &mut dyn FnMut(String),
+) -> std::result::Result<(BTreeMap<String, HookArtPortValue>, Option<Value>), WorkflowRuntimeError>
+{
+    let tool = tool_registry
+        .get_tool(&request.art_id)?
+        .or_else(|| {
+            tool_registry
+                .list_tools()
+                .ok()?
+                .into_iter()
+                .find(|tool| tool.qualified_id() == request.art_id)
+        })
+        .ok_or_else(|| ToolRegistryError::ExecutionRejected {
+            id: request.art_id.clone(),
+        })?;
+    let tool = resolve_registered_tool_package(
+        &tool,
+        tool_registry,
+        framework_registry,
+        control_plane_root,
+    )
+    .map_err(|error| ToolRegistryError::InvalidToolDefinition {
+        id: request.art_id.clone(),
+        reason: format!("Art package integrity verification failed: {error}"),
+    })?;
+    let servers = mcp_servers
+        .lock()
+        .map_err(|_| ToolRegistryError::ExecutionRejected {
+            id: request.art_id.clone(),
+        })?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let inputs =
+        materialize_hook_art_inputs(&request.inputs, shared_images).map_err(|message| {
+            ToolRegistryError::InvalidToolDefinition {
+                id: request.art_id.clone(),
+                reason: message,
+            }
+        })?;
+    let timeout = request
+        .deadline_at_ms
+        .map(|deadline| deadline.saturating_sub(unix_time_millis()))
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(120))
+        .max(Duration::from_millis(1));
+    let mut arguments = inputs.as_object().cloned().unwrap_or_default();
+    for (name, value) in &request.parameters {
+        if arguments.insert(name.clone(), value.clone()).is_some() {
+            return Err(ToolRegistryError::InvalidToolDefinition {
+                id: request.art_id.clone(),
+                reason: format!("Hook input and parameter names collide at `{name}`"),
+            }
+            .into());
+        }
+    }
+    arguments.insert(
+        "disabledParams".to_owned(),
+        serde_json::to_value(&request.disabled_parameters).unwrap_or_else(|_| json!([])),
+    );
+    let arguments = Value::Object(arguments);
+    let result = execute_tool_with_workflows_and_preview_timeout_and_cancellation(
+        &tool,
+        &servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        timeout,
+        cancellation,
+        |preview| {
+            if !hook_art_request_is_current(
+                &request.request_id,
+                &request.node_id,
+                request.generation,
+                request.device_id.as_deref(),
+            ) {
+                return;
+            }
+            let Some(value) = hook_art_primary_output_value(&preview, shared_images) else {
+                return;
+            };
+            let Some(preview_revision) = next_hook_art_preview_revision(
+                &request.request_id,
+                &request.node_id,
+                request.generation,
+                request.device_id.as_deref(),
+            ) else {
+                return;
+            };
+            let commit = HookArtPreviewCommit {
+                protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+                request_id: request.request_id.clone(),
+                node_id: request.node_id.clone(),
+                generation: request.generation,
+                preview_revision,
+                port_id: hook_art_primary_output_id(&tool),
+                value,
+            };
+            emit_intermediate(hook_protocol_event_json(
+                loom_protocol::HOOK_EVENT_ART_PREVIEW,
+                &commit,
+            ));
+        },
+    )?;
+    if cancellation.load(Ordering::Acquire) {
+        return Err(WorkflowRuntimeError::Cancelled);
+    }
+    let candidates = result.pointer("/loomMetadata/candidates").cloned();
+    Ok((
+        hook_art_result_outputs(&tool, &result, shared_images),
+        candidates,
+    ))
+}
+
+fn materialize_hook_art_inputs(
+    inputs: &BTreeMap<String, HookArtPortValue>,
+    shared_images: &SharedImageStoreHandle,
+) -> std::result::Result<Value, String> {
+    let mut materialized = serde_json::Map::new();
+    for (name, input) in inputs {
+        let value = match input {
+            HookArtPortValue::Value { value } => value.clone(),
+            HookArtPortValue::InlineResource {
+                mime, data_base64, ..
+            } => {
+                if !mime.starts_with("image/") {
+                    return Err(format!("inline input `{name}` must be an image"));
+                }
+                if data_base64.starts_with("data:") {
+                    return Err(format!(
+                        "inline input `{name}` dataBase64 must contain bare base64 data"
+                    ));
+                }
+                BASE64.decode(data_base64).map_err(|error| {
+                    format!("inline input `{name}` is not valid base64: {error}")
+                })?;
+                Value::String(format!("data:{mime};base64,{data_base64}"))
+            }
+            HookArtPortValue::SharedMemory {
+                handle,
+                size,
+                width,
+                height,
+                format,
+            } => {
+                if format != "rgba8" {
+                    return Err(format!("shared-memory input `{name}` must use rgba8"));
+                }
+                let size = usize::try_from(*size)
+                    .map_err(|_| format!("shared-memory input `{name}` size exceeds usize"))?;
+                let expected = usize::try_from(u64::from(*width) * u64::from(*height) * 4)
+                    .map_err(|_| format!("shared-memory input `{name}` dimensions overflow"))?;
+                if size != expected {
+                    return Err(format!(
+                        "shared-memory input `{name}` size mismatch: expected {expected}, got {size}"
+                    ));
+                }
+                let bytes = shared_images
+                    .lock()
+                    .map_err(|_| "lock shared image store".to_owned())?
+                    .read_rgba8_or_open(handle, size)
+                    .map_err(|error| error.to_string())?;
+                Value::String(
+                    loom_shared_image::rgba8_to_png_data_url(*width, *height, bytes)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            HookArtPortValue::Resource { .. } => {
+                return Err(format!(
+                    "broker resource input `{name}` requires an attachment-scoped lease"
+                ))
+            }
+        };
+        materialized.insert(name.clone(), value);
+    }
+    Ok(Value::Object(materialized))
+}
+
+fn hook_art_result_outputs(
+    tool: &ToolDefinition,
+    result: &Value,
+    shared_images: &SharedImageStoreHandle,
+) -> BTreeMap<String, HookArtPortValue> {
+    let output_id = hook_art_primary_output_id(tool);
+    if let Some(value) = hook_art_primary_output_value(result, shared_images) {
+        return BTreeMap::from([(output_id, value)]);
+    }
+    let mut outputs = BTreeMap::new();
+    for output in &tool.outputs {
+        let Some(id) = output.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(value) = result.get(id) {
+            outputs.insert(
+                id.to_owned(),
+                HookArtPortValue::Value {
+                    value: value.clone(),
+                },
+            );
+        }
+    }
+    if outputs.is_empty() {
+        outputs.insert(
+            output_id,
+            HookArtPortValue::Value {
+                value: result.clone(),
+            },
+        );
+    }
+    outputs
+}
+
+fn hook_art_primary_output_value(
+    result: &Value,
+    shared_images: &SharedImageStoreHandle,
+) -> Option<HookArtPortValue> {
+    if let Some(data_url) = extract_art_image_data_url(result) {
+        return Some(hook_art_image_value(&data_url, shared_images));
+    }
+    if result.get("type").and_then(Value::as_str) == Some("shader") {
+        return Some(HookArtPortValue::Value {
+            value: result.clone(),
+        });
+    }
+    None
+}
+
+fn hook_art_image_value(
+    data_url: &str,
+    shared_images: &SharedImageStoreHandle,
+) -> HookArtPortValue {
+    hook_art_image_value_with(data_url, || {
+        hook_art_shared_image_value(data_url, shared_images)
+    })
+}
+
+fn hook_art_image_value_with(
+    data_url: &str,
+    create_shared_image: impl FnOnce() -> std::result::Result<HookArtPortValue, String>,
+) -> HookArtPortValue {
+    create_shared_image().unwrap_or_else(|_| {
+        let (mime, data_base64) = data_url
+            .strip_prefix("data:")
+            .and_then(|value| value.split_once(";base64,"))
+            .unwrap_or(("image/png", data_url));
+        let dimensions = loom_image_io::decode_image_base64_to_rgba8(data_url)
+            .ok()
+            .map(|image| (image.width, image.height));
+        HookArtPortValue::InlineResource {
+            mime: mime.to_owned(),
+            data_base64: data_base64.to_owned(),
+            width: dimensions.map(|value| value.0),
+            height: dimensions.map(|value| value.1),
+        }
+    })
+}
+
+fn extract_art_image_data_url(value: &Value) -> Option<String> {
+    const OUTPUT_KEYS: &[&str] = &[
+        "output_base64",
+        "outputBase64",
+        "image_base64",
+        "imageBase64",
+        "data_url",
+        "dataUrl",
+        "data",
+        "image",
+        "output",
+        "result",
+        "content",
+    ];
+    if let Some(content) = value.get("content").and_then(Value::as_array) {
+        if let Some(data) = content.iter().find_map(|item| {
+            (item.get("type").and_then(Value::as_str) == Some("image"))
+                .then(|| item.get("data").and_then(Value::as_str))
+                .flatten()
+        }) {
+            return normalize_art_image_data_url(
+                data,
+                content
+                    .iter()
+                    .find(|item| item.get("data").and_then(Value::as_str) == Some(data))
+                    .and_then(|item| item.get("mimeType").and_then(Value::as_str)),
+            );
+        }
+    }
+    match value {
+        Value::String(value) if value.trim_start().starts_with("data:image/") => {
+            Some(value.clone())
+        }
+        Value::Object(object) => OUTPUT_KEYS
+            .iter()
+            .filter_map(|key| object.get(*key))
+            .find_map(extract_art_image_data_url),
+        Value::Array(values) => values.iter().find_map(extract_art_image_data_url),
+        _ => None,
     }
 }
 
-fn execute_hook_bridge_sync_shortcuts(
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> HookBridgeWebSocketTextResult {
-    match artloom_compat_shortcuts_value(settings_store) {
-        Ok(shortcuts) => HookBridgeWebSocketTextResult::response(
-            json!({
-                "type": "shortcuts",
-                "data": shortcuts,
-            })
-            .to_string(),
-        ),
-        Err(error) => HookBridgeWebSocketTextResult::response(hook_bridge_error_json(error)),
+fn normalize_art_image_data_url(data: &str, mime: Option<&str>) -> Option<String> {
+    if data.trim_start().starts_with("data:image/") {
+        return Some(data.to_owned());
     }
+    let mime = mime.filter(|value| value.starts_with("image/"))?;
+    BASE64.decode(data).ok()?;
+    Some(format!("data:{mime};base64,{data}"))
 }
 
-fn execute_hook_bridge_translate_text(
-    text: &str,
-    target_lang: &str,
-) -> HookBridgeWebSocketTextResult {
-    match translate_text_via_provider(text, target_lang) {
-        Ok(Some(translated_text)) => HookBridgeWebSocketTextResult::response(
-            json!({
-                "type": "success",
-                "data": {
-                    "translated_text": translated_text,
-                    "target_lang": target_lang,
-                    "source": "loom-translate-provider"
-                }
-            })
-            .to_string(),
-        ),
-        Ok(None) => HookBridgeWebSocketTextResult::response(
-            json!({
-                "type": "success",
-                "data": {
-                    "translated_text": text,
-                    "target_lang": target_lang,
-                    "source": "loom-hook-bridge-compat"
-                }
-            })
-            .to_string(),
-        ),
-        Err(error) => HookBridgeWebSocketTextResult::response(hook_bridge_error_json(error)),
+fn hook_art_shared_image_value(
+    data_url: &str,
+    shared_images: &SharedImageStoreHandle,
+) -> std::result::Result<HookArtPortValue, String> {
+    let image = match shared_images.lock() {
+        Ok(mut store) => store.create_from_data_url(data_url),
+        Err(poisoned) => poisoned.into_inner().create_from_data_url(data_url),
     }
+    .map_err(|error| error.to_string())?;
+    Ok(HookArtPortValue::SharedMemory {
+        handle: image.handle,
+        size: u64::try_from(image.size).unwrap_or(u64::MAX),
+        width: image.width,
+        height: image.height,
+        format: "rgba8".to_owned(),
+    })
+}
+
+fn hook_art_primary_output_id(tool: &ToolDefinition) -> String {
+    tool.outputs
+        .first()
+        .and_then(|output| {
+            output
+                .get("name")
+                .or_else(|| output.get("id"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("output")
+        .to_owned()
+}
+
+fn hook_protocol_event_json(method: &str, params: &impl Serialize) -> String {
+    let params = serde_json::to_value(params).unwrap_or_default();
+    serde_json::to_string(&HookEvent {
+        protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+        method: method.to_owned(),
+        params,
+    })
+    .unwrap_or_else(|error| hook_protocol_failure_json("event", "serialization_failed", error))
 }
 
 fn translate_text_via_provider(
@@ -16089,1022 +15074,31 @@ fn translate_text_via_provider(
         .ok_or_else(|| "translate provider response missing translated text".to_owned())
 }
 
-fn artloom_compat_shortcuts_value(
-    settings_store: &SharedArtLoomCompatSettingsStore,
-) -> std::result::Result<Vec<ArtLoomShortcutConfig>, String> {
-    let store = settings_store
-        .lock()
-        .map_err(|_| "lock ArtLoom compat settings".to_owned())?;
-    let mut shortcuts = store
-        .settings
-        .shortcuts
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(shortcuts)
-}
-
-fn hook_bridge_control_error_json(response: Result<(u16, String)>) -> String {
-    let message = match response {
-        Ok((_status, body)) => serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("error")
-                    .and_then(|error| error.get("message"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or(body),
-        Err(error) => error.to_string(),
-    };
-    hook_bridge_error_json(message)
-}
-
-fn execute_hook_bridge_ocr_image(
+fn execute_hook_ocr(
     image_base64: &str,
     ocr_provider: &OcrProviderHandle,
-) -> HookBridgeWebSocketTextResult {
+) -> std::result::Result<Value, String> {
     let mut provider = match ocr_provider.lock() {
         Ok(provider) => provider,
-        Err(_) => {
-            return HookBridgeWebSocketTextResult::response(
-                ocr_image_error_response("OCR enhancement unavailable").to_string(),
-            )
-        }
+        Err(_) => return Err("OCR enhancement unavailable".to_owned()),
     };
 
     match &mut *provider {
-        OcrProvider::Unavailable => HookBridgeWebSocketTextResult::response(
-            ocr_image_error_response("OCR enhancement unavailable").to_string(),
-        ),
+        OcrProvider::Unavailable => Err("OCR enhancement unavailable".to_owned()),
         OcrProvider::Fixture { text } => {
-            let rgba = match loom_image_io::decode_image_base64_to_rgba8(image_base64) {
-                Ok(rgba) => rgba,
-                Err(error) => {
-                    return HookBridgeWebSocketTextResult::response(
-                        ocr_image_error_response(error.to_string()).to_string(),
-                    )
-                }
-            };
-
-            HookBridgeWebSocketTextResult::response(
-                ocr_image_success_response(text, rgba.width, rgba.height).to_string(),
-            )
+            let rgba = loom_image_io::decode_image_base64_to_rgba8(image_base64)
+                .map_err(|error| error.to_string())?;
+            Ok(json!({ "text": text, "width": rgba.width, "height": rgba.height }))
         }
         OcrProvider::Real { engine } => {
-            let image_bytes = match loom_image_io::decode_data_url_bytes(image_base64) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    return HookBridgeWebSocketTextResult::response(
-                        ocr_image_error_response(error.to_string()).to_string(),
-                    )
-                }
-            };
-            let result = match engine.detect_image_bytes(&image_bytes, false) {
-                Ok(result) => result,
-                Err(error) => {
-                    return HookBridgeWebSocketTextResult::response(
-                        ocr_image_error_response(error.to_string()).to_string(),
-                    )
-                }
-            };
-            let response = serde_json::json!({
-                "type": "success",
-                "data": result,
-            });
-
-            HookBridgeWebSocketTextResult::response(response.to_string())
+            let image_bytes = loom_image_io::decode_data_url_bytes(image_base64)
+                .map_err(|error| error.to_string())?;
+            let result = engine
+                .detect_image_bytes(&image_bytes, false)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(result).map_err(|error| error.to_string())
         }
     }
-}
-
-fn execute_hook_bridge_art_node(
-    node_id: &str,
-    art_id: &str,
-    input_base64: Option<String>,
-    params: std::collections::BTreeMap<String, Value>,
-    mcp_servers: &SharedMcpServerStore,
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-    framework_registry: &FrameworkRegistry,
-    control_plane_root: &Path,
-    emit_intermediate: &mut dyn FnMut(String),
-) -> HookBridgeWebSocketTextResult {
-    let started = Instant::now();
-    set_hook_canvas_runtime_status(node_id, "processing", None);
-    let tool = match tool_registry.get_tool(art_id) {
-        Ok(Some(tool)) => tool,
-        Ok(None) => {
-            if loom_native_image::is_native_art_id(art_id) {
-                return execute_hook_bridge_native_art_node(node_id, art_id, input_base64, params);
-            }
-            let message = format!("Art definition not found: {art_id}");
-            set_hook_canvas_runtime_status(node_id, "error", Some(message.clone()));
-            return HookBridgeWebSocketTextResult::response(
-                execute_art_node_error_response(message).to_string(),
-            );
-        }
-        Err(error) => {
-            set_hook_canvas_runtime_status(node_id, "error", Some(error.to_string()));
-            return HookBridgeWebSocketTextResult::response(
-                execute_art_node_error_response(error.to_string()).to_string(),
-            );
-        }
-    };
-    let tool = match resolve_registered_tool_package(
-        &tool,
-        tool_registry,
-        framework_registry,
-        control_plane_root,
-    ) {
-        Ok(tool) => tool,
-        Err(error) => {
-            let message = format!("Art package integrity verification failed: {error}");
-            set_hook_canvas_runtime_status(node_id, "error", Some(message.clone()));
-            return HookBridgeWebSocketTextResult::response(
-                execute_art_node_error_response(message).to_string(),
-            );
-        }
-    };
-
-    let servers = match mcp_servers.lock() {
-        Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
-        Err(_) => {
-            set_hook_canvas_runtime_status(
-                node_id,
-                "error",
-                Some("lock MCP server store".to_owned()),
-            );
-            return HookBridgeWebSocketTextResult::response(
-                execute_art_node_error_response("lock MCP server store").to_string(),
-            );
-        }
-    };
-
-    let mut arguments = serde_json::Map::new();
-    for (key, value) in params {
-        arguments.insert(key, value);
-    }
-    let mut temporary_input_files = Vec::new();
-    if let Some(input) = input_base64.filter(|value| !value.is_empty()) {
-        arguments
-            .entry("input_base64".to_owned())
-            .or_insert_with(|| Value::String(input.clone()));
-        if matches!(&tool.execution, ToolExecution::CloudApi { .. }) {
-            if let Some(input_path) = write_hook_bridge_cloud_input_file(&input) {
-                let temporary_input_file = input_path.clone();
-                let input_path = input_path.to_string_lossy().into_owned();
-                arguments
-                    .entry("input".to_owned())
-                    .or_insert_with(|| Value::String(input_path.clone()));
-                arguments
-                    .entry("image".to_owned())
-                    .or_insert_with(|| Value::String(input_path));
-                temporary_input_files.push(temporary_input_file);
-            } else {
-                arguments
-                    .entry("input".to_owned())
-                    .or_insert_with(|| Value::String(input));
-            }
-        } else {
-            arguments
-                .entry("input".to_owned())
-                .or_insert_with(|| Value::String(input));
-        }
-    }
-
-    let mut preview_emitted = false;
-    let response = match execute_tool_with_workflows_and_preview(
-        &tool,
-        &servers,
-        workflow_store,
-        tool_registry,
-        Value::Object(arguments),
-        |preview| {
-            let Some(output_base64) = extract_ahrp_base64_output(&preview) else {
-                return;
-            };
-            preview_emitted = true;
-            set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
-            let response = execute_art_node_image_success_response(
-                node_id,
-                &output_base64,
-                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            );
-            emit_intermediate(hook_bridge_response_with_phase(
-                &response.to_string(),
-                "preview",
-            ));
-        },
-    ) {
-        Ok(result) => {
-            let image_search_state = extract_hook_canvas_result_candidates(&result);
-            if let Some((candidates, selected_result_index)) = image_search_state.clone() {
-                set_hook_canvas_runtime_result_candidates(
-                    node_id,
-                    candidates,
-                    selected_result_index,
-                );
-            } else {
-                clear_hook_canvas_runtime_result_candidates(node_id);
-            }
-            match extract_ahrp_base64_output(&result) {
-                Some(output_base64) => {
-                    if let Some((candidates, selected_result_index)) = image_search_state.as_ref() {
-                        persist_hook_canvas_image_search_state(
-                            node_id,
-                            candidates,
-                            *selected_result_index,
-                            Some(output_base64.as_str()),
-                        );
-                    }
-                    if !preview_emitted {
-                        set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
-                    }
-                    execute_art_node_image_success_response(
-                        node_id,
-                        &output_base64,
-                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    )
-                }
-                None => {
-                    if !preview_emitted {
-                        clear_hook_canvas_runtime_preview(node_id);
-                    }
-                    execute_art_node_success_response(
-                        node_id,
-                        result,
-                        started.elapsed().as_millis(),
-                    )
-                }
-            }
-        }
-        Err(error) => {
-            if !preview_emitted {
-                clear_hook_canvas_runtime_preview(node_id);
-            }
-            clear_hook_canvas_runtime_result_candidates(node_id);
-            execute_art_node_error_response(error.to_string())
-        }
-    };
-    for path in temporary_input_files {
-        let _ = fs::remove_file(path);
-    }
-    finalize_execute_art_node_runtime_status(node_id, &response);
-    HookBridgeWebSocketTextResult::response(hook_bridge_response_with_phase(
-        &response.to_string(),
-        "final",
-    ))
-}
-
-fn write_hook_bridge_cloud_input_file(input_base64: &str) -> Option<PathBuf> {
-    write_hook_bridge_input_file("cloud", input_base64).ok()
-}
-
-static HOOK_BRIDGE_INPUT_FILE_NONCE: AtomicUsize = AtomicUsize::new(1);
-
-fn write_hook_bridge_input_file(kind: &str, input_base64: &str) -> Result<PathBuf, String> {
-    let bytes =
-        loom_image_io::decode_data_url_bytes(input_base64).map_err(|error| error.to_string())?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let nonce = HOOK_BRIDGE_INPUT_FILE_NONCE.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "loom-{kind}-input-{}-{timestamp}-{nonce}.png",
-        std::process::id(),
-    ));
-    fs::write(&path, bytes).map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
-fn execute_hook_bridge_native_art_node(
-    node_id: &str,
-    art_id: &str,
-    input_base64: Option<String>,
-    params: std::collections::BTreeMap<String, Value>,
-) -> HookBridgeWebSocketTextResult {
-    set_hook_canvas_runtime_status(node_id, "processing", None);
-    let Some(input_base64) = input_base64.filter(|value| !value.is_empty()) else {
-        set_hook_canvas_runtime_status(
-            node_id,
-            "error",
-            Some("Native image filter input_base64 is required".to_owned()),
-        );
-        return HookBridgeWebSocketTextResult::response(
-            execute_art_node_error_response("Native image filter input_base64 is required")
-                .to_string(),
-        );
-    };
-    let params = params.into_iter().collect::<HashMap<_, _>>();
-    let result = loom_native_image::process_art(art_id, &input_base64, params);
-    let response = if result.success {
-        match result.output_base64 {
-            Some(output_base64) => {
-                set_hook_canvas_runtime_preview(node_id, Some(output_base64.clone()));
-                execute_art_node_image_success_response(
-                    node_id,
-                    &output_base64,
-                    result.processing_time_ms,
-                )
-            }
-            None => {
-                clear_hook_canvas_runtime_preview(node_id);
-                execute_art_node_error_response("Native image filter produced no output")
-            }
-        }
-    } else {
-        clear_hook_canvas_runtime_preview(node_id);
-        execute_art_node_error_response(
-            result
-                .error
-                .unwrap_or_else(|| "Native image filter failed".to_owned()),
-        )
-    };
-    finalize_execute_art_node_runtime_status(node_id, &response);
-    HookBridgeWebSocketTextResult::response(response.to_string())
-}
-
-struct PreparedAhrpInput {
-    input_base64: String,
-    width: u64,
-    height: u64,
-    tool_input: Value,
-    output_preference: AhrpOutputPreference,
-}
-
-fn prepare_hook_bridge_ahrp_input(
-    request_id: &str,
-    input: Value,
-    shared_images: &SharedImageStoreHandle,
-) -> Result<PreparedAhrpInput, Value> {
-    let input_type = input.get("type").and_then(Value::as_str).unwrap_or("");
-    match input_type {
-        "base64" => prepare_hook_bridge_base64_ahrp_input(request_id, input),
-        "shared_memory" => {
-            prepare_hook_bridge_shared_memory_ahrp_input(request_id, input, shared_images)
-        }
-        _ => Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            format!("Unsupported AHRP input type: {input_type}"),
-        )),
-    }
-}
-
-fn prepare_hook_bridge_base64_ahrp_input(
-    request_id: &str,
-    input: Value,
-) -> Result<PreparedAhrpInput, Value> {
-    let Some(input_base64) = input
-        .get("data")
-        .and_then(Value::as_str)
-        .filter(|data| !data.is_empty())
-        .map(str::to_owned)
-    else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP base64 input missing data",
-        ));
-    };
-    let Some(width) = input.get("width").and_then(Value::as_u64) else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP base64 input missing width",
-        ));
-    };
-    let Some(height) = input.get("height").and_then(Value::as_u64) else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP base64 input missing height",
-        ));
-    };
-
-    Ok(PreparedAhrpInput {
-        input_base64,
-        width,
-        height,
-        tool_input: input,
-        output_preference: AhrpOutputPreference::Base64,
-    })
-}
-
-fn prepare_hook_bridge_shared_memory_ahrp_input(
-    request_id: &str,
-    input: Value,
-    shared_images: &SharedImageStoreHandle,
-) -> Result<PreparedAhrpInput, Value> {
-    let Some(handle) = input
-        .get("handle")
-        .and_then(Value::as_str)
-        .filter(|handle| !handle.is_empty())
-    else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory input missing handle",
-        ));
-    };
-    let Some(size) = input
-        .get("size")
-        .and_then(Value::as_u64)
-        .and_then(|size| usize::try_from(size).ok())
-    else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory input missing size",
-        ));
-    };
-    let Some(width) = input.get("width").and_then(Value::as_u64) else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory input missing width",
-        ));
-    };
-    let Some(height) = input.get("height").and_then(Value::as_u64) else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory input missing height",
-        ));
-    };
-    let format = input
-        .get("format")
-        .and_then(Value::as_str)
-        .unwrap_or("rgba8");
-    if format != "rgba8" {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            format!("Unsupported AHRP shared_memory format: {format}"),
-        ));
-    }
-    let Some(expected_size) = width
-        .checked_mul(height)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .and_then(|bytes| usize::try_from(bytes).ok())
-    else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory dimensions overflow",
-        ));
-    };
-    if size != expected_size {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            format!("AHRP shared_memory size mismatch: expected {expected_size}, got {size}"),
-        ));
-    }
-
-    let bytes = match shared_images
-        .lock()
-        .map_err(|_| ahrp_error_response(request_id, "InternalError", "lock shared image store"))?
-        .read_rgba8_or_open(handle, size)
-    {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(ahrp_error_response(
-                request_id,
-                "BadRequest",
-                error.to_string(),
-            ))
-        }
-    };
-    let Ok(width_u32) = u32::try_from(width) else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory width exceeds u32",
-        ));
-    };
-    let Ok(height_u32) = u32::try_from(height) else {
-        return Err(ahrp_error_response(
-            request_id,
-            "BadRequest",
-            "AHRP shared_memory height exceeds u32",
-        ));
-    };
-    let input_base64 = match loom_shared_image::rgba8_to_png_data_url(width_u32, height_u32, bytes)
-    {
-        Ok(data_url) => data_url,
-        Err(error) => {
-            return Err(ahrp_error_response(
-                request_id,
-                "BadRequest",
-                error.to_string(),
-            ))
-        }
-    };
-    let tool_input = json!({
-        "type": "base64",
-        "data": input_base64,
-        "width": width,
-        "height": height,
-        "format": "rgba8",
-    });
-
-    Ok(PreparedAhrpInput {
-        input_base64,
-        width,
-        height,
-        tool_input,
-        output_preference: AhrpOutputPreference::SharedMemory,
-    })
-}
-
-fn ahrp_process_output_response(
-    request_id: &str,
-    output_base64: &str,
-    width: u64,
-    height: u64,
-    processing_time_ms: u128,
-    output_preference: AhrpOutputPreference,
-    shared_images: &SharedImageStoreHandle,
-) -> Value {
-    match output_preference {
-        AhrpOutputPreference::Base64 => ahrp_process_base64_success_response(
-            request_id,
-            output_base64,
-            width,
-            height,
-            processing_time_ms,
-        ),
-        AhrpOutputPreference::SharedMemory => {
-            let image = match shared_images
-                .lock()
-                .map_err(|_| "lock shared image store".to_owned())
-                .and_then(|mut store| {
-                    store
-                        .create_from_data_url(output_base64)
-                        .map_err(|error| error.to_string())
-                }) {
-                Ok(image) => image,
-                Err(error) => return ahrp_error_response(request_id, "EngineError", error),
-            };
-            let format = match image.format {
-                SharedImageFormat::Rgba8 => "rgba8",
-            };
-            ahrp_process_shared_memory_success_response(
-                request_id,
-                &image.handle,
-                image.size,
-                u64::from(image.width),
-                u64::from(image.height),
-                format,
-                processing_time_ms,
-            )
-        }
-    }
-}
-
-fn hook_bridge_argument_value_is_blank(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::String(text) => text.trim().is_empty(),
-        Value::Object(object) => object.is_empty(),
-        _ => false,
-    }
-}
-
-fn hook_bridge_image_data(value: &Value) -> Option<&str> {
-    match value {
-        Value::String(value) if value.trim_start().starts_with("data:image/") => Some(value),
-        Value::Object(value) if value.get("type").and_then(Value::as_str) == Some("base64") => {
-            value.get("data").and_then(Value::as_str)
-        }
-        _ => None,
-    }
-}
-
-fn ahrp_uses_file_backed_image_inputs(execution: &ToolExecution) -> bool {
-    matches!(
-        execution,
-        ToolExecution::FrameworkArt { .. } | ToolExecution::Workflow { .. }
-    )
-}
-
-fn prepare_file_backed_ahrp_arguments(
-    arguments: &mut serde_json::Map<String, Value>,
-    input_images: std::collections::BTreeMap<String, Value>,
-    input_base64: &str,
-) -> Result<Vec<PathBuf>, String> {
-    let mut temporary_input_files = Vec::new();
-    for (key, value) in input_images {
-        if key.trim().is_empty() || hook_bridge_argument_value_is_blank(&value) {
-            continue;
-        }
-        let value = if let Some(image_data) = hook_bridge_image_data(&value) {
-            let path = match write_hook_bridge_input_file("aux", image_data) {
-                Ok(path) => path,
-                Err(error) => {
-                    for path in temporary_input_files {
-                        let _ = fs::remove_file(path);
-                    }
-                    return Err(error);
-                }
-            };
-            let path_value = Value::String(path.to_string_lossy().into_owned());
-            temporary_input_files.push(path);
-            path_value
-        } else {
-            value
-        };
-        arguments.insert(key, value);
-    }
-
-    let input_path = match write_hook_bridge_input_file("primary", input_base64) {
-        Ok(path) => path,
-        Err(error) => {
-            for path in temporary_input_files {
-                let _ = fs::remove_file(path);
-            }
-            return Err(error);
-        }
-    };
-    let input_path_value = Value::String(input_path.to_string_lossy().into_owned());
-    arguments
-        .entry("input_base64".to_owned())
-        .or_insert_with(|| input_path_value.clone());
-    arguments
-        .entry("input".to_owned())
-        .or_insert_with(|| input_path_value.clone());
-    arguments
-        .entry("image".to_owned())
-        .or_insert_with(|| input_path_value.clone());
-    temporary_input_files.push(input_path);
-    Ok(temporary_input_files)
-}
-
-fn execute_hook_bridge_ahrp_process(
-    request_id: &str,
-    art_id: &str,
-    input: Value,
-    params: std::collections::BTreeMap<String, Value>,
-    input_images: std::collections::BTreeMap<String, Value>,
-    disabled_params: Vec<String>,
-    mcp_servers: &SharedMcpServerStore,
-    tool_registry: &ToolRegistry,
-    workflow_store: &WorkflowStore,
-    shared_images: &SharedImageStoreHandle,
-    framework_registry: &FrameworkRegistry,
-    control_plane_root: &Path,
-    emit_intermediate: &mut dyn FnMut(String),
-) -> HookBridgeWebSocketTextResult {
-    let started = Instant::now();
-    let matched_node_id = resolve_hook_runtime_node_id(art_id, &params);
-    if let Some(node_id) = matched_node_id.as_deref() {
-        begin_hook_canvas_runtime_request(node_id, request_id);
-    }
-    let prepared_input = match prepare_hook_bridge_ahrp_input(request_id, input, shared_images) {
-        Ok(input) => input,
-        Err(response) => {
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-            return HookBridgeWebSocketTextResult::response(response.to_string());
-        }
-    };
-
-    let disabled = disabled_params
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    let filtered_params = params
-        .into_iter()
-        .filter(|(key, _)| !disabled.contains(key))
-        .collect::<std::collections::BTreeMap<_, _>>();
-
-    let tool = match tool_registry.get_tool(art_id) {
-        Ok(Some(tool)) => tool,
-        Ok(None) => {
-            if loom_native_image::is_native_art_id(art_id) {
-                let result = execute_hook_bridge_native_ahrp_process(
-                    request_id,
-                    art_id,
-                    &prepared_input.input_base64,
-                    filtered_params,
-                    prepared_input.width,
-                    prepared_input.height,
-                    prepared_input.output_preference,
-                    matched_node_id.as_deref(),
-                    shared_images,
-                );
-                if let Ok(response) = serde_json::from_str::<Value>(&result.response) {
-                    finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-                }
-                return result;
-            }
-            let response = ahrp_error_response(
-                request_id,
-                "NotFound",
-                format!("Art definition not found: {art_id}"),
-            );
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-            return HookBridgeWebSocketTextResult::response(response.to_string());
-        }
-        Err(error) => {
-            let response = ahrp_error_response(request_id, "InternalError", error.to_string());
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-            return HookBridgeWebSocketTextResult::response(response.to_string());
-        }
-    };
-    let tool = match resolve_registered_tool_package(
-        &tool,
-        tool_registry,
-        framework_registry,
-        control_plane_root,
-    ) {
-        Ok(tool) => tool,
-        Err(error) => {
-            let response = ahrp_error_response(
-                request_id,
-                "IntegrityError",
-                format!("Art package integrity verification failed: {error}"),
-            );
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-            return HookBridgeWebSocketTextResult::response(response.to_string());
-        }
-    };
-
-    let servers = match mcp_servers.lock() {
-        Ok(servers) => servers.values().cloned().collect::<Vec<_>>(),
-        Err(_) => {
-            let response =
-                ahrp_error_response(request_id, "InternalError", "lock MCP server store");
-            finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-            return HookBridgeWebSocketTextResult::response(response.to_string());
-        }
-    };
-
-    let mut arguments = serde_json::Map::new();
-    for (key, value) in filtered_params {
-        arguments.insert(key, value);
-    }
-    // Process-backed Arts receive file paths so large images are not duplicated
-    // through nested JSON/stdin boundaries. Cloud APIs use a path for multipart
-    // fields such as `{{inputs.input.path}}`.
-    let mut temporary_input_files = if ahrp_uses_file_backed_image_inputs(&tool.execution) {
-        match prepare_file_backed_ahrp_arguments(
-            &mut arguments,
-            input_images,
-            &prepared_input.input_base64,
-        ) {
-            Ok(paths) => paths,
-            Err(error) => {
-                let response = ahrp_error_response(
-                    request_id,
-                    "BadRequest",
-                    format!("Could not materialize Art image input: {error}"),
-                );
-                finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-                return HookBridgeWebSocketTextResult::response(response.to_string());
-            }
-        }
-    } else {
-        for (key, value) in input_images {
-            if key.trim().is_empty() || hook_bridge_argument_value_is_blank(&value) {
-                continue;
-            }
-            arguments.insert(key, value);
-        }
-        arguments
-            .entry("input_base64".to_owned())
-            .or_insert_with(|| Value::String(prepared_input.input_base64.clone()));
-        Vec::new()
-    };
-    if matches!(&tool.execution, ToolExecution::CloudApi { .. }) {
-        if let Some(input_path) = write_hook_bridge_cloud_input_file(&prepared_input.input_base64) {
-            let temporary_input_file = input_path.clone();
-            let input_path = input_path.to_string_lossy().into_owned();
-            arguments
-                .entry("input".to_owned())
-                .or_insert_with(|| Value::String(input_path.clone()));
-            arguments
-                .entry("image".to_owned())
-                .or_insert_with(|| Value::String(input_path));
-            temporary_input_files.push(temporary_input_file);
-        } else {
-            arguments
-                .entry("input".to_owned())
-                .or_insert(prepared_input.tool_input);
-        }
-    } else {
-        arguments
-            .entry("input".to_owned())
-            .or_insert(prepared_input.tool_input);
-    }
-
-    let mut preview_emitted = false;
-    let response = match execute_tool_with_workflows_and_preview(
-        &tool,
-        &servers,
-        workflow_store,
-        tool_registry,
-        Value::Object(arguments),
-        |preview| {
-            let Some(output_base64) = extract_ahrp_base64_output(&preview) else {
-                return;
-            };
-            preview_emitted = true;
-            if let Some(node_id) = matched_node_id.as_deref() {
-                set_hook_canvas_runtime_preview_for_request(
-                    node_id,
-                    request_id,
-                    Some(output_base64.clone()),
-                );
-            }
-            let mut response = ahrp_process_output_response(
-                request_id,
-                &output_base64,
-                prepared_input.width,
-                prepared_input.height,
-                started.elapsed().as_millis(),
-                prepared_input.output_preference,
-                shared_images,
-            );
-            if let Some(object) = response.as_object_mut() {
-                object.insert("phase".to_owned(), Value::String("preview".to_owned()));
-            }
-            emit_intermediate(response.to_string());
-        },
-    ) {
-        Ok(result) => {
-            let image_search_state = extract_hook_canvas_result_candidates(&result);
-            if let Some(node_id) = matched_node_id.as_deref() {
-                if let Some((candidates, selected_result_index)) = image_search_state.clone() {
-                    set_hook_canvas_runtime_result_candidates_for_request(
-                        node_id,
-                        request_id,
-                        candidates,
-                        selected_result_index,
-                    );
-                } else {
-                    set_hook_canvas_runtime_result_candidates_for_request(
-                        node_id,
-                        request_id,
-                        Vec::new(),
-                        None,
-                    );
-                }
-            }
-            match extract_ahrp_base64_output(&result) {
-                Some(output) => {
-                    if let Some(node_id) = matched_node_id.as_deref() {
-                        if let Some((candidates, selected_result_index)) =
-                            image_search_state.as_ref()
-                        {
-                            if hook_canvas_runtime_request_is_current(node_id, request_id) {
-                                persist_hook_canvas_image_search_state(
-                                    node_id,
-                                    candidates,
-                                    *selected_result_index,
-                                    Some(output.as_str()),
-                                );
-                            }
-                        }
-                        if !preview_emitted {
-                            set_hook_canvas_runtime_preview_for_request(
-                                node_id,
-                                request_id,
-                                Some(output.clone()),
-                            );
-                        }
-                    }
-                    let mut response = ahrp_process_output_response(
-                        request_id,
-                        &output,
-                        prepared_input.width,
-                        prepared_input.height,
-                        started.elapsed().as_millis(),
-                        prepared_input.output_preference,
-                        shared_images,
-                    );
-                    if let Some((candidates, selected_result_index)) = image_search_state.as_ref() {
-                        attach_ahrp_image_search_metadata(
-                            &mut response,
-                            hook_canvas_image_search_metadata_value(
-                                candidates,
-                                *selected_result_index,
-                            ),
-                        );
-                    }
-                    response
-                }
-                None => {
-                    if let Some(node_id) = matched_node_id.as_deref() {
-                        if !preview_emitted {
-                            set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
-                        }
-                    }
-                    let detail = extract_execution_text_content(&result)
-                        .map(|text| text.trim().to_owned())
-                        .filter(|text| !text.is_empty())
-                        .unwrap_or_else(|| {
-                            "MCP tool response contained no usable image data".to_owned()
-                        });
-                    let mut response = ahrp_error_response(request_id, "EngineError", detail);
-                    if let Some((candidates, selected_result_index)) = image_search_state.as_ref() {
-                        attach_ahrp_image_search_metadata(
-                            &mut response,
-                            hook_canvas_image_search_metadata_value(
-                                candidates,
-                                *selected_result_index,
-                            ),
-                        );
-                    }
-                    response
-                }
-            }
-        }
-        Err(error) => {
-            if let Some(node_id) = matched_node_id.as_deref() {
-                if !preview_emitted {
-                    set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
-                }
-                set_hook_canvas_runtime_result_candidates_for_request(
-                    node_id,
-                    request_id,
-                    Vec::new(),
-                    None,
-                );
-            }
-            ahrp_error_response(request_id, "EngineError", error.to_string())
-        }
-    };
-    for path in temporary_input_files {
-        let _ = fs::remove_file(path);
-    }
-    finalize_ahrp_runtime_status(matched_node_id.as_deref(), request_id, &response);
-    HookBridgeWebSocketTextResult::response(response.to_string())
-}
-
-fn execute_hook_bridge_native_ahrp_process(
-    request_id: &str,
-    art_id: &str,
-    input_base64: &str,
-    params: std::collections::BTreeMap<String, Value>,
-    width: u64,
-    height: u64,
-    output_preference: AhrpOutputPreference,
-    matched_node_id: Option<&str>,
-    shared_images: &SharedImageStoreHandle,
-) -> HookBridgeWebSocketTextResult {
-    let result = loom_native_image::process_art(
-        art_id,
-        input_base64,
-        params.into_iter().collect::<HashMap<_, _>>(),
-    );
-    let response = if result.success {
-        match result.output_base64 {
-            Some(output_base64) => {
-                if let Some(node_id) = matched_node_id {
-                    set_hook_canvas_runtime_preview_for_request(
-                        node_id,
-                        request_id,
-                        Some(output_base64.clone()),
-                    );
-                }
-                ahrp_process_output_response(
-                    request_id,
-                    &output_base64,
-                    width,
-                    height,
-                    result.processing_time_ms as u128,
-                    output_preference,
-                    shared_images,
-                )
-            }
-            None => {
-                if let Some(node_id) = matched_node_id {
-                    set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
-                }
-                ahrp_error_response(
-                    request_id,
-                    "EngineError",
-                    "Native image filter produced no output",
-                )
-            }
-        }
-    } else {
-        if let Some(node_id) = matched_node_id {
-            set_hook_canvas_runtime_preview_for_request(node_id, request_id, None);
-        }
-        ahrp_error_response(
-            request_id,
-            "EngineError",
-            result
-                .error
-                .unwrap_or_else(|| "Native image filter failed".to_owned()),
-        )
-    };
-    HookBridgeWebSocketTextResult::response(response.to_string())
 }
 
 fn register_hook_bridge_subscription(
@@ -17175,7 +15169,7 @@ fn broadcast_hook_bridge_messages_with_count(
     delivered
 }
 
-fn broadcast_hook_bridge_json(hook_bridge: &SharedHookBridgeRuntime, broadcast: Value) {
+fn broadcast_hook_bridge_json(hook_bridge: &SharedHookBridgeRuntime, broadcast: impl Serialize) {
     let serialized = match serde_json::to_string(&broadcast) {
         Ok(serialized) => serialized,
         Err(_) => return,
@@ -17218,7 +15212,7 @@ fn surface_snapshot_recovery_messages_for_device(
                     }
                     let snapshot = attachment.snapshot?;
                     serde_json::to_string(&json!({
-                        "method": "surface/snapshot",
+                        "method": SURFACE_EVENT_SNAPSHOT,
                         "params": {
                             "hookNodeId": attachment.descriptor.hook_node_id,
                             "snapshot": snapshot,
@@ -17240,7 +15234,7 @@ fn surface_snapshot_recovery_messages_for_device(
                     return None;
                 }
                 serde_json::to_string(&json!({
-                    "method": "surface/confirmation",
+                    "method": SURFACE_EVENT_CONFIRMATION_REQUEST,
                     "params": confirmation,
                 }))
                 .ok()
@@ -17343,13 +15337,7 @@ fn subscriber_accepts_broadcast(subscriber: &HookBridgeSubscriber, broadcast: &s
 
 fn channel_accepts_method(channel: &str, method: &str) -> bool {
     let channel = channel.trim();
-    if channel.is_empty() {
-        return false;
-    }
-    method == channel
-        || method
-            .strip_prefix(channel)
-            .is_some_and(|suffix| suffix.starts_with('/'))
+    !channel.is_empty() && method == channel
 }
 
 fn hook_bridge_read_timed_out(error: &tungstenite::Error) -> bool {
@@ -17358,16 +15346,6 @@ fn hook_bridge_read_timed_out(error: &tungstenite::Error) -> bool {
         tungstenite::Error::Io(io_error)
             if matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
     )
-}
-
-fn hook_bridge_error_json(message: impl Into<String>) -> String {
-    serde_json::json!({
-        "type": "error",
-        "data": {
-            "message": message.into()
-        }
-    })
-    .to_string()
 }
 
 fn invalid_request(message: impl Into<String>) -> Result<(u16, String)> {
@@ -17659,6 +15637,13 @@ fn workflow_store_error_response(error: WorkflowStoreError) -> Result<(u16, Stri
             400,
             json!({
                 "code": "invalid_workflow",
+                "message": message,
+            }),
+        ),
+        WorkflowStoreError::InvalidWorkflowGraph(message) => structured_error(
+            400,
+            json!({
+                "code": "invalid_workflow_graph",
                 "message": message,
             }),
         ),
@@ -18463,6 +16448,200 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static HOOK_ART_REQUEST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hook_art_request(request_id: &str, node_id: &str, generation: u64) -> HookArtExecuteRequest {
+        HookArtExecuteRequest {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: request_id.to_owned(),
+            node_id: node_id.to_owned(),
+            art_id: "neuro.official/art".to_owned(),
+            generation,
+            device_id: Some("device:local".to_owned()),
+            inputs: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            disabled_parameters: Vec::new(),
+            deadline_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn hook_bridge_status_advertises_only_formal_namespaced_protocol() {
+        let runtime = HookBridgeRuntime::new(unique_temp_dir("hook-status").join("workflows"));
+        let status = hook_bridge_status_json(&runtime);
+        assert_eq!(status["protocol"], loom_protocol::HOOK_PROTOCOL_VERSION);
+        let methods = status["methods"].as_array().expect("Hook methods");
+        assert!(methods.iter().all(|method| {
+            method
+                .as_str()
+                .is_some_and(|method| method.starts_with("loom.hook."))
+        }));
+        assert!(!status
+            .as_object()
+            .expect("status object")
+            .contains_key("sessionMethod"));
+    }
+
+    #[test]
+    fn hook_art_request_ids_are_idempotent_and_generations_replace_previous_work() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state();
+        let first = hook_art_request("request:first", "node:one", 1);
+        let first_token = match reserve_hook_art_request(&first) {
+            HookArtReservation::Execute(token) => token,
+            _ => panic!("first request must execute"),
+        };
+        assert!(matches!(
+            reserve_hook_art_request(&first),
+            HookArtReservation::Replay(_)
+        ));
+
+        let replacement = hook_art_request("request:replacement", "node:one", 2);
+        assert!(matches!(
+            reserve_hook_art_request(&replacement),
+            HookArtReservation::Execute(_)
+        ));
+        assert!(first_token.load(Ordering::Acquire));
+        assert!(!hook_art_request_is_current(
+            "request:first",
+            "node:one",
+            1,
+            first.device_id.as_deref()
+        ));
+        assert!(hook_art_request_is_current(
+            "request:replacement",
+            "node:one",
+            2,
+            replacement.device_id.as_deref()
+        ));
+
+        let stale = hook_art_request("request:stale", "node:one", 1);
+        let HookArtReservation::Reject(response) = reserve_hook_art_request(&stale) else {
+            panic!("stale request must be rejected");
+        };
+        let response: HookResponse = serde_json::from_str(&response).expect("stale response");
+        assert_eq!(response.status, HookRequestStatus::Failed);
+        assert_eq!(
+            response.error.expect("stale error").code,
+            "stale_generation"
+        );
+        clear_hook_canvas_runtime_state();
+    }
+
+    #[test]
+    fn hook_art_request_coordination_is_scoped_by_device() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state();
+        let device_one = hook_art_request("request:shared", "node:shared", 4);
+        let mut device_two = hook_art_request("request:shared", "node:shared", 4);
+        device_two.device_id = Some("device:remote".to_owned());
+
+        let device_one_token = match reserve_hook_art_request(&device_one) {
+            HookArtReservation::Execute(token) => token,
+            _ => panic!("first device request must execute"),
+        };
+        let device_two_token = match reserve_hook_art_request(&device_two) {
+            HookArtReservation::Execute(token) => token,
+            _ => panic!("second device request must execute independently"),
+        };
+
+        assert!(!device_one_token.load(Ordering::Acquire));
+        assert!(!device_two_token.load(Ordering::Acquire));
+        assert!(hook_art_request_is_current(
+            &device_one.request_id,
+            &device_one.node_id,
+            device_one.generation,
+            device_one.device_id.as_deref(),
+        ));
+        assert!(hook_art_request_is_current(
+            &device_two.request_id,
+            &device_two.node_id,
+            device_two.generation,
+            device_two.device_id.as_deref(),
+        ));
+        assert_eq!(
+            next_hook_art_preview_revision(
+                &device_one.request_id,
+                &device_one.node_id,
+                device_one.generation,
+                device_one.device_id.as_deref(),
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            next_hook_art_preview_revision(
+                &device_two.request_id,
+                &device_two.node_id,
+                device_two.generation,
+                device_two.device_id.as_deref(),
+            ),
+            Some(1)
+        );
+        clear_hook_canvas_runtime_state();
+    }
+
+    #[test]
+    fn hook_art_request_id_replay_requires_an_identical_request() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state();
+        let request = hook_art_request("request:identity", "node:identity", 1);
+        assert!(matches!(
+            reserve_hook_art_request(&request),
+            HookArtReservation::Execute(_)
+        ));
+
+        let mut changed = request.clone();
+        changed.parameters.insert("quality".to_owned(), json!(90));
+        let HookArtReservation::Reject(response) = reserve_hook_art_request(&changed) else {
+            panic!("changed request payload must conflict with the active requestId");
+        };
+        let response: HookResponse = serde_json::from_str(&response).expect("conflict response");
+        assert_eq!(
+            response.error.expect("conflict error").code,
+            "request_id_conflict"
+        );
+        clear_hook_canvas_runtime_state();
+    }
+
+    #[test]
+    fn hook_art_cancellation_binds_node_generation_and_device() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state();
+        let request = hook_art_request("request:cancel", "node:cancel", 4);
+        let token = match reserve_hook_art_request(&request) {
+            HookArtReservation::Execute(token) => token,
+            _ => panic!("request must execute"),
+        };
+        let wrong_device = HookArtCancelRequest {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: request.request_id.clone(),
+            node_id: request.node_id.clone(),
+            generation: request.generation,
+            device_id: Some("device:other".to_owned()),
+        };
+        let response: HookResponse = serde_json::from_str(&cancel_hook_art_request(&wrong_device))
+            .expect("wrong-device cancellation response");
+        assert_eq!(response.status, HookRequestStatus::Failed);
+        assert!(!token.load(Ordering::Acquire));
+
+        let cancellation = HookArtCancelRequest {
+            device_id: request.device_id.clone(),
+            ..wrong_device
+        };
+        let response: HookResponse = serde_json::from_str(&cancel_hook_art_request(&cancellation))
+            .expect("cancellation response");
+        assert_eq!(response.status, HookRequestStatus::CancelRequested);
+        assert!(token.load(Ordering::Acquire));
+        clear_hook_canvas_runtime_state();
+    }
 
     #[test]
     fn platform_global_art_ids_use_the_na_numeric_contract() {
@@ -18781,8 +16960,8 @@ mod tests {
         broadcast_hook_bridge_messages(
             &hub,
             &[
-                json!({"method": "surface/patch", "params": {"revision": 1}}).to_string(),
-                json!({"method": "surface/result", "params": {"resultRevision": 1}}).to_string(),
+                json!({"method": SURFACE_EVENT_PATCH, "params": {"revision": 1}}).to_string(),
+                json!({"method": loom_protocol::SURFACE_EVENT_RESULT, "params": {"resultRevision": 1}}).to_string(),
             ],
         );
         let (next, reset, entries) = hub.wait_after(0, Duration::ZERO);
@@ -18795,7 +16974,7 @@ mod tests {
             broadcast_hook_bridge_messages(
                 &hub,
                 &[json!({
-                    "method": "surface/patch",
+                    "method": SURFACE_EVENT_PATCH,
                     "params": {"revision": revision}
                 })
                 .to_string()],
@@ -18857,7 +17036,7 @@ mod tests {
             &hub,
             &[
                 json!({
-                    "method": "surface/patch",
+                    "method": SURFACE_EVENT_PATCH,
                     "params": {
                         "hookNodeId": "hook-node:a",
                         "patch": {
@@ -18868,7 +17047,7 @@ mod tests {
                 })
                 .to_string(),
                 json!({
-                    "method": "surface/patch",
+                    "method": SURFACE_EVENT_PATCH,
                     "params": {
                         "hookNodeId": "hook-node:b",
                         "patch": {
@@ -18927,6 +17106,9 @@ mod tests {
         })];
         child.outputs = vec![json!({ "name": "output", "type": "image" })];
         child.metadata = Some(json!({
+            "packageSecurity": {
+                "publisher": { "id": "neuro.official", "name": "Neuro Official" }
+            },
             "capabilities": { "preview": "shader" }
         }));
         tool_registry.save_tool(child).expect("save child Art");
@@ -18937,7 +17119,7 @@ mod tests {
                 r#"name: Transfer Composite
 nodes:
   - id: transfer
-    uses: color-transfer
+    uses: neuro.official/color-transfer
     with:
       strength: 100
 "#,
@@ -18990,52 +17172,41 @@ nodes:
                 "executionType": "image_buffer"
             }),
         ];
-        composite.metadata = Some(json!({
-            "artloomCompat": {
-                "source": "loom-local",
-                "autoProcess": true
-            }
-        }));
+        composite.metadata = Some(json!({ "autoProcess": true }));
         tool_registry
             .save_tool(composite)
             .expect("save composite Art");
 
-        for (status, body) in [
-            list_artloom_compat_arts("list_arts", &tool_registry, &workflow_store)
-                .expect("list Hook Arts"),
-            list_enabled_artloom_compat_arts(&tool_registry, &workflow_store)
-                .expect("list enabled Hook Arts"),
-        ] {
-            assert_eq!(status, 200);
-            let response: Value = serde_json::from_str(&body).expect("parse Hook Art response");
-            let param = &response["arts"][0]["params"][0];
-            assert_eq!(param["id"], "strength");
-            assert_eq!(param["label"], "迁移强度");
-            assert_eq!(param["default"], 35);
-            assert_eq!(param["widget"], "slider");
-            assert_eq!(param["data_type"], "number");
-            assert_eq!(param["min"], 0);
-            assert_eq!(param["max"], 100);
-            assert_eq!(param["step"], 1);
-            assert_eq!(param["group"], "基础");
-            assert_eq!(
-                response["arts"][0]["metadata"]["capabilities"]["preview"],
-                "shader"
-            );
-            assert_eq!(
-                response["arts"][0]["metadata"]["capabilities"]["requiresFormalExecution"],
-                true
-            );
-            assert_eq!(
-                response["arts"][0]["metadata"]["capabilities"]["shaderInput"],
-                "input"
-            );
-            assert_eq!(
-                response["arts"][0]["metadata"]["capabilities"]["shaderReferenceInput"],
-                "input_2"
-            );
-        }
-
+        let tools = tool_registry.list_tools().expect("list Hook Arts");
+        let composite = tools
+            .iter()
+            .find(|tool| tool.id == "transfer-composite-art")
+            .expect("composite Art");
+        let capability = hook_protocol_art_capability(composite, &tools, &workflow_store);
+        let capability = serde_json::to_value(capability).expect("serialize capability");
+        let param = &capability["parameters"][0];
+        assert_eq!(param["id"], "strength");
+        assert_eq!(param["label"], "迁移强度");
+        assert_eq!(param["default"], 35);
+        assert_eq!(param["widget"], "slider");
+        assert_eq!(param["data_type"], "number");
+        assert_eq!(param["min"], 0);
+        assert_eq!(param["max"], 100);
+        assert_eq!(param["step"], 1);
+        assert_eq!(param["group"], "基础");
+        assert_eq!(capability["metadata"]["capabilities"]["preview"], "shader");
+        assert_eq!(
+            capability["metadata"]["capabilities"]["requiresFormalExecution"],
+            true
+        );
+        assert_eq!(
+            capability["metadata"]["capabilities"]["shaderInput"],
+            "input"
+        );
+        assert_eq!(
+            capability["metadata"]["capabilities"]["shaderReferenceInput"],
+            "input_2"
+        );
         fs::remove_dir_all(root).ok();
     }
 
@@ -19112,15 +17283,15 @@ nodes:
             "art_publish_not_owned"
         );
 
-        let legacy = ToolDefinition::new(
-            "legacy-art",
-            "Legacy",
+        let unowned = ToolDefinition::new(
+            "unowned-art",
+            "Unowned",
             "No local authoring metadata",
             execution(),
         );
-        tools.save_tool(legacy).unwrap();
+        tools.save_tool(unowned).unwrap();
         let (status, body) =
-            publish_art_to_store(r#"{"artId":"legacy-art"}"#, &tools, &root).unwrap();
+            publish_art_to_store(r#"{"artId":"unowned-art"}"#, &tools, &root).unwrap();
         assert_eq!(status, 403);
         assert_eq!(
             serde_json::from_str::<Value>(&body).unwrap()["error"]["code"],
@@ -19187,9 +17358,15 @@ nodes:
             "name": format!("{id} daemon test framework"),
             "description": "daemon framework package test",
             "version": version,
+            "publisher": { "id": "publisher.test", "name": "Publisher Test" },
             "protocolVersion": "loom.framework.v1",
             "platforms": ["windows-x64"],
-            "entry": { "kind": "process", "command": command, "args": ["--stdio"] },
+            "entry": {
+                "kind": "process",
+                "command": command,
+                "args": ["--stdio"],
+                "processModel": "per_execution"
+            },
             "permissions": ["process.spawn"],
             "artExecution": {
                 "requestSchema": "loom.art.execute.v1",
@@ -19224,7 +17401,10 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
-                "packageSecurity": { "version": version }
+                "packageSecurity": {
+                    "version": version,
+                    "publisher": { "id": "publisher.test", "name": "Publisher Test" }
+                }
             }
         });
         let mut bytes = Vec::new();
@@ -19257,7 +17437,10 @@ nodes:
             "execution": { "type": "workflow", "workflowId": workflow_id },
             "metadata": {
                 "dependencies": { "framework": "workflow" },
-                "packageSecurity": { "version": "1.0.0" }
+                "packageSecurity": {
+                    "version": "1.0.0",
+                    "publisher": { "id": "publisher.test", "name": "Publisher Test" }
+                }
             }
         });
         let mut bytes = Vec::new();
@@ -19291,7 +17474,10 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
-                "packageSecurity": { "version": version },
+                "packageSecurity": {
+                    "version": version,
+                    "publisher": { "id": "publisher.test", "name": "Publisher Test" }
+                },
                 "capabilities": {
                     "surface": {
                         "protocolVersion": "loom.surface.v1",
@@ -19356,7 +17542,10 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
-                "packageSecurity": { "version": version },
+                "packageSecurity": {
+                    "version": version,
+                    "publisher": { "id": "publisher.test", "name": "Publisher Test" }
+                },
                 "capabilities": {
                     "surface": {
                         "protocolVersion": "loom.surface.v1",
@@ -19434,7 +17623,10 @@ nodes:
             "execution": { "type": "framework_art", "framework": "process" },
             "metadata": {
                 "dependencies": { "framework": "process" },
-                "packageSecurity": { "version": version },
+                "packageSecurity": {
+                    "version": version,
+                    "publisher": { "id": "publisher.test", "name": "Publisher Test" }
+                },
                 "capabilities": {
                     "surface": {
                         "protocolVersion": "loom.surface.v1",
@@ -20185,15 +18377,22 @@ nodes:
     }
 
     #[test]
-    fn hook_bridge_and_ahrp_executions_create_durable_run_evidence() {
+    fn hook_art_execution_creates_durable_run_evidence() {
         let root = unique_temp_dir("hook-execution-evidence");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
         let hook_response = run_hook_bridge_text(
             &runtime,
-            r#"{"method":"art_loom/execute_art_node","params":{"node_id":"missing-node","art_id":"missing-art","params":{}}}"#,
+            &formal_art_execute_request(
+                "missing-request",
+                "missing-node",
+                "missing-art",
+                None,
+                json!({}),
+            ),
         );
-        let hook_run_id = hook_response["executionId"]
+        assert_eq!(hook_response["status"], "failed");
+        let hook_run_id = hook_response["data"]["executionId"]
             .as_str()
             .expect("Hook execution id");
         let store = runtime.run_store.lock().expect("run store");
@@ -20202,7 +18401,8 @@ nodes:
             .expect("read Hook run")
             .expect("Hook run");
         assert_eq!(hook_run["capability"], "art.execute");
-        assert_eq!(hook_run["surface"], "hook_bridge_websocket");
+        assert_eq!(hook_run["surface"], "loom_hook_v1");
+        assert_eq!(hook_run["externalRequestId"], "missing-request");
         assert_eq!(hook_run["status"], "failed");
         let hook_events = store
             .get_events(hook_run_id)
@@ -20212,29 +18412,12 @@ nodes:
         assert_eq!(hook_events[1]["kind"], "external_tool_failed");
         drop(store);
 
-        let ahrp_response = run_hook_bridge_text(
-            &runtime,
-            r#"{"method":"art/process","params":{"request_id":"ahrp-missing","art_id":"missing-art","input":{"type":"base64","data":"data:image/png;base64,AA==","width":1,"height":1,"format":"rgba8"},"params":{},"input_images":{},"disabled_params":[]}}"#,
-        );
-        let ahrp_run_id = ahrp_response["executionId"]
-            .as_str()
-            .expect("AHRP execution id");
-        let store = runtime.run_store.lock().expect("run store");
-        let ahrp_run = store
-            .get_run(ahrp_run_id)
-            .expect("read AHRP run")
-            .expect("AHRP run");
-        assert_eq!(ahrp_run["surface"], "ahrp_websocket");
-        assert_eq!(ahrp_run["externalRequestId"], "ahrp-missing");
-        assert_eq!(ahrp_run["status"], "failed");
-        drop(store);
-
         drop(runtime);
         fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn hook_bridge_and_ahrp_reject_tampered_art_packages_before_execution() {
+    fn hook_art_rejects_tampered_art_packages_before_execution() {
         let root = unique_temp_dir("hook-art-package-integrity");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         runtime
@@ -20258,7 +18441,13 @@ nodes:
 
         let hook_response = run_hook_bridge_text(
             &runtime,
-            r#"{"method":"art_loom/execute_art_node","params":{"node_id":"integrity-node","art_id":"integrity-art","params":{}}}"#,
+            &formal_art_execute_request(
+                "integrity-request",
+                "integrity-node",
+                "integrity-art",
+                None,
+                json!({}),
+            ),
         );
         assert!(
             hook_response
@@ -20266,7 +18455,9 @@ nodes:
                 .contains("integrity verification failed"),
             "unexpected Hook response: {hook_response}"
         );
-        let hook_run_id = hook_response["executionId"].as_str().expect("Hook run id");
+        let hook_run_id = hook_response["data"]["executionId"]
+            .as_str()
+            .expect("Hook run id");
         {
             let store = runtime.run_store.lock().expect("run store");
             assert_eq!(
@@ -20276,24 +18467,6 @@ nodes:
             let events = store.get_events(hook_run_id).unwrap().unwrap();
             assert_eq!(events.last().unwrap()["kind"], "external_tool_failed");
         }
-
-        let ahrp_response = run_hook_bridge_text(
-            &runtime,
-            r#"{"method":"art/process","params":{"request_id":"ahrp-integrity","art_id":"integrity-art","input":{"type":"base64","data":"data:image/png;base64,AA==","width":1,"height":1,"format":"rgba8"},"params":{},"input_images":{},"disabled_params":[]}}"#,
-        );
-        assert_eq!(ahrp_response["status"], "IntegrityError");
-        assert!(ahrp_response["error"]
-            .as_str()
-            .is_some_and(|message| message.contains("integrity verification failed")));
-        let ahrp_run_id = ahrp_response["executionId"].as_str().expect("AHRP run id");
-        let store = runtime.run_store.lock().expect("run store");
-        assert_eq!(
-            store.get_run(ahrp_run_id).unwrap().unwrap()["status"],
-            "failed"
-        );
-        let events = store.get_events(ahrp_run_id).unwrap().unwrap();
-        assert_eq!(events.last().unwrap()["kind"], "external_tool_failed");
-        drop(store);
 
         drop(runtime);
         fs::remove_dir_all(&root).ok();
@@ -20463,68 +18636,8 @@ nodes:
         let _ = fs::remove_dir_all(root);
     }
 
-    // Regression: ArtLoom sends cloud_api `headers` as an object (with a
-    // `{api_key}` placeholder) and `body` as an array of field descriptors. The
-    // executor expects both as JSON strings; the old converter used a
-    // string-only extractor and silently dropped them, so RemoveBG uploaded no
-    // image and PhotoRoom answered "missing_image". These lock the conversion.
-    #[test]
-    fn artloom_cloud_headers_object_becomes_json_string_with_api_key_resolved() {
-        let execution = serde_json::json!({
-            "type": "cloud_api",
-            "method": "POST",
-            "content_type": "multipart/form-data",
-            "endpoint": "https://sdk.photoroom.com/v1/segment",
-            "api_key": "sk_test_123",
-            "headers": { "x-api-key": "{api_key}" }
-        });
-        let rendered = artloom_headers_to_json_string(&execution).expect("headers json");
-        let parsed: std::collections::HashMap<String, String> =
-            serde_json::from_str(&rendered).expect("headers parse as string map");
-        assert_eq!(
-            parsed.get("x-api-key").map(String::as_str),
-            Some("sk_test_123")
-        );
-    }
-
-    #[test]
-    fn artloom_cloud_body_array_becomes_json_string_with_image_file_field() {
-        let execution = serde_json::json!({
-            "type": "cloud_api",
-            "body": [
-                { "name": "image_file", "execution_type": "image_buffer", "source": "input" },
-                { "name": "format", "default": "png" }
-            ]
-        });
-        let rendered = artloom_body_to_json_string(&execution).expect("body json");
-        let parsed: std::collections::HashMap<String, String> =
-            serde_json::from_str(&rendered).expect("body parse as string map");
-        // Input image field must carry a `.path}}` template so the executor
-        // uploads the temp input file as a multipart file part.
-        assert_eq!(
-            parsed.get("image_file").map(String::as_str),
-            Some("{{inputs.input.path}}")
-        );
-        assert_eq!(parsed.get("format").map(String::as_str), Some("png"));
-    }
-
-    #[test]
-    fn artloom_cloud_headers_and_body_pass_through_existing_json_strings() {
-        let execution = serde_json::json!({
-            "type": "cloud_api",
-            "headers": "{\"X-Trace\":\"abc\"}",
-            "body": "{\"file\":\"{{inputs.image.path}}\"}"
-        });
-        assert_eq!(
-            artloom_headers_to_json_string(&execution).as_deref(),
-            Some("{\"X-Trace\":\"abc\"}")
-        );
-        assert_eq!(
-            artloom_body_to_json_string(&execution).as_deref(),
-            Some("{\"file\":\"{{inputs.image.path}}\"}")
-        );
-    }
-
+    // Cloud API authoring accepts object headers and descriptor-array bodies;
+    // these tests lock their conversion into executable string templates.
     const CONCURRENCY_GATE_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn wait_for_test_gate(gate: &Arc<(Mutex<bool>, Condvar)>, timeout: Duration) -> bool {
@@ -20755,11 +18868,13 @@ nodes:
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
+        static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(1);
         let mut dir = std::env::temp_dir();
         dir.push(format!(
-            "loom-daemon-contract-{}-{}",
+            "loom-daemon-contract-{}-{}-{}",
             name,
-            std::process::id()
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed),
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
@@ -20768,14 +18883,6 @@ nodes:
 
     fn canonical_test_path(path: impl AsRef<Path>) -> PathBuf {
         fs::canonicalize(path).expect("canonicalize test path")
-    }
-
-    fn write_hook_session(appdata: &Path, identifier: &str, contents: &str) -> PathBuf {
-        let dir = appdata.join(identifier);
-        fs::create_dir_all(&dir).expect("create hook identifier dir");
-        let path = dir.join("session.json");
-        fs::write(&path, contents).expect("write hook session");
-        path
     }
 
     fn test_daemon_runtime_from_config(
@@ -20847,10 +18954,8 @@ nodes:
             surface_instances,
             surface_actions,
             surface_resources,
-            artloom_settings: Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
-                control_plane_root
-                    .join("settings")
-                    .join("artloom-compat-settings.json"),
+            settings: Arc::new(Mutex::new(LoomSettingsStore::new(
+                control_plane_root.join("settings").join("settings.json"),
             ))),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
@@ -20931,7 +19036,7 @@ nodes:
                 &runtime.mcp_servers,
                 &runtime.tool_registry,
                 &runtime.workflow_store,
-                &runtime.artloom_settings,
+                &runtime.settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
                 &runtime.framework_registry,
@@ -20964,7 +19069,7 @@ nodes:
             &runtime.mcp_servers,
             &runtime.tool_registry,
             &runtime.workflow_store,
-            &runtime.artloom_settings,
+            &runtime.settings,
             &runtime.shared_images,
             &runtime.ocr_provider,
             &runtime.framework_registry,
@@ -20991,7 +19096,7 @@ nodes:
             &runtime.mcp_servers,
             &runtime.tool_registry,
             &runtime.workflow_store,
-            &runtime.artloom_settings,
+            &runtime.settings,
             &runtime.shared_images,
             &runtime.ocr_provider,
             &runtime.framework_registry,
@@ -21010,8 +19115,85 @@ nodes:
         )
     }
 
+    fn read_hook_terminal_response(
+        socket: &mut tungstenite::WebSocket<TcpStream>,
+        request_id: &str,
+    ) -> Value {
+        loop {
+            let message = read_hook_bridge_json(socket);
+            if message["requestId"] == request_id
+                && message.get("status").is_some()
+                && message.get("method").is_none()
+            {
+                return message;
+            }
+        }
+    }
+
+    fn formal_art_execute_request(
+        request_id: &str,
+        node_id: &str,
+        art_id: &str,
+        input: Option<Value>,
+        parameters: Value,
+    ) -> String {
+        let mut inputs = serde_json::Map::new();
+        if let Some(input) = input {
+            inputs.insert("input".to_owned(), input);
+        }
+        json!({
+            "method": loom_protocol::HOOK_METHOD_ART_EXECUTE,
+            "params": {
+                "protocolVersion": loom_protocol::HOOK_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "nodeId": node_id,
+                "artId": art_id,
+                "generation": 1,
+                "inputs": inputs,
+                "parameters": parameters,
+                "disabledParameters": [],
+            }
+        })
+        .to_string()
+    }
+
+    fn inline_art_input(data_url: &str) -> Value {
+        let (header, data_base64) = data_url
+            .strip_prefix("data:")
+            .and_then(|value| value.split_once(','))
+            .expect("test image data URL");
+        let mime = header
+            .strip_suffix(";base64")
+            .expect("base64 test image data URL");
+        json!({
+            "kind": "inline_resource",
+            "mime": mime,
+            "dataBase64": data_base64,
+        })
+    }
+
+    fn remove_test_dir(path: &Path) {
+        let mut last_error = None;
+        for _ in 0..20 {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+        panic!(
+            "cleanup test directory `{}` failed: {}",
+            path.display(),
+            last_error.expect("cleanup error")
+        );
+    }
+
     #[test]
     fn daemon_hook_bridge_streams_workflow_preview_before_formal_result() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("workflow-preview-stream");
         let runtime = test_daemon_runtime(&root, None);
         runtime
@@ -21021,9 +19203,9 @@ nodes:
                 r#"name: Workflow Preview Stream
 nodes:
   - id: formal
-    uses: missing-formal-tool
+    uses: neuro.official/missing-formal-tool
   - id: preview
-    uses: sticker
+    uses: __sticker__
 "#,
             )
             .expect("save preview workflow");
@@ -21053,43 +19235,35 @@ nodes:
             ))
             .expect("save preview workflow Art");
 
-        let request = json!({
-            "method": "art/process",
-            "params": {
-                "request_id": "req-workflow-preview",
-                "art_id": "workflow-preview-stream-art",
-                "input": {
-                    "type": "base64",
-                    "data": test_png_base64(),
-                    "width": 1,
-                    "height": 1,
-                    "format": "rgba8"
-                },
-                "params": {},
-                "input_images": {},
-                "disabled_params": []
-            }
-        })
-        .to_string();
+        let request = formal_art_execute_request(
+            "req-workflow-preview",
+            "workflow-preview-node",
+            "workflow-preview-stream-art",
+            Some(inline_art_input(&test_png_base64())),
+            json!({}),
+        );
         let (intermediate, final_response) =
             run_hook_bridge_text_with_intermediate(&runtime, &request);
 
-        assert_eq!(
-            intermediate.len(),
-            1,
+        assert!(
+            intermediate.iter().any(|event| {
+                event["method"] == loom_protocol::HOOK_EVENT_ART_PREVIEW
+                    && event["params"]["requestId"] == "req-workflow-preview"
+            }),
             "final response without preview: {final_response}"
         );
-        assert_eq!(intermediate[0]["phase"], "preview");
-        assert_eq!(intermediate[0]["request_id"], "req-workflow-preview");
-        assert_eq!(intermediate[0]["status"], "Success");
-        assert_eq!(final_response["phase"], "final");
-        assert_eq!(final_response["request_id"], "req-workflow-preview");
-        assert_eq!(final_response["status"], "EngineError");
+        assert!(intermediate.iter().any(|event| {
+            event["method"] == loom_protocol::HOOK_EVENT_ART_FAILURE
+                && event["params"]["requestId"] == "req-workflow-preview"
+        }));
+        assert_eq!(final_response["requestId"], "req-workflow-preview");
+        assert_eq!(final_response["status"], "failed");
         fs::remove_dir_all(root).expect("cleanup preview workflow root");
     }
 
     #[test]
     fn daemon_hook_bridge_returns_successful_formal_output_after_workflow_preview() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("workflow-preview-success");
         let runtime = test_daemon_runtime(&root, None);
         runtime
@@ -21099,9 +19273,9 @@ nodes:
                 r#"name: Workflow Preview Success
 nodes:
   - id: preview
-    uses: sticker
+    uses: __sticker__
   - id: formal
-    uses: sticker
+    uses: __sticker__
     needs:
       - preview
 "#,
@@ -21134,35 +19308,31 @@ nodes:
             .expect("save successful preview Art");
 
         let input_image = test_png_base64();
-        let request = json!({
-            "method": "art/process",
-            "params": {
-                "request_id": "req-workflow-preview-success",
-                "art_id": "workflow-preview-success-art",
-                "input": {
-                    "type": "base64",
-                    "data": input_image,
-                    "width": 1,
-                    "height": 1,
-                    "format": "rgba8"
-                },
-                "params": {},
-                "input_images": {},
-                "disabled_params": []
-            }
-        })
-        .to_string();
+        let request = formal_art_execute_request(
+            "req-workflow-preview-success",
+            "workflow-preview-success-node",
+            "workflow-preview-success-art",
+            Some(inline_art_input(&input_image)),
+            json!({}),
+        );
         let (intermediate, final_response) =
             run_hook_bridge_text_with_intermediate(&runtime, &request);
 
-        assert_eq!(intermediate.len(), 1, "final response: {final_response}");
-        assert_eq!(intermediate[0]["phase"], "preview");
-        assert_eq!(intermediate[0]["status"], "Success");
-        assert_eq!(intermediate[0]["data"]["output"]["data"], input_image);
-        assert_eq!(final_response["phase"], "final");
-        assert_eq!(final_response["request_id"], "req-workflow-preview-success");
-        assert_eq!(final_response["status"], "Success");
-        assert_eq!(final_response["data"]["output"]["data"], input_image);
+        assert!(
+            intermediate.iter().any(|event| {
+                event["method"] == loom_protocol::HOOK_EVENT_ART_PREVIEW
+                    && event["params"]["requestId"] == "req-workflow-preview-success"
+            }),
+            "final response: {final_response}"
+        );
+        assert!(intermediate.iter().any(|event| {
+            event["method"] == loom_protocol::HOOK_EVENT_ART_RESULT
+                && event["params"]["requestId"] == "req-workflow-preview-success"
+                && event["params"]["resultRevision"] == 1
+        }));
+        assert_eq!(final_response["requestId"], "req-workflow-preview-success");
+        assert_eq!(final_response["status"], "succeeded");
+        assert!(final_response["data"]["outputs"]["output"]["handle"].is_string());
 
         fs::remove_dir_all(root).expect("cleanup successful preview workflow root");
     }
@@ -21189,34 +19359,14 @@ nodes:
     }
 
     #[test]
-    fn resolve_hook_session_path_prefers_the_most_recently_written_identifier() {
-        let appdata = unique_temp_dir("hook-session-resolution");
-
-        // A stale legacy directory (the previously hardcoded default) plus the
-        // directory Hook is actually writing under a newer identifier.
-        let stale = write_hook_session(&appdata, "com.vmjcv.arthook-next", r#"{"stickers":[]}"#);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let current = write_hook_session(
-            &appdata,
-            "com.vmjcv.hook",
-            r#"{"stickers":[{"id":"live","type":"sticker"}]}"#,
-        );
-
-        let resolved = resolve_hook_session_path(&appdata);
-
-        assert_eq!(resolved, current);
-        assert_ne!(resolved, stale);
-    }
-
-    #[test]
-    fn resolve_hook_session_path_falls_back_to_default_when_no_session_exists() {
+    fn resolve_hook_session_path_uses_canonical_default_when_no_session_exists() {
         let appdata = unique_temp_dir("hook-session-missing");
 
         let resolved = resolve_hook_session_path(&appdata);
 
         assert_eq!(
             resolved,
-            appdata.join("com.vmjcv.arthook-next").join("session.json")
+            appdata.join("com.yamiyu.hook").join("session.json")
         );
     }
 
@@ -22142,6 +20292,7 @@ nodes:
               "command": "npx",
               "args": ["-y", "@brave/brave-search-mcp-server"],
               "env": { "BRAVE_API_KEY": "test-key" },
+              "transport": "stdio",
               "enabled": true
             }"#,
                     ),
@@ -22301,159 +20452,6 @@ nodes:
     }
 
     #[test]
-    fn normalize_mcp_server_config_rewrites_legacy_brave_github_source_to_npm_transport_stdio() {
-        let normalized = normalize_mcp_server_config(McpServerConfig {
-            id: "479008f0-bd4f-483e-8598-39fbae54a117".to_owned(),
-            name: "Brave Search".to_owned(),
-            description: "legacy brave fixture".to_owned(),
-            command: "npx".to_owned(),
-            args: vec![
-                "-y".to_owned(),
-                "github:brave/brave-search-mcp-server".to_owned(),
-            ],
-            env: BTreeMap::new(),
-            transport: McpTransport::Stdio,
-            url: String::new(),
-            headers: BTreeMap::new(),
-            enabled: true,
-        });
-
-        assert_eq!(
-            normalized.args,
-            vec![
-                "-y".to_owned(),
-                "@brave/brave-search-mcp-server".to_owned(),
-                "--transport".to_owned(),
-                "stdio".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn normalize_mcp_server_config_leaves_unrelated_servers_unchanged() {
-        let server = McpServerConfig {
-            id: "fixture".to_owned(),
-            name: "Fixture".to_owned(),
-            description: "test fixture".to_owned(),
-            command: "python".to_owned(),
-            args: vec!["server.py".to_owned()],
-            env: BTreeMap::new(),
-            transport: McpTransport::Stdio,
-            url: String::new(),
-            headers: BTreeMap::new(),
-            enabled: true,
-        };
-
-        assert_eq!(normalize_mcp_server_config(server.clone()), server);
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_mcp_server_store_command_aliases() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let registry_fixture = McpRegistryFixture::start();
-        let previous_registry_endpoint = std::env::var("LOOM_MCP_REGISTRY_ENDPOINT").ok();
-        let root = unique_temp_dir("artloom-mcp-server-store");
-        std::env::set_var(
-            "LOOM_MCP_REGISTRY_ENDPOINT",
-            registry_fixture.url("/v0.1/servers"),
-        );
-        let config = DaemonConfig::localhost(0);
-        restore_env("LOOM_MCP_REGISTRY_ENDPOINT", previous_registry_endpoint);
-        let runtime = test_daemon_runtime_from_config(&root, config);
-
-        let empty = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/mcp/servers", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(empty["compatCommand"], "get_mcp_servers");
-        assert_eq!(empty["servers"], serde_json::json!([]));
-
-        let saved = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/mcp/servers",
-                    &[],
-                    Some(
-                        r#"{
-              "id": "compat-mcp",
-              "name": "Compat MCP",
-              "description": "Old ArtLoom MCP server store fixture",
-              "command": "powershell.exe",
-              "args": ["-NoProfile"],
-              "env": { "COMPAT": "1" },
-              "enabled": true
-            }"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved["compatCommand"], "save_mcp_server");
-        assert_eq!(saved["message"], "Saved successfully");
-        assert_eq!(saved["server"]["id"], "compat-mcp");
-
-        let listed = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/mcp/servers", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(listed["compatCommand"], "get_mcp_servers");
-        assert_eq!(listed["servers"][0]["id"], "compat-mcp");
-
-        let registry = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "GET",
-                    "/v1/artloom-compat/mcp/registry?search=fixture&limit=250&cursor=cursor-1&updatedSince=2026-08-01T00%3A00%3A00Z&includeDeleted=true",
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(registry["compatCommand"], "fetch_mcp_registry");
-        assert_eq!(
-            registry["servers"][0]["server"]["name"],
-            "io.modelcontextprotocol/fixture"
-        );
-        assert!(registry_fixture.request_path().contains("limit=100"));
-        assert!(registry_fixture.request_path().contains("version=latest"));
-        assert!(registry_fixture
-            .request_path()
-            .contains("updated_since=2026-08-01T00%3A00%3A00Z"));
-        assert!(registry_fixture
-            .request_path()
-            .contains("include_deleted=true"));
-
-        let deleted = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "DELETE",
-                    "/v1/artloom-compat/mcp/servers/compat-mcp",
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(deleted["compatCommand"], "delete_mcp_server");
-        assert_eq!(deleted["message"], "Deleted successfully");
-        assert_eq!(deleted["deleted"], true);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup ArtLoom MCP server store root");
-    }
-
-    #[test]
     fn daemon_exposes_mcp_registry_and_connection_test_contracts() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let registry_fixture = McpRegistryFixture::start();
@@ -22497,7 +20495,6 @@ nodes:
             200,
         );
         assert_eq!(test_result["success"], true);
-        assert_eq!(test_result["compatCommand"], "test_mcp_connection");
         assert_eq!(test_result["tools"][0]["name"], "echo");
         assert_eq!(
             test_result["server_info"]["serverInfo"]["name"],
@@ -22565,13 +20562,12 @@ nodes:
     }
 
     #[test]
-    fn daemon_exposes_safe_mcp_package_compatibility_contracts() {
+    fn daemon_exposes_safe_mcp_package_contracts() {
         let install_plan = build_mcp_package_install_plan(r#"{"packageName":"mcp-server-demo"}"#)
             .expect("install plan");
         assert_eq!(install_plan.0, 200);
         let install_plan =
             serde_json::from_str::<Value>(&install_plan.1).expect("install plan json");
-        assert_eq!(install_plan["compatCommand"], "install_mcp_package");
         assert_eq!(install_plan["package"], "mcp-server-demo");
         assert_eq!(install_plan["sideEffect"], false);
         assert_eq!(install_plan["command"][1], "-m");
@@ -22584,7 +20580,6 @@ nodes:
         let check = check_mcp_package_installed(r#"{"moduleName":"json"}"#).expect("check module");
         assert_eq!(check.0, 200);
         let check = serde_json::from_str::<Value>(&check.1).expect("check json");
-        assert_eq!(check["compatCommand"], "check_mcp_package_installed");
         assert_eq!(check["module"], "json");
     }
 
@@ -22627,7 +20622,7 @@ def run(args):
                 &runtime,
                 &parsed_request(
                     "POST",
-                    "/v1/python-arts/source/read",
+                    "/v1/art-authoring/source/read",
                     &[],
                     Some(&serde_json::json!({ "path": python_path }).to_string()),
                 ),
@@ -22648,7 +20643,7 @@ def run(args):
                 &runtime,
                 &parsed_request(
                     "POST",
-                    "/v1/python-arts/source/check-art-json",
+                    "/v1/art-authoring/source/check-art-json",
                     &[],
                     Some(&serde_json::json!({ "pythonPath": python_path }).to_string()),
                 ),
@@ -22671,7 +20666,7 @@ def run(args):
                 &runtime,
                 &parsed_request(
                     "POST",
-                    "/v1/python-arts/source/read-art-json",
+                    "/v1/art-authoring/source/read-art-json",
                     &[],
                     Some(&serde_json::json!({ "artPath": art_dir }).to_string()),
                 ),
@@ -22685,7 +20680,7 @@ def run(args):
                 &runtime,
                 &parsed_request(
                     "POST",
-                    "/v1/python-arts/source/infer-ports",
+                    "/v1/art-authoring/source/infer-ports",
                     &[],
                     Some(&serde_json::json!({ "path": python_path }).to_string()),
                 ),
@@ -22703,27 +20698,6 @@ def run(args):
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup source fixture root");
-    }
-
-    #[test]
-    fn unwrap_prefetch_shader_payload_promotes_text_wrapped_shader_json() {
-        let wrapped = serde_json::json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": "{\"type\":\"shader\",\"vertex_shader\":\"void main(){}\",\"fragment_shader\":\"void main(){ }\",\"uniforms\":{\"strength\":42.0},\"textures\":{\"lut\":\"data:image/png;base64,AAAA\"}}"
-                }
-            ]
-        });
-
-        let unwrapped = unwrap_prefetch_shader_payload(wrapped);
-
-        assert_eq!(unwrapped["type"], "shader");
-        assert_eq!(unwrapped["vertex_shader"], "void main(){}");
-        assert_eq!(unwrapped["fragment_shader"], "void main(){ }");
-        assert_eq!(unwrapped["uniforms"]["strength"], 42.0);
-        assert_eq!(unwrapped["textures"]["lut"], "data:image/png;base64,AAAA");
-        assert!(unwrapped.get("content").is_none());
     }
 
     #[test]
@@ -22806,7 +20780,7 @@ def run(args):
                     "/v1/workflows/wf-1",
                     &[],
                     Some(
-                        r#"{"data":"name: Paint Flow\nnodes:\n  - id: prompt\n    uses: text.prompt\n"}"#,
+                        r#"{"data":"name: Paint Flow\nnodes:\n  - id: prompt\n    uses: neuro.official/text-prompt\n"}"#,
                     ),
                 ),
             ),
@@ -22881,115 +20855,6 @@ def run(args):
     }
 
     #[test]
-    fn daemon_exposes_artloom_workflow_store_command_aliases() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-workflow-store");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let saved_metadata = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/artloom-compat/workflows/compat-workflow/metadata",
-                    &[],
-                    Some(
-                        r#"{
-              "id": "compat-workflow",
-              "name": "Compat Workflow",
-              "description": "Old metadata path",
-              "created_at": "1",
-              "updated_at": "",
-              "status": "draft",
-              "node_count": 0,
-              "tags": ["compat"]
-            }"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_metadata["compatCommand"], "save_workflow_metadata");
-        assert_eq!(saved_metadata["workflow"]["id"], "compat-workflow");
-        assert_eq!(saved_metadata["workflow"]["name"], "Compat Workflow");
-        assert_eq!(
-            saved_metadata["workflow"]["description"],
-            "Old metadata path"
-        );
-        assert_eq!(saved_metadata["workflow"]["status"], "draft");
-        assert_eq!(saved_metadata["workflow"]["tags"][0], "compat");
-
-        let saved_data = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/artloom-compat/workflows/compat-workflow/data",
-                    &[],
-                    Some(
-                        r#"{"data":"name: Compat Workflow\nnodes:\n  - id: prompt\n    uses: text.prompt\n"}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_data["compatCommand"], "save_workflow_data");
-        assert_eq!(saved_data["workflowId"], "compat-workflow");
-        assert_eq!(saved_data["saved"], true);
-
-        let listed = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/workflows", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(listed["compatCommand"], "list_workflows");
-        assert_eq!(listed["workflows"][0]["id"], "compat-workflow");
-        assert_eq!(listed["workflows"][0]["name"], "Compat Workflow");
-        assert_eq!(listed["workflows"][0]["node_count"], 1);
-        assert_eq!(listed["workflows"][0]["status"], "draft");
-
-        let loaded_data = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "GET",
-                    "/v1/artloom-compat/workflows/compat-workflow/data",
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(loaded_data["compatCommand"], "load_workflow_data");
-        assert_eq!(loaded_data["workflowId"], "compat-workflow");
-        assert!(loaded_data["data"]
-            .as_str()
-            .expect("loaded workflow data")
-            .contains("uses: text.prompt"));
-
-        let deleted = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "DELETE",
-                    "/v1/artloom-compat/workflows/compat-workflow/data",
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(deleted["compatCommand"], "delete_workflow_data");
-        assert_eq!(deleted["workflowId"], "compat-workflow");
-        assert_eq!(deleted["deleted"], true);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup ArtLoom workflow store root");
-    }
-
-    #[test]
     fn daemon_executes_mcp_backed_tool_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
@@ -23040,47 +20905,6 @@ def run(args):
         server.join().expect("server thread");
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup mcp-backed tool root");
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_call_mcp_tool_command_alias() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("artloom-call-mcp-tool");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-        let fixture = current_test_binary_mcp_fixture_config();
-
-        let response = http_json_post(
-            address.port(),
-            "/v1/artloom-compat/mcp/call-tool",
-            &serde_json::json!({
-                "command": fixture["command"].as_str().expect("fixture command"),
-                "args": fixture["args"].clone(),
-                "env": fixture["env"].clone(),
-                "toolName": "echo",
-                "toolArgs": {
-                    "text": "direct mcp compat"
-                }
-            })
-            .to_string(),
-        );
-
-        assert_eq!(response["compatCommand"], "call_mcp_tool");
-        assert_eq!(response["status"], "succeeded");
-        assert_eq!(response["result"]["content"][0]["type"], "text");
-        assert_eq!(
-            response["result"]["content"][0]["text"],
-            "direct mcp compat"
-        );
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup ArtLoom call_mcp_tool root");
     }
 
     #[test]
@@ -23136,7 +20960,7 @@ def run(args):
     #[test]
     fn daemon_reports_hook_bridge_status_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let appdata_root = unique_temp_dir("empty-arthook-appdata");
+        let appdata_root = unique_temp_dir("empty-hook-appdata");
         let control_plane_root = unique_temp_dir("hook-bridge-status-control-plane");
         let previous_appdata = std::env::var("APPDATA").ok();
         std::env::set_var("APPDATA", &appdata_root);
@@ -23154,16 +20978,14 @@ def run(args):
         assert_eq!(status["running"], false);
         assert_eq!(status["port"], 19820);
         assert_eq!(status["connectedClients"], 0);
+        assert_eq!(status["protocol"], loom_protocol::HOOK_PROTOCOL_VERSION);
         assert!(status["methods"].as_array().expect("methods").contains(
-            &serde_json::Value::String("art_loom/update_workflow_node".to_owned())
+            &serde_json::Value::String(loom_protocol::HOOK_METHOD_WORKFLOW_NODE_UPDATE.to_owned())
         ));
         assert!(status["methods"].as_array().expect("methods").contains(
-            &serde_json::Value::String("art_hook/instantiate".to_owned())
+            &serde_json::Value::String(loom_protocol::HOOK_METHOD_WORKFLOW_INSTANTIATE.to_owned())
         ));
-        assert!(status["methods"].as_array().expect("methods").contains(
-            &serde_json::Value::String("read_arthook_session".to_owned())
-        ));
-        assert_eq!(status["sessionMethod"], "read_arthook_session");
+        assert!(status.get("sessionMethod").is_none());
 
         let session = expect_json_text_route_response(
             route_request(
@@ -23172,7 +20994,10 @@ def run(args):
             ),
             200,
         );
-        assert_eq!(session["method"], "read_arthook_session");
+        assert_eq!(
+            session["protocolVersion"],
+            loom_protocol::HOOK_PROTOCOL_VERSION
+        );
         assert_eq!(
             session["session"]["stickers"]
                 .as_array()
@@ -23191,71 +21016,11 @@ def run(args):
     }
 
     #[test]
-    fn hook_canvas_runtime_ignores_stale_ahrp_request_updates() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
-
-        begin_hook_canvas_runtime_request("node", "request-old");
-        assert!(set_hook_canvas_runtime_preview_for_request(
-            "node",
-            "request-old",
-            Some("data:image/png;base64,OLD".to_owned()),
-        ));
-
-        begin_hook_canvas_runtime_request("node", "request-new");
-        assert!(!set_hook_canvas_runtime_preview_for_request(
-            "node",
-            "request-old",
-            Some("data:image/png;base64,STALE".to_owned()),
-        ));
-        assert!(set_hook_canvas_runtime_preview_for_request(
-            "node",
-            "request-new",
-            Some("data:image/png;base64,NEW".to_owned()),
-        ));
-
-        finalize_ahrp_runtime_status(
-            Some("node"),
-            "request-old",
-            &json!({ "status": "EngineError", "error": "stale failure" }),
-        );
-        {
-            let states = hook_canvas_runtime_statuses()
-                .lock()
-                .expect("runtime states");
-            let state = states.get("node").expect("runtime node");
-            assert_eq!(state.active_request_id.as_deref(), Some("request-new"));
-            assert_eq!(state.status, "processing");
-            assert_eq!(
-                state.preview_data_url.as_deref(),
-                Some("data:image/png;base64,NEW")
-            );
-        }
-
-        finalize_ahrp_runtime_status(Some("node"), "request-new", &json!({ "status": "Success" }));
-        {
-            let states = hook_canvas_runtime_statuses()
-                .lock()
-                .expect("runtime states");
-            let state = states.get("node").expect("runtime node");
-            assert_eq!(state.active_request_id, None);
-            assert_eq!(state.status, "ready");
-        }
-        assert!(!set_hook_canvas_runtime_preview_for_request(
-            "node",
-            "request-new",
-            Some("data:image/png;base64,LATE".to_owned()),
-        ));
-
-        clear_hook_canvas_runtime_state();
-    }
-
-    #[test]
     fn daemon_exposes_hook_canvas_snapshot_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         clear_hook_canvas_runtime_state();
         let appdata = unique_temp_dir("hook-canvas-appdata");
-        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
         fs::write(
@@ -23300,15 +21065,16 @@ def run(args):
         let workflow = run_hook_bridge_text(
             &runtime,
             &json!({
-                "method": "art_loom/overwrite_workflow",
+                "method": loom_protocol::HOOK_METHOD_WORKFLOW_SYNC,
                 "params": {
-                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
+                    "requestId": "sync-live-workflow",
+                    "workflowId": HOOK_LIVE_WORKFLOW_ID,
                     "snapshot": {
                         "name": "Hook Live",
                         "nodes": [
                             {
                                 "id": "capture",
-                                "type": "screenshot",
+                                "type": "sticker",
                                 "position": { "x": 20, "y": 30 },
                                 "measured": { "width": 80, "height": 80 },
                                 "data": {
@@ -23319,11 +21085,11 @@ def run(args):
                             },
                             {
                                 "id": "missing-art-node",
-                                "type": "art",
+                                "type": "artNode",
                                 "position": { "x": 160, "y": 40 },
                                 "measured": { "width": 90, "height": 90 },
                                 "data": {
-                                    "artId": "missing-art",
+                                    "artId": "neuro.official/missing-art",
                                     "previewSrc": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
                                     "params": { "strength": 61 },
                                     "w": 90,
@@ -23345,7 +21111,7 @@ def run(args):
             })
             .to_string(),
         );
-        assert_eq!(workflow["type"], "success", "response={workflow}");
+        assert_eq!(workflow["status"], "succeeded", "response={workflow}");
 
         let (status, body) = hook_canvas_snapshot().expect("hook canvas snapshot");
         assert_eq!(status, 200);
@@ -23366,118 +21132,6 @@ def run(args):
     }
 
     #[test]
-    fn daemon_hook_canvas_marks_live_art_node_error_after_ahrp_failure() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
-        let root = unique_temp_dir("hook-canvas-live-error");
-        let appdata = unique_temp_dir("hook-canvas-live-error-appdata");
-        let previous_appdata = std::env::var("APPDATA").ok();
-        std::env::set_var("APPDATA", &appdata);
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let overwrite = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art_loom/overwrite_workflow",
-                "params": {
-                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
-                    "snapshot": {
-                        "name": "Hook Live",
-                        "nodes": [
-                            {
-                                "id": "capture",
-                                "type": "screenshot",
-                                "position": { "x": 20, "y": 30 },
-                                "measured": { "width": 80, "height": 80 },
-                                "data": {
-                                    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-                                    "w": 80,
-                                    "h": 80
-                                }
-                            },
-                            {
-                                "id": "missing-art-node",
-                                "type": "art",
-                                "position": { "x": 160, "y": 40 },
-                                "measured": { "width": 90, "height": 90 },
-                                "data": {
-                                    "artId": "missing-art",
-                                    "previewSrc": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-                                    "params": { "strength": 61 },
-                                    "w": 90,
-                                    "h": 90
-                                }
-                            }
-                        ],
-                        "edges": [
-                            {
-                                "id": "edge-1",
-                                "source": "capture",
-                                "target": "missing-art-node",
-                                "sourceHandle": "output",
-                                "targetHandle": "input"
-                            }
-                        ]
-                    }
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(overwrite["type"], "success", "response={overwrite}");
-
-        let before = expect_json_result_response(hook_canvas_snapshot(), 200);
-        assert_eq!(before["nodes"][1]["status"], "ready");
-        let before_revision = before["revision"]
-            .as_str()
-            .expect("before revision")
-            .to_owned();
-
-        let failure = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art/process",
-                "params": {
-                    "request_id": "req-missing-art",
-                    "art_id": "missing-art",
-                    "input": {
-                        "type": "base64",
-                        "data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-                        "width": 1,
-                        "height": 1,
-                        "format": "rgba8"
-                    },
-                    "params": {
-                        "strength": 61
-                    },
-                    "disabled_params": []
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(failure["status"], "NotFound", "response={failure}");
-
-        let after = expect_json_result_response(hook_canvas_snapshot(), 200);
-        assert_eq!(after["nodes"][1]["status"], "error");
-        assert_eq!(
-            after["nodes"][1]["errorMessage"],
-            "Art definition not found: missing-art"
-        );
-        assert_eq!(after["nodes"][1]["previewAvailable"], true);
-        let after_revision = after["revision"].as_str().expect("after revision");
-        assert_ne!(after_revision, before_revision);
-        assert!(
-            after_revision.contains("-rt-"),
-            "expected runtime overlay revision suffix, got {after_revision}"
-        );
-
-        restore_env("APPDATA", previous_appdata);
-        clear_hook_canvas_runtime_state();
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup root");
-        fs::remove_dir_all(appdata).expect("cleanup appdata");
-    }
-
-    #[test]
     fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         clear_hook_canvas_runtime_state();
@@ -23485,7 +21139,7 @@ def run(args):
         let previous_appdata = std::env::var("APPDATA").ok();
         let root = unique_temp_dir("hook-canvas-save-workflow");
         let appdata = unique_temp_dir("hook-canvas-save-workflow-appdata");
-        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
         fs::write(
@@ -23493,8 +21147,8 @@ def run(args):
             r#"{
               "stickers": [
                 {"id":"a","type":"sticker","src":"images/a.png","x":0,"y":0,"w":80,"h":80},
-                {"id":"b","type":"art","artId":"resize","src":"images/b.png","x":200,"y":0,"w":80,"h":80},
-                {"id":"c","type":"art","artId":"resize","src":"images/c.png","x":400,"y":0,"w":80,"h":80},
+                {"id":"b","type":"art","artId":"neuro.official/resize","src":"images/b.png","x":200,"y":0,"w":80,"h":80},
+                {"id":"c","type":"art","artId":"neuro.official/resize","src":"images/c.png","x":400,"y":0,"w":80,"h":80},
                 {"id":"lonely","type":"sticker","src":"images/lonely.png","x":0,"y":200,"w":80,"h":80}
               ],
               "links": [
@@ -23577,7 +21231,7 @@ def run(args):
     fn daemon_serves_only_registered_hook_canvas_preview_images() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let appdata = unique_temp_dir("hook-canvas-preview-appdata");
-        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
         let png = test_png_bytes();
@@ -23620,7 +21274,7 @@ def run(args):
     fn daemon_prefers_data_url_hook_canvas_preview_over_file_backed_src() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let appdata = unique_temp_dir("hook-canvas-preview-data-url");
-        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
 
@@ -23674,7 +21328,7 @@ def run(args):
     fn daemon_validates_hook_canvas_preview_type_and_size() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let appdata = unique_temp_dir("hook-canvas-preview-validation");
-        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
         fs::write(images.join("unsupported.bin"), b"not-an-image").expect("write unsupported");
@@ -23724,7 +21378,7 @@ def run(args):
         let _guard = ENV_LOCK.lock().expect("env lock");
         let appdata = unique_temp_dir("hook-canvas-auth-appdata");
         let control_plane_root = unique_temp_dir("hook-canvas-auth-control-plane");
-        let session_dir = appdata.join("com.vmjcv.arthook-next");
+        let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
         fs::create_dir_all(&images).expect("create session images");
         fs::write(images.join("capture.png"), test_png_bytes()).expect("write preview");
@@ -23783,311 +21437,41 @@ def run(args):
     }
 
     #[test]
-    fn artloom_settings_migrate_legacy_system_theme_to_dark_once() {
-        let root = unique_temp_dir("artloom-theme-migration");
-        let path = root.join("settings").join("artloom-compat-settings.json");
-        fs::create_dir_all(path.parent().expect("settings parent")).expect("create settings");
-
-        let mut legacy = ArtLoomCompatSettings::default();
-        legacy.appearance_version = 0;
-        legacy.general.theme = "system".to_owned();
-        legacy.hook_general.theme = "system".to_owned();
-        fs::write(
-            &path,
-            serde_json::to_string_pretty(&legacy).expect("legacy settings json"),
-        )
-        .expect("write legacy settings");
-
-        let mut migrated = ArtLoomCompatSettingsStore::new(path.clone());
-        assert_eq!(
-            migrated.settings.appearance_version,
-            CURRENT_APPEARANCE_VERSION
-        );
-        assert_eq!(migrated.settings.general.theme, "dark");
-        assert_eq!(migrated.settings.hook_general.theme, "dark");
-
-        migrated.settings.general.theme = "system".to_owned();
-        migrated.save().expect("save explicit system theme");
-        let reloaded = ArtLoomCompatSettingsStore::new(path);
-        assert_eq!(reloaded.settings.general.theme, "system");
-
-        fs::remove_dir_all(root).expect("cleanup settings");
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_settings_shortcuts_and_safe_system_contracts() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-settings");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let settings = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/settings", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(settings["compatCommand"], "get_settings");
-        assert_eq!(settings["settings"]["general"]["theme"], "dark");
-        assert_eq!(
-            settings["settings"]["engine"]["comfyui_url"],
-            "http://127.0.0.1:8188"
-        );
-
-        let updated_settings = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/artloom-compat/settings",
-                    &[],
-                    Some(
-                        r#"{"general":{"theme":"dark","language":"en","auto_start":false,"minimize_to_tray":true,"enable_tray_icon":true},"system":{"auto_check_updates":true,"enable_run_log":true,"run_as_admin":false,"record_screenshot_history":true,"history_retention":"7d","enable_proxy":false},"engine":{"comfyui_url":"http://127.0.0.1:8188","python_interpreter":"python.exe","virtual_env_path":"./venv","compute_device":"0","vram_reservation_gb":12},"quick_bindings":[{"id":"1","art":"ComfyUI Workflow","key":"Ctrl+Shift+1"}],"shortcuts":{}}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(updated_settings["compatCommand"], "update_settings");
-        assert_eq!(updated_settings["settings"]["general"]["theme"], "dark");
-
-        let shortcut = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/artloom-compat/shortcuts/capture",
-                    &[],
-                    Some(
-                        r#"{"id":"capture","label":"Screenshot","keys":"Ctrl+Alt+1","enabled":true}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(shortcut["compatCommand"], "update_shortcut");
-        assert_eq!(shortcut["shortcut"]["keys"], "Ctrl+Alt+1");
-
-        let shortcuts = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/shortcuts", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(shortcuts["compatCommand"], "get_shortcuts");
-        assert_eq!(shortcuts["shortcuts"][0]["id"], "capture");
-        assert_eq!(shortcuts["shortcuts"][0]["keys"], "Ctrl+Alt+1");
-
-        let started = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("POST", "/v1/hook-bridge/start", &[], Some(r#"{"port":0}"#)),
-            ),
-            200,
-        );
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"get_settings"}"#.to_owned(),
-            ))
-            .expect("send get_settings");
-        let hook_settings = read_hook_bridge_json(&mut socket);
-        assert_eq!(hook_settings["type"], "settings");
-        assert_eq!(hook_settings["data"]["general"]["theme"], "dark");
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"get_shortcuts"}"#.to_owned(),
-            ))
-            .expect("send get_shortcuts");
-        let hook_shortcuts = read_hook_bridge_json(&mut socket);
-        assert_eq!(hook_shortcuts["type"], "shortcuts");
-        assert_eq!(hook_shortcuts["data"][0]["id"], "capture");
-        assert_eq!(hook_shortcuts["data"][0]["keys"], "Ctrl+Alt+1");
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"sync_shortcuts"}"#.to_owned(),
-            ))
-            .expect("send sync_shortcuts");
-        let hook_synced = read_hook_bridge_json(&mut socket);
-        assert_eq!(hook_synced["type"], "shortcuts");
-        assert_eq!(hook_synced["data"][0]["keys"], "Ctrl+Alt+1");
-
-        drop(socket);
-        let stopped = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("POST", "/v1/hook-bridge/stop", &[], Some("{}")),
-            ),
-            200,
-        );
-        assert_eq!(stopped["running"], false);
-
-        let default_autostart = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/system/autostart", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(default_autostart["compatCommand"], "is_autostart_enabled");
-        assert_eq!(default_autostart["enabled"], false);
-        assert_eq!(default_autostart["sideEffect"], false);
-
-        let autostart = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/system/autostart",
-                    &[],
-                    Some(r#"{"enabled":true}"#),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(autostart["compatCommand"], "set_autostart");
-        assert_eq!(autostart["enabled"], true);
-        assert_eq!(autostart["sideEffect"], false);
-
-        let updated_autostart = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/system/autostart", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(updated_autostart["compatCommand"], "is_autostart_enabled");
-        assert_eq!(updated_autostart["enabled"], true);
-        assert_eq!(updated_autostart["sideEffect"], false);
-
-        let disabled_autostart = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/system/autostart/disable",
-                    &[],
-                    Some("{}"),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(disabled_autostart["compatCommand"], "disable_autostart");
-        assert_eq!(disabled_autostart["enabled"], false);
-        assert_eq!(disabled_autostart["sideEffect"], false);
-
-        let enabled_autostart = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/system/autostart/enable",
-                    &[],
-                    Some("{}"),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(enabled_autostart["compatCommand"], "enable_autostart");
-        assert_eq!(enabled_autostart["enabled"], true);
-        assert_eq!(enabled_autostart["sideEffect"], false);
-
-        let tray = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/system/minimize-to-tray",
-                    &[],
-                    Some(r#"{"enabled":false}"#),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(tray["compatCommand"], "set_minimize_to_tray");
-        assert_eq!(tray["enabled"], false);
-        assert_eq!(tray["sideEffect"], false);
-
-        let paths = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/app-paths", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(paths["compatCommand"], "get_app_paths");
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup settings root");
-    }
-
-    #[test]
-    fn artloom_settings_store_drops_the_legacy_placeholder_quick_binding() {
-        let root = unique_temp_dir("hook-legacy-quick-binding");
+    fn settings_store_rejects_incomplete_settings_schema() {
+        let root = unique_temp_dir("loom-settings-strict-schema");
         fs::create_dir_all(&root).expect("create settings root");
         let path = root.join("settings.json");
-        let mut settings = ArtLoomCompatSettings::default();
-        settings.quick_bindings.push(ArtLoomQuickBinding {
-            id: "1".to_owned(),
-            art: "ComfyUI Workflow".to_owned(),
-            key: "Ctrl+Shift+1".to_owned(),
-        });
-        settings.quick_bindings.push(ArtLoomQuickBinding {
-            id: "color-transfer".to_owned(),
-            art: "custom-1770131241684".to_owned(),
-            key: "Ctrl+K".to_owned(),
-        });
-        fs::write(
-            &path,
-            serde_json::to_vec_pretty(&settings).expect("settings json"),
-        )
-        .expect("write settings");
-
-        let store = ArtLoomCompatSettingsStore::new(path);
-
-        assert_eq!(store.settings.quick_bindings.len(), 1);
-        assert_eq!(store.settings.quick_bindings[0].art, "custom-1770131241684");
-        fs::remove_dir_all(root).expect("cleanup settings root");
-    }
-
-    #[test]
-    fn artloom_settings_store_defaults_new_loom_sections_for_older_settings_files() {
-        let root = unique_temp_dir("loom-cache-settings-default");
-        fs::create_dir_all(&root).expect("create settings root");
-        let path = root.join("settings.json");
-        let mut value = serde_json::to_value(ArtLoomCompatSettings::default())
-            .expect("serialize default settings");
+        let mut value =
+            serde_json::to_value(LoomSettings::default()).expect("serialize default settings");
         let settings = value.as_object_mut().expect("settings object");
+        settings["general"]["theme"] = json!("light");
         settings.remove("loom_cache");
         settings.remove("mcp");
         settings.remove("art_store");
+        assert!(serde_json::from_value::<LoomSettings>(value.clone()).is_err());
         fs::write(
             &path,
             serde_json::to_vec_pretty(&value).expect("settings json"),
         )
         .expect("write settings");
 
-        let store = ArtLoomCompatSettingsStore::new(path);
+        let store = LoomSettingsStore::new(path);
 
-        assert_eq!(store.settings.loom_cache, ArtLoomCacheSettings::default());
-        assert_eq!(store.settings.mcp, ArtLoomMcpSettings::default());
-        assert_eq!(store.settings.art_store, ArtLoomArtStoreSettings::default());
+        assert_eq!(store.settings.general.theme, "dark");
+        assert_eq!(store.settings.loom_cache, LoomCacheSettings::default());
+        assert_eq!(store.settings.mcp, McpSettings::default());
+        assert_eq!(store.settings.art_store, ArtStoreSettings::default());
         fs::remove_dir_all(root).expect("cleanup settings root");
     }
 
     #[test]
-    fn artloom_settings_apply_mcp_limits_and_global_art_update_policy() {
+    fn settings_apply_mcp_limits_and_global_art_update_policy() {
         let root = unique_temp_dir("loom-runtime-settings");
-        let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+        let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
             root.join("settings.json"),
         )));
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
-        let mut settings = ArtLoomCompatSettings::default();
+        let mut settings = LoomSettings::default();
         settings.mcp.request_timeout_seconds = 120;
         settings.mcp.memory_limit_bytes = 1024 * 1024 * 1024;
         settings.network.loom.mode = "disabled".to_owned();
@@ -24095,8 +21479,8 @@ def run(args):
         settings.art_store.auto_update = false;
         let body = serde_json::to_string(&settings).expect("settings body");
 
-        let (status, _) = put_artloom_compat_settings(&body, &settings_store, &hook_bridge)
-            .expect("save runtime settings");
+        let (status, _) =
+            put_settings(&body, &settings_store, &hook_bridge).expect("save runtime settings");
 
         assert_eq!(status, 200);
         assert_eq!(loom_mcp::runtime_limits(), (120, 1024 * 1024 * 1024));
@@ -24123,7 +21507,7 @@ def run(args):
             serde_json::from_str::<Value>(&update_body).expect("update response")["disabled"],
             true
         );
-        apply_artloom_runtime_settings(&ArtLoomCompatSettings::default());
+        apply_runtime_settings(&LoomSettings::default());
         fs::remove_dir_all(root).expect("cleanup settings root");
     }
 
@@ -24146,9 +21530,41 @@ def run(args):
     }
 
     #[test]
+    fn art_store_latest_requests_resolve_to_a_cataloged_exact_version() {
+        let catalog = RemoteArtStoreCatalog {
+            arts: vec![RemoteArtStoreEntry {
+                id: "canonical-art".to_owned(),
+                latest_version: "1.2.0".to_owned(),
+                versions: vec![
+                    RemoteArtStoreVersion {
+                        version: "1.0.0".to_owned(),
+                        sha256: "a".repeat(64),
+                    },
+                    RemoteArtStoreVersion {
+                        version: "1.2.0".to_owned(),
+                        sha256: "b".repeat(64),
+                    },
+                ],
+                ..RemoteArtStoreEntry::default()
+            }],
+        };
+
+        assert_eq!(
+            resolve_art_store_package_version(Some(&catalog), "canonical-art", None).unwrap(),
+            "1.2.0"
+        );
+        assert_eq!(
+            resolve_art_store_package_version(None, "canonical-art", Some("1.0.0")).unwrap(),
+            "1.0.0"
+        );
+        assert!(resolve_art_store_package_version(Some(&catalog), "missing", None).is_err());
+        assert!(resolve_art_store_package_version(None, "canonical-art", Some("latest")).is_err());
+    }
+
+    #[test]
     fn hook_cache_settings_and_library_commands_use_the_hook_bridge_channel() {
         let root = unique_temp_dir("hook-cache-control");
-        let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+        let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
             root.join("settings.json"),
         )));
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
@@ -24158,18 +21574,18 @@ def run(args):
             .broadcast_hub
             .clone();
         let (rx, _subscription) =
-            register_hook_bridge_subscription(&hub, vec!["art_hook/cache_control".to_owned()]);
+            register_hook_bridge_subscription(&hub, vec![HOOK_EVENT_CACHE_CONTROL.to_owned()]);
 
-        let body = serde_json::to_string(&ArtLoomCompatSettings::default()).expect("settings body");
-        let (status, _) = put_artloom_compat_settings(&body, &settings_store, &hook_bridge)
-            .expect("save cache settings");
+        let body = serde_json::to_string(&LoomSettings::default()).expect("settings body");
+        let (status, _) =
+            put_settings(&body, &settings_store, &hook_bridge).expect("save cache settings");
         assert_eq!(status, 200);
         let settings_event: Value = serde_json::from_str(
             &rx.recv_timeout(Duration::from_secs(1))
                 .expect("settings event"),
         )
         .expect("settings json");
-        assert_eq!(settings_event["method"], "art_hook/cache_control");
+        assert_eq!(settings_event["method"], HOOK_EVENT_CACHE_CONTROL);
         assert_eq!(settings_event["params"]["action"], "settings");
         assert_eq!(
             settings_event["params"]["settings"]["recycle_bin_max_entries"],
@@ -24193,7 +21609,7 @@ def run(args):
     #[test]
     fn hook_receives_full_settings_after_settings_or_shortcut_updates() {
         let root = unique_temp_dir("hook-settings-updated");
-        let settings_store = Arc::new(Mutex::new(ArtLoomCompatSettingsStore::new(
+        let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
             root.join("settings.json"),
         )));
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
@@ -24203,30 +21619,30 @@ def run(args):
             .broadcast_hub
             .clone();
         let (rx, _subscription) =
-            register_hook_bridge_subscription(&hub, vec!["art_hook/settings_updated".to_owned()]);
+            register_hook_bridge_subscription(&hub, vec![HOOK_EVENT_SETTINGS_UPDATED.to_owned()]);
 
-        let mut settings = ArtLoomCompatSettings::default();
+        let mut settings = LoomSettings::default();
         settings.general.theme = "dark".to_owned();
         let body = serde_json::to_string(&settings).expect("settings body");
-        put_artloom_compat_settings(&body, &settings_store, &hook_bridge).expect("save settings");
+        put_settings(&body, &settings_store, &hook_bridge).expect("save settings");
         let settings_event: Value = serde_json::from_str(
             &rx.recv_timeout(Duration::from_secs(1))
                 .expect("full settings event"),
         )
         .expect("settings json");
-        assert_eq!(settings_event["method"], "art_hook/settings_updated");
+        assert_eq!(settings_event["method"], HOOK_EVENT_SETTINGS_UPDATED);
         assert_eq!(
             settings_event["params"]["settings"]["general"]["theme"],
             "dark"
         );
 
-        let shortcut = ArtLoomShortcutConfig {
+        let shortcut = LoomShortcutConfig {
             id: "capture".to_owned(),
             label: "Screenshot".to_owned(),
             keys: "Alt+9 / F8".to_owned(),
             enabled: true,
         };
-        put_artloom_compat_shortcut(
+        put_shortcut(
             "capture",
             &serde_json::to_string(&shortcut).expect("shortcut body"),
             &settings_store,
@@ -24251,361 +21667,6 @@ def run(args):
     }
 
     #[test]
-    fn daemon_exposes_artloom_registry_ipc_and_shared_memory_aliases() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-compat-aliases");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let sync_body = serde_json::json!({
-            "arts": [{
-                "id": "compat-art",
-                "name": "Compat Art",
-                "description": "ArtLoom registry alias fixture",
-                "iconColor": "#52c41a",
-                "enabled": true,
-                "execution": {
-                    "type": "framework_art",
-                    "framework": "process"
-                },
-                "autoProcess": true,
-                "defaults": { "seed": 1234 },
-                "inputs": [{ "name": "image", "type": "image" }],
-                "outputs": [{ "name": "result", "type": "image" }],
-                "params": [{ "id": "strength", "default": 0.1 }]
-            }]
-        })
-        .to_string();
-        let saved_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/sync",
-                    &[],
-                    Some(&sync_body),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_tool["syncedCount"], 1);
-        assert_eq!(saved_tool["arts"][0]["art_id"], "compat-art");
-
-        let arts = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/arts", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(arts["compatCommand"], "list_arts");
-        assert_eq!(arts["count"], 1);
-        assert_eq!(arts["arts"][0]["art_id"], "compat-art");
-        assert_eq!(arts["arts"][0]["auto_process"], true);
-        assert_eq!(arts["arts"][0]["defaults"]["seed"], 1234);
-
-        let user_arts = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/user-arts", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(user_arts["compatCommand"], "get_user_arts");
-        assert_eq!(user_arts["arts"][0]["id"], "compat-art");
-        assert_eq!(user_arts["arts"][0]["name"], "Compat Art");
-        assert_eq!(
-            user_arts["arts"][0]["description"],
-            "ArtLoom registry alias fixture"
-        );
-        assert_eq!(user_arts["arts"][0]["category"], "Adapter");
-        assert_eq!(user_arts["arts"][0]["version"], "1.0.0");
-        assert_eq!(user_arts["arts"][0]["author"], "User");
-        assert_eq!(user_arts["arts"][0]["status"], "active");
-        assert_eq!(user_arts["arts"][0]["iconColor"], "#52c41a");
-        assert_eq!(user_arts["arts"][0]["downloads"], 0);
-        assert_eq!(user_arts["arts"][0]["owned"], true);
-        assert_eq!(user_arts["arts"][0]["executionType"], "framework_art");
-        assert_eq!(user_arts["arts"][0]["execution"]["framework"], "process");
-        assert_eq!(user_arts["arts"][0]["autoProcess"], true);
-        assert_eq!(user_arts["arts"][0]["inputs"][0]["name"], "image");
-        assert_eq!(user_arts["arts"][0]["outputs"][0]["name"], "result");
-        assert!(user_arts["arts"][0].get("art_id").is_none());
-
-        let art = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/arts/compat-art", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(art["compatCommand"], "get_art");
-        assert_eq!(art["art"]["enabled"], true);
-        assert_eq!(art["art"]["auto_process"], true);
-        assert_eq!(art["art"]["defaults"]["seed"], 1234);
-
-        let enabled_arts = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/arts/enabled", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(enabled_arts["compatCommand"], "get_enabled_arts");
-        assert_eq!(enabled_arts["count"], 1);
-        assert_eq!(enabled_arts["arts"][0]["id"], "compat-art");
-
-        let disabled = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/compat-art/disable",
-                    &[],
-                    Some("{}"),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(disabled["compatCommand"], "disable_art");
-        assert_eq!(disabled["enabled"], false);
-
-        let enabled_after_disable = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/arts/enabled", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(enabled_after_disable["compatCommand"], "get_enabled_arts");
-        assert_eq!(enabled_after_disable["count"], 0);
-
-        let enabled = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/compat-art/enable",
-                    &[],
-                    Some("{}"),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(enabled["compatCommand"], "enable_art");
-        assert_eq!(enabled["enabled"], true);
-
-        let defaults = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/artloom-compat/arts/compat-art/defaults",
-                    &[],
-                    Some(r#"{"defaults":{"strength":0.8}}"#),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(defaults["compatCommand"], "update_art_defaults");
-        assert_eq!(defaults["tool"]["params"][0]["default"], 0.8);
-
-        let synced = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("POST", "/v1/artloom-compat/arts/sync", &[], Some("{}")),
-            ),
-            200,
-        );
-        assert_eq!(synced["compatCommand"], "sync_user_arts");
-        assert_eq!(synced["synced"], true);
-        assert_eq!(synced["sideEffect"], false);
-        assert!(synced["message"]
-            .as_str()
-            .expect("sync message")
-            .contains("source of truth"));
-
-        let ipc = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/ipc/status", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(ipc["compatCommand"], "get_ipc_status");
-        assert_eq!(ipc["protocol"], "artloom-compat");
-
-        let created_buffer = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/shared-memory/buffers",
-                    &[],
-                    Some(r#"{"width":1,"height":1,"channels":4}"#),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(created_buffer["compatCommand"], "shm_create_buffer");
-        let handle = created_buffer["handle"]
-            .as_str()
-            .expect("shared memory handle");
-
-        let buffers = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/shared-memory/buffers", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(buffers["compatCommand"], "shm_list_buffers");
-        assert_eq!(buffers["buffers"][0]["handle_name"], handle);
-        assert_eq!(buffers["buffers"][0]["format"], "rgba8");
-        assert_eq!(buffers["buffers"][0]["ref_count"], 1);
-
-        let info = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "GET",
-                    &format!("/v1/shared-memory/buffers/{handle}"),
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(info["compatCommand"], "shm_get_buffer_info");
-        assert_eq!(info["buffer"]["handle_name"], handle);
-
-        let released = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "DELETE",
-                    &format!("/v1/shared-memory/buffers/{handle}"),
-                    &[],
-                    None,
-                ),
-            ),
-            200,
-        );
-        assert_eq!(released["compatCommand"], "shm_release_buffer");
-        assert_eq!(released["released"], true);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup alias root");
-    }
-
-    #[test]
-    fn daemon_sync_user_arts_imports_payload_and_preserves_non_compat_tools() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-compat-import");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let regular_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/tools/loom-tool",
-                    &[],
-                    Some(
-                        r#"{"id":"loom-tool","name":"Loom Tool","description":"native loom tool","enabled":true,"execution":{"type":"workflow","workflowId":"wf-native"}}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(regular_tool["tool"]["id"], "loom-tool");
-
-        let old_compat_body = serde_json::json!({
-            "arts": [{
-                "id": "compat-old",
-                "label": "Compat Old",
-                "description": "old compat art",
-                "enabled": true,
-                "execution": { "type": "framework_art", "framework": "process" },
-                "params": [{ "id": "strength", "default": 0.1 }]
-            }]
-        })
-        .to_string();
-        let old_compat = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/sync",
-                    &[],
-                    Some(&old_compat_body),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(old_compat["syncedCount"], 1);
-        assert_eq!(old_compat["arts"][0]["art_id"], "compat-old");
-
-        let sync_body = serde_json::json!({
-            "arts": [{
-                "id": "compat-new",
-                "label": "Compat New",
-                "description": "new compat art",
-                "icon": "#52c41a",
-                "enabled": true,
-                "execution": { "type": "framework_art", "framework": "process" },
-                "inputs": [
-                    { "name": "prompt", "label": "Prompt", "type": "string", "execution_type": "string", "default": "hello" }
-                ],
-                "params": [
-                    { "id": "strength", "label": "Strength", "widget": "slider", "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.1 }
-                ],
-                "defaults": { "strength": 0.8 }
-            }]
-        })
-        .to_string();
-        let synced = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/sync",
-                    &[],
-                    Some(&sync_body),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(synced["compatCommand"], "sync_user_arts");
-        assert_eq!(synced["sideEffect"], true);
-        assert_eq!(synced["syncedCount"], 1);
-
-        let tools = expect_json_text_route_response(
-            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
-            200,
-        );
-        let listed = tools["tools"].as_array().expect("tools array");
-        assert!(listed.iter().any(|tool| tool["id"] == "loom-tool"));
-        assert!(listed.iter().any(|tool| tool["id"] == "compat-new"));
-        assert!(!listed.iter().any(|tool| tool["id"] == "compat-old"));
-
-        let arts = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/arts", &[], None),
-            ),
-            200,
-        );
-        let listed_arts = arts["arts"].as_array().expect("arts array");
-        assert_eq!(listed_arts.len(), 1);
-        assert_eq!(listed_arts[0]["art_id"], "compat-new");
-        assert_eq!(listed_arts[0]["inputs"][0]["name"], "prompt");
-        assert_eq!(listed_arts[0]["params"][0]["default"], 0.8);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup import root");
-    }
-
-    #[test]
     fn daemon_hook_bridge_runtime_start_status_stop() {
         let root = unique_temp_dir("hook-bridge-runtime");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
@@ -24621,7 +21682,7 @@ def run(args):
                 &runtime.mcp_servers,
                 &runtime.tool_registry,
                 &runtime.workflow_store,
-                &runtime.artloom_settings,
+                &runtime.settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
                 &runtime.framework_registry,
@@ -24635,7 +21696,7 @@ def run(args):
         assert_eq!(started["running"], true);
         assert!(started["port"].as_u64().expect("assigned bridge port") > 0);
         assert_eq!(started["connectedClients"], 0);
-        assert_eq!(started["protocol"], "artloom-compat");
+        assert_eq!(started["protocol"], loom_protocol::HOOK_PROTOCOL_VERSION);
 
         let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
         assert_eq!(running["running"], true);
@@ -24648,7 +21709,7 @@ def run(args):
                 &runtime.mcp_servers,
                 &runtime.tool_registry,
                 &runtime.workflow_store,
-                &runtime.artloom_settings,
+                &runtime.settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
                 &runtime.framework_registry,
@@ -24688,7 +21749,7 @@ def run(args):
                 &runtime.mcp_servers,
                 &runtime.tool_registry,
                 &runtime.workflow_store,
-                &runtime.artloom_settings,
+                &runtime.settings,
                 &runtime.shared_images,
                 &runtime.ocr_provider,
                 &runtime.framework_registry,
@@ -24713,16 +21774,30 @@ def run(args):
 
         socket
             .send(tungstenite::Message::Text(
-                r#"{"method":"handshake","params":{"client_version":"0.4.2"}}"#.to_owned(),
+                json!({
+                    "method": loom_protocol::HOOK_METHOD_HANDSHAKE,
+                    "params": {
+                        "protocolVersion": loom_protocol::HOOK_PROTOCOL_VERSION,
+                        "supportedProtocolVersions": [loom_protocol::HOOK_PROTOCOL_VERSION],
+                        "clientId": "daemon-test",
+                        "clientVersion": "0.4.2",
+                        "platform": "windows",
+                        "transports": ["websocket"],
+                    }
+                })
+                .to_string(),
             ))
             .expect("send handshake");
         let response = socket.read().expect("read handshake response");
         let response = response.into_text().expect("text response");
         let response: serde_json::Value = serde_json::from_str(&response).expect("response json");
 
-        assert_eq!(response["type"], "handshake");
-        assert_eq!(response["data"]["server_version"], "0.1.0");
-        assert!(response["data"]["session_id"].as_str().is_some());
+        assert_eq!(
+            response["protocolVersion"],
+            loom_protocol::HOOK_PROTOCOL_VERSION
+        );
+        assert_eq!(response["serverVersion"], "0.1.0");
+        assert!(response["sessionId"].as_str().is_some());
 
         let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
         assert_eq!(running["running"], true);
@@ -24742,184 +21817,6 @@ def run(args):
     }
 
     #[test]
-    fn daemon_artloom_sync_without_defaults_does_not_treat_art_shape_as_defaults() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-compat-no-defaults");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let sync_body = serde_json::json!({
-            "arts": [{
-                "id": "compat-no-defaults",
-                "name": "Compat No Defaults",
-                "description": "Old sync_user_arts payload without independent defaults",
-                "iconColor": "#52c41a",
-                "enabled": true,
-                "execution": {
-                    "type": "framework_art",
-                    "framework": "process"
-                },
-                "inputs": [{ "name": "prompt", "type": "text" }],
-                "outputs": [{ "name": "result", "type": "text" }],
-                "params": [{ "id": "strength", "default": 0.2 }]
-            }]
-        })
-        .to_string();
-        let saved_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/sync",
-                    &[],
-                    Some(&sync_body),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_tool["syncedCount"], 1);
-
-        let arts = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/artloom-compat/arts", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(arts["compatCommand"], "list_arts");
-        assert_eq!(arts["arts"][0]["defaults"], json!({ "strength": 0.2 }));
-        assert!(arts["arts"][0]["defaults"].get("id").is_none());
-        assert!(arts["arts"][0]["defaults"].get("execution").is_none());
-        assert!(arts["arts"][0]["defaults"].get("params").is_none());
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup settings root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_sync_user_arts_imports_hook_payload() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("hook-bridge-sync-user-arts");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let saved_native_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/tools/loom-tool",
-                    &[],
-                    Some(
-                        r#"{"id":"loom-tool","name":"Loom Tool","description":"native loom tool","enabled":true,"execution":{"type":"workflow","workflowId":"wf-native"}}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_native_tool["tool"]["id"], "loom-tool");
-
-        let started = expect_json_result_response(
-            start_hook_bridge(
-                r#"{"port":0}"#,
-                &runtime.hook_bridge,
-                &runtime.mcp_servers,
-                &runtime.tool_registry,
-                &runtime.workflow_store,
-                &runtime.artloom_settings,
-                &runtime.shared_images,
-                &runtime.ocr_provider,
-                &runtime.framework_registry,
-                &runtime.control_plane_root,
-                &runtime.run_store,
-                &runtime.surface_instances,
-                &runtime.surface_actions,
-            ),
-            200,
-        );
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-        let request = serde_json::json!({
-            "method": "sync_user_arts",
-            "params": {
-                "arts": [{
-                    "id": "hook-art",
-                    "name": "Hook Art",
-                    "description": "Synced from Hook",
-                    "iconColor": "#52c41a",
-                    "enabled": true,
-                    "execution": {
-                        "type": "framework_art",
-                        "framework": "process"
-                    },
-                    "inputs": [{ "name": "prompt", "label": "Prompt", "type": "string" }],
-                    "outputs": [{ "name": "result", "type": "text" }],
-                    "params": [{ "id": "strength", "default": 0.7 }]
-                }]
-            }
-        });
-        socket
-            .send(tungstenite::Message::Text(request.to_string()))
-            .expect("send sync_user_arts");
-        let response = read_hook_bridge_json(&mut socket);
-        assert_eq!(response["type"], "success");
-        assert_eq!(response["data"]["compatCommand"], "sync_user_arts");
-        assert_eq!(response["data"]["sideEffect"], true);
-        assert_eq!(response["data"]["syncedCount"], 1);
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"list_arts"}"#.to_owned(),
-            ))
-            .expect("send list_arts");
-        let listed = read_hook_bridge_json(&mut socket);
-        assert_eq!(listed["type"], "arts");
-        assert_eq!(listed["data"].as_array().expect("arts").len(), 1);
-        assert_eq!(listed["data"][0]["art_id"], "hook-art");
-        assert_eq!(listed["data"][0]["icon"], "#52c41a");
-        assert_eq!(listed["data"][0]["execution_type"], "framework_art");
-        assert_eq!(listed["data"][0]["execution"]["framework"], "process");
-        assert_eq!(listed["data"][0]["outputs"][0]["name"], "result");
-        assert_eq!(listed["data"][0]["inputs"][0]["name"], "prompt");
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"update_art_param","params":{"art_id":"hook-art","param_id":"strength","value":0.9}}"#
-                    .to_owned(),
-            ))
-            .expect("send update_art_param");
-        let updated_param = read_hook_bridge_json(&mut socket);
-        assert_eq!(updated_param["type"], "success");
-        assert_eq!(updated_param["data"]["compatCommand"], "update_art_param");
-        assert_eq!(updated_param["data"]["art_id"], "hook-art");
-        assert_eq!(updated_param["data"]["param_id"], "strength");
-
-        socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"list_arts"}"#.to_owned(),
-            ))
-            .expect("send list_arts after update_art_param");
-        let relisted = read_hook_bridge_json(&mut socket);
-        assert_eq!(relisted["type"], "arts");
-        assert_eq!(relisted["data"][0]["defaults"]["strength"], 0.9);
-        assert_eq!(relisted["data"][0]["params"][0]["default"], 0.9);
-
-        let tools = expect_json_text_route_response(
-            route_request(&runtime, &parsed_request("GET", "/v1/tools", &[], None)),
-            200,
-        );
-        let listed_tools = tools["tools"].as_array().expect("tools array");
-        assert!(listed_tools.iter().any(|tool| tool["id"] == "loom-tool"));
-        assert!(listed_tools.iter().any(|tool| tool["id"] == "hook-art"));
-
-        drop(socket);
-        let stopped = expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
-        assert_eq!(stopped["running"], false);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup hook sync root");
-    }
-
-    #[test]
     fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_temp_dir("hook-bridge-fanout");
@@ -24931,25 +21828,44 @@ def run(args):
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
         subscriber
             .send(tungstenite::Message::Text(
-                r#"{"method":"subscribe","params":{"channels":["art_hook"]}}"#.to_owned(),
+                json!({
+                    "method": loom_protocol::HOOK_METHOD_SUBSCRIBE,
+                    "params": {
+                        "requestId": "subscribe-workflow",
+                        "events": [loom_protocol::HOOK_EVENT_WORKFLOW_INSTANTIATED],
+                    }
+                })
+                .to_string(),
             ))
             .expect("send subscribe");
         let subscribe_response = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(subscribe_response["type"], "success");
-        assert_eq!(subscribe_response["data"]["subscribed"], true);
+        assert_eq!(subscribe_response["status"], "succeeded");
 
         let mut publisher = connect_hook_bridge_websocket(bridge_port);
         publisher
             .send(tungstenite::Message::Text(
-                r#"{"method":"art_loom/instantiate_workflow","params":{"nodes":[{"id":"prompt"}],"edges":[{"source":"prompt","target":"out"}],"mode":"reference","workflow_id":"wf-broadcast"}}"#.to_owned(),
+                json!({
+                    "method": loom_protocol::HOOK_METHOD_WORKFLOW_INSTANTIATE,
+                    "params": {
+                        "requestId": "instantiate-workflow",
+                        "workflowId": "wf-broadcast",
+                        "mode": "reference",
+                        "nodes": [{"id":"prompt","type":"artNode","data":{"artId":"neuro.official/prompt"}}],
+                        "edges": [{"source":"prompt","target":"out"}],
+                    }
+                })
+                .to_string(),
             ))
             .expect("send instantiate workflow");
         let publish_response = read_hook_bridge_json(&mut publisher);
-        assert_eq!(publish_response["type"], "success");
+        assert_eq!(publish_response["status"], "succeeded");
 
         let broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(broadcast["method"], "art_hook/instantiate");
-        assert_eq!(broadcast["params"]["workflow_id"], "wf-broadcast");
+        assert_eq!(
+            broadcast["method"],
+            loom_protocol::HOOK_EVENT_WORKFLOW_INSTANTIATED
+        );
+        assert_eq!(broadcast["params"]["workflowId"], "wf-broadcast");
         assert_eq!(broadcast["params"]["nodes"][0]["id"], "prompt");
         assert_eq!(broadcast["params"]["edges"][0]["target"], "out");
 
@@ -24971,50 +21887,9 @@ def run(args):
     }
 
     #[test]
-    fn instantiate_workflow_rejects_non_hook_subscribers_instead_of_reporting_false_success() {
+    fn daemon_hook_bridge_accepts_versioned_surface_subscriptions() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-ipc-no-hook-subscriber");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut unrelated_subscriber = connect_hook_bridge_websocket(bridge_port);
-        unrelated_subscriber
-            .send(tungstenite::Message::Text(
-                r#"{"method":"subscribe","params":{"channels":["art_loom/arts_updated"]}}"#
-                    .to_owned(),
-            ))
-            .expect("send unrelated subscribe");
-        let subscribe_response = read_hook_bridge_json(&mut unrelated_subscriber);
-        assert_eq!(subscribe_response["type"], "success");
-
-        let rejected = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/ipc/instantiate-workflow",
-                    &[],
-                    Some(
-                        r#"{"nodes":[{"id":"orphan"}],"edges":[],"mode":"reference","workflowId":"no-hook"}"#,
-                    ),
-                ),
-            ),
-            409,
-        );
-        assert_eq!(rejected["error"]["code"], "no_art_hook_client");
-
-        drop(unrelated_subscriber);
-        let stopped = stop_test_hook_bridge(&runtime);
-        assert_eq!(stopped["running"], false);
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup no Hook subscriber root");
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_ipc_workflow_command_aliases() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-ipc-workflow-aliases");
+        let root = unique_temp_dir("hook-bridge-surface-subscription");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
         let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
@@ -25022,217 +21897,49 @@ def run(args):
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
         subscriber
             .send(tungstenite::Message::Text(
-                r#"{"method":"subscribe","params":{"channels":["art_hook"]}}"#.to_owned(),
+                json!({
+                    "method": loom_protocol::HOOK_METHOD_SUBSCRIBE,
+                    "params": {
+                        "requestId": "subscribe-surface",
+                        "events": loom_protocol::SURFACE_EVENT_METHODS,
+                    }
+                })
+                .to_string(),
             ))
-            .expect("send subscribe");
-        let subscribe_response = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(subscribe_response["type"], "success");
-
-        let instantiated = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/ipc/instantiate-workflow",
-                    &[],
-                    Some(
-                        r#"{"nodes":[{"id":"compat-node"}],"edges":[{"source":"compat-node","target":"compat-output"}],"mode":"reference","workflowId":"compat-workflow"}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(instantiated["compatCommand"], "instantiate_workflow");
-        assert_eq!(instantiated["type"], "success");
-        assert_eq!(instantiated["method"], "art_hook/instantiate");
-
-        let broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(broadcast["method"], "art_hook/instantiate");
-        assert_eq!(broadcast["params"]["workflow_id"], "compat-workflow");
-        assert_eq!(broadcast["params"]["nodes"][0]["id"], "compat-node");
-
-        let executed = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/ipc/execute-art-node",
-                    &[],
-                    Some(
-                        &serde_json::json!({
-                            "nodeId": "compat-native-node",
-                            "artId": "core.image.invert",
-                            "inputBase64": test_png_base64(),
-                            "params": {}
-                        })
-                        .to_string(),
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(executed["compatCommand"], "execute_art_node");
-        assert_eq!(executed["type"], "success", "response={executed}");
-        assert_eq!(executed["data"]["node_id"], "compat-native-node");
-        assert_eq!(executed["data"]["success"], true);
-        assert!(executed["data"]["output_base64"]
-            .as_str()
-            .expect("output_base64")
-            .starts_with("data:image/png;base64,"));
-
-        drop(subscriber);
-        let stopped = stop_test_hook_bridge(&runtime);
-        assert_eq!(stopped["running"], false);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup ArtLoom IPC workflow aliases root");
-    }
-
-    #[test]
-    fn daemon_broadcasts_arts_updated_after_tool_and_artloom_registry_mutations() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("artloom-compat-broadcasts");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-
-        let mut subscriber = connect_hook_bridge_websocket(bridge_port);
-        subscriber
-            .send(tungstenite::Message::Text(
-                r#"{"method":"subscribe","params":{"channels":["art_loom/arts_updated"]}}"#
-                    .to_owned(),
-            ))
-            .expect("send subscribe");
-        let subscribe_response = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(subscribe_response["type"], "success");
-        assert_eq!(subscribe_response["data"]["subscribed"], true);
-
-        let explicit_broadcast = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/broadcast-updated",
-                    &[],
-                    Some("{}"),
-                ),
-            ),
-            200,
-        );
+            .expect("send Surface subscribe");
+        let response = read_hook_bridge_json(&mut subscriber);
+        assert_eq!(response["status"], "succeeded");
         assert_eq!(
-            explicit_broadcast["compatCommand"],
-            "broadcast_arts_updated"
+            response["data"]["events"][0],
+            loom_protocol::SURFACE_EVENT_SNAPSHOT
         );
-        assert_eq!(explicit_broadcast["broadcasted"], true);
-        let explicit_broadcast_event = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(explicit_broadcast_event["method"], "art_loom/arts_updated");
-
-        let saved_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/tools/native-tool",
-                    &[],
-                    Some(
-                        r#"{"id":"native-tool","name":"Native Tool","description":"broadcast fixture","enabled":true,"execution":{"type":"framework_art","framework":"process"}}"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_tool["tool"]["id"], "native-tool");
-        let put_broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(put_broadcast["method"], "art_loom/arts_updated");
-
-        let sync_body = serde_json::json!({
-            "arts": [{
-                "id": "compat-art",
-                "label": "Compat Art",
-                "description": "broadcast compat fixture",
-                "enabled": true,
-                "execution": { "type": "framework_art", "framework": "process" },
-                "params": [{ "id": "strength", "default": 0.1 }]
-            }]
-        })
-        .to_string();
-        let imported = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/sync",
-                    &[],
-                    Some(&sync_body),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(imported["compatCommand"], "sync_user_arts");
-        let import_broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(import_broadcast["method"], "art_loom/arts_updated");
-
-        let disabled = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/arts/compat-art/disable",
-                    &[],
-                    Some("{}"),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(disabled["compatCommand"], "disable_art");
-        let disable_broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(disable_broadcast["method"], "art_loom/arts_updated");
-
-        let defaults = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/artloom-compat/arts/compat-art/defaults",
-                    &[],
-                    Some(r#"{"defaults":{"strength":0.8}}"#),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(defaults["compatCommand"], "update_art_defaults");
-        let defaults_broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(defaults_broadcast["method"], "art_loom/arts_updated");
-
-        let mirrored = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("POST", "/v1/artloom-compat/arts/sync", &[], Some("{}")),
-            ),
-            200,
-        );
-        assert_eq!(mirrored["compatCommand"], "sync_user_arts");
-        let mirror_broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(mirror_broadcast["method"], "art_loom/arts_updated");
-
-        let deleted_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("DELETE", "/v1/tools/native-tool", &[], None),
-            ),
-            200,
-        );
-        assert_eq!(deleted_tool["deleted"], true);
-        let delete_broadcast = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(delete_broadcast["method"], "art_loom/arts_updated");
 
         drop(subscriber);
         let stopped = stop_test_hook_bridge(&runtime);
         assert_eq!(stopped["running"], false);
-
         drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup broadcast root");
+        fs::remove_dir_all(root).expect("cleanup Surface subscription root");
+    }
+
+    #[test]
+    fn daemon_hook_bridge_rejects_legacy_surface_subscription_alias() {
+        let root = unique_temp_dir("hook-bridge-legacy-surface-subscription");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let response = run_hook_bridge_text(
+            &runtime,
+            &json!({
+                "method": loom_protocol::HOOK_METHOD_SUBSCRIBE,
+                "params": {
+                    "requestId": "subscribe-legacy-surface",
+                    "events": ["surface"],
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(response["status"], "failed");
+        assert_eq!(response["error"]["code"], "unsupported_event");
+        drop(runtime);
+        fs::remove_dir_all(root).expect("cleanup legacy Surface subscription root");
     }
 
     #[test]
@@ -25247,13 +21954,18 @@ def run(args):
         let mut subscriber = connect_hook_bridge_websocket(bridge_port);
         subscriber
             .send(tungstenite::Message::Text(
-                r#"{"method":"subscribe","params":{"channels":["art_hook/instantiate"]}}"#
-                    .to_owned(),
+                json!({
+                    "method": loom_protocol::HOOK_METHOD_SUBSCRIBE,
+                    "params": {
+                        "requestId": "subscribe-workflow-only",
+                        "events": [loom_protocol::HOOK_EVENT_WORKFLOW_INSTANTIATED],
+                    }
+                })
+                .to_string(),
             ))
             .expect("send subscribe");
         let subscribe_response = read_hook_bridge_json(&mut subscriber);
-        assert_eq!(subscribe_response["type"], "success");
-        assert_eq!(subscribe_response["data"]["subscribed"], true);
+        assert_eq!(subscribe_response["status"], "succeeded");
 
         let saved_tool = expect_json_text_route_response(
             route_request(
@@ -25342,16 +22054,22 @@ def run(args):
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
         socket
-            .send(tungstenite::Message::Text(
-                r#"{"method":"art_loom/execute_art_node","params":{"node_id":"node-mcp","art_id":"fixture-art","input_base64":"data:text/plain;base64,aW5wdXQ=","params":{"text":"execute art node runtime"}}}"#.to_owned(),
-            ))
+            .send(tungstenite::Message::Text(formal_art_execute_request(
+                "mcp-execute",
+                "node-mcp",
+                "fixture-art",
+                None,
+                json!({ "text": "execute art node runtime" }),
+            )))
             .expect("send execute art node");
-        let response = read_hook_bridge_json(&mut socket);
+        let response = read_hook_terminal_response(&mut socket, "mcp-execute");
 
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-mcp");
-        assert_eq!(response["data"]["output_text"], "execute art node runtime");
+        assert_eq!(response["status"], "succeeded", "response={response}");
+        assert_eq!(response["data"]["nodeId"], "node-mcp");
+        assert!(
+            response.to_string().contains("execute art node runtime"),
+            "response={response}"
+        );
 
         drop(socket);
         let stopped = stop_test_hook_bridge(&runtime);
@@ -25429,29 +22147,24 @@ def run(args):
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
         socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-mcp-image-search",
-                        "art_id": "fixture-image-search-art",
-                        "params": {
-                            "query": "fixture cat",
-                            "count": 1,
-                            "safesearch": "off",
-                            "spellcheck": true
-                        }
-                    }
-                })
-                .to_string(),
-            ))
+            .send(tungstenite::Message::Text(formal_art_execute_request(
+                "mcp-image-search",
+                "node-mcp-image-search",
+                "fixture-image-search-art",
+                None,
+                json!({
+                    "query": "fixture cat",
+                    "count": 1,
+                    "safesearch": "off",
+                    "spellcheck": true
+                }),
+            )))
             .expect("send MCP image-search execute art node");
-        let response = read_hook_bridge_json(&mut socket);
+        let response = read_hook_terminal_response(&mut socket, "mcp-image-search");
 
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-mcp-image-search");
-        assert_eq!(response["data"]["output_base64"], image_data);
+        assert_eq!(response["status"], "succeeded", "response={response}");
+        assert_eq!(response["data"]["nodeId"], "node-mcp-image-search");
+        assert!(response["data"]["outputs"]["output"]["handle"].is_string());
 
         drop(socket);
         let stopped = stop_test_hook_bridge(&runtime);
@@ -25459,922 +22172,6 @@ def run(args):
 
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup mcp image-search art node root");
-    }
-
-    #[test]
-    fn daemon_hook_canvas_surfaces_mcp_image_search_candidates_and_selection() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
-        let root = unique_temp_dir("mcp-image-search-canvas");
-        let appdata = unique_temp_dir("mcp-image-search-canvas-appdata");
-        let previous_appdata = std::env::var("APPDATA").ok();
-        std::env::set_var("APPDATA", &appdata);
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-        let first_image_data = test_png_base64();
-        let second_image_data =
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AAoUHv8BpAE8tOS4KAAAAABJRU5ErkJggg==";
-        let first_fixture = HttpImageFixture::start(
-            "image/png",
-            loom_image_io::decode_data_url_bytes(&first_image_data).expect("decode first image"),
-        );
-        let second_fixture = HttpImageFixture::start(
-            "image/png",
-            loom_image_io::decode_data_url_bytes(second_image_data).expect("decode second image"),
-        );
-        let fixture = current_test_binary_mcp_fixture_config_with_env(&[
-            (
-                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
-                first_fixture.url("/fixture-a.png"),
-            ),
-            (
-                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL_ALT",
-                second_fixture.url("/fixture-b.png"),
-            ),
-        ]);
-
-        let saved_server = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/mcp/servers/fixture",
-                    &[],
-                    Some(&fixture.to_string()),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_server["server"]["id"], "fixture");
-
-        let saved_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/tools/fixture-image-search-art-canvas",
-                    &[],
-                    Some(
-                        r#"{
-              "id": "fixture-image-search-art-canvas",
-              "name": "图片搜索",
-              "description": "Execute fixture MCP image search for Hook canvas state",
-              "enabled": true,
-              "execution": {
-                "type": "mcp",
-                "serverId": "fixture",
-                "toolName": "brave_image_search"
-              },
-              "outputs": [
-                {
-                  "name": "output",
-                  "label": "output",
-                  "type": "image",
-                  "execution_type": "image_buffer"
-                }
-              ],
-              "params": [
-                { "id": "query", "default": "fixture cat" },
-                { "id": "count", "default": 2 },
-                { "id": "result_index", "default": 0 }
-              ]
-            }"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-image-search-art-canvas");
-
-        let overwrite = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art_loom/overwrite_workflow",
-                "params": {
-                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
-                    "snapshot": {
-                        "name": "Hook Live",
-                        "nodes": [
-                            {
-                                "id": "image-search-node",
-                                "type": "art",
-                                "position": { "x": 160, "y": 40 },
-                                "measured": { "width": 90, "height": 90 },
-                                "data": {
-                                    "artId": "fixture-image-search-art-canvas",
-                                    "params": {
-                                        "query": "fixture cat",
-                                        "count": 2
-                                    },
-                                    "w": 90,
-                                    "h": 90
-                                }
-                            }
-                        ],
-                        "edges": []
-                    }
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(overwrite["type"], "success", "response={overwrite}");
-
-        let success = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art_loom/execute_art_node",
-                "params": {
-                    "node_id": "image-search-node",
-                    "art_id": "fixture-image-search-art-canvas",
-                    "params": {
-                        "query": "fixture cat",
-                        "count": 2,
-                        "result_index": 1
-                    }
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(success["type"], "success", "response={success}");
-        assert_eq!(success["data"]["output_base64"], second_image_data);
-
-        let after_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
-        assert_eq!(after_snapshot["nodes"][0]["selectedResultIndex"], 1);
-        assert_eq!(
-            after_snapshot["nodes"][0]["resultCandidates"][0]["index"],
-            0
-        );
-        assert_eq!(
-            after_snapshot["nodes"][0]["resultCandidates"][1]["index"],
-            1
-        );
-        assert_eq!(after_snapshot["nodes"][0]["previewAvailable"], true);
-
-        clear_hook_canvas_runtime_state();
-
-        let persisted_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
-        assert_eq!(persisted_snapshot["available"], true);
-        assert_eq!(persisted_snapshot["nodes"][0]["id"], "image-search-node");
-        assert_eq!(persisted_snapshot["nodes"][0]["params"]["result_index"], 1);
-        assert_eq!(persisted_snapshot["nodes"][0]["selectedResultIndex"], 1);
-        assert_eq!(
-            persisted_snapshot["nodes"][0]["resultCandidates"][0]["index"],
-            0
-        );
-        assert_eq!(
-            persisted_snapshot["nodes"][0]["resultCandidates"][1]["index"],
-            1
-        );
-        assert_eq!(persisted_snapshot["nodes"][0]["previewAvailable"], true);
-
-        let persisted_preview = expect_binary_route_response(
-            hook_canvas_preview_response("image-search-node").expect("persisted preview"),
-            200,
-            "image/png",
-        );
-        assert_eq!(
-            persisted_preview,
-            loom_image_io::decode_data_url_bytes(second_image_data)
-                .expect("decode persisted preview"),
-        );
-
-        restore_env("APPDATA", previous_appdata);
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup mcp image search canvas root");
-        fs::remove_dir_all(appdata).expect("cleanup mcp image search canvas appdata");
-    }
-
-    #[test]
-    fn daemon_artloom_update_workflow_node_route_persists_live_hook_params() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
-        let root = unique_temp_dir("hook-live-update-workflow-node");
-        let appdata = unique_temp_dir("hook-live-update-workflow-node-appdata");
-        let previous_appdata = std::env::var("APPDATA").ok();
-        std::env::set_var("APPDATA", &appdata);
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-
-        let overwrite = run_hook_bridge_text(
-            &runtime,
-            &json!({
-                "method": "art_loom/overwrite_workflow",
-                "params": {
-                    "workflow_id": HOOK_LIVE_WORKFLOW_ID,
-                    "snapshot": {
-                        "name": "Hook Live",
-                        "nodes": [
-                            {
-                                "id": "image-search-node",
-                                "type": "art",
-                                "position": { "x": 160, "y": 40 },
-                                "measured": { "width": 90, "height": 90 },
-                                "data": {
-                                    "artId": "fixture-image-search-art-canvas",
-                                    "params": {
-                                        "query": "fixture cat",
-                                        "count": 2
-                                    },
-                                    "w": 90,
-                                    "h": 90
-                                }
-                            }
-                        ],
-                        "edges": []
-                    }
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(overwrite["type"], "success", "response={overwrite}");
-
-        let updated = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/ipc/update-workflow-node",
-                    &[],
-                    Some(
-                        r#"{
-                            "workflowId": "hook-live",
-                            "nodeId": "image-search-node",
-                            "param": "result_index",
-                            "value": 1
-                        }"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(updated["compatCommand"], "update_workflow_node");
-        assert_eq!(updated["type"], "success");
-
-        clear_hook_canvas_runtime_state();
-
-        let persisted_snapshot = expect_json_result_response(hook_canvas_snapshot(), 200);
-        assert_eq!(persisted_snapshot["available"], true);
-        assert_eq!(persisted_snapshot["nodes"][0]["params"]["result_index"], 1);
-        assert_eq!(persisted_snapshot["nodes"][0]["selectedResultIndex"], 1);
-
-        restore_env("APPDATA", previous_appdata);
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup hook live update workflow node root");
-        fs::remove_dir_all(appdata).expect("cleanup hook live update workflow node appdata");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_ahrp_process_through_mcp_tool() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("mcp-ahrp-process");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-        let fixture = current_test_binary_mcp_fixture_config();
-        let image_data = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
-
-        let saved_server = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/mcp/servers/fixture",
-                    &[],
-                    Some(&fixture.to_string()),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_server["server"]["id"], "fixture");
-
-        let saved_tool = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "PUT",
-                    "/v1/tools/fixture-process-art",
-                    &[],
-                    Some(
-                        r#"{
-              "id": "fixture-process-art",
-              "name": "Fixture Process Art",
-              "description": "Execute fixture MCP through AHRP process",
-              "enabled": true,
-              "execution": {
-                "type": "mcp",
-                "serverId": "fixture",
-                "toolName": "echo"
-              }
-            }"#,
-                    ),
-                ),
-            ),
-            200,
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-process-art");
-
-        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-ahrp-mcp",
-                        "art_id": "fixture-process-art",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {
-                            "text": image_data,
-                            "ignored": "remove me"
-                        },
-                        "disabled_params": ["ignored"]
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["request_id"], "req-ahrp-mcp");
-        assert_eq!(response["status"], "Success");
-        assert_eq!(response["data"]["type"], "result");
-        assert_eq!(response["data"]["output"]["type"], "base64");
-        assert_eq!(response["data"]["output"]["data"], image_data);
-        assert_eq!(response["data"]["output"]["width"], 1);
-        assert_eq!(response["data"]["output"]["height"], 1);
-        assert!(response["data"]["processing_time_ms"].as_u64().is_some());
-
-        drop(socket);
-        let stopped = stop_test_hook_bridge(&runtime);
-        assert_eq!(stopped["running"], false);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup mcp ahrp process root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_ahrp_process_mcp_image_search_with_legacy_hook_params() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("mcp-ahrp-process-legacy-image-search");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let image_data = test_png_base64();
-        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
-        let alternate_image_data =
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AAoUHv8BpAE8tOS4KAAAAABJRU5ErkJggg==";
-        let alternate_image_fixture = HttpImageFixture::start(
-            "image/png",
-            loom_image_io::decode_data_url_bytes(alternate_image_data)
-                .expect("decode alternate image"),
-        );
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let fixture = current_test_binary_mcp_fixture_config_with_env(&[
-            (
-                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
-                image_fixture.url("/fixture-a.png"),
-            ),
-            (
-                "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL_ALT",
-                alternate_image_fixture.url("/fixture-b.png"),
-            ),
-        ]);
-        http_json_put(
-            address.port(),
-            "/v1/mcp/servers/fixture",
-            &fixture.to_string(),
-        );
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-process-image-search-legacy",
-            &serde_json::json!({
-                "id": "fixture-process-image-search-legacy",
-                "name": "Fixture Process Image Search Legacy",
-                "description": "Execute MCP image search through the real Hook art/process path with legacy Hook params",
-                "enabled": true,
-                "execution": {
-                    "type": "mcp",
-                    "serverId": "fixture",
-                    "toolName": "brave_image_search"
-                },
-                "outputs": [
-                    {
-                        "name": "output",
-                        "label": "output",
-                        "type": "image",
-                        "execution_type": "image_buffer"
-                    }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(
-            saved_tool["tool"]["id"],
-            "fixture-process-image-search-legacy"
-        );
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-ahrp-mcp-legacy-image-search",
-                        "art_id": "fixture-process-image-search-legacy",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {
-                            "query": "fixture cat",
-                            "count": "2",
-                            "search_lang": "ZH",
-                            "spellcheck": "true"
-                        },
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send legacy hook mcp image search ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["request_id"], "req-ahrp-mcp-legacy-image-search");
-        assert_eq!(response["status"], "Success", "response={response}");
-        assert_eq!(response["data"]["type"], "result", "response={response}");
-        assert_eq!(
-            response["data"]["output"]["type"], "base64",
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["output"]["data"],
-            fixture_image_base64(),
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["imageSearch"]["selectedIndex"], 0,
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["imageSearch"]["candidates"]
-                .as_array()
-                .map(Vec::len),
-            Some(2),
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
-            image_fixture.url("/fixture-a.png"),
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["imageSearch"]["candidates"][1]["imageUrl"],
-            alternate_image_fixture.url("/fixture-b.png"),
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["candidates"]["kind"], "image.candidates",
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["candidates"]["items"]
-                .as_array()
-                .map(Vec::len),
-            Some(2),
-            "response={response}"
-        );
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup mcp legacy image search ahrp process root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_reports_friendly_message_when_mcp_image_search_returns_no_images() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("mcp-ahrp-process-empty-image-search");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let image_data = test_png_base64();
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let fixture = current_test_binary_mcp_fixture_config();
-        http_json_put(
-            address.port(),
-            "/v1/mcp/servers/fixture",
-            &fixture.to_string(),
-        );
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-process-image-search-empty",
-            &serde_json::json!({
-                "id": "fixture-process-image-search-empty",
-                "name": "Fixture Process Image Search Empty",
-                "description": "Surface a friendly message when image search yields no usable image",
-                "enabled": true,
-                "execution": {
-                    "type": "mcp",
-                    "serverId": "fixture",
-                    "toolName": "brave_image_search"
-                },
-                "outputs": [
-                    {
-                        "name": "output",
-                        "label": "output",
-                        "type": "image",
-                        "execution_type": "image_buffer"
-                    }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(
-            saved_tool["tool"]["id"],
-            "fixture-process-image-search-empty"
-        );
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-ahrp-mcp-empty-image-search",
-                        "art_id": "fixture-process-image-search-empty",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {
-                            "query": "offensive fixture",
-                            "count": "3",
-                            "search_lang": "ZH",
-                            "spellcheck": "true"
-                        },
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send empty-image MCP image search ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["request_id"], "req-ahrp-mcp-empty-image-search");
-        assert_eq!(response["status"], "EngineError", "response={response}");
-        assert_eq!(
-            response["error"],
-            "图片搜索未返回可用结果：搜索服务将该查询判定为可能敏感，请尝试更换关键词。",
-            "response={response}"
-        );
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup empty-image mcp image search root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_retains_image_search_candidates_when_mcp_candidate_download_fails() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("mcp-ahrp-process-candidate-download-failure");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let image_data = test_png_base64();
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let fixture = current_test_binary_mcp_fixture_config_with_env(&[(
-            "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
-            "http://127.0.0.1:9/broken.jpg".to_owned(),
-        )]);
-        http_json_put(
-            address.port(),
-            "/v1/mcp/servers/fixture",
-            &fixture.to_string(),
-        );
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-process-image-search-download-failure",
-            &serde_json::json!({
-                "id": "fixture-process-image-search-download-failure",
-                "name": "Fixture Process Image Search Download Failure",
-                "description": "Keep image-search candidates in the Hook bridge error payload when Loom cannot download them server-side",
-                "enabled": true,
-                "execution": {
-                    "type": "mcp",
-                    "serverId": "fixture",
-                    "toolName": "brave_image_search"
-                },
-                "outputs": [
-                    {
-                        "name": "output",
-                        "label": "output",
-                        "type": "image",
-                        "execution_type": "image_buffer"
-                    }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(
-            saved_tool["tool"]["id"],
-            "fixture-process-image-search-download-failure"
-        );
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-ahrp-mcp-candidate-download-failure",
-                        "art_id": "fixture-process-image-search-download-failure",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {
-                            "query": "fixture cat",
-                            "count": "1",
-                            "search_lang": "ZH",
-                            "spellcheck": "true"
-                        },
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send candidate-download-failure MCP image search ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"],
-            "req-ahrp-mcp-candidate-download-failure"
-        );
-        assert_eq!(response["status"], "EngineError", "response={response}");
-        assert_eq!(
-            response["error"], "图片搜索已返回候选结果，但图片下载失败，请稍后重试。",
-            "response={response}"
-        );
-        assert_eq!(
-            response["data"]["loomMetadata"]["imageSearch"]["candidates"][0]["imageUrl"],
-            "http://127.0.0.1:9/broken.jpg",
-            "response={response}"
-        );
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup candidate-download-failure mcp image search root");
-    }
-
-    #[test]
-    fn daemon_registered_tool_executes_realshape_mcp_image_search_with_legacy_hook_params() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("mcp-direct-legacy-image-search-realshape");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let image_fixture = HttpImageFixture::start("image/png", fixture_image_bytes());
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let fixture = current_test_binary_mcp_fixture_config_with_env(&[(
-            "LOOM_DAEMON_MCP_FIXTURE_IMAGE_URL",
-            image_fixture.url("/fixture.png"),
-        )]);
-        http_json_put(
-            address.port(),
-            "/v1/mcp/servers/fixture",
-            &fixture.to_string(),
-        );
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-image-search-realshape",
-            &serde_json::json!({
-                "id": "fixture-image-search-realshape",
-                "name": "Fixture Image Search Realshape",
-                "description": "Execute MCP image search through the direct tool route with Brave-like string-only search_lang schema",
-                "enabled": true,
-                "execution": {
-                    "type": "mcp",
-                    "serverId": "fixture",
-                    "toolName": "brave_image_search_realshape"
-                },
-                "outputs": [
-                    {
-                        "name": "output",
-                        "label": "output",
-                        "type": "image",
-                        "execution_type": "image_buffer"
-                    }
-                ]
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-image-search-realshape");
-
-        let executed = http_json_post(
-            address.port(),
-            "/v1/tools/fixture-image-search-realshape/execute",
-            r#"{"arguments":{"query":"fixture cat","count":"1","search_lang":"ZH","spellcheck":"true"}}"#,
-        );
-        assert_eq!(executed["toolId"], "fixture-image-search-realshape");
-        assert_eq!(executed["status"], "succeeded");
-        assert_eq!(executed["result"]["content"][0]["type"], "image");
-        assert_eq!(
-            executed["result"]["content"][0]["data"],
-            fixture_image_base64()
-        );
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup mcp direct legacy image search realshape root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_native_art_node_without_registry_tool() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("native-art-node");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-        let image_data = test_png_base64();
-
-        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-native",
-                        "art_id": "core.image.invert",
-                        "input_base64": image_data,
-                        "params": {}
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send native execute art node");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-native");
-        assert!(response["data"]["output_base64"]
-            .as_str()
-            .expect("native output")
-            .starts_with("data:image/png;base64,"));
-
-        drop(socket);
-        let stopped = stop_test_hook_bridge(&runtime);
-        assert_eq!(stopped["running"], false);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup native art node root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_native_art_ahrp_process_without_registry_tool() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("native-ahrp-process");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-        let image_data = test_png_base64();
-
-        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-native-process",
-                        "art_id": "core.image.invert",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {},
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send native ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-native-process",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success");
-        assert_eq!(response["data"]["type"], "result");
-        assert_eq!(response["data"]["output"]["type"], "base64");
-        assert!(response["data"]["output"]["data"]
-            .as_str()
-            .expect("native ahrp output")
-            .starts_with("data:image/png;base64,"));
-        assert_eq!(response["data"]["output"]["width"], 1);
-        assert_eq!(response["data"]["output"]["height"], 1);
-
-        drop(socket);
-        let stopped = stop_test_hook_bridge(&runtime);
-        assert_eq!(stopped["running"], false);
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup native ahrp process root");
-    }
-
-    #[test]
-    fn daemon_exposes_artloom_native_process_art_command_alias() {
-        let root = unique_temp_dir("native-process-art-alias");
-        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-        let image_data = test_png_base64();
-
-        let response = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "POST",
-                    "/v1/artloom-compat/native/process-art",
-                    &[],
-                    Some(
-                        &serde_json::json!({
-                            "artId": "core.image.invert",
-                            "inputBase64": image_data,
-                            "params": {}
-                        })
-                        .to_string(),
-                    ),
-                ),
-            ),
-            200,
-        );
-
-        assert_eq!(response["compatCommand"], "native_process_art");
-        assert_eq!(response["success"], true);
-        assert!(response["output_base64"]
-            .as_str()
-            .expect("native compat output")
-            .starts_with("data:image/png;base64,"));
-        assert!(response["error"].is_null());
-        assert!(response["processing_time_ms"].as_u64().is_some());
-
-        drop(runtime);
-        fs::remove_dir_all(root).expect("cleanup native compat root");
     }
 
     #[test]
@@ -26485,41 +22282,6 @@ def run(args):
     }
 
     #[test]
-    fn ahrp_file_backed_arguments_keep_large_images_out_of_framework_stdin() {
-        let image = test_png_base64();
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("strength".to_owned(), json!(37));
-        let input_images = std::collections::BTreeMap::from([
-            ("reference".to_owned(), Value::String(image.clone())),
-            ("empty".to_owned(), Value::String(String::new())),
-        ]);
-
-        let temporary_files =
-            prepare_file_backed_ahrp_arguments(&mut arguments, input_images, &image)
-                .expect("materialize AHRP images");
-
-        assert_eq!(temporary_files.len(), 2);
-        assert_eq!(arguments["input"], arguments["input_base64"]);
-        assert_eq!(arguments["image"], arguments["input"]);
-        assert!(arguments.get("empty").is_none());
-        for key in ["input", "reference"] {
-            let path = PathBuf::from(arguments[key].as_str().expect("file-backed image path"));
-            assert!(path.is_file(), "missing materialized image for {key}");
-            assert_eq!(
-                fs::read(path).expect("read materialized image"),
-                loom_image_io::decode_data_url_bytes(&image).expect("decode fixture")
-            );
-        }
-        let serialized = Value::Object(arguments).to_string();
-        assert!(!serialized.contains("data:image/"));
-        assert!(serialized.len() < 1024);
-
-        for path in temporary_files {
-            fs::remove_file(path).expect("cleanup materialized image");
-        }
-    }
-
-    #[test]
     fn daemon_image_helper_converts_path_to_base64() {
         let root = unique_temp_dir("image-helper-path");
         let image_path = root.join("pixel.png");
@@ -26578,28 +22340,30 @@ def run(args):
         let capabilities = run_hook_bridge_text(
             &runtime,
             &serde_json::json!({
-                "method": "art_loom/get_capabilities"
+                "method": loom_protocol::HOOK_METHOD_ENHANCEMENTS_GET,
+                "params": { "requestId": "fixture-enhancements" }
             })
             .to_string(),
         );
+        assert_eq!(capabilities["status"], "succeeded");
         assert_eq!(capabilities["data"]["ocr"], true);
 
         let response = run_hook_bridge_text(
             &runtime,
             &serde_json::json!({
-                "method": "art_loom/ocr_image",
+                "method": loom_protocol::HOOK_METHOD_OCR_EXECUTE,
                 "params": {
-                    "image_base64": test_png_base64()
+                    "requestId": "fixture-ocr",
+                    "imageBase64": test_png_base64()
                 }
             })
             .to_string(),
         );
 
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["fullText"], "hello loom ocr");
+        assert_eq!(response["status"], "succeeded", "response={response}");
+        assert_eq!(response["data"]["text"], "hello loom ocr");
         assert_eq!(response["data"]["width"], 1);
         assert_eq!(response["data"]["height"], 1);
-        assert_eq!(response["data"]["textBlocks"][0]["text"], "hello loom ocr");
 
         drop(runtime);
         restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
@@ -26617,21 +22381,21 @@ def run(args):
         let response = run_hook_bridge_text(
             &runtime,
             &serde_json::json!({
-                "method": "art_loom/translate_text",
+                "method": loom_protocol::HOOK_METHOD_TRANSLATION_EXECUTE,
                 "params": {
+                    "requestId": "fixture-translation",
                     "text": "hello loom",
-                    "target_lang": "zh"
+                    "targetLanguage": "zh"
                 }
             })
             .to_string(),
         );
 
-        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["status"], "succeeded", "response={response}");
         assert_eq!(
-            response["data"]["translated_text"],
+            response["data"]["translatedText"],
             "translated:hello loom:zh"
         );
-        assert_eq!(response["data"]["source"], "loom-translate-provider");
         let request = fixture.request();
         assert!(request.starts_with("POST /translate HTTP/1.1"));
         assert!(request.contains(r#""text":"hello loom""#));
@@ -26668,7 +22432,8 @@ def run(args):
         socket
             .send(tungstenite::Message::Text(
                 serde_json::json!({
-                    "method": "art_loom/get_capabilities"
+                    "method": loom_protocol::HOOK_METHOD_ENHANCEMENTS_GET,
+                    "params": { "requestId": "real-enhancements" }
                 })
                 .to_string(),
             ))
@@ -26680,17 +22445,18 @@ def run(args):
         socket
             .send(tungstenite::Message::Text(
                 serde_json::json!({
-                    "method": "art_loom/ocr_image",
+                    "method": loom_protocol::HOOK_METHOD_OCR_EXECUTE,
                     "params": {
-                        "image_base64": image_data
+                        "requestId": "real-ocr",
+                        "imageBase64": image_data
                     }
                 })
                 .to_string(),
             ))
             .expect("send ocr request");
-        let response = read_hook_bridge_json(&mut socket);
+        let response = read_hook_terminal_response(&mut socket, "real-ocr");
 
-        assert_eq!(response["type"], "success", "response={response}");
+        assert_eq!(response["status"], "succeeded", "response={response}");
         assert!(
             !response["data"]["fullText"]
                 .as_str()
@@ -26718,7 +22484,7 @@ def run(args):
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         restore_env("LOOM_OCR_MODEL_DIR", previous_model_dir);
         restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
-        fs::remove_dir_all(root).expect("cleanup ocr real root");
+        remove_test_dir(&root);
     }
 
     #[test]
@@ -26735,16 +22501,17 @@ def run(args):
         let response = run_hook_bridge_text(
             &runtime,
             &serde_json::json!({
-                "method": "art_loom/ocr_image",
+                "method": loom_protocol::HOOK_METHOD_OCR_EXECUTE,
                 "params": {
-                    "image_base64": test_png_base64()
+                    "requestId": "unavailable-ocr",
+                    "imageBase64": test_png_base64()
                 }
             })
             .to_string(),
         );
 
-        assert_eq!(response["type"], "error");
-        assert_eq!(response["data"]["message"], "OCR enhancement unavailable");
+        assert_eq!(response["status"], "failed");
+        assert_eq!(response["error"]["message"], "OCR enhancement unavailable");
 
         drop(runtime);
         restore_env("LOOM_OCR_MODEL_DIR", previous_model_dir);
@@ -26753,80 +22520,126 @@ def run(args):
     }
 
     #[test]
-    fn daemon_hook_bridge_executes_shared_memory_ahrp_process() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("shared-memory-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
+    fn formal_shared_memory_port_materializes_as_an_image_input() {
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![10, 20, 30, 255])
+            .expect("create shared image");
+        let inputs = BTreeMap::from([(
+            "input".to_owned(),
+            HookArtPortValue::SharedMemory {
+                handle: image.handle,
+                size: 4,
+                width: 1,
+                height: 1,
+                format: "rgba8".to_owned(),
+            },
+        )]);
 
-        let created = http_json_post(
-            address.port(),
-            "/v1/shared-images",
-            r#"{"width":1,"height":1,"format":"rgba8","data":[10,20,30,255]}"#,
+        let materialized =
+            materialize_hook_art_inputs(&inputs, &store).expect("materialize shared-memory input");
+
+        let data_url = materialized["input"].as_str().expect("image data URL");
+        assert!(data_url.starts_with("data:image/png;base64,"));
+        assert_eq!(
+            loom_image_io::decode_image_base64_to_rgba8(data_url)
+                .expect("decode materialized image")
+                .data,
+            vec![10, 20, 30, 255]
         );
-        let handle = created["image"]["handle"]
+    }
+
+    #[test]
+    fn formal_inline_resource_requires_bare_valid_base64() {
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let valid = BTreeMap::from([(
+            "input".to_owned(),
+            HookArtPortValue::InlineResource {
+                mime: "image/png".to_owned(),
+                data_base64: BASE64.encode(test_png_bytes()),
+                width: Some(1),
+                height: Some(1),
+            },
+        )]);
+        let materialized =
+            materialize_hook_art_inputs(&valid, &store).expect("materialize inline resource");
+        assert!(materialized["input"]
             .as_str()
-            .expect("shared input handle")
-            .to_owned();
+            .is_some_and(|value| value.starts_with("data:image/png;base64,")));
 
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
+        let data_url = BTreeMap::from([(
+            "input".to_owned(),
+            HookArtPortValue::InlineResource {
+                mime: "image/png".to_owned(),
+                data_base64: test_png_base64(),
+                width: None,
+                height: None,
+            },
+        )]);
+        assert!(materialize_hook_art_inputs(&data_url, &store)
+            .expect_err("data URL must be rejected")
+            .contains("bare base64"));
 
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-shared-memory-process",
-                        "art_id": "core.image.invert",
-                        "input": {
-                            "type": "shared_memory",
-                            "handle": handle,
-                            "size": 4,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {},
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send shared memory ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
+        let invalid = BTreeMap::from([(
+            "input".to_owned(),
+            HookArtPortValue::InlineResource {
+                mime: "image/png".to_owned(),
+                data_base64: "not-base64".to_owned(),
+                width: None,
+                height: None,
+            },
+        )]);
+        assert!(materialize_hook_art_inputs(&invalid, &store)
+            .expect_err("invalid base64 must be rejected")
+            .contains("not valid base64"));
+    }
 
-        assert_eq!(response["request_id"], "req-shared-memory-process");
-        assert_eq!(response["status"], "Success", "response={response}");
-        assert_eq!(response["data"]["type"], "result");
-        assert_eq!(response["data"]["output"]["type"], "shared_memory");
-        assert_eq!(response["data"]["output"]["width"], 1);
-        assert_eq!(response["data"]["output"]["height"], 1);
-        assert_eq!(response["data"]["output"]["size"], 4);
-        assert_eq!(response["data"]["output"]["format"], "rgba8");
-        let output_handle = response["data"]["output"]["handle"]
-            .as_str()
-            .expect("output shared memory handle");
-
-        let output = http_json_get(
-            address.port(),
-            &format!("/v1/shared-images/{output_handle}"),
+    #[test]
+    fn formal_output_extracts_image_content_blocks() {
+        let data_url = test_png_base64();
+        assert_eq!(
+            extract_art_image_data_url(&json!({
+                "content": [{
+                    "type": "image",
+                    "mimeType": "image/png",
+                    "data": data_url,
+                }]
+            })),
+            Some(data_url.clone())
         );
-        assert_eq!(output["data"], serde_json::json!([245, 235, 225, 255]));
+        let bare = data_url.split_once(',').expect("test data URL").1;
+        assert_eq!(
+            extract_art_image_data_url(&json!({
+                "content": [{
+                    "type": "image",
+                    "mimeType": "image/png",
+                    "data": bare,
+                }]
+            })),
+            Some(data_url)
+        );
+    }
 
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup shared memory ahrp process root");
+    #[test]
+    fn formal_image_output_falls_back_to_inline_when_shared_memory_is_unavailable() {
+        let output = hook_art_image_value_with(&test_png_base64(), || {
+            Err("shared memory unavailable".to_owned())
+        });
+        let HookArtPortValue::InlineResource {
+            mime,
+            data_base64,
+            width,
+            height,
+        } = output
+        else {
+            panic!("failed shared memory must produce an inline resource")
+        };
+        assert_eq!(mime, "image/png");
+        assert!(!data_base64.starts_with("data:"));
+        assert_eq!(width, Some(1));
+        assert_eq!(height, Some(1));
     }
 
     #[test]
@@ -26865,25 +22678,19 @@ def run(args):
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
         socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-cloud",
-                        "art_id": "fixture-cloud-art",
-                        "input_base64": image_data,
-                        "params": {}
-                    }
-                })
-                .to_string(),
-            ))
+            .send(tungstenite::Message::Text(formal_art_execute_request(
+                "cloud-image",
+                "node-cloud",
+                "fixture-cloud-art",
+                Some(inline_art_input(&image_data)),
+                json!({}),
+            )))
             .expect("send cloud execute art node");
-        let response = read_hook_bridge_json(&mut socket);
+        let response = read_hook_terminal_response(&mut socket, "cloud-image");
 
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-cloud");
-        assert_eq!(response["data"]["output_base64"], image_data);
+        assert_eq!(response["status"], "succeeded", "response={response}");
+        assert_eq!(response["data"]["nodeId"], "node-cloud");
+        assert!(response["data"]["outputs"]["output"]["handle"].is_string());
 
         drop(socket);
         let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
@@ -26915,11 +22722,11 @@ def run(args):
             &serde_json::json!({
                 "id": "fixture-cloud-multipart-art",
                 "name": "Fixture Cloud Multipart Art",
-                "description": "Execute old ArtLoom-style multipart cloud Art through Hook bridge",
+                "description": "Execute multipart cloud Art through Hook bridge",
                 "enabled": true,
                 "execution": {
                     "type": "cloud_api",
-                    "url": fixture.url("/multipart/{{inputs.route.value}}"),
+                    "endpoint": fixture.url("/multipart/{{inputs.route.value}}"),
                     "method": "POST",
                     "contentType": "multipart/form-data",
                     "headers": "{\"X-Trace\":\"{{inputs.trace.value}}\"}",
@@ -26935,29 +22742,23 @@ def run(args):
         let mut socket = connect_hook_bridge_websocket(bridge_port);
 
         socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art_loom/execute_art_node",
-                    "params": {
-                        "node_id": "node-cloud-multipart",
-                        "art_id": "fixture-cloud-multipart-art",
-                        "input_base64": image_data,
-                        "params": {
-                            "route": "image",
-                            "trace": "trace-bridge",
-                            "prompt": "hello cloud multipart"
-                        }
-                    }
-                })
-                .to_string(),
-            ))
+            .send(tungstenite::Message::Text(formal_art_execute_request(
+                "cloud-multipart",
+                "node-cloud-multipart",
+                "fixture-cloud-multipart-art",
+                Some(inline_art_input(&image_data)),
+                json!({
+                    "route": "image",
+                    "trace": "trace-bridge",
+                    "prompt": "hello cloud multipart"
+                }),
+            )))
             .expect("send multipart cloud execute art node");
-        let response = read_hook_bridge_json(&mut socket);
+        let response = read_hook_terminal_response(&mut socket, "cloud-multipart");
 
-        assert_eq!(response["type"], "success", "response={response}");
-        assert_eq!(response["data"]["success"], true);
-        assert_eq!(response["data"]["node_id"], "node-cloud-multipart");
-        assert_eq!(response["data"]["output_base64"], image_data);
+        assert_eq!(response["status"], "succeeded", "response={response}");
+        assert_eq!(response["data"]["nodeId"], "node-cloud-multipart");
+        assert!(response["data"]["outputs"]["output"]["handle"].is_string());
 
         let request = fixture.request();
         let request_lower = request.to_ascii_lowercase();
@@ -26965,7 +22766,7 @@ def run(args):
         assert!(request_lower.contains("x-trace: trace-bridge"));
         assert!(request_lower.contains("content-type: multipart/form-data; boundary="));
         assert!(request.contains("name=\"file\""));
-        assert!(request.contains("filename=\"loom-cloud-input-"));
+        assert!(request.contains("filename=\"loom-cloud-input.png\""));
         assert!(request.contains("name=\"prompt\""));
         assert!(request.contains("\r\nhello cloud multipart\r\n"));
         assert!(!request.contains("{{"));
@@ -26980,177 +22781,8 @@ def run(args):
         fs::remove_dir_all(root).expect("cleanup cloud multipart art node root");
     }
 
-    // Regression: the real Hook path is `art/process` (not `art_loom/execute_art_node`).
-    // For cloud_api multipart arts it must write the AHRP input to a temp file and
-    // bind it to `input`/`image` so `{{inputs.input.path}}` uploads the real image.
-    // Before the fix this path bound `input` to the raw AHRP input object, so the
-    // template rendered a JSON blob and PhotoRoom-style APIs answered "missing_image".
-    #[test]
-    fn daemon_hook_bridge_ahrp_process_cloud_multipart_uploads_input_file() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("cloud-multipart-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let image_data = test_png_base64();
-        let fixture =
-            CloudApiFixture::start(CloudApiFixtureMode::MultipartImage(image_data.clone()));
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-cloud-multipart-process",
-            &serde_json::json!({
-                "id": "fixture-cloud-multipart-process",
-                "name": "Fixture Cloud Multipart Process",
-                "description": "Execute multipart cloud Art through the AHRP process path",
-                "enabled": true,
-                "execution": {
-                    "type": "cloud_api",
-                    "url": fixture.url("/multipart/segment"),
-                    "method": "POST",
-                    "contentType": "multipart/form-data",
-                    "headers": "{\"x-api-key\":\"sk_test\"}",
-                    "body": "{\"image_file\":\"{{inputs.input}}\",\"format\":\"png\"}"
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-cloud-multipart-process");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-cloud-multipart-process",
-                        "art_id": "fixture-cloud-multipart-process",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {},
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send cloud multipart ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-cloud-multipart-process",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success", "response={response}");
-
-        let request = fixture.request();
-        // The image field must be a real file upload, not the AHRP input JSON.
-        assert!(request.contains("name=\"image_file\""));
-        assert!(request.contains("filename=\"loom-cloud-input-"));
-        assert!(request.contains("name=\"format\""));
-        assert!(request.contains("\r\npng\r\n"));
-        // No unrendered template and no leaked AHRP input object.
-        assert!(!request.contains("{{"));
-        assert!(!request.contains("\"type\":\"base64\""));
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup cloud multipart ahrp process root");
-    }
-
-    #[test]
-    fn daemon_hook_bridge_executes_cloud_api_ahrp_process_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        let root = unique_temp_dir("cloud-ahrp-process");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let image_data = test_png_base64();
-        let fixture = CloudApiFixture::start(CloudApiFixtureMode::Image(image_data.clone()));
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-        let address = daemon.local_addr().expect("local address");
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-        let saved_tool = http_json_put(
-            address.port(),
-            "/v1/tools/fixture-cloud-process",
-            &serde_json::json!({
-                "id": "fixture-cloud-process",
-                "name": "Fixture Cloud Process",
-                "description": "Execute fixture cloud through AHRP process",
-                "enabled": true,
-                "execution": {
-                    "type": "cloud_api",
-                    "endpoint": fixture.url("/image"),
-                    "method": "POST"
-                }
-            })
-            .to_string(),
-        );
-        assert_eq!(saved_tool["tool"]["id"], "fixture-cloud-process");
-
-        let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
-        let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-        let mut socket = connect_hook_bridge_websocket(bridge_port);
-
-        socket
-            .send(tungstenite::Message::Text(
-                serde_json::json!({
-                    "method": "art/process",
-                    "params": {
-                        "request_id": "req-cloud-process",
-                        "art_id": "fixture-cloud-process",
-                        "input": {
-                            "type": "base64",
-                            "data": image_data,
-                            "width": 1,
-                            "height": 1,
-                            "format": "rgba8"
-                        },
-                        "params": {},
-                        "disabled_params": []
-                    }
-                })
-                .to_string(),
-            ))
-            .expect("send cloud ahrp process");
-        let response = read_hook_bridge_json(&mut socket);
-
-        assert_eq!(
-            response["request_id"], "req-cloud-process",
-            "response={response}"
-        );
-        assert_eq!(response["status"], "Success");
-        assert_eq!(response["data"]["type"], "result");
-        assert_eq!(response["data"]["output"]["type"], "base64");
-        assert_eq!(response["data"]["output"]["data"], image_data);
-        assert_eq!(response["data"]["output"]["width"], 1);
-        assert_eq!(response["data"]["output"]["height"], 1);
-
-        drop(socket);
-        let stopped = http_json_post(address.port(), "/v1/hook-bridge/stop", "{}");
-        assert_eq!(stopped["running"], false);
-
-        shutdown_tx.send(()).expect("shutdown");
-        server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
-        fs::remove_dir_all(root).expect("cleanup cloud ahrp process root");
-    }
+    // Formal inline resources must be materialized to a file so multipart
+    // templates can upload the real image bytes.
 
     fn connect_hook_bridge_websocket(bridge_port: u16) -> tungstenite::WebSocket<TcpStream> {
         let stream =
@@ -27174,16 +22806,6 @@ def run(args):
 
     fn test_png_base64() -> String {
         format!("data:image/png;base64,{}", BASE64.encode(test_png_bytes()))
-    }
-
-    fn fixture_image_base64() -> String {
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-            .to_owned()
-    }
-
-    fn fixture_image_bytes() -> Vec<u8> {
-        loom_image_io::decode_data_url_bytes(&fixture_image_base64())
-            .expect("decode fixture image data url")
     }
 
     fn test_png_bytes() -> Vec<u8> {
@@ -29096,6 +24718,7 @@ def run(args):
                 "--nocapture"
             ],
             "env": env,
+            "transport": "stdio",
             "enabled": true
         })
     }
@@ -29425,7 +25048,10 @@ def run(args):
                 .lock()
                 .expect("lock hook bridge")
                 .broadcast_hub,
-            vec!["surface".to_owned()],
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
         );
 
         let snapshot_path = format!("/v1/surfaces/instances/{instance_id}/snapshot");
@@ -29458,7 +25084,7 @@ def run(args):
                 .expect("Surface snapshot push"),
         )
         .expect("Surface snapshot push JSON");
-        assert_eq!(snapshot_push["method"], "surface/snapshot");
+        assert_eq!(snapshot_push["method"], SURFACE_EVENT_SNAPSHOT);
         assert_eq!(snapshot_push["params"]["hookNodeId"], "hook-node:stock");
         let mounted_push: Value = serde_json::from_str(
             &surface_rx
@@ -29466,7 +25092,7 @@ def run(args):
                 .expect("Surface mounted lifecycle push"),
         )
         .expect("Surface mounted lifecycle JSON");
-        assert_eq!(mounted_push["method"], "surface/lifecycle");
+        assert_eq!(mounted_push["method"], SURFACE_EVENT_LIFECYCLE);
         assert_eq!(mounted_push["params"]["event"]["state"], "mounted");
 
         let lifecycle_path = format!("/v1/surfaces/instances/{instance_id}/lifecycle");
@@ -29490,7 +25116,7 @@ def run(args):
                 .expect("Surface lifecycle push"),
         )
         .expect("Surface lifecycle JSON");
-        assert_eq!(lifecycle_push["method"], "surface/lifecycle");
+        assert_eq!(lifecycle_push["method"], SURFACE_EVENT_LIFECYCLE);
         assert_eq!(lifecycle_push["params"]["event"]["state"], "active");
 
         let patch_path = format!("/v1/surfaces/instances/{instance_id}/patch");
@@ -29520,7 +25146,7 @@ def run(args):
                 .expect("Surface patch push"),
         )
         .expect("Surface patch push JSON");
-        assert_eq!(patch_push["method"], "surface/patch");
+        assert_eq!(patch_push["method"], SURFACE_EVENT_PATCH);
         assert_eq!(patch_push["params"]["patch"]["revision"], 2);
 
         let generation_path = format!("/v1/surfaces/instances/{instance_id}/generation");
@@ -29538,7 +25164,7 @@ def run(args):
                 .expect("Surface generation push"),
         )
         .expect("Surface generation push JSON");
-        assert_eq!(generation_push["method"], "surface/generation");
+        assert_eq!(generation_push["method"], SURFACE_EVENT_GENERATION);
         assert_eq!(generation_push["params"]["generation"], 1);
 
         let preview_path = format!("/v1/surfaces/instances/{instance_id}/preview");
@@ -29972,7 +25598,10 @@ def run(args):
                 .lock()
                 .expect("lock hook bridge")
                 .broadcast_hub,
-            vec!["surface".to_owned()],
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
         );
         let mount_body = json!({ "attachmentId": attachment_id }).to_string();
         let mount_path = format!("/v1/surfaces/instances/{instance_id}/mount");
@@ -29997,7 +25626,7 @@ def run(args):
                 .expect("Surface mount push"),
         )
         .expect("Surface push JSON");
-        assert_eq!(push["method"], "surface/snapshot");
+        assert_eq!(push["method"], SURFACE_EVENT_SNAPSHOT);
         assert_eq!(push["params"]["hookNodeId"], "hook-node:surface-stock");
         assert_eq!(push["params"]["snapshot"]["revision"], 1);
         let lifecycle: Value = serde_json::from_str(
@@ -30006,7 +25635,7 @@ def run(args):
                 .expect("Surface mounted lifecycle push"),
         )
         .expect("Surface lifecycle JSON");
-        assert_eq!(lifecycle["method"], "surface/lifecycle");
+        assert_eq!(lifecycle["method"], SURFACE_EVENT_LIFECYCLE);
         assert_eq!(lifecycle["params"]["event"]["state"], "mounted");
 
         let generation_path = format!("/v1/surfaces/instances/{instance_id}/generation");

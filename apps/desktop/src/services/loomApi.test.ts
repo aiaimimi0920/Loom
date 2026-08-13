@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  artLoomExecuteArtNodeErrorMessage,
   autoUpdateArts,
   bootstrapPackagedArts,
   fetchArtStoreCatalog,
@@ -30,7 +29,7 @@ import {
   trustPluginPublisher,
   untrustPluginUser,
   updateArtToVersion,
-  updateArtLoomWorkflowNode,
+  updateHookWorkflowNode,
   deletePluginCredential,
   uninstallFramework,
   uninstallArtPackage,
@@ -301,7 +300,7 @@ test("browser fallback keeps the daemon online when an optional module fails", a
           return [200, { servers: [] }] as const;
         case "/v1/tools":
           return [500, { error: { code: "tool_registry_error" } }] as const;
-        case "/v1/python-arts":
+        case "/v1/art-authoring/python/arts":
           return [200, { arts: [] }] as const;
         case "/v1/workflows":
           return [200, { workflows: [] }] as const;
@@ -345,7 +344,7 @@ test("browser fallback reports malformed optional module contracts as degraded",
           return { servers: [] };
         case "/v1/tools":
           return {};
-        case "/v1/python-arts":
+        case "/v1/art-authoring/python/arts":
           return { arts: [] };
         case "/v1/workflows":
           return { workflows: [] };
@@ -434,7 +433,7 @@ test("saveHookCanvasWorkflow sends the selected node export request to the daemo
   assert.match(seenBody, /"workflowName":"Hook Export"/);
 });
 
-test("updateArtLoomWorkflowNode sends the compat node-param persistence request", async (context) => {
+test("updateHookWorkflowNode sends the formal Hook node-param persistence request", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => {
     globalThis.fetch = originalFetch;
@@ -455,7 +454,7 @@ test("updateArtLoomWorkflowNode sends the compat node-param persistence request"
     });
   }) as typeof fetch;
 
-  await updateArtLoomWorkflowNode("http://127.0.0.1:18770", {
+  await updateHookWorkflowNode("http://127.0.0.1:18770", {
     workflowId: "hook-live",
     nodeId: "image-search-node",
     param: "result_index",
@@ -463,38 +462,11 @@ test("updateArtLoomWorkflowNode sends the compat node-param persistence request"
   });
 
   assert.equal(seenMethod, "POST");
-  assert.equal(seenPath, "/v1/artloom-compat/ipc/update-workflow-node");
+  assert.equal(seenPath, "/v1/hook-bridge/workflows/nodes/update");
   assert.match(seenBody, /"workflowId":"hook-live"/);
   assert.match(seenBody, /"nodeId":"image-search-node"/);
   assert.match(seenBody, /"param":"result_index"/);
   assert.match(seenBody, /"value":1/);
-});
-
-test("artLoomExecuteArtNodeErrorMessage surfaces compat payload details", () => {
-  assert.equal(
-    artLoomExecuteArtNodeErrorMessage({
-      type: "error",
-      data: { message: "MCP tool response contained no usable image data" },
-    }),
-    "MCP tool response contained no usable image data",
-  );
-  assert.equal(
-    artLoomExecuteArtNodeErrorMessage({
-      type: "error",
-      data: { error: "额度不足（HTTP 402）" },
-    }),
-    "额度不足（HTTP 402）",
-  );
-});
-
-test("artLoomExecuteArtNodeErrorMessage ignores success responses", () => {
-  assert.equal(
-    artLoomExecuteArtNodeErrorMessage({
-      type: "success",
-      data: { message: "should not surface" },
-    }),
-    null,
-  );
 });
 
 test("Art package uninstall uses the publisher-qualified package route", async (context) => {

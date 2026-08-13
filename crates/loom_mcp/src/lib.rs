@@ -72,7 +72,6 @@ pub enum McpTransport {
     #[default]
     Stdio,
     StreamableHttp,
-    Sse,
 }
 
 impl McpTransport {
@@ -81,13 +80,8 @@ impl McpTransport {
         match self {
             Self::Stdio => "stdio",
             Self::StreamableHttp => "streamable-http",
-            Self::Sse => "sse",
         }
     }
-}
-
-fn is_stdio_transport(transport: &McpTransport) -> bool {
-    *transport == McpTransport::Stdio
 }
 
 /// User-configured MCP server definition.
@@ -104,7 +98,6 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "is_stdio_transport")]
     pub transport: McpTransport,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
@@ -198,7 +191,6 @@ impl McpServerConfig {
                 "stdio command is required".to_owned(),
             )),
             McpTransport::StreamableHttp => validate_remote_config(self),
-            McpTransport::Sse => Err(McpError::UnsupportedTransport("sse".to_owned())),
             McpTransport::Stdio => Ok(()),
         }
     }
@@ -357,7 +349,7 @@ fn windows_powershell_spawn_spec(command: &Path, args: &[String]) -> SpawnComman
     SpawnCommandSpec::direct("powershell.exe", command_args)
 }
 
-/// Build the official MCP Registry URL using the same limit bounds as ArtLoom.
+/// Build the official MCP Registry URL using bounded pagination.
 pub fn build_registry_url(
     search: Option<&str>,
     limit: Option<u32>,
@@ -432,7 +424,6 @@ impl McpClient {
                 StreamableHttpMcpClient::connect_with_timeout(config, request_timeout)
                     .map(Self::StreamableHttp)
             }
-            McpTransport::Sse => Err(McpError::UnsupportedTransport("sse".to_owned())),
         }
     }
 
@@ -1149,19 +1140,30 @@ mod tests {
     }
 
     #[test]
-    fn legacy_server_config_deserializes_as_stdio() {
+    fn stdio_server_config_requires_explicit_transport() {
+        assert!(
+            serde_json::from_value::<McpServerConfig>(serde_json::json!({
+                "id": "local",
+                "name": "Local",
+                "command": "npx",
+                "args": ["-y", "local-mcp"]
+            }))
+            .is_err()
+        );
+
         let config: McpServerConfig = serde_json::from_value(serde_json::json!({
-            "id": "legacy",
-            "name": "Legacy",
+            "id": "local",
+            "name": "Local",
             "command": "npx",
-            "args": ["-y", "legacy-mcp"]
+            "args": ["-y", "local-mcp"],
+            "transport": "stdio"
         }))
-        .expect("legacy MCP config");
+        .expect("explicit stdio MCP config");
 
         assert_eq!(config.transport, McpTransport::Stdio);
         assert!(config.url.is_empty());
         assert!(config.headers.is_empty());
-        config.validate().expect("valid legacy stdio config");
+        config.validate().expect("valid explicit stdio config");
     }
 
     #[test]

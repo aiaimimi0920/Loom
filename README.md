@@ -28,8 +28,18 @@ entry in a packaged desktop release is `Loom.exe`; it connects to the local
 Loom service on loopback and can start `runtime\loom-daemon.exe` automatically
 when the service is not already running. The CLI is published separately in a
 `Loom-CLI-*.zip` artifact so users do not need to choose between three
-executables in the desktop package. The old ArtLoom/ArtHook names remain only
-where they are compatibility protocol names.
+executables in the desktop package. Loom and Hook use the versioned
+`loom.hook.v1` Art bridge; no old ArtLoom/ArtHook execution protocol is shipped.
+
+## Current canonical-only baseline
+
+Phase 71 is the current Art production baseline. Loom and Hook accept only the
+current persisted shapes, publisher-qualified package identities and storage
+layouts, exact framework/process fields, and the `com.yamiyu.hook` app-data
+identity. Obsolete aliases and migrations are rejected rather than translated.
+See
+[`docs/progress/phase-71-art-canonical-layout-legacy-zero.md`](docs/progress/phase-71-art-canonical-layout-legacy-zero.md)
+for the code, package, release, and native acceptance evidence.
 
 ## Workspace
 
@@ -51,8 +61,7 @@ where they are compatibility protocol names.
 │   └── loom_hooks
 ├── examples/
 │   ├── agents/
-│   ├── workflows/
-│   └── artloom/
+│   └── workflows/
 └── docs/
 ```
 
@@ -125,9 +134,8 @@ daemon is not under the packaged `runtime` directory. Debug builds also check
 the repository's `target\debug\loom-daemon.exe` after the explicit override
 and packaged runtime location.
 
-The UI names the ArtHook compatibility route as **Hook 同步**. Internally the
-daemon still exposes Hook Bridge APIs because old ArtHook/ArtLoom clients expect
-those method names and port behavior. Hook-generated live workflow data is
+The UI names the Loom<->Hook integration workspace **Hook 同步**. Internally the
+daemon exposes the versioned `loom.hook.v1` Hook Bridge. Hook-generated live workflow data is
 stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Hook
 实时工作流`.
 
@@ -310,13 +318,12 @@ until the platform adds the exact package digest to the index.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Install-LoomImageCompressArt.ps1
+  -File .\scripts\Install-LoomSampleArtPackage.ps1 `
+  -PackageName image-compress
 ```
 
-The legacy per-Art script names are now thin wrappers over
-`Install-LoomSampleArtPackage.ps1`; they no longer generate or install a
-legacy built-in execution definition. The corresponding wrappers are
-`Install-LoomImageSearchArt.ps1` and `Install-LoomColorTransferArt.ps1`.
+`Install-LoomSampleArtPackage.ps1` is the only local sample-package installer.
+Per-Art wrapper entry points were removed rather than retained as aliases.
 
 When `process` is installed from the store, Loom downloads one runtime ZIP,
 unpacks it under `<LOOM_CONTROL_PLANE_ROOT>\frameworks\...\process\`, and uses
@@ -394,7 +401,7 @@ Installed code is immutable under `versions/<version>-<digest-prefix>/`.
 Activation pointers, dependency lockfiles, lifecycle journals, and uninstall
 tombstones provide restart-safe upgrade, rollback, and crash recovery. Mutable
 `state/`, `cache/`, and `outputs/` directories remain outside immutable code.
-Every HTTP, ArtLoom compatibility, Hook Bridge, and AHRP package execution
+Every HTTP and `loom.hook.v1` package execution
 revalidates the active package digest, lockfile, signature/trust state, and
 publisher revocation before launching it.
 
@@ -405,8 +412,8 @@ state is restored or the parent is explicitly reinstalled to refresh the lock.
 Hook forwards every package execution type, including CLI-backed Arts, to Loom;
 it does not contain an Art-specific local command executor.
 
-The default `LOOM_PLUGIN_PERMISSION_MODE=audit` keeps existing packages
-compatible and reports permissions through the Desktop and
+The default `LOOM_PLUGIN_PERMISSION_MODE=audit` permits declared capabilities
+that are not yet OS-enforceable and reports them through the Desktop and
 `GET /v1/doctor/frameworks`. `LOOM_PLUGIN_PERMISSION_MODE=strict` fails closed
 when a package requests direct network, arbitrary filesystem, GPU, or clipboard
 access that Loom cannot currently enforce with an OS sandbox. Process trees,
@@ -422,7 +429,7 @@ Further references:
 - [Plugin security](docs/plugin-security.md)
 - [Permissions and enforcement](docs/plugin-permissions.md)
 - [Signing, trust, and revocation](docs/plugin-signing-and-trust.md)
-- [Migration guide](docs/plugin-migration.md)
+- [Historical plugin migration guide](docs/plugin-migration.md)
 - [Release SBOM and provenance](docs/release-provenance.md)
 
 ## Local capability API
@@ -762,7 +769,7 @@ cargo test --locked -p loom_agent -p loom_workflow
 cargo test --locked -p loom_memory
 cargo test --locked -p loom_gateway -p loom_sandbox -p loom_hooks
 cargo test --locked -p loom-daemon -p loom-cli
-cargo test --locked -p loom_workflow --test artloom_conversion
+cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 ```
 
 ## Docs

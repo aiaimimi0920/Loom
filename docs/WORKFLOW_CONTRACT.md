@@ -70,38 +70,14 @@ returns a tab-separated status and completed-node list, for example:
 succeeded    start,draft,review
 ```
 
-## ArtLoom conversion contract
+## Hook workflow synchronization
 
-`loom_workflow::artloom::convert_artloom_yaml(workflow_id, yaml)` accepts the
-selected ArtLoom YAML subset:
-
-```yaml
-name: ArtLoom Success DAG
-description: Optional text
-nodes:
-  - id: root
-    uses: planner
-  - id: draft
-    uses: writer
-    needs:
-      - root
-    with:
-      input: ${{ nodes.root.outputs.output }}
-```
-
-Conversion behavior:
-
-- `name` and `description` are preserved on `ConvertedArtLoomWorkflow`.
-- `workflow_id` becomes the native `WorkflowGraph.id`.
-- `nodes[].id` becomes the native node id.
-- `nodes[].uses` becomes the native `ActorId`.
-- `nodes[].needs` becomes native edges.
-- ArtLoom output references in `with` recursively add native edges.
-- duplicate edges are de-duplicated.
-- the converted graph is validated before being returned.
-
-The converter intentionally ignores ArtLoom canvas metadata, visual state,
-desktop IPC, ArtHook behavior, and embedded Python runtime concerns.
+Hook sends its live graph through the typed `loom.hook.workflow.sync` contract.
+Loom stores and validates the resulting workflow with the same native workflow
+store used by packaged workflow Arts. Parameter persistence uses
+`loom.hook.workflow.node.update`; instantiation uses
+`loom.hook.workflow.instantiate`. The removed ArtLoom YAML converter is not an
+accepted import or runtime path.
 
 ## Workflow Art package dependencies
 
