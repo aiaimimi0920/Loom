@@ -70,6 +70,9 @@ const environmentText = (environment: Record<string, string> = {}) => Object.ent
   .map(([key, value]) => `${key}=${value}`)
   .join("\n");
 
+const isArtManagedServer = (server: LoomMcpServer) =>
+  server.managed === true && server.source === "art";
+
 const normalizedServerId = (value: string) => value
   .trim()
   .replace(/[^a-zA-Z0-9_.@/-]/g, "-")
@@ -435,6 +438,7 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   };
 
   const testServer = async (server: LoomMcpServer) => {
+    if (isArtManagedServer(server)) return;
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
@@ -457,6 +461,7 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   };
 
   const persistServer = async (server: LoomMcpServer, testAfterSave: boolean) => {
+    if (isArtManagedServer(server)) return;
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
@@ -517,10 +522,12 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   };
 
   const toggleServer = async (server: LoomMcpServer) => {
+    if (isArtManagedServer(server)) return;
     await persistServer({ ...server, enabled: server.enabled === false }, false);
   };
 
   const removeServer = async (server: LoomMcpServer) => {
+    if (isArtManagedServer(server)) return;
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
@@ -542,6 +549,9 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   const filteredServers = useMemo(() => servers.filter((server) => !normalizedServiceSearch ||
     server.name.toLowerCase().includes(normalizedServiceSearch) ||
     server.id.toLowerCase().includes(normalizedServiceSearch) ||
+    (server.serverId || "").toLowerCase().includes(normalizedServiceSearch) ||
+    (server.ownerArtId || "").toLowerCase().includes(normalizedServiceSearch) ||
+    (server.toolName || "").toLowerCase().includes(normalizedServiceSearch) ||
     (server.description || "").toLowerCase().includes(normalizedServiceSearch)), [normalizedServiceSearch, servers]);
   const filteredMarketServers = useMemo(() => MCP_MARKET_SERVERS.filter((server) => {
     const matchesSearch = !normalizedStoreSearch || server.name.toLowerCase().includes(normalizedStoreSearch) ||
@@ -672,14 +682,15 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
         <div className="art-registry-grid mcp-card-grid">
           {filteredServers.length ? filteredServers.map((server) => {
             const enabled = server.enabled !== false;
+            const artManaged = isArtManagedServer(server);
             const snapshot = testSnapshots[server.id];
             const busy = busyServerId === server.id;
             return (
               <article
                 className={`glass-card art-registry-card mcp-service-card ${enabled ? "art-registry-card--enabled" : "art-registry-card--disabled"}${busy ? " mcp-service-card--busy" : ""}`}
                 key={server.id}
-                title={enabled ? "已启用" : "已禁用"}
-                aria-label={`${server.name}，${enabled ? "已启用" : "已禁用"}`}
+                title={artManaged ? "由 Art 管理" : enabled ? "已启用" : "已禁用"}
+                aria-label={`${server.name}，${artManaged ? "由 Art 管理" : enabled ? "已启用" : "已禁用"}`}
                 aria-busy={busy}
               >
                 <div className="art-registry-card__head">
@@ -698,10 +709,21 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
                 </div>
                 <div className="mcp-card__body">
                   <p className="art-registry-card__description" title={server.description || "暂无描述"}>{server.description || "暂无描述"}</p>
-                  <p className="mcp-card__identity" title={server.transport === "streamable-http" ? `${server.id} · ${server.url}` : `${server.id} · ${server.command} ${(server.args || []).join(" ")}`}>
-                    {server.transport === "streamable-http" ? `远程 · ${server.url}` : `本地 · ${server.command}`}
+                  <p className="mcp-card__identity" title={artManaged ? `${server.ownerArtId} · ${server.serverId || server.id} · ${server.toolName}` : server.transport === "streamable-http" ? `${server.id} · ${server.url}` : `${server.id} · ${server.command} ${(server.args || []).join(" ")}`}>
+                    {artManaged ? `Art · ${server.serverId || server.id} · ${server.toolName || "MCP tool"}` : server.transport === "streamable-http" ? `远程 · ${server.url}` : `本地 · ${server.command}`}
                   </p>
-                  {busy ? (
+                  {artManaged ? (
+                    <p
+                      className={`mcp-card__state ${server.credentialRequired && !server.credentialBound ? "mcp-card__state--error" : "mcp-card__state--success"}`}
+                      role="status"
+                    >
+                      {server.credentialRequired
+                        ? server.credentialBound
+                          ? "由 Art 管理 · 凭据已绑定"
+                          : "由 Art 管理 · 凭据待绑定"
+                        : "由 Art 管理 · 无需凭据"}
+                    </p>
+                  ) : busy ? (
                     <p className="mcp-card__state mcp-card__state--loading" role="status"><span className="mcp-busy-indicator" aria-hidden="true" />处理中</p>
                   ) : snapshot ? (
                     <p
@@ -714,20 +736,24 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
                   ) : null}
                 </div>
                 <div className="art-registry-card__actions">
-                  <div className="mcp-card__action-buttons">
-                    <button className="art-card-action" type="button" aria-label={`编辑 ${server.name}`} title="编辑" disabled={operationBusy} onClick={() => setEditor({ mode: "edit", server })}>
-                      <McpIcon kind="edit" />
-                    </button>
-                    <button className="art-card-action" type="button" aria-label={`测试 ${server.name}`} title="测试连接" disabled={operationBusy || !enabled} onClick={() => void testServer(server)}>
-                      <McpIcon kind="test" />
-                    </button>
-                    <button className={enabled ? "art-card-action art-card-action--active" : "art-card-action"} type="button" aria-label={`${enabled ? "禁用" : "启用"} ${server.name}`} title={enabled ? "禁用" : "启用"} disabled={operationBusy} onClick={() => void toggleServer(server)}>
-                      <McpIcon kind="power" />
-                    </button>
-                    <button className="art-card-action art-card-action--danger" type="button" aria-label={`删除 ${server.name}`} title="删除" disabled={operationBusy} onClick={() => void removeServer(server)}>
-                      <McpIcon kind="trash" />
-                    </button>
-                  </div>
+                  {artManaged ? (
+                    <span className="mcp-card__state" title={server.ownerArtId}>只读 · 请在 Art 管理中配置</span>
+                  ) : (
+                    <div className="mcp-card__action-buttons">
+                      <button className="art-card-action" type="button" aria-label={`编辑 ${server.name}`} title="编辑" disabled={operationBusy} onClick={() => setEditor({ mode: "edit", server })}>
+                        <McpIcon kind="edit" />
+                      </button>
+                      <button className="art-card-action" type="button" aria-label={`测试 ${server.name}`} title="测试连接" disabled={operationBusy || !enabled} onClick={() => void testServer(server)}>
+                        <McpIcon kind="test" />
+                      </button>
+                      <button className={enabled ? "art-card-action art-card-action--active" : "art-card-action"} type="button" aria-label={`${enabled ? "禁用" : "启用"} ${server.name}`} title={enabled ? "禁用" : "启用"} disabled={operationBusy} onClick={() => void toggleServer(server)}>
+                        <McpIcon kind="power" />
+                      </button>
+                      <button className="art-card-action art-card-action--danger" type="button" aria-label={`删除 ${server.name}`} title="删除" disabled={operationBusy} onClick={() => void removeServer(server)}>
+                        <McpIcon kind="trash" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </article>
             );

@@ -23,6 +23,7 @@ else {
 }
 $workRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-sample-art-runtime-" + [guid]::NewGuid().ToString("N"))
 $image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+$imageSecond = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 $imageSearchFrameworkData = @{
     mcp = @{
         serverId = "fixture"
@@ -33,9 +34,14 @@ $imageSearchFrameworkData = @{
                 type = "object"
                 items = @(
                     @{
-                        title = "Fixture image"
+                        title = "Fixture image one"
                         url = "https://example.invalid/source"
                         properties = @{ url = $image; width = 1; height = 1 }
+                    },
+                    @{
+                        title = "Fixture image two"
+                        url = "https://example.invalid/source-two"
+                        properties = @{ url = $imageSecond; width = 1; height = 1 }
                     }
                 )
             }
@@ -66,7 +72,7 @@ $colorTransferParams = @{
 $cases = @(
     @{ id = "custom-1770146354922"; framework = "process"; params = @{ quality_num = 90; lossless = $true }; inputs = @{ input = $image } },
     @{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; params = @{}; inputs = @{ input = $image } },
-    @{ id = "custom-image-search"; framework = "mcp"; params = @{ query = "loom smoke"; count = 3 }; inputs = @{}; frameworkData = $imageSearchFrameworkData },
+    @{ id = "custom-image-search"; framework = "mcp"; params = @{ query = "loom smoke"; count = 3; result_index = 1 }; inputs = @{}; frameworkData = $imageSearchFrameworkData },
     @{ id = "custom-1770131241684"; framework = "process"; params = $colorTransferParams; inputs = @{ input = $image; reference = $image } },
     @{ id = "custom-1770131241684"; framework = "process"; params = $colorTransferParams; inputs = @{ input = $image; reference = $image; output_mode = "shader" }; expectShader = $true },
     @{ id = "custom-image-blend-script"; framework = "process"; params = @{ mix_ratio = 50 }; inputs = @{ input = $image; reference = $image } }
@@ -157,6 +163,10 @@ function Invoke-Runtime {
         }
         Assert-True ([double]$response.output.applied_params.gamma -eq 1.2) "Color Transfer gamma was not preserved: $stdout"
         Assert-True ([bool]$response.output.applied_params.skin_protection) "Color Transfer skin protection was not preserved: $stdout"
+    }
+    if ($Case.id -eq "custom-image-search") {
+        Assert-True ([string]$response.output.selectedCandidate -eq "brave-search-2") "Image Search did not select result_index=1: $stdout"
+        Assert-True ([string]$response.output.output_base64 -eq $imageSecond) "Image Search selected output did not match the second candidate: $stdout"
     }
     return $response
 }

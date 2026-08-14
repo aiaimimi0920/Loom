@@ -49,7 +49,6 @@ struct McpArtConfig {
 pub struct McpExecution {
     server_id: String,
     tool_name: String,
-    arguments: Value,
     result: Value,
 }
 
@@ -82,12 +81,11 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
     server.env = environment;
     server.headers = headers;
 
-    let result = execute_tool(&server, &config.tool_name, &arguments)
+    let (_, result) = execute_tool(&server, &config.tool_name, &arguments)
         .map_err(|error| redact_credentials(error, &request.context.credentials))?;
     Ok(McpExecution {
         server_id: server_id.to_owned(),
         tool_name: config.tool_name,
-        arguments,
         result,
     })
 }
@@ -292,7 +290,7 @@ fn execute_tool(
     server: &McpServerConfig,
     tool_name: &str,
     arguments: &Value,
-) -> Result<Value, String> {
+) -> Result<(Value, Value), String> {
     let mut client = McpClient::connect(server)
         .map_err(|error| format!("failed to connect MCP server: {error}"))?;
     client
@@ -305,10 +303,10 @@ fn execute_tool(
         .ok_or_else(|| format!("MCP server does not expose tool `{tool_name}`"))?;
     let normalized_arguments = normalize_arguments(arguments, schema);
     let result = client
-        .call_tool(tool_name, normalized_arguments)
+        .call_tool(tool_name, normalized_arguments.clone())
         .map_err(|error| format!("MCP tools/call `{tool_name}` failed: {error}"));
     client.cancel();
-    result
+    result.map(|result| (normalized_arguments, result))
 }
 
 fn find_tool_input_schema<'a>(tools: &'a Value, tool_name: &str) -> Option<&'a Value> {
@@ -325,9 +323,19 @@ fn normalize_arguments(arguments: &Value, schema: &Value) -> Value {
         return arguments.clone();
     };
     let properties = schema.get("properties").and_then(Value::as_object);
+    let has_pattern_or_composed_properties =
+        ["patternProperties", "allOf", "anyOf", "oneOf", "$ref"]
+            .iter()
+            .any(|name| schema.get(*name).is_some());
+    let rejects_undeclared = schema.get("additionalProperties") == Some(&Value::Bool(false))
+        && !has_pattern_or_composed_properties;
     Value::Object(
         arguments
             .iter()
+            .filter(|(name, _)| {
+                !rejects_undeclared
+                    || properties.is_some_and(|properties| properties.contains_key(*name))
+            })
             .map(|(name, value)| {
                 let schema = properties.and_then(|properties| properties.get(name));
                 (name.clone(), normalize_argument(name, value, schema))
@@ -528,6 +536,42 @@ mod tests {
     }
 
     #[test]
+    fn schema_excludes_arguments_rejected_by_the_mcp_tool() {
+        let normalized = normalize_arguments(
+            &json!({
+                "query": "red panda",
+                "count": "2",
+                "result_index": 1,
+                "__exec_manualTrigger": 123,
+                "force_update": 456
+            }),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "count": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }),
+        );
+        assert_eq!(normalized, json!({ "query": "red panda", "count": 2 }));
+    }
+
+    #[test]
+    fn schema_preserves_arguments_when_pattern_properties_define_dynamic_keys() {
+        let normalized = normalize_arguments(
+            &json!({ "header_x": "visible" }),
+            &json!({
+                "type": "object",
+                "properties": {},
+                "patternProperties": { "^header_": { "type": "string" } },
+                "additionalProperties": false
+            }),
+        );
+        assert_eq!(normalized, json!({ "header_x": "visible" }));
+    }
+
+    #[test]
     fn credential_values_are_redacted_from_mcp_errors() {
         assert_eq!(
             redact_credentials(
@@ -643,7 +687,13 @@ mod tests {
         request.art_id = "custom-image-search".to_owned();
         request.art_dir = art_dir.clone();
         request.inputs = json!({});
-        request.params = json!({ "query": "loom framework", "count": "2" });
+        request.params = json!({
+            "query": "loom framework",
+            "count": "2",
+            "result_index": 1,
+            "__exec_manualTrigger": 123,
+            "force_update": 456
+        });
         request.context.credentials = vec![CredentialGrant {
             name: "brave_api_key".to_owned(),
             value: "fixture-api-key".to_owned(),
@@ -653,8 +703,14 @@ mod tests {
         let execution = execute(&request, &art_dir).expect("execute package-local MCP server");
         assert_eq!(execution.server_id, "neuro-image-search");
         assert_eq!(execution.tool_name, "brave_image_search");
-        assert_eq!(execution.arguments["count"], "2");
         assert_eq!(execution.result["structuredContent"]["count"], 2);
+        assert!(
+            serde_json::to_value(&execution)
+                .expect("serialize MCP execution")
+                .get("arguments")
+                .is_none(),
+            "MCP arguments must not be echoed into the Art runtime payload"
+        );
         assert_eq!(
             execution.result["structuredContent"]["candidates"][0]["imageUrl"],
             "https://cdn.example.test/image-1.png"

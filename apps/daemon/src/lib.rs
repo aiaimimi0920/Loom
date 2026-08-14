@@ -2005,6 +2005,8 @@ type SharedImageStoreHandle = Arc<Mutex<SharedImageStore>>;
 type OcrProviderHandle = Arc<Mutex<OcrProvider>>;
 type SharedLoomSettingsStore = Arc<Mutex<LoomSettingsStore>>;
 
+const ART_MANAGED_MCP_SERVER_ID_PREFIX: &str = "art-mcp:";
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct LoomShortcutConfig {
     id: String,
@@ -3570,7 +3572,7 @@ fn route(
                 shared_images,
             )
         }
-        ("GET", "/v1/mcp/servers") => list_mcp_servers(mcp_servers),
+        ("GET", "/v1/mcp/servers") => list_mcp_servers(mcp_servers, tool_registry),
         ("GET", "/v1/mcp/registry") => fetch_mcp_registry(
             &request.path,
             mcp_registry_endpoint,
@@ -6824,15 +6826,115 @@ fn capabilities() -> Result<(u16, String)> {
     ))
 }
 
-fn list_mcp_servers(mcp_servers: &SharedMcpServerStore) -> Result<(u16, String)> {
-    let mut servers = mcp_servers
+fn list_mcp_servers(
+    mcp_servers: &SharedMcpServerStore,
+    tool_registry: &ToolRegistry,
+) -> Result<(u16, String)> {
+    let user_servers = mcp_servers
         .lock()
         .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
         .values()
+        .filter(|server| !server.id.starts_with(ART_MANAGED_MCP_SERVER_ID_PREFIX))
         .cloned()
         .collect::<Vec<_>>();
-    servers.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut servers = user_servers
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    servers.extend(project_art_managed_mcp_servers(tool_registry)?);
+    servers.sort_by(|left, right| {
+        left.get("id")
+            .and_then(Value::as_str)
+            .cmp(&right.get("id").and_then(Value::as_str))
+    });
     Ok((200, serde_json::to_string(&json!({ "servers": servers }))?))
+}
+
+fn project_art_managed_mcp_servers(tool_registry: &ToolRegistry) -> Result<Vec<Value>> {
+    let tools = tool_registry
+        .list_tools()
+        .map_err(|error| anyhow::anyhow!("list installed Arts for MCP projection: {error}"))?;
+    Ok(tools
+        .iter()
+        .filter_map(project_art_managed_mcp_server)
+        .collect())
+}
+
+fn project_art_managed_mcp_server(tool: &ToolDefinition) -> Option<Value> {
+    let ToolExecution::FrameworkArt { framework } = &tool.execution else {
+        return None;
+    };
+    if framework != "mcp" {
+        return None;
+    }
+
+    let metadata = tool.metadata.as_ref()?.as_object()?;
+    let mcp = metadata.get("mcp")?.as_object()?;
+    let server_id = mcp.get("serverId")?.as_str()?.trim();
+    let tool_name = mcp.get("toolName")?.as_str()?.trim();
+    if server_id.is_empty() || tool_name.is_empty() {
+        return None;
+    }
+    let transport = mcp
+        .get("transport")
+        .and_then(Value::as_str)
+        .unwrap_or("stdio");
+    if !matches!(transport, "stdio" | "streamable-http") {
+        return None;
+    }
+    let credential_names = ["credentialEnv", "credentialHeaders"]
+        .iter()
+        .filter_map(|field| mcp.get(*field).and_then(Value::as_object))
+        .flat_map(|mapping| mapping.values())
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<BTreeSet<_>>();
+    let credential_bindings = metadata
+        .get("artUserSettings")
+        .and_then(|settings| settings.get("credentialBindings"))
+        .and_then(Value::as_object);
+    let credential_bound = credential_names.iter().all(|name| {
+        credential_bindings
+            .and_then(|bindings| bindings.get(*name))
+            .and_then(Value::as_str)
+            .is_some_and(|binding| !binding.trim().is_empty())
+    });
+    let owner_art_id = tool.qualified_id();
+    let projected_id = format!(
+        "{ART_MANAGED_MCP_SERVER_ID_PREFIX}{}:{}",
+        encode_managed_mcp_id_segment(&owner_art_id),
+        encode_managed_mcp_id_segment(server_id),
+    );
+
+    Some(json!({
+        "id": projected_id,
+        "serverId": server_id,
+        "name": format!("{} MCP", tool.name),
+        "description": tool.description,
+        "transport": transport,
+        "command": "",
+        "enabled": tool.enabled,
+        "managed": true,
+        "source": "art",
+        "ownerArtId": owner_art_id,
+        "toolName": tool_name,
+        "readOnly": true,
+        "editable": false,
+        "deletable": false,
+        "credentialRequired": !credential_names.is_empty(),
+        "credentialBound": credential_bound,
+    }))
+}
+
+fn encode_managed_mcp_id_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.bytes() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn put_mcp_server(
@@ -6841,6 +6943,9 @@ fn put_mcp_server(
     mcp_servers: &SharedMcpServerStore,
     store_path: &Path,
 ) -> Result<(u16, String)> {
+    if path_id.starts_with(ART_MANAGED_MCP_SERVER_ID_PREFIX) {
+        return managed_mcp_server_mutation_error(path_id);
+    }
     let server = match serde_json::from_str::<McpServerConfig>(body) {
         Ok(server) => server,
         Err(error) => return invalid_request(error.to_string()),
@@ -6878,6 +6983,9 @@ fn delete_mcp_server(
     mcp_servers: &SharedMcpServerStore,
     store_path: &Path,
 ) -> Result<(u16, String)> {
+    if path_id.starts_with(ART_MANAGED_MCP_SERVER_ID_PREFIX) {
+        return managed_mcp_server_mutation_error(path_id);
+    }
     {
         let mut guard = mcp_servers
             .lock()
@@ -6902,6 +7010,17 @@ fn delete_mcp_server(
         200,
         serde_json::to_string(&json!({ "serverId": path_id, "deleted": true }))?,
     ))
+}
+
+fn managed_mcp_server_mutation_error(server_id: &str) -> Result<(u16, String)> {
+    structured_error(
+        409,
+        json!({
+            "code": "mcp_server_managed_by_art",
+            "message": "Art-managed MCP services are read-only; manage the owning Art instead",
+            "serverId": server_id,
+        }),
+    )
 }
 
 fn fetch_mcp_registry(path: &str, endpoint: &str, cache_path: &Path) -> Result<(u16, String)> {
@@ -20763,6 +20882,140 @@ nodes:
                 .len(),
             0
         );
+
+        drop(runtime);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn daemon_projects_installed_art_mcp_servers_as_read_only_runtime_entries() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("control-plane-art-managed-mcp");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let mut art = ToolDefinition::new(
+            "custom-image-search",
+            "图片搜索",
+            "Search image candidates through the Art-scoped MCP framework.",
+            ToolExecution::FrameworkArt {
+                framework: "mcp".to_owned(),
+            },
+        );
+        art.metadata = Some(json!({
+            "packageSecurity": {
+                "version": "0.3.2",
+                "publisher": { "id": "neuro.official", "name": "Neuro" }
+            },
+            "mcp": {
+                "transport": "stdio",
+                "serverId": "neuro-image-search",
+                "command": "runtime/image-search-mcp.ps1",
+                "toolName": "brave_image_search",
+                "credentialEnv": { "BRAVE_API_KEY": "brave_api_key" }
+            }
+        }));
+        ArtSettingsStore::new(&root)
+            .save(
+                "neuro.official/custom-image-search",
+                ArtUserSettings {
+                    credential_bindings: BTreeMap::from([(
+                        "brave_api_key".to_owned(),
+                        "art.neuro.official.custom-image-search.brave_api_key".to_owned(),
+                    )]),
+                    ..ArtUserSettings::default()
+                },
+            )
+            .expect("save Art credential binding metadata");
+        runtime
+            .tool_registry
+            .save_tool(art)
+            .expect("save MCP framework Art");
+
+        let listed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
+        let servers = listed["servers"].as_array().expect("servers");
+        assert_eq!(servers.len(), 1);
+        let managed = &servers[0];
+        assert_eq!(managed["serverId"], "neuro-image-search");
+        assert_eq!(managed["ownerArtId"], "neuro.official/custom-image-search");
+        assert_eq!(managed["toolName"], "brave_image_search");
+        assert_eq!(managed["source"], "art");
+        assert_eq!(managed["managed"], true);
+        assert_eq!(managed["readOnly"], true);
+        assert_eq!(managed["editable"], false);
+        assert_eq!(managed["deletable"], false);
+        assert_eq!(managed["credentialRequired"], true);
+        assert_eq!(managed["credentialBound"], true);
+        assert!(managed.get("env").is_none());
+        assert!(managed.get("headers").is_none());
+        assert!(managed.get("credentialEnv").is_none());
+        assert!(managed.get("credentialHeaders").is_none());
+        assert_eq!(managed["command"], "");
+        assert!(
+            !mcp_server_store_path(&root).exists(),
+            "Art-managed projection must not create the user MCP server store"
+        );
+
+        let managed_id = managed["id"].as_str().expect("managed id");
+        let rejected_put = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    &format!("/v1/mcp/servers/{managed_id}"),
+                    &[],
+                    Some(
+                        &json!({
+                            "id": managed_id,
+                            "name": "conflicting user server",
+                            "command": "powershell",
+                            "transport": "stdio",
+                            "enabled": true
+                        })
+                        .to_string(),
+                    ),
+                ),
+            ),
+            409,
+        );
+        assert_eq!(rejected_put["error"]["code"], "mcp_server_managed_by_art");
+        let rejected_delete = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "DELETE",
+                    &format!("/v1/mcp/servers/{managed_id}"),
+                    &[],
+                    None,
+                ),
+            ),
+            409,
+        );
+        assert_eq!(
+            rejected_delete["error"]["code"],
+            "mcp_server_managed_by_art"
+        );
+        assert!(
+            !mcp_server_store_path(&root).exists(),
+            "rejected managed mutations must not create the user MCP server store"
+        );
+
+        runtime
+            .tool_registry
+            .delete_tool("neuro.official/custom-image-search")
+            .expect("uninstall MCP framework Art");
+        let after_uninstall = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/v1/mcp/servers", &[], None),
+            ),
+            200,
+        );
+        assert_eq!(after_uninstall["servers"], json!([]));
 
         drop(runtime);
         let _ = fs::remove_dir_all(root);

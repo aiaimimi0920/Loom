@@ -327,16 +327,28 @@ try {
         throw "MCP image search returned candidates, but none could be downloaded"
     }
 
-    $first = $candidates[0]
+    $selectedIndex = 0
+    $selectedIndexValue = Get-RequestParamValue `
+        -Request $request `
+        -Names @("result_index") `
+        -DefaultValue 0
+    $parsedSelectedIndex = 0
+    if ([int]::TryParse([string]$selectedIndexValue, [ref]$parsedSelectedIndex)) {
+        $selectedIndex = [Math]::Max(
+            0,
+            [Math]::Min($candidates.Count - 1, $parsedSelectedIndex)
+        )
+    }
+    $selected = $candidates[$selectedIndex]
     $output = [ordered]@{
-        output_base64 = $first.data
+        output_base64 = $selected.data
         query = $query
         count = $candidates.Count
-        selectedCandidate = $first.id
+        selectedCandidate = $selected.id
         content = @([ordered]@{
             type = "image"
-            data = $first.data
-            mimeType = (Get-ImageMimeType -Location $first.data -ContentType "")
+            data = $selected.data
+            mimeType = (Get-ImageMimeType -Location $selected.data -ContentType "")
         })
     }
     Write-SuccessResponse -Output $output -Candidates $candidates

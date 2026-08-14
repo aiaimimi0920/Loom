@@ -275,3 +275,13 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(styleSource, /\.mcp-hub :is\(button, input, select, textarea\):focus-visible[\s\S]*?var\(--loom-theme-accent-text\)/);
   assert.match(styleSource, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.mcp-busy-indicator/);
 });
+
+test("renders Art-managed MCP services as credential-aware read-only entries", () => {
+  assert.match(hubSource, /const isArtManagedServer/);
+  assert.match(hubSource, /server\.managed === true && server\.source === "art"/);
+  assert.match(hubSource, /由 Art 管理 · 凭据已绑定/);
+  assert.match(hubSource, /由 Art 管理 · 凭据待绑定/);
+  assert.match(hubSource, /只读 · 请在 Art 管理中配置/);
+  assert.match(hubSource, /if \(isArtManagedServer\(server\)\) return;/);
+  assert.match(hubSource, /artManaged \? \([\s\S]*?\) : \([\s\S]*?aria-label=\{`编辑/);
+});

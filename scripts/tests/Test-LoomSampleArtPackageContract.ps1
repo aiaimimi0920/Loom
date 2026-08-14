@@ -48,7 +48,7 @@ $buildScript = Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"
 $expected = [ordered]@{
     "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802001"; version = "0.1.2" }
     "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; executionType = "framework_art"; globalId = "NA20260802002"; version = "0.1.1" }
-    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802003"; version = "0.3.1" }
+    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802003"; version = "0.3.2" }
     "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802004"; version = "0.1.4" }
     "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802005"; version = "0.1.0" }
     "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow"; executionType = "workflow"; globalId = "NA20260802006"; version = "0.1.0" }

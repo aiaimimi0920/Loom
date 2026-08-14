@@ -35,6 +35,7 @@ export interface LoomCapabilitiesResponse {
 
 export interface LoomMcpServer {
   id: string;
+  serverId?: string;
   name: string;
   description?: string;
   transport?: "stdio" | "streamable-http" | "sse";
@@ -44,6 +45,15 @@ export interface LoomMcpServer {
   url?: string;
   headers?: Record<string, string>;
   enabled?: boolean;
+  managed?: boolean;
+  source?: "art" | "user";
+  ownerArtId?: string;
+  toolName?: string;
+  readOnly?: boolean;
+  editable?: boolean;
+  deletable?: boolean;
+  credentialRequired?: boolean;
+  credentialBound?: boolean;
 }
 
 export interface LoomMcpServersResponse {
