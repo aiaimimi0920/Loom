@@ -143,13 +143,15 @@ try {
             results = @(
                 @{
                     title = "Loom first"
-                    url = "https://example.test/source/1"
+                    url = "https://cdn.example.test/image-1.png"
+                    source = "https://example.test/source/1"
                     thumbnail = @{ src = "https://cdn.example.test/thumb-1.jpg" }
                     properties = @{ url = "https://cdn.example.test/image-1.png"; width = 640; height = 480 }
                 },
                 @{
                     title = "Loom second"
-                    url = "https://example.test/source/2"
+                    url = "https://cdn.example.test/image-2.png"
+                    source = "https://example.test/source/2"
                     thumbnail = @{ src = "https://cdn.example.test/thumb-2.jpg" }
                     properties = @{}
                 }
@@ -230,6 +232,7 @@ try {
     Assert-True ([int]$call.result.structuredContent.count -eq 2) "Image-search MCP candidate count mismatch."
     Assert-True ([string]$call.result.structuredContent.candidates[0].imageUrl -eq "https://cdn.example.test/image-1.png") "Primary image URL was not normalized."
     Assert-True ([string]$call.result.structuredContent.candidates[0].thumbnailUrl -eq "https://cdn.example.test/thumb-1.jpg") "Thumbnail URL was not preserved."
+    Assert-True ([string]$call.result.structuredContent.candidates[0].sourcePageUrl -eq "https://example.test/source/1") "Source page URL was not preserved."
     Assert-True ([int]$call.result.structuredContent.candidates[0].width -eq 640) "Image width was not preserved."
     Assert-True ([string]$call.result.structuredContent.candidates[1].imageUrl -eq "https://cdn.example.test/thumb-2.jpg") "Thumbnail-only result was not promoted to an image candidate."
 

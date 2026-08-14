@@ -1452,11 +1452,11 @@ fn activate_art_pointer(
         },
     )?;
     write_art_activation(active_path, &next)?;
-    if let Err(error) = tool_registry.save_tool(tool.clone()) {
+    let tool = tool_registry.save_tool(tool).map_err(|error| {
         let _ = write_art_activation(active_path, &activation);
         clear_art_lifecycle(art_root);
-        return Err(ArtInstallError::Registry(error.to_string()));
-    }
+        ArtInstallError::Registry(error.to_string())
+    })?;
     clear_art_lifecycle(art_root);
     Ok(tool)
 }
@@ -2382,7 +2382,9 @@ fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::art_settings::{ArtSettingsStore, ArtUserSettings};
     use crate::ToolExecution;
+    use std::collections::BTreeMap;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
@@ -3535,6 +3537,16 @@ mod tests {
             &registry,
         )
         .expect("install first Art");
+        let settings = ArtUserSettings {
+            credential_bindings: BTreeMap::from([(
+                "api_key".to_owned(),
+                "rollback-secret".to_owned(),
+            )]),
+            ..ArtUserSettings::default()
+        };
+        ArtSettingsStore::new(&root)
+            .save("publisher.test/rollback-art", settings.clone())
+            .expect("save Art settings before upgrade");
         install_art_from_zip(
             &build_zip(manifest, &[("bin/tool.exe", b"version-two")]),
             &root,
@@ -3543,6 +3555,14 @@ mod tests {
         )
         .expect("install second Art");
         let current = registry.get_tool("rollback-art").unwrap().unwrap();
+        assert_eq!(
+            current
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/artUserSettings/credentialBindings/api_key"))
+                .and_then(serde_json::Value::as_str),
+            Some("rollback-secret")
+        );
         verify_art_package_integrity(&root, &current, &framework).expect("verify current Art");
         let installed = list_installed_art_versions(&root, "rollback-art", &registry)
             .expect("list immutable versions");
@@ -3575,6 +3595,20 @@ mod tests {
 
         let rolled_back = rollback_art_package(&root, "rollback-art", &registry, &framework)
             .expect("rollback Art");
+        assert_eq!(
+            rolled_back
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/artUserSettings/credentialBindings/api_key"))
+                .and_then(serde_json::Value::as_str),
+            Some("rollback-secret")
+        );
+        assert_eq!(
+            ArtSettingsStore::new(&root)
+                .get("publisher.test/rollback-art")
+                .expect("load Art settings after rollback"),
+            settings
+        );
         verify_art_package_integrity(&root, &rolled_back, &framework)
             .expect("verify rolled-back Art");
         let active =

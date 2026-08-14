@@ -15982,6 +15982,13 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "message": error.to_string(),
             }),
         ),
+        ToolRegistryError::ArtSettings(error) => structured_error(
+            500,
+            json!({
+                "code": "art_settings_error",
+                "message": error.to_string(),
+            }),
+        ),
     }
 }
 

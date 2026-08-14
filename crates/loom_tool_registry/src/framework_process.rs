@@ -957,20 +957,25 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             .and_then(Value::as_object_mut)
             .expect("fixture metadata")
             .insert(
-                "artUserSettings".to_owned(),
-                json!({ "credentialBindings": { "api_key": "stored-secret" } }),
-            );
-        tool.metadata
-            .as_mut()
-            .and_then(Value::as_object_mut)
-            .expect("fixture metadata")
-            .insert(
                 "packageSecurity".to_owned(),
                 json!({
                     "version": "1.0.0",
                     "publisher": { "id": "publisher.test", "name": "Publisher" }
                 }),
             );
+        let art_identity = tool.qualified_id();
+        crate::art_settings::ArtSettingsStore::new(&root)
+            .save(
+                &art_identity,
+                crate::art_settings::ArtUserSettings {
+                    credential_bindings: BTreeMap::from([(
+                        "api_key".to_owned(),
+                        "stored-secret".to_owned(),
+                    )]),
+                    ..crate::art_settings::ArtUserSettings::default()
+                },
+            )
+            .expect("persist fixture Art settings");
         crate::credentials::CredentialStore::new(&root)
             .upsert(crate::credentials::CredentialInput {
                 name: "stored-secret".to_owned(),
@@ -978,11 +983,21 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
                 value_type: crate::credentials::CredentialValueType::String,
                 scope: crate::credentials::CredentialScope {
                     framework_id: None,
-                    art_id: Some(tool.qualified_id()),
+                    art_id: Some(art_identity.clone()),
                 },
                 expires_at: None,
             })
             .expect("store fixture credential");
+        let tool = crate::ToolRegistry::new(root.join("tools"))
+            .save_tool(tool)
+            .expect("save fixture tool with persisted settings");
+        assert_eq!(
+            tool.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/artUserSettings/credentialBindings/api_key"))
+                .and_then(Value::as_str),
+            Some("stored-secret")
+        );
 
         let result = execute_framework_art_in_root_with_timeout(
             &tool,

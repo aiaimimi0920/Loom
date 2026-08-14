@@ -75,7 +75,7 @@ function ConvertTo-BraveImageCandidate {
     }
 
     $titleValue = Get-PropertyValue -Value $Result -Name "title"
-    $sourcePageUrl = ConvertTo-HttpUrl (Get-PropertyValue -Value $Result -Name "url")
+    $sourcePageUrl = ConvertTo-HttpUrl (Get-PropertyValue -Value $Result -Name "source")
     return [ordered]@{
         imageUrl = $imageUrl
         thumbnailUrl = $thumbnailUrl

@@ -127,8 +127,12 @@ impl ArtSettingsStore {
     }
 
     pub fn get(&self, art_id: &str) -> Result<ArtUserSettings, ArtSettingsError> {
+        Ok(self.get_optional(art_id)?.unwrap_or_default())
+    }
+
+    pub fn get_optional(&self, art_id: &str) -> Result<Option<ArtUserSettings>, ArtSettingsError> {
         validate_art_reference(art_id)?;
-        Ok(self.read_file()?.arts.remove(art_id).unwrap_or_default())
+        Ok(self.read_file()?.arts.remove(art_id))
     }
 
     pub fn list(&self) -> Result<BTreeMap<String, ArtUserSettings>, ArtSettingsError> {

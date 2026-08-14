@@ -136,6 +136,8 @@ pub enum ToolRegistryError {
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Art settings error: {0}")]
+    ArtSettings(#[from] art_settings::ArtSettingsError),
 }
 
 pub type ToolRegistryResult<T> = Result<T, ToolRegistryError>;
@@ -507,9 +509,10 @@ impl ToolRegistry {
 
     fn save_tool_inner(
         &self,
-        tool: ToolDefinition,
+        mut tool: ToolDefinition,
         replace_unpublished: bool,
     ) -> ToolRegistryResult<ToolDefinition> {
+        self.apply_persisted_art_settings(&mut tool)?;
         tool.validate()?;
         self.ensure_root()?;
 
@@ -602,17 +605,45 @@ impl ToolRegistry {
         }
 
         let content = fs::read_to_string(path)?;
-        match serde_json::from_str(&content) {
-            Ok(tools) => Ok(tools),
+        let mut tools = match serde_json::from_str(&content) {
+            Ok(tools) => tools,
             Err(error) => {
                 let Some(tools) = recover_tools_with_trailing_delimiters(&content) else {
                     return Err(ToolRegistryError::Json(error));
                 };
                 self.write_corruption_backup(&content)?;
                 self.write_tools(&tools)?;
-                Ok(tools)
+                tools
             }
+        };
+        for tool in &mut tools {
+            self.apply_persisted_art_settings(tool)?;
         }
+        Ok(tools)
+    }
+
+    fn apply_persisted_art_settings(&self, tool: &mut ToolDefinition) -> ToolRegistryResult<()> {
+        let Some(control_plane_root) = self.root.parent().filter(|_| {
+            self.root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("tools"))
+        }) else {
+            return Ok(());
+        };
+        let settings = art_settings::ArtSettingsStore::new(control_plane_root)
+            .get_optional(&tool.qualified_id())?;
+        if let Some(metadata) = tool
+            .metadata
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.remove("artUserSettings");
+        }
+        if let Some(settings) = settings {
+            art_settings::apply_settings_metadata(tool, &settings);
+        }
+        Ok(())
     }
 
     fn write_tools(&self, tools: &[ToolDefinition]) -> ToolRegistryResult<()> {
@@ -2522,6 +2553,103 @@ mod tests {
         assert!(!registry.delete_tool("brave-search").expect("delete absent"));
 
         fs::remove_dir_all(root).expect("cleanup temp tool registry root");
+    }
+
+    #[test]
+    fn registry_rehydrates_persisted_art_settings_after_restart() {
+        let root = temp_root("persisted-art-settings");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let mut tool = ToolDefinition::new(
+            "image-search",
+            "Image Search",
+            "Package-backed image search",
+            ToolExecution::FrameworkArt {
+                framework: "mcp".to_owned(),
+            },
+        );
+        tool.metadata = Some(serde_json::json!({
+            "packageSecurity": {
+                "publisher": { "id": "publisher.example", "name": "Publisher" }
+            }
+        }));
+        registry.save_tool(tool).expect("save package tool");
+
+        art_settings::ArtSettingsStore::new(&root)
+            .save(
+                "publisher.example/image-search",
+                art_settings::ArtUserSettings {
+                    credential_bindings: std::collections::BTreeMap::from([(
+                        "api_key".to_owned(),
+                        "stored-secret".to_owned(),
+                    )]),
+                    ..art_settings::ArtUserSettings::default()
+                },
+            )
+            .expect("save Art settings independently of the registry projection");
+
+        let restarted = ToolRegistry::new(root.join("tools"));
+        let rehydrated = restarted
+            .get_tool("publisher.example/image-search")
+            .expect("read restarted registry")
+            .expect("rehydrated tool");
+        assert_eq!(
+            rehydrated
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer("/artUserSettings/credentialBindings/api_key")
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("stored-secret")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup persisted Art settings root");
+    }
+
+    #[test]
+    fn registry_removes_stale_art_settings_without_a_persisted_entry() {
+        let root = temp_root("stale-art-settings");
+        let tools_root = root.join("tools");
+        fs::create_dir_all(&tools_root).expect("create canonical registry root");
+        let mut tool = ToolDefinition::new(
+            "image-search",
+            "Image Search",
+            "Package-backed image search",
+            ToolExecution::FrameworkArt {
+                framework: "mcp".to_owned(),
+            },
+        );
+        tool.metadata = Some(serde_json::json!({
+            "packageSecurity": {
+                "publisher": { "id": "publisher.example", "name": "Publisher" }
+            },
+            "artUserSettings": {
+                "credentialBindings": { "api_key": "stale-secret" }
+            }
+        }));
+        fs::write(
+            tools_root.join(TOOLS_FILE),
+            serde_json::to_vec_pretty(&vec![tool]).expect("serialize stale registry"),
+        )
+        .expect("write stale registry");
+
+        let restarted = ToolRegistry::new(&tools_root);
+        let sanitized = restarted
+            .get_tool("publisher.example/image-search")
+            .expect("read restarted registry")
+            .expect("sanitized tool");
+        assert!(sanitized
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("artUserSettings"))
+            .is_none());
+        assert!(sanitized
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("packageSecurity"))
+            .is_some());
+
+        fs::remove_dir_all(root).expect("cleanup stale Art settings root");
     }
 
     #[test]
