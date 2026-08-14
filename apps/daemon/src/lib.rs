@@ -30,6 +30,7 @@ use loom_hook_bridge::{
     HOOK_BRIDGE_PORT,
 };
 use loom_hooks::{HookSettings, HookSettingsSummary};
+use loom_mcp::package::{install_server_package, uninstall_server_package};
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
@@ -63,7 +64,8 @@ use loom_tool_registry::network_policy::{
 #[cfg(test)]
 use loom_tool_registry::WorkflowExecutionBindings;
 use loom_tool_registry::{
-    framework::FrameworkRegistry, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
+    framework::{read_dependencies, FrameworkRegistry},
+    ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
 };
 use loom_workflow_runtime::{
     execute_tool_with_workflows, execute_tool_with_workflows_and_preview_timeout_and_cancellation,
@@ -1701,7 +1703,10 @@ fn request_body_size_limit(headers: &str) -> usize {
         .split_whitespace();
     let method = request_line.next().unwrap_or_default();
     let path = request_line.next().unwrap_or_default();
-    let is_package_install = matches!(path, "/v1/frameworks/install" | "/v1/arts/install");
+    let is_package_install = matches!(
+        path,
+        "/v1/frameworks/install" | "/v1/arts/install" | "/v1/mcp/servers/install"
+    );
     let is_framework_upgrade = path.starts_with("/v1/frameworks/") && path.ends_with("/upgrade");
     let is_surface_resource = path == "/v1/surfaces/resources";
     if method.eq_ignore_ascii_case("POST")
@@ -1929,6 +1934,29 @@ struct McpPackageInstallPlanRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct McpServerPackageInstallRequest {
+    #[serde(default)]
+    zip_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerCredentialUpdateRequest {
+    #[serde(default)]
+    values: BTreeMap<String, String>,
+    #[serde(default)]
+    clear: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArtUninstallRequest {
+    #[serde(default)]
+    remove_unused_mcp_servers: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct McpToolCallRequest {
     #[serde(default)]
     transport: McpTransport,
@@ -2004,8 +2032,6 @@ type SharedHookBridgeRuntime = Arc<Mutex<HookBridgeRuntime>>;
 type SharedImageStoreHandle = Arc<Mutex<SharedImageStore>>;
 type OcrProviderHandle = Arc<Mutex<OcrProvider>>;
 type SharedLoomSettingsStore = Arc<Mutex<LoomSettingsStore>>;
-
-const ART_MANAGED_MCP_SERVER_ID_PREFIX: &str = "art-mcp:";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct LoomShortcutConfig {
@@ -3572,7 +3598,9 @@ fn route(
                 shared_images,
             )
         }
-        ("GET", "/v1/mcp/servers") => list_mcp_servers(mcp_servers, tool_registry),
+        ("GET", "/v1/mcp/servers") => {
+            list_mcp_servers(mcp_servers, tool_registry, control_plane_root)
+        }
         ("GET", "/v1/mcp/registry") => fetch_mcp_registry(
             &request.path,
             mcp_registry_endpoint,
@@ -3582,6 +3610,39 @@ fn route(
         ("POST", "/v1/mcp/call") => call_mcp_tool(&request.body),
         ("POST", "/v1/mcp/package/check") => check_mcp_package_installed(&request.body),
         ("POST", "/v1/mcp/package/install-plan") => build_mcp_package_install_plan(&request.body),
+        ("POST", "/v1/mcp/servers/install") => install_mcp_server_package(
+            &request.body,
+            mcp_servers,
+            control_plane_root,
+            &mcp_server_store_path(control_plane_root),
+        ),
+        ("PUT", path)
+            if path_id_with_suffix(path, "/v1/mcp/servers/", "/credentials").is_some() =>
+        {
+            let id = path_id_with_suffix(path, "/v1/mcp/servers/", "/credentials")
+                .expect("checked path");
+            update_mcp_server_credentials(
+                id,
+                &request.body,
+                mcp_servers,
+                control_plane_root,
+                &mcp_server_store_path(control_plane_root),
+            )
+        }
+        ("PUT", path) if path_id_with_suffix(path, "/v1/mcp/servers/", "/enabled").is_some() => {
+            let id =
+                path_id_with_suffix(path, "/v1/mcp/servers/", "/enabled").expect("checked path");
+            set_mcp_server_enabled(
+                id,
+                &request.body,
+                mcp_servers,
+                &mcp_server_store_path(control_plane_root),
+            )
+        }
+        ("POST", path) if path_id_with_suffix(path, "/v1/mcp/servers/", "/test").is_some() => {
+            let id = path_id_with_suffix(path, "/v1/mcp/servers/", "/test").expect("checked path");
+            test_installed_mcp_server(id, mcp_servers, control_plane_root)
+        }
         ("PUT", path) if path_id(path, "/v1/mcp/servers/").is_some() => put_mcp_server(
             path_id(path, "/v1/mcp/servers/").expect("checked path"),
             &request.body,
@@ -3592,6 +3653,7 @@ fn route(
             path_id(path, "/v1/mcp/servers/").expect("checked path"),
             mcp_servers,
             &mcp_server_store_path(control_plane_root),
+            control_plane_root,
         ),
         ("GET", "/v1/tools") => list_tools(tool_registry),
         ("GET", "/v1/frameworks") => list_frameworks(framework_registry),
@@ -3724,9 +3786,12 @@ fn route(
             uninstall_art(
                 &decoded_package_path_id_with_suffix(path, "/v1/arts/", "/uninstall")
                     .expect("checked path"),
+                &request.body,
                 tool_registry,
                 control_plane_root,
                 hook_bridge,
+                mcp_servers,
+                &mcp_server_store_path(control_plane_root),
             )
         }
         ("GET", path) if path.split('?').next() == Some("/v1/arts/store/catalog") => {
@@ -6829,19 +6894,21 @@ fn capabilities() -> Result<(u16, String)> {
 fn list_mcp_servers(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
+    control_plane_root: &Path,
 ) -> Result<(u16, String)> {
-    let user_servers = mcp_servers
+    let configured_servers = mcp_servers
         .lock()
         .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
         .values()
-        .filter(|server| !server.id.starts_with(ART_MANAGED_MCP_SERVER_ID_PREFIX))
         .cloned()
         .collect::<Vec<_>>();
-    let mut servers = user_servers
+    let tools = tool_registry
+        .list_tools()
+        .map_err(|error| anyhow::anyhow!("list installed Arts for MCP usage: {error}"))?;
+    let mut servers = configured_servers
         .into_iter()
-        .map(serde_json::to_value)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    servers.extend(project_art_managed_mcp_servers(tool_registry)?);
+        .map(|server| mcp_server_view(&server, &tools, control_plane_root))
+        .collect::<Vec<_>>();
     servers.sort_by(|left, right| {
         left.get("id")
             .and_then(Value::as_str)
@@ -6850,91 +6917,75 @@ fn list_mcp_servers(
     Ok((200, serde_json::to_string(&json!({ "servers": servers }))?))
 }
 
-fn project_art_managed_mcp_servers(tool_registry: &ToolRegistry) -> Result<Vec<Value>> {
-    let tools = tool_registry
-        .list_tools()
-        .map_err(|error| anyhow::anyhow!("list installed Arts for MCP projection: {error}"))?;
-    Ok(tools
-        .iter()
-        .filter_map(project_art_managed_mcp_server)
-        .collect())
-}
-
-fn project_art_managed_mcp_server(tool: &ToolDefinition) -> Option<Value> {
-    let ToolExecution::FrameworkArt { framework } = &tool.execution else {
-        return None;
+fn mcp_server_view(
+    server: &McpServerConfig,
+    tools: &[ToolDefinition],
+    control_plane_root: &Path,
+) -> Value {
+    let mut value = serde_json::to_value(server).unwrap_or_else(|_| json!({}));
+    let Some(object) = value.as_object_mut() else {
+        return value;
     };
-    if framework != "mcp" {
-        return None;
-    }
-
-    let metadata = tool.metadata.as_ref()?.as_object()?;
-    let mcp = metadata.get("mcp")?.as_object()?;
-    let server_id = mcp.get("serverId")?.as_str()?.trim();
-    let tool_name = mcp.get("toolName")?.as_str()?.trim();
-    if server_id.is_empty() || tool_name.is_empty() {
-        return None;
-    }
-    let transport = mcp
-        .get("transport")
-        .and_then(Value::as_str)
-        .unwrap_or("stdio");
-    if !matches!(transport, "stdio" | "streamable-http") {
-        return None;
-    }
-    let credential_names = ["credentialEnv", "credentialHeaders"]
+    object.remove("credentialBindings");
+    let package_id = server
+        .package
+        .as_ref()
+        .map(|package| package.qualified_id.clone());
+    let used_by_art_ids = tools
         .iter()
-        .filter_map(|field| mcp.get(*field).and_then(Value::as_object))
-        .flat_map(|mapping| mapping.values())
-        .filter_map(Value::as_str)
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>();
-    let credential_bindings = metadata
-        .get("artUserSettings")
-        .and_then(|settings| settings.get("credentialBindings"))
-        .and_then(Value::as_object);
-    let credential_bound = credential_names.iter().all(|name| {
-        credential_bindings
-            .and_then(|bindings| bindings.get(*name))
-            .and_then(Value::as_str)
-            .is_some_and(|binding| !binding.trim().is_empty())
-    });
-    let owner_art_id = tool.qualified_id();
-    let projected_id = format!(
-        "{ART_MANAGED_MCP_SERVER_ID_PREFIX}{}:{}",
-        encode_managed_mcp_id_segment(&owner_art_id),
-        encode_managed_mcp_id_segment(server_id),
+        .filter(|tool| {
+            let dependencies = read_dependencies(tool);
+            dependencies
+                .mcp_servers
+                .iter()
+                .any(|dependency| Some(dependency.id.as_str()) == package_id.as_deref())
+                || tool
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.pointer("/mcp/serverId"))
+                    .and_then(Value::as_str)
+                    == Some(server.id.as_str())
+        })
+        .map(ToolDefinition::qualified_id)
+        .collect::<Vec<_>>();
+    let credential_required = server
+        .credential_requirements
+        .iter()
+        .any(|requirement| requirement.required);
+    let required_bindings = server
+        .credential_requirements
+        .iter()
+        .filter(|requirement| requirement.required)
+        .filter_map(|requirement| {
+            server
+                .credential_bindings
+                .get(&requirement.id)
+                .map(|name| (requirement.id.clone(), name.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let credential_bound = !credential_required
+        || (required_bindings.len()
+            == server
+                .credential_requirements
+                .iter()
+                .filter(|requirement| requirement.required)
+                .count()
+            && CredentialStore::new(control_plane_root)
+                .grants_for_mcp_bindings(&server.id, &required_bindings)
+                .is_ok());
+    object.insert(
+        "source".to_owned(),
+        Value::String(if server.package.is_some() {
+            "package".to_owned()
+        } else {
+            "manual".to_owned()
+        }),
     );
-
-    Some(json!({
-        "id": projected_id,
-        "serverId": server_id,
-        "name": format!("{} MCP", tool.name),
-        "description": tool.description,
-        "transport": transport,
-        "command": "",
-        "enabled": tool.enabled,
-        "managed": true,
-        "source": "art",
-        "ownerArtId": owner_art_id,
-        "toolName": tool_name,
-        "readOnly": true,
-        "editable": false,
-        "deletable": false,
-        "credentialRequired": !credential_names.is_empty(),
-        "credentialBound": credential_bound,
-    }))
-}
-
-fn encode_managed_mcp_id_segment(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(value.len() * 2);
-    for byte in value.bytes() {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
+    object.insert("credentialRequired".to_owned(), json!(credential_required));
+    object.insert("credentialBound".to_owned(), json!(credential_bound));
+    object.insert("usageCount".to_owned(), json!(used_by_art_ids.len()));
+    object.insert("usedByArtIds".to_owned(), json!(used_by_art_ids));
+    value
 }
 
 fn put_mcp_server(
@@ -6943,15 +6994,21 @@ fn put_mcp_server(
     mcp_servers: &SharedMcpServerStore,
     store_path: &Path,
 ) -> Result<(u16, String)> {
-    if path_id.starts_with(ART_MANAGED_MCP_SERVER_ID_PREFIX) {
-        return managed_mcp_server_mutation_error(path_id);
-    }
     let server = match serde_json::from_str::<McpServerConfig>(body) {
         Ok(server) => server,
         Err(error) => return invalid_request(error.to_string()),
     };
     if server.id != path_id {
         return id_mismatch("server", path_id, &server.id);
+    }
+    if server.package.is_some() {
+        return structured_error(
+            400,
+            json!({
+                "code": "mcp_package_state_read_only",
+                "message": "package metadata can only be changed through MCP package install or upgrade",
+            }),
+        );
     }
     if let Err(error) = server.validate() {
         return invalid_request(error.to_string());
@@ -6978,15 +7035,272 @@ fn put_mcp_server(
     Ok((200, serde_json::to_string(&json!({ "server": server }))?))
 }
 
+fn install_mcp_server_package(
+    body: &str,
+    mcp_servers: &SharedMcpServerStore,
+    control_plane_root: &Path,
+    store_path: &Path,
+) -> Result<(u16, String)> {
+    let request: McpServerPackageInstallRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    if request.zip_base64.trim().is_empty() {
+        return invalid_request("zipBase64 is required");
+    }
+    let package_bytes = match BASE64.decode(request.zip_base64.trim()) {
+        Ok(bytes) => bytes,
+        Err(error) => return invalid_request(format!("zipBase64 is invalid: {error}")),
+    };
+    let mut installed = match install_server_package(control_plane_root, &package_bytes) {
+        Ok(server) => server,
+        Err(error) => {
+            return structured_error(
+                400,
+                json!({
+                    "code": "invalid_mcp_server_package",
+                    "message": error.to_string(),
+                }),
+            )
+        }
+    };
+    let mut guard = mcp_servers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+    let previous = guard.get(&installed.id).cloned();
+    if let Some(existing) = previous.as_ref() {
+        let existing_package = existing
+            .package
+            .as_ref()
+            .map(|package| package.qualified_id.as_str());
+        let installed_package = installed
+            .package
+            .as_ref()
+            .map(|package| package.qualified_id.as_str());
+        if existing_package != installed_package {
+            let _ = uninstall_server_package(control_plane_root, &installed);
+            return structured_error(
+                409,
+                json!({
+                    "code": "mcp_server_id_conflict",
+                    "message": format!("MCP server id `{}` is already used by another configuration", installed.id),
+                    "serverId": installed.id,
+                }),
+            );
+        }
+        installed.credential_bindings = existing.credential_bindings.clone();
+        installed.enabled = existing.enabled;
+    }
+    guard.insert(installed.id.clone(), installed.clone());
+    if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+        match previous {
+            Some(previous) => {
+                guard.insert(installed.id.clone(), previous);
+            }
+            None => {
+                guard.remove(&installed.id);
+            }
+        }
+        return Err(error);
+    }
+    drop(guard);
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "server": mcp_server_view(&installed, &[], control_plane_root),
+        }))?,
+    ))
+}
+
+fn set_mcp_server_enabled(
+    path_id: &str,
+    body: &str,
+    mcp_servers: &SharedMcpServerStore,
+    store_path: &Path,
+) -> Result<(u16, String)> {
+    let request: ToggleRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let mut guard = mcp_servers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+    let Some(previous) = guard.get(path_id).cloned() else {
+        return structured_error(
+            404,
+            json!({ "code": "mcp_server_not_found", "serverId": path_id }),
+        );
+    };
+    let mut updated = previous.clone();
+    updated.enabled = request.enabled;
+    guard.insert(path_id.to_owned(), updated.clone());
+    if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+        guard.insert(path_id.to_owned(), previous);
+        return Err(error);
+    }
+    Ok((200, serde_json::to_string(&json!({ "server": updated }))?))
+}
+
+fn update_mcp_server_credentials(
+    path_id: &str,
+    body: &str,
+    mcp_servers: &SharedMcpServerStore,
+    control_plane_root: &Path,
+    store_path: &Path,
+) -> Result<(u16, String)> {
+    let request: McpServerCredentialUpdateRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let previous = mcp_servers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
+        .get(path_id)
+        .cloned();
+    let Some(previous) = previous else {
+        return structured_error(
+            404,
+            json!({ "code": "mcp_server_not_found", "serverId": path_id }),
+        );
+    };
+    let credential_ids = previous
+        .credential_requirements
+        .iter()
+        .map(|requirement| requirement.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(unknown) = request
+        .values
+        .keys()
+        .map(String::as_str)
+        .chain(request.clear.iter().map(String::as_str))
+        .find(|id| !credential_ids.contains(id))
+    {
+        return invalid_request(format!("unknown MCP credential id `{unknown}`"));
+    }
+    let store = CredentialStore::new(control_plane_root);
+    let scope = CredentialScope {
+        framework_id: None,
+        art_id: None,
+        mcp_server_id: Some(path_id.to_owned()),
+    };
+    let mut updated = previous.clone();
+    for id in request.clear {
+        if let Some(name) = updated.credential_bindings.remove(&id) {
+            let _ = store.delete(&name, &scope);
+        }
+    }
+    for (id, value) in request.values {
+        if value.is_empty() {
+            return invalid_request(format!("MCP credential `{id}` must not be empty"));
+        }
+        let name = mcp_credential_name(path_id, &id);
+        if let Err(error) = store.upsert(CredentialInput {
+            name: name.clone(),
+            value,
+            value_type: CredentialValueType::String,
+            scope: scope.clone(),
+            expires_at: None,
+        }) {
+            return structured_error(
+                400,
+                json!({ "code": "credential_store_failed", "message": error.to_string() }),
+            );
+        }
+        updated.credential_bindings.insert(id, name);
+    }
+    let mut guard = mcp_servers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+    guard.insert(path_id.to_owned(), updated.clone());
+    if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
+        guard.insert(path_id.to_owned(), previous);
+        return Err(error);
+    }
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "server": mcp_server_view(&updated, &[], control_plane_root),
+        }))?,
+    ))
+}
+
+fn mcp_credential_name(server_id: &str, credential_id: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(server_id.as_bytes()));
+    format!("mcp-{}-{credential_id}", &digest[..16])
+}
+
+fn materialize_mcp_server_credentials(
+    server: &McpServerConfig,
+    control_plane_root: &Path,
+) -> std::result::Result<McpServerConfig, String> {
+    let grants = CredentialStore::new(control_plane_root)
+        .grants_for_mcp_bindings(&server.id, &server.credential_bindings)
+        .map_err(|error| error.to_string())?;
+    let values = grants
+        .into_iter()
+        .map(|grant| (grant.name, grant.value))
+        .collect::<BTreeMap<_, _>>();
+    let mut resolved = server.clone();
+    for requirement in resolved
+        .credential_requirements
+        .iter()
+        .filter(|requirement| requirement.required)
+    {
+        if !values.contains_key(&requirement.id) {
+            return Err(format!(
+                "MCP credential `{}` is not configured",
+                requirement.label
+            ));
+        }
+    }
+    for (name, alias) in &resolved.credential_env {
+        if let Some(value) = values.get(alias) {
+            resolved.env.insert(name.clone(), value.clone());
+        }
+    }
+    for (name, alias) in &resolved.credential_headers {
+        if let Some(value) = values.get(alias) {
+            resolved.headers.insert(name.clone(), value.clone());
+        }
+    }
+    Ok(resolved)
+}
+
+fn test_installed_mcp_server(
+    path_id: &str,
+    mcp_servers: &SharedMcpServerStore,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let server = mcp_servers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
+        .get(path_id)
+        .cloned();
+    let Some(server) = server else {
+        return structured_error(
+            404,
+            json!({ "code": "mcp_server_not_found", "serverId": path_id }),
+        );
+    };
+    let resolved = match materialize_mcp_server_credentials(&server, control_plane_root) {
+        Ok(server) => server,
+        Err(message) => {
+            return structured_error(
+                409,
+                json!({ "code": "mcp_credential_missing", "message": message }),
+            )
+        }
+    };
+    test_mcp_connection(&serde_json::to_string(&resolved)?)
+}
+
 fn delete_mcp_server(
     path_id: &str,
     mcp_servers: &SharedMcpServerStore,
     store_path: &Path,
+    control_plane_root: &Path,
 ) -> Result<(u16, String)> {
-    if path_id.starts_with(ART_MANAGED_MCP_SERVER_ID_PREFIX) {
-        return managed_mcp_server_mutation_error(path_id);
-    }
-    {
+    let removed = {
         let mut guard = mcp_servers
             .lock()
             .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
@@ -7001,26 +7315,36 @@ fn delete_mcp_server(
             );
         };
         if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
-            guard.insert(path_id.to_owned(), removed);
+            guard.insert(path_id.to_owned(), removed.clone());
             return Err(error);
         }
+        removed
+    };
+    if let Err(error) = uninstall_server_package(control_plane_root, &removed) {
+        let mut guard = mcp_servers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+        guard.insert(path_id.to_owned(), removed.clone());
+        let _ = persist_mcp_servers_snapshot(store_path, &guard);
+        return structured_error(
+            500,
+            json!({ "code": "mcp_uninstall_failed", "message": error.to_string() }),
+        );
+    }
+    let credential_store = CredentialStore::new(control_plane_root);
+    let scope = CredentialScope {
+        framework_id: None,
+        art_id: None,
+        mcp_server_id: Some(path_id.to_owned()),
+    };
+    for name in removed.credential_bindings.values() {
+        let _ = credential_store.delete(name, &scope);
     }
 
     Ok((
         200,
         serde_json::to_string(&json!({ "serverId": path_id, "deleted": true }))?,
     ))
-}
-
-fn managed_mcp_server_mutation_error(server_id: &str) -> Result<(u16, String)> {
-    structured_error(
-        409,
-        json!({
-            "code": "mcp_server_managed_by_art",
-            "message": "Art-managed MCP services are read-only; manage the owning Art instead",
-            "serverId": server_id,
-        }),
-    )
 }
 
 fn fetch_mcp_registry(path: &str, endpoint: &str, cache_path: &Path) -> Result<(u16, String)> {
@@ -7229,6 +7553,12 @@ fn call_mcp_tool(body: &str) -> Result<(u16, String)> {
         transport: request.transport,
         url: request.url.trim().to_owned(),
         headers: request.headers,
+        credential_env: BTreeMap::new(),
+        credential_headers: BTreeMap::new(),
+        credential_bindings: BTreeMap::new(),
+        credential_requirements: Vec::new(),
+        tools: Vec::new(),
+        package: None,
         enabled: true,
     };
     if let Err(error) = config.validate() {
@@ -7770,10 +8100,59 @@ fn rollback_art(
 
 fn uninstall_art(
     art_id: &str,
+    body: &str,
     tool_registry: &ToolRegistry,
     control_plane_root: &Path,
     hook_bridge: &SharedHookBridgeRuntime,
+    mcp_servers: &SharedMcpServerStore,
+    mcp_store_path: &Path,
 ) -> Result<(u16, String)> {
+    let request: ArtUninstallRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let target = match tool_registry.get_tool(art_id) {
+        Ok(Some(tool)) => tool,
+        Ok(None) => {
+            return structured_error(404, json!({ "code": "art_not_found", "artId": art_id }))
+        }
+        Err(error) => return tool_registry_error_response(error),
+    };
+    let target_identity = target.qualified_id();
+    let mcp_dependencies = read_dependencies(&target).mcp_servers;
+    let other_tools = tool_registry
+        .list_tools()
+        .map_err(|error| anyhow::anyhow!("list Arts before uninstall: {error}"))?;
+    let mut retained_mcp_servers = Vec::new();
+    let removable_mcp_packages = if request.remove_unused_mcp_servers {
+        mcp_dependencies
+            .iter()
+            .filter_map(|dependency| {
+                let used_by = other_tools
+                    .iter()
+                    .filter(|tool| tool.qualified_id() != target_identity)
+                    .filter(|tool| {
+                        read_dependencies(tool)
+                            .mcp_servers
+                            .iter()
+                            .any(|candidate| candidate.id == dependency.id)
+                    })
+                    .map(ToolDefinition::qualified_id)
+                    .collect::<Vec<_>>();
+                if used_by.is_empty() {
+                    Some(dependency.id.clone())
+                } else {
+                    retained_mcp_servers.push(json!({
+                        "packageId": dependency.id,
+                        "usedByArtIds": used_by,
+                    }));
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>()
+    } else {
+        BTreeSet::new()
+    };
     match loom_tool_registry::install::uninstall_art_package(
         control_plane_root,
         art_id,
@@ -7781,10 +8160,40 @@ fn uninstall_art(
     ) {
         Ok(()) => {
             let _ = ArtSettingsStore::new(control_plane_root).delete(art_id);
+            let mut removed_mcp_servers = Vec::new();
+            if request.remove_unused_mcp_servers {
+                let candidates = mcp_servers
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock MCP server store"))?
+                    .values()
+                    .filter(|server| {
+                        server.package.as_ref().is_some_and(|package| {
+                            removable_mcp_packages.contains(&package.qualified_id)
+                        })
+                    })
+                    .map(|server| server.id.clone())
+                    .collect::<Vec<_>>();
+                for server_id in candidates {
+                    let (status, _) = delete_mcp_server(
+                        &server_id,
+                        mcp_servers,
+                        mcp_store_path,
+                        control_plane_root,
+                    )?;
+                    if status == 200 {
+                        removed_mcp_servers.push(server_id);
+                    }
+                }
+            }
             broadcast_tool_capabilities_updated(hook_bridge);
             Ok((
                 200,
-                serde_json::to_string(&json!({ "artId": art_id, "uninstalled": true }))?,
+                serde_json::to_string(&json!({
+                    "artId": art_id,
+                    "uninstalled": true,
+                    "removedMcpServers": removed_mcp_servers,
+                    "retainedMcpServers": retained_mcp_servers,
+                }))?,
             ))
         }
         Err(error) => structured_error(
@@ -8073,6 +8482,7 @@ fn put_art_management_settings(
             scope: CredentialScope {
                 framework_id: None,
                 art_id: Some(identity.clone()),
+                mcp_server_id: None,
             },
             expires_at: None,
         }) {
@@ -8103,6 +8513,7 @@ fn put_art_management_settings(
                 &CredentialScope {
                     framework_id: None,
                     art_id: Some(identity.clone()),
+                    mcp_server_id: None,
                 },
             );
         }
@@ -15920,6 +16331,24 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "message": error.to_string(),
             }),
         ),
+        ToolRegistryError::McpDependency {
+            tool_id,
+            server_id,
+            code,
+            reason,
+        } => structured_error(
+            if code == "mcp_dependency_missing" {
+                404
+            } else {
+                409
+            },
+            json!({
+                "code": code,
+                "message": reason,
+                "tool_id": tool_id,
+                "server_id": server_id,
+            }),
+        ),
         ToolRegistryError::CloudInvalidMethod { id, method } => structured_error(
             400,
             json!({
@@ -17929,6 +18358,44 @@ nodes:
         bytes
     }
 
+    fn mcp_server_package_zip() -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "id": "fixture-search",
+            "name": "Fixture Search",
+            "version": "1.2.3",
+            "publisher": { "id": "publisher.test", "name": "Publisher Test" },
+            "transport": "stdio",
+            "entry": { "command": "runtime/server.ps1", "args": [] },
+            "tools": ["search"],
+            "credentials": [{
+                "id": "api_key",
+                "label": "API Key",
+                "required": true,
+                "target": { "kind": "env", "name": "API_KEY" }
+            }]
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer
+                .start_file("mcp.server.json", options)
+                .expect("manifest entry");
+            writer
+                .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                .expect("manifest bytes");
+            writer
+                .start_file("runtime/server.ps1", options)
+                .expect("runtime entry");
+            writer
+                .write_all(b"Write-Output fixture")
+                .expect("runtime bytes");
+            writer.finish().expect("finish package");
+        }
+        bytes
+    }
+
     fn art_package_zip(id: &str, version: &str, payload: &[u8]) -> Vec<u8> {
         let manifest = serde_json::json!({
             "id": id,
@@ -18522,9 +18989,12 @@ nodes:
 
         let (status, body) = uninstall_art(
             "authored-art",
+            "{}",
             &runtime.tool_registry,
             &root,
             &runtime.hook_bridge,
+            &runtime.mcp_servers,
+            &mcp_server_store_path(&root),
         )
         .expect("uninstall authored Art");
         assert_eq!(status, 200, "body={body}");
@@ -19544,7 +20014,7 @@ nodes:
     fn expect_text_route_response(response: RouteResponse, expected_status: u16) -> String {
         match response {
             RouteResponse::Text { status, body } => {
-                assert_eq!(status, expected_status);
+                assert_eq!(status, expected_status, "route response body: {body}");
                 body
             }
             RouteResponse::Binary { .. } => {
@@ -20888,47 +21358,101 @@ nodes:
     }
 
     #[test]
-    fn daemon_projects_installed_art_mcp_servers_as_read_only_runtime_entries() {
+    fn daemon_manages_independent_mcp_server_package_lifecycle() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let root = unique_temp_dir("control-plane-art-managed-mcp");
+        let root = unique_temp_dir("control-plane-independent-mcp");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let package = mcp_server_package_zip();
+        let package_base64 = BASE64.encode(&package);
+        let installed = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/mcp/servers/install",
+                    &[],
+                    Some(&json!({ "zipBase64": &package_base64 }).to_string()),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(installed["server"]["id"], "fixture-search");
+        assert_eq!(installed["server"]["source"], "package");
+        assert_eq!(
+            installed["server"]["package"]["qualifiedId"],
+            "publisher.test/fixture-search"
+        );
+        assert_eq!(installed["server"]["credentialRequired"], true);
+        assert_eq!(installed["server"]["credentialBound"], false);
+        assert!(installed["server"].get("credentialBindings").is_none());
+
         let mut art = ToolDefinition::new(
-            "custom-image-search",
-            "图片搜索",
-            "Search image candidates through the Art-scoped MCP framework.",
+            "fixture-art",
+            "Fixture Art",
+            "Uses an independently installed MCP server.",
             ToolExecution::FrameworkArt {
                 framework: "mcp".to_owned(),
             },
         );
         art.metadata = Some(json!({
             "packageSecurity": {
-                "version": "0.3.2",
-                "publisher": { "id": "neuro.official", "name": "Neuro" }
+                "version": "1.0.0",
+                "publisher": { "id": "publisher.test", "name": "Publisher Test" }
+            },
+            "dependencies": {
+                "framework": "mcp",
+                "mcpServers": [{ "id": "publisher.test/fixture-search", "version": "^1.2" }]
             },
             "mcp": {
-                "transport": "stdio",
-                "serverId": "neuro-image-search",
-                "command": "runtime/image-search-mcp.ps1",
-                "toolName": "brave_image_search",
-                "credentialEnv": { "BRAVE_API_KEY": "brave_api_key" }
+                "serverId": "fixture-search",
+                "packageId": "publisher.test/fixture-search",
+                "version": "^1.2",
+                "toolName": "search"
             }
         }));
-        ArtSettingsStore::new(&root)
-            .save(
-                "neuro.official/custom-image-search",
-                ArtUserSettings {
-                    credential_bindings: BTreeMap::from([(
-                        "brave_api_key".to_owned(),
-                        "art.neuro.official.custom-image-search.brave_api_key".to_owned(),
-                    )]),
-                    ..ArtUserSettings::default()
-                },
-            )
-            .expect("save Art credential binding metadata");
         runtime
             .tool_registry
             .save_tool(art)
-            .expect("save MCP framework Art");
+            .expect("save MCP consumer Art");
+
+        let configured = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "PUT",
+                    "/v1/mcp/servers/fixture-search/credentials",
+                    &[],
+                    Some(r#"{"values":{"api_key":"fixture-secret"}}"#),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(configured["server"]["credentialBound"], true);
+        assert!(!fs::read_to_string(mcp_server_store_path(&root))
+            .expect("MCP server store")
+            .contains("fixture-secret"));
+
+        let reinstalled = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/mcp/servers/install",
+                    &[],
+                    Some(&json!({ "zipBase64": &package_base64 }).to_string()),
+                ),
+            ),
+            200,
+        );
+        assert_eq!(reinstalled["server"]["credentialBound"], true);
+        assert!(reinstalled["server"].get("credentialBindings").is_none());
+        let persisted_servers: Value = serde_json::from_str(
+            &fs::read_to_string(mcp_server_store_path(&root)).expect("MCP server store"),
+        )
+        .expect("parse MCP server store");
+        assert!(persisted_servers[0]["credentialBindings"]["api_key"]
+            .as_str()
+            .is_some_and(|binding| !binding.is_empty()));
 
         let listed = expect_json_text_route_response(
             route_request(
@@ -20937,85 +21461,38 @@ nodes:
             ),
             200,
         );
-        let servers = listed["servers"].as_array().expect("servers");
-        assert_eq!(servers.len(), 1);
-        let managed = &servers[0];
-        assert_eq!(managed["serverId"], "neuro-image-search");
-        assert_eq!(managed["ownerArtId"], "neuro.official/custom-image-search");
-        assert_eq!(managed["toolName"], "brave_image_search");
-        assert_eq!(managed["source"], "art");
-        assert_eq!(managed["managed"], true);
-        assert_eq!(managed["readOnly"], true);
-        assert_eq!(managed["editable"], false);
-        assert_eq!(managed["deletable"], false);
-        assert_eq!(managed["credentialRequired"], true);
-        assert_eq!(managed["credentialBound"], true);
-        assert!(managed.get("env").is_none());
-        assert!(managed.get("headers").is_none());
-        assert!(managed.get("credentialEnv").is_none());
-        assert!(managed.get("credentialHeaders").is_none());
-        assert_eq!(managed["command"], "");
-        assert!(
-            !mcp_server_store_path(&root).exists(),
-            "Art-managed projection must not create the user MCP server store"
+        assert_eq!(listed["servers"][0]["usageCount"], 1);
+        assert_eq!(
+            listed["servers"][0]["usedByArtIds"][0],
+            "publisher.test/fixture-art"
         );
+        assert_eq!(listed["servers"][0]["credentialBound"], true);
 
-        let managed_id = managed["id"].as_str().expect("managed id");
-        let rejected_put = expect_json_text_route_response(
+        let disabled = expect_json_text_route_response(
             route_request(
                 &runtime,
                 &parsed_request(
                     "PUT",
-                    &format!("/v1/mcp/servers/{managed_id}"),
+                    "/v1/mcp/servers/fixture-search/enabled",
                     &[],
-                    Some(
-                        &json!({
-                            "id": managed_id,
-                            "name": "conflicting user server",
-                            "command": "powershell",
-                            "transport": "stdio",
-                            "enabled": true
-                        })
-                        .to_string(),
-                    ),
+                    Some(r#"{"enabled":false}"#),
                 ),
-            ),
-            409,
-        );
-        assert_eq!(rejected_put["error"]["code"], "mcp_server_managed_by_art");
-        let rejected_delete = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request(
-                    "DELETE",
-                    &format!("/v1/mcp/servers/{managed_id}"),
-                    &[],
-                    None,
-                ),
-            ),
-            409,
-        );
-        assert_eq!(
-            rejected_delete["error"]["code"],
-            "mcp_server_managed_by_art"
-        );
-        assert!(
-            !mcp_server_store_path(&root).exists(),
-            "rejected managed mutations must not create the user MCP server store"
-        );
-
-        runtime
-            .tool_registry
-            .delete_tool("neuro.official/custom-image-search")
-            .expect("uninstall MCP framework Art");
-        let after_uninstall = expect_json_text_route_response(
-            route_request(
-                &runtime,
-                &parsed_request("GET", "/v1/mcp/servers", &[], None),
             ),
             200,
         );
-        assert_eq!(after_uninstall["servers"], json!([]));
+        assert_eq!(disabled["server"]["enabled"], false);
+
+        let deleted = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("DELETE", "/v1/mcp/servers/fixture-search", &[], None),
+            ),
+            200,
+        );
+        assert_eq!(deleted["deleted"], true);
+        assert!(!root
+            .join("mcp/packages/publisher.test/fixture-search")
+            .exists());
 
         drop(runtime);
         let _ = fs::remove_dir_all(root);

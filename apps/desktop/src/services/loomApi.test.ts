@@ -28,6 +28,7 @@ import {
   trustPluginUser,
   trustPluginPublisher,
   untrustPluginUser,
+  updateMcpServerCredentials,
   updateArtToVersion,
   updateHookWorkflowNode,
   deletePluginCredential,
@@ -38,6 +39,42 @@ import {
   type ConnectionState,
   type LoomSnapshot,
 } from "./loomApi.ts";
+
+test("updates credentials through the independent MCP server endpoint", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let requestBody: Record<string, unknown> | null = null;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    assert.equal(new URL(value).pathname, "/v1/mcp/servers/neuro-image-search/credentials");
+    assert.equal(init?.method, "PUT");
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({
+      server: {
+        id: "neuro-image-search",
+        name: "Neuro Image Search",
+        transport: "stdio",
+        command: "runtime/image-search-mcp.ps1",
+        credentialRequired: true,
+        credentialBound: true,
+      },
+    });
+  }) as typeof fetch;
+
+  const server = await updateMcpServerCredentials(
+    "http://127.0.0.1:18765",
+    "neuro-image-search",
+    { brave_api_key: "write-only-fixture" },
+  );
+  assert.deepEqual(requestBody, {
+    values: { brave_api_key: "write-only-fixture" },
+    clear: [],
+  });
+  assert.equal(server.credentialBound, true);
+  assert.equal("credentialBindings" in server, false);
+});
 
 test("official MCP Registry and remote tool helpers preserve standard transport fields", async (context) => {
   const originalFetch = globalThis.fetch;
@@ -477,20 +514,25 @@ test("Art package uninstall uses the publisher-qualified package route", async (
 
   let seenMethod = "";
   let seenPath = "";
+  let seenBody = "";
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     seenMethod = String(init?.method ?? "GET").toUpperCase();
     seenPath = new URL(value).pathname;
+    seenBody = String(init?.body ?? "");
     return new Response(JSON.stringify({ artId: "publisher.test/sample-art", uninstalled: true }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
   }) as typeof fetch;
 
-  await uninstallArtPackage("http://127.0.0.1:18770", "publisher.test/sample-art");
+  await uninstallArtPackage("http://127.0.0.1:18770", "publisher.test/sample-art", {
+    removeUnusedMcpServers: true,
+  });
 
   assert.equal(seenMethod, "POST");
   assert.equal(seenPath, "/v1/arts/publisher.test%2Fsample-art/uninstall");
+  assert.match(seenBody, /"removeUnusedMcpServers":true/);
 });
 
 test("framework helpers call the framework management routes", async (context) => {

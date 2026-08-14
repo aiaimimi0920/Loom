@@ -163,7 +163,7 @@ test("renders compact Art cards with framework icons and icon-only actions", () 
 
 test("Art card edit and enable controls persist through dedicated management APIs", () => {
   assert.match(appSource, /const packageIdentity = artPackageIdentity\(tool\)/);
-  assert.match(appSource, /await uninstallArtPackage\(baseUrl, packageIdentity\)/);
+  assert.match(appSource, /await uninstallArtPackage\(baseUrl, packageIdentity, \{[\s\S]*?removeUnusedMcpServers:/);
   assert.match(appSource, /await deleteToolDefinition\(baseUrl, tool\.id\)/);
   assert.match(appSource, /saveToolDefinition\(baseUrl, \{ \.\.\.tool, enabled: nextEnabled \}\)/);
   assert.match(appSource, /role="dialog"\s+aria-modal="true"\s+aria-labelledby="art-edit-dialog-title"/);
@@ -172,6 +172,19 @@ test("Art card edit and enable controls persist through dedicated management API
   assert.match(appSource, /aria-pressed=\{enabled\}/);
   assert.match(appSource, /aria-label=\{`编辑 \$\{tool\.name \|\| tool\.id\}`\}/);
   assert.match(appSource, /aria-label=\{`删除 \$\{tool\.name \|\| tool\.id\}`\}/);
+});
+
+test("Art cards expose independent MCP dependency readiness and configuration", () => {
+  assert.match(appSource, /resolveArtMcpDependencies\(tool, mcpServers\)/);
+  assert.match(appSource, /需要配置 MCP 凭据/);
+  assert.match(appSource, /MCP 依赖已禁用/);
+  assert.match(appSource, /MCP 依赖未安装/);
+  assert.match(appSource, /MCP 依赖就绪/);
+  assert.match(appSource, /await updateMcpServerCredentials\(baseUrl, credentialServer\.id, values, clear\)/);
+  assert.match(appSource, /<McpCredentialDialog[\s\S]*?server=\{credentialServer\}/);
+  assert.match(styleSource, /\.art-registry-card__mcp-configuration \{[\s\S]*?var\(--loom-theme-warning\)/);
+  assert.match(styleSource, /\.art-registry-card__mcp-state--ready \{[\s\S]*?var\(--loom-theme-success\)/);
+  assert.match(styleSource, /\.art-registry-card__mcp-state--missing \{[\s\S]*?var\(--loom-theme-danger\)/);
 });
 
 test("Art editor keeps content while removing redundant field and section labels", () => {

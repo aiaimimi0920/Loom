@@ -3,6 +3,7 @@
 //! V1 envelopes are strict. New protocol behavior must be negotiated explicitly
 //! instead of accepting alternative historical field names.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use semver::{Version, VersionReq};
@@ -382,6 +383,33 @@ pub struct FrameworkExecutionContext {
     pub granted_permissions: PermissionPolicy,
     #[serde(default)]
     pub credentials: Vec<CredentialGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_server: Option<FrameworkMcpServer>,
+}
+
+/// Host-resolved MCP runtime configuration supplied to the MCP framework.
+/// Art packages identify a dependency but never own its process or endpoint.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameworkMcpServer {
+    pub id: String,
+    pub package_id: String,
+    pub version: String,
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credential_env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credential_headers: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

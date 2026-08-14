@@ -237,8 +237,9 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.doesNotMatch(hubSource, /fetchMcpRegistry\(baseUrl/);
   assert.match(hubSource, /MCP_MARKET_SERVERS\.filter/);
   assert.match(hubSource, /await saveMcpServer\(baseUrl, server\)/);
-  assert.match(hubSource, /await testMcpConnection\(baseUrl, saved\)/);
-  assert.match(hubSource, />添加 MCP</);
+  assert.match(hubSource, /await testInstalledMcpServer\(baseUrl, saved\.id\)/);
+  assert.match(hubSource, />安装 MCP 包</);
+  assert.match(hubSource, />添加手动配置</);
   assert.match(hubSource, />\s*链接添加\s*</);
   assert.match(hubSource, /mode: "link", server: createRemoteMcpDraft\(\)/);
   assert.match(hubSource, /transport: "streamable-http"/);
@@ -276,12 +277,13 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(styleSource, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.mcp-busy-indicator/);
 });
 
-test("renders Art-managed MCP services as credential-aware read-only entries", () => {
-  assert.match(hubSource, /const isArtManagedServer/);
-  assert.match(hubSource, /server\.managed === true && server\.source === "art"/);
-  assert.match(hubSource, /由 Art 管理 · 凭据已绑定/);
-  assert.match(hubSource, /由 Art 管理 · 凭据待绑定/);
-  assert.match(hubSource, /只读 · 请在 Art 管理中配置/);
-  assert.match(hubSource, /if \(isArtManagedServer\(server\)\) return;/);
-  assert.match(hubSource, /artManaged \? \([\s\S]*?\) : \([\s\S]*?aria-label=\{`编辑/);
+test("renders MCP packages as independently managed services", () => {
+  assert.doesNotMatch(hubSource, /isArtManagedServer|由 Art 管理|只读 · 请在 Art 管理中配置/);
+  assert.match(hubSource, /server\.source === "package"/);
+  assert.match(hubSource, /await installMcpServerPackage\(baseUrl, btoa\(binary\)\)/);
+  assert.match(hubSource, /await setMcpServerEnabled\(baseUrl, server\.id, enabled\)/);
+  assert.match(hubSource, /await updateMcpServerCredentials\(baseUrl, server\.id, values, clear\)/);
+  assert.match(hubSource, /await deleteMcpServer\(baseUrl, server\.id\)/);
+  assert.match(hubSource, /被 \{server\.usageCount\} 个 Art 使用/);
+  assert.match(hubSource, /凭据由 Loom CredentialStore 加密保存/);
 });

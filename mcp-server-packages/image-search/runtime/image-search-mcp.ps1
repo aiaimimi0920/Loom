@@ -65,7 +65,10 @@ function ConvertTo-BraveImageCandidate {
     }
     $properties = Get-PropertyValue -Value $Result -Name "properties"
     $thumbnail = Get-PropertyValue -Value $Result -Name "thumbnail"
-    $imageUrl = ConvertTo-HttpUrl (Get-PropertyValue -Value $properties -Name "url")
+    $imageUrl = ConvertTo-HttpUrl (Get-PropertyValue -Value $Result -Name "url")
+    if ($null -eq $imageUrl) {
+        $imageUrl = ConvertTo-HttpUrl (Get-PropertyValue -Value $properties -Name "url")
+    }
     $thumbnailUrl = ConvertTo-HttpUrl (Get-PropertyValue -Value $thumbnail -Name "src")
     if ($null -eq $imageUrl) {
         $imageUrl = $thumbnailUrl

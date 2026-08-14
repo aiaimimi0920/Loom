@@ -56,6 +56,16 @@ function Install-FrameworkZip {
     return Invoke-LoomJson -Method Post -Url "$BaseUrl/v1/frameworks/install" -Body @{ zipBase64 = $encoded }
 }
 
+function Install-McpZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$ZipPath
+    )
+
+    $encoded = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($ZipPath))
+    return Invoke-LoomJson -Method Post -Url "$BaseUrl/v1/mcp/servers/install" -Body @{ zipBase64 = $encoded }
+}
+
 function Write-Utf8NoBomFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -125,7 +135,10 @@ $configuration = Join-Path $controlPlane "configuration"
 $runStore = Join-Path $controlPlane "runs.sqlite3"
 $stdoutPath = Join-Path $controlPlane "daemon.stdout.log"
 $stderrPath = Join-Path $controlPlane "daemon.stderr.log"
-$mcpFixturePath = Join-Path $controlPlane "authored-mcp-fixture.ps1"
+$mcpPackageStage = Join-Path $controlPlane "authored-mcp-package"
+$mcpFixturePath = Join-Path $mcpPackageStage "runtime\authored-mcp-fixture.ps1"
+$mcpManifestPath = Join-Path $mcpPackageStage "mcp.server.json"
+$mcpPackagePath = Join-Path $controlPlane "authored-art-fixture-mcp.zip"
 $port = Get-FreePort
 $baseUrl = "http://127.0.0.1:$port"
 $daemon = $null
@@ -196,6 +209,19 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
 }
 '@
 
+$mcpArtRuntime = @'
+$ErrorActionPreference = "Stop"
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$mcpResult = $request.frameworkData.mcp.result
+if ($null -eq $mcpResult) {
+    throw "MCP framework result is missing"
+}
+[Console]::Out.WriteLine((@{
+    status = "success"
+    output = $mcpResult
+} | ConvertTo-Json -Depth 30 -Compress))
+'@
+
 $pythonAdapter = @'
 import importlib.util
 import json
@@ -230,8 +256,28 @@ def run(args):
     }
 '@
 
-New-Item -ItemType Directory -Force -Path $controlPlane, $configuration | Out-Null
+New-Item -ItemType Directory -Force -Path $controlPlane, $configuration, (Split-Path -Parent $mcpFixturePath) | Out-Null
 Write-Utf8NoBomFile -Path $mcpFixturePath -Content $mcpFixture
+$mcpManifest = [ordered]@{
+    schemaVersion = 1
+    id = "authored-art-fixture"
+    name = "Authored Art Fixture"
+    description = "Independent MCP package for authored Art creation"
+    version = "1.0.0"
+    publisher = [ordered]@{
+        id = "neuro.official"
+        name = "Neuro"
+    }
+    transport = "stdio"
+    entry = [ordered]@{
+        command = "runtime/authored-mcp-fixture.ps1"
+        args = @()
+    }
+    tools = @("echo")
+    credentials = @()
+}
+Write-Utf8NoBomFile -Path $mcpManifestPath -Content (($mcpManifest | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+Compress-Archive -Path (Join-Path $mcpPackageStage "*") -DestinationPath $mcpPackagePath -CompressionLevel Optimal
 
 try {
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
@@ -269,6 +315,10 @@ try {
         $status = @($frameworkStatus.frameworks | Where-Object { [string]$_.id -eq $frameworkId }) | Select-Object -First 1
         Assert-True ($null -ne $status -and [bool]$status.installed -and [bool]$status.enabled -and [bool]$status.ready) "Framework is not ready: $frameworkId"
     }
+    $installedMcp = Install-McpZip -BaseUrl $baseUrl -ZipPath $mcpPackagePath
+    Assert-Equal "authored-art-fixture" ([string]$installedMcp.server.id) "Authored MCP package install id mismatch."
+    Assert-Equal "package" ([string]$installedMcp.server.source) "Authored MCP fixture must use the independent package lifecycle."
+    Assert-Equal "neuro.official/authored-art-fixture" ([string]$installedMcp.server.package.qualifiedId) "Authored MCP package identity mismatch."
     $trust = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/plugin-trust/policy" -Body @{
         policy = "require_signed"
     }
@@ -288,24 +338,33 @@ try {
         }
     $null = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/arts/create" -Body @{ tool = $cloudTool; files = @() }
 
-    $null = Invoke-LoomJson -Method Put -Url "$baseUrl/v1/mcp/servers/authored-art-fixture" -Body @{
-        id = "authored-art-fixture"
-        name = "Authored Art Fixture"
-        description = "MCP fixture for authored Art creation"
-        transport = "stdio"
-        command = "powershell.exe"
-        args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $mcpFixturePath)
-        env = @{}
-        enabled = $true
-    }
     $mcpTool = New-LocalArtTool `
         -RepositoryName $repositoryNames.mcp `
         -ArtName "MCP Creation Test" `
         -Framework "mcp" `
-        -Execution @{ type = "mcp"; serverId = "authored-art-fixture"; toolName = "echo" } `
+        -Execution @{ type = "framework_art"; framework = "mcp" } `
         -Inputs @(@{ name = "text"; label = "Text"; type = "string"; executionType = "string" }) `
         -Outputs @(@{ name = "result"; label = "Result"; type = "string"; executionType = "string" })
-    $null = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/arts/create" -Body @{ tool = $mcpTool; files = @() }
+    $mcpTool.metadata.dependencies["frameworkVersion"] = "^0.2"
+    $mcpTool.metadata.dependencies["mcpServers"] = @(
+        @{ id = "neuro.official/authored-art-fixture"; version = "^1.0" }
+    )
+    $mcpTool.metadata["mcp"] = [ordered]@{
+        serverId = "authored-art-fixture"
+        packageId = "neuro.official/authored-art-fixture"
+        version = "^1.0"
+        toolName = "echo"
+    }
+    $null = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/arts/create" -Body @{
+        tool = $mcpTool
+        runtime = @{
+            protocolVersion = "loom.art.runtime.v1"
+            entry = @{ command = "powershell.exe"; args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "runtime/main.ps1") }
+        }
+        files = @(
+            @{ path = "runtime/main.ps1"; content = $mcpArtRuntime }
+        )
+    }
 
     $scriptTool = New-LocalArtTool `
         -RepositoryName $repositoryNames.script `

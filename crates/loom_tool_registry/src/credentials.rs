@@ -30,6 +30,8 @@ pub struct CredentialScope {
     pub framework_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub art_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_server_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,11 +167,18 @@ impl CredentialStore {
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| {
-            (&left.name, &left.scope.framework_id, &left.scope.art_id).cmp(&(
-                &right.name,
-                &right.scope.framework_id,
-                &right.scope.art_id,
-            ))
+            (
+                &left.name,
+                &left.scope.framework_id,
+                &left.scope.art_id,
+                &left.scope.mcp_server_id,
+            )
+                .cmp(&(
+                    &right.name,
+                    &right.scope.framework_id,
+                    &right.scope.art_id,
+                    &right.scope.mcp_server_id,
+                ))
         });
         Ok(summaries)
     }
@@ -260,6 +269,7 @@ impl CredentialStore {
                     .art_id
                     .as_deref()
                     .is_some_and(|scope| scope != art_id)
+                || credential.scope.mcp_server_id.is_some()
             {
                 continue;
             }
@@ -307,6 +317,7 @@ impl CredentialStore {
                             .art_id
                             .as_deref()
                             .is_none_or(|scope| scope == art_id)
+                        && credential.scope.mcp_server_id.is_none()
                         && !credential
                             .expires_at
                             .as_deref()
@@ -317,6 +328,55 @@ impl CredentialStore {
                     usize::from(credential.scope.framework_id.is_some())
                         + usize::from(credential.scope.art_id.is_some())
                 })
+                .ok_or_else(|| CredentialError::MissingBinding {
+                    alias: alias.clone(),
+                    credential: credential_name.clone(),
+                })?;
+            if credential.value_type != CredentialValueType::String {
+                return Err(CredentialError::NonStringSecretBinding {
+                    alias: alias.clone(),
+                    credential: credential_name.clone(),
+                    actual: credential.value_type,
+                });
+            }
+            let bytes = unprotect_value(&credential.protected_value, &credential.protection)?;
+            grants.push(CredentialGrant {
+                name: alias.clone(),
+                value: String::from_utf8(bytes)
+                    .map_err(|error| CredentialError::Protection(error.to_string()))?,
+                expires_at: credential.expires_at.clone(),
+            });
+        }
+        Ok(grants)
+    }
+
+    pub fn grants_for_mcp_bindings(
+        &self,
+        mcp_server_id: &str,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<Vec<CredentialGrant>, CredentialError> {
+        let now = Utc::now();
+        let credentials = self.read_file()?.credentials;
+        let mut grants = Vec::with_capacity(bindings.len());
+        for (alias, credential_name) in bindings {
+            let credential = credentials
+                .iter()
+                .filter(|credential| {
+                    credential.name == *credential_name
+                        && credential.scope.framework_id.is_none()
+                        && credential.scope.art_id.is_none()
+                        && credential
+                            .scope
+                            .mcp_server_id
+                            .as_deref()
+                            .is_none_or(|scope| scope == mcp_server_id)
+                        && !credential
+                            .expires_at
+                            .as_deref()
+                            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                            .is_some_and(|expires| expires.with_timezone(&Utc) <= now)
+                })
+                .max_by_key(|credential| usize::from(credential.scope.mcp_server_id.is_some()))
                 .ok_or_else(|| CredentialError::MissingBinding {
                     alias: alias.clone(),
                     credential: credential_name.clone(),
@@ -353,6 +413,7 @@ impl CredentialStore {
                     credential.name == *credential_name
                         && credential.scope.framework_id.is_none()
                         && credential.scope.art_id.is_none()
+                        && credential.scope.mcp_server_id.is_none()
                         && !credential
                             .expires_at
                             .as_deref()
@@ -459,6 +520,7 @@ fn validate_input(input: &CredentialInput) -> Result<(), CredentialError> {
     for scope in [
         input.scope.framework_id.as_deref(),
         input.scope.art_id.as_deref(),
+        input.scope.mcp_server_id.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -740,6 +802,7 @@ mod tests {
                 scope: CredentialScope {
                     framework_id: Some("cloud_api".to_owned()),
                     art_id: Some("example-art".to_owned()),
+                    mcp_server_id: None,
                 },
                 expires_at: None,
             })
@@ -831,6 +894,41 @@ mod tests {
     }
 
     #[test]
+    fn mcp_credentials_are_resolved_only_for_the_bound_server() {
+        let root = temp_root();
+        let store = CredentialStore::new(&root);
+        store
+            .upsert(CredentialInput {
+                name: "image_search_key".to_owned(),
+                value: "mcp-secret".to_owned(),
+                value_type: CredentialValueType::String,
+                scope: CredentialScope {
+                    framework_id: None,
+                    art_id: None,
+                    mcp_server_id: Some("neuro-image-search".to_owned()),
+                },
+                expires_at: None,
+            })
+            .expect("store MCP credential");
+        let bindings =
+            BTreeMap::from([("brave_api_key".to_owned(), "image_search_key".to_owned())]);
+        let grants = store
+            .grants_for_mcp_bindings("neuro-image-search", &bindings)
+            .expect("resolve MCP binding");
+        assert_eq!(grants[0].name, "brave_api_key");
+        assert_eq!(grants[0].value, "mcp-secret");
+        assert!(matches!(
+            store.grants_for_mcp_bindings("other-server", &bindings),
+            Err(CredentialError::MissingBinding { .. })
+        ));
+        assert!(store
+            .grants_for("mcp", "art", &["image_search_key".to_owned()])
+            .expect("Art grant lookup")
+            .is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn credential_scopes_accept_publisher_qualified_package_ids() {
         let root = temp_root();
         let store = CredentialStore::new(&root);
@@ -842,6 +940,7 @@ mod tests {
                 scope: CredentialScope {
                     framework_id: Some("neuro.official/mcp".to_owned()),
                     art_id: Some("neuro.official/custom-image-search".to_owned()),
+                    mcp_server_id: None,
                 },
                 expires_at: None,
             })

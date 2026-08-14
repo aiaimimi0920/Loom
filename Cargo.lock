@@ -1424,11 +1424,16 @@ dependencies = [
 name = "loom_mcp"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "loom_process",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
+ "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]

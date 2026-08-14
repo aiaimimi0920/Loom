@@ -598,6 +598,7 @@ $cloudEvidencePath = Join-Path $fixturesRoot "cloud-request.json"
 $mcpEvidencePath = Join-Path $fixturesRoot "mcp-request.json"
 $cloudScriptPath = Join-Path $fixturesRoot "fake-cloud-server.py"
 $mcpScriptPath = Join-Path $fixturesRoot "fake-mcp-server.py"
+$mcpPackagePath = Join-Path $fixturesRoot "store-fixture-mcp.zip"
 
 $cloudScript = @"
 import base64
@@ -794,6 +795,42 @@ for raw_line in sys.stdin:
 "@
 Write-Utf8NoBomFile -Path $mcpScriptPath -Content $mcpScript
 
+$fixturePythonLiteral = $fixturePythonCommand.Replace("'", "''")
+$fixturePythonPrefix = if ($fixturePythonArgsPrefix.Count -gt 0) {
+    "@(" + (($fixturePythonArgsPrefix | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ", ") + ")"
+} else {
+    "@()"
+}
+$mcpLauncher = @"
+param(
+    [Parameter(ValueFromRemainingArguments = `$true)]
+    [string[]]`$McpArguments
+)
+`$pythonPrefix = $fixturePythonPrefix
+& '$fixturePythonLiteral' @pythonPrefix (Join-Path `$PSScriptRoot 'fake-mcp-server.py') @McpArguments
+exit `$LASTEXITCODE
+"@
+$mcpServerManifest = @{
+    schemaVersion = 1
+    id = "store-fixture"
+    name = "Store Fixture MCP"
+    description = "Independent MCP package used by the framework/store smoke"
+    version = "1.0.0"
+    publisher = @{ id = "neuro.official"; name = "Neuro" }
+    transport = "stdio"
+    entry = @{
+        command = "runtime/server.ps1"
+        args = @($mcpEvidencePath, "http://127.0.0.1:$cloudPort/raw-image.png", "http://127.0.0.1:$cloudPort/raw-image-alt.png")
+    }
+    tools = @("echo", "brave_image_search")
+    credentials = @()
+}
+New-ZipFixture -ZipPath $mcpPackagePath -TextFiles @{
+    "mcp.server.json" = (ConvertTo-NormalizedJson $mcpServerManifest)
+    "runtime/server.ps1" = $mcpLauncher
+    "runtime/fake-mcp-server.py" = $mcpScript
+}
+
 
 $processImageRuntime = @'
 $ErrorActionPreference = "Stop"
@@ -953,9 +990,8 @@ $mcpManifest = @{
     description = "Fake store MCP image-search Art"
     enabled = $true
     execution = @{
-        type = "mcp"
-        serverId = "store-fixture"
-        toolName = "brave_image_search"
+        type = "framework_art"
+        framework = "mcp"
     }
     outputs = @(
         @{
@@ -973,11 +1009,27 @@ $mcpManifest = @{
     metadata = @{
         packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
         art = @{ qualifiedId = "neuro.official/store-mcp-art" }
-        dependencies = @{ framework = "neuro.official/mcp" }
+        dependencies = @{
+            framework = "mcp"
+            frameworkVersion = "^0.2"
+            mcpServers = @(
+                @{ id = "neuro.official/store-fixture"; version = "^1.0" }
+            )
+        }
+        mcp = @{
+            serverId = "store-fixture"
+            packageId = "neuro.official/store-fixture"
+            version = "^1.0"
+            toolName = "brave_image_search"
+        }
     }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art\1.0.0.zip") -TextFiles @{
     "manifest.json" = (ConvertTo-NormalizedJson $mcpManifest)
+} -FileCopies @{
+    "art.runtime.json" = (Join-Path $repoRoot "art-packages\samples\image-search\art.runtime.json")
+    "runtime/main.ps1" = (Join-Path $repoRoot "art-packages\samples\image-search\runtime\main.ps1")
+    "runtime/common.ps1" = (Join-Path $repoRoot "art-packages\shared\image-runtime-common.ps1")
 }
 
 $workflowYaml = @"
@@ -1079,16 +1131,12 @@ try {
     Assert-Equal ($catalogExpectedIds -join ",") (($catalogIds | Sort-Object) -join ",") "Store catalog ids mismatch."
     $summary.catalog = $catalog.arts
 
-    $savedServer = Invoke-JsonPut -Uri "$baseUrl/v1/mcp/servers/store-fixture" -Body @{
-        id = "store-fixture"
-        name = "Store Fixture MCP"
-        transport = "stdio"
-        command = $fixturePythonCommand
-        args = @($fixturePythonArgsPrefix + @($mcpScriptPath, $mcpEvidencePath, "http://127.0.0.1:$cloudPort/raw-image.png", "http://127.0.0.1:$cloudPort/raw-image-alt.png"))
-        env = @{}
-        enabled = $true
+    $savedServer = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/servers/install" -Body @{
+        zipBase64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($mcpPackagePath))
     }
-    Assert-Equal "store-fixture" ([string]$savedServer.server.id) "MCP server save id mismatch."
+    Assert-Equal "store-fixture" ([string]$savedServer.server.id) "MCP package install id mismatch."
+    Assert-Equal "package" ([string]$savedServer.server.source) "MCP smoke fixture must use the independent package lifecycle."
+    Assert-Equal "neuro.official/store-fixture" ([string]$savedServer.server.package.qualifiedId) "MCP package identity mismatch."
     $summary.mcpServer = $savedServer.server
 
     $frameworkInstallReports = @{}

@@ -364,6 +364,83 @@ function Assert-FrameworkPackages {
     return @($payloadPaths)
 }
 
+function Assert-McpServerPackages {
+    param(
+        [string]$PackagePath,
+        [object]$Manifest
+    )
+
+    if ([int]$Manifest.schemaVersion -lt 2) {
+        return @()
+    }
+
+    $expectedId = "neuro-image-search"
+    $expectedQualifiedId = "neuro.official/neuro-image-search"
+    $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "mcpServerPackages")
+    Assert-Equal -Expected 1 -Actual $packageRecords.Count -Message "Manifest must contain one MCP server package record."
+    $zipRecord = $packageRecords[0]
+    Assert-Equal -Expected "mcp-server-package-zip" -Actual ([string]$zipRecord.kind) -Message "MCP server package kind mismatch."
+    Assert-Equal -Expected $expectedId -Actual ([string]$zipRecord.id) -Message "MCP server package id mismatch."
+    Assert-Equal -Expected $expectedQualifiedId -Actual ([string]$zipRecord.qualifiedId) -Message "MCP server package qualified id mismatch."
+    Assert-Equal -Expected "$expectedId.zip" -Actual ([string]$zipRecord.name) -Message "MCP server package name mismatch."
+    Assert-Equal -Expected "packages\mcp-servers\$expectedId.zip" -Actual (([string]$zipRecord.path).Replace("/", "\")) -Message "MCP server package path mismatch."
+
+    $artifacts = @(Get-ManifestRecord -Manifest $Manifest -Name "artifacts")
+    $payloadPaths = @()
+    $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $zipRecord
+    $sidecarRecord = @($artifacts | Where-Object {
+        (Test-LoomArtifactKind -Artifact $_ -Kind "mcp-server-package-zip-sha256") -and
+        [string]$_.id -eq $expectedId
+    })
+    Assert-Equal -Expected 1 -Actual $sidecarRecord.Count -Message "MCP server package checksum record count mismatch."
+    $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $sidecarRecord[0]
+    Assert-ZipChecksumSidecar -PackagePath $PackagePath -ZipRecord $zipRecord -SidecarRecord $sidecarRecord[0]
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord.path)
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $manifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "mcp.server.json" })
+        Assert-Equal -Expected 1 -Actual $manifestEntry.Count -Message "MCP server ZIP must contain one root manifest."
+        $reader = [System.IO.StreamReader]::new($manifestEntry[0].Open())
+        try {
+            $serverManifest = $reader.ReadToEnd() | ConvertFrom-Json
+        }
+        finally {
+            $reader.Dispose()
+        }
+        Assert-Equal -Expected $expectedId -Actual ([string]$serverManifest.id) -Message "MCP server ZIP manifest id mismatch."
+        Assert-Equal -Expected ([string]$zipRecord.version) -Actual ([string]$serverManifest.version) -Message "MCP server ZIP manifest version mismatch."
+        Assert-Equal -Expected "neuro.official" -Actual ([string]$serverManifest.publisher.id) -Message "MCP server ZIP publisher mismatch."
+        Assert-True -Condition (@($serverManifest.tools) -contains "brave_image_search") -Message "MCP server ZIP tool declaration is missing."
+        $runtimePath = ([string]$serverManifest.entry.command).Replace("\", "/")
+        $runtimeEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq $runtimePath })
+        Assert-Equal -Expected 1 -Actual $runtimeEntry.Count -Message "MCP server ZIP runtime entry is missing."
+    }
+    finally {
+        $archive.Dispose()
+    }
+
+    $catalogRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "mcpServerCatalog")
+    Assert-Equal -Expected 1 -Actual $catalogRecords.Count -Message "Manifest must contain one MCP server catalog record."
+    Assert-Equal -Expected "packages\mcp-servers\summary.json" -Actual (([string]$catalogRecords[0].path).Replace("/", "\")) -Message "MCP server catalog path mismatch."
+    $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $catalogRecords[0]
+    $catalogArtifact = @($artifacts | Where-Object { Test-LoomArtifactKind -Artifact $_ -Kind "mcp-server-package-catalog" })
+    Assert-Equal -Expected 1 -Actual $catalogArtifact.Count -Message "Manifest artifacts must contain one MCP server catalog."
+    Assert-Equal -Expected ([string]$catalogRecords[0].sha256) -Actual ([string]$catalogArtifact[0].sha256) -Message "MCP server catalog artifact mismatch."
+
+    $catalogPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$catalogRecords[0].path)
+    $catalog = Get-Content -Raw -Encoding UTF8 -LiteralPath $catalogPath | ConvertFrom-Json
+    $catalogEntries = @($catalog.servers)
+    Assert-Equal -Expected 1 -Actual $catalogEntries.Count -Message "MCP server catalog entry count mismatch."
+    Assert-Equal -Expected $expectedId -Actual ([string]$catalogEntries[0].id) -Message "MCP server catalog id mismatch."
+    Assert-Equal -Expected $expectedQualifiedId -Actual ([string]$catalogEntries[0].qualifiedId) -Message "MCP server catalog qualified id mismatch."
+    Assert-Equal -Expected ([string]$zipRecord.name) -Actual ([string]$catalogEntries[0].zip) -Message "MCP server catalog ZIP mismatch."
+    Assert-Equal -Expected ([string]$zipRecord.sha256) -Actual ([string]$catalogEntries[0].sha256) -Message "MCP server catalog hash mismatch."
+
+    return @($payloadPaths)
+}
+
 function Assert-SampleArtPackages {
     param(
         [string]$PackagePath,
@@ -586,6 +663,7 @@ foreach ($record in $supportRecords) {
     $payloadPaths += Assert-FileRecord -PackagePath $packageFullPath -Record $record
 }
 $payloadPaths += @(Assert-FrameworkPackages -PackagePath $packageFullPath -Manifest $manifest)
+$payloadPaths += @(Assert-McpServerPackages -PackagePath $packageFullPath -Manifest $manifest)
 $payloadPaths += @(Assert-SampleArtPackages -PackagePath $packageFullPath -Manifest $manifest)
 
 $buildInfo = @(Get-ManifestRecord -Manifest $manifest -Name "buildInfo")

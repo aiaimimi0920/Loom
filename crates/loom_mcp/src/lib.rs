@@ -1,5 +1,7 @@
 //! MCP server configuration and JSON-RPC request contracts for Loom.
 
+pub mod package;
+
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -74,6 +76,25 @@ pub enum McpTransport {
     StreamableHttp,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCredentialRequirement {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerPackageState {
+    pub qualified_id: String,
+    pub publisher_id: String,
+    pub version: String,
+    pub digest: String,
+    pub package_dir: PathBuf,
+}
+
 impl McpTransport {
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -103,6 +124,18 @@ pub struct McpServerConfig {
     pub url: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credential_env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credential_headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credential_bindings: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_requirements: Vec<McpCredentialRequirement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<McpServerPackageState>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -139,6 +172,12 @@ impl McpServerConfig {
             transport: McpTransport::Stdio,
             url: String::new(),
             headers: BTreeMap::new(),
+            credential_env: BTreeMap::new(),
+            credential_headers: BTreeMap::new(),
+            credential_bindings: BTreeMap::new(),
+            credential_requirements: Vec::new(),
+            tools: Vec::new(),
+            package: None,
             enabled: true,
         }
     }
@@ -167,6 +206,12 @@ impl McpServerConfig {
             transport: McpTransport::StreamableHttp,
             url: url.into(),
             headers: BTreeMap::new(),
+            credential_env: BTreeMap::new(),
+            credential_headers: BTreeMap::new(),
+            credential_bindings: BTreeMap::new(),
+            credential_requirements: Vec::new(),
+            tools: Vec::new(),
+            package: None,
             enabled: true,
         }
     }

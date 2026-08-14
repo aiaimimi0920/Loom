@@ -257,6 +257,15 @@ pub struct ArtDependencies {
     pub binaries: Vec<ArtBinary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<ArtMcpServerDependency>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtMcpServerDependency {
+    pub id: String,
+    pub version: String,
 }
 
 /// Read an art's dependency manifest from `metadata.dependencies`, defaulting

@@ -159,6 +159,7 @@ function New-SupportSpec {
 function Get-LoomCatalog {
     param(
         [string]$FrameworkPackageOutputRoot,
+        [string]$McpServerPackageOutputRoot,
         [string]$SampleArtPackageOutputRoot
     )
 
@@ -237,6 +238,11 @@ function Get-LoomCatalog {
         )
     }
 
+    $mcpServerPackageCatalog = [ordered]@{
+        outputRoot = [System.IO.Path]::GetFullPath($McpServerPackageOutputRoot)
+        expectedIds = @("neuro-image-search")
+    }
+
     return [ordered]@{
         app = "Loom"
         sourceProject = "Loom"
@@ -246,6 +252,7 @@ function Get-LoomCatalog {
         cliArtifact = $cliArtifact
         pluginSdkArtifact = $pluginSdkArtifact
         frameworkPackageCatalog = $frameworkPackageCatalog
+        mcpServerPackageCatalog = $mcpServerPackageCatalog
         sampleArtPackageCatalog = $sampleArtPackageCatalog
         commands = @(
             New-CommandSpec -Executable "cargo" `
@@ -278,13 +285,23 @@ function Get-LoomCatalog {
                 -Arguments @(
                     "-NoProfile",
                     "-ExecutionPolicy", "Bypass",
+                    "-File", (Join-Path $repoRoot "scripts\Build-LoomMcpServerPackages.ps1"),
+                    "-OutputRoot", $mcpServerPackageCatalog.outputRoot
+                ) `
+                -WorkingDirectory $repoRoot `
+                -Display "Build-LoomMcpServerPackages.ps1 -OutputRoot packages\mcp-servers" `
+                -LogName "build-05.log"
+            New-CommandSpec -Executable "powershell.exe" `
+                -Arguments @(
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
                     "-File", (Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"),
                     "-OutputRoot", $sampleArtPackageCatalog.outputRoot,
                     "-Configuration", "Release"
                 ) `
                 -WorkingDirectory $repoRoot `
                 -Display "Build-LoomSampleArtPackages.ps1 -OutputRoot packages\arts -Configuration Release" `
-                -LogName "build-05.log"
+                -LogName "build-06.log"
         )
     }
 }
@@ -349,6 +366,10 @@ function New-Plan {
         frameworkPackageCatalog = [ordered]@{
             outputRoot = $Catalog.frameworkPackageCatalog.outputRoot
             expectedIds = @($Catalog.frameworkPackageCatalog.expectedIds)
+        }
+        mcpServerPackageCatalog = [ordered]@{
+            outputRoot = $Catalog.mcpServerPackageCatalog.outputRoot
+            expectedIds = @($Catalog.mcpServerPackageCatalog.expectedIds)
         }
         sampleArtPackageCatalog = [ordered]@{
             outputRoot = $Catalog.sampleArtPackageCatalog.outputRoot
@@ -516,6 +537,93 @@ function Get-FrameworkPackageArtifacts {
         catalog = $summaryRecord
         artifacts = @($artifactRecords)
         payload = @($payloadRecords)
+    }
+}
+
+function Get-McpServerPackageArtifacts {
+    param([System.Collections.Specialized.OrderedDictionary]$McpCatalog)
+
+    $catalogRoot = [string]$McpCatalog.outputRoot
+    $summaryPath = Join-Path $catalogRoot "summary.json"
+    if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+        throw "MCP server package catalog summary is missing: $summaryPath"
+    }
+    $summary = Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath | ConvertFrom-Json
+    $expectedIds = @($McpCatalog.expectedIds | ForEach-Object { [string]$_ })
+    $summaryEntries = @($summary.servers)
+    $actualIds = @($summaryEntries | ForEach-Object { [string]$_.id })
+    if (-not [string]::Equals(
+        (@($expectedIds | Sort-Object) -join "`n"),
+        (@($actualIds | Sort-Object) -join "`n"),
+        [System.StringComparison]::Ordinal
+    )) {
+        throw "MCP server package catalog ids do not match the release contract."
+    }
+
+    $packageRecords = @()
+    $artifactRecords = @()
+    foreach ($id in $expectedIds) {
+        $entry = @($summaryEntries | Where-Object { [string]$_.id -eq $id })
+        if ($entry.Count -ne 1) {
+            throw "MCP server package catalog must contain exactly one entry for ${id}."
+        }
+        $zipPath = Join-Path $catalogRoot "$id.zip"
+        $sidecarPath = "$zipPath.sha256"
+        foreach ($required in @($zipPath, $sidecarPath)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw "MCP server package artifact is missing: $required"
+            }
+        }
+        $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sidecarFields = @((Get-Content -Raw -Encoding UTF8 -LiteralPath $sidecarPath).Trim() -split '\s+')
+        if ($sidecarFields.Count -ne 2 -or
+            -not [string]::Equals($sidecarFields[0], $zipHash, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($sidecarFields[1], "$id.zip", [System.StringComparison]::Ordinal)) {
+            throw "MCP server package checksum sidecar is invalid: $sidecarPath"
+        }
+        if (-not [string]::Equals([string]$entry[0].sha256, $zipHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "MCP server package summary hash mismatch: $id"
+        }
+        $zipFile = Get-Item -LiteralPath $zipPath
+        $zipRelative = "packages\mcp-servers\$id.zip"
+        $zipRecord = [ordered]@{
+            kind = "mcp-server-package-zip"
+            role = "mcp-server"
+            id = $id
+            qualifiedId = [string]$entry[0].qualifiedId
+            version = [string]$entry[0].version
+            name = $zipFile.Name
+            path = $zipRelative
+            bytes = [int64]$zipFile.Length
+            sha256 = $zipHash
+        }
+        $sidecarFile = Get-Item -LiteralPath $sidecarPath
+        $sidecarRecord = [ordered]@{
+            kind = "mcp-server-package-zip-sha256"
+            role = "mcp-server"
+            id = $id
+            name = $sidecarFile.Name
+            path = "$zipRelative.sha256"
+            bytes = [int64]$sidecarFile.Length
+            sha256 = (Get-FileHash -LiteralPath $sidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $packageRecords += $zipRecord
+        $artifactRecords += @($zipRecord, $sidecarRecord)
+    }
+    $summaryFile = Get-Item -LiteralPath $summaryPath
+    $summaryRecord = [ordered]@{
+        kind = "mcp-server-package-catalog"
+        name = $summaryFile.Name
+        path = "packages\mcp-servers\summary.json"
+        bytes = [int64]$summaryFile.Length
+        sha256 = (Get-FileHash -LiteralPath $summaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $artifactRecords += $summaryRecord
+    return [pscustomobject]@{
+        packages = @($packageRecords)
+        catalog = $summaryRecord
+        artifacts = @($artifactRecords)
+        payload = @($artifactRecords)
     }
 }
 
@@ -839,6 +947,7 @@ $resolvedOutputRoot = Resolve-OutputRoot -Value $OutputRoot
 $destination = Join-Path $resolvedOutputRoot $resolvedVersionId
 $catalog = Get-LoomCatalog `
     -FrameworkPackageOutputRoot (Join-Path $destination "packages\frameworks") `
+    -McpServerPackageOutputRoot (Join-Path $destination "packages\mcp-servers") `
     -SampleArtPackageOutputRoot (Join-Path $destination "packages\arts")
 $sourceGitDirty = Get-GitDirty
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
@@ -897,6 +1006,11 @@ $frameworkPackageRecords = @($frameworkArtifacts.packages)
 $frameworkCatalogRecord = $frameworkArtifacts.catalog
 $frameworkArtifactRecords = @($frameworkArtifacts.artifacts)
 $frameworkPayloadRecords = @($frameworkArtifacts.payload)
+$mcpServerArtifacts = Get-McpServerPackageArtifacts -McpCatalog $catalog.mcpServerPackageCatalog
+$mcpServerPackageRecords = @($mcpServerArtifacts.packages)
+$mcpServerCatalogRecord = $mcpServerArtifacts.catalog
+$mcpServerArtifactRecords = @($mcpServerArtifacts.artifacts)
+$mcpServerPayloadRecords = @($mcpServerArtifacts.payload)
 $sampleArtArtifacts = Get-SampleArtPackageArtifacts -ArtCatalog $catalog.sampleArtPackageCatalog
 $sampleArtPackageRecords = @($sampleArtArtifacts.packages)
 $sampleArtCatalogRecord = $sampleArtArtifacts.catalog
@@ -928,8 +1042,8 @@ $buildInfo = [ordered]@{
     sha256 = (Get-FileHash -LiteralPath $buildInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-$payloadRecords = @($exeRecords + $supportRecords + $frameworkPayloadRecords + $sampleArtPayloadRecords)
-$artifactRecords = @($frameworkArtifactRecords + $sampleArtArtifactRecords)
+$payloadRecords = @($exeRecords + $supportRecords + $frameworkPayloadRecords + $mcpServerPayloadRecords + $sampleArtPayloadRecords)
+$artifactRecords = @($frameworkArtifactRecords + $mcpServerArtifactRecords + $sampleArtArtifactRecords)
 $cliArtifactManifest = $null
 $pluginSdkArtifactManifest = $null
 if (-not $NoZip) {
@@ -941,6 +1055,7 @@ if (-not $NoZip) {
         $cliArtifactRecords +
         $pluginSdkArtifactRecords +
         $frameworkArtifactRecords +
+        $mcpServerArtifactRecords +
         $sampleArtArtifactRecords
     )
     $cliZipRecord = @($cliArtifactRecords | Where-Object { [string]$_.kind -eq "cli-zip" })[0]
@@ -1027,6 +1142,8 @@ $manifest = [ordered]@{
     pluginSdkArtifact = $pluginSdkArtifactManifest
     frameworkPackages = $frameworkPackageRecords
     frameworkCatalog = $frameworkCatalogRecord
+    mcpServerPackages = $mcpServerPackageRecords
+    mcpServerCatalog = $mcpServerCatalogRecord
     sampleArtPackages = $sampleArtPackageRecords
     sampleArtCatalog = $sampleArtCatalogRecord
     sbom = $sbomRecords

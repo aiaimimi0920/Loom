@@ -45,15 +45,20 @@ export interface LoomMcpServer {
   url?: string;
   headers?: Record<string, string>;
   enabled?: boolean;
-  managed?: boolean;
-  source?: "art" | "user";
-  ownerArtId?: string;
-  toolName?: string;
-  readOnly?: boolean;
-  editable?: boolean;
-  deletable?: boolean;
+  source?: "package" | "manual";
+  package?: {
+    qualifiedId: string;
+    publisherId: string;
+    version: string;
+    digest: string;
+    packageDir: string;
+  };
+  tools?: string[];
+  credentialRequirements?: Array<{ id: string; label: string; required?: boolean }>;
   credentialRequired?: boolean;
   credentialBound?: boolean;
+  usageCount?: number;
+  usedByArtIds?: string[];
 }
 
 export interface LoomMcpServersResponse {
@@ -1485,8 +1490,23 @@ export async function deleteToolDefinition(baseUrl: string, toolId: string): Pro
   await deleteJson(baseUrl, `/v1/tools/${encodeURIComponent(toolId)}`);
 }
 
-export async function uninstallArtPackage(baseUrl: string, artIdentity: string): Promise<void> {
-  await postJson(baseUrl, `/v1/arts/${encodeURIComponent(artIdentity)}/uninstall`, {});
+export interface LoomArtUninstallResult {
+  artId?: string;
+  uninstalled?: boolean;
+  removedMcpServers?: string[];
+  retainedMcpServers?: Array<{ packageId?: string; usedByArtIds?: string[] }>;
+}
+
+export async function uninstallArtPackage(
+  baseUrl: string,
+  artIdentity: string,
+  options: { removeUnusedMcpServers: boolean },
+): Promise<LoomArtUninstallResult> {
+  return await postJson<LoomArtUninstallResult>(
+    baseUrl,
+    `/v1/arts/${encodeURIComponent(artIdentity)}/uninstall`,
+    options,
+  );
 }
 
 export async function deleteMcpServer(baseUrl: string, serverId: string): Promise<void> {
@@ -1500,6 +1520,46 @@ export async function saveMcpServer(baseUrl: string, server: LoomMcpServer): Pro
     server,
   );
   return response.server ?? server;
+}
+
+export async function installMcpServerPackage(
+  baseUrl: string,
+  zipBase64: string,
+): Promise<LoomMcpServer> {
+  const response = await postJson<{ server?: LoomMcpServer }>(baseUrl, "/v1/mcp/servers/install", {
+    zipBase64,
+  });
+  if (!response.server) throw new Error("Loom 本地服务没有返回已安装的 MCP 服务。");
+  return response.server;
+}
+
+export async function setMcpServerEnabled(
+  baseUrl: string,
+  serverId: string,
+  enabled: boolean,
+): Promise<LoomMcpServer> {
+  const response = await putJson<{ server?: LoomMcpServer }>(
+    baseUrl,
+    `/v1/mcp/servers/${encodeURIComponent(serverId)}/enabled`,
+    { enabled },
+  );
+  if (!response.server) throw new Error("Loom 本地服务没有返回 MCP 服务状态。");
+  return response.server;
+}
+
+export async function updateMcpServerCredentials(
+  baseUrl: string,
+  serverId: string,
+  values: Record<string, string>,
+  clear: string[] = [],
+): Promise<LoomMcpServer> {
+  const response = await putJson<{ server?: LoomMcpServer }>(
+    baseUrl,
+    `/v1/mcp/servers/${encodeURIComponent(serverId)}/credentials`,
+    { values, clear },
+  );
+  if (!response.server) throw new Error("Loom 本地服务没有返回 MCP 凭据状态。");
+  return response.server;
 }
 
 export async function fetchMcpRegistry(
@@ -1530,6 +1590,17 @@ export async function testMcpConnection(
   server: LoomMcpServer,
 ): Promise<LoomMcpTestResult> {
   return await postJson<LoomMcpTestResult>(baseUrl, "/v1/mcp/test", server);
+}
+
+export async function testInstalledMcpServer(
+  baseUrl: string,
+  serverId: string,
+): Promise<LoomMcpTestResult> {
+  return await postJson<LoomMcpTestResult>(
+    baseUrl,
+    `/v1/mcp/servers/${encodeURIComponent(serverId)}/test`,
+    {},
+  );
 }
 
 export async function callMcpTool(

@@ -83,6 +83,7 @@ import {
   type LoomArtManagementSettingsInput,
   type ArtStoreEntry,
   testMcpConnection,
+  updateMcpServerCredentials,
   waitForLoomOnline,
 } from "./services/loomApi";
 import {
@@ -112,6 +113,7 @@ import {
   type ArtPublisherIdentity,
   type ArtWorkspaceId,
 } from "./services/artHubUi";
+import { artMcpDependencyIds, resolveArtMcpDependencies } from "./services/artMcpDependencies";
 import {
   getHookCanvasRefreshTrigger,
   keepNewestHookCanvasSnapshot,
@@ -122,7 +124,7 @@ import {
   HookCanvasThumbnail,
   type WorkflowArtCreationRequest,
 } from "./components/hook/HookCanvasThumbnail";
-import { McpHub } from "./components/mcp/McpHub";
+import { McpCredentialDialog, McpHub } from "./components/mcp/McpHub";
 import {
   autoTemplateResponse,
   collectWorkflowParamBindingCandidates,
@@ -2738,7 +2740,9 @@ function McpPanel({
       notify={notify}
       confirmRemove={(server) => requestAppConfirmation({
         title: "删除 MCP",
-        message: `删除 ${server.name || server.id} 后，使用该服务的 Art 将无法运行。`,
+        message: server.usageCount
+          ? `删除 ${server.name || server.id} 后，${server.usageCount} 个正在使用它的 Art 将返回 MCP 依赖缺失错误。仍要删除吗？`
+          : `删除 ${server.name || server.id} 及其独立运行包和专属凭据。此操作不可撤销。`,
         confirmLabel: "删除",
         tone: "danger",
       })}
@@ -2780,6 +2784,8 @@ function RegistryPanel({
   const [artManagementLoading, setArtManagementLoading] = useState(false);
   const [editBusyAction, setEditBusyAction] = useState<"save" | "update" | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [credentialServer, setCredentialServer] = useState<LoomMcpServer | null>(null);
+  const [credentialBusy, setCredentialBusy] = useState(false);
   const editButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const autoUpdateAttemptedUrl = useRef<string | null>(null);
   const visibleTools = useMemo(
@@ -2812,8 +2818,44 @@ function RegistryPanel({
     try {
       const packageIdentity = artPackageIdentity(tool);
       if (packageIdentity) {
-        await uninstallArtPackage(baseUrl, packageIdentity);
+        const mcpDependencies = artMcpDependencyIds(tool);
+        const confirmation = mcpDependencies.length > 0
+          ? await requestAppConfirmationWithOption({
+              title: "卸载 Art",
+              message: `将卸载 ${tool.name || tool.id}。它声明了 ${mcpDependencies.length} 个独立 MCP 服务依赖。`,
+              optionLabel: "同时卸载未被其他 Art 使用的 MCP 服务",
+              optionDefault: false,
+              confirmLabel: "卸载",
+              tone: "danger",
+            })
+          : {
+              accepted: await requestAppConfirmation({
+                title: "卸载 Art",
+                message: `将卸载 ${tool.name || tool.id} 及其运行数据。`,
+                confirmLabel: "卸载",
+                tone: "danger",
+              }),
+              optionSelected: false,
+            };
+        if (!confirmation.accepted) return;
+        const result = await uninstallArtPackage(baseUrl, packageIdentity, {
+          removeUnusedMcpServers: confirmation.optionSelected,
+        });
+        const removedCount = result.removedMcpServers?.length || 0;
+        const retainedCount = result.retainedMcpServers?.length || 0;
+        setRegistryMessage({
+          kind: "info",
+          text: removedCount || retainedCount
+            ? `已卸载 ${tool.name || tool.id}；移除 ${removedCount} 个未使用 MCP，保留 ${retainedCount} 个仍在使用的 MCP。`
+            : `已卸载 ${tool.name || tool.id}。`,
+        });
       } else {
+        if (!await requestAppConfirmation({
+          title: "删除工具",
+          message: `将删除 ${tool.name || tool.id}。此操作不可撤销。`,
+          confirmLabel: "删除",
+          tone: "danger",
+        })) return;
         await deleteToolDefinition(baseUrl, tool.id);
       }
       await refresh();
@@ -2912,6 +2954,29 @@ function RegistryPanel({
       setRegistryMessage({ kind: "error", text: detail });
     } finally {
       setEditBusyAction(null);
+    }
+  };
+
+  const saveMcpDependencyCredentials = async (
+    values: Record<string, string>,
+    clear: string[],
+  ) => {
+    if (!credentialServer || credentialBusy) return;
+    setCredentialBusy(true);
+    setRegistryMessage(null);
+    try {
+      await updateMcpServerCredentials(baseUrl, credentialServer.id, values, clear);
+      const message = `${credentialServer.name || credentialServer.id} 的 MCP 凭据已更新。`;
+      setCredentialServer(null);
+      setRegistryMessage({ kind: "info", text: message });
+      pushAppToast({ level: "info", text: message });
+      await refresh();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "无法保存 MCP 凭据。";
+      setRegistryMessage({ kind: "error", text: detail });
+      pushAppToast({ level: "error", text: detail });
+    } finally {
+      setCredentialBusy(false);
     }
   };
 
@@ -3149,6 +3214,19 @@ function RegistryPanel({
           const frameworkLabel = framework
             ? frameworkFilterLabel(framework)
             : artFrameworkIconLabel(frameworkReference);
+          const mcpDependencies = resolveArtMcpDependencies(tool, mcpServers);
+          const blockedMcpDependency = mcpDependencies.find((dependency) => dependency.status !== "ready");
+          const displayedMcpDependency = blockedMcpDependency ?? mcpDependencies[0];
+          const mcpStatus = displayedMcpDependency?.status;
+          const mcpStatusText = mcpStatus === "credentials_required"
+            ? "需要配置 MCP 凭据"
+            : mcpStatus === "disabled"
+              ? "MCP 依赖已禁用"
+              : mcpStatus === "missing"
+                ? "MCP 依赖未安装"
+                : mcpStatus === "ready"
+                  ? "MCP 依赖就绪"
+                  : null;
           const toolBusy = busyToolId === tool.id;
           return (
             <article
@@ -3166,9 +3244,32 @@ function RegistryPanel({
                   <ArtIcon kind={artFrameworkIconKind(frameworkReference)} />
                 </span>
               </div>
-              {tool.description ? (
-                <p className="art-registry-card__description" title={tool.description}>{tool.description}</p>
-              ) : null}
+              <div className="art-registry-card__body">
+                {tool.description ? (
+                  <p className="art-registry-card__description" title={tool.description}>{tool.description}</p>
+                ) : null}
+                {mcpStatusText && displayedMcpDependency ? (
+                  mcpStatus === "credentials_required" && displayedMcpDependency.server ? (
+                    <button
+                      className="art-registry-card__mcp-configuration"
+                      type="button"
+                      title={displayedMcpDependency.dependencyId}
+                      aria-label={`${tool.name || tool.id}: 配置 ${displayedMcpDependency.server.name || displayedMcpDependency.server.id} MCP 凭据`}
+                      onClick={() => setCredentialServer(displayedMcpDependency.server)}
+                      disabled={toolBusy || credentialBusy}
+                    >
+                      {mcpStatusText}
+                    </button>
+                  ) : (
+                    <p
+                      className={`art-registry-card__mcp-state art-registry-card__mcp-state--${mcpStatus}`}
+                      title={displayedMcpDependency.dependencyId}
+                    >
+                      {mcpStatusText}
+                    </p>
+                  )
+                ) : null}
+              </div>
               <div className="art-registry-card__actions">
                 <button
                   className="art-card-action"
@@ -3220,6 +3321,14 @@ function RegistryPanel({
         onClose={closeToolEditor}
         onSave={saveToolEdits}
         onUpdate={updateToolVersion}
+      />
+      <McpCredentialDialog
+        server={credentialServer}
+        busy={credentialBusy}
+        onClose={() => {
+          if (!credentialBusy) setCredentialServer(null);
+        }}
+        onSave={saveMcpDependencyCredentials}
       />
       <ArtCreationDialog
         open={createDialogOpen}
@@ -3348,7 +3457,14 @@ interface AppConfirmRequest {
   message: string;
   confirmLabel: string;
   tone: AppConfirmTone;
-  resolve: (accepted: boolean) => void;
+  optionLabel?: string;
+  optionDefault: boolean;
+  resolve: (result: AppConfirmResult) => void;
+}
+
+interface AppConfirmResult {
+  accepted: boolean;
+  optionSelected: boolean;
 }
 
 let nextAppConfirmId = 1;
@@ -3371,6 +3487,33 @@ function requestAppConfirmation(options: {
       message: options.message,
       confirmLabel: options.confirmLabel ?? "确认",
       tone: options.tone ?? "danger",
+      optionDefault: false,
+      resolve: (result) => resolve(result.accepted),
+    });
+  });
+}
+
+function requestAppConfirmationWithOption(options: {
+  title: string;
+  message: string;
+  optionLabel: string;
+  optionDefault?: boolean;
+  confirmLabel?: string;
+  tone?: AppConfirmTone;
+}): Promise<AppConfirmResult> {
+  return new Promise((resolve) => {
+    if (!appConfirmSubscriber) {
+      resolve({ accepted: false, optionSelected: options.optionDefault ?? false });
+      return;
+    }
+    appConfirmSubscriber({
+      id: nextAppConfirmId++,
+      title: options.title,
+      message: options.message,
+      confirmLabel: options.confirmLabel ?? "确认",
+      tone: options.tone ?? "danger",
+      optionLabel: options.optionLabel,
+      optionDefault: options.optionDefault ?? false,
       resolve,
     });
   });
@@ -3384,10 +3527,12 @@ function AppConfirmViewport() {
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const bodyOverflowRef = useRef<string | null>(null);
   const active = queue[0] ?? null;
+  const [optionSelected, setOptionSelected] = useState(false);
+  const optionSelectedRef = useRef(false);
 
   const settle = useCallback((accepted: boolean) => {
     const [current, ...remaining] = queueRef.current;
-    current?.resolve(accepted);
+    current?.resolve({ accepted, optionSelected: optionSelectedRef.current });
     queueRef.current = remaining;
     setQueue(remaining);
   }, []);
@@ -3402,10 +3547,19 @@ function AppConfirmViewport() {
     };
     return () => {
       appConfirmSubscriber = null;
-      queueRef.current.forEach((request) => request.resolve(false));
+      queueRef.current.forEach((request) => request.resolve({
+        accepted: false,
+        optionSelected: request.optionDefault,
+      }));
       queueRef.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    const selected = active?.optionDefault ?? false;
+    optionSelectedRef.current = selected;
+    setOptionSelected(selected);
+  }, [active?.id, active?.optionDefault]);
 
   useEffect(() => {
     if (active) {
@@ -3472,6 +3626,15 @@ function AppConfirmViewport() {
       <section ref={dialogRef} className={`app-confirm-dialog app-confirm-dialog--${active.tone}`} role="alertdialog" aria-modal="true" aria-labelledby="app-confirm-title" aria-describedby="app-confirm-message">
         <header><h2 id="app-confirm-title">{active.title}</h2></header>
         <p id="app-confirm-message">{active.message}</p>
+        {active.optionLabel ? (
+          <label className="app-confirm-dialog__option">
+            <input type="checkbox" checked={optionSelected} onChange={(event) => {
+              optionSelectedRef.current = event.target.checked;
+              setOptionSelected(event.target.checked);
+            }} />
+            <span>{active.optionLabel}</span>
+          </label>
+        ) : null}
         <footer>
           <button ref={cancelRef} className="ghost-button" type="button" onClick={() => settle(false)}>取消</button>
           <button className={active.tone === "danger" ? "danger-button" : "signal-button"} type="button" onClick={() => settle(true)}>{active.confirmLabel}</button>

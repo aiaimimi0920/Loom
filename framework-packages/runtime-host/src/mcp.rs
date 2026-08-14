@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
-use loom_protocol::{CredentialGrant, FrameworkExecuteRequest};
+use loom_protocol::{CredentialGrant, FrameworkExecuteRequest, FrameworkMcpServer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -22,24 +22,10 @@ struct ArtMetadata {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpArtConfig {
-    #[serde(default)]
     server_id: String,
-    #[serde(default)]
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
+    package_id: String,
+    version: String,
     tool_name: String,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-    #[serde(default)]
-    credential_env: BTreeMap<String, String>,
-    transport: McpTransport,
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    headers: BTreeMap<String, String>,
-    #[serde(default)]
-    credential_headers: BTreeMap<String, String>,
     #[serde(default)]
     arguments: Value,
 }
@@ -55,25 +41,48 @@ pub struct McpExecution {
 pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpExecution, String> {
     let config = load_config(art_dir)?;
     let arguments = build_arguments(request, &config.arguments)?;
-    let environment = build_environment(request, &config)?;
-    let headers = build_headers(request, &config)?;
-    let server_id = non_empty(&config.server_id).unwrap_or(request.art_id.as_str());
-    let mut server = match config.transport {
+    let resolved = request
+        .context
+        .mcp_server
+        .as_ref()
+        .ok_or_else(|| "MCP dependency was not resolved by the Loom host".to_owned())?;
+    if resolved.id != config.server_id {
+        return Err(format!(
+            "resolved MCP server `{}` does not match Art dependency `{}`",
+            resolved.id, config.server_id
+        ));
+    }
+    if resolved.package_id != config.package_id {
+        return Err(format!(
+            "resolved MCP package `{}` does not match Art dependency `{}`",
+            resolved.package_id, config.package_id
+        ));
+    }
+    let transport = match resolved.transport.as_str() {
+        "stdio" => McpTransport::Stdio,
+        "streamable-http" => McpTransport::StreamableHttp,
+        other => return Err(format!("resolved MCP transport `{other}` is unsupported")),
+    };
+    let environment = build_environment(request, resolved)?;
+    let headers = build_headers(request, resolved)?;
+    let mut server = match transport {
         McpTransport::Stdio => {
-            let command = super::resolve_command(art_dir, config.command.trim())?;
+            if resolved.command.trim().is_empty() {
+                return Err("resolved stdio MCP command is missing".to_owned());
+            }
             McpServerConfig::new(
-                server_id,
-                format!("{} MCP server", request.art_id),
-                command.to_string_lossy(),
+                resolved.id.clone(),
+                format!("{} MCP server", resolved.id),
+                resolved.command.clone(),
             )
         }
         McpTransport::StreamableHttp => McpServerConfig::remote(
-            server_id,
-            format!("{} MCP server", request.art_id),
-            expand_runtime_paths(&config.url, request, art_dir),
+            resolved.id.clone(),
+            format!("{} MCP server", resolved.id),
+            expand_runtime_paths(&resolved.url, request, art_dir),
         ),
     };
-    server.args = config
+    server.args = resolved
         .args
         .iter()
         .map(|argument| expand_runtime_paths(argument, request, art_dir))
@@ -84,7 +93,7 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
     let (_, result) = execute_tool(&server, &config.tool_name, &arguments)
         .map_err(|error| redact_credentials(error, &request.context.credentials))?;
     Ok(McpExecution {
-        server_id: server_id.to_owned(),
+        server_id: resolved.id.clone(),
         tool_name: config.tool_name,
         result,
     })
@@ -101,14 +110,14 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
         .metadata
         .mcp
         .ok_or_else(|| "MCP Art metadata.mcp is required".to_owned())?;
-    match config.transport {
-        McpTransport::Stdio if config.command.trim().is_empty() => {
-            return Err("MCP Art metadata.mcp.command is required".to_owned())
-        }
-        McpTransport::StreamableHttp if config.url.trim().is_empty() => {
-            return Err("MCP Art metadata.mcp.url is required".to_owned())
-        }
-        _ => {}
+    if config.server_id.trim().is_empty() {
+        return Err("MCP Art metadata.mcp.serverId is required".to_owned());
+    }
+    if config.package_id.trim().is_empty() {
+        return Err("MCP Art metadata.mcp.packageId is required".to_owned());
+    }
+    if config.version.trim().is_empty() {
+        return Err("MCP Art metadata.mcp.version is required".to_owned());
     }
     if config.tool_name.trim().is_empty() {
         return Err("MCP Art metadata.mcp.toolName is required".to_owned());
@@ -118,7 +127,7 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
 
 fn build_environment(
     request: &FrameworkExecuteRequest,
-    config: &McpArtConfig,
+    config: &FrameworkMcpServer,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut environment = config
         .env
@@ -158,7 +167,7 @@ fn build_environment(
 
 fn build_headers(
     request: &FrameworkExecuteRequest,
-    config: &McpArtConfig,
+    config: &FrameworkMcpServer,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut headers = config
         .headers
@@ -437,11 +446,6 @@ fn redact_credentials(mut message: String, credentials: &[CredentialGrant]) -> S
     message
 }
 
-fn non_empty(value: &str) -> Option<&str> {
-    let value = value.trim();
-    (!value.is_empty()).then_some(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +471,7 @@ mod tests {
             params: json!({ "query": "loom", "count": "2" }),
             disabled_params: vec!["disabled".to_owned()],
             context: FrameworkExecutionContext {
+                mcp_server: Some(resolved_server()),
                 credentials: vec![CredentialGrant {
                     name: "api_key".to_owned(),
                     value: "secret-value".to_owned(),
@@ -474,6 +479,21 @@ mod tests {
                 }],
                 ..FrameworkExecutionContext::default()
             },
+        }
+    }
+
+    fn resolved_server() -> FrameworkMcpServer {
+        FrameworkMcpServer {
+            id: "fixture".to_owned(),
+            package_id: "publisher.test/fixture".to_owned(),
+            version: "1.0.0".to_owned(),
+            transport: "stdio".to_owned(),
+            command: "fixture".to_owned(),
+            credential_env: BTreeMap::from([(
+                "BRAVE_API_KEY".to_owned(),
+                "api_key".to_owned(),
+            )]),
+            ..FrameworkMcpServer::default()
         }
     }
 
@@ -497,19 +517,7 @@ mod tests {
 
     #[test]
     fn credential_alias_maps_to_server_environment() {
-        let config = McpArtConfig {
-            server_id: "fixture".to_owned(),
-            command: "fixture".to_owned(),
-            args: Vec::new(),
-            tool_name: "search".to_owned(),
-            env: BTreeMap::new(),
-            credential_env: BTreeMap::from([("BRAVE_API_KEY".to_owned(), "api_key".to_owned())]),
-            transport: McpTransport::Stdio,
-            url: String::new(),
-            headers: BTreeMap::new(),
-            credential_headers: BTreeMap::new(),
-            arguments: Value::Null,
-        };
+        let config = resolved_server();
         let environment = build_environment(&request(), &config).unwrap();
         assert_eq!(
             environment.get("BRAVE_API_KEY"),
@@ -599,7 +607,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn package_local_image_search_server_executes_through_mcp_framework() {
+    fn independent_image_search_server_executes_through_mcp_framework() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture image API");
         let address = listener.local_addr().expect("fixture image API address");
         let fixture = thread::spawn(move || {
@@ -625,7 +633,8 @@ mod tests {
                 "results": [
                     {
                         "title": "Loom first",
-                        "url": "https://example.test/source/1",
+                        "url": "https://cdn.example.test/image-1.png",
+                        "source": "https://example.test/source/1",
                         "thumbnail": { "src": "https://cdn.example.test/thumb-1.jpg" },
                         "properties": {
                             "url": "https://cdn.example.test/image-1.png",
@@ -635,7 +644,8 @@ mod tests {
                     },
                     {
                         "title": "Loom second",
-                        "url": "https://example.test/source/2",
+                        "url": "https://cdn.example.test/image-2.png",
+                        "source": "https://example.test/source/2",
                         "thumbnail": { "src": "https://cdn.example.test/thumb-2.jpg" },
                         "properties": {}
                     }
@@ -660,23 +670,15 @@ mod tests {
             "loom-image-search-mcp-framework-{}-{suffix}",
             std::process::id()
         ));
-        let runtime_dir = art_dir.join("runtime");
-        fs::create_dir_all(&runtime_dir).expect("create staged Art runtime");
-        let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        fs::create_dir_all(&art_dir).expect("create staged Art directory");
+        let art_source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../art-packages/samples/image-search");
-        fs::copy(
-            source_dir.join("runtime/image-search-mcp.ps1"),
-            runtime_dir.join("image-search-mcp.ps1"),
-        )
-        .expect("stage package-local image-search MCP server");
-        let mut manifest: Value = serde_json::from_slice(
-            &fs::read(source_dir.join("manifest.json")).expect("read image-search manifest"),
+        let mcp_source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../mcp-server-packages/image-search");
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(art_source_dir.join("manifest.json")).expect("read image-search manifest"),
         )
         .expect("parse image-search manifest");
-        manifest["metadata"]["mcp"]["args"] = json!([
-            "-Endpoint",
-            format!("http://{address}/res/v1/images/search")
-        ]);
         fs::write(
             art_dir.join("manifest.json"),
             serde_json::to_vec(&manifest).expect("serialize staged manifest"),
@@ -699,8 +701,27 @@ mod tests {
             value: "fixture-api-key".to_owned(),
             expires_at: None,
         }];
+        request.context.mcp_server = Some(FrameworkMcpServer {
+            id: "neuro-image-search".to_owned(),
+            package_id: "neuro.official/neuro-image-search".to_owned(),
+            version: "0.1.0".to_owned(),
+            transport: "stdio".to_owned(),
+            command: mcp_source_dir
+                .join("runtime/image-search-mcp.ps1")
+                .display()
+                .to_string(),
+            args: vec![
+                "-Endpoint".to_owned(),
+                format!("http://{address}/res/v1/images/search"),
+            ],
+            credential_env: BTreeMap::from([(
+                "BRAVE_API_KEY".to_owned(),
+                "brave_api_key".to_owned(),
+            )]),
+            ..FrameworkMcpServer::default()
+        });
 
-        let execution = execute(&request, &art_dir).expect("execute package-local MCP server");
+        let execution = execute(&request, &art_dir).expect("execute independent MCP server");
         assert_eq!(execution.server_id, "neuro-image-search");
         assert_eq!(execution.tool_name, "brave_image_search");
         assert_eq!(execution.result["structuredContent"]["count"], 2);
@@ -717,7 +738,7 @@ mod tests {
         );
         assert_eq!(
             execution.result["structuredContent"]["candidates"][1]["imageUrl"],
-            "https://cdn.example.test/thumb-2.jpg"
+            "https://cdn.example.test/image-2.png"
         );
 
         fixture.join().expect("image API fixture thread");

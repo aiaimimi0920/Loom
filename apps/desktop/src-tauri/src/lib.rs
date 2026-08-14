@@ -20,8 +20,10 @@ const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
 const FRAMEWORK_PACKAGE_CATALOG_ENV: &str = "LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR";
 const FRAMEWORK_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const ART_PACKAGE_CATALOG_ENV: &str = "LOOM_ART_PACKAGE_CATALOG_DIR";
+const MCP_SERVER_PACKAGE_CATALOG_ENV: &str = "LOOM_MCP_SERVER_PACKAGE_CATALOG_DIR";
 const BUNDLED_ART_SHA256_ALLOWLIST_ENV: &str = "LOOM_BUNDLED_ART_SHA256_ALLOWLIST";
 const ART_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const MCP_SERVER_PACKAGE_MAX_BYTES: u64 = 24 * 1024 * 1024;
 const LOOM_DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const LOOM_MCP_REGISTRY_REQUEST_TIMEOUT: Duration = Duration::from_secs(50);
@@ -221,7 +223,10 @@ fn open_url_in_default_browser(url: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     let operation = "open\0".encode_utf16().collect::<Vec<_>>();
-    let target = url.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let target = url
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -236,7 +241,9 @@ fn open_url_in_default_browser(url: &str) -> Result<(), String> {
     if status > 32 {
         Ok(())
     } else {
-        Err(format!("系统浏览器无法打开地址（ShellExecuteW={status}）。"))
+        Err(format!(
+            "系统浏览器无法打开地址（ShellExecuteW={status}）。"
+        ))
     }
 }
 
@@ -859,6 +866,22 @@ struct PackagedFrameworkCatalogEntry {
 }
 
 #[derive(Debug, Deserialize)]
+struct PackagedMcpServerCatalog {
+    #[serde(default)]
+    servers: Vec<PackagedMcpServerCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PackagedMcpServerCatalogEntry {
+    id: String,
+    qualified_id: String,
+    version: String,
+    zip: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PackagedArtCatalogEntry {
     id: String,
     framework: String,
@@ -1449,13 +1472,12 @@ fn read_daemon_snapshot(base_url: &str) -> Result<DaemonSnapshot, String> {
     let mcp_servers =
         read_optional_daemon_array(base_url, "/v1/mcp/servers", "servers", &mut degraded_errors);
     let tools = read_optional_daemon_array(base_url, "/v1/tools", "tools", &mut degraded_errors);
-    let python_arts =
-        read_optional_daemon_array(
-            base_url,
-            "/v1/art-authoring/python/arts",
-            "arts",
-            &mut degraded_errors,
-        );
+    let python_arts = read_optional_daemon_array(
+        base_url,
+        "/v1/art-authoring/python/arts",
+        "arts",
+        &mut degraded_errors,
+    );
     let workflows =
         read_optional_daemon_array(base_url, "/v1/workflows", "workflows", &mut degraded_errors);
     let hook_bridge =
@@ -1532,9 +1554,7 @@ fn http_get_json(base_url: &str, path: &str) -> Result<Value, String> {
 }
 
 fn daemon_get_timeout(path: &str) -> Duration {
-    if path == "/v1/mcp/registry"
-        || path.starts_with("/v1/mcp/registry?")
-    {
+    if path == "/v1/mcp/registry" || path.starts_with("/v1/mcp/registry?") {
         LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
     } else {
         LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT
@@ -1785,6 +1805,10 @@ fn read_verified_art_package(id: &str, package_path: &Path) -> Result<Vec<u8>, S
     read_verified_package("Art", id, package_path, ART_PACKAGE_MAX_BYTES)
 }
 
+fn read_verified_mcp_server_package(id: &str, package_path: &Path) -> Result<Vec<u8>, String> {
+    read_verified_package("MCP 服务", id, package_path, MCP_SERVER_PACKAGE_MAX_BYTES)
+}
+
 fn read_verified_package(
     kind: &str,
     id: &str,
@@ -1863,6 +1887,132 @@ fn packaged_art_catalog_candidates(current_exe: &Path) -> Vec<PathBuf> {
         candidates.push(packaged);
     }
     candidates
+}
+
+fn packaged_mcp_server_catalog_candidates(current_exe: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = std::env::var_os(MCP_SERVER_PACKAGE_CATALOG_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        candidates.push(root.join("summary.json"));
+    }
+    let packaged = current_exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("packages")
+        .join("mcp-servers")
+        .join("summary.json");
+    if !candidates.iter().any(|candidate| candidate == &packaged) {
+        candidates.push(packaged);
+    }
+    candidates
+}
+
+fn validate_packaged_mcp_server_entry(entry: &PackagedMcpServerCatalogEntry) -> Result<(), String> {
+    if entry.id.is_empty()
+        || entry.id.len() > 128
+        || entry.id.contains("..")
+        || !entry
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(format!("打包 MCP 服务 ID 无效：{}", entry.id));
+    }
+    let Some((publisher, package_id)) = entry.qualified_id.split_once('/') else {
+        return Err(format!("打包 MCP 包 ID 无效：{}", entry.qualified_id));
+    };
+    if publisher.is_empty()
+        || package_id != entry.id
+        || !publisher
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(format!("打包 MCP 包 ID 无效：{}", entry.qualified_id));
+    }
+    if entry.version.is_empty() || entry.zip != format!("{}.zip", entry.id) {
+        return Err(format!("打包 MCP 服务 `{}` 的版本或 ZIP 无效。", entry.id));
+    }
+    if entry.sha256.len() != 64 || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("打包 MCP 服务 `{}` 的 SHA-256 无效。", entry.id));
+    }
+    Ok(())
+}
+
+fn bootstrap_packaged_mcp_servers(
+    base_url: &str,
+    current_exe: &Path,
+    control_plane_root: &Path,
+) -> Result<Vec<String>, String> {
+    let Some(catalog_path) = packaged_mcp_server_catalog_candidates(current_exe)
+        .into_iter()
+        .find(|path| path.is_file())
+    else {
+        return Ok(Vec::new());
+    };
+    let catalog_bytes = fs::read(&catalog_path).map_err(|error| {
+        format!(
+            "无法读取打包 MCP 服务目录 `{}`：{error}",
+            catalog_path.display()
+        )
+    })?;
+    let catalog_hash = format!("{:x}", Sha256::digest(&catalog_bytes));
+    let marker_path = control_plane_root
+        .join("migrations")
+        .join("packaged-mcp-servers.sha256");
+    if fs::read_to_string(&marker_path)
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(&catalog_hash))
+    {
+        return Ok(Vec::new());
+    }
+    let catalog: PackagedMcpServerCatalog =
+        serde_json::from_slice(&catalog_bytes).map_err(|error| {
+            format!(
+                "无法解析打包 MCP 服务目录 `{}`：{error}",
+                catalog_path.display()
+            )
+        })?;
+    if catalog.servers.is_empty() {
+        return Err(format!("打包 MCP 服务目录为空：{}", catalog_path.display()));
+    }
+    let catalog_root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut installed_ids = Vec::new();
+    for entry in &catalog.servers {
+        validate_packaged_mcp_server_entry(entry)?;
+        if installed_ids.contains(&entry.id) {
+            return Err(format!("打包 MCP 服务目录包含重复 ID：{}", entry.id));
+        }
+        let package_path = catalog_root.join(&entry.zip);
+        let package = read_verified_mcp_server_package(&entry.id, &package_path)?;
+        let actual_hash = format!("{:x}", Sha256::digest(&package));
+        if !actual_hash.eq_ignore_ascii_case(&entry.sha256) {
+            return Err(format!("打包 MCP 服务 `{}` 的目录哈希不匹配。", entry.id));
+        }
+        http_post_json_with_timeout(
+            base_url,
+            "/v1/mcp/servers/install",
+            &serde_json::json!({ "zipBase64": base64_encode(&package) }),
+            Duration::from_secs(120),
+        )?;
+        installed_ids.push(entry.id.clone());
+    }
+    if let Some(parent) = marker_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "无法创建打包 MCP 服务迁移目录 `{}`：{error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&marker_path, format!("{catalog_hash}\n")).map_err(|error| {
+        format!(
+            "无法写入打包 MCP 服务迁移标记 `{}`：{error}",
+            marker_path.display()
+        )
+    })?;
+    Ok(installed_ids)
 }
 
 fn packaged_art_sha256_allowlist(current_exe: &Path) -> Result<Vec<String>, String> {
@@ -1986,6 +2136,13 @@ fn bootstrap_packaged_arts_from_exe(
             framework_ids.push(entry.framework.clone());
         }
     }
+
+    // MCP services are independent packages. Install or upgrade the bundled
+    // service catalog before frameworks and Arts that declare those services.
+    // The separate marker intentionally prevents a user uninstall from being
+    // undone on every desktop restart.
+    let _installed_mcp_ids =
+        bootstrap_packaged_mcp_servers(base_url, current_exe, control_plane_root)?;
 
     let marker_path = control_plane_root
         .join("migrations")
@@ -2604,7 +2761,10 @@ mod tests {
             daemon_get_timeout("/v1/mcp/registry?limit=100&cursor=opaque"),
             LOOM_MCP_REGISTRY_REQUEST_TIMEOUT
         );
-        assert_eq!(daemon_get_timeout("/health"), LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT);
+        assert_eq!(
+            daemon_get_timeout("/health"),
+            LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT
+        );
         assert!(LOOM_MCP_REGISTRY_REQUEST_TIMEOUT > Duration::from_secs(40));
     }
 
@@ -2618,10 +2778,7 @@ mod tests {
             "http://127.0.0.1:49321"
         );
         assert_eq!(
-            resolve_command_base_url_with_active(
-                "http://127.0.0.1:18765/".to_owned(),
-                None,
-            ),
+            resolve_command_base_url_with_active("http://127.0.0.1:18765/".to_owned(), None,),
             "http://127.0.0.1:18765"
         );
     }
@@ -2728,9 +2885,7 @@ mod tests {
         fs::write(&workflow, b"workflow").expect("write workflow");
         fs::write(framework_temp.join("request.bin"), vec![2_u8; 20])
             .expect("write framework temporary file");
-        let settings_path = control_plane
-            .join("settings")
-            .join("settings.json");
+        let settings_path = control_plane.join("settings").join("settings.json");
         fs::create_dir_all(settings_path.parent().expect("settings parent"))
             .expect("create settings directory");
         fs::write(
@@ -2977,6 +3132,79 @@ mod tests {
     }
 
     #[test]
+    fn packaged_mcp_server_bootstrap_installs_once_and_respects_uninstall_marker() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_catalog = std::env::var(MCP_SERVER_PACKAGE_CATALOG_ENV).ok();
+        std::env::remove_var(MCP_SERVER_PACKAGE_CATALOG_ENV);
+        let root = unique_temp_dir("mcp-server-bootstrap");
+        let desktop_exe = root.join("Loom.exe");
+        let catalog_root = root.join("packages").join("mcp-servers");
+        let control_plane_root = root.join("control-plane");
+        fs::create_dir_all(&catalog_root).expect("create MCP catalog");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop placeholder");
+        let package = b"independent-mcp-package";
+        let hash = format!("{:x}", Sha256::digest(package));
+        let package_path = catalog_root.join("neuro-image-search.zip");
+        fs::write(&package_path, package).expect("write MCP package");
+        fs::write(
+            package_path.with_extension("zip.sha256"),
+            format!("{hash}  neuro-image-search.zip\n"),
+        )
+        .expect("write MCP checksum");
+        fs::write(
+            catalog_root.join("summary.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "servers": [{
+                    "id": "neuro-image-search",
+                    "qualifiedId": "neuro.official/neuro-image-search",
+                    "version": "0.1.0",
+                    "zip": "neuro-image-search.zip",
+                    "sha256": hash,
+                }]
+            }))
+            .expect("serialize MCP catalog"),
+        )
+        .expect("write MCP catalog");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind MCP bootstrap fixture");
+        let address = listener
+            .local_addr()
+            .expect("read MCP bootstrap fixture address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept MCP install request");
+            request_tx
+                .send(read_test_http_request(&mut stream))
+                .expect("record MCP install request");
+            write_test_json_response(
+                &mut stream,
+                "200 OK",
+                r#"{"server":{"id":"neuro-image-search"}}"#,
+            );
+        });
+        let base_url = format!("http://127.0.0.1:{}", address.port());
+        let installed =
+            bootstrap_packaged_mcp_servers(&base_url, &desktop_exe, &control_plane_root)
+                .expect("bootstrap packaged MCP server");
+        server.join().expect("join MCP bootstrap fixture");
+        assert_eq!(installed, vec!["neuro-image-search"]);
+        let request = request_rx.recv().expect("MCP install request");
+        assert!(request.starts_with("POST /v1/mcp/servers/install HTTP/1.1"));
+        assert!(request.contains("\"zipBase64\""));
+        assert!(control_plane_root
+            .join("migrations/packaged-mcp-servers.sha256")
+            .is_file());
+
+        let skipped =
+            bootstrap_packaged_mcp_servers("http://127.0.0.1:1", &desktop_exe, &control_plane_root)
+                .expect("same MCP catalog must not reinstall after user removal");
+        assert!(skipped.is_empty());
+        restore_env(MCP_SERVER_PACKAGE_CATALOG_ENV, previous_catalog);
+        fs::remove_dir_all(root).expect("cleanup MCP bootstrap fixture");
+    }
+
+    #[test]
     fn packaged_art_bootstrap_installs_catalog_once() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_catalog = std::env::var(ART_PACKAGE_CATALOG_ENV).ok();
@@ -3085,7 +3313,7 @@ mod tests {
     }
 
     #[test]
-    fn packaged_art_bootstrap_upgrades_changed_framework_version() {
+    fn packaged_art_bootstrap_upgrades_changed_framework_version_after_art_catalog_applied() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_art_catalog = std::env::var(ART_PACKAGE_CATALOG_ENV).ok();
         let previous_framework_catalog = std::env::var(FRAMEWORK_PACKAGE_CATALOG_ENV).ok();
@@ -3101,7 +3329,7 @@ mod tests {
         fs::create_dir_all(&framework_catalog_root).expect("create Framework catalog");
         fs::write(&desktop_exe, b"desktop").expect("write desktop placeholder");
 
-        let framework_package = b"mcp-framework-0.2.1";
+        let framework_package = b"mcp-framework-0.2.2";
         let framework_hash = format!("{:x}", Sha256::digest(framework_package));
         let framework_package_path = framework_catalog_root.join("mcp.zip");
         fs::write(&framework_package_path, framework_package).expect("write Framework package");
@@ -3116,7 +3344,7 @@ mod tests {
                 "configuration": "Release",
                 "frameworks": [{
                     "id": "mcp",
-                    "version": "0.2.1",
+                    "version": "0.2.2",
                 }],
             }))
             .expect("serialize Framework catalog"),
@@ -3132,20 +3360,27 @@ mod tests {
             format!("{art_hash}  custom-image-search.zip\n"),
         )
         .expect("write Art checksum");
+        let art_catalog = serde_json::to_vec_pretty(&serde_json::json!({
+            "configuration": "Release",
+            "packages": [{
+                "id": "custom-image-search",
+                "framework": "mcp",
+                "zip": "custom-image-search.zip",
+                "sha256": art_hash,
+            }],
+        }))
+        .expect("serialize Art catalog");
+        fs::write(art_catalog_root.join("summary.json"), &art_catalog).expect("write Art catalog");
+        let marker_path = control_plane_root
+            .join("migrations")
+            .join("packaged-arts.sha256");
+        fs::create_dir_all(marker_path.parent().expect("marker parent"))
+            .expect("create packaged Art migration directory");
         fs::write(
-            art_catalog_root.join("summary.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "configuration": "Release",
-                "packages": [{
-                    "id": "custom-image-search",
-                    "framework": "mcp",
-                    "zip": "custom-image-search.zip",
-                    "sha256": art_hash,
-                }],
-            }))
-            .expect("serialize Art catalog"),
+            &marker_path,
+            format!("{:x}\n", Sha256::digest(&art_catalog)),
         )
-        .expect("write Art catalog");
+        .expect("write previously applied Art catalog marker");
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind upgrade fixture");
         let address = listener.local_addr().expect("read upgrade fixture address");
@@ -3154,11 +3389,11 @@ mod tests {
             for (status, body) in [
                 (
                     "200 OK",
-                    r#"{"frameworks":[{"id":"mcp","qualifiedId":"neuro.official/mcp","installed":true,"enabled":true,"ready":true,"version":"0.2.0"}]}"#,
+                    r#"{"frameworks":[{"id":"mcp","qualifiedId":"neuro.official/mcp","installed":true,"enabled":true,"ready":true,"version":"0.2.1"}]}"#,
                 ),
                 (
                     "200 OK",
-                    r#"{"framework":{"id":"mcp","installed":true,"ready":true,"version":"0.2.1"}}"#,
+                    r#"{"framework":{"id":"mcp","installed":true,"ready":true,"version":"0.2.2"}}"#,
                 ),
                 ("200 OK", r#"{"tool":{"id":"custom-image-search"}}"#),
             ] {
@@ -3189,10 +3424,7 @@ mod tests {
         assert!(requests[1].contains("\"zipBase64\""));
         assert!(requests[2].starts_with("POST /v1/arts/install HTTP/1.1"));
         assert!(requests[2].contains("\"bundledCatalog\":true"));
-        assert!(control_plane_root
-            .join("migrations")
-            .join("packaged-arts.sha256")
-            .is_file());
+        assert!(marker_path.is_file());
 
         fs::remove_dir_all(root).expect("cleanup upgrade fixture");
         restore_env(ART_PACKAGE_CATALOG_ENV, previous_art_catalog);

@@ -970,6 +970,26 @@ button {
   margin: 0;
 }
 
+.app-confirm-dialog__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-warning) 32%, var(--loom-theme-line));
+  padding: 10px;
+  background: color-mix(in srgb, var(--loom-theme-warning) 8%, transparent);
+  color: var(--loom-theme-text);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.app-confirm-dialog__option input {
+  width: 17px;
+  height: 17px;
+  margin: 1px 0 0;
+  accent-color: var(--loom-theme-accent);
+}
+
 .app-confirm-dialog h2 {
   font-size: 1.08rem;
 }
@@ -2067,6 +2087,69 @@ code {
   -webkit-line-clamp: 2;
   color: rgba(17, 22, 20, 0.72);
   line-height: 1.5;
+}
+
+.art-registry-card__body {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 9px;
+}
+
+.art-registry-card__mcp-state,
+.art-registry-card__mcp-configuration {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 0.72rem;
+  font-weight: 850;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.art-registry-card__mcp-configuration {
+  border: 1px solid color-mix(in srgb, var(--loom-theme-warning) 52%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-warning) 11%, var(--loom-theme-control));
+  color: var(--loom-theme-warning);
+  cursor: pointer;
+}
+
+.art-registry-card__mcp-configuration:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-warning) 76%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-warning) 16%, var(--loom-theme-control));
+}
+
+.art-registry-card__mcp-configuration:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 2px;
+}
+
+.art-registry-card__mcp-configuration:disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  cursor: not-allowed;
+}
+
+.art-registry-card__mcp-state {
+  border-left: 2px solid currentColor;
+  background: var(--loom-theme-control);
+}
+
+.art-registry-card__mcp-state--ready {
+  color: var(--loom-theme-success);
+}
+
+.art-registry-card__mcp-state--disabled {
+  color: var(--loom-theme-warning);
+}
+
+.art-registry-card__mcp-state--missing {
+  color: var(--loom-theme-danger);
 }
 
 .art-registry-card__actions {
@@ -7608,8 +7691,19 @@ input:is([type="checkbox"], [type="radio"], [type="range"]) {
   color: var(--loom-theme-success);
 }
 
+.mcp-card__state--warning {
+  color: var(--loom-theme-warning);
+}
+
 .mcp-card__state--error {
   color: var(--loom-theme-danger);
+}
+
+.mcp-card__usage {
+  margin: 0;
+  color: var(--loom-theme-secondary-text);
+  font-size: 0.72rem;
+  font-weight: 750;
 }
 
 .mcp-card__action-buttons {
@@ -7900,6 +7994,30 @@ input:is([type="checkbox"], [type="radio"], [type="range"]) {
   margin: 0;
   color: var(--loom-theme-warning);
   font-weight: 800;
+}
+
+.mcp-server-dialog__credential-note {
+  margin: 0;
+  border-left: 2px solid var(--loom-theme-secondary);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--loom-theme-secondary) 10%, transparent);
+  color: var(--loom-theme-muted);
+  font-size: 0.76rem;
+}
+
+.mcp-server-dialog__credential {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--loom-theme-line);
+  padding: 0 0 12px;
+}
+
+.mcp-server-dialog__credential > label:first-child {
+  display: grid;
+  gap: 6px;
+  color: var(--loom-theme-muted);
+  font-size: 0.76rem;
+  font-weight: 900;
 }
 
 .mcp-server-dialog__enabled {

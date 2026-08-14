@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use loom_process::{ProcessError, ProcessSpec};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::framework::{
@@ -17,11 +18,19 @@ use crate::{ToolDefinition, ToolRegistryError, ToolRegistryResult};
 
 pub use loom_protocol::{
     FrameworkExecuteError, FrameworkExecuteRequest, FrameworkExecuteResponse,
-    FrameworkExecutionContext,
+    FrameworkExecutionContext, FrameworkMcpServer,
 };
 
 pub const DEFAULT_FRAMEWORK_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_FRAMEWORK_IMAGE_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpArtDependency {
+    server_id: String,
+    package_id: String,
+    version: String,
+}
 
 struct TempDirectoryGuard {
     path: PathBuf,
@@ -258,34 +267,52 @@ fn execute_framework_art_in_root_with_timeout(
         .parent()
         .map(crate::credentials::CredentialStore::new);
     let art_identity = tool.qualified_id();
-    let mut credentials = credential_store
-        .as_ref()
-        .map(|store| {
-            store.grants_for(
-                framework,
-                &art_identity,
-                &manifest.permission_policy.credentials,
-            )
-        })
-        .transpose()
-        .map_err(|error| ToolRegistryError::FrameworkProcessProtocol {
-            id: tool.id.clone(),
-            framework: framework.to_owned(),
-            reason: format!("credential broker failed: {error}"),
-        })?
-        .unwrap_or_default();
-    if let (Some(store), bindings) = (credential_store.as_ref(), art_credential_bindings(tool)) {
-        if !bindings.is_empty() {
-            let bound = store
-                .grants_for_bindings(framework, &art_identity, &bindings)
-                .map_err(|error| ToolRegistryError::FrameworkProcessProtocol {
+    let (mut credentials, mcp_server) = if framework == "mcp" {
+        let control_plane_root =
+            packages_root
+                .parent()
+                .ok_or_else(|| ToolRegistryError::FrameworkProcessProtocol {
                     id: tool.id.clone(),
                     framework: framework.to_owned(),
-                    reason: format!("credential binding failed: {error}"),
+                    reason: "framework package root has no control-plane parent".to_owned(),
                 })?;
-            for grant in bound {
-                credentials.retain(|existing| existing.name != grant.name);
-                credentials.push(grant);
+        let (server, grants) =
+            resolve_mcp_server(tool, control_plane_root, credential_store.as_ref())?;
+        (grants, Some(server))
+    } else {
+        let grants = credential_store
+            .as_ref()
+            .map(|store| {
+                store.grants_for(
+                    framework,
+                    &art_identity,
+                    &manifest.permission_policy.credentials,
+                )
+            })
+            .transpose()
+            .map_err(|error| ToolRegistryError::FrameworkProcessProtocol {
+                id: tool.id.clone(),
+                framework: framework.to_owned(),
+                reason: format!("credential broker failed: {error}"),
+            })?
+            .unwrap_or_default();
+        (grants, None)
+    };
+    if framework != "mcp" {
+        if let (Some(store), bindings) = (credential_store.as_ref(), art_credential_bindings(tool))
+        {
+            if !bindings.is_empty() {
+                let bound = store
+                    .grants_for_bindings(framework, &art_identity, &bindings)
+                    .map_err(|error| ToolRegistryError::FrameworkProcessProtocol {
+                        id: tool.id.clone(),
+                        framework: framework.to_owned(),
+                        reason: format!("credential binding failed: {error}"),
+                    })?;
+                for grant in bound {
+                    credentials.retain(|existing| existing.name != grant.name);
+                    credentials.push(grant);
+                }
             }
         }
     }
@@ -309,6 +336,7 @@ fn execute_framework_art_in_root_with_timeout(
             art_version: art_package_string(tool, "version"),
             granted_permissions: manifest.permission_policy.clone(),
             credentials,
+            mcp_server,
             ..FrameworkExecutionContext::default()
         },
     };
@@ -411,7 +439,7 @@ fn execute_framework_art_in_root_with_timeout(
         ],
     )?;
 
-    Ok(response_to_tool_value(response))
+    Ok(response_to_tool_value(tool, response))
 }
 
 fn normalize_framework_image_output(
@@ -659,6 +687,185 @@ fn art_credential_bindings(tool: &ToolDefinition) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+fn resolve_mcp_server(
+    tool: &ToolDefinition,
+    control_plane_root: &Path,
+    credential_store: Option<&crate::credentials::CredentialStore>,
+) -> ToolRegistryResult<(FrameworkMcpServer, Vec<loom_protocol::CredentialGrant>)> {
+    let dependency: McpArtDependency = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("mcp"))
+        .cloned()
+        .ok_or_else(|| {
+            mcp_dependency_error(
+                tool,
+                "<missing>",
+                "mcp_dependency_invalid",
+                "MCP Art metadata.mcp is required",
+            )
+        })
+        .and_then(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                mcp_dependency_error(
+                    tool,
+                    "<invalid>",
+                    "mcp_dependency_invalid",
+                    format!("invalid MCP Art dependency: {error}"),
+                )
+            })
+        })?;
+    if dependency.server_id.trim().is_empty()
+        || dependency.package_id.trim().is_empty()
+        || dependency.version.trim().is_empty()
+    {
+        return Err(mcp_dependency_error(
+            tool,
+            dependency.server_id.as_str(),
+            "mcp_dependency_invalid",
+            "metadata.mcp.serverId, packageId, and version are required",
+        ));
+    }
+    let store_path = control_plane_root.join("mcp").join("servers.json");
+    let servers = fs::read(&store_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<loom_mcp::McpServerConfig>>(&bytes).ok())
+        .unwrap_or_default();
+    let server = servers
+        .into_iter()
+        .find(|server| server.id == dependency.server_id)
+        .ok_or_else(|| {
+            mcp_dependency_error(
+                tool,
+                &dependency.server_id,
+                "mcp_dependency_missing",
+                format!(
+                    "independent MCP server `{}` is not installed",
+                    dependency.server_id
+                ),
+            )
+        })?;
+    if !server.enabled {
+        return Err(mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_disabled",
+            format!("MCP server `{}` is disabled", dependency.server_id),
+        ));
+    }
+    let package = server.package.as_ref().ok_or_else(|| {
+        mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_package_mismatch",
+            "the selected MCP server is not installed from a package",
+        )
+    })?;
+    if package.qualified_id != dependency.package_id {
+        return Err(mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_package_mismatch",
+            format!(
+                "Art requires MCP package `{}`, but server `{}` is package `{}`",
+                dependency.package_id, dependency.server_id, package.qualified_id
+            ),
+        ));
+    }
+    let version_requirement = semver::VersionReq::parse(&dependency.version).map_err(|error| {
+        mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_invalid",
+            format!(
+                "invalid MCP version requirement `{}`: {error}",
+                dependency.version
+            ),
+        )
+    })?;
+    let package_version = semver::Version::parse(&package.version).map_err(|error| {
+        mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_version_mismatch",
+            format!("installed MCP package version is invalid: {error}"),
+        )
+    })?;
+    if !version_requirement.matches(&package_version) {
+        return Err(mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_version_mismatch",
+            format!(
+                "Art requires MCP package version `{}`, but `{}` is installed",
+                dependency.version, package.version
+            ),
+        ));
+    }
+    server.validate().map_err(|error| {
+        mcp_dependency_error(
+            tool,
+            &dependency.server_id,
+            "mcp_dependency_invalid",
+            error.to_string(),
+        )
+    })?;
+    for requirement in server
+        .credential_requirements
+        .iter()
+        .filter(|requirement| requirement.required)
+    {
+        if !server.credential_bindings.contains_key(&requirement.id) {
+            return Err(mcp_dependency_error(
+                tool,
+                &dependency.server_id,
+                "mcp_credential_missing",
+                format!("MCP credential `{}` is not configured", requirement.label),
+            ));
+        }
+    }
+    let credentials = credential_store
+        .map(|store| store.grants_for_mcp_bindings(&server.id, &server.credential_bindings))
+        .transpose()
+        .map_err(|error| {
+            mcp_dependency_error(
+                tool,
+                &dependency.server_id,
+                "mcp_credential_missing",
+                format!("MCP credential resolution failed: {error}"),
+            )
+        })?
+        .unwrap_or_default();
+    let resolved = FrameworkMcpServer {
+        id: server.id,
+        package_id: package.qualified_id.clone(),
+        version: package.version.clone(),
+        transport: server.transport.label().to_owned(),
+        command: server.command,
+        args: server.args,
+        env: server.env,
+        url: server.url,
+        headers: server.headers,
+        credential_env: server.credential_env,
+        credential_headers: server.credential_headers,
+    };
+    Ok((resolved, credentials))
+}
+
+fn mcp_dependency_error(
+    tool: &ToolDefinition,
+    server_id: &str,
+    code: &str,
+    reason: impl Into<String>,
+) -> ToolRegistryError {
+    ToolRegistryError::McpDependency {
+        tool_id: tool.qualified_id(),
+        server_id: server_id.to_owned(),
+        code: code.to_owned(),
+        reason: reason.into(),
+    }
+}
+
 fn split_arguments(tool: &ToolDefinition, arguments: &Value) -> (Value, Value, Vec<String>) {
     let Some(object) = arguments.as_object() else {
         return (arguments.clone(), Value::Object(Map::new()), Vec::new());
@@ -701,8 +908,50 @@ fn split_arguments(tool: &ToolDefinition, arguments: &Value) -> (Value, Value, V
     (Value::Object(inputs), Value::Object(params), disabled)
 }
 
-fn response_to_tool_value(response: FrameworkExecuteResponse) -> Value {
+fn selected_image_candidate_index(output: &Map<String, Value>, candidates: &[Value]) -> usize {
+    if let Some(index) = output.get("selectedIndex").and_then(Value::as_u64) {
+        return usize::try_from(index)
+            .unwrap_or(usize::MAX)
+            .min(candidates.len().saturating_sub(1));
+    }
+    let selected_id = output.get("selectedCandidate").and_then(Value::as_str);
+    selected_id
+        .and_then(|selected_id| {
+            candidates.iter().position(|candidate| {
+                candidate
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|candidate_id| candidate_id == selected_id)
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn insert_image_candidate_metadata(output: &mut Map<String, Value>, candidates: Vec<Value>) {
+    let selected_index = selected_image_candidate_index(output, &candidates);
+    let metadata = output
+        .entry("loomMetadata".to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !metadata.is_object() {
+        *metadata = Value::Object(Map::new());
+    }
+    metadata
+        .as_object_mut()
+        .expect("loomMetadata was normalized to an object")
+        .insert(
+            "candidates".to_owned(),
+            json!({
+                "kind": "image.candidates",
+                "selectedIndex": selected_index,
+                "items": candidates,
+            }),
+        );
+}
+
+fn response_to_tool_value(tool: &ToolDefinition, response: FrameworkExecuteResponse) -> Value {
     let has_candidates = !response.candidates.is_empty();
+    let has_image_candidates =
+        has_candidates && tool.outputs.iter().any(is_image_output_definition);
     let has_cache = !response.cache.is_null();
     let has_execution_metadata = response.diagnostics.is_some() || !response.events.is_empty();
     if !has_candidates && !has_cache && !has_execution_metadata {
@@ -715,7 +964,9 @@ fn response_to_tool_value(response: FrameworkExecuteResponse) -> Value {
         })
     });
     if let Value::Object(mut output) = response.output {
-        if has_candidates {
+        if has_image_candidates {
+            insert_image_candidate_metadata(&mut output, response.candidates);
+        } else if has_candidates {
             output.insert("candidates".to_owned(), Value::Array(response.candidates));
         }
         if has_cache {
@@ -728,7 +979,9 @@ fn response_to_tool_value(response: FrameworkExecuteResponse) -> Value {
     } else {
         let mut result = Map::new();
         result.insert("output".to_owned(), response.output);
-        if has_candidates {
+        if has_image_candidates {
+            insert_image_candidate_metadata(&mut result, response.candidates);
+        } else if has_candidates {
             result.insert("candidates".to_owned(), Value::Array(response.candidates));
         }
         if has_cache {
@@ -764,6 +1017,47 @@ mod tests {
             std::env::temp_dir().join(format!("loom-framework-process-{name}-{}", request_id()));
         fs::create_dir_all(&root).expect("create process test root");
         root
+    }
+
+    #[test]
+    fn framework_image_candidates_use_canonical_loom_metadata() {
+        let mut tool = ToolDefinition::new(
+            "fixture-image-art",
+            "Fixture Image Art",
+            "Projects framework candidates for Hook.",
+            crate::ToolExecution::FrameworkArt {
+                framework: "mcp".to_owned(),
+            },
+        );
+        tool.outputs = vec![json!({
+            "name": "output",
+            "type": "image",
+            "execution_type": "image_buffer",
+        })];
+        let response: FrameworkExecuteResponse = serde_json::from_value(json!({
+            "status": "success",
+            "output": {
+                "content": [{ "type": "image", "data": "fixture", "mimeType": "image/png" }],
+                "selectedCandidate": "candidate-2",
+            },
+            "candidates": [
+                { "id": "candidate-1", "index": 0, "data": "first" },
+                { "id": "candidate-2", "index": 1, "data": "second" },
+            ],
+        }))
+        .expect("framework response");
+
+        let result = response_to_tool_value(&tool, response);
+        assert!(result.get("candidates").is_none());
+        assert_eq!(
+            result["loomMetadata"]["candidates"]["kind"],
+            "image.candidates"
+        );
+        assert_eq!(result["loomMetadata"]["candidates"]["selectedIndex"], 1);
+        assert_eq!(
+            result["loomMetadata"]["candidates"]["items"][1]["id"],
+            "candidate-2"
+        );
     }
 
     fn powershell_executable() -> PathBuf {
@@ -984,6 +1278,7 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
                 scope: crate::credentials::CredentialScope {
                     framework_id: None,
                     art_id: Some(art_identity.clone()),
+                    mcp_server_id: None,
                 },
                 expires_at: None,
             })
@@ -1016,6 +1311,85 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
             result["request"]["context"]["credentials"][0]["value"],
             "fixture-value"
         );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn mcp_framework_resolves_independent_package_and_server_scoped_credentials() {
+        let root = temp_root("independent-mcp");
+        fs::create_dir_all(root.join("mcp")).expect("create MCP store root");
+        let mut server = loom_mcp::McpServerConfig::new(
+            "neuro-image-search",
+            "Image Search",
+            root.join("mcp/server.ps1").display().to_string(),
+        );
+        server
+            .credential_env
+            .insert("BRAVE_API_KEY".to_owned(), "brave_api_key".to_owned());
+        server
+            .credential_bindings
+            .insert("brave_api_key".to_owned(), "stored-image-key".to_owned());
+        server
+            .credential_requirements
+            .push(loom_mcp::McpCredentialRequirement {
+                id: "brave_api_key".to_owned(),
+                label: "Brave API Key".to_owned(),
+                required: true,
+            });
+        server.package = Some(loom_mcp::McpServerPackageState {
+            qualified_id: "neuro.official/neuro-image-search".to_owned(),
+            publisher_id: "neuro.official".to_owned(),
+            version: "0.1.0".to_owned(),
+            digest: "fixture".to_owned(),
+            package_dir: root
+                .join("mcp/packages/neuro.official/neuro-image-search/versions/0.1.0-fixture"),
+        });
+        fs::write(
+            root.join("mcp/servers.json"),
+            serde_json::to_vec(&vec![server]).expect("serialize MCP store"),
+        )
+        .expect("write MCP store");
+        crate::credentials::CredentialStore::new(&root)
+            .upsert(crate::credentials::CredentialInput {
+                name: "stored-image-key".to_owned(),
+                value: "fixture-value".to_owned(),
+                value_type: crate::credentials::CredentialValueType::String,
+                scope: crate::credentials::CredentialScope {
+                    framework_id: None,
+                    art_id: None,
+                    mcp_server_id: Some("neuro-image-search".to_owned()),
+                },
+                expires_at: None,
+            })
+            .expect("store MCP credential");
+        let mut tool = ToolDefinition::new(
+            "custom-image-search",
+            "Image Search",
+            "MCP consumer",
+            crate::ToolExecution::FrameworkArt {
+                framework: "mcp".to_owned(),
+            },
+        );
+        tool.metadata = Some(json!({
+            "packageSecurity": {
+                "version": "0.4.0",
+                "publisher": { "id": "neuro.official", "name": "Neuro" }
+            },
+            "mcp": {
+                "serverId": "neuro-image-search",
+                "packageId": "neuro.official/neuro-image-search",
+                "version": "^0.1",
+                "toolName": "brave_image_search"
+            }
+        }));
+        let store = crate::credentials::CredentialStore::new(&root);
+        let (resolved, credentials) =
+            resolve_mcp_server(&tool, &root, Some(&store)).expect("resolve MCP dependency");
+        assert_eq!(resolved.package_id, "neuro.official/neuro-image-search");
+        assert_eq!(resolved.version, "0.1.0");
+        assert_eq!(resolved.credential_env["BRAVE_API_KEY"], "brave_api_key");
+        assert_eq!(credentials[0].name, "brave_api_key");
+        assert_eq!(credentials[0].value, "fixture-value");
         fs::remove_dir_all(root).ok();
     }
 

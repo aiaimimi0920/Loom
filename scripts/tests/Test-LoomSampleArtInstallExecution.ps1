@@ -1,6 +1,7 @@
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
     [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks",
+    [string]$McpServerArtifactRoot = ".loom-art-store-data\mcp-servers",
     [string]$ArtArtifactRoot = ".loom-art-store-data\arts",
     [string]$LargeImagePath = ""
 )
@@ -52,6 +53,18 @@ function Install-Zip {
     return Invoke-LoomJson -Method Post -Url ($Url.TrimEnd('/') + $Prefix + "/install") -Body @{ zipBase64 = $encoded }
 }
 
+function Install-McpZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$ZipPath
+    )
+
+    $bytes = [System.IO.File]::ReadAllBytes($ZipPath)
+    return Invoke-LoomJson -Method Post -Url ($Url.TrimEnd('/') + "/v1/mcp/servers/install") -Body @{
+        zipBase64 = [Convert]::ToBase64String($bytes)
+    }
+}
+
 function Write-Utf8NoBomFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -61,7 +74,7 @@ function Write-Utf8NoBomFile {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
-function New-ImageSearchFixturePackage {
+function New-ImageSearchFixtureMcpPackage {
     param(
         [Parameter(Mandatory = $true)][string]$SourceZip,
         [Parameter(Mandatory = $true)][string]$DestinationZip,
@@ -69,15 +82,15 @@ function New-ImageSearchFixturePackage {
         [Parameter(Mandatory = $true)][string]$Endpoint
     )
 
-    $stage = Join-Path $WorkRoot "image-search-fixture"
+    $stage = Join-Path $WorkRoot "image-search-mcp-fixture"
     Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
     $serverPath = Join-Path $stage "runtime\image-search-mcp.ps1"
-    Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Packaged image-search MCP server is missing: $serverPath"
+    Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Independent image-search MCP server is missing: $serverPath"
 
-    $manifestPath = Join-Path $stage "manifest.json"
+    $manifestPath = Join-Path $stage "mcp.server.json"
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-    Assert-True ([string]$manifest.metadata.mcp.command -eq "runtime/image-search-mcp.ps1") "Image-search fixture must preserve the package-local MCP command."
-    $manifest.metadata.mcp.args = @("-Endpoint", $Endpoint)
+    Assert-True ([string]$manifest.entry.command -eq "runtime/image-search-mcp.ps1") "Image-search fixture must preserve the independent MCP entry."
+    $manifest.entry.args = @("-Endpoint", $Endpoint)
     Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
     if (Test-Path -LiteralPath $DestinationZip) {
         Remove-Item -LiteralPath $DestinationZip -Force
@@ -128,7 +141,8 @@ try {
                 $body = @{
                     results = @(@{
                         title = "Installed package fixture"
-                        url = "https://example.test/source"
+                        url = "http://127.0.0.1:$Port/fixture.png"
+                        source = "https://example.test/source"
                         thumbnail = @{ src = "http://127.0.0.1:$Port/fixture.png" }
                         properties = @{ url = "http://127.0.0.1:$Port/fixture.png"; width = 1; height = 1 }
                     })
@@ -190,6 +204,12 @@ $frameworkRootPath = if ([System.IO.Path]::IsPathRooted($FrameworkArtifactRoot))
 }
 else {
     [System.IO.Path]::GetFullPath((Join-Path $repoRoot $FrameworkArtifactRoot))
+}
+$mcpServerRootPath = if ([System.IO.Path]::IsPathRooted($McpServerArtifactRoot)) {
+    [System.IO.Path]::GetFullPath($McpServerArtifactRoot)
+}
+else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $McpServerArtifactRoot))
 }
 $artRootPath = if ([System.IO.Path]::IsPathRooted($ArtArtifactRoot)) {
     [System.IO.Path]::GetFullPath($ArtArtifactRoot)
@@ -265,9 +285,9 @@ $artCases = @(
 
 New-Item -ItemType Directory -Force -Path $controlPlane, $configuration | Out-Null
 try {
-    $sourceImageSearchZip = Join-Path $artRootPath "custom-image-search.zip"
-    Assert-True (Test-Path -LiteralPath $sourceImageSearchZip -PathType Leaf) "Image-search Art ZIP missing: $sourceImageSearchZip"
-    $imageSearchFixtureZip = Join-Path $controlPlane "custom-image-search-fixture.zip"
+    $sourceImageSearchMcpZip = Join-Path $mcpServerRootPath "neuro-image-search.zip"
+    Assert-True (Test-Path -LiteralPath $sourceImageSearchMcpZip -PathType Leaf) "Image-search MCP ZIP missing: $sourceImageSearchMcpZip"
+    $imageSearchMcpFixtureZip = Join-Path $controlPlane "neuro-image-search-fixture.zip"
     $imageSearchApiFixture = Start-ImageSearchApiFixture `
         -Port $imageSearchApiPort `
         -WorkRoot $controlPlane `
@@ -283,9 +303,9 @@ try {
         }
         Start-Sleep -Milliseconds 50
     }
-    New-ImageSearchFixturePackage `
-        -SourceZip $sourceImageSearchZip `
-        -DestinationZip $imageSearchFixtureZip `
+    New-ImageSearchFixtureMcpPackage `
+        -SourceZip $sourceImageSearchMcpZip `
+        -DestinationZip $imageSearchMcpFixtureZip `
         -WorkRoot $controlPlane `
         -Endpoint "http://127.0.0.1:$imageSearchApiPort/res/v1/images/search"
 
@@ -325,13 +345,16 @@ try {
         Assert-True ($null -ne $status -and [bool]$status.installed -and [bool]$status.enabled -and [bool]$status.ready) "Framework is not ready after package installation: $frameworkId"
     }
 
+    $installedMcp = Install-McpZip -Url $baseUrl -ZipPath $imageSearchMcpFixtureZip
+    Assert-True ([string]$installedMcp.server.id -eq "neuro-image-search") "Independent image-search MCP package was not installed."
+    $configuredMcp = Invoke-LoomJson `
+        -Method Put `
+        -Url "$baseUrl/v1/mcp/servers/neuro-image-search/credentials" `
+        -Body @{ values = @{ brave_api_key = "loom-package-smoke-key" }; clear = @() }
+    Assert-True ([bool]$configuredMcp.server.credentialBound) "Image-search MCP credential was not stored in the MCP scope."
+
     foreach ($case in $artCases) {
-        $zipPath = if ($case.id -eq "custom-image-search") {
-            $imageSearchFixtureZip
-        }
-        else {
-            Join-Path $artRootPath "$($case.id).zip"
-        }
+        $zipPath = Join-Path $artRootPath "$($case.id).zip"
         Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Art ZIP missing: $zipPath"
         $null = Install-Zip -Url $baseUrl -ZipPath $zipPath -Prefix "/v1/arts"
     }
@@ -342,26 +365,10 @@ try {
         Assert-True (@($tools.tools | Where-Object { [string]$_.id -eq $case.id }).Count -eq 1) "Installed Art is not listed: $($case.id)"
     }
 
-    $management = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/arts/custom-image-search/management" -Body $null
-    $braveKeyParameter = @($management.parameters | Where-Object { [string]$_.id -eq "brave_api_key" }) | Select-Object -First 1
-    Assert-True ($null -ne $braveKeyParameter -and [bool]$braveKeyParameter.required -and [bool]$braveKeyParameter.secret) "Image-search management does not expose its required Brave API Key."
-    $savedManagement = Invoke-LoomJson `
-        -Method Put `
-        -Url "$baseUrl/v1/arts/custom-image-search/settings" `
-        -Body @{
-            autoUpdate = $true
-            defaults = @{ query = "loom package smoke"; count = 3 }
-            credentialBindings = @{}
-            secretValues = @{ brave_api_key = "loom-package-smoke-key" }
-        }
-    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$savedManagement.credentialBindings.brave_api_key)) "Image-search Brave API Key was not stored as an Art credential binding."
-    $availableCredential = @($savedManagement.availableCredentials | Where-Object {
-        [string]$_.name -eq [string]$savedManagement.credentialBindings.brave_api_key
-    }) | Select-Object -First 1
-    Assert-True ($null -ne $availableCredential) "Image-search Art credential is not available after saving it."
     $updatedTools = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools" -Body $null
     $updatedImageSearch = @($updatedTools.tools | Where-Object { [string]$_.id -eq "custom-image-search" }) | Select-Object -First 1
-    Assert-True ([string]$updatedImageSearch.metadata.artUserSettings.credentialBindings.brave_api_key -eq [string]$savedManagement.credentialBindings.brave_api_key) "Image-search credential binding was not applied to the executable tool metadata."
+    Assert-True ([string]$updatedImageSearch.metadata.mcp.packageId -eq "neuro.official/neuro-image-search") "Image-search Art does not reference the independent MCP package."
+    Assert-True ($null -eq $updatedImageSearch.metadata.PSObject.Properties["artUserSettings"]) "Image-search Art must not receive MCP credential bindings."
 
     $colorTransferManagement = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/arts/custom-1770131241684/management" -Body $null
     $colorTransferParameterIds = @($colorTransferManagement.parameters | ForEach-Object { [string]$_.id })
@@ -412,8 +419,16 @@ try {
     Assert-True ($imageSearchApiFixture.ExitCode -eq 0) "Image-search API fixture failed: $($imageSearchApiFixture.StandardError.ReadToEnd())"
     $capturedImageSearchRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $imageSearchApiRequestPath
     Assert-True ($capturedImageSearchRequests -match 'GET /res/v1/images/search\?q=loom%20package%20smoke&count=3&safesearch=strict HTTP/1\.1') "Installed image-search MCP request URI is invalid."
-    Assert-True ($capturedImageSearchRequests -match '(?im)^X-Subscription-Token:\s*loom-package-smoke-key\s*$') "Installed image-search MCP did not receive the Art credential."
+    Assert-True ($capturedImageSearchRequests -match '(?im)^X-Subscription-Token:\s*loom-package-smoke-key\s*$') "Installed image-search MCP did not receive the MCP-scoped credential."
     Assert-True ($capturedImageSearchRequests -match '(?m)^GET /fixture\.png HTTP/1\.1') "Installed image-search Art did not download the selected image."
+    $uninstallImageSearch = Invoke-LoomJson `
+        -Method Post `
+        -Url "$baseUrl/v1/arts/neuro.official%2Fcustom-image-search/uninstall" `
+        -Body @{ removeUnusedMcpServers = $true }
+    Assert-True ([bool]$uninstallImageSearch.uninstalled) "Image-search Art uninstall did not succeed."
+    Assert-True (@($uninstallImageSearch.removedMcpServers) -contains "neuro-image-search") "Unused image-search MCP server was not removed with the Art."
+    $mcpAfterArtUninstall = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/mcp/servers" -Body $null
+    Assert-True (@($mcpAfterArtUninstall.servers).Count -eq 0) "Independent MCP server remained after optional unused dependency cleanup."
     if (-not [string]::IsNullOrWhiteSpace($largeImagePathResolved)) {
         $executed = Invoke-LoomJson `
             -Method Post `

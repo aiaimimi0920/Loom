@@ -128,10 +128,14 @@ Assert-ScriptContract `
         'pluginSdkArtifact',
         'Loom-Plugin-SDK-',
         'Build-LoomArtFrameworkPackages.ps1',
+        'Build-LoomMcpServerPackages.ps1',
         'Build-LoomSampleArtPackages.ps1',
         'frameworkPackageCatalog',
         'frameworkPackages',
         'frameworkCatalog',
+        'mcpServerPackageCatalog',
+        'mcpServerPackages',
+        'mcpServerCatalog',
         'sampleArtPackageCatalog',
         'sampleArtPackages',
         'sampleArtCatalog',
@@ -163,10 +167,14 @@ Assert-ScriptContract `
         'pluginSdkArtifact',
         'Loom-Plugin-SDK-',
         'function Assert-FrameworkPackages',
+        'function Assert-McpServerPackages',
         'function Assert-SampleArtPackages',
         'frameworkPackages',
         'frameworkCatalog',
         'framework-package-zip-sha256',
+        'mcpServerPackages',
+        'mcpServerCatalog',
+        'mcp-server-package-zip-sha256',
         'sampleArtPackages',
         'sampleArtCatalog',
         'sample-art-package-zip-sha256',
@@ -405,6 +413,8 @@ Assert-True -Condition ([string]$defaultPlan.pluginSdkArtifact.zipNamePattern -e
 Assert-Equal -Expected 19 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas, Surface SDK, and developer documentation."
 Assert-Equal -Expected "process,cloud_api,mcp,workflow" -Actual (@($defaultPlan.frameworkPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog all four independent framework packages."
 Assert-Equal -Expected (Join-Path $defaultPlan.destination "packages\frameworks") -Actual ([string]$defaultPlan.frameworkPackageCatalog.outputRoot) -Message "Dry-run framework catalog output must stay inside the candidate."
+Assert-Equal -Expected "neuro-image-search" -Actual (@($defaultPlan.mcpServerPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog the independent image-search MCP server package."
+Assert-Equal -Expected (Join-Path $defaultPlan.destination "packages\mcp-servers") -Actual ([string]$defaultPlan.mcpServerPackageCatalog.outputRoot) -Message "Dry-run MCP server catalog output must stay inside the candidate."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { -not ([string]$_.destinationRelativePath).StartsWith("runtime\") }).Count -eq 0) -Message "All daemon-owned support files must live under runtime."
 Assert-True -Condition (@($defaultPlan.supportFiles | Where-Object { ([string]$_.destinationRelativePath).Replace('\', '/').StartsWith("runtime/python/Arts/", [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) -Message "Default release must not package optional Python Arts."
 Assert-Equal -Expected "." -Actual (@($defaultPlan.sourcePaths) -join ",") -Message "Manifest source paths must be standalone-relative."

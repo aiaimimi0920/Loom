@@ -58,6 +58,13 @@ pub enum ToolRegistryError {
     MissingMcpServer { tool_id: String, server_id: String },
     #[error("MCP execution failed: {0}")]
     Mcp(#[from] loom_mcp::McpError),
+    #[error("MCP dependency `{server_id}` for tool `{tool_id}` failed [{code}]: {reason}")]
+    McpDependency {
+        tool_id: String,
+        server_id: String,
+        code: String,
+        reason: String,
+    },
     #[error("cloud API method `{method}` for tool `{id}` is not supported")]
     CloudInvalidMethod { id: String, method: String },
     #[error("cloud API request to `{endpoint}` for tool `{id}` failed: {source}")]

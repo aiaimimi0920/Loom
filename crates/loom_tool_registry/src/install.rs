@@ -25,7 +25,7 @@ use loom_protocol::{
     ResolvedDependency,
 };
 
-use crate::framework::{read_dependencies, ArtBinary, FrameworkRegistry};
+use crate::framework::{read_dependencies, ArtBinary, ArtMcpServerDependency, FrameworkRegistry};
 use crate::{ToolDefinition, ToolRegistry};
 
 const MANIFEST_NAME: &str = "manifest.json";
@@ -134,6 +134,23 @@ struct ArtLifecycleJournal {
     old_activation: Option<ArtActivationState>,
     next_activation: ArtActivationState,
     target: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpPackageActiveState {
+    qualified_id: String,
+    version: String,
+    digest: String,
+    package_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtMcpExecutionMetadata {
+    server_id: String,
+    package_id: String,
+    version: String,
 }
 
 fn read_art_package_security(tool: &ToolDefinition) -> ArtPackageSecurityMetadata {
@@ -484,15 +501,21 @@ fn install_art_from_zip_with_source(
         }
     }
 
+    validate_mcp_execution_dependency(&tool, &deps.mcp_servers)?;
+
     let arts_root = control_plane_root.join("arts");
     std::fs::create_dir_all(&arts_root)?;
     let art_root = art_root_for_tool(control_plane_root, &tool)?;
-    let locked_arts = resolve_art_dependency_locks(
+    let mut locked_dependencies = resolve_art_dependency_locks(
         control_plane_root,
         &deps.arts,
         framework_registry,
         tool_registry,
     )?;
+    locked_dependencies.extend(resolve_mcp_dependency_locks(
+        control_plane_root,
+        &deps.mcp_servers,
+    )?);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -566,7 +589,7 @@ fn install_art_from_zip_with_source(
             framework_registry,
             &deps.binaries,
             &art_dir,
-            &locked_arts,
+            &locked_dependencies,
         )?;
         set_tree_readonly(&art_dir, true)?;
 
@@ -1489,8 +1512,9 @@ fn verify_art_lockfile(
             "Art lockfile identity, version, or schema version is invalid".to_owned(),
         ));
     }
-    let declared_arts = read_dependencies(tool).arts;
-    validate_art_dependency_lock_set(&declared_arts, &lockfile.resolved)?;
+    let declared = read_dependencies(tool);
+    validate_art_dependency_lock_set(&declared.arts, &lockfile.resolved)?;
+    validate_mcp_dependency_lock_set(&declared.mcp_servers, &lockfile.resolved)?;
     for dependency in &lockfile.resolved {
         match dependency.kind.as_str() {
             "framework" => {
@@ -1586,6 +1610,20 @@ fn verify_art_lockfile(
                 verifying.remove(&dependency.id);
                 verified?;
             }
+            "mcp" => {
+                let exact = ArtMcpServerDependency {
+                    id: dependency.id.clone(),
+                    version: format!("={}", dependency.version),
+                };
+                let active =
+                    resolve_mcp_dependency_locks(control_plane_root, std::slice::from_ref(&exact))?;
+                if active.len() != 1 || !active[0].sha256.eq_ignore_ascii_case(&dependency.sha256) {
+                    return Err(ArtInstallError::InvalidPackage(format!(
+                        "locked MCP dependency `{}` is unavailable or has changed",
+                        dependency.id
+                    )));
+                }
+            }
             kind => {
                 return Err(ArtInstallError::InvalidPackage(format!(
                     "Art lockfile contains unsupported dependency kind `{kind}`"
@@ -1674,6 +1712,270 @@ fn locate_exact_installed_art_package(
     Ok((art_root, art_dir, tool))
 }
 
+fn validate_mcp_execution_dependency(
+    tool: &ToolDefinition,
+    declared: &[ArtMcpServerDependency],
+) -> Result<(), ArtInstallError> {
+    let framework = crate::framework::framework_id_for_execution(&tool.execution);
+    if framework.rsplit_once('/').map_or(framework, |(_, id)| id) != "mcp" {
+        return Ok(());
+    }
+    let execution: ArtMcpExecutionMetadata = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("mcp"))
+        .cloned()
+        .ok_or_else(|| {
+            ArtInstallError::InvalidPackage(
+                "MCP Art metadata.mcp is required for the mcp framework".to_owned(),
+            )
+        })
+        .and_then(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                ArtInstallError::InvalidPackage(format!("invalid MCP Art metadata: {error}"))
+            })
+        })?;
+    if !loom_protocol::is_safe_package_id(execution.server_id.trim()) {
+        return Err(ArtInstallError::InvalidPackage(
+            "metadata.mcp.serverId must be a safe package id".to_owned(),
+        ));
+    }
+    split_mcp_package_identity(&execution.package_id).ok_or_else(|| {
+        ArtInstallError::InvalidPackage(
+            "metadata.mcp.packageId must be publisher-qualified".to_owned(),
+        )
+    })?;
+    semver::VersionReq::parse(&execution.version).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "metadata.mcp.version `{}` is invalid: {error}",
+            execution.version
+        ))
+    })?;
+    let matches = declared
+        .iter()
+        .filter(|dependency| dependency.id == execution.package_id)
+        .collect::<Vec<_>>();
+    if matches.len() != 1 || matches[0].version != execution.version {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "metadata.mcp package `{}` version `{}` must have one identical metadata.dependencies.mcpServers declaration",
+            execution.package_id, execution.version
+        )));
+    }
+    Ok(())
+}
+
+fn split_mcp_package_identity(value: &str) -> Option<(&str, &str)> {
+    let (publisher, id) = value.split_once('/')?;
+    (!publisher.contains('/')
+        && loom_protocol::is_safe_publisher_id(publisher)
+        && loom_protocol::is_safe_package_id(id))
+    .then_some((publisher, id))
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_installed_mcp_servers(
+    control_plane_root: &Path,
+) -> Result<Vec<loom_mcp::McpServerConfig>, ArtInstallError> {
+    let path = control_plane_root.join("mcp").join("servers.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    serde_json::from_slice(&bytes).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "installed MCP server store `{}` is invalid: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn verify_active_mcp_package(
+    control_plane_root: &Path,
+    package: &loom_mcp::McpServerPackageState,
+) -> Result<PathBuf, ArtInstallError> {
+    let (publisher, id) = split_mcp_package_identity(&package.qualified_id).ok_or_else(|| {
+        ArtInstallError::InvalidPackage(format!(
+            "installed MCP package identity `{}` is invalid",
+            package.qualified_id
+        ))
+    })?;
+    if package.publisher_id != publisher || !is_sha256_hex(&package.digest) {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` has invalid publisher or digest state",
+            package.qualified_id
+        )));
+    }
+    semver::Version::parse(&package.version).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` version is invalid: {error}",
+            package.qualified_id
+        ))
+    })?;
+
+    let package_root = control_plane_root
+        .join("mcp")
+        .join("packages")
+        .join(publisher)
+        .join(id);
+    let active_path = package_root.join("active.json");
+    let active: McpPackageActiveState =
+        serde_json::from_slice(&std::fs::read(&active_path).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "installed MCP package `{}` has no readable active state: {error}",
+                package.qualified_id
+            ))
+        })?)
+        .map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "installed MCP package `{}` active state is invalid: {error}",
+                package.qualified_id
+            ))
+        })?;
+    if active.qualified_id != package.qualified_id
+        || active.version != package.version
+        || !active.digest.eq_ignore_ascii_case(&package.digest)
+    {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` active state does not match the server registry",
+            package.qualified_id
+        )));
+    }
+
+    let versions_root = std::fs::canonicalize(package_root.join("versions")).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` versions directory is unavailable: {error}",
+            package.qualified_id
+        ))
+    })?;
+    let package_dir = std::fs::canonicalize(&package.package_dir).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` directory is unavailable: {error}",
+            package.qualified_id
+        ))
+    })?;
+    let active_dir = std::fs::canonicalize(&active.package_dir).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` active directory is unavailable: {error}",
+            package.qualified_id
+        ))
+    })?;
+    let expected_name = format!("{}-{}", package.version, &package.digest[..12]);
+    if package_dir.parent() != Some(versions_root.as_path())
+        || package_dir.file_name() != Some(OsStr::new(&expected_name))
+        || active_dir != package_dir
+    {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` active directory escapes its immutable package root",
+            package.qualified_id
+        )));
+    }
+
+    let manifest_path = package_dir.join(loom_mcp::package::MCP_SERVER_PACKAGE_MANIFEST);
+    let manifest: loom_mcp::package::McpServerPackageManifest =
+        serde_json::from_slice(&std::fs::read(&manifest_path)?).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "installed MCP package manifest `{}` is invalid: {error}",
+                manifest_path.display()
+            ))
+        })?;
+    if manifest.qualified_id() != package.qualified_id || manifest.version != package.version {
+        return Err(ArtInstallError::InvalidPackage(format!(
+            "installed MCP package `{}` manifest identity or version changed",
+            package.qualified_id
+        )));
+    }
+    Ok(package_dir)
+}
+
+fn resolve_mcp_dependency_locks(
+    control_plane_root: &Path,
+    dependencies: &[ArtMcpServerDependency],
+) -> Result<Vec<ResolvedDependency>, ArtInstallError> {
+    if dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    let servers = read_installed_mcp_servers(control_plane_root)?;
+    let mut resolved = Vec::with_capacity(dependencies.len());
+    let mut identities = std::collections::BTreeSet::new();
+    for dependency in dependencies {
+        split_mcp_package_identity(&dependency.id).ok_or_else(|| {
+            ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` must be a safe publisher-qualified package id",
+                dependency.id
+            ))
+        })?;
+        if !identities.insert(dependency.id.clone()) {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` is declared more than once",
+                dependency.id
+            )));
+        }
+        let requirement = semver::VersionReq::parse(&dependency.version).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` has invalid version requirement `{}`: {error}",
+                dependency.id, dependency.version
+            ))
+        })?;
+        let matches = servers
+            .iter()
+            .filter(|server| {
+                server
+                    .package
+                    .as_ref()
+                    .is_some_and(|package| package.qualified_id == dependency.id)
+            })
+            .collect::<Vec<_>>();
+        let server = match matches.as_slice() {
+            [] => {
+                return Err(ArtInstallError::InvalidPackage(format!(
+                    "MCP dependency `{}` is not installed",
+                    dependency.id
+                )))
+            }
+            [server] => *server,
+            _ => {
+                return Err(ArtInstallError::InvalidPackage(format!(
+                    "MCP dependency `{}` resolves to multiple installed servers",
+                    dependency.id
+                )))
+            }
+        };
+        if !server.enabled {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` is disabled",
+                dependency.id
+            )));
+        }
+        let package = server.package.as_ref().expect("matching server package");
+        let version = semver::Version::parse(&package.version).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "installed MCP package `{}` version is invalid: {error}",
+                dependency.id
+            ))
+        })?;
+        if !requirement.matches(&version) {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` requires `{}`, but `{}` is installed",
+                dependency.id, dependency.version, package.version
+            )));
+        }
+        let package_dir = verify_active_mcp_package(control_plane_root, package)?;
+        let digest = canonical_package_digest(&package_dir, None)
+            .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
+        resolved.push(ResolvedDependency {
+            kind: "mcp".to_owned(),
+            id: dependency.id.clone(),
+            version: package.version.clone(),
+            sha256: digest,
+        });
+    }
+    Ok(resolved)
+}
+
 fn art_reference_matches_qualified(reference: &str, qualified_id: &str) -> bool {
     if reference.contains('/') {
         reference == qualified_id
@@ -1713,6 +2015,59 @@ fn validate_art_dependency_lock_set(
     if matched.len() != locked.len() {
         return Err(ArtInstallError::InvalidPackage(
             "Art lockfile contains an undeclared or duplicate Art dependency".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mcp_dependency_lock_set(
+    declared: &[ArtMcpServerDependency],
+    resolved: &[ResolvedDependency],
+) -> Result<(), ArtInstallError> {
+    let locked = resolved
+        .iter()
+        .filter(|dependency| dependency.kind == "mcp")
+        .collect::<Vec<_>>();
+    let mut matched = std::collections::BTreeSet::new();
+    for dependency in declared {
+        split_mcp_package_identity(&dependency.id).ok_or_else(|| {
+            ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` must be a safe publisher-qualified package id",
+                dependency.id
+            ))
+        })?;
+        let requirement = semver::VersionReq::parse(&dependency.version).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` has invalid version requirement `{}`: {error}",
+                dependency.id, dependency.version
+            ))
+        })?;
+        let matches = locked
+            .iter()
+            .filter(|locked| locked.id == dependency.id)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 || !matched.insert(matches[0].id.clone()) {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "MCP dependency `{}` is not represented by one exact lock",
+                dependency.id
+            )));
+        }
+        let locked_version = semver::Version::parse(&matches[0].version).map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "locked MCP dependency `{}` has invalid version: {error}",
+                dependency.id
+            ))
+        })?;
+        if !requirement.matches(&locked_version) || !is_sha256_hex(&matches[0].sha256) {
+            return Err(ArtInstallError::InvalidPackage(format!(
+                "locked MCP dependency `{}` no longer satisfies the Art manifest",
+                dependency.id
+            )));
+        }
+    }
+    if matched.len() != locked.len() {
+        return Err(ArtInstallError::InvalidPackage(
+            "Art lockfile contains an undeclared or duplicate MCP dependency".to_owned(),
         ));
     }
     Ok(())

@@ -5,8 +5,11 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 
 import {
   deleteMcpServer,
+  installMcpServerPackage,
   saveMcpServer,
-  testMcpConnection,
+  setMcpServerEnabled,
+  testInstalledMcpServer,
+  updateMcpServerCredentials,
   type LoomMcpServer,
 } from "../../services/loomApi";
 import {
@@ -69,9 +72,6 @@ const parseLines = (value: string) => value
 const environmentText = (environment: Record<string, string> = {}) => Object.entries(environment)
   .map(([key, value]) => `${key}=${value}`)
   .join("\n");
-
-const isArtManagedServer = (server: LoomMcpServer) =>
-  server.managed === true && server.source === "art";
 
 const normalizedServerId = (value: string) => value
   .trim()
@@ -368,6 +368,125 @@ function McpServerDialog({
   );
 }
 
+export function McpCredentialDialog({
+  server,
+  busy,
+  onClose,
+  onSave,
+}: {
+  server: LoomMcpServer | null;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (values: Record<string, string>, clear: string[]) => Promise<void>;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const firstInputRef = useRef<HTMLInputElement | null>(null);
+  const busyRef = useRef(busy);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [clear, setClear] = useState<Set<string>>(new Set());
+  busyRef.current = busy;
+
+  useEffect(() => {
+    if (!server) return;
+    setValues({});
+    setClear(new Set());
+    const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    document.body.style.overflow = "hidden";
+    const timer = window.setTimeout(() => firstInputRef.current?.focus(), 0);
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape" && !busyRef.current) {
+        event.preventDefault();
+        onClose();
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? []);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+  }, [onClose, server]);
+
+  if (!server) return null;
+  const requirements = server.credentialRequirements || [];
+  const enteredValues = Object.fromEntries(Object.entries(values).filter(([, value]) => value.length > 0));
+  const canSave = Object.keys(enteredValues).length > 0 || clear.size > 0;
+  return createPortal(
+    <div className="framework-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !busy) onClose();
+    }}>
+      <section ref={dialogRef} className="framework-dialog mcp-server-dialog" role="dialog" aria-modal="true" aria-labelledby="mcp-credential-dialog-title" aria-busy={busy}>
+        <header className="framework-dialog__header">
+          <div>
+            <h2 id="mcp-credential-dialog-title">配置 MCP 凭据</h2>
+            <p>{server.name} · {server.package?.qualifiedId || server.id}</p>
+          </div>
+          <button className="icon-button" type="button" aria-label="关闭" title="关闭" disabled={busy} onClick={onClose}><McpIcon kind="close" /></button>
+        </header>
+        <form className="mcp-server-dialog__form" onSubmit={(event) => {
+          event.preventDefault();
+          if (!canSave || busy) return;
+          void onSave(enteredValues, [...clear]);
+        }}>
+          <div className="mcp-server-dialog__scroll">
+            <p className="mcp-server-dialog__credential-note">凭据由 Loom CredentialStore 加密保存；此页面不会回显已保存的值。</p>
+            {requirements.length ? requirements.map((requirement, index) => (
+              <div className="mcp-server-dialog__credential" key={requirement.id}>
+                <label>
+                  <span>{requirement.label}{requirement.required ? " · 必填" : " · 可选"}</span>
+                  <input
+                    ref={index === 0 ? firstInputRef : undefined}
+                    className="studio-input"
+                    type="password"
+                    autoComplete="off"
+                    value={values[requirement.id] || ""}
+                    placeholder={server.credentialBound ? "已保存；留空保持不变" : "输入凭据"}
+                    disabled={clear.has(requirement.id)}
+                    onChange={(event) => setValues((current) => ({ ...current, [requirement.id]: event.target.value }))}
+                  />
+                </label>
+                <label className="mcp-server-dialog__enabled">
+                  <input
+                    type="checkbox"
+                    checked={clear.has(requirement.id)}
+                    onChange={(event) => setClear((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(requirement.id); else next.delete(requirement.id);
+                      return next;
+                    })}
+                  />
+                  <span>清除此凭据</span>
+                </label>
+              </div>
+            )) : <p className="muted-line">此 MCP 服务没有声明凭据槽位。</p>}
+          </div>
+          <footer className="mcp-server-dialog__actions">
+            <button className="ghost-button" type="button" disabled={busy} onClick={onClose}>取消</button>
+            <button className="signal-button" type="submit" disabled={busy || !canSave}>{busy ? "保存中" : "保存凭据"}</button>
+          </footer>
+        </form>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: McpHubProps) {
   const [activeWorkspace, setActiveWorkspace] = useState<McpWorkspaceId>("services");
   const [serviceSearchText, setServiceSearchText] = useState("");
@@ -379,7 +498,9 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   const [editorBusy, setEditorBusy] = useState(false);
   const [testSnapshots, setTestSnapshots] = useState<Record<string, McpMarketplaceTestSnapshot>>({});
   const [editor, setEditor] = useState<McpEditorState | null>(null);
+  const [credentialServer, setCredentialServer] = useState<LoomMcpServer | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const packageFileInputRef = useRef<HTMLInputElement | null>(null);
   const serverOperationRef = useRef(false);
   const editorBusyRef = useRef(false);
   const operationBusy = busyServerId !== null || busyMarketplaceId !== null;
@@ -387,6 +508,30 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   const closeEditor = useCallback(() => {
     if (!editorBusyRef.current) setEditor(null);
   }, []);
+  const closeCredentialDialog = useCallback(() => {
+    if (!serverOperationRef.current) setCredentialServer(null);
+  }, []);
+
+  const installPackageFile = async (file: File) => {
+    if (serverOperationRef.current) return;
+    serverOperationRef.current = true;
+    setBusyServerId("__package-install__");
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      const installed = await installMcpServerPackage(baseUrl, btoa(binary));
+      notify("info", `${installed.name || installed.id} 已作为独立 MCP 服务安装。`);
+      await refresh();
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "无法安装 MCP 服务包。");
+    } finally {
+      serverOperationRef.current = false;
+      setBusyServerId(null);
+    }
+  };
 
   const openMarketplaceSource = async (marketItem: McpMarketServer) => {
     try {
@@ -409,7 +554,7 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     setMarketPage(1);
   }, [storeSearchText]);
 
-  const recordTestResult = (server: LoomMcpServer, result: Awaited<ReturnType<typeof testMcpConnection>>) => {
+  const recordTestResult = (server: LoomMcpServer, result: Awaited<ReturnType<typeof testInstalledMcpServer>>) => {
     const tools = Array.isArray(result.tools) ? result.tools : [];
     setTestSnapshots((current) => ({
       ...current,
@@ -438,12 +583,11 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   };
 
   const testServer = async (server: LoomMcpServer) => {
-    if (isArtManagedServer(server)) return;
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
     try {
-      const result = await testMcpConnection(baseUrl, server);
+      const result = await testInstalledMcpServer(baseUrl, server.id);
       const toolCount = recordTestResult(server, result);
       notify(
         result.success === false ? "error" : "info",
@@ -461,7 +605,6 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   };
 
   const persistServer = async (server: LoomMcpServer, testAfterSave: boolean) => {
-    if (isArtManagedServer(server)) return;
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
@@ -486,7 +629,7 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     try {
       if (testAfterSave && saved.enabled !== false) {
         try {
-          const result = await testMcpConnection(baseUrl, saved);
+          const result = await testInstalledMcpServer(baseUrl, saved.id);
           const toolCount = recordTestResult(saved, result);
           notify(
             result.success === false ? "error" : "info",
@@ -522,12 +665,23 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   };
 
   const toggleServer = async (server: LoomMcpServer) => {
-    if (isArtManagedServer(server)) return;
-    await persistServer({ ...server, enabled: server.enabled === false }, false);
+    if (serverOperationRef.current) return;
+    serverOperationRef.current = true;
+    setBusyServerId(server.id);
+    try {
+      const enabled = server.enabled === false;
+      await setMcpServerEnabled(baseUrl, server.id, enabled);
+      notify("info", `${server.name} 已${enabled ? "启用" : "禁用"}。`);
+      await refresh();
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "无法更新 MCP 服务状态。");
+    } finally {
+      serverOperationRef.current = false;
+      setBusyServerId(null);
+    }
   };
 
   const removeServer = async (server: LoomMcpServer) => {
-    if (isArtManagedServer(server)) return;
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
@@ -544,14 +698,35 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     }
   };
 
+  const saveCredentials = async (
+    server: LoomMcpServer,
+    values: Record<string, string>,
+    clear: string[],
+  ) => {
+    if (serverOperationRef.current) return;
+    serverOperationRef.current = true;
+    setBusyServerId(server.id);
+    try {
+      await updateMcpServerCredentials(baseUrl, server.id, values, clear);
+      notify("info", `${server.name} 的凭据已更新。`);
+      setCredentialServer(null);
+      await refresh();
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "无法保存 MCP 凭据。");
+    } finally {
+      serverOperationRef.current = false;
+      setBusyServerId(null);
+    }
+  };
+
   const normalizedServiceSearch = serviceSearchText.trim().toLowerCase();
   const normalizedStoreSearch = storeSearchText.trim().toLowerCase();
   const filteredServers = useMemo(() => servers.filter((server) => !normalizedServiceSearch ||
     server.name.toLowerCase().includes(normalizedServiceSearch) ||
     server.id.toLowerCase().includes(normalizedServiceSearch) ||
     (server.serverId || "").toLowerCase().includes(normalizedServiceSearch) ||
-    (server.ownerArtId || "").toLowerCase().includes(normalizedServiceSearch) ||
-    (server.toolName || "").toLowerCase().includes(normalizedServiceSearch) ||
+    (server.package?.qualifiedId || "").toLowerCase().includes(normalizedServiceSearch) ||
+    (server.tools || []).some((tool) => tool.toLowerCase().includes(normalizedServiceSearch)) ||
     (server.description || "").toLowerCase().includes(normalizedServiceSearch)), [normalizedServiceSearch, servers]);
   const filteredMarketServers = useMemo(() => MCP_MARKET_SERVERS.filter((server) => {
     const matchesSearch = !normalizedStoreSearch || server.name.toLowerCase().includes(normalizedStoreSearch) ||
@@ -612,21 +787,35 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
         <div className="framework-filter mcp-hub__toolbar">
           <div className="mcp-hub__toolbar-primary">
             {activeWorkspace === "services" ? (
-              <button className="ghost-button" type="button" disabled={operationBusy} onClick={() => setEditor({
-                mode: "create",
-                server: {
-                  id: "local-mcp-server",
-                  name: "本地 MCP 服务",
-                  description: "",
-                  transport: "stdio",
-                  command: "npx",
-                  args: ["-y", "@modelcontextprotocol/server-memory"],
-                  env: {},
-                  url: "",
-                  headers: {},
-                  enabled: true,
-                },
-              })}>添加 MCP</button>
+              <>
+                <input
+                  ref={packageFileInputRef}
+                  hidden
+                  type="file"
+                  accept=".zip,application/zip"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (file) void installPackageFile(file);
+                  }}
+                />
+                <button className="signal-button" type="button" disabled={operationBusy} onClick={() => packageFileInputRef.current?.click()}>安装 MCP 包</button>
+                <button className="ghost-button" type="button" disabled={operationBusy} onClick={() => setEditor({
+                  mode: "create",
+                  server: {
+                    id: "local-mcp-server",
+                    name: "本地 MCP 服务",
+                    description: "",
+                    transport: "stdio",
+                    command: "npx",
+                    args: ["-y", "@modelcontextprotocol/server-memory"],
+                    env: {},
+                    url: "",
+                    headers: {},
+                    enabled: true,
+                  },
+                })}>添加手动配置</button>
+              </>
             ) : (
               <button
                 className="ghost-button"
@@ -682,15 +871,15 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
         <div className="art-registry-grid mcp-card-grid">
           {filteredServers.length ? filteredServers.map((server) => {
             const enabled = server.enabled !== false;
-            const artManaged = isArtManagedServer(server);
+            const packaged = server.source === "package" && Boolean(server.package);
             const snapshot = testSnapshots[server.id];
             const busy = busyServerId === server.id;
             return (
               <article
                 className={`glass-card art-registry-card mcp-service-card ${enabled ? "art-registry-card--enabled" : "art-registry-card--disabled"}${busy ? " mcp-service-card--busy" : ""}`}
                 key={server.id}
-                title={artManaged ? "由 Art 管理" : enabled ? "已启用" : "已禁用"}
-                aria-label={`${server.name}，${artManaged ? "由 Art 管理" : enabled ? "已启用" : "已禁用"}`}
+                title={enabled ? "已启用" : "已禁用"}
+                aria-label={`${server.name}，${enabled ? "已启用" : "已禁用"}`}
                 aria-busy={busy}
               >
                 <div className="art-registry-card__head">
@@ -709,21 +898,10 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
                 </div>
                 <div className="mcp-card__body">
                   <p className="art-registry-card__description" title={server.description || "暂无描述"}>{server.description || "暂无描述"}</p>
-                  <p className="mcp-card__identity" title={artManaged ? `${server.ownerArtId} · ${server.serverId || server.id} · ${server.toolName}` : server.transport === "streamable-http" ? `${server.id} · ${server.url}` : `${server.id} · ${server.command} ${(server.args || []).join(" ")}`}>
-                    {artManaged ? `Art · ${server.serverId || server.id} · ${server.toolName || "MCP tool"}` : server.transport === "streamable-http" ? `远程 · ${server.url}` : `本地 · ${server.command}`}
+                  <p className="mcp-card__identity" title={packaged ? `${server.package?.qualifiedId} · ${server.package?.version}` : server.transport === "streamable-http" ? `${server.id} · ${server.url}` : `${server.id} · ${server.command} ${(server.args || []).join(" ")}`}>
+                    {packaged ? `包 · ${server.package?.qualifiedId} @ ${server.package?.version}` : server.transport === "streamable-http" ? `远程 · ${server.url}` : `手动 · ${server.command}`}
                   </p>
-                  {artManaged ? (
-                    <p
-                      className={`mcp-card__state ${server.credentialRequired && !server.credentialBound ? "mcp-card__state--error" : "mcp-card__state--success"}`}
-                      role="status"
-                    >
-                      {server.credentialRequired
-                        ? server.credentialBound
-                          ? "由 Art 管理 · 凭据已绑定"
-                          : "由 Art 管理 · 凭据待绑定"
-                        : "由 Art 管理 · 无需凭据"}
-                    </p>
-                  ) : busy ? (
+                  {busy ? (
                     <p className="mcp-card__state mcp-card__state--loading" role="status"><span className="mcp-busy-indicator" aria-hidden="true" />处理中</p>
                   ) : snapshot ? (
                     <p
@@ -733,27 +911,31 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
                     >
                       {snapshot.status === "success" ? `${snapshot.toolCount} 个工具` : snapshot.error || "连接失败"}
                     </p>
-                  ) : null}
+                  ) : server.credentialRequired ? (
+                    <p
+                      className={`mcp-card__state ${server.credentialBound ? "mcp-card__state--success" : "mcp-card__state--warning"}`}
+                      role="status"
+                    >
+                      {server.credentialBound ? "凭据已配置" : "需要配置凭据"}
+                    </p>
+                  ) : <p className="mcp-card__state" role="status">无需凭据</p>}
+                  {server.usageCount ? <p className="mcp-card__usage">被 {server.usageCount} 个 Art 使用</p> : null}
                 </div>
                 <div className="art-registry-card__actions">
-                  {artManaged ? (
-                    <span className="mcp-card__state" title={server.ownerArtId}>只读 · 请在 Art 管理中配置</span>
-                  ) : (
-                    <div className="mcp-card__action-buttons">
-                      <button className="art-card-action" type="button" aria-label={`编辑 ${server.name}`} title="编辑" disabled={operationBusy} onClick={() => setEditor({ mode: "edit", server })}>
-                        <McpIcon kind="edit" />
-                      </button>
-                      <button className="art-card-action" type="button" aria-label={`测试 ${server.name}`} title="测试连接" disabled={operationBusy || !enabled} onClick={() => void testServer(server)}>
-                        <McpIcon kind="test" />
-                      </button>
-                      <button className={enabled ? "art-card-action art-card-action--active" : "art-card-action"} type="button" aria-label={`${enabled ? "禁用" : "启用"} ${server.name}`} title={enabled ? "禁用" : "启用"} disabled={operationBusy} onClick={() => void toggleServer(server)}>
-                        <McpIcon kind="power" />
-                      </button>
-                      <button className="art-card-action art-card-action--danger" type="button" aria-label={`删除 ${server.name}`} title="删除" disabled={operationBusy} onClick={() => void removeServer(server)}>
-                        <McpIcon kind="trash" />
-                      </button>
-                    </div>
-                  )}
+                  <div className="mcp-card__action-buttons">
+                    <button className="art-card-action" type="button" aria-label={`${packaged ? "配置凭据" : "编辑"} ${server.name}`} title={packaged ? "配置凭据" : "编辑"} disabled={operationBusy} onClick={() => packaged ? setCredentialServer(server) : setEditor({ mode: "edit", server })}>
+                      <McpIcon kind="edit" />
+                    </button>
+                    <button className="art-card-action" type="button" aria-label={`测试 ${server.name}`} title="测试连接" disabled={operationBusy || !enabled || Boolean(server.credentialRequired && !server.credentialBound)} onClick={() => void testServer(server)}>
+                      <McpIcon kind="test" />
+                    </button>
+                    <button className={enabled ? "art-card-action art-card-action--active" : "art-card-action"} type="button" aria-label={`${enabled ? "禁用" : "启用"} ${server.name}`} title={enabled ? "禁用" : "启用"} disabled={operationBusy} onClick={() => void toggleServer(server)}>
+                      <McpIcon kind="power" />
+                    </button>
+                    <button className="art-card-action art-card-action--danger" type="button" aria-label={`删除 ${server.name}`} title="删除" disabled={operationBusy} onClick={() => void removeServer(server)}>
+                      <McpIcon kind="trash" />
+                    </button>
+                  </div>
                 </div>
               </article>
             );
@@ -889,6 +1071,14 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
           } finally {
             setEditorBusy(false);
           }
+        }}
+      />
+      <McpCredentialDialog
+        server={credentialServer}
+        busy={credentialServer ? busyServerId === credentialServer.id : false}
+        onClose={closeCredentialDialog}
+        onSave={async (values, clear) => {
+          if (credentialServer) await saveCredentials(credentialServer, values, clear);
         }}
       />
     </section>

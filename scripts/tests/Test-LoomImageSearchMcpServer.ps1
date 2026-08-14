@@ -96,7 +96,7 @@ function Send-JsonRpcRequest {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
-$serverScript = Join-Path $repoRoot "art-packages\samples\image-search\runtime\image-search-mcp.ps1"
+$serverScript = Join-Path $repoRoot "mcp-server-packages\image-search\runtime\image-search-mcp.ps1"
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
 $workRoot = Join-Path $tempBase ("loom-image-search-mcp-test-" + [Guid]::NewGuid().ToString("N"))
 $fixtureScript = Join-Path $workRoot "fixture-http.ps1"
@@ -143,7 +143,6 @@ try {
             results = @(
                 @{
                     title = "Loom first"
-                    url = "https://cdn.example.test/image-1.png"
                     source = "https://example.test/source/1"
                     thumbnail = @{ src = "https://cdn.example.test/thumb-1.jpg" }
                     properties = @{ url = "https://cdn.example.test/image-1.png"; width = 640; height = 480 }
@@ -153,6 +152,12 @@ try {
                     url = "https://cdn.example.test/image-2.png"
                     source = "https://example.test/source/2"
                     thumbnail = @{ src = "https://cdn.example.test/thumb-2.jpg" }
+                    properties = @{}
+                },
+                @{
+                    title = "Loom thumbnail fallback"
+                    source = "https://example.test/source/3"
+                    thumbnail = @{ src = "https://cdn.example.test/thumb-3.jpg" }
                     properties = @{}
                 }
             )
@@ -225,21 +230,23 @@ try {
         method = "tools/call"
         params = [ordered]@{
             name = "brave_image_search"
-            arguments = [ordered]@{ query = "loom framework"; count = 2 }
+            arguments = [ordered]@{ query = "loom framework"; count = 3 }
         }
     })
     Assert-True (-not [bool]$call.result.isError) "Image-search MCP tool returned isError."
-    Assert-True ([int]$call.result.structuredContent.count -eq 2) "Image-search MCP candidate count mismatch."
+    Assert-True ([int]$call.result.structuredContent.count -eq 3) "Image-search MCP candidate count mismatch."
     Assert-True ([string]$call.result.structuredContent.candidates[0].imageUrl -eq "https://cdn.example.test/image-1.png") "Primary image URL was not normalized."
     Assert-True ([string]$call.result.structuredContent.candidates[0].thumbnailUrl -eq "https://cdn.example.test/thumb-1.jpg") "Thumbnail URL was not preserved."
     Assert-True ([string]$call.result.structuredContent.candidates[0].sourcePageUrl -eq "https://example.test/source/1") "Source page URL was not preserved."
     Assert-True ([int]$call.result.structuredContent.candidates[0].width -eq 640) "Image width was not preserved."
-    Assert-True ([string]$call.result.structuredContent.candidates[1].imageUrl -eq "https://cdn.example.test/thumb-2.jpg") "Thumbnail-only result was not promoted to an image candidate."
+    Assert-True ([string]$call.result.structuredContent.candidates[1].imageUrl -eq "https://cdn.example.test/image-2.png") "Top-level Brave image URL was not preserved."
+    Assert-True ([string]$call.result.structuredContent.candidates[2].imageUrl -eq "https://cdn.example.test/thumb-3.jpg") "Thumbnail-only Brave result was not preserved."
+    Assert-True ([string]$call.result.structuredContent.candidates[2].sourcePageUrl -eq "https://example.test/source/3") "Thumbnail-only source page URL was not preserved."
 
     Assert-True $fixtureProcess.WaitForExit(10000) "Fixture HTTP server did not exit after one request."
     Assert-True ($fixtureProcess.ExitCode -eq 0) "Fixture HTTP server failed: $($fixtureProcess.StandardError.ReadToEnd())"
     $capturedRequest = Get-Content -Raw -Encoding UTF8 -LiteralPath $requestPath
-    Assert-True ($capturedRequest -match 'GET /res/v1/images/search\?q=loom%20framework&count=2&safesearch=strict HTTP/1\.1') "Image-search request URI is invalid: $capturedRequest"
+    Assert-True ($capturedRequest -match 'GET /res/v1/images/search\?q=loom%20framework&count=3&safesearch=strict HTTP/1\.1') "Image-search request URI is invalid: $capturedRequest"
     Assert-True ($capturedRequest -match '(?im)^X-Subscription-Token:\s*fixture-api-key\s*$') "Brave API credential header was not sent."
 }
 finally {
@@ -263,4 +270,4 @@ finally {
     }
 }
 
-Write-Host "Image-search package-local MCP server contract passed."
+Write-Host "Independent image-search MCP server contract passed."
