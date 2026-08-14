@@ -2,7 +2,7 @@
   "id": "mcp",
   "name": "MCP",
   "description": "Executes MCP-backed Art packages in an isolated process boundary.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": {
     "id": "neuro.official",
     "name": "Neuro"
