@@ -415,10 +415,16 @@ fn schema_type_matches(schema: &Value, expected: &str) -> bool {
 }
 
 fn redact_credentials(mut message: String, credentials: &[CredentialGrant]) -> String {
-    for credential in credentials {
-        if credential.value.len() >= 4 {
-            message = message.replace(&credential.value, "[REDACTED]");
-        }
+    let mut values = credentials
+        .iter()
+        .map(|credential| credential.value.as_str())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    values.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+    for value in values {
+        message = message.replace(value, "[REDACTED]");
     }
     message
 }
@@ -434,6 +440,13 @@ mod tests {
     use loom_protocol::FrameworkExecutionContext;
     use serde_json::json;
     use std::path::PathBuf;
+    #[cfg(windows)]
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn request() -> FrameworkExecuteRequest {
         FrameworkExecuteRequest {
@@ -523,5 +536,135 @@ mod tests {
             ),
             "server printed [REDACTED]"
         );
+    }
+
+    #[test]
+    fn short_credential_values_are_redacted_from_mcp_errors() {
+        assert_eq!(
+            redact_credentials(
+                "server printed key=abc".to_owned(),
+                &[CredentialGrant {
+                    name: "short_key".to_owned(),
+                    value: "abc".to_owned(),
+                    expires_at: None,
+                }]
+            ),
+            "server printed key=[REDACTED]"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn package_local_image_search_server_executes_through_mcp_framework() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture image API");
+        let address = listener.local_addr().expect("fixture image API address");
+        let fixture = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept image API request");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone fixture stream"));
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read request line");
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            assert!(request.starts_with(
+                "GET /res/v1/images/search?q=loom%20framework&count=2&safesearch=strict HTTP/1.1\r\n"
+            ));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("x-subscription-token: fixture-api-key\r\n"));
+
+            let body = json!({
+                "results": [
+                    {
+                        "title": "Loom first",
+                        "url": "https://example.test/source/1",
+                        "thumbnail": { "src": "https://cdn.example.test/thumb-1.jpg" },
+                        "properties": {
+                            "url": "https://cdn.example.test/image-1.png",
+                            "width": 640,
+                            "height": 480
+                        }
+                    },
+                    {
+                        "title": "Loom second",
+                        "url": "https://example.test/source/2",
+                        "thumbnail": { "src": "https://cdn.example.test/thumb-2.jpg" },
+                        "properties": {}
+                    }
+                ]
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write fixture response");
+            stream.flush().expect("flush fixture response");
+        });
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let art_dir = std::env::temp_dir().join(format!(
+            "loom-image-search-mcp-framework-{}-{suffix}",
+            std::process::id()
+        ));
+        let runtime_dir = art_dir.join("runtime");
+        fs::create_dir_all(&runtime_dir).expect("create staged Art runtime");
+        let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../art-packages/samples/image-search");
+        fs::copy(
+            source_dir.join("runtime/image-search-mcp.ps1"),
+            runtime_dir.join("image-search-mcp.ps1"),
+        )
+        .expect("stage package-local image-search MCP server");
+        let mut manifest: Value = serde_json::from_slice(
+            &fs::read(source_dir.join("manifest.json")).expect("read image-search manifest"),
+        )
+        .expect("parse image-search manifest");
+        manifest["metadata"]["mcp"]["args"] = json!([
+            "-Endpoint",
+            format!("http://{address}/res/v1/images/search")
+        ]);
+        fs::write(
+            art_dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).expect("serialize staged manifest"),
+        )
+        .expect("write staged manifest");
+
+        let mut request = request();
+        request.art_id = "custom-image-search".to_owned();
+        request.art_dir = art_dir.clone();
+        request.inputs = json!({});
+        request.params = json!({ "query": "loom framework", "count": "2" });
+        request.context.credentials = vec![CredentialGrant {
+            name: "brave_api_key".to_owned(),
+            value: "fixture-api-key".to_owned(),
+            expires_at: None,
+        }];
+
+        let execution = execute(&request, &art_dir).expect("execute package-local MCP server");
+        assert_eq!(execution.server_id, "neuro-image-search");
+        assert_eq!(execution.tool_name, "brave_image_search");
+        assert_eq!(execution.arguments["count"], "2");
+        assert_eq!(execution.result["structuredContent"]["count"], 2);
+        assert_eq!(
+            execution.result["structuredContent"]["candidates"][0]["imageUrl"],
+            "https://cdn.example.test/image-1.png"
+        );
+        assert_eq!(
+            execution.result["structuredContent"]["candidates"][1]["imageUrl"],
+            "https://cdn.example.test/thumb-2.jpg"
+        );
+
+        fixture.join().expect("image API fixture thread");
+        fs::remove_dir_all(&art_dir).expect("remove staged image-search Art");
     }
 }

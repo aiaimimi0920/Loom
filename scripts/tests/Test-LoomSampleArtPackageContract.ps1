@@ -48,7 +48,7 @@ $buildScript = Join-Path $repoRoot "scripts\Build-LoomSampleArtPackages.ps1"
 $expected = [ordered]@{
     "image-compress" = [ordered]@{ id = "custom-1770146354922"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802001"; version = "0.1.2" }
     "remove-bg" = [ordered]@{ id = "custom-remove-bg-cloud"; framework = "cloud_api"; executionType = "framework_art"; globalId = "NA20260802002"; version = "0.1.1" }
-    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802003"; version = "0.2.1" }
+    "image-search" = [ordered]@{ id = "custom-image-search"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802003"; version = "0.3.0" }
     "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802004"; version = "0.1.4" }
     "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802005"; version = "0.1.0" }
     "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow"; executionType = "workflow"; globalId = "NA20260802006"; version = "0.1.0" }
@@ -97,9 +97,18 @@ foreach ($entry in $expected.GetEnumerator()) {
     if ($entry.Key -eq "image-search") {
         $secret = @($manifest.params | Where-Object { [string]$_.id -eq "brave_api_key" }) | Select-Object -First 1
         Assert-True ($null -ne $secret -and [bool]$secret.required -and [string]$secret.type -eq "secret") "Image search must declare a required Brave API Key secret parameter."
-        Assert-True ([string]$manifest.metadata.mcp.command -eq "npx") "Image search must launch its MCP server through npx."
+        Assert-True ([string]$manifest.metadata.mcp.serverId -eq "neuro-image-search") "Image search MCP server id is invalid."
+        Assert-True ([string]$manifest.metadata.mcp.command -eq "runtime/image-search-mcp.ps1") "Image search must launch its package-local MCP server."
+        Assert-True (@($manifest.metadata.mcp.args).Count -eq 0) "Image search package-local MCP server must not depend on external launcher arguments."
         Assert-True ([string]$manifest.metadata.mcp.toolName -eq "brave_image_search") "Image search must call brave_image_search."
         Assert-True ([string]$manifest.metadata.mcp.credentialEnv.BRAVE_API_KEY -eq "brave_api_key") "Image search must map the Art secret to BRAVE_API_KEY."
+        $mcpServerPath = Join-Path $sourceDirectory "runtime\image-search-mcp.ps1"
+        Assert-True (Test-Path -LiteralPath $mcpServerPath -PathType Leaf) "Image search package-local MCP server is missing."
+        $mcpServerSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $mcpServerPath
+        Assert-True ($mcpServerSource -match 'api\.search\.brave\.com/res/v1/images/search') "Image search MCP server must use the Brave image search API."
+        Assert-True ($mcpServerSource -match '"tools/list"') "Image search MCP server must implement tools/list."
+        Assert-True ($mcpServerSource -match '"tools/call"') "Image search MCP server must implement tools/call."
+        Assert-True ($mcpServerSource -notmatch '@brave/brave-search-mcp-server|\bnpx\b') "Image search MCP server must be self-contained."
         $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceDirectory "runtime\main.ps1")
         Assert-True ($runtimeSource -match 'frameworkData\.mcp\.result') "Image search runtime must consume the real MCP result."
         Assert-True ($runtimeSource -notmatch 'New-PlaceholderImage') "Image search runtime must not generate placeholder results."
@@ -242,6 +251,9 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 Assert-True ($null -ne $zipSecret -and [bool]$zipSecret.required -and [string]$zipSecret.type -eq "secret") "Packaged image search must retain its Brave API Key parameter."
                 Assert-True ([string]$zipManifest.metadata.mcp.toolName -eq "brave_image_search") "Packaged image search MCP tool is invalid."
                 Assert-True ([string]$zipManifest.metadata.mcp.credentialEnv.BRAVE_API_KEY -eq "brave_api_key") "Packaged image search credential mapping is invalid."
+                Assert-True ([string]$zipManifest.metadata.mcp.command -eq "runtime/image-search-mcp.ps1") "Packaged image search must use its package-local MCP server."
+                $mcpServerEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq "runtime/image-search-mcp.ps1" } | Select-Object -First 1
+                Assert-True ($null -ne $mcpServerEntry) "Packaged image search MCP server is missing: $zipPath"
             }
             if ($entry.Key -eq "color-transfer") {
                 $packagedParameterIds = @($zipManifest.params | ForEach-Object { [string]$_.id })
@@ -295,5 +307,10 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
         Assert-True ($actualHash -eq $expectedHash) "Sample Art ZIP hash mismatch: $zipPath"
     }
 }
+
+$imageSearchMcpContract = Join-Path $scriptRoot "Test-LoomImageSearchMcpServer.ps1"
+Assert-True (Test-Path -LiteralPath $imageSearchMcpContract -PathType Leaf) "Image-search MCP contract test is required: $imageSearchMcpContract"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $imageSearchMcpContract
+Assert-True ($LASTEXITCODE -eq 0) "Image-search package-local MCP server contract failed."
 
 Write-Host "Sample Art package contract passed for $($expected.Count) packages."

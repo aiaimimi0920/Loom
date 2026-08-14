@@ -333,8 +333,10 @@ use the same installed framework process boundary without modifying Loom or Hook
 The packaged `图片搜索` Art declares `Brave API Key` as a required secret. Set it
 from the Art editor by either selecting a global credential or entering an
 Art-scoped value. The independently installed `mcp` framework maps that binding
-to `BRAVE_API_KEY`, starts `@brave/brave-search-mcp-server`, and calls
-`brave_image_search`; the key is not stored in normal Art defaults.
+to `BRAVE_API_KEY` and starts the Art package's own
+`runtime/image-search-mcp.ps1` server. That server exposes
+`brave_image_search` over stdio MCP and calls the Brave image-search API without
+an npm or `npx` runtime dependency; the key is not stored in normal Art defaults.
 
 Every Art parameter can also switch from a literal default to a typed global
 encrypted value. Global values declare `string`, `number`, `integer`, `boolean`,
@@ -366,6 +368,12 @@ machine-readable summary under:
 ```text
 target\framework-art-store-hook-smoke\<runId>\summary.json
 ```
+
+That broad Hook smoke intentionally uses a protocol fixture; it is not the
+package-local server proof. `scripts/tests/Test-LoomSampleArtInstallExecution.ps1`
+installs the real `custom-image-search.zip`, preserves its package-local MCP
+server, redirects only the provider endpoint to a local Brave API fixture, and
+verifies credential injection, image download, and the formal image result.
 
 ## Third-party plugin boundary smoke
 

@@ -1,5 +1,10 @@
 # Phase 58: MCP image-search Art closure
 
+> Historical note: Phase 72 supersedes the execution-time
+> `npx @brave/brave-search-mcp-server` dependency with a package-local MCP
+> server. The Phase 58 evidence below remains the history of the first MCP image
+> normalization path, not the current packaging contract.
+
 ## Status
 
 Complete.

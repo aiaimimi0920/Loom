@@ -65,112 +65,116 @@ function New-ImageSearchFixturePackage {
     param(
         [Parameter(Mandatory = $true)][string]$SourceZip,
         [Parameter(Mandatory = $true)][string]$DestinationZip,
-        [Parameter(Mandatory = $true)][string]$WorkRoot
+        [Parameter(Mandatory = $true)][string]$WorkRoot,
+        [Parameter(Mandatory = $true)][string]$Endpoint
     )
 
     $stage = Join-Path $WorkRoot "image-search-fixture"
     Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
-    $serverPath = Join-Path $stage "runtime\fake-mcp-server.ps1"
-    $server = @'
-$ErrorActionPreference = "Stop"
-function Write-Message {
-    param([Parameter(Mandatory = $true)][object]$Value)
-    [Console]::Out.WriteLine(($Value | ConvertTo-Json -Depth 30 -Compress))
-    [Console]::Out.Flush()
-}
-
-$image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-while ($null -ne ($line = [Console]::In.ReadLine())) {
-    if ([string]::IsNullOrWhiteSpace($line)) {
-        continue
-    }
-    $request = $line | ConvertFrom-Json
-    $method = [string]$request.method
-    if ($method -eq "notifications/initialized") {
-        continue
-    }
-    if ($method -eq "initialize") {
-        Write-Message @{
-            jsonrpc = "2.0"
-            id = $request.id
-            result = @{
-                protocolVersion = "2024-11-05"
-                capabilities = @{ tools = @{} }
-                serverInfo = @{ name = "loom-image-search-fixture"; version = "1.0.0" }
-            }
-        }
-        continue
-    }
-    if ($method -eq "tools/list") {
-        Write-Message @{
-            jsonrpc = "2.0"
-            id = $request.id
-            result = @{
-                tools = @(
-                    @{
-                        name = "brave_image_search"
-                        description = "Return a fixture image"
-                        inputSchema = @{
-                            type = "object"
-                            properties = @{
-                                query = @{ type = "string" }
-                                count = @{ type = "integer" }
-                            }
-                            required = @("query")
-                        }
-                    }
-                )
-            }
-        }
-        continue
-    }
-    if ($method -eq "tools/call") {
-        if ($env:BRAVE_API_KEY -ne "loom-package-smoke-key") {
-            Write-Message @{
-                jsonrpc = "2.0"
-                id = $request.id
-                error = @{ code = -32001; message = "BRAVE_API_KEY was not injected" }
-            }
-            continue
-        }
-        $query = [string]$request.params.arguments.query
-        Write-Message @{
-            jsonrpc = "2.0"
-            id = $request.id
-            result = @{
-                content = @(@{ type = "text"; text = "fixture results for $query" })
-                structuredContent = @{
-                    type = "object"
-                    items = @(
-                        @{
-                            title = "Fixture image"
-                            url = "https://example.invalid/source"
-                            properties = @{ url = $image; width = 1; height = 1 }
-                        }
-                    )
-                }
-            }
-        }
-    }
-}
-'@
-    Write-Utf8NoBomFile -Path $serverPath -Content $server
+    $serverPath = Join-Path $stage "runtime\image-search-mcp.ps1"
+    Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Packaged image-search MCP server is missing: $serverPath"
 
     $manifestPath = Join-Path $stage "manifest.json"
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-    $manifest.metadata.mcp.command = "powershell.exe"
-    $manifest.metadata.mcp.args = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "{artDir}/runtime/fake-mcp-server.ps1"
-    )
+    Assert-True ([string]$manifest.metadata.mcp.command -eq "runtime/image-search-mcp.ps1") "Image-search fixture must preserve the package-local MCP command."
+    $manifest.metadata.mcp.args = @("-Endpoint", $Endpoint)
     Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
     if (Test-Path -LiteralPath $DestinationZip) {
         Remove-Item -LiteralPath $DestinationZip -Force
     }
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
+}
+
+function Start-ImageSearchApiFixture {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$WorkRoot,
+        [Parameter(Mandatory = $true)][string]$ReadyPath,
+        [Parameter(Mandatory = $true)][string]$RequestPath
+    )
+
+    $fixturePath = Join-Path $WorkRoot "image-search-api-fixture.ps1"
+    $fixtureSource = @'
+param(
+    [int]$Port,
+    [string]$ReadyPath,
+    [string]$RequestPath
+)
+$ErrorActionPreference = "Stop"
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+$listener.Start()
+try {
+    [System.IO.File]::WriteAllText($ReadyPath, "ready", [System.Text.UTF8Encoding]::new($false))
+    $captured = @()
+    for ($requestIndex = 0; $requestIndex -lt 2; $requestIndex++) {
+        $client = $listener.AcceptTcpClient()
+        try {
+            $stream = $client.GetStream()
+            $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::ASCII, $false, 1024, $true)
+            $lines = @()
+            try {
+                while ($null -ne ($line = $reader.ReadLine())) {
+                    if ($line.Length -eq 0) { break }
+                    $lines += $line
+                }
+            }
+            finally {
+                $reader.Dispose()
+            }
+            $captured += $lines
+            $captured += ""
+            $requestLine = [string]$lines[0]
+            if ($requestLine -like "GET /res/v1/images/search?*") {
+                $body = @{
+                    results = @(@{
+                        title = "Installed package fixture"
+                        url = "https://example.test/source"
+                        thumbnail = @{ src = "http://127.0.0.1:$Port/fixture.png" }
+                        properties = @{ url = "http://127.0.0.1:$Port/fixture.png"; width = 1; height = 1 }
+                    })
+                } | ConvertTo-Json -Depth 10 -Compress
+                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+                $contentType = "application/json; charset=utf-8"
+                $status = "200 OK"
+            }
+            elseif ($requestLine -like "GET /fixture.png *") {
+                $bodyBytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+                $contentType = "image/png"
+                $status = "200 OK"
+            }
+            else {
+                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes("not found")
+                $contentType = "text/plain"
+                $status = "404 Not Found"
+            }
+            $header = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+            $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
+            $stream.Write($headerBytes, 0, $headerBytes.Length)
+            $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+            $stream.Flush()
+        }
+        finally {
+            $client.Dispose()
+        }
+    }
+    [System.IO.File]::WriteAllLines($RequestPath, $captured, [System.Text.UTF8Encoding]::new($false))
+}
+finally {
+    $listener.Stop()
+}
+'@
+    Write-Utf8NoBomFile -Path $fixturePath -Content $fixtureSource
+    $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $processInfo.FileName = "powershell.exe"
+    $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$fixturePath`" -Port $Port -ReadyPath `"$ReadyPath`" -RequestPath `"$RequestPath`""
+    $processInfo.UseShellExecute = $false
+    $processInfo.CreateNoWindow = $true
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $processInfo
+    Assert-True $process.Start() "Failed to start image-search API fixture."
+    return $process
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -213,8 +217,14 @@ $runStore = Join-Path $controlPlane "runs.sqlite3"
 $stdoutPath = Join-Path $controlPlane "daemon.stdout.log"
 $stderrPath = Join-Path $controlPlane "daemon.stderr.log"
 $port = Get-FreePort
+do {
+    $imageSearchApiPort = Get-FreePort
+} while ($imageSearchApiPort -eq $port)
 $baseUrl = "http://127.0.0.1:$port"
 $daemon = $null
+$imageSearchApiFixture = $null
+$imageSearchApiReadyPath = Join-Path $controlPlane "image-search-api-ready"
+$imageSearchApiRequestPath = Join-Path $controlPlane "image-search-api-requests.txt"
 $succeeded = $false
 $oldEnvironment = @{}
 foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
@@ -258,10 +268,26 @@ try {
     $sourceImageSearchZip = Join-Path $artRootPath "custom-image-search.zip"
     Assert-True (Test-Path -LiteralPath $sourceImageSearchZip -PathType Leaf) "Image-search Art ZIP missing: $sourceImageSearchZip"
     $imageSearchFixtureZip = Join-Path $controlPlane "custom-image-search-fixture.zip"
+    $imageSearchApiFixture = Start-ImageSearchApiFixture `
+        -Port $imageSearchApiPort `
+        -WorkRoot $controlPlane `
+        -ReadyPath $imageSearchApiReadyPath `
+        -RequestPath $imageSearchApiRequestPath
+    $fixtureDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $imageSearchApiReadyPath -PathType Leaf)) {
+        if ($imageSearchApiFixture.HasExited) {
+            throw "Image-search API fixture exited early: $($imageSearchApiFixture.StandardError.ReadToEnd())"
+        }
+        if ([DateTime]::UtcNow -ge $fixtureDeadline) {
+            throw "Timed out waiting for image-search API fixture."
+        }
+        Start-Sleep -Milliseconds 50
+    }
     New-ImageSearchFixturePackage `
         -SourceZip $sourceImageSearchZip `
         -DestinationZip $imageSearchFixtureZip `
-        -WorkRoot $controlPlane
+        -WorkRoot $controlPlane `
+        -Endpoint "http://127.0.0.1:$imageSearchApiPort/res/v1/images/search"
 
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$port
@@ -382,6 +408,12 @@ try {
         }
         Write-Host "PASS installed/executed $($case.id)"
     }
+    Assert-True $imageSearchApiFixture.WaitForExit(10000) "Image-search API fixture did not observe both the search and image requests."
+    Assert-True ($imageSearchApiFixture.ExitCode -eq 0) "Image-search API fixture failed: $($imageSearchApiFixture.StandardError.ReadToEnd())"
+    $capturedImageSearchRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $imageSearchApiRequestPath
+    Assert-True ($capturedImageSearchRequests -match 'GET /res/v1/images/search\?q=loom%20package%20smoke&count=3&safesearch=strict HTTP/1\.1') "Installed image-search MCP request URI is invalid."
+    Assert-True ($capturedImageSearchRequests -match '(?im)^X-Subscription-Token:\s*loom-package-smoke-key\s*$') "Installed image-search MCP did not receive the Art credential."
+    Assert-True ($capturedImageSearchRequests -match '(?m)^GET /fixture\.png HTTP/1\.1') "Installed image-search Art did not download the selected image."
     if (-not [string]::IsNullOrWhiteSpace($largeImagePathResolved)) {
         $executed = Invoke-LoomJson `
             -Method Post `
@@ -407,6 +439,10 @@ finally {
         Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue
         $null = $daemon.WaitForExit(5000)
     }
+    if ($null -ne $imageSearchApiFixture -and -not $imageSearchApiFixture.HasExited) {
+        Stop-Process -Id $imageSearchApiFixture.Id -Force -ErrorAction SilentlyContinue
+        $null = $imageSearchApiFixture.WaitForExit(5000)
+    }
     if (-not $succeeded) {
         Write-Host "--- daemon stdout ---"
         Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
@@ -416,7 +452,12 @@ finally {
     foreach ($name in $oldEnvironment.Keys) {
         [System.Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name])
     }
-    Remove-Item -LiteralPath $controlPlane -Recurse -Force -ErrorAction SilentlyContinue
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $resolvedControlPlane = [System.IO.Path]::GetFullPath($controlPlane)
+    if ($resolvedControlPlane.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $resolvedControlPlane).StartsWith("loom-sample-art-install-")) {
+        Remove-Item -LiteralPath $resolvedControlPlane -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host "Loom sample Art install/execution smoke passed for $($artCases.Count) packages."

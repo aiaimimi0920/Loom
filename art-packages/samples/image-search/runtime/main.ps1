@@ -229,7 +229,7 @@ function Convert-ImageLocationToDataUrl {
         }
         $maximumBytes = 32MB
         if ($response.Content.Headers.ContentLength -and
-            $response.Content.Headers.ContentLength.Value -gt $maximumBytes) {
+            [long]$response.Content.Headers.ContentLength -gt $maximumBytes) {
             throw "image exceeds 32 MiB"
         }
         $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
