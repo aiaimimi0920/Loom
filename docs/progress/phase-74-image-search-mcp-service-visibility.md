@@ -4,10 +4,11 @@
 
 ## 状态
 
-源码实现、针对性回归、Hook/Loom 完整源码门禁、独立安全审查、Hook R19、Loom R29、
-Loom release verifier，以及 R29 正式 daemon 的隔离 MCP 服务投影验证均已完成。
+源码实现、针对性回归、Hook/Loom 完整源码门禁、独立安全审查、Hook R19、Loom R30、
+Loom release verifier、正式 daemon 的隔离 MCP 服务投影验证，以及 R29 `mcp@0.2.0`
+到 R30 `mcp@0.2.1` 的升级验证均已完成。
 
-当前仍未执行 R19/R29 原生 Hook/Loom 双端 GUI 验收。用户正在运行 R28 Loom 和既有
+当前仍未执行 R19/R30 原生 Hook/Loom 双端 GUI 验收。用户正在运行 R28 Loom 和既有
 Hook 实例；本阶段没有终止、替换或重启这些进程。
 
 ## 1. 目的
@@ -227,6 +228,33 @@ Desktop 类型和 `McpHub` 识别同时满足 `managed=true` 与 `source="art"` 
 - 展开 credential alias 为普通环境变量或 header；
 - 为 `custom-image-search` 增加 host/UI Art-ID 特判。
 
+### 4.6 MCP Framework 0.2.1 与已安装控制面升级
+
+R29 首次发布后追加升级审计发现：R28 与 R29 都把 MCP Framework 标记为 `0.2.0`。
+FrameworkRegistry 的底层安装以 package digest 建立不可变版本目录，因此显式安装同版本
+但不同 digest 的 ZIP 仍能切换 runtime；但是 Desktop packaged bootstrap 只比较已安装
+版本和打包 catalog 的版本字符串。用户沿用 R28 控制面启动 R29 时，`0.2.0 == 0.2.0`
+会跳过自动升级。
+
+这意味着 R29 在全新控制面的服务投影和执行验证虽然真实通过，但不能证明既有用户控制面
+自动获得了新 MCP runtime。R29 因此被 R30 取代，不作为最终交付版本。
+
+R30 将 MCP Framework 正式提升为：
+
+```text
+neuro.official/mcp@0.2.1
+```
+
+Desktop bootstrap 看到已安装 `0.2.0` 与打包 `0.2.1` 不同后，会调用：
+
+```text
+POST /v1/frameworks/mcp/upgrade
+```
+
+并在 Framework 变化后重新安装依赖它的 bundled Art，使 Art dependency lock 指向新的
+active Framework。这里没有增加 R29/R28 专用分支或旧 runtime fallback，只执行正常的
+Framework 版本升级语义。
+
 ## 5. 默认 key 的安全定义
 
 “默认 key”仍然只表示用户已通过 Art settings 建立的 credential binding：
@@ -237,7 +265,7 @@ Desktop 类型和 `McpHub` 识别同时满足 `managed=true` 与 `source="art"` 
    `BRAVE_API_KEY`。
 
 本阶段没有把真实 key 写入 Git、manifest、普通 defaults、Hook session、workflow
-payload、MCP 列表响应、日志、文档、hash、长度、前缀或片段。R29 隔离验证使用随机
+payload、MCP 列表响应、日志、文档、hash、长度、前缀或片段。隔离验证使用随机
 生成且随临时控制面一同删除的测试 credential，只验证 `credentialBound` 摘要变化，
 没有调用真实 provider。
 
@@ -258,6 +286,7 @@ payload、MCP 列表响应、日志、文档、hash、长度、前缀或片段�
 | `loom-daemon --lib --test-threads=1` | 206 passed |
 | Loom Rust formatting | passed |
 | Loom desktop | 138 passed；typecheck/build passed |
+| Desktop packaged bootstrap `0.2.0 -> 0.2.1` | 1 passed |
 | Framework package contract | 4 Frameworks passed |
 | Sample Art package contract | 6 Arts passed |
 | Package-local image-search MCP direct contract | passed |
@@ -321,6 +350,35 @@ credentialBound=false -> true
 - 本轮 R29 daemon 已退出，临时控制面已删除；
 - 用户原有 R28 Loom/daemon 和 Hook 进程未被停止或修改。
 
+这组验证证明 managed MCP 投影本身进入了正式 release bytes，但后续升级审计发现 R29 的
+Framework 版本号没有变化，因此 R29 不再作为最终用户升级包。
+
+### 6.4 R29 到 R30 的隔离升级验证
+
+验证使用同一个临时控制面依次启动 R29 和 R30 正式 daemon：
+
+1. 用 R29 安装 `mcp@0.2.0` 和 `custom-image-search@0.3.2`；
+2. 停止本轮 R29 daemon；
+3. 用 R30 daemon 打开同一个控制面，确认升级前仍是 `mcp@0.2.0` 且 ready；
+4. 使用 R30 打包的 `mcp.zip` 调用正式 upgrade API；
+5. 确认 active Framework 变为 `mcp@0.2.1` 且 ready；
+6. 重新安装 R30 bundled image-search Art；
+7. 确认 Art-managed 图片搜索 MCP 投影仍存在且不暴露 credential/executable 字段。
+
+实际结果：
+
+```text
+before: mcp@0.2.0 ready=true
+after:  mcp@0.2.1 ready=true
+managed serverId=neuro-image-search
+managed ownerArtId=neuro.official/custom-image-search
+servers.json absent=true
+```
+
+独立 Desktop bootstrap 回归同时证明版本不同时会请求
+`POST /v1/frameworks/mcp/upgrade`，并随后请求 bundled Art reinstall。验证结束后，本轮
+R29/R30 daemon 和临时控制面均已清理，用户原有进程未被修改。
+
 ## 7. 正式 release
 
 ### 7.1 Hook R19
@@ -337,30 +395,32 @@ release/Hook/20260814-image-search-mcp-visibility-r19/hook.exe
 | SHA-256 | `a851b75221c4d08263cfea9865faecc728bc330f7f6ee1dfcf9387f7057179d7` |
 | Authenticode | `NotSigned` |
 
-### 7.2 Loom R29
+### 7.2 Loom R30
 
 ```text
-release/Loom/20260814-image-search-mcp-visibility-r29
+release/Loom/20260814-image-search-mcp-upgrade-r30
 ```
 
 | Item | Value |
 | --- | --- |
-| source commit | `37db5d5c411855cc6c88c55eb7f9614bacdf8191` |
+| source commit | `74de815d9a42f89f07a4e35d1d71b6f9fc94bfc3` |
 | `gitDirty` | `false` |
-| `Loom.exe` | `84373c898b30930a99990e090a5b5289d971296d84aeeec71720eb875fd0b589` |
+| MCP Framework version | `0.2.1` |
+| `Loom.exe` | `c84ebca6075edad82b4f5926d7efc93a2a1cee0b1f44006055b17cfb8c4a8c4c` |
 | `runtime/loom-daemon.exe` | `9f04abc044c747188ce10a603aa7f8ab6d5ceb49db6ac1f3161a4f8070bbb5d1` |
-| `packages/frameworks/mcp.zip` | `a2247d8243275bb874550c761393c7f63071f788f1574b526c4c3b25955c14bd` |
+| `packages/frameworks/mcp.zip` | `de9e2f8b351f873473943bca0082ca3af899b2887fc600f2f78cc94244741418` |
 | `packages/arts/custom-image-search.zip` | `bce52be4f183763edfb377f81582319a6e7733f03c97556d7c252bddc87dfd57` |
 | image-search ZIP bytes | `10182` |
-| desktop ZIP | `93fa2446df2cf879c78146703c822137f9b62c13cb43d6cf919e802924ca9234` |
+| desktop ZIP | `85cc46c49b52edfca76d99ddfe172e6429309b07d267240671fe77c3cb212cdd` |
 
-R29 `checksums.sha256` 包含 49 项。正式 Art ZIP 已独立打开确认：
+R30 `checksums.sha256` 包含 49 项。正式 Framework/Art ZIP 已独立确认：
 
+- MCP Framework package version 为 `0.2.1`；
 - package version 为 `0.3.2`；
 - `runtime/image-search-mcp.ps1` 存在；
 - `runtime/main.ps1` 包含 `result_index` 候选选择；
 - MCP Framework ZIP 包含新构建的 `runtime/loom-framework-mcp.exe`；
-- release manifest 的 `gitHead` 为上述 R29 source commit，`gitDirty=false`。
+- release manifest 的 `gitHead` 为上述 R30 source commit，`gitDirty=false`。
 
 release verifier 结果：
 
@@ -377,7 +437,7 @@ authoredArtCreationSmoke = passed
 
 ## 8. 当前未完成内容
 
-### 8.1 R19/R29 原生双端 GUI 验收
+### 8.1 R19/R30 原生双端 GUI 验收
 
 本阶段完成时，用户仍在运行：
 
@@ -386,17 +446,17 @@ release/Loom/20260814-image-search-runtime-fix-r28/Loom.exe
 release/Loom/20260814-image-search-runtime-fix-r28/runtime/loom-daemon.exe
 ```
 
-因此尚未运行 R19 Hook -> R29 Loom 的原生 pairing、MCP 服务页面可见性、候选点击、
+因此尚未运行 R19 Hook -> R30 Loom 的原生 pairing、MCP 服务页面可见性、候选点击、
 formal image output、restart recovery 和 600 秒 soak。必须等用户正常退出旧实例后再执行；
 不能为了验收强杀、重启或替换现场进程。
 
-### 8.2 R29 未重复消费真实 Brave credential
+### 8.2 R30 未重复消费真实 Brave credential
 
-Phase 73 已对 R28 完成隔离真实 provider 搜索与图片下载。R29 本阶段专注控制参数、
+Phase 73 已对 R28 完成隔离真实 provider 搜索与图片下载。R30 本阶段专注控制参数、
 Framework schema 边界和 MCP 服务投影；正式 package/installed execution 测试继续通过，
-但 R29 隔离投影验证没有读取或消费用户真实 key，也没有再次发起真实 Brave 请求。
+但 R30 隔离升级验证没有读取或消费用户真实 key，也没有再次发起真实 Brave 请求。
 
-这不是已知代码缺口，但属于最终 R19/R29 原生验收需要覆盖的外部 provider 边界。
+这不是已知代码缺口，但属于最终 R19/R30 原生验收需要覆盖的外部 provider 边界。
 
 ### 8.3 既有框架全局边界保持不变
 
@@ -432,6 +492,7 @@ Legacy 兼容层。
 Art-owned `result_index` 正确执行；MCP 页面通过只读动态投影显示同一个 package-local
 服务，不创建第二份用户 MCP 配置或 credential 真相源。
 
-从源码、package、release verifier 和正式 R29 daemon API 证据看，本阶段开发目标已经
-完成。剩余工作是等待现场旧进程自然退出后执行 R19/R29 原生 GUI/真实 provider 验收，
+从源码、package、release verifier、Desktop bootstrap 回归和正式 R29 -> R30 daemon
+升级证据看，本阶段开发目标已经完成。剩余工作是等待现场旧进程自然退出后执行
+R19/R30 原生 GUI/真实 provider 验收，
 以及按独立发布策略处理代码签名。
