@@ -53,7 +53,8 @@ $forbiddenArtIds = @(
     "custom-image-search",
     "custom-1770131241684",
     "custom-image-blend-script",
-    "custom-image-blend-compress-workflow"
+    "custom-image-blend-compress-workflow",
+    "custom-stock-monitor"
 )
 
 foreach ($file in $hookSource) {

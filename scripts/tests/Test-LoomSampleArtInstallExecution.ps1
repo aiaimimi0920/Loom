@@ -41,6 +41,33 @@ function Invoke-LoomJson {
     return Invoke-RestMethod -Method $Method -Uri $Url -ContentType "application/json" -Body $json -TimeoutSec 120
 }
 
+function Get-PropertyValue {
+    param([AllowNull()][object]$Value, [string]$Name)
+    if ($null -eq $Value) { return $null }
+    $property = $Value.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Wait-StockSurfaceAction {
+    param(
+        [string]$BaseUrl,
+        [string]$InstanceId,
+        [string]$EventId,
+        [int]$TimeoutSeconds = 20
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $record = Invoke-LoomJson -Method Get -Url "$BaseUrl/v1/surfaces/instances/$InstanceId" -Body $null
+        $ack = Get-PropertyValue (Get-PropertyValue $record "eventAcks") $EventId
+        if ($null -ne $ack -and [string]$ack.status -in @("succeeded", "failed", "cancelled")) {
+            return [pscustomobject]@{ record = $record; ack = $ack }
+        }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Timed out waiting for Stock Monitor Surface action: $EventId"
+}
+
 function Install-Zip {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
@@ -240,14 +267,22 @@ $port = Get-FreePort
 do {
     $imageSearchApiPort = Get-FreePort
 } while ($imageSearchApiPort -eq $port)
+do {
+    $stockApiPort = Get-FreePort
+} while ($stockApiPort -in @($port, $imageSearchApiPort))
 $baseUrl = "http://127.0.0.1:$port"
 $daemon = $null
 $imageSearchApiFixture = $null
+$stockApiFixture = $null
 $imageSearchApiReadyPath = Join-Path $controlPlane "image-search-api-ready"
 $imageSearchApiRequestPath = Join-Path $controlPlane "image-search-api-requests.txt"
+$stockApiReadyPath = Join-Path $controlPlane "stock-api-ready"
+$stockApiRequestPath = Join-Path $controlPlane "stock-api-requests.txt"
+$stockApiStdoutPath = Join-Path $controlPlane "stock-api.stdout.log"
+$stockApiStderrPath = Join-Path $controlPlane "stock-api.stderr.log"
 $succeeded = $false
 $oldEnvironment = @{}
-foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
+foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH", "LOOM_STOCK_API_BASE_URL")) {
     $oldEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name)
 }
 
@@ -309,11 +344,26 @@ try {
         -WorkRoot $controlPlane `
         -Endpoint "http://127.0.0.1:$imageSearchApiPort/res/v1/images/search"
 
+    $stockFixtureScript = Join-Path $scriptRoot "fixtures\StockMonitorApiFixture.ps1"
+    Assert-True (Test-Path -LiteralPath $stockFixtureScript -PathType Leaf) "Stock Monitor API fixture is missing: $stockFixtureScript"
+    $stockApiFixture = Start-Process -FilePath "powershell.exe" -ArgumentList (
+        "-NoProfile -ExecutionPolicy Bypass -File `"$stockFixtureScript`" -Port $stockApiPort -ReadyPath `"$stockApiReadyPath`" -RequestPath `"$stockApiRequestPath`""
+    ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stockApiStdoutPath -RedirectStandardError $stockApiStderrPath
+    $stockFixtureDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $stockApiReadyPath -PathType Leaf)) {
+        if ($stockApiFixture.HasExited) {
+            throw "Stock Monitor API fixture exited early: $([IO.File]::ReadAllText($stockApiStderrPath))"
+        }
+        if ([DateTime]::UtcNow -ge $stockFixtureDeadline) { throw "Timed out waiting for Stock Monitor API fixture." }
+        Start-Sleep -Milliseconds 50
+    }
+
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$port
     $env:LOOM_CONTROL_PLANE_ROOT = $controlPlane
     $env:LOOM_CONFIGURATION_ROOT = $configuration
     $env:LOOM_RUN_STORE_PATH = $runStore
+    $env:LOOM_STOCK_API_BASE_URL = "http://127.0.0.1:$stockApiPort"
     $daemon = Start-Process -FilePath $daemonPath -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
     $ready = $false
@@ -358,12 +408,17 @@ try {
         Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Art ZIP missing: $zipPath"
         $null = Install-Zip -Url $baseUrl -ZipPath $zipPath -Prefix "/v1/arts"
     }
+    $stockArtId = "custom-stock-monitor"
+    $stockZipPath = Join-Path $artRootPath "$stockArtId.zip"
+    Assert-True (Test-Path -LiteralPath $stockZipPath -PathType Leaf) "Stock Monitor Art ZIP missing: $stockZipPath"
+    $null = Install-Zip -Url $baseUrl -ZipPath $stockZipPath -Prefix "/v1/arts"
     $installedWorkflow = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/workflows/image-blend-compress-workflow" -Body $null
     Assert-True ([string]$installedWorkflow.workflow.id -eq "image-blend-compress-workflow") "Workflow sample definition was not registered from its package."
     $tools = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools" -Body $null
     foreach ($case in $artCases) {
         Assert-True (@($tools.tools | Where-Object { [string]$_.id -eq $case.id }).Count -eq 1) "Installed Art is not listed: $($case.id)"
     }
+    Assert-True (@($tools.tools | Where-Object { [string]$_.id -eq $stockArtId }).Count -eq 1) "Installed Stock Monitor Art is not listed."
 
     $updatedTools = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools" -Body $null
     $updatedImageSearch = @($updatedTools.tools | Where-Object { [string]$_.id -eq "custom-image-search" }) | Select-Object -First 1
@@ -415,6 +470,62 @@ try {
         }
         Write-Host "PASS installed/executed $($case.id)"
     }
+
+    $stockHostCapabilities = @{
+        apiVersion = "1.0"
+        runtimes = @("declarative", "javascript")
+        nodes = @("view", "row", "column", "stack", "scroll", "text", "image", "icon", "button", "input", "textarea", "number", "slider", "switch", "select", "progress", "divider", "spacer")
+        transports = @("loom_resource", "shared_memory")
+        capabilities = @("remote_resources", "surface.javascript.v1")
+        input = @{ pointer = $true; hover = $true; touch = $true; keyboard = $true }
+    }
+    $stockAttach = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/surfaces/attach" -Body @{
+        artId = $stockArtId
+        hookNodeId = "hook-node:stock-monitor-install-smoke"
+        deviceId = "device-000-local"
+        capabilities = $stockHostCapabilities
+    }
+    $stockInstanceId = [string]$stockAttach.instance.descriptor.instanceId
+    $stockAttachmentProperty = @($stockAttach.instance.attachments.PSObject.Properties)[0]
+    $stockAttachmentId = [string]$stockAttachmentProperty.Name
+    $stockSnapshot = $stockAttachmentProperty.Value.snapshot
+    Assert-True (-not [string]::IsNullOrWhiteSpace($stockInstanceId)) "Stock Monitor Surface instance id is missing."
+    Assert-True (-not [string]::IsNullOrWhiteSpace($stockAttachmentId)) "Stock Monitor Surface attachment id is missing."
+    Assert-True ([string]$stockSnapshot.runtime -eq "javascript") "Stock Monitor did not select the JavaScript Surface runtime."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$stockSnapshot.entryResourceId)) "Stock Monitor JavaScript entry resource is missing."
+    Assert-True (@($stockSnapshot.resourceLeases).Count -ge 1) "Stock Monitor JavaScript entry resource lease is missing."
+    $stockEventId = "event:stock-refresh-$([Guid]::NewGuid().ToString('N'))"
+    $stockAck = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/surfaces/instances/$stockInstanceId/events" -Body @{
+        protocolVersion = "loom.surface.v1"
+        instanceId = $stockInstanceId
+        attachmentId = $stockAttachmentId
+        eventId = $stockEventId
+        nodeId = "refresh"
+        event = "click"
+        action = "stock_refresh"
+        class = "discrete"
+        generation = [int64]$stockAttach.instance.descriptor.generation
+        baseRevision = [int64]$stockSnapshot.revision
+        payload = @{ testApiBaseUrl = "http://127.0.0.1:$stockApiPort" }
+    }
+    Assert-True ([string]$stockAck.status -in @("queued", "running")) "Stock Monitor refresh action was not accepted."
+    $stockFinal = Wait-StockSurfaceAction -BaseUrl $baseUrl -InstanceId $stockInstanceId -EventId $stockEventId
+    Assert-True ([string]$stockFinal.ack.status -eq "succeeded") "Stock Monitor Surface refresh failed: $($stockFinal.ack | ConvertTo-Json -Depth 10 -Compress)"
+    $stockFormalQuote = $stockFinal.record.latestResult.outputs.quote.value
+    Assert-True ([string]$stockFormalQuote.provider -eq "eastmoney") "Installed Stock Monitor provider mismatch."
+    Assert-True ([string]$stockFormalQuote.symbol -eq "000034") "Installed Stock Monitor symbol mismatch."
+    Assert-True ([double]$stockFormalQuote.price -eq 24.99) "Installed Stock Monitor price mismatch."
+    Assert-True (@($stockFormalQuote.trend).Count -eq 3) "Installed Stock Monitor trend count mismatch."
+    $stockCurrentAttachment = Get-PropertyValue (Get-PropertyValue $stockFinal.record "attachments") $stockAttachmentId
+    Assert-True ([string]$stockCurrentAttachment.snapshot.authoritativeState.status -eq "ready") "Installed Stock Monitor authoritative state is not ready."
+    Assert-True $stockApiFixture.WaitForExit(10000) "Stock Monitor API fixture did not observe quote and trend requests."
+    $stockFixtureError = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiStderrPath
+    Assert-True ([string]::IsNullOrWhiteSpace($stockFixtureError)) "Stock Monitor API fixture failed: $stockFixtureError"
+    $capturedStockRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiRequestPath
+    Assert-True ($capturedStockRequests -match 'GET /api/qt/stock/get\?secid=0\.000034&fields=') "Installed Stock Monitor quote request is invalid."
+    Assert-True ($capturedStockRequests -match 'GET /api/qt/stock/trends2/get\?secid=0\.000034&fields1=') "Installed Stock Monitor trend request is invalid."
+    Write-Host "PASS installed/executed Surface custom-stock-monitor"
+
     Assert-True $imageSearchApiFixture.WaitForExit(10000) "Image-search API fixture did not observe both the search and image requests."
     Assert-True ($imageSearchApiFixture.ExitCode -eq 0) "Image-search API fixture failed: $($imageSearchApiFixture.StandardError.ReadToEnd())"
     $capturedImageSearchRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $imageSearchApiRequestPath
@@ -458,6 +569,10 @@ finally {
         Stop-Process -Id $imageSearchApiFixture.Id -Force -ErrorAction SilentlyContinue
         $null = $imageSearchApiFixture.WaitForExit(5000)
     }
+    if ($null -ne $stockApiFixture -and -not $stockApiFixture.HasExited) {
+        Stop-Process -Id $stockApiFixture.Id -Force -ErrorAction SilentlyContinue
+        $null = $stockApiFixture.WaitForExit(5000)
+    }
     if (-not $succeeded) {
         Write-Host "--- daemon stdout ---"
         Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
@@ -475,4 +590,4 @@ finally {
     }
 }
 
-Write-Host "Loom sample Art install/execution smoke passed for $($artCases.Count) packages."
+Write-Host "Loom sample Art install/execution smoke passed for $($artCases.Count + 1) packages."

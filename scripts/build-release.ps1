@@ -235,6 +235,7 @@ function Get-LoomCatalog {
             [ordered]@{ id = "custom-1770131241684"; framework = "process" }
             [ordered]@{ id = "custom-image-blend-script"; framework = "process" }
             [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow" }
+            [ordered]@{ id = "custom-stock-monitor"; framework = "process" }
         )
     }
 

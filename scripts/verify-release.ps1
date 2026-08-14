@@ -458,9 +458,10 @@ function Assert-SampleArtPackages {
         "custom-1770131241684" = [ordered]@{ framework = "process"; executionType = "framework_art" }
         "custom-image-blend-script" = [ordered]@{ framework = "process"; executionType = "framework_art" }
         "custom-image-blend-compress-workflow" = [ordered]@{ framework = "workflow"; executionType = "workflow" }
+        "custom-stock-monitor" = [ordered]@{ framework = "process"; executionType = "framework_art" }
     }
     $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "sampleArtPackages")
-    Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain six curated Art package records."
+    Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain seven curated Art package records."
     $actualIds = @($packageRecords | ForEach-Object { [string]$_.id } | Sort-Object)
     Assert-Equal -Expected ((@($expected.Keys) | Sort-Object) -join ",") -Actual ($actualIds -join ",") -Message "Sample Art package id set mismatch."
 
@@ -517,6 +518,13 @@ function Assert-SampleArtPackages {
                 Assert-Equal -Expected "image-blend-compress-workflow" -Actual ([string]$artManifest.execution.workflowId) -Message "Workflow sample Art execution id mismatch for $id."
             }
             Assert-Equal -Expected $framework -Actual ([string]$artManifest.metadata.dependencies.framework) -Message "Sample Art ZIP dependency framework mismatch for $id."
+            if ($id -eq "custom-stock-monitor") {
+                $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
+                Assert-True -Condition ($entryNames -contains "surface/main.js") -Message "Stock Monitor ZIP is missing the JavaScript Surface entry."
+                Assert-True -Condition ($entryNames -contains "surface/fallback.json") -Message "Stock Monitor ZIP is missing the declarative fallback."
+                Assert-Equal -Expected "eastmoney" -Actual ([string]$artManifest.metadata.marketData.providerId) -Message "Stock Monitor provider metadata mismatch."
+                Assert-Equal -Expected $false -Actual ([bool]$artManifest.metadata.marketData.trading) -Message "Stock Monitor must not advertise trading."
+            }
         }
         finally {
             $archive.Dispose()

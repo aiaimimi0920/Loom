@@ -81,7 +81,8 @@ $packageNames = @(
     "image-search",
     "color-transfer",
     "image-blend",
-    "image-blend-compress"
+    "image-blend-compress",
+    "stock-monitor"
 )
 
 if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {

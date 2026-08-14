@@ -1,0 +1,152 @@
+{
+  "id": "custom-stock-monitor",
+  "name": "股票盯盘",
+  "description": "通过东方财富公开行情接口观察沪深 A 股实时价格、分时走势和关键指标，不提供交易功能。",
+  "enabled": true,
+  "execution": {
+    "type": "framework_art",
+    "framework": "process"
+  },
+  "inputs": [],
+  "outputs": [
+    {
+      "name": "quote",
+      "label": "行情快照",
+      "type": "object"
+    }
+  ],
+  "params": [
+    {
+      "id": "symbol",
+      "label": "股票代码",
+      "widget": "text",
+      "required": true,
+      "default": "000034",
+      "data_type": "string"
+    },
+    {
+      "id": "interval_seconds",
+      "label": "刷新间隔（秒）",
+      "widget": "slider",
+      "default": 15,
+      "min": 5,
+      "max": 60,
+      "step": 5,
+      "data_type": "number"
+    }
+  ],
+  "metadata": {
+    "packageSecurity": {
+      "version": "1.0.0",
+      "publisher": {
+        "id": "neuro.official",
+        "name": "Neuro",
+        "icon": "N"
+      }
+    },
+    "art": {
+      "qualifiedId": "neuro.official/custom-stock-monitor",
+      "englishName": "custom-stock-monitor",
+      "globalId": "NA20260802007"
+    },
+    "localization": {
+      "defaultLocale": "zh-CN",
+      "names": {
+        "zh-CN": "股票盯盘",
+        "en-US": "Stock Monitor"
+      },
+      "descriptions": {
+        "zh-CN": "观察沪深 A 股实时价格、分时走势和关键指标，不提供交易功能。",
+        "en-US": "Monitors Shanghai and Shenzhen A-share quotes, intraday trends, and key metrics without trading."
+      }
+    },
+    "dependencies": {
+      "framework": "process",
+      "frameworkVersion": "^0.1"
+    },
+    "capabilities": {
+      "parameters": "surface",
+      "marketData": {
+        "providerId": "eastmoney",
+        "providerName": "东方财富",
+        "marketScope": "沪深 A 股",
+        "apiKeyRequired": false,
+        "trading": false
+      },
+      "surface": {
+        "protocolVersion": "loom.surface.v1",
+        "apiVersion": "1.0",
+        "variants": [
+          {
+            "runtime": "javascript",
+            "entry": "surface/main.js",
+            "requiredCapabilities": ["surface.javascript.v1"]
+          },
+          {
+            "runtime": "declarative",
+            "entry": "surface/fallback.json"
+          }
+        ],
+        "fallbackScene": "surface/fallback.json",
+        "requiredNodes": ["column", "row", "text", "input", "select", "button", "divider"],
+        "requiredCapabilities": [],
+        "minimumSize": {
+          "width": 360,
+          "height": 320
+        },
+        "actions": [
+          {
+            "id": "stock_refresh",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": true,
+            "timeoutMs": 15000,
+            "progress": true
+          },
+          {
+            "id": "stock_symbol_commit",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": true,
+            "timeoutMs": 15000,
+            "progress": true
+          },
+          {
+            "id": "stock_interval_commit",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": false,
+            "timeoutMs": 5000,
+            "progress": false
+          }
+        ],
+        "instanceMode": "independent",
+        "stateSchemaVersion": 1,
+        "themeMode": "custom"
+      }
+    },
+    "marketData": {
+      "providerId": "eastmoney",
+      "providerName": "东方财富",
+      "quoteHost": "push2.eastmoney.com",
+      "trendHost": "push2his.eastmoney.com",
+      "marketScope": "沪深 A 股",
+      "apiKeyRequired": false,
+      "trading": false,
+      "disclaimer": "仅用于行情观察，不构成交易指令"
+    },
+    "plugin": {
+      "packageVersion": "1.0.0",
+      "runtimeMode": "surface"
+    }
+  }
+}

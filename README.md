@@ -94,7 +94,7 @@ first and then open the desktop:
 The CLI entry for advanced scripting is available from the separate
 `Loom-CLI-*.zip` release artifact. It is not copied into the desktop package
 root. The desktop package contains only the user-facing `Loom.exe` plus its
-internal runtime sidecar, support files, framework package catalog, and six
+internal runtime sidecar, support files, framework package catalog, and seven
 independent sample Art packages. Framework and Art runtimes remain separate
 ZIPs and are never statically linked into the desktop executable.
 
@@ -192,7 +192,7 @@ their package-local `art.runtime.json` entry; they are not separate frameworks.
 These four packages are optional and are not installed by a standalone daemon in
 a fresh control plane. Formal desktop releases carry them as independent ZIPs
 under `packages\frameworks`. The desktop's one-time sample-Art bootstrap installs
-the dependencies required by its six bundled Arts; operators can still install,
+the dependencies required by its seven bundled Arts; operators can still install,
 disable, update, or uninstall packages independently through **管理框架**. They
 are never statically linked into `Loom.exe` or `loom-daemon.exe`. They are a
 repo-owned catalog, not a closed allowlist: safe third-party
@@ -287,7 +287,7 @@ packaged daemon automatically checks the release's sibling
 `packages\frameworks` directory and verifies each ZIP against its `.sha256`
 sidecar before installation.
 
-The four repo-owned framework packages and six sample Art packages are built
+The four repo-owned framework packages and seven sample Art packages are built
 independently from the Loom binaries:
 
 ```powershell
@@ -304,7 +304,7 @@ The output contains one framework ZIP per framework and one Art ZIP per sample
 Art. Both ZIP types have independent manifests and SHA-256 files. Formal desktop
 release tooling publishes both catalogs under `packages\frameworks` and
 `packages\arts`. On the first launch for a catalog hash, the desktop verifies the
-ZIPs, installs the declared framework dependencies, and installs the six curated Arts
+ZIPs, installs the declared framework dependencies, and installs the seven curated Arts
 through the public package APIs. The applied catalog hash is recorded under the
 writable control plane, so deleting an Art later does not make it reappear on
 every startup. This bootstrap never edits Loom or Hook source. The same generic
@@ -392,7 +392,7 @@ framework upgrade, restart, enable, disable, uninstall, reinstall, Hook-facing
 dynamic capability discovery, generic Hook node instantiation, Hook Bridge
 execution, and unchanged Loom/Hook source fingerprints. Framework IDs supplied
 by third-party packages are accepted when they match Loom's safe package ID
-rules; the six catalog IDs are not a closed allowlist.
+rules; the seven catalog IDs are not a closed allowlist.
 
 This is a local boundary smoke, not a hosted marketplace certification. It
 requires a Rust toolchain and a built daemon. The invariant it proves is that
@@ -727,7 +727,7 @@ packages\Loom-CLI-<versionId>-windows-x64.zip.sha256
 ```
 
 The desktop ZIP contains `Loom.exe`, the runtime tree, the four independent
-framework ZIPs, and six independent Art ZIPs. On desktop startup, the Art catalog
+framework ZIPs, and seven independent Art ZIPs. On desktop startup, the Art catalog
 is applied once to the writable control plane through the same install APIs used
 by external packages. The CLI ZIP contains only `loom.exe`, allowing command-line
 use without adding a second executable to the desktop package root. The embedded Python runtime exists only inside
