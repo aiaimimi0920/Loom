@@ -13,20 +13,28 @@
 需要同时检查三个 Git 层级：
 
 1. Hook 子仓库：`../Hook`
-   - 本次实现提交：`0d952ec391012e5ba5292932b06a2341f5da5eab`
-   - 提交标题：`feat(art): adopt canonical Loom Hook protocol`
-2. Loom 子仓库：本文所在提交。审查时在 Loom 根目录执行
-   `git rev-parse HEAD`，该提交包含本轮 Loom 实现与本文。
-3. Neuro 父仓库：审查父仓库当前提交中的 `Hook`、`Loom` gitlink，确认它们
-   分别指向上述两个子仓库提交。父仓库的 Gateway、Platform、Talk、Tea 和其他
-   工作区修改不属于本次 Art 框架提交。
+   - R17 release 源码提交：`bc47f51c767d914bd800e965fcfd29cae9b5bae5`
+   - 当前 R17/R27 acceptance 入口提交：
+     `0e0b4093c21ff25a34818618ed48f1ea979afba3`
+2. Loom 子仓库：
+   - R27 release 源码提交：`08fa8a29a000daa0abe677813c72925e0f0d0184`
+   - 该提交在审查后资源语义之上增加 package-local 图片搜索 MCP。
+   - 本文的 release 记录为后续文档提交；审查时另行执行
+     `git rev-parse HEAD`。
+3. Neuro 父仓库：审查父仓库当前提交中的 `Hook`、`Loom` gitlink。Hook 应指向
+   当前 acceptance 入口提交；Loom 当前文档提交必须是上述 R27 release 源码提交的
+   descendant。父仓库的 Gateway、Platform、Talk、Tea 和其他工作区修改不属于本次
+   Art 框架提交。
 
 正式运行候选位于父仓库 release 根，而不是子仓库：
 
-- Hook R14：
-  `../release/Hook/20260813-loom-hook-v1-surface-wire-r14/hook.exe`
-- Loom R23：
-  `../release/Loom/20260813-loom-hook-v1-surface-wire-r23`
+- Hook R17：
+  `../release/Hook/20260814-art-protocol-review-r17/hook.exe`
+- Loom R27：
+  `../release/Loom/20260814-packaged-image-search-mcp-r27`
+
+R14/R23 和它们的 600 秒结果保留在第 3.8 节作为历史 acceptance；它们不再是
+当前默认候选。
 
 release 与 runtime evidence 按仓库策略没有强制加入源码 Git 提交；复核时需要
 在共享工作区独立核对其存在性、manifest、哈希和 JSON 证据。
@@ -261,10 +269,12 @@ bridge reset 与 terminal cache eviction 会自动回收仍未显式释放的 ha
 范围内，当前源码实现已闭环，并通过全量源码测试、构建、第三方 plugin boundary
 以及真实 Framework + Art Store + Hook smoke。它不是仅改文档或仅跑 unit tests。
 
-但是，2026-08-14 独立审查新增的 `outputTransports`、严格 formal-value 校验、
-多输出端口保留、shared-memory execution ownership/release、package version 收紧和
-canvas shape fail-closed 尚未进入新的 Hook/Loom release。因此 R14/R23 与既有 600 秒
-native acceptance 只能作为历史基线，不能作为当前审查后源码的发布证据。
+2026-08-14 独立审查新增的 `outputTransports`、严格 formal-value 校验、多输出端口
+保留、shared-memory execution ownership/release、package version 收紧和 canvas
+shape fail-closed 已进入 Hook R17 / Loom R26；随后 package-local 图片搜索 MCP 已进入
+Loom R27。R17/R27 已通过 exact-hash preflight 和 Loom 全套 release verifier，但新的
+600 秒 native acceptance 仍因现存用户 Hook 实例而安全阻塞。因此 R14/R23 的既有
+600 秒结果仍只是历史运行基线，不能替代 R17/R27 的最终 native gate。
 
 但是，“所有内部对象都必须 qualified”“默认生产级信任/OS 沙箱”“九个 Art 全部
 进入正式 release catalog”“release 能由最终干净提交直接追溯”这些更强命题目前
@@ -389,12 +399,42 @@ native acceptance 只能作为历史基线，不能作为当前审查后源码�
 `running=false`。smoke 结束后再次核对 Hook/Loom/daemon/Art Store 进程和相关 listener，
 均为空。
 
-### 3.8 历史 release 与 600 秒原生证据
+### 3.8 当前 release 与历史 600 秒原生证据
+
+当前 Hook R17：
+
+- path：`../release/Hook/20260814-art-protocol-review-r17/hook.exe`
+- bytes：`7036416`
+- SHA-256：`b12f107f32924db7498cb20f7a69ca926481f08da996b236e90f50b2a7cb894e`
+
+当前 Loom R27：
+
+- path：`../release/Loom/20260814-packaged-image-search-mcp-r27`
+- source：`08fa8a29a000daa0abe677813c72925e0f0d0184`
+- `gitDirty=false`
+- `Loom.exe`：`5935dc9cc4e722bc56bc0b946abf948ca105f10e51b387a00dedfb7e61541cb5`
+- `runtime/loom-daemon.exe`：
+  `8157b1086580eaca22b0a1764f367f32c966b956509937a7cebf6b3ec0b07293`
+- `packages/frameworks/mcp.zip`：
+  `2dd4e06059c960fd6da5dd4ef0241d5a25aa349a138af64a1b2fcfc7c164230d`
+- `packages/arts/custom-image-search.zip`：
+  `d6e45b2b6d4e5c4fe90d03eb322b5ac43185740c97aef52746baa59238d5e1c8`
+- verifier：49 files；七组 release/runtime smoke 全部 passed。
+
+R27 中 `custom-image-search@0.3.0` 的 ZIP 已独立打开检查，包含
+`runtime/image-search-mcp.ps1`，且 manifest 不再包含 npm/npx server fallback。
+
+当前安全 preflight：
+
+- summary：
+  `../Hook/artifacts/runtime-performance/hook-loom-surface-candidate/20260814-124315-hook-loom-surface-c174f9e4814e/summary.json`
+- exact R17/R27 path 与 SHA-256 均匹配；
+- 结果：`blocked_existing_hook`；
+- 没有启动候选，也没有终止现存用户进程。
 
 以下 R14/R23 证据早于 2026-08-14 独立审查修复，不包含本次最终源码。它们只证明
-此前候选的 native 运行状态；当前源码若要成为正式产品候选，必须生成新的 Hook 与
-Loom release、更新 verifier/default hashes，并以新制品精确 SHA-256 重跑 600 秒双端
-acceptance。
+此前候选的 native 运行状态，并作为历史 soak 基线保留；它们不能替代 R17/R27 以
+精确 SHA-256 重跑的 600 秒双端 acceptance。
 
 Hook R14：
 
@@ -512,29 +552,23 @@ Hook/Loom wire 对 packaged Art 强制 `publisher/id`，但 built-in native imag
 保留 `core.image.*`。它们不是 package，也不走 publisher package layout。若审查目标
 要求连 native built-in 都改为 publisher namespace，这部分未实现。
 
-#### E. 三个 Surface prototype 未进入 R23 正式 Art catalog
+#### E. 三个 Surface prototype 未进入 R27 正式 Art catalog
 
-九个 Art 的**源码和独立 package 构建**均已 canonical；但 R23 manifest 的正式
+九个 Art 的**源码和独立 package 构建**均已 canonical；但 R27 manifest 的正式
 `sampleArtPackages` 只有六个 sample ZIP。三个 Surface prototype 由
 `build-surface-prototypes.ps1` 独立打包并在 release verifier/runtime acceptance 中
-作为 smoke/fixture 使用，没有作为 R23 的正式 catalog artifacts 发布。
+作为 smoke/fixture 使用，没有作为 R27 的正式 catalog artifacts 发布。
 
-因此可以宣称“九个源码包已重构并验证”，不能宣称“R23 正式发行包分发九个 Art”。
+因此可以宣称“九个源码包已重构并验证”，不能宣称“R27 正式发行包分发九个 Art”。
 若开发目标要求九个都随 Loom release 分发，还需要扩展 release manifest、catalog、
 checksums、SBOM/provenance 和 verifier。
 
-#### F. 当前审查后源码尚无对应正式 release
+#### F. 当前 release 已有 clean provenance，但新 native acceptance 尚未完成
 
-R23 `manifest.json` 记录：
-
-- `gitHead = 98115667cb256cb242b10e32c29a11c853ebe929`
-- `gitDirty = true`
-
-R14 也在源码提交整理前构建，并且 R14/R23 都不包含 2026-08-14 审查新增的资源归属
-释放、transport negotiation、strict formal output、multi-output 与 package/canvas
-收紧。已有哈希和 native acceptance 只能证明“这些旧 bytes 在该工作区运行通过”，
-不能证明当前源码已经发布。需要在 Hook/Loom 提交后构建新的 release ID、重新
-verify，并重跑精确 hash 的 native acceptance。
+R17/R27 已分别对应评审后的正式 bytes，R27 `gitHead` 为
+`08fa8a29a000daa0abe677813c72925e0f0d0184`、`gitDirty=false`，且 release verifier
+全部通过。尚未完成的是 R17/R27 的 600 秒 native acceptance。现有 Hook/Loom 用户
+实例必须正常退出后才能运行；不得为了完成 gate 而强制终止未知用户进程。
 
 #### G. Native acceptance 有显式测试态输入隔离
 
@@ -588,7 +622,7 @@ evidence 中安装的 official process Framework 与 dashboard fixture 也显示
 ### 5.1 先核对 Git 边界
 
 ```powershell
-git -C .\Hook show --stat --oneline 0d952ec391012e5ba5292932b06a2341f5da5eab
+git -C .\Hook show --stat --oneline 0e0b4093c21ff25a34818618ed48f1ea979afba3
 git -C .\Loom rev-parse HEAD
 git ls-files -s Hook Loom
 git status --short
@@ -645,6 +679,13 @@ cargo test -p loom_tool_registry --lib
 cargo test -p loom_workflow_runtime
 cargo test -p loom_workflow_store
 cargo test -p loom-daemon --lib -- --test-threads=1
+cargo test --manifest-path .\framework-packages\runtime-host\Cargo.toml
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\tests\Test-LoomSampleArtPackageContract.ps1 `
+  -ArtifactRoot .\target\image-search-mcp-rebuild\arts
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\tests\Test-LoomSampleArtInstallExecution.ps1 `
+  -ArtArtifactRoot .\target\image-search-mcp-rebuild\arts
 
 # Loom desktop
 Set-Location .\apps\desktop
@@ -668,18 +709,19 @@ timeout 将其误报为测试失败。
 
 ```powershell
 Get-FileHash -Algorithm SHA256 `
-  .\release\Hook\20260813-loom-hook-v1-surface-wire-r14\hook.exe
+  .\release\Hook\20260814-art-protocol-review-r17\hook.exe
 
 Get-FileHash -Algorithm SHA256 `
-  .\release\Loom\20260813-loom-hook-v1-surface-wire-r23\Loom.exe
+  .\release\Loom\20260814-packaged-image-search-mcp-r27\Loom.exe
 
 Get-FileHash -Algorithm SHA256 `
-  .\release\Loom\20260813-loom-hook-v1-surface-wire-r23\runtime\loom-daemon.exe
+  .\release\Loom\20260814-packaged-image-search-mcp-r27\runtime\loom-daemon.exe
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\Loom\scripts\verify-release.ps1 `
-  -PackageDir .\release\Loom\20260813-loom-hook-v1-surface-wire-r23 `
-  -RunSmoke
+  -PackageDir .\release\Loom\20260814-packaged-image-search-mcp-r27 `
+  -RunSmoke `
+  -RequireCleanSource
 ```
 
 然后直接读取 acceptance outer/inner `summary.json`，核对：

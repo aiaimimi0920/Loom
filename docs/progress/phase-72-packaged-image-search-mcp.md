@@ -5,8 +5,9 @@ Date: 2026-08-14
 ## Status
 
 Implementation, package contracts, Framework-host integration, Art installation,
-and image-result execution are complete. A new clean-provenance Loom release and
-the corresponding native Hook/Loom acceptance remain release gates.
+image-result execution, a clean-provenance Loom release, and the full release
+verifier are complete. The corresponding native Hook/Loom acceptance remains the
+final release gate.
 
 ## Purpose
 
@@ -177,15 +178,66 @@ runtime/image-search-mcp.ps1
 runtime/main.ps1
 ```
 
-## Remaining release gates
+## Formal release
+
+The clean-provenance release is:
+
+```text
+release/Loom/20260814-packaged-image-search-mcp-r27
+```
+
+Provenance and primary artifacts:
+
+| Item | Value |
+| --- | --- |
+| source commit | `08fa8a29a000daa0abe677813c72925e0f0d0184` |
+| `gitDirty` | `false` |
+| `Loom.exe` | `5935dc9cc4e722bc56bc0b946abf948ca105f10e51b387a00dedfb7e61541cb5` |
+| `runtime/loom-daemon.exe` | `8157b1086580eaca22b0a1764f367f32c966b956509937a7cebf6b3ec0b07293` |
+| `packages/frameworks/mcp.zip` | `2dd4e06059c960fd6da5dd4ef0241d5a25aa349a138af64a1b2fcfc7c164230d` |
+| `packages/arts/custom-image-search.zip` | `d6e45b2b6d4e5c4fe90d03eb322b5ac43185740c97aef52746baa59238d5e1c8` |
+| image-search ZIP bytes | `10089` |
+| desktop ZIP | `78bc746a8aa8085cf15409eae52dcdc9ebfd8a800c5a162ad2af49aafdb4b604` |
+| CLI ZIP | `8d41e6fec8a59d7908a7a93ff63619d4c56cf59cb245f3a702e7ca794461eb12` |
+| Plugin SDK ZIP | `50a20f849d305c7785e59050b24cef7c48bef4a541c64131965dac49f639f88b` |
+
+`checksums.sha256` contains 49 entries. The formal image-search ZIP was opened
+independently after packaging and contains the package-local MCP server. Its
+packaged manifest reports version `0.3.0`, qualified ID
+`neuro.official/custom-image-search`, Framework `mcp`, server ID
+`neuro-image-search`, command `runtime/image-search-mcp.ps1`, zero launcher
+arguments, and tool `brave_image_search`.
+
+The release verifier completed with all groups passing:
+
+```text
+filesChecked = 49
+smoke = passed
+hookCanvasSmoke = passed
+hookErrorPreviewSmoke = passed
+frameworkArtStoreHookSmoke = passed
+pluginBoundarySmoke = passed
+surfacePrototypeSmoke = passed
+authoredArtCreationSmoke = passed
+```
+
+## Remaining validation boundary and release gate
 
 The following are intentionally not claimed by source/package tests alone:
 
 1. A real Brave API call was not made because no user credential was read or
    exposed during automated verification. The local API fixture proves the HTTP
    and credential contract without consuming a real secret.
-2. The source must be committed before a clean-provenance Loom release is built.
-3. The new release must pass `verify-release.ps1 -RunSmoke`.
-4. Hook's acceptance defaults must be updated to the new Loom daemon SHA-256.
-5. The 600-second native Hook/Loom acceptance must run only after the currently
+2. The 600-second native Hook/Loom acceptance must run only after the currently
    active user Hook/Loom instances have exited normally.
+
+The latest safe preflight is:
+
+```text
+Hook/artifacts/runtime-performance/hook-loom-surface-candidate/
+  20260814-124315-hook-loom-surface-c174f9e4814e/summary.json
+```
+
+It resolved R17/R27 and validated both hashes, but returned
+`blocked_existing_hook`. It did not launch candidates or terminate the active
+user Hook processes.
