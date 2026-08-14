@@ -296,6 +296,12 @@ payload、MCP 列表响应、日志、文档、hash、长度、前缀或片段�
 `npm run typecheck:test` 仍会报告仓内既有测试 fixture/canvas mock 类型问题；这不是本轮
 新增回归。本轮完整 Vitest、生产 typecheck 和 production build 均通过。
 
+新增 native Desktop bootstrap 测试单独运行通过。随后执行完整
+`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` 时，当前既有 baseline
+为 26 passed / 8 failed：首个无关失败是 Loom cache settings fixture 使用 snake_case
+字段后得到 `None`，其 panic 使共享 `ENV_LOCK` poisoned，并连带 7 个环境变量测试失败。
+本阶段没有修改该 cache/settings 逻辑，也没有把这些失败误报为通过。
+
 ### 6.2 独立审查修复
 
 三组独立审查覆盖 Hook 参数边界、MCP Framework host 和 managed MCP 页面。审查发现
@@ -468,6 +474,24 @@ hosted marketplace，以及 Surface prototypes 进入正式 release catalog，�
 
 Hook R19 的当前 Authenticode 状态为 `NotSigned`。发布物内容与 SHA-256 已固定，但若正式
 分发策略要求平台代码签名，仍需由独立签名发布流程完成；不能通过兼容代码替代签名。
+
+### 8.5 Native Desktop 既有测试与格式 baseline
+
+standalone `apps/desktop/src-tauri` 的完整 Rust library suite 当前不是全绿：
+
+```text
+26 passed
+8 failed
+```
+
+首个失败位于既有 Loom cache settings fixture；其后的环境相关失败由共享 mutex poison
+连带产生。新增 `packaged_art_bootstrap_upgrades_changed_framework_version` 单测独立通过，
+R30 release verifier 也全部通过，因此该 baseline 不改变本阶段 MCP 升级结论，但仍应由
+独立 Desktop settings/cache 工作项修复。
+
+对该 standalone manifest 运行 `cargo fmt --check` 还会报告同一文件中本阶段修改范围外的
+既有格式差异；本阶段新增测试块已按 rustfmt 输出调整，没有批量改写无关代码。主 Loom
+workspace 的 Rust formatting gate 仍通过。
 
 ## 9. 明确不应补回的实现
 
