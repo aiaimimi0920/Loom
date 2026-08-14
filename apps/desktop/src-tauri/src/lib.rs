@@ -3085,6 +3085,121 @@ mod tests {
     }
 
     #[test]
+    fn packaged_art_bootstrap_upgrades_changed_framework_version() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_art_catalog = std::env::var(ART_PACKAGE_CATALOG_ENV).ok();
+        let previous_framework_catalog = std::env::var(FRAMEWORK_PACKAGE_CATALOG_ENV).ok();
+        std::env::remove_var(ART_PACKAGE_CATALOG_ENV);
+        std::env::remove_var(FRAMEWORK_PACKAGE_CATALOG_ENV);
+
+        let root = unique_temp_dir("framework-upgrade-bootstrap");
+        let desktop_exe = root.join("Loom.exe");
+        let art_catalog_root = root.join("packages").join("arts");
+        let framework_catalog_root = root.join("packages").join("frameworks");
+        let control_plane_root = root.join("control-plane");
+        fs::create_dir_all(&art_catalog_root).expect("create Art catalog");
+        fs::create_dir_all(&framework_catalog_root).expect("create Framework catalog");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop placeholder");
+
+        let framework_package = b"mcp-framework-0.2.1";
+        let framework_hash = format!("{:x}", Sha256::digest(framework_package));
+        let framework_package_path = framework_catalog_root.join("mcp.zip");
+        fs::write(&framework_package_path, framework_package).expect("write Framework package");
+        fs::write(
+            framework_package_path.with_extension("zip.sha256"),
+            format!("{framework_hash}  mcp.zip\n"),
+        )
+        .expect("write Framework checksum");
+        fs::write(
+            framework_catalog_root.join("summary.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "configuration": "Release",
+                "frameworks": [{
+                    "id": "mcp",
+                    "version": "0.2.1",
+                }],
+            }))
+            .expect("serialize Framework catalog"),
+        )
+        .expect("write Framework catalog");
+
+        let art_package = b"custom-image-search-art";
+        let art_hash = format!("{:x}", Sha256::digest(art_package));
+        let art_package_path = art_catalog_root.join("custom-image-search.zip");
+        fs::write(&art_package_path, art_package).expect("write Art package");
+        fs::write(
+            art_package_path.with_extension("zip.sha256"),
+            format!("{art_hash}  custom-image-search.zip\n"),
+        )
+        .expect("write Art checksum");
+        fs::write(
+            art_catalog_root.join("summary.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "configuration": "Release",
+                "packages": [{
+                    "id": "custom-image-search",
+                    "framework": "mcp",
+                    "zip": "custom-image-search.zip",
+                    "sha256": art_hash,
+                }],
+            }))
+            .expect("serialize Art catalog"),
+        )
+        .expect("write Art catalog");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind upgrade fixture");
+        let address = listener.local_addr().expect("read upgrade fixture address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for (status, body) in [
+                (
+                    "200 OK",
+                    r#"{"frameworks":[{"id":"mcp","qualifiedId":"neuro.official/mcp","installed":true,"enabled":true,"ready":true,"version":"0.2.0"}]}"#,
+                ),
+                (
+                    "200 OK",
+                    r#"{"framework":{"id":"mcp","installed":true,"ready":true,"version":"0.2.1"}}"#,
+                ),
+                ("200 OK", r#"{"tool":{"id":"custom-image-search"}}"#),
+            ] {
+                let (mut stream, _) = listener.accept().expect("accept upgrade request");
+                request_tx
+                    .send(read_test_http_request(&mut stream))
+                    .expect("record upgrade request");
+                write_test_json_response(&mut stream, status, body);
+            }
+        });
+
+        let base_url = format!("http://127.0.0.1:{}", address.port());
+        let result = bootstrap_packaged_arts_from_exe(&base_url, &desktop_exe, &control_plane_root)
+            .expect("upgrade packaged Framework and reinstall Art");
+        server.join().expect("join upgrade fixture");
+
+        assert!(result.available);
+        assert!(result.applied);
+        assert_eq!(result.framework_ids, vec!["mcp"]);
+        assert_eq!(result.art_ids, vec!["custom-image-search"]);
+        let requests = [
+            request_rx.recv().expect("framework listing request"),
+            request_rx.recv().expect("framework upgrade request"),
+            request_rx.recv().expect("Art reinstall request"),
+        ];
+        assert!(requests[0].starts_with("GET /v1/frameworks HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /v1/frameworks/mcp/upgrade HTTP/1.1"));
+        assert!(requests[1].contains("\"zipBase64\""));
+        assert!(requests[2].starts_with("POST /v1/arts/install HTTP/1.1"));
+        assert!(requests[2].contains("\"bundledCatalog\":true"));
+        assert!(control_plane_root
+            .join("migrations")
+            .join("packaged-arts.sha256")
+            .is_file());
+
+        fs::remove_dir_all(root).expect("cleanup upgrade fixture");
+        restore_env(ART_PACKAGE_CATALOG_ENV, previous_art_catalog);
+        restore_env(FRAMEWORK_PACKAGE_CATALOG_ENV, previous_framework_catalog);
+    }
+
+    #[test]
     fn packaged_framework_install_falls_back_for_an_old_daemon() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_catalog = std::env::var(FRAMEWORK_PACKAGE_CATALOG_ENV).ok();
