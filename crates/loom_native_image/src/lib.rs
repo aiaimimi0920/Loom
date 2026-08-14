@@ -355,4 +355,22 @@ mod tests {
         assert!(!result.success);
         assert!(result.error.expect("error").contains("Unknown art_id"));
     }
+
+    #[test]
+    fn short_native_art_aliases_are_rejected() {
+        for art_id in [
+            "pixelate",
+            "blur",
+            "grayscale",
+            "brightness",
+            "contrast",
+            "invert",
+        ] {
+            assert!(!is_native_art_id(art_id), "{art_id}");
+            assert!(
+                process_image(art_id, &DynamicImage::new_rgba8(1, 1), &HashMap::new()).is_err(),
+                "{art_id}"
+            );
+        }
+    }
 }

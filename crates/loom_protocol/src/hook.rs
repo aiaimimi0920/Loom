@@ -26,6 +26,7 @@ pub const HOOK_METHOD_WORKFLOW_NODE_UPDATE: &str = "loom.hook.workflow.node.upda
 pub const HOOK_METHOD_WORKFLOW_INSTANTIATE: &str = "loom.hook.workflow.instantiate";
 pub const HOOK_METHOD_ART_EXECUTE: &str = "loom.hook.art.execute";
 pub const HOOK_METHOD_ART_CANCEL: &str = "loom.hook.art.cancel";
+pub const HOOK_METHOD_ART_RESOURCES_RELEASE: &str = "loom.hook.art.resources.release";
 pub const HOOK_METHOD_SETTINGS_GET: &str = "loom.hook.settings.get";
 pub const HOOK_METHOD_ENHANCEMENTS_GET: &str = "loom.hook.enhancements.get";
 pub const HOOK_METHOD_OCR_EXECUTE: &str = "loom.hook.ocr.execute";
@@ -51,6 +52,7 @@ pub const HOOK_REQUEST_METHODS: &[&str] = &[
     HOOK_METHOD_WORKFLOW_INSTANTIATE,
     HOOK_METHOD_ART_EXECUTE,
     HOOK_METHOD_ART_CANCEL,
+    HOOK_METHOD_ART_RESOURCES_RELEASE,
     HOOK_METHOD_SETTINGS_GET,
     HOOK_METHOD_ENHANCEMENTS_GET,
     HOOK_METHOD_OCR_EXECUTE,
@@ -191,6 +193,8 @@ pub enum HookRequest {
     ArtExecute(HookArtExecuteRequest),
     #[serde(rename = "loom.hook.art.cancel")]
     ArtCancel(HookArtCancelRequest),
+    #[serde(rename = "loom.hook.art.resources.release")]
+    ArtResourcesRelease(HookArtResourcesReleaseRequest),
     #[serde(rename = "loom.hook.settings.get")]
     SettingsGet(HookSettingsGetRequest),
     #[serde(rename = "loom.hook.enhancements.get")]
@@ -251,7 +255,6 @@ pub struct HookWorkflowInstantiateRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookArtExecuteRequest {
-    #[serde(default = "default_hook_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
@@ -259,6 +262,7 @@ pub struct HookArtExecuteRequest {
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    pub output_transports: Vec<HookTransportMode>,
     #[serde(default)]
     pub inputs: BTreeMap<String, HookArtPortValue>,
     #[serde(default)]
@@ -299,13 +303,25 @@ pub enum HookArtPortValue {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookArtCancelRequest {
-    #[serde(default = "default_hook_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookArtResourcesReleaseRequest {
+    pub protocol_version: String,
+    pub request_id: String,
+    pub execution_request_id: String,
+    pub node_id: String,
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    pub handles: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,5 +615,118 @@ mod tests {
         let encoded = serde_json::to_value(commit).expect("serialize result");
         assert_eq!(encoded["protocolVersion"], HOOK_PROTOCOL_VERSION);
         assert_eq!(encoded["outputs"]["result"]["kind"], "value");
+    }
+
+    #[test]
+    fn hook_art_execute_requires_explicit_output_transports() {
+        let missing_protocol = serde_json::from_value::<HookRequest>(serde_json::json!({
+            "method": HOOK_METHOD_ART_EXECUTE,
+            "params": {
+                "requestId": "request:1",
+                "nodeId": "node:1",
+                "artId": "publisher/art",
+                "generation": 1,
+                "outputTransports": ["websocket"],
+                "inputs": {},
+                "parameters": {},
+                "disabledParameters": []
+            }
+        }));
+        assert!(missing_protocol.is_err());
+
+        let missing = serde_json::from_value::<HookRequest>(serde_json::json!({
+            "method": HOOK_METHOD_ART_EXECUTE,
+            "params": {
+                "protocolVersion": HOOK_PROTOCOL_VERSION,
+                "requestId": "request:1",
+                "nodeId": "node:1",
+                "artId": "publisher/art",
+                "generation": 1,
+                "inputs": {},
+                "parameters": {},
+                "disabledParameters": []
+            }
+        }));
+        assert!(missing.is_err());
+
+        let request = serde_json::from_value::<HookRequest>(serde_json::json!({
+            "method": HOOK_METHOD_ART_EXECUTE,
+            "params": {
+                "protocolVersion": HOOK_PROTOCOL_VERSION,
+                "requestId": "request:1",
+                "nodeId": "node:1",
+                "artId": "publisher/art",
+                "generation": 1,
+                "outputTransports": ["websocket"],
+                "inputs": {},
+                "parameters": {},
+                "disabledParameters": []
+            }
+        }))
+        .expect("canonical Art execute request");
+        let HookRequest::ArtExecute(request) = request else {
+            panic!("expected Art execute request")
+        };
+        assert_eq!(
+            request.output_transports,
+            vec![HookTransportMode::Websocket]
+        );
+    }
+
+    #[test]
+    fn hook_art_resource_release_uses_canonical_identity() {
+        let missing_protocol = serde_json::from_value::<HookRequest>(serde_json::json!({
+            "method": HOOK_METHOD_ART_RESOURCES_RELEASE,
+            "params": {
+                "requestId": "release:request:1",
+                "executionRequestId": "request:1",
+                "nodeId": "node:1",
+                "generation": 2,
+                "deviceId": "device:local",
+                "handles": ["Loom_Buffer_1"]
+            }
+        }));
+        assert!(missing_protocol.is_err());
+
+        let missing_execution = serde_json::from_value::<HookRequest>(serde_json::json!({
+            "method": HOOK_METHOD_ART_RESOURCES_RELEASE,
+            "params": {
+                "protocolVersion": HOOK_PROTOCOL_VERSION,
+                "requestId": "release:request:1",
+                "nodeId": "node:1",
+                "generation": 2,
+                "deviceId": "device:local",
+                "handles": ["Loom_Buffer_1"]
+            }
+        }));
+        assert!(missing_execution.is_err());
+
+        let request = HookRequest::ArtResourcesRelease(HookArtResourcesReleaseRequest {
+            protocol_version: HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: "release:request:1".to_owned(),
+            execution_request_id: "request:1".to_owned(),
+            node_id: "node:1".to_owned(),
+            generation: 2,
+            device_id: Some("device:local".to_owned()),
+            handles: vec!["Loom_Buffer_1".to_owned()],
+        });
+        let encoded = serde_json::to_value(request).expect("serialize resource release");
+        assert_eq!(encoded["method"], HOOK_METHOD_ART_RESOURCES_RELEASE);
+        assert_eq!(encoded["params"]["executionRequestId"], "request:1");
+        assert_eq!(encoded["params"]["handles"][0], "Loom_Buffer_1");
+    }
+
+    #[test]
+    fn hook_art_cancel_requires_explicit_protocol_version() {
+        let missing_protocol = serde_json::from_value::<HookRequest>(serde_json::json!({
+            "method": HOOK_METHOD_ART_CANCEL,
+            "params": {
+                "requestId": "request:1",
+                "nodeId": "node:1",
+                "generation": 2,
+                "deviceId": "device:local"
+            }
+        }));
+        assert!(missing_protocol.is_err());
     }
 }

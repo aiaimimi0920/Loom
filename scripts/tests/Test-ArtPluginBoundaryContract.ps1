@@ -35,6 +35,7 @@ foreach ($requiredText in @(
     "art_package_integrity_failed",
     "loom.hook.workflow.instantiated",
     "loom.hook.art.execute",
+    "outputTransports",
     "hookBridgeExecuted"
 )) {
     Assert-True ($pluginSmoke.Contains($requiredText)) "Plugin boundary smoke is missing required proof: $requiredText"

@@ -52,6 +52,21 @@ routes, old direct per-Art methods, and short Art-ID catalog aliases are not
 accepted. Bridge Art identity is publisher-qualified, for example
 `neuro.official/surface-device-dashboard`.
 
+Every `loom.hook.art.execute` request declares a non-empty
+`outputTransports` list. A native Hook client may request `shared_memory` and
+`websocket`; a browser client requests only `websocket`. Loom materializes every
+declared formal output port using a transport the client can consume. It never
+sends an undeclared shared-memory handle and never drops scalar or secondary
+ports merely because another output is an image. Missing `outputTransports` is
+invalid rather than being inferred from historical client behavior.
+After a client has materialized shared-memory results, it sends
+`loom.hook.art.resources.release` with a fresh command `requestId`, the original
+`executionRequestId`, and the exact device, node, generation, and handle set.
+Loom releases only handles owned by that execution identity. Repeated release
+of an already released owned handle is idempotently reported as missing;
+cross-request or cross-identity handles are rejected without releasing any
+mapping.
+
 Hook translates formal `loom.surface.*` pushes into private `surface/...` Tauri
 events for its frontend. Those process-internal UI events are not wire aliases.
 Framework and Art storage use only publisher-qualified immutable layouts; the

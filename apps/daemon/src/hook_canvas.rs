@@ -239,6 +239,12 @@ impl HookCanvasDocument {
         let mut nodes = Vec::new();
 
         let canvas_source = hook_canvas_source(&root);
+        if matches!(canvas_source, HookCanvasSource::Invalid) {
+            warnings.push(
+                "Hook canvas must contain exactly one canonical shape: stickers/links or nodes/edges."
+                    .to_owned(),
+            );
+        }
         for raw_node in canvas_nodes(&root, canvas_source) {
             let Some(id) = non_empty_string(raw_node.get("id")) else {
                 warnings.push("已跳过缺少有效 ID 的 Hook 节点。".to_owned());
@@ -249,8 +255,10 @@ impl HookCanvasDocument {
                 continue;
             }
 
-            let (x, x_degraded) = normalized_coordinate(node_coordinate(raw_node, "x", canvas_source));
-            let (y, y_degraded) = normalized_coordinate(node_coordinate(raw_node, "y", canvas_source));
+            let (x, x_degraded) =
+                normalized_coordinate(node_coordinate(raw_node, "x", canvas_source));
+            let (y, y_degraded) =
+                normalized_coordinate(node_coordinate(raw_node, "y", canvas_source));
             let (width, width_degraded) =
                 normalized_size(node_size(raw_node, "w", "width", canvas_source));
             let (height, height_degraded) =
@@ -724,6 +732,7 @@ where
 enum HookCanvasSource {
     Session,
     Workflow,
+    Invalid,
 }
 
 #[derive(Clone, Copy)]
@@ -733,10 +742,21 @@ enum EdgeEnd {
 }
 
 fn hook_canvas_source(root: &Value) -> HookCanvasSource {
-    if root.get("stickers").is_some() || root.get("links").is_some() {
-        HookCanvasSource::Session
-    } else {
-        HookCanvasSource::Workflow
+    let has_session_keys = root.get("stickers").is_some() || root.get("links").is_some();
+    let has_workflow_keys = root.get("nodes").is_some() || root.get("edges").is_some();
+    let valid_session = root.get("stickers").is_some_and(Value::is_array)
+        && root.get("links").is_some_and(Value::is_array);
+    let valid_workflow = root.get("nodes").is_some_and(Value::is_array)
+        && root.get("edges").is_some_and(Value::is_array);
+    match (
+        valid_session,
+        valid_workflow,
+        has_session_keys,
+        has_workflow_keys,
+    ) {
+        (true, false, true, false) => HookCanvasSource::Session,
+        (false, true, false, true) => HookCanvasSource::Workflow,
+        _ => HookCanvasSource::Invalid,
     }
 }
 
@@ -744,6 +764,7 @@ fn canvas_nodes(root: &Value, source: HookCanvasSource) -> &[Value] {
     let key = match source {
         HookCanvasSource::Session => "stickers",
         HookCanvasSource::Workflow => "nodes",
+        HookCanvasSource::Invalid => return &[],
     };
     root.get(key)
         .and_then(Value::as_array)
@@ -755,6 +776,7 @@ fn canvas_edges(root: &Value, source: HookCanvasSource) -> &[Value] {
     let key = match source {
         HookCanvasSource::Session => "links",
         HookCanvasSource::Workflow => "edges",
+        HookCanvasSource::Invalid => return &[],
     };
     root.get(key)
         .and_then(Value::as_array)
@@ -768,6 +790,7 @@ fn edge_endpoint(raw_edge: &Value, source: HookCanvasSource, end: EdgeEnd) -> Op
         (HookCanvasSource::Session, EdgeEnd::Target) => "toUnitId",
         (HookCanvasSource::Workflow, EdgeEnd::Source) => "source",
         (HookCanvasSource::Workflow, EdgeEnd::Target) => "target",
+        (HookCanvasSource::Invalid, _) => return None,
     };
     first_non_empty_string(raw_edge, &[key])
 }
@@ -778,6 +801,7 @@ fn edge_port(raw_edge: &Value, source: HookCanvasSource, end: EdgeEnd) -> Option
         (HookCanvasSource::Session, EdgeEnd::Target) => "toPortId",
         (HookCanvasSource::Workflow, EdgeEnd::Source) => "sourceHandle",
         (HookCanvasSource::Workflow, EdgeEnd::Target) => "targetHandle",
+        (HookCanvasSource::Invalid, _) => return None,
     };
     first_non_empty_string(raw_edge, &[key])
 }
@@ -858,6 +882,7 @@ fn node_coordinate(node: &Value, key: &str, source: HookCanvasSource) -> Option<
         HookCanvasSource::Session => value_as_f64(node.get(key))
             .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(key)))),
         HookCanvasSource::Workflow => value_as_f64(node_nested_value(node, "position", key)),
+        HookCanvasSource::Invalid => None,
     }
 }
 
@@ -874,6 +899,7 @@ fn node_size(
             .or_else(|| value_as_f64(node_data(node).and_then(|data| data.get(long_key)))),
         HookCanvasSource::Workflow => value_as_f64(node_nested_value(node, "measured", long_key))
             .or_else(|| value_as_f64(node.get(long_key))),
+        HookCanvasSource::Invalid => None,
     }
 }
 
@@ -2740,7 +2766,7 @@ mod tests {
     }
 
     #[test]
-    fn session_shape_ignores_workflow_containers_and_endpoint_aliases() {
+    fn hybrid_canvas_shape_is_rejected() {
         let root = test_root("hybrid-session");
         let session = write_session(
             &root,
@@ -2763,13 +2789,37 @@ mod tests {
         let root_value = serde_json::from_slice(&bytes).expect("parse hybrid session fixture");
         let document = HookCanvasDocument::from_serialized_root(&session, bytes, root_value, None);
 
-        assert_eq!(document.snapshot.nodes.len(), 1);
-        assert_eq!(document.snapshot.nodes[0].id, "session-node");
-        assert_eq!(document.snapshot.nodes[0].x, 4.0);
-        assert_eq!(document.snapshot.nodes[0].y, 8.0);
-        assert_eq!(document.snapshot.nodes[0].width, 320.0);
-        assert_eq!(document.snapshot.nodes[0].height, 180.0);
+        assert!(document.snapshot.nodes.is_empty());
         assert!(document.snapshot.edges.is_empty());
+        assert!(document
+            .snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("exactly one canonical shape")));
+    }
+
+    #[test]
+    fn incomplete_or_non_array_canvas_containers_are_rejected() {
+        for (name, contents) in [
+            ("missing-links", r#"{"stickers":[]}"#),
+            ("null-links", r#"{"stickers":[],"links":null}"#),
+            ("missing-edges", r#"{"nodes":[]}"#),
+            ("object-edges", r#"{"nodes":[],"edges":{}}"#),
+        ] {
+            let root = test_root(name);
+            let session = write_session(&root, contents);
+            let bytes = fs::read(&session).expect("read malformed canvas fixture");
+            let root_value = serde_json::from_slice(&bytes).expect("parse canvas fixture");
+            let document =
+                HookCanvasDocument::from_serialized_root(&session, bytes, root_value, None);
+            assert!(document.snapshot.nodes.is_empty(), "{name}");
+            assert!(document.snapshot.edges.is_empty(), "{name}");
+            assert!(document
+                .snapshot
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("exactly one canonical shape")));
+        }
     }
 
     #[test]

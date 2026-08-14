@@ -261,7 +261,7 @@
     },
     "artExecute": {
       "type": "object",
-      "required": ["protocolVersion", "requestId", "nodeId", "artId", "generation", "inputs", "parameters", "disabledParameters"],
+      "required": ["protocolVersion", "requestId", "nodeId", "artId", "generation", "outputTransports", "inputs", "parameters", "disabledParameters"],
       "properties": {
         "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
         "requestId": { "$ref": "#/$defs/safeIdentifier" },
@@ -269,6 +269,12 @@
         "artId": { "$ref": "#/$defs/safeIdentifier" },
         "generation": { "type": "integer", "minimum": 0 },
         "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "outputTransports": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/transport" },
+          "uniqueItems": true
+        },
         "inputs": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/portValue" }
@@ -295,6 +301,25 @@
       },
       "additionalProperties": false
     },
+    "artResourcesRelease": {
+      "type": "object",
+      "required": ["protocolVersion", "requestId", "executionRequestId", "nodeId", "generation", "handles"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "requestId": { "$ref": "#/$defs/safeIdentifier" },
+        "executionRequestId": { "$ref": "#/$defs/safeIdentifier" },
+        "nodeId": { "$ref": "#/$defs/safeIdentifier" },
+        "generation": { "type": "integer", "minimum": 0 },
+        "deviceId": { "$ref": "#/$defs/safeIdentifier" },
+        "handles": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/safeIdentifier" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
     "request": {
       "oneOf": [
         { "$ref": "#/$defs/handshakeRequestEnvelope" },
@@ -305,6 +330,7 @@
         { "$ref": "#/$defs/workflowInstantiateEnvelope" },
         { "$ref": "#/$defs/artExecuteEnvelope" },
         { "$ref": "#/$defs/artCancelEnvelope" },
+        { "$ref": "#/$defs/artResourcesReleaseEnvelope" },
         { "$ref": "#/$defs/settingsGetEnvelope" },
         { "$ref": "#/$defs/enhancementsGetEnvelope" },
         { "$ref": "#/$defs/ocrExecuteEnvelope" },
@@ -380,6 +406,15 @@
       "properties": {
         "method": { "const": "loom.hook.art.cancel" },
         "params": { "$ref": "#/$defs/artCancel" }
+      },
+      "additionalProperties": false
+    },
+    "artResourcesReleaseEnvelope": {
+      "type": "object",
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "const": "loom.hook.art.resources.release" },
+        "params": { "$ref": "#/$defs/artResourcesRelease" }
       },
       "additionalProperties": false
     },

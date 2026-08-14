@@ -228,6 +228,15 @@ fn inherited_runtime_environment() -> Vec<(std::ffi::OsString, std::ffi::OsStrin
         "OS",
         "NUMBER_OF_PROCESSORS",
         "PROCESSOR_ARCHITECTURE",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USERNAME",
+        "USERDOMAIN",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PUBLIC",
     ];
     #[cfg(not(windows))]
     const ALLOWED: &[&str] = &[
@@ -813,5 +822,26 @@ mod tests {
             !stdout.contains(SECRET),
             "child inherited host secret: {stdout:?}"
         );
+    }
+
+    #[test]
+    fn supervised_process_keeps_required_runtime_environment() {
+        let required = if cfg!(windows) {
+            ["PATH", "SYSTEMROOT", "TEMP", "USERPROFILE", "APPDATA"]
+        } else {
+            ["PATH", "HOME", "TMPDIR", "LANG", "SHELL"]
+        };
+        let inherited = inherited_runtime_environment()
+            .into_iter()
+            .map(|(key, value)| (key.to_string_lossy().to_string(), value))
+            .collect::<std::collections::HashMap<_, _>>();
+        for name in required {
+            if std::env::var_os(name).is_some() {
+                assert!(
+                    inherited.keys().any(|key| key.eq_ignore_ascii_case(name)),
+                    "runtime environment dropped {name}"
+                );
+            }
+        }
     }
 }

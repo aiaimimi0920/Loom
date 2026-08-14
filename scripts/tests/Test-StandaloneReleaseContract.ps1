@@ -307,7 +307,8 @@ Assert-ScriptContract `
         'Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256',
         'Write-Utf8NoBomFile -Path "$ZipPath.sha256"',
         'method = "loom.hook.art.execute"',
-        'protocolVersion = "loom.hook.v1"'
+        'protocolVersion = "loom.hook.v1"',
+        'outputTransports = @("shared_memory", "websocket")'
     ) `
     -ForbiddenText $commonForbidden
 

@@ -41,10 +41,11 @@ Methods:
 6. `loom.hook.workflow.instantiate`
 7. `loom.hook.art.execute`
 8. `loom.hook.art.cancel`
-9. `loom.hook.settings.get`
-10. `loom.hook.enhancements.get`
-11. `loom.hook.ocr.execute`
-12. `loom.hook.translation.execute`
+9. `loom.hook.art.resources.release`
+10. `loom.hook.settings.get`
+11. `loom.hook.enhancements.get`
+12. `loom.hook.ocr.execute`
+13. `loom.hook.translation.execute`
 
 Events:
 
@@ -86,6 +87,15 @@ deadline. Superseding generations cancel older work in the same node/device
 scope; explicit `art.cancel` is also device/node/generation bound. Preview and
 formal revisions advance independently, and stale or cancelled work cannot
 replace either current value.
+
+Every execution declares `outputTransports`. Native Hook requests shared memory
+plus websocket delivery; browser Hook requests websocket only. A shared-memory
+release has its own fresh command `requestId` and explicitly names the original
+`executionRequestId`. Loom binds every produced handle to the exact
+device/execution/node/generation identity, rejects mixed or cross-owner handle
+sets atomically, and automatically reclaims live handles on cancellation,
+generation replacement, bridge reset, and terminal-cache eviction. Repeated
+release of an already released owned handle remains idempotent.
 
 Formal values are one of `value`, `inline_resource`, `shared_memory`, or
 `resource`. Inline payloads use bare Base64 in `dataBase64`; data-URL prefixes
@@ -136,6 +146,13 @@ non-goals are removed by Phase 71.
   it is not a Hook catalog alias.
 
 ## Verification
+
+本节的 R12/R21 与后续 R14/R23 是历史 release 证据。2026-08-14 审查后的源码新增了
+explicit `outputTransports`、strict formal output、multi-output、shared-memory
+execution ownership/release、package version 和 canvas shape 收紧；旧 release 不包含
+这些修改，不能作为当前源码的发布证明。当前源码的 fresh gate 见
+`art-framework-refactor-independent-review-handoff-2026-08-13.md`，新的正式 release
+与 600 秒 native acceptance 仍需单独生成。
 
 - Loom: protocol 21, shared image 4, registry 120, workflow 6, daemon 198,
   desktop 141, desktop typecheck/build, Art plugin boundary, third-party plugin

@@ -418,6 +418,7 @@ function Invoke-LoomHookArtExecution {
             artId = $ArtId
             generation = 1
             deviceId = "device:release-smoke"
+            outputTransports = @("shared_memory", "websocket")
             inputs = $Inputs
             parameters = $Parameters
             disabledParameters = @()

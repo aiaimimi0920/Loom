@@ -127,10 +127,11 @@ Schema 和 Hook mirror 必须一致：
 6. `loom.hook.workflow.instantiate`
 7. `loom.hook.art.execute`
 8. `loom.hook.art.cancel`
-9. `loom.hook.settings.get`
-10. `loom.hook.enhancements.get`
-11. `loom.hook.ocr.execute`
-12. `loom.hook.translation.execute`
+9. `loom.hook.art.resources.release`
+10. `loom.hook.settings.get`
+11. `loom.hook.enhancements.get`
+12. `loom.hook.ocr.execute`
+13. `loom.hook.translation.execute`
 
 标准 Art 事件：
 
@@ -229,6 +230,12 @@ Workflow Art 的 child dependency 与 `uses` 也必须 qualified；不能依赖�
 formal value 的类型只能是 `value`、`inline_resource`、`shared_memory`、`resource`。
 preview 仅展示；下游执行、保存、持久化和导出只消费 formal output。
 
+每个 `art.execute` 必须显式声明 `outputTransports`。共享内存释放命令使用独立的新
+`requestId`，并通过 `executionRequestId` 指向原执行；Loom 将每个输出 handle 绑定到
+精确的 device / execution / node / generation。跨请求、跨设备、跨节点、跨 generation
+或混入非所属 handle 的释放会整体失败，不会释放任何映射。取消、generation 替换、
+bridge reset 与 terminal cache eviction 会自动回收仍未显式释放的 handle。
+
 ### 2.7 生命周期、安全与发布目标
 
 目标包括：
@@ -251,8 +258,13 @@ preview 仅展示；下游执行、保存、持久化和导出只消费 formal o
 ### 3.1 总体结论
 
 在“Loom/Hook 调用框架、标准化协议、九个 Art 源码迁移、旧公开调用面删除”这一
-范围内，实现已闭环并通过源码、package smoke、release verifier 和 native
-acceptance。它不是仅改文档或仅跑 unit tests。
+范围内，当前源码实现已闭环，并通过全量源码测试、构建、第三方 plugin boundary
+以及真实 Framework + Art Store + Hook smoke。它不是仅改文档或仅跑 unit tests。
+
+但是，2026-08-14 独立审查新增的 `outputTransports`、严格 formal-value 校验、
+多输出端口保留、shared-memory execution ownership/release、package version 收紧和
+canvas shape fail-closed 尚未进入新的 Hook/Loom release。因此 R14/R23 与既有 600 秒
+native acceptance 只能作为历史基线，不能作为当前审查后源码的发布证据。
 
 但是，“所有内部对象都必须 qualified”“默认生产级信任/OS 沙箱”“九个 Art 全部
 进入正式 release catalog”“release 能由最终干净提交直接追溯”这些更强命题目前
@@ -344,36 +356,45 @@ acceptance。它不是仅改文档或仅跑 unit tests。
 - stream resume、resource lease、journal、tombstone、corruption detection；
 - device-bound confirmation/cancellation；
 - generation replacement 与 late-result rejection；
+- shared-memory output 的 execution ownership、显式 release、重复 release 幂等，以及
+  cancellation/replacement/reset/terminal-eviction 自动回收；
 - preview/formal revision 独立 stale check；
 - 当前 `hook-live -> latest.yaml` workflow storage contract。
 
 ### 3.7 验证结果
 
-2026-08-13 的 fresh gates：
+2026-08-14 审查后源码的 fresh gates：
 
 | Gate | 结果 |
 | --- | --- |
 | Rust formatting / combined compile | passed |
-| `loom_protocol` | 21 passed |
-| `loom_mcp` | 19 passed |
-| Framework runtime host | 4 passed |
-| `loom_tool_registry --lib` | 117 passed |
+| `loom_native_image` | passed |
+| `loom_process` | passed |
+| `loom_protocol` | 25 passed |
+| `loom_tool_registry --lib` | 120 passed |
 | `loom_workflow_runtime` | 16 passed |
-| `loom_workflow_store` | 7 passed |
-| `loom-art-store --lib` | 17 passed |
-| `loom-daemon --lib --test-threads=1` | 195 passed |
-| `loom-plugin-cli --lib` | 9 passed |
-| Loom desktop | 141 passed；typecheck/build passed |
-| Hook Rust | 221 passed；formatting passed |
-| Hook frontend | 252 files / 1049 tests passed；typecheck/build passed |
-| Framework package | 4 manifests / 4 rebuilt ZIPs passed |
-| Sample Art package | 6 sources / 6 rebuilt ZIPs passed |
-| Surface prototype | 3 ZIPs + sidecars；runtime smoke passed |
-| Third-party plugin boundary | full lifecycle passed |
+| `loom_workflow_store` | passed |
+| `loom-daemon --lib --test-threads=1` | 205 passed |
+| Loom desktop | 137 passed；typecheck/build passed |
+| Hook Rust | 228 passed；formatting passed |
+| Hook frontend | 252 files / 1058 tests passed；typecheck/build passed |
 | Framework + Art Store + Hook smoke | 4 Frameworks、6 Arts、6 formal executions passed |
-| Loom R23 verifier | 49 files；7 smoke groups passed |
+| Third-party plugin boundary smoke | full lifecycle passed |
+| PowerShell plugin/release contract gates | passed |
 
-### 3.8 正式 release 与 600 秒原生证据
+本轮 Framework/Art/Hook 可机读证据：
+`target/framework-art-store-hook-smoke/20260814-092704-framework-store-30172-a112e5982f944661b95c4796401233b8/summary.json`。
+其中 `result=passed`、`formalHookExecutions.count=6`、
+`formalHookExecutions.protocolVersion=loom.hook.v1`，且 bridge stop 后
+`running=false`。smoke 结束后再次核对 Hook/Loom/daemon/Art Store 进程和相关 listener，
+均为空。
+
+### 3.8 历史 release 与 600 秒原生证据
+
+以下 R14/R23 证据早于 2026-08-14 独立审查修复，不包含本次最终源码。它们只证明
+此前候选的 native 运行状态；当前源码若要成为正式产品候选，必须生成新的 Hook 与
+Loom release、更新 verifier/default hashes，并以新制品精确 SHA-256 重跑 600 秒双端
+acceptance。
 
 Hook R14：
 
@@ -502,17 +523,18 @@ Hook/Loom wire 对 packaged Art 强制 `publisher/id`，但 built-in native imag
 若开发目标要求九个都随 Loom release 分发，还需要扩展 release manifest、catalog、
 checksums、SBOM/provenance 和 verifier。
 
-#### F. 最终 release provenance 不是本次 consolidation commit
+#### F. 当前审查后源码尚无对应正式 release
 
 R23 `manifest.json` 记录：
 
 - `gitHead = 98115667cb256cb242b10e32c29a11c853ebe929`
 - `gitDirty = true`
 
-R14 也在源码提交整理前构建。已有哈希和 native acceptance 可以证明“这些具体
-bytes 在该工作区运行通过”，但不能证明它们由本文所在最终干净 commit 直接、
-可复现构建。若发布规范要求 clean-source provenance，需要在 Hook/Loom 提交后构建
-新的 release ID、重新 verify，并重跑精确 hash 的 native acceptance。
+R14 也在源码提交整理前构建，并且 R14/R23 都不包含 2026-08-14 审查新增的资源归属
+释放、transport negotiation、strict formal output、multi-output 与 package/canvas
+收紧。已有哈希和 native acceptance 只能证明“这些旧 bytes 在该工作区运行通过”，
+不能证明当前源码已经发布。需要在 Hook/Loom 提交后构建新的 release ID、重新
+verify，并重跑精确 hash 的 native acceptance。
 
 #### G. Native acceptance 有显式测试态输入隔离
 

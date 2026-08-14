@@ -37,12 +37,12 @@ use loom_protocol::{
     DeviceSessionChallengeRequest, DeviceSessionChallengeResponse, DeviceSessionIssueRequest,
     DeviceSessionIssueResponse, HookArtAck, HookArtCancelRequest, HookArtCapability,
     HookArtExecuteRequest, HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
-    HookArtResultCommit, HookCapabilities, HookEvent, HookHandshakeResponse, HookRequest,
-    HookRequestStatus, HookResponse, HookTransportMode, PublisherTrustRecord,
-    SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure,
-    SurfaceHostCapabilities, SurfaceInstanceMode, SurfaceInstancePersistence,
-    SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue, SurfacePreviewCommit,
-    SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
+    HookArtResourcesReleaseRequest, HookArtResultCommit, HookCapabilities, HookEvent,
+    HookHandshakeResponse, HookRequest, HookRequestStatus, HookResponse, HookTransportMode,
+    PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent,
+    SurfaceExecutionFailure, SurfaceHostCapabilities, SurfaceInstanceMode,
+    SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue,
+    SurfacePreviewCommit, SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
     SurfaceResourceTransportKind, SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot,
     DEVICE_SESSION_PROTOCOL_VERSION, HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED,
     SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION,
@@ -2569,6 +2569,9 @@ struct HookArtRequestEntry {
     cancellation: Arc<AtomicBool>,
     status: HookRequestStatus,
     device_id: Option<String>,
+    resource_handles: BTreeSet<String>,
+    live_resource_handles: BTreeSet<String>,
+    result_resource_handles: BTreeSet<String>,
 }
 
 struct HookArtTerminalEntry {
@@ -2576,6 +2579,9 @@ struct HookArtTerminalEntry {
     generation: u64,
     request_fingerprint: String,
     response: String,
+    resource_handles: BTreeSet<String>,
+    live_resource_handles: BTreeSet<String>,
+    result_resource_handles: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -4014,7 +4020,7 @@ fn route(
             surface_instances,
             surface_actions,
         ),
-        ("POST", "/v1/hook-bridge/stop") => stop_hook_bridge(hook_bridge),
+        ("POST", "/v1/hook-bridge/stop") => stop_hook_bridge(hook_bridge, shared_images),
         ("POST", "/v1/runs") => start_tea_run(&request.body, run_store),
         ("POST", "/v1/invoke") => invoke_capability(&request.body, run_store, brain_planner),
         ("GET", path) if execution_diagnostics_path_id(path).is_some() => execution_diagnostics(
@@ -13144,16 +13150,38 @@ fn is_hook_live_workflow_id(workflow_id: &str) -> bool {
     workflow_id == HOOK_LIVE_WORKFLOW_ID
 }
 
-fn clear_hook_canvas_runtime_state() {
+fn release_shared_image_handles(
+    shared_images: &SharedImageStoreHandle,
+    handles: impl IntoIterator<Item = String>,
+) {
+    let handles = handles.into_iter().collect::<BTreeSet<_>>();
+    if handles.is_empty() {
+        return;
+    }
+    let mut store = match shared_images.lock() {
+        Ok(store) => store,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    for handle in handles {
+        store.release(&handle);
+    }
+}
+
+fn clear_hook_canvas_runtime_state(shared_images: Option<&SharedImageStoreHandle>) {
     if let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() {
         snapshots.clear();
     }
     if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
         statuses.clear();
     }
+    let mut resource_handles = BTreeSet::new();
     if let Ok(mut requests) = hook_art_requests().lock() {
         for entry in requests.active_by_request.values() {
             entry.cancellation.store(true, Ordering::Release);
+            resource_handles.extend(entry.live_resource_handles.iter().cloned());
+        }
+        for entry in requests.terminal_by_request.values() {
+            resource_handles.extend(entry.live_resource_handles.iter().cloned());
         }
         requests.active_by_request.clear();
         requests.active_by_node.clear();
@@ -13162,6 +13190,9 @@ fn clear_hook_canvas_runtime_state() {
         requests.result_revision_by_node.clear();
         requests.terminal_by_request.clear();
         requests.terminal_order.clear();
+    }
+    if let Some(shared_images) = shared_images {
+        release_shared_image_handles(shared_images, resource_handles);
     }
 }
 
@@ -13175,7 +13206,10 @@ fn hook_art_request_fingerprint(request: &HookArtExecuteRequest) -> String {
     serde_json::to_string(request).expect("Hook Art execution requests must serialize")
 }
 
-fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservation {
+fn reserve_hook_art_request(
+    request: &HookArtExecuteRequest,
+    shared_images: &SharedImageStoreHandle,
+) -> HookArtReservation {
     let mut state = match hook_art_requests().lock() {
         Ok(state) => state,
         Err(_) => {
@@ -13194,7 +13228,17 @@ fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservati
             && terminal.generation == request.generation
             && terminal.request_fingerprint == request_fingerprint
         {
-            return HookArtReservation::Replay(terminal.response.clone());
+            if terminal
+                .result_resource_handles
+                .is_subset(&terminal.live_resource_handles)
+            {
+                return HookArtReservation::Replay(terminal.response.clone());
+            }
+            return HookArtReservation::Reject(hook_protocol_failure_json(
+                &request.request_id,
+                "request_resources_released",
+                "the cached Art result contained shared-memory resources that were already released",
+            ));
         }
         return HookArtReservation::Reject(hook_protocol_failure_json(
             &request.request_id,
@@ -13239,10 +13283,11 @@ fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservati
             ));
         }
     }
+    let mut superseded_handles = BTreeSet::new();
     if let Some(previous_request_id) = state.active_by_node.get(&node_scope).cloned() {
         let previous_request_scope =
             HookArtRequestScope::new(request.device_id.as_deref(), &previous_request_id);
-        if let Some(previous) = state.active_by_request.get(&previous_request_scope) {
+        if let Some(previous) = state.active_by_request.get_mut(&previous_request_scope) {
             if request.generation == previous.generation {
                 return HookArtReservation::Reject(hook_protocol_failure_json(
                     &request.request_id,
@@ -13251,6 +13296,7 @@ fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservati
                 ));
             }
             previous.cancellation.store(true, Ordering::Release);
+            superseded_handles.append(&mut previous.live_resource_handles);
         }
     }
 
@@ -13270,9 +13316,49 @@ fn reserve_hook_art_request(request: &HookArtExecuteRequest) -> HookArtReservati
             cancellation: Arc::clone(&cancellation),
             status: HookRequestStatus::Running,
             device_id: request.device_id.clone(),
+            resource_handles: BTreeSet::new(),
+            live_resource_handles: BTreeSet::new(),
+            result_resource_handles: BTreeSet::new(),
         },
     );
+    drop(state);
+    release_shared_image_handles(shared_images, superseded_handles);
     HookArtReservation::Execute(cancellation)
+}
+
+fn register_hook_art_resource_handles(
+    request: &HookArtExecuteRequest,
+    handles: &BTreeSet<String>,
+    formal_result: bool,
+) -> bool {
+    if handles.is_empty() {
+        return true;
+    }
+    let Ok(mut state) = hook_art_requests().lock() else {
+        return false;
+    };
+    let request_scope = HookArtRequestScope::new(request.device_id.as_deref(), &request.request_id);
+    let node_scope = HookArtNodeScope::new(request.device_id.as_deref(), &request.node_id);
+    let owns_node =
+        state.active_by_node.get(&node_scope).map(String::as_str) == Some(&request.request_id);
+    let Some(entry) = state.active_by_request.get_mut(&request_scope) else {
+        return false;
+    };
+    if !owns_node
+        || entry.node_id != request.node_id
+        || entry.generation != request.generation
+        || entry.cancellation.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    entry.resource_handles.extend(handles.iter().cloned());
+    entry.live_resource_handles.extend(handles.iter().cloned());
+    if formal_result {
+        entry
+            .result_resource_handles
+            .extend(handles.iter().cloned());
+    }
+    true
 }
 
 fn hook_art_request_is_current(
@@ -13357,7 +13443,9 @@ fn finish_hook_art_request(
     generation: u64,
     device_id: Option<&str>,
     request_fingerprint: String,
+    terminal_status: HookRequestStatus,
     response: String,
+    shared_images: &SharedImageStoreHandle,
 ) {
     let Ok(mut state) = hook_art_requests().lock() else {
         return;
@@ -13371,9 +13459,15 @@ fn finish_hook_art_request(
     if !matches {
         return;
     }
-    state.active_by_request.remove(&request_scope);
+    let Some(mut active) = state.active_by_request.remove(&request_scope) else {
+        return;
+    };
     if state.active_by_node.get(&node_scope).map(String::as_str) == Some(request_id) {
         state.active_by_node.remove(&node_scope);
+    }
+    let mut released_handles = BTreeSet::new();
+    if terminal_status != HookRequestStatus::Succeeded {
+        released_handles.append(&mut active.live_resource_handles);
     }
     state.terminal_by_request.insert(
         request_scope.clone(),
@@ -13382,17 +13476,27 @@ fn finish_hook_art_request(
             generation,
             request_fingerprint,
             response,
+            resource_handles: active.resource_handles,
+            live_resource_handles: active.live_resource_handles,
+            result_resource_handles: active.result_resource_handles,
         },
     );
     state.terminal_order.push_back(request_scope);
     while state.terminal_order.len() > MAX_HOOK_ART_TERMINAL_REQUESTS {
         if let Some(expired) = state.terminal_order.pop_front() {
-            state.terminal_by_request.remove(&expired);
+            if let Some(mut entry) = state.terminal_by_request.remove(&expired) {
+                released_handles.append(&mut entry.live_resource_handles);
+            }
         }
     }
+    drop(state);
+    release_shared_image_handles(shared_images, released_handles);
 }
 
-fn cancel_hook_art_request(request: &HookArtCancelRequest) -> String {
+fn cancel_hook_art_request(
+    request: &HookArtCancelRequest,
+    shared_images: &SharedImageStoreHandle,
+) -> String {
     let Ok(mut state) = hook_art_requests().lock() else {
         return hook_protocol_failure_json(
             &request.request_id,
@@ -13436,10 +13540,156 @@ fn cancel_hook_art_request(request: &HookArtCancelRequest) -> String {
     }
     entry.status = HookRequestStatus::CancelRequested;
     entry.cancellation.store(true, Ordering::Release);
-    hook_protocol_response_json(
+    let released_handles = std::mem::take(&mut entry.live_resource_handles);
+    let response = hook_protocol_response_json(
         &request.request_id,
         HookRequestStatus::CancelRequested,
         json!({ "nodeId": request.node_id, "generation": request.generation }),
+        None,
+    );
+    drop(state);
+    release_shared_image_handles(shared_images, released_handles);
+    response
+}
+
+fn release_hook_art_resources(
+    request: &HookArtResourcesReleaseRequest,
+    shared_images: &SharedImageStoreHandle,
+) -> String {
+    let unique_handles = request.handles.iter().collect::<BTreeSet<_>>();
+    if request.protocol_version != loom_protocol::HOOK_PROTOCOL_VERSION
+        || !loom_protocol::is_safe_hook_identifier(&request.request_id)
+        || !loom_protocol::is_safe_hook_identifier(&request.execution_request_id)
+        || !loom_protocol::is_safe_hook_identifier(&request.node_id)
+        || request.handles.is_empty()
+        || unique_handles.len() != request.handles.len()
+        || request.handles.iter().any(|handle| {
+            !loom_protocol::is_safe_hook_identifier(handle) || !handle.starts_with("Loom_Buffer_")
+        })
+    {
+        return hook_protocol_failure_json(
+            &request.request_id,
+            "invalid_resource_release",
+            "Art resource release requires canonical execution identity and unique Loom shared-memory handles",
+        );
+    }
+    let execution_scope =
+        HookArtRequestScope::new(request.device_id.as_deref(), &request.execution_request_id);
+    let mut state = match hook_art_requests().lock() {
+        Ok(state) => state,
+        Err(_) => {
+            return hook_protocol_failure_json(
+                &request.request_id,
+                "request_state_unavailable",
+                "lock Hook Art request state",
+            )
+        }
+    };
+    if !state.active_by_request.contains_key(&execution_scope)
+        && !state.terminal_by_request.contains_key(&execution_scope)
+    {
+        let request_exists_for_another_device = state
+            .active_by_request
+            .keys()
+            .chain(state.terminal_by_request.keys())
+            .any(|scope| scope.request_id == request.execution_request_id);
+        return hook_protocol_failure_json(
+            &request.request_id,
+            if request_exists_for_another_device {
+                "resource_release_device_mismatch"
+            } else {
+                "execution_request_not_found"
+            },
+            if request_exists_for_another_device {
+                "deviceId does not own the Art execution resources"
+            } else {
+                "no Art execution matches executionRequestId"
+            },
+        );
+    }
+    let mut store = match shared_images.lock() {
+        Ok(store) => store,
+        Err(_) => {
+            return hook_protocol_failure_json(
+                &request.request_id,
+                "shared_image_store_unavailable",
+                "lock shared image store",
+            )
+        }
+    };
+    let release_owned =
+        |node_id: &str,
+         generation: u64,
+         resource_handles: &BTreeSet<String>,
+         live_resource_handles: &mut BTreeSet<String>,
+         store: &mut SharedImageStore|
+         -> std::result::Result<(Vec<String>, Vec<String>), (&'static str, &'static str)> {
+            if node_id != request.node_id || generation != request.generation {
+                return Err((
+                    "resource_release_identity_mismatch",
+                    "nodeId or generation does not own the Art execution resources",
+                ));
+            }
+            if request
+                .handles
+                .iter()
+                .any(|handle| !resource_handles.contains(handle))
+            {
+                return Err((
+                    "resource_release_ownership_mismatch",
+                    "one or more handles do not belong to the Art execution",
+                ));
+            }
+            let mut released = Vec::new();
+            let mut missing = Vec::new();
+            for handle in &request.handles {
+                if live_resource_handles.remove(handle) {
+                    if store.release(handle) {
+                        released.push(handle.clone());
+                    } else {
+                        missing.push(handle.clone());
+                    }
+                } else {
+                    missing.push(handle.clone());
+                }
+            }
+            Ok((released, missing))
+        };
+    let release_result = if let Some(entry) = state.active_by_request.get_mut(&execution_scope) {
+        release_owned(
+            &entry.node_id,
+            entry.generation,
+            &entry.resource_handles,
+            &mut entry.live_resource_handles,
+            &mut store,
+        )
+    } else if let Some(entry) = state.terminal_by_request.get_mut(&execution_scope) {
+        release_owned(
+            &entry.node_id,
+            entry.generation,
+            &entry.resource_handles,
+            &mut entry.live_resource_handles,
+            &mut store,
+        )
+    } else {
+        unreachable!("execution ownership was checked above")
+    };
+    let (released, missing) = match release_result {
+        Ok(result) => result,
+        Err((code, message)) => {
+            return hook_protocol_failure_json(&request.request_id, code, message)
+        }
+    };
+    hook_protocol_response_json(
+        &request.request_id,
+        HookRequestStatus::Succeeded,
+        json!({
+            "executionRequestId": request.execution_request_id,
+            "nodeId": request.node_id,
+            "generation": request.generation,
+            "released": released,
+            "missing": missing,
+        }),
         None,
     )
 }
@@ -13752,7 +14002,7 @@ fn start_hook_bridge(
             }),
         );
     }
-    clear_hook_canvas_runtime_state();
+    clear_hook_canvas_runtime_state(Some(shared_images));
 
     let listener = match TcpListener::bind(("127.0.0.1", requested_port)) {
         Ok(listener) => listener,
@@ -13821,7 +14071,10 @@ fn start_hook_bridge(
     ))
 }
 
-fn stop_hook_bridge(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, String)> {
+fn stop_hook_bridge(
+    hook_bridge: &SharedHookBridgeRuntime,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
     let mut runtime = hook_bridge
         .lock()
         .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
@@ -13834,7 +14087,7 @@ fn stop_hook_bridge(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, Strin
     runtime.connected_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
-    clear_hook_canvas_runtime_state();
+    clear_hook_canvas_runtime_state(Some(shared_images));
 
     Ok((
         200,
@@ -14144,9 +14397,12 @@ fn handle_hook_bridge_websocket_text_with_intermediate(
             run_store,
             emit_intermediate,
         ),
-        HookRequest::ArtCancel(request) => {
-            HookBridgeWebSocketTextResult::response(cancel_hook_art_request(&request))
-        }
+        HookRequest::ArtCancel(request) => HookBridgeWebSocketTextResult::response(
+            cancel_hook_art_request(&request, shared_images),
+        ),
+        HookRequest::ArtResourcesRelease(request) => HookBridgeWebSocketTextResult::response(
+            release_hook_art_resources(&request, shared_images),
+        ),
         request => handle_hook_protocol_request(
             request,
             tool_registry,
@@ -14361,7 +14617,9 @@ fn handle_hook_protocol_request(
                 }
             }
         }
-        HookRequest::ArtExecute(_) | HookRequest::ArtCancel(_) => hook_protocol_failure(
+        HookRequest::ArtExecute(_)
+        | HookRequest::ArtCancel(_)
+        | HookRequest::ArtResourcesRelease(_) => hook_protocol_failure(
             "hook.art",
             "internal_routing_error",
             "Art requests must be handled by the execution-aware dispatcher",
@@ -14541,7 +14799,14 @@ fn handle_hook_art_execute(
             "requestId, nodeId, and artId must be valid Hook identities",
         );
     }
-    let cancellation = match reserve_hook_art_request(&request) {
+    if request.output_transports.is_empty() {
+        return hook_protocol_failure(
+            &request.request_id,
+            "invalid_output_transport",
+            "outputTransports must contain at least one supported transport",
+        );
+    }
+    let cancellation = match reserve_hook_art_request(&request, shared_images) {
         HookArtReservation::Execute(cancellation) => cancellation,
         HookArtReservation::Replay(response) | HookArtReservation::Reject(response) => {
             return HookBridgeWebSocketTextResult::response(response)
@@ -14587,7 +14852,7 @@ fn handle_hook_art_execute(
         control_plane_root,
         emit_intermediate,
     );
-    let terminal_response = match result {
+    let (terminal_response, terminal_status) = match result {
         Ok((outputs, candidates)) => {
             let Some(result_revision) = next_hook_art_result_revision(
                 &request.request_id,
@@ -14606,7 +14871,9 @@ fn handle_hook_art_execute(
                     request.generation,
                     request.device_id.as_deref(),
                     hook_art_request_fingerprint(&request),
+                    HookRequestStatus::Cancelled,
                     response.clone(),
+                    shared_images,
                 );
                 return HookBridgeWebSocketTextResult::response(response);
             };
@@ -14635,7 +14902,7 @@ fn handle_hook_art_execute(
                 data,
                 None,
             );
-            response
+            (response, HookRequestStatus::Succeeded)
         }
         Err(error) => {
             let cancelled = cancellation.load(Ordering::Acquire)
@@ -14690,11 +14957,11 @@ fn handle_hook_art_execute(
             }
             let response = hook_protocol_response_json(
                 &request.request_id,
-                status,
+                status.clone(),
                 data,
                 Some(failure.error.clone()),
             );
-            response
+            (response, status)
         }
     };
     finish_hook_art_request(
@@ -14703,7 +14970,9 @@ fn handle_hook_art_execute(
         request.generation,
         request.device_id.as_deref(),
         hook_art_request_fingerprint(&request),
+        terminal_status,
         terminal_response.clone(),
+        shared_images,
     );
     HookBridgeWebSocketTextResult::response(terminal_response)
 }
@@ -14796,9 +15065,20 @@ fn execute_hook_art_request(
             ) {
                 return;
             }
-            let Some(value) = hook_art_primary_output_value(&preview, shared_images) else {
+            let Some(value) = hook_art_primary_output_value(
+                &preview,
+                shared_images,
+                request
+                    .output_transports
+                    .contains(&HookTransportMode::SharedMemory),
+            ) else {
                 return;
             };
+            let handles = hook_art_port_resource_handles(&value);
+            if !register_hook_art_resource_handles(request, &handles, false) {
+                release_shared_image_handles(shared_images, handles);
+                return;
+            }
             let Some(preview_revision) = next_hook_art_preview_revision(
                 &request.request_id,
                 &request.node_id,
@@ -14826,10 +15106,20 @@ fn execute_hook_art_request(
         return Err(WorkflowRuntimeError::Cancelled);
     }
     let candidates = result.pointer("/loomMetadata/candidates").cloned();
-    Ok((
-        hook_art_result_outputs(&tool, &result, shared_images),
-        candidates,
-    ))
+    let outputs = hook_art_result_outputs(
+        &tool,
+        &result,
+        shared_images,
+        request
+            .output_transports
+            .contains(&HookTransportMode::SharedMemory),
+    );
+    let handles = hook_art_output_resource_handles(&outputs);
+    if !register_hook_art_resource_handles(request, &handles, true) {
+        release_shared_image_handles(shared_images, handles);
+        return Err(WorkflowRuntimeError::Cancelled);
+    }
+    Ok((outputs, candidates))
 }
 
 fn materialize_hook_art_inputs(
@@ -14900,23 +15190,30 @@ fn hook_art_result_outputs(
     tool: &ToolDefinition,
     result: &Value,
     shared_images: &SharedImageStoreHandle,
+    allow_shared_memory: bool,
 ) -> BTreeMap<String, HookArtPortValue> {
     let output_id = hook_art_primary_output_id(tool);
-    if let Some(value) = hook_art_primary_output_value(result, shared_images) {
-        return BTreeMap::from([(output_id, value)]);
-    }
     let mut outputs = BTreeMap::new();
     for output in &tool.outputs {
-        let Some(id) = output.get("name").and_then(Value::as_str) else {
+        let Some(id) = output
+            .get("name")
+            .or_else(|| output.get("id"))
+            .and_then(Value::as_str)
+        else {
             continue;
         };
         if let Some(value) = result.get(id) {
             outputs.insert(
                 id.to_owned(),
-                HookArtPortValue::Value {
-                    value: value.clone(),
-                },
+                hook_art_output_value(value, shared_images, allow_shared_memory),
             );
+        }
+    }
+    if !outputs.contains_key(&output_id) {
+        if let Some(value) =
+            hook_art_primary_output_value(result, shared_images, allow_shared_memory)
+        {
+            outputs.insert(output_id.clone(), value);
         }
     }
     if outputs.is_empty() {
@@ -14930,12 +15227,36 @@ fn hook_art_result_outputs(
     outputs
 }
 
+fn hook_art_port_resource_handles(value: &HookArtPortValue) -> BTreeSet<String> {
+    match value {
+        HookArtPortValue::SharedMemory { handle, .. } => BTreeSet::from([handle.clone()]),
+        _ => BTreeSet::new(),
+    }
+}
+
+fn hook_art_output_resource_handles(
+    outputs: &BTreeMap<String, HookArtPortValue>,
+) -> BTreeSet<String> {
+    outputs
+        .values()
+        .filter_map(|value| match value {
+            HookArtPortValue::SharedMemory { handle, .. } => Some(handle.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn hook_art_primary_output_value(
     result: &Value,
     shared_images: &SharedImageStoreHandle,
+    allow_shared_memory: bool,
 ) -> Option<HookArtPortValue> {
     if let Some(data_url) = extract_art_image_data_url(result) {
-        return Some(hook_art_image_value(&data_url, shared_images));
+        return Some(hook_art_image_value(
+            &data_url,
+            shared_images,
+            allow_shared_memory,
+        ));
     }
     if result.get("type").and_then(Value::as_str) == Some("shader") {
         return Some(HookArtPortValue::Value {
@@ -14945,12 +15266,27 @@ fn hook_art_primary_output_value(
     None
 }
 
+fn hook_art_output_value(
+    value: &Value,
+    shared_images: &SharedImageStoreHandle,
+    allow_shared_memory: bool,
+) -> HookArtPortValue {
+    hook_art_primary_output_value(value, shared_images, allow_shared_memory).unwrap_or_else(|| {
+        HookArtPortValue::Value {
+            value: value.clone(),
+        }
+    })
+}
+
 fn hook_art_image_value(
     data_url: &str,
     shared_images: &SharedImageStoreHandle,
+    allow_shared_memory: bool,
 ) -> HookArtPortValue {
     hook_art_image_value_with(data_url, || {
-        hook_art_shared_image_value(data_url, shared_images)
+        allow_shared_memory
+            .then(|| hook_art_shared_image_value(data_url, shared_images))
+            .unwrap_or_else(|| Err("shared memory was not negotiated".to_owned()))
     })
 }
 
@@ -16494,6 +16830,7 @@ mod tests {
             art_id: "neuro.official/art".to_owned(),
             generation,
             device_id: Some("device:local".to_owned()),
+            output_transports: vec![HookTransportMode::SharedMemory],
             inputs: BTreeMap::new(),
             parameters: BTreeMap::new(),
             disabled_parameters: Vec::new(),
@@ -16523,20 +16860,21 @@ mod tests {
         let _guard = HOOK_ART_REQUEST_TEST_LOCK
             .lock()
             .expect("Hook Art request test lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let first = hook_art_request("request:first", "node:one", 1);
-        let first_token = match reserve_hook_art_request(&first) {
+        let first_token = match reserve_hook_art_request(&first, &store) {
             HookArtReservation::Execute(token) => token,
             _ => panic!("first request must execute"),
         };
         assert!(matches!(
-            reserve_hook_art_request(&first),
+            reserve_hook_art_request(&first, &store),
             HookArtReservation::Replay(_)
         ));
 
         let replacement = hook_art_request("request:replacement", "node:one", 2);
         assert!(matches!(
-            reserve_hook_art_request(&replacement),
+            reserve_hook_art_request(&replacement, &store),
             HookArtReservation::Execute(_)
         ));
         assert!(first_token.load(Ordering::Acquire));
@@ -16554,7 +16892,7 @@ mod tests {
         ));
 
         let stale = hook_art_request("request:stale", "node:one", 1);
-        let HookArtReservation::Reject(response) = reserve_hook_art_request(&stale) else {
+        let HookArtReservation::Reject(response) = reserve_hook_art_request(&stale, &store) else {
             panic!("stale request must be rejected");
         };
         let response: HookResponse = serde_json::from_str(&response).expect("stale response");
@@ -16563,7 +16901,7 @@ mod tests {
             response.error.expect("stale error").code,
             "stale_generation"
         );
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(Some(&store));
     }
 
     #[test]
@@ -16571,9 +16909,10 @@ mod tests {
         let _guard = HOOK_ART_REQUEST_TEST_LOCK
             .lock()
             .expect("Hook Art request test lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let first = hook_art_request("request:completed", "node:restart", 5);
-        match reserve_hook_art_request(&first) {
+        match reserve_hook_art_request(&first, &store) {
             HookArtReservation::Execute(_) => {}
             _ => panic!("completed request must execute"),
         }
@@ -16583,15 +16922,17 @@ mod tests {
             first.generation,
             first.device_id.as_deref(),
             hook_art_request_fingerprint(&first),
+            HookRequestStatus::Succeeded,
             "{}".to_owned(),
+            &store,
         );
 
         let restarted = hook_art_request("request:after-restart", "node:restart", 1);
         assert!(matches!(
-            reserve_hook_art_request(&restarted),
+            reserve_hook_art_request(&restarted, &store),
             HookArtReservation::Execute(_)
         ));
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(Some(&store));
     }
 
     #[test]
@@ -16599,16 +16940,17 @@ mod tests {
         let _guard = HOOK_ART_REQUEST_TEST_LOCK
             .lock()
             .expect("Hook Art request test lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let device_one = hook_art_request("request:shared", "node:shared", 4);
         let mut device_two = hook_art_request("request:shared", "node:shared", 4);
         device_two.device_id = Some("device:remote".to_owned());
 
-        let device_one_token = match reserve_hook_art_request(&device_one) {
+        let device_one_token = match reserve_hook_art_request(&device_one, &store) {
             HookArtReservation::Execute(token) => token,
             _ => panic!("first device request must execute"),
         };
-        let device_two_token = match reserve_hook_art_request(&device_two) {
+        let device_two_token = match reserve_hook_art_request(&device_two, &store) {
             HookArtReservation::Execute(token) => token,
             _ => panic!("second device request must execute independently"),
         };
@@ -16645,7 +16987,7 @@ mod tests {
             ),
             Some(1)
         );
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(Some(&store));
     }
 
     #[test]
@@ -16653,16 +16995,18 @@ mod tests {
         let _guard = HOOK_ART_REQUEST_TEST_LOCK
             .lock()
             .expect("Hook Art request test lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let request = hook_art_request("request:identity", "node:identity", 1);
         assert!(matches!(
-            reserve_hook_art_request(&request),
+            reserve_hook_art_request(&request, &store),
             HookArtReservation::Execute(_)
         ));
 
         let mut changed = request.clone();
         changed.parameters.insert("quality".to_owned(), json!(90));
-        let HookArtReservation::Reject(response) = reserve_hook_art_request(&changed) else {
+        let HookArtReservation::Reject(response) = reserve_hook_art_request(&changed, &store)
+        else {
             panic!("changed request payload must conflict with the active requestId");
         };
         let response: HookResponse = serde_json::from_str(&response).expect("conflict response");
@@ -16670,7 +17014,7 @@ mod tests {
             response.error.expect("conflict error").code,
             "request_id_conflict"
         );
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(Some(&store));
     }
 
     #[test]
@@ -16678,9 +17022,10 @@ mod tests {
         let _guard = HOOK_ART_REQUEST_TEST_LOCK
             .lock()
             .expect("Hook Art request test lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let request = hook_art_request("request:cancel", "node:cancel", 4);
-        let token = match reserve_hook_art_request(&request) {
+        let token = match reserve_hook_art_request(&request, &store) {
             HookArtReservation::Execute(token) => token,
             _ => panic!("request must execute"),
         };
@@ -16691,8 +17036,9 @@ mod tests {
             generation: request.generation,
             device_id: Some("device:other".to_owned()),
         };
-        let response: HookResponse = serde_json::from_str(&cancel_hook_art_request(&wrong_device))
-            .expect("wrong-device cancellation response");
+        let response: HookResponse =
+            serde_json::from_str(&cancel_hook_art_request(&wrong_device, &store))
+                .expect("wrong-device cancellation response");
         assert_eq!(response.status, HookRequestStatus::Failed);
         assert!(!token.load(Ordering::Acquire));
 
@@ -16700,11 +17046,12 @@ mod tests {
             device_id: request.device_id.clone(),
             ..wrong_device
         };
-        let response: HookResponse = serde_json::from_str(&cancel_hook_art_request(&cancellation))
-            .expect("cancellation response");
+        let response: HookResponse =
+            serde_json::from_str(&cancel_hook_art_request(&cancellation, &store))
+                .expect("cancellation response");
         assert_eq!(response.status, HookRequestStatus::CancelRequested);
         assert!(token.load(Ordering::Acquire));
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(Some(&store));
     }
 
     #[test]
@@ -19119,7 +19466,10 @@ nodes:
     }
 
     fn stop_test_hook_bridge(runtime: &DaemonRuntime) -> serde_json::Value {
-        expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200)
+        expect_json_result_response(
+            stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
+            200,
+        )
     }
 
     fn hook_bridge_status_value(runtime: &DaemonRuntime) -> serde_json::Value {
@@ -19218,6 +19568,7 @@ nodes:
                 "nodeId": node_id,
                 "artId": art_id,
                 "generation": 1,
+                "outputTransports": ["shared_memory"],
                 "inputs": inputs,
                 "parameters": parameters,
                 "disabledParameters": [],
@@ -21087,7 +21438,7 @@ def run(args):
     #[test]
     fn daemon_exposes_hook_canvas_snapshot_contract() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
         let appdata = unique_temp_dir("hook-canvas-appdata");
         let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
@@ -21117,14 +21468,14 @@ def run(args):
         assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas"));
         assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview"));
         restore_env("APPDATA", previous);
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
         fs::remove_dir_all(appdata).expect("cleanup");
     }
 
     #[test]
     fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
         let root = unique_temp_dir("hook-canvas-live-workflow");
         let appdata = unique_temp_dir("hook-canvas-live-workflow-appdata");
         let previous_appdata = std::env::var("APPDATA").ok();
@@ -21194,7 +21545,7 @@ def run(args):
         assert_eq!(canvas["nodes"][1]["previewAvailable"], true);
 
         restore_env("APPDATA", previous_appdata);
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
         drop(runtime);
         fs::remove_dir_all(root).expect("cleanup root");
         fs::remove_dir_all(appdata).expect("cleanup appdata");
@@ -21203,7 +21554,7 @@ def run(args):
     #[test]
     fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let previous_appdata = std::env::var("APPDATA").ok();
         let root = unique_temp_dir("hook-canvas-save-workflow");
@@ -21291,7 +21642,7 @@ def run(args):
 
         restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         restore_env("APPDATA", previous_appdata);
-        clear_hook_canvas_runtime_state();
+        clear_hook_canvas_runtime_state(None);
         fs::remove_dir_all(root).expect("cleanup root");
         fs::remove_dir_all(appdata).expect("cleanup appdata");
     }
@@ -21791,8 +22142,10 @@ def run(args):
         );
         assert_eq!(duplicate_start["error"]["code"], "hook_bridge_running");
 
-        let stopped_again =
-            expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
+        let stopped_again = expect_json_result_response(
+            stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
+            200,
+        );
         assert_eq!(stopped_again["running"], false);
         assert_eq!(stopped_again["connectedClients"], 0);
         assert_eq!(stopped_again["port"], 19820);
@@ -21878,7 +22231,10 @@ def run(args):
         );
 
         drop(socket);
-        let stopped = expect_json_result_response(stop_hook_bridge(&runtime.hook_bridge), 200);
+        let stopped = expect_json_result_response(
+            stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
+            200,
+        );
         assert_eq!(stopped["running"], false);
 
         drop(runtime);
@@ -22709,6 +23065,411 @@ def run(args):
         assert!(!data_base64.starts_with("data:"));
         assert_eq!(width, Some(1));
         assert_eq!(height, Some(1));
+    }
+
+    #[test]
+    fn hook_art_result_preserves_all_declared_output_ports_and_transport() {
+        let mut tool = ToolDefinition::new(
+            "multi-output",
+            "Multi output",
+            "test",
+            ToolExecution::FrameworkArt {
+                framework: "process".to_owned(),
+            },
+        );
+        tool.outputs = vec![
+            json!({ "name": "output_image", "type": "image" }),
+            json!({ "name": "score", "type": "number" }),
+        ];
+        let image = test_png_base64();
+        let result = json!({ "output_image": image, "score": 0.9 });
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+
+        let websocket = hook_art_result_outputs(&tool, &result, &store, false);
+        assert!(matches!(
+            websocket.get("output_image"),
+            Some(HookArtPortValue::InlineResource { .. })
+        ));
+        assert_eq!(
+            websocket.get("score"),
+            Some(&HookArtPortValue::Value { value: json!(0.9) })
+        );
+
+        let native = hook_art_result_outputs(&tool, &result, &store, true);
+        assert!(matches!(
+            native.get("output_image"),
+            Some(HookArtPortValue::SharedMemory { .. })
+        ));
+        assert_eq!(native.len(), 2);
+    }
+
+    #[test]
+    fn hook_art_resource_release_closes_shared_memory_and_is_idempotent() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let execution = hook_art_request("request:1", "node:1", 1);
+        assert!(matches!(
+            reserve_hook_art_request(&execution, &store),
+            HookArtReservation::Execute(_)
+        ));
+        let image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![10, 20, 30, 255])
+            .expect("create shared image");
+        assert!(register_hook_art_resource_handles(
+            &execution,
+            &BTreeSet::from([image.handle.clone()]),
+            true,
+        ));
+        finish_hook_art_request(
+            &execution.request_id,
+            &execution.node_id,
+            execution.generation,
+            execution.device_id.as_deref(),
+            hook_art_request_fingerprint(&execution),
+            HookRequestStatus::Succeeded,
+            "{}".to_owned(),
+            &store,
+        );
+        let request = HookArtResourcesReleaseRequest {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: "release:request:1".to_owned(),
+            execution_request_id: execution.request_id.clone(),
+            node_id: "node:1".to_owned(),
+            generation: 1,
+            device_id: Some("device:local".to_owned()),
+            handles: vec![image.handle.clone()],
+        };
+        let released: Value = serde_json::from_str(&release_hook_art_resources(&request, &store))
+            .expect("release response");
+        assert_eq!(released["status"], "succeeded");
+        assert_eq!(released["data"]["released"][0], image.handle);
+        assert!(store.lock().expect("shared image store").list().is_empty());
+
+        let repeated: Value = serde_json::from_str(&release_hook_art_resources(&request, &store))
+            .expect("idempotent release response");
+        assert_eq!(repeated["status"], "succeeded");
+        assert_eq!(repeated["data"]["missing"][0], image.handle);
+        let HookArtReservation::Reject(replay) = reserve_hook_art_request(&execution, &store)
+        else {
+            panic!("released shared-memory results must not replay stale handles");
+        };
+        let replay: HookResponse = serde_json::from_str(&replay).expect("replay rejection");
+        assert_eq!(
+            replay.error.expect("replay error").code,
+            "request_resources_released"
+        );
+        clear_hook_canvas_runtime_state(Some(&store));
+    }
+
+    #[test]
+    fn hook_art_resource_release_rejects_cross_execution_identity() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let owner = hook_art_request("request:owner", "node:owner", 7);
+        assert!(matches!(
+            reserve_hook_art_request(&owner, &store),
+            HookArtReservation::Execute(_)
+        ));
+        let owner_image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![1, 2, 3, 255])
+            .expect("create owner image");
+        assert!(register_hook_art_resource_handles(
+            &owner,
+            &BTreeSet::from([owner_image.handle.clone()]),
+            true,
+        ));
+
+        let base_release = HookArtResourcesReleaseRequest {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: "release:owner".to_owned(),
+            execution_request_id: owner.request_id.clone(),
+            node_id: owner.node_id.clone(),
+            generation: owner.generation,
+            device_id: owner.device_id.clone(),
+            handles: vec![owner_image.handle.clone()],
+        };
+        for (request, expected_code) in [
+            (
+                HookArtResourcesReleaseRequest {
+                    execution_request_id: "request:missing".to_owned(),
+                    ..base_release.clone()
+                },
+                "execution_request_not_found",
+            ),
+            (
+                HookArtResourcesReleaseRequest {
+                    device_id: Some("device:other".to_owned()),
+                    ..base_release.clone()
+                },
+                "resource_release_device_mismatch",
+            ),
+            (
+                HookArtResourcesReleaseRequest {
+                    node_id: "node:other".to_owned(),
+                    ..base_release.clone()
+                },
+                "resource_release_identity_mismatch",
+            ),
+            (
+                HookArtResourcesReleaseRequest {
+                    generation: owner.generation + 1,
+                    ..base_release.clone()
+                },
+                "resource_release_identity_mismatch",
+            ),
+        ] {
+            let response: HookResponse =
+                serde_json::from_str(&release_hook_art_resources(&request, &store))
+                    .expect("release rejection");
+            assert_eq!(response.status, HookRequestStatus::Failed);
+            assert_eq!(response.error.expect("release error").code, expected_code);
+            assert!(store
+                .lock()
+                .expect("shared image store")
+                .list()
+                .iter()
+                .any(|image| image.handle == owner_image.handle));
+        }
+
+        let other = hook_art_request("request:other", "node:other", 1);
+        assert!(matches!(
+            reserve_hook_art_request(&other, &store),
+            HookArtReservation::Execute(_)
+        ));
+        let other_image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![4, 5, 6, 255])
+            .expect("create other image");
+        assert!(register_hook_art_resource_handles(
+            &other,
+            &BTreeSet::from([other_image.handle.clone()]),
+            true,
+        ));
+        let cross_handle = HookArtResourcesReleaseRequest {
+            handles: vec![other_image.handle.clone()],
+            ..base_release.clone()
+        };
+        let response: HookResponse =
+            serde_json::from_str(&release_hook_art_resources(&cross_handle, &store))
+                .expect("cross-handle rejection");
+        assert_eq!(
+            response.error.expect("cross-handle error").code,
+            "resource_release_ownership_mismatch"
+        );
+        assert_eq!(store.lock().expect("shared image store").list().len(), 2);
+
+        let released: HookResponse =
+            serde_json::from_str(&release_hook_art_resources(&base_release, &store))
+                .expect("owned release");
+        assert_eq!(released.status, HookRequestStatus::Succeeded);
+        assert_eq!(store.lock().expect("shared image store").list().len(), 1);
+        clear_hook_canvas_runtime_state(Some(&store));
+        assert!(store.lock().expect("shared image store").list().is_empty());
+    }
+
+    #[test]
+    fn released_preview_resources_do_not_invalidate_live_final_replay() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let execution = hook_art_request("request:preview-final", "node:preview-final", 1);
+        assert!(matches!(
+            reserve_hook_art_request(&execution, &store),
+            HookArtReservation::Execute(_)
+        ));
+        let preview = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![1, 2, 3, 255])
+            .expect("create preview image");
+        assert!(register_hook_art_resource_handles(
+            &execution,
+            &BTreeSet::from([preview.handle.clone()]),
+            false,
+        ));
+        let preview_release = HookArtResourcesReleaseRequest {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: "release:preview".to_owned(),
+            execution_request_id: execution.request_id.clone(),
+            node_id: execution.node_id.clone(),
+            generation: execution.generation,
+            device_id: execution.device_id.clone(),
+            handles: vec![preview.handle],
+        };
+        let preview_release: HookResponse =
+            serde_json::from_str(&release_hook_art_resources(&preview_release, &store))
+                .expect("preview release response");
+        assert_eq!(preview_release.status, HookRequestStatus::Succeeded);
+
+        let final_image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![4, 5, 6, 255])
+            .expect("create final image");
+        assert!(register_hook_art_resource_handles(
+            &execution,
+            &BTreeSet::from([final_image.handle]),
+            true,
+        ));
+        finish_hook_art_request(
+            &execution.request_id,
+            &execution.node_id,
+            execution.generation,
+            execution.device_id.as_deref(),
+            hook_art_request_fingerprint(&execution),
+            HookRequestStatus::Succeeded,
+            "{\"status\":\"succeeded\"}".to_owned(),
+            &store,
+        );
+        assert!(matches!(
+            reserve_hook_art_request(&execution, &store),
+            HookArtReservation::Replay(_)
+        ));
+        clear_hook_canvas_runtime_state(Some(&store));
+        assert!(store.lock().expect("shared image store").list().is_empty());
+    }
+
+    #[test]
+    fn hook_art_replacement_and_cancellation_reclaim_owned_resources() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let first = hook_art_request("request:first-resource", "node:resource", 1);
+        let first_token = match reserve_hook_art_request(&first, &store) {
+            HookArtReservation::Execute(token) => token,
+            _ => panic!("first request must execute"),
+        };
+        let first_image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![1, 2, 3, 255])
+            .expect("create first image");
+        assert!(register_hook_art_resource_handles(
+            &first,
+            &BTreeSet::from([first_image.handle.clone()]),
+            false,
+        ));
+
+        let replacement = hook_art_request("request:replacement-resource", "node:resource", 2);
+        let replacement_token = match reserve_hook_art_request(&replacement, &store) {
+            HookArtReservation::Execute(token) => token,
+            _ => panic!("replacement request must execute"),
+        };
+        assert!(first_token.load(Ordering::Acquire));
+        assert!(store.lock().expect("shared image store").list().is_empty());
+
+        let replacement_image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![4, 5, 6, 255])
+            .expect("create replacement image");
+        assert!(register_hook_art_resource_handles(
+            &replacement,
+            &BTreeSet::from([replacement_image.handle.clone()]),
+            false,
+        ));
+        let cancellation = HookArtCancelRequest {
+            protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
+            request_id: replacement.request_id.clone(),
+            node_id: replacement.node_id.clone(),
+            generation: replacement.generation,
+            device_id: replacement.device_id.clone(),
+        };
+        let response: HookResponse =
+            serde_json::from_str(&cancel_hook_art_request(&cancellation, &store))
+                .expect("cancel response");
+        assert_eq!(response.status, HookRequestStatus::CancelRequested);
+        assert!(replacement_token.load(Ordering::Acquire));
+        assert!(store.lock().expect("shared image store").list().is_empty());
+
+        let late_image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![7, 8, 9, 255])
+            .expect("create late image");
+        let late_handles = BTreeSet::from([late_image.handle.clone()]);
+        assert!(!register_hook_art_resource_handles(
+            &replacement,
+            &late_handles,
+            false,
+        ));
+        release_shared_image_handles(&store, late_handles);
+        assert!(store.lock().expect("shared image store").list().is_empty());
+        clear_hook_canvas_runtime_state(Some(&store));
+    }
+
+    #[test]
+    fn hook_art_terminal_eviction_reclaims_unreleased_resources() {
+        let _guard = HOOK_ART_REQUEST_TEST_LOCK
+            .lock()
+            .expect("Hook Art request test lock");
+        clear_hook_canvas_runtime_state(None);
+        let store = Arc::new(Mutex::new(SharedImageStore::new()));
+        let first = hook_art_request("request:terminal:0", "node:terminal:0", 1);
+        assert!(matches!(
+            reserve_hook_art_request(&first, &store),
+            HookArtReservation::Execute(_)
+        ));
+        let image = store
+            .lock()
+            .expect("shared image store")
+            .create_rgba8(1, 1, vec![1, 2, 3, 255])
+            .expect("create terminal image");
+        assert!(register_hook_art_resource_handles(
+            &first,
+            &BTreeSet::from([image.handle.clone()]),
+            true,
+        ));
+        finish_hook_art_request(
+            &first.request_id,
+            &first.node_id,
+            first.generation,
+            first.device_id.as_deref(),
+            hook_art_request_fingerprint(&first),
+            HookRequestStatus::Succeeded,
+            "{}".to_owned(),
+            &store,
+        );
+        assert_eq!(store.lock().expect("shared image store").list().len(), 1);
+
+        for index in 1..=MAX_HOOK_ART_TERMINAL_REQUESTS {
+            let execution = hook_art_request(
+                &format!("request:terminal:{index}"),
+                &format!("node:terminal:{index}"),
+                1,
+            );
+            assert!(matches!(
+                reserve_hook_art_request(&execution, &store),
+                HookArtReservation::Execute(_)
+            ));
+            finish_hook_art_request(
+                &execution.request_id,
+                &execution.node_id,
+                execution.generation,
+                execution.device_id.as_deref(),
+                hook_art_request_fingerprint(&execution),
+                HookRequestStatus::Succeeded,
+                "{}".to_owned(),
+                &store,
+            );
+        }
+        assert!(store.lock().expect("shared image store").list().is_empty());
+        clear_hook_canvas_runtime_state(Some(&store));
     }
 
     #[test]

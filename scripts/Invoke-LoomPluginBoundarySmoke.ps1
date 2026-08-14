@@ -595,6 +595,7 @@ $response = [ordered]@{
             artId = $qualifiedArtId
             generation = 1
             deviceId = "device:plugin-boundary"
+            outputTransports = @("websocket")
             inputs = [ordered]@{ input = [ordered]@{ kind = "value"; value = "hello" } }
             parameters = [ordered]@{ prefix = "hook" }
             disabledParameters = @()

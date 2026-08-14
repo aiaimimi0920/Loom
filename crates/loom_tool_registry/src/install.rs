@@ -144,6 +144,27 @@ fn read_art_package_security(tool: &ToolDefinition) -> ArtPackageSecurityMetadat
         .unwrap_or_default()
 }
 
+fn required_art_package_version(
+    security: &ArtPackageSecurityMetadata,
+) -> Result<&str, ArtInstallError> {
+    let version = security
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ArtInstallError::InvalidPackage(
+                "metadata.packageSecurity.version is required".to_owned(),
+            )
+        })?;
+    semver::Version::parse(version).map_err(|error| {
+        ArtInstallError::InvalidPackage(format!(
+            "metadata.packageSecurity.version `{version}` is not valid SemVer: {error}"
+        ))
+    })?;
+    Ok(version)
+}
+
 fn is_safe_art_id(id: &str) -> bool {
     loom_protocol::is_safe_package_id(id)
 }
@@ -513,7 +534,7 @@ fn install_art_from_zip_with_source(
                 .map(|signature| signature.file.as_str()),
         )
         .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
-        let version = security.version.as_deref().unwrap_or("0.0.0");
+        let version = required_art_package_version(&security)?;
         let active_relative = Path::new("versions").join(format!(
             "{}-{}",
             sanitize_version_for_path(version),
@@ -2398,6 +2419,11 @@ mod tests {
             .unwrap()
             .entry("publisher")
             .or_insert_with(|| serde_json::json!({ "id": "publisher.test" }));
+        security
+            .as_object_mut()
+            .unwrap()
+            .entry("version")
+            .or_insert_with(|| serde_json::json!("0.1.0"));
         let publisher_id = security
             .get("publisher")
             .and_then(|publisher| publisher.get("id"))
@@ -2558,6 +2584,56 @@ mod tests {
             ArtInstallError::InvalidPackage(reason) if reason.contains("publisher is required")
         ));
         assert!(!root.join("arts").join("unpublished-art").exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn install_rejects_missing_or_invalid_art_package_version() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "process");
+        let registry = ToolRegistry::new(root.join("tools"));
+
+        for version in [None, Some("latest")] {
+            let mut manifest = serde_json::json!({
+                "id": "version-required-art",
+                "name": "Version required",
+                "description": "test",
+                "enabled": true,
+                "execution": { "type": "framework_art", "framework": "process" },
+                "metadata": {
+                    "packageSecurity": {
+                        "publisher": { "id": "publisher.test" }
+                    },
+                    "art": { "qualifiedId": "publisher.test/version-required-art" }
+                }
+            });
+            if let Some(version) = version {
+                manifest["metadata"]["packageSecurity"]["version"] = serde_json::json!(version);
+            }
+            let mut bytes = Vec::new();
+            {
+                let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+                let options = SimpleFileOptions::default();
+                writer.start_file(MANIFEST_NAME, options).unwrap();
+                writer
+                    .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+                    .unwrap();
+                writer.finish().unwrap();
+            }
+
+            let error = install_art_from_zip(&bytes, &root, &framework, &registry)
+                .expect_err("Art version must fail closed");
+            assert!(
+                matches!(error, ArtInstallError::InvalidPackage(ref reason)
+                    if reason.contains("metadata.packageSecurity.version")),
+                "{error:?}"
+            );
+        }
+        assert!(registry
+            .get_tool("publisher.test/version-required-art")
+            .unwrap()
+            .is_none());
         std::fs::remove_dir_all(root).ok();
     }
 
