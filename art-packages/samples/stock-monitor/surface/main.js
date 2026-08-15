@@ -27,6 +27,7 @@
     let refreshTimer = null;
     let pendingTimer = null;
     let resizeObserver = null;
+    let adoptedStyleSheet = null;
     let suspended = false;
     let disposed = false;
     let pending = false;
@@ -445,16 +446,20 @@
         clearScheduledWork();
         resizeObserver && resizeObserver.disconnect();
         resizeObserver = null;
+        if (adoptedStyleSheet) {
+            document.adoptedStyleSheets = document.adoptedStyleSheets.filter((sheet) => sheet !== adoptedStyleSheet);
+            adoptedStyleSheet = null;
+        }
     };
 
     NeuroSurface.define({
         mount({ root, snapshot }) {
             rootElement = root;
             snapshotValue = snapshot;
-            const style = document.createElement("style");
-            style.textContent = styleSource;
+            adoptedStyleSheet = new CSSStyleSheet();
+            adoptedStyleSheet.replaceSync(styleSource);
+            document.adoptedStyleSheets = [...document.adoptedStyleSheets, adoptedStyleSheet];
             root.innerHTML = markup;
-            root.prepend(style);
             refs = Object.fromEntries(Array.from(root.querySelectorAll("[data-ref]")).map((element) => [element.dataset.ref, element]));
             bindEvents();
             resizeObserver = new ResizeObserver(drawChart);

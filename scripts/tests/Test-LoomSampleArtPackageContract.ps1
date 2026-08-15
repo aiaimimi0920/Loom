@@ -314,6 +314,8 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS")) "Packaged Stock Monitor must cap Canvas allocation: $zipPath"
                 Assert-True ($surfaceSource.Contains("position:absolute;inset:0")) "Packaged Stock Monitor Canvas must not contribute intrinsic Grid size: $zipPath"
                 Assert-True (-not $surfaceSource.Contains("height:100%;min-height:145px")) "Packaged Stock Monitor must not retain the recursive Canvas sizing rule: $zipPath"
+                Assert-True ($surfaceSource.Contains("new CSSStyleSheet()")) "Packaged Stock Monitor must use a CSP-compatible constructed stylesheet: $zipPath"
+                Assert-True (-not $surfaceSource.Contains('document.createElement("style")')) "Packaged Stock Monitor must not inject a nonce-blocked inline style: $zipPath"
                 $packagedActions = @($zipManifest.metadata.capabilities.surface.actions | ForEach-Object { [string]$_.id } | Sort-Object)
                 Assert-True (($packagedActions -join ",") -eq "stock_interval_commit,stock_refresh,stock_symbol_commit") "Packaged Stock Monitor action set is invalid: $zipPath"
                 Assert-True ([string]$zipManifest.metadata.marketData.providerId -eq "stock-api") "Packaged Stock Monitor provider is invalid: $zipPath"
