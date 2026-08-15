@@ -7,6 +7,7 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 const RUNTIME_REGISTRY_FILE: &str = "plugin-runtimes.json";
+const RECOVERED_RUNTIME_REGISTRY_FILE: &str = "plugin-runtimes-recovered.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,11 +85,12 @@ impl RuntimeRegistry {
     }
 
     pub fn list(&self) -> Result<Vec<PackageCandidate>, String> {
-        if !self.path.is_file() {
-            return Ok(Vec::new());
+        let path = self.storage_path();
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.to_string()),
         }
-        serde_json::from_slice(&fs::read(&self.path).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())
     }
 
     pub fn register(&self, candidate: PackageCandidate) -> Result<(), String> {
@@ -142,14 +144,28 @@ impl RuntimeRegistry {
     }
 
     fn write(&self, records: &[PackageCandidate]) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
+        let path = self.storage_path();
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         let mut bytes = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
-        let temporary = self.path.with_extension("json.tmp");
+        let temporary = path.with_extension("json.tmp");
         fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-        crate::replace_registry_file(&temporary, &self.path).map_err(|error| error.to_string())
+        crate::replace_registry_file(&temporary, &path).map_err(|error| error.to_string())
+    }
+
+    fn storage_path(&self) -> PathBuf {
+        match fs::metadata(&self.path) {
+            Ok(_) => self.path.clone(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.path.clone(),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => self
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(RECOVERED_RUNTIME_REGISTRY_FILE),
+            Err(_) => self.path.clone(),
+        }
     }
 }
 

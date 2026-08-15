@@ -1014,10 +1014,28 @@ impl FrameworkRegistry {
                 sanitize_version_for_path(&manifest.version),
                 &digest[..12]
             );
-            let active_relative = Path::new(FRAMEWORK_VERSIONS_DIR).join(version_dir);
+            let mut active_relative = Path::new(FRAMEWORK_VERSIONS_DIR).join(&version_dir);
+            let mut target = package_root.join(&active_relative);
+            let target_exists = match fs::symlink_metadata(&target) {
+                Ok(_) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    // A legacy package directory can retain an ACL owned by a
+                    // previous Windows token. Keep it immutable and activate
+                    // the freshly verified package under a new path.
+                    let nonce = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    active_relative = Path::new(FRAMEWORK_VERSIONS_DIR)
+                        .join(format!("{version_dir}-recovered-{nonce}"));
+                    target = package_root.join(&active_relative);
+                    false
+                }
+                Err(error) => return Err(FrameworkError::Io(error)),
+            };
             let active_relative_text = active_relative.to_string_lossy().replace('\\', "/");
-            let target = package_root.join(&active_relative);
-            let target_created = if target.exists() {
+            let target_created = if target_exists {
                 fs::remove_dir_all(&staging)?;
                 false
             } else {

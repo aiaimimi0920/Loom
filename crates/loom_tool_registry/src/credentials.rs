@@ -439,16 +439,25 @@ impl CredentialStore {
     }
 
     fn read_file(&self) -> Result<CredentialFile, CredentialError> {
-        if !self.path.exists() {
-            return Ok(CredentialFile::default());
+        match loom_plugin_security::restrict_private_path_permissions(&self.path, false) {
+            Ok(()) => Ok(serde_json::from_slice(&fs::read(&self.path)?)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(CredentialFile::default())
+            }
+            Err(error) => Err(CredentialError::Io(error)),
         }
-        Ok(serde_json::from_slice(&fs::read(&self.path)?)?)
     }
 
     fn write_file(&self, file: &CredentialFile) -> Result<(), CredentialError> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-            restrict_path_permissions(parent, true)?;
+            match restrict_path_permissions(parent, true) {
+                Ok(()) => {}
+                Err(CredentialError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir_all(parent)?;
+                    restrict_path_permissions(parent, true)?;
+                }
+                Err(error) => return Err(error),
+            }
         }
         let mut bytes = serde_json::to_vec_pretty(file)?;
         bytes.push(b'\n');
@@ -699,78 +708,9 @@ fn unprotect_value(value: &str, protection: &str) -> Result<Vec<u8>, CredentialE
     Ok(BASE64.decode(value.as_bytes())?)
 }
 
-#[cfg(unix)]
-fn restrict_path_permissions(path: &Path, directory: bool) -> Result<(), CredentialError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn restrict_path_permissions(path: &Path, _directory: bool) -> Result<(), CredentialError> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR,
-    };
-
-    let canonical = fs::canonicalize(path)?;
-    let wide = canonical.as_os_str().encode_wide().collect::<Vec<_>>();
-    let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
-        || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
-    {
-        wide
-    } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
-        let mut value = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
-        value.extend_from_slice(&wide[2..]);
-        value
-    } else {
-        let mut value = r"\\?\".encode_utf16().collect::<Vec<_>>();
-        value.extend_from_slice(&wide);
-        value
-    };
-    extended.push(0);
-    let sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0"
-        .encode_utf16()
-        .collect::<Vec<_>>();
-    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    let converted = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    };
-    if converted == 0 {
-        return Err(CredentialError::Io(std::io::Error::last_os_error()));
-    }
-    let updated = unsafe {
-        SetFileSecurityW(
-            extended.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor,
-        )
-    };
-    unsafe {
-        LocalFree(descriptor.cast());
-    }
-    if updated == 0 {
-        return Err(CredentialError::Io(std::io::Error::last_os_error()));
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
 fn restrict_path_permissions(_path: &Path, _directory: bool) -> Result<(), CredentialError> {
-    Ok(())
+    loom_plugin_security::restrict_private_path_permissions(_path, _directory)
+        .map_err(CredentialError::Io)
 }
 
 #[cfg(test)]

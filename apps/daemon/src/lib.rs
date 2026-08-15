@@ -495,6 +495,12 @@ impl LoomDaemon {
         let framework_runtime_root = control_plane_root.join("frameworks");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
         std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", &framework_runtime_root);
+        repair_legacy_control_plane_permissions(&control_plane_root).with_context(|| {
+            format!(
+                "repair Loom control-plane permissions in {}",
+                control_plane_root.display()
+            )
+        })?;
         let mut run_store: Box<dyn RunEvidenceStore> = match &config.run_store {
             RunStoreConfig::Memory => Box::new(InMemoryRunEvidenceStore::default()),
             RunStoreConfig::Sqlite(path) => {
@@ -1354,126 +1360,8 @@ fn replace_sensitive_file(source: &Path, destination: &Path) -> std::io::Result<
     Ok(())
 }
 
-#[cfg(unix)]
-fn restrict_sensitive_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)?.permissions();
-    permissions.set_mode(if directory { 0o700 } else { 0o600 });
-    fs::set_permissions(path, permissions)
-}
-
-#[cfg(windows)]
-fn restrict_sensitive_path_permissions(path: &Path, _directory: bool) -> std::io::Result<()> {
-    let current_user_sid = current_user_sid_string()?;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR,
-    };
-
-    let path = extended_windows_path(path)?;
-    let sddl = format!("D:P(A;;FA;;;{current_user_sid})(A;;FA;;;OW)(A;;FA;;;SY)\0")
-        .encode_utf16()
-        .collect::<Vec<_>>();
-    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    let converted = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    };
-    if converted == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let updated = unsafe {
-        SetFileSecurityW(
-            path.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor,
-        )
-    };
-    unsafe {
-        LocalFree(descriptor.cast());
-    }
-    if updated == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn current_user_sid_string() -> std::io::Result<String> {
-    use std::mem::size_of;
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    let mut token: HANDLE = std::ptr::null_mut();
-    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
-    if opened == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let result = (|| -> std::io::Result<String> {
-        let mut required = 0u32;
-        unsafe {
-            let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
-        }
-        if required < size_of::<TOKEN_USER>() as u32 {
-            return Err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                "Windows token user information is unavailable",
-            ));
-        }
-        let mut buffer = vec![0u8; required as usize];
-        let read = unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                buffer.as_mut_ptr().cast(),
-                required,
-                &mut required,
-            )
-        };
-        if read == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
-        let mut sid_string = std::ptr::null_mut();
-        let converted = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string) };
-        if converted == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let mut length = 0usize;
-        unsafe {
-            while *sid_string.add(length) != 0 {
-                length += 1;
-            }
-        }
-        let sid =
-            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid_string, length) });
-        unsafe {
-            LocalFree(sid_string.cast());
-        }
-        Ok(sid)
-    })();
-
-    unsafe {
-        CloseHandle(token);
-    }
-    result
-}
-
-#[cfg(not(any(unix, windows)))]
 fn restrict_sensitive_path_permissions(_path: &Path, _directory: bool) -> std::io::Result<()> {
-    Ok(())
+    loom_plugin_security::restrict_private_path_permissions(_path, _directory)
 }
 
 #[cfg(windows)]
@@ -1544,6 +1432,65 @@ fn default_control_plane_root() -> PathBuf {
         .filter(|path| !path.as_os_str().is_empty())
         .map(|path| path.join("Loom").join("control-plane"))
         .unwrap_or_else(|| PathBuf::from(".runtime").join("loom").join("control-plane"))
+}
+
+#[cfg(windows)]
+fn repair_legacy_control_plane_permissions(root: &Path) -> std::io::Result<()> {
+    const ACL_MIGRATION_MARKER: &str = "windows-private-acl-v2";
+    static REPAIR_LOCK: Mutex<()> = Mutex::new(());
+
+    let _repair_guard = REPAIR_LOCK.lock().map_err(|_| {
+        std::io::Error::other("Loom control-plane permission repair lock was poisoned")
+    })?;
+
+    match loom_plugin_security::restrict_private_path_permissions(root, true) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+
+    // These stores were the only writers that applied the legacy private ACL
+    // to the control-plane root. Repair their files before testing existence,
+    // because ordinary metadata calls can themselves fail under that ACL.
+    let mut legacy_private_store_found = false;
+    for file_name in ["plugin-trust.json", "plugin-credentials.json"] {
+        match loom_plugin_security::restrict_private_path_permissions(&root.join(file_name), false)
+        {
+            Ok(()) => legacy_private_store_found = true,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if !legacy_private_store_found {
+        return Ok(());
+    }
+
+    let migration_dir = root.join("migrations");
+    match loom_plugin_security::restrict_private_path_permissions(&migration_dir, true) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let marker = migration_dir.join(ACL_MIGRATION_MARKER);
+    if marker.is_file() {
+        return Ok(());
+    }
+
+    let quarantined = loom_plugin_security::repair_private_tree_permissions(root)?;
+    if !quarantined.is_empty() {
+        runtime_log_info(format!(
+            "repaired legacy control-plane ACL and left {} unreadable legacy entries untouched",
+            quarantined.len()
+        ));
+    }
+    fs::create_dir_all(&migration_dir)?;
+    fs::write(&marker, format!("2 skipped={}\n", quarantined.len()))?;
+    loom_plugin_security::restrict_private_path_permissions(&marker, false)
+}
+
+#[cfg(not(windows))]
+fn repair_legacy_control_plane_permissions(_root: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn mcp_server_store_path(control_plane_root: &Path) -> PathBuf {

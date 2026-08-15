@@ -95,16 +95,26 @@ const fn default_trust_store_schema_version() -> u32 {
 
 impl TrustStore {
     pub fn load(path: &Path) -> Result<Self, PluginSecurityError> {
-        if !path.exists() {
-            return Ok(Self::default());
+        // Repair the ACL before opening a legacy trust store. Older Loom
+        // builds protected the parent with OWNER RIGHTS/SYSTEM only, which
+        // leaves the current token unable to read or atomically replace it.
+        match restrict_private_path_permissions(path, false) {
+            Ok(()) => Ok(serde_json::from_slice(&fs::read(path)?)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(PluginSecurityError::Io(error)),
         }
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
     }
 
     pub fn write_atomic(&self, path: &Path) -> Result<(), PluginSecurityError> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            restrict_trust_path_permissions(parent, true)?;
+            match restrict_private_path_permissions(parent, true) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir_all(parent)?;
+                    restrict_private_path_permissions(parent, true)?;
+                }
+                Err(error) => return Err(PluginSecurityError::Io(error)),
+            }
         }
         let mut bytes = serde_json::to_vec_pretty(self)?;
         bytes.push(b'\n');
@@ -113,9 +123,9 @@ impl TrustStore {
             file.write_all(&bytes)?;
             file.sync_all()?;
             drop(file);
-            restrict_trust_path_permissions(&temporary, false)?;
+            restrict_private_path_permissions(&temporary, false)?;
             replace_file_atomic(&temporary, path)?;
-            restrict_trust_path_permissions(path, false)?;
+            restrict_private_path_permissions(path, false)?;
             sync_parent_directory(path)?;
             Ok(())
         })();
@@ -302,7 +312,7 @@ fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn restrict_trust_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
+pub fn restrict_private_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = fs::metadata(path)?.permissions();
@@ -311,7 +321,7 @@ fn restrict_trust_path_permissions(path: &Path, directory: bool) -> std::io::Res
 }
 
 #[cfg(windows)]
-fn restrict_trust_path_permissions(path: &Path, _directory: bool) -> std::io::Result<()> {
+pub fn restrict_private_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
@@ -322,8 +332,12 @@ fn restrict_trust_path_permissions(path: &Path, _directory: bool) -> std::io::Re
         PSECURITY_DESCRIPTOR,
     };
 
-    let canonical = fs::canonicalize(path)?;
-    let wide = canonical.as_os_str().encode_wide().collect::<Vec<_>>();
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
     let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
         || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
     {
@@ -338,7 +352,11 @@ fn restrict_trust_path_permissions(path: &Path, _directory: bool) -> std::io::Re
         value
     };
     extended.push(0);
-    let sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0"
+    let inheritance = if directory { "OICI" } else { "" };
+    let current_user_sid = current_user_sid_string()?;
+    let sddl = format!(
+        "D:P(A;{inheritance};FA;;;{current_user_sid})(A;{inheritance};FA;;;OW)(A;{inheritance};FA;;;SY)\0"
+    )
         .encode_utf16()
         .collect::<Vec<_>>();
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -370,8 +388,127 @@ fn restrict_trust_path_permissions(path: &Path, _directory: bool) -> std::io::Re
 }
 
 #[cfg(not(any(unix, windows)))]
-fn restrict_trust_path_permissions(_path: &Path, _directory: bool) -> std::io::Result<()> {
+pub fn restrict_private_path_permissions(_path: &Path, _directory: bool) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Repair an existing private control-plane tree after older builds applied a
+/// Windows DACL that omitted the current user's SID. Entries whose owner does
+/// not allow their DACL to be repaired are left untouched and reported to the
+/// caller; they remain outside the active traversal until their owning token
+/// can be migrated. The traversal is deliberately symlink-free so permission
+/// repair cannot escape the tree.
+pub fn repair_private_tree_permissions(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    restrict_private_path_permissions(root, true).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "repair private directory permissions {}: {error}",
+                root.display()
+            ),
+        )
+    })?;
+    let mut pending = vec![root.to_path_buf()];
+    let mut quarantined = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "private control-plane tree contains a symbolic link: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            if let Err(error) = restrict_private_path_permissions(&path, file_type.is_dir()) {
+                if error.kind() != std::io::ErrorKind::PermissionDenied {
+                    return Err(std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "repair private path permissions {}: {error}",
+                            path.display()
+                        ),
+                    ));
+                }
+                let relative = path.strip_prefix(root).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "private ACL repair escaped its root",
+                    )
+                })?;
+                quarantined.push(relative.to_path_buf());
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(quarantined)
+}
+
+#[cfg(windows)]
+fn current_user_sid_string() -> std::io::Result<String> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = (|| -> std::io::Result<String> {
+        let mut required = 0u32;
+        unsafe {
+            let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        if required < size_of::<TOKEN_USER>() as u32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows token user information is unavailable",
+            ));
+        }
+        let mut buffer = vec![0u8; required as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let mut sid_string = std::ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut length = 0usize;
+        unsafe {
+            while *sid_string.add(length) != 0 {
+                length += 1;
+            }
+        }
+        let sid =
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid_string, length) });
+        unsafe {
+            LocalFree(sid_string.cast());
+        }
+        Ok(sid)
+    })();
+    unsafe {
+        CloseHandle(token);
+    }
+    result
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

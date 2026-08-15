@@ -558,14 +558,26 @@ fn install_art_from_zip_with_source(
         )
         .map_err(|error| ArtInstallError::InvalidPackage(error.to_string()))?;
         let version = required_art_package_version(&security)?;
-        let active_relative = Path::new("versions").join(format!(
-            "{}-{}",
-            sanitize_version_for_path(version),
-            &digest[..12]
-        ));
-        let art_dir = art_root.join(&active_relative);
+        let version_dir = format!("{}-{}", sanitize_version_for_path(version), &digest[..12]);
+        let mut active_relative = Path::new("versions").join(&version_dir);
+        let mut art_dir = art_root.join(&active_relative);
         std::fs::create_dir_all(art_dir.parent().expect("Art version parent"))?;
-        let target_created = if art_dir.exists() {
+        let target_exists = match std::fs::symlink_metadata(&art_dir) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                active_relative =
+                    Path::new("versions").join(format!("{version_dir}-recovered-{nonce}"));
+                art_dir = art_root.join(&active_relative);
+                false
+            }
+            Err(error) => return Err(ArtInstallError::Io(error)),
+        };
+        let target_created = if target_exists {
             std::fs::remove_dir_all(&staging)?;
             false
         } else {
