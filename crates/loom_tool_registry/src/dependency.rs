@@ -156,9 +156,8 @@ impl RuntimeRegistry {
     }
 
     fn storage_path(&self) -> PathBuf {
-        match fs::metadata(&self.path) {
+        match fs::read(&self.path) {
             Ok(_) => self.path.clone(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.path.clone(),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => self
                 .path
                 .parent()
