@@ -562,8 +562,27 @@ fn install_art_from_zip_with_source(
         let mut active_relative = Path::new("versions").join(&version_dir);
         let mut art_dir = art_root.join(&active_relative);
         std::fs::create_dir_all(art_dir.parent().expect("Art version parent"))?;
+        // A version directory may predate the Windows private-ACL repair. On
+        // Windows `symlink_metadata` can still succeed for such a directory
+        // even though reading its manifest (and therefore reusing it) is
+        // denied. Treat an unreadable immutable target as a collision and
+        // install the verified package under a recovered version name instead
+        // of failing later while writing its lock/activation state. The old
+        // directory is intentionally left untouched.
         let target_exists = match std::fs::symlink_metadata(&art_dir) {
-            Ok(_) => true,
+            Ok(_) => match std::fs::read(art_dir.join(MANIFEST_NAME)) {
+                Ok(_) => true,
+                Err(_) => {
+                    let nonce = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    active_relative =
+                        Path::new("versions").join(format!("{version_dir}-recovered-{nonce}"));
+                    art_dir = art_root.join(&active_relative);
+                    false
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 let nonce = std::time::SystemTime::now()
