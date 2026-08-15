@@ -2199,8 +2199,13 @@ fn resolve_art_dependency_locks(
                 &child,
                 framework_registry,
                 &mut verifying,
-            )?
-        };
+            )
+        }
+        .map_err(|error| {
+            ArtInstallError::InvalidPackage(format!(
+                "Art dependency `{identity}` integrity verification failed: {error}"
+            ))
+        })?;
         resolved.push(ResolvedDependency {
             kind: "art".to_owned(),
             id: identity,
