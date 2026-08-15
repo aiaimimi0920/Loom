@@ -1253,6 +1253,14 @@ fn write_local_capability_manifest(
                 temporary.display()
             )
         })?;
+        if path.is_file() {
+            restrict_sensitive_path_permissions(&path, false).with_context(|| {
+                format!(
+                    "refresh loom manifest permissions before replacement {}",
+                    path.display()
+                )
+            })?;
+        }
         replace_sensitive_file(&temporary, &path)
             .with_context(|| format!("atomically replace loom manifest {}", path.display()))?;
         restrict_sensitive_path_permissions(&path, false)
@@ -1357,6 +1365,7 @@ fn restrict_sensitive_path_permissions(path: &Path, directory: bool) -> std::io:
 
 #[cfg(windows)]
 fn restrict_sensitive_path_permissions(path: &Path, _directory: bool) -> std::io::Result<()> {
+    let current_user_sid = current_user_sid_string()?;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -1367,7 +1376,7 @@ fn restrict_sensitive_path_permissions(path: &Path, _directory: bool) -> std::io
     };
 
     let path = extended_windows_path(path)?;
-    let sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0"
+    let sddl = format!("D:P(A;;FA;;;{current_user_sid})(A;;FA;;;OW)(A;;FA;;;SY)\0")
         .encode_utf16()
         .collect::<Vec<_>>();
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -1396,6 +1405,70 @@ fn restrict_sensitive_path_permissions(path: &Path, _directory: bool) -> std::io
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn current_user_sid_string() -> std::io::Result<String> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if opened == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let result = (|| -> std::io::Result<String> {
+        let mut required = 0u32;
+        unsafe {
+            let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        if required < size_of::<TOKEN_USER>() as u32 {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Windows token user information is unavailable",
+            ));
+        }
+        let mut buffer = vec![0u8; required as usize];
+        let read = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        if read == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let mut sid_string = std::ptr::null_mut();
+        let converted = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string) };
+        if converted == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut length = 0usize;
+        unsafe {
+            while *sid_string.add(length) != 0 {
+                length += 1;
+            }
+        }
+        let sid =
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid_string, length) });
+        unsafe {
+            LocalFree(sid_string.cast());
+        }
+        Ok(sid)
+    })();
+
+    unsafe {
+        CloseHandle(token);
+    }
+    result
 }
 
 #[cfg(not(any(unix, windows)))]
