@@ -165,6 +165,8 @@ foreach ($entry in $expected.GetEnumerator()) {
         Assert-True ([string]$manifest.execution.workflowBindings.primaryOutput.nodeId -eq "compress") "Workflow sample Art must return the compression child result."
     }
     if ($entry.Key -eq "stock-monitor") {
+        $mcpFrameworkManifestPath = Join-Path $repoRoot "framework-packages\mcp\framework.manifest.json"
+        $mcpFrameworkManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $mcpFrameworkManifestPath | ConvertFrom-Json
         $surface = $manifest.metadata.capabilities.surface
         $surfaceRuntimes = @($surface.variants | ForEach-Object { [string]$_.runtime })
         $surfaceActions = @($surface.actions | ForEach-Object { [string]$_.id } | Sort-Object)
@@ -189,6 +191,7 @@ foreach ($entry in $expected.GetEnumerator()) {
         Assert-True ([string]$manifest.metadata.mcp.serverId -eq "stock-api") "Stock Monitor MCP server id is invalid."
         Assert-True ([string]$manifest.metadata.mcp.packageId -eq "neuro.official/stock-api") "Stock Monitor MCP package id is invalid."
         Assert-True ([string]$manifest.metadata.mcp.version -eq "=2.7.3") "Stock Monitor MCP version must be exact."
+        Assert-True ([version]$mcpFrameworkManifest.version -ge [version]"0.2.3") "Stock Monitor requires MCP framework 0.2.3 or newer for Surface action routing."
         Assert-True (@($manifest.metadata.mcp.calls).Count -eq 2) "Stock Monitor must declare quote and history MCP calls."
         Assert-True (@($manifest.metadata.mcp.surfaceActions.stock_interval_commit.calls).Count -eq 0) "Stock Monitor interval action must skip MCP calls."
         $mcpDependencies = @($manifest.metadata.dependencies.mcpServers)
