@@ -52,7 +52,7 @@ $expected = [ordered]@{
     "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802004"; version = "0.1.4" }
     "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802005"; version = "0.1.0" }
     "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow"; executionType = "workflow"; globalId = "NA20260802006"; version = "0.1.0" }
-    "stock-monitor" = [ordered]@{ id = "custom-stock-monitor"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802007"; version = "1.0.0" }
+    "stock-monitor" = [ordered]@{ id = "custom-stock-monitor"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802007"; version = "1.1.0" }
 }
 
 Assert-True (Test-Path -LiteralPath $packagesRoot -PathType Container) "Sample Art package source directory is required: $packagesRoot"
@@ -174,8 +174,8 @@ foreach ($entry in $expected.GetEnumerator()) {
         Assert-True ($surfaceRuntimes.Count -eq 2 -and $surfaceRuntimes[0] -eq "javascript" -and $surfaceRuntimes[1] -eq "declarative") "Stock Monitor must prefer JavaScript Surface and retain a declarative fallback."
         Assert-True ([string]$surface.fallbackScene -eq "surface/fallback.json") "Stock Monitor fallback scene is invalid."
         Assert-True (($surfaceActions -join ",") -eq ($expectedActions -join ",")) "Stock Monitor Surface action set is invalid."
-        Assert-True ([string]$manifest.metadata.marketData.providerId -eq "eastmoney") "Stock Monitor provider id is invalid."
-        Assert-True ([string]$manifest.metadata.marketData.providerName -eq "东方财富") "Stock Monitor provider name is invalid."
+        Assert-True ([string]$manifest.metadata.marketData.providerId -eq "stock-api") "Stock Monitor provider id is invalid."
+        Assert-True ([string]$manifest.metadata.marketData.upstreamVersion -eq "2.7.3") "Stock Monitor upstream version is invalid."
         Assert-True (-not [bool]$manifest.metadata.marketData.apiKeyRequired) "Stock Monitor must not require an API credential."
         Assert-True (-not [bool]$manifest.metadata.marketData.trading) "Stock Monitor must not advertise trading."
         Assert-True (Test-Path -LiteralPath (Join-Path $sourceDirectory "surface\main.js") -PathType Leaf) "Stock Monitor JavaScript Surface entry is missing."
@@ -184,9 +184,16 @@ foreach ($entry in $expected.GetEnumerator()) {
         Assert-True ($secretParameters.Count -eq 0) "Stock Monitor must not own provider credentials."
         Assert-True (-not (@($surface.actions | Where-Object { [string]$_.id -match '(?i)buy|sell|trade|order|purchase' }).Count)) "Stock Monitor must not declare trading actions."
         $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceDirectory "runtime\main.ps1")
-        Assert-True ($runtimeSource -match 'Invoke-RestMethod') "Stock Monitor runtime must use structured HTTP JSON parsing."
-        Assert-True ($runtimeSource -match 'push2\.eastmoney\.com' -and $runtimeSource -match 'push2his\.eastmoney\.com') "Stock Monitor runtime must call the declared Eastmoney quote and trend hosts."
-        Assert-True ($runtimeSource -match 'LOOM_STOCK_API_BASE_URL' -and $runtimeSource -match '\.IsLoopback') "Stock Monitor test override must be loopback-only."
+        Assert-True ($runtimeSource -match 'frameworkData' -and $runtimeSource -match 'Get-McpToolContent') "Stock Monitor runtime must consume MCP framework results."
+        Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass stock-api."
+        Assert-True ([string]$manifest.metadata.mcp.serverId -eq "stock-api") "Stock Monitor MCP server id is invalid."
+        Assert-True ([string]$manifest.metadata.mcp.packageId -eq "neuro.official/stock-api") "Stock Monitor MCP package id is invalid."
+        Assert-True ([string]$manifest.metadata.mcp.version -eq "=2.7.3") "Stock Monitor MCP version must be exact."
+        Assert-True (@($manifest.metadata.mcp.calls).Count -eq 2) "Stock Monitor must declare quote and history MCP calls."
+        Assert-True (@($manifest.metadata.mcp.surfaceActions.stock_interval_commit.calls).Count -eq 0) "Stock Monitor interval action must skip MCP calls."
+        $mcpDependencies = @($manifest.metadata.dependencies.mcpServers)
+        Assert-True ($mcpDependencies.Count -eq 1) "Stock Monitor must declare exactly one MCP server dependency."
+        Assert-True ([string]$mcpDependencies[0].id -eq "neuro.official/stock-api" -and [string]$mcpDependencies[0].version -eq "=2.7.3") "Stock Monitor MCP dependency is invalid."
         Assert-True ($runtimeSource -notmatch '(?i)random|fake price|placeholder quote') "Stock Monitor runtime must not fabricate quotes."
     }
 
@@ -297,9 +304,21 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 $fallbackEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq "surface/fallback.json" } | Select-Object -First 1
                 Assert-True ($null -ne $surfaceEntry) "Packaged Stock Monitor JavaScript Surface entry is missing: $zipPath"
                 Assert-True ($null -ne $fallbackEntry) "Packaged Stock Monitor fallback scene is missing: $zipPath"
+                $surfaceReader = [System.IO.StreamReader]::new($surfaceEntry.Open())
+                try {
+                    $surfaceSource = $surfaceReader.ReadToEnd()
+                }
+                finally {
+                    $surfaceReader.Dispose()
+                }
+                Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS")) "Packaged Stock Monitor must cap Canvas allocation: $zipPath"
+                Assert-True ($surfaceSource.Contains("position:absolute;inset:0")) "Packaged Stock Monitor Canvas must not contribute intrinsic Grid size: $zipPath"
+                Assert-True (-not $surfaceSource.Contains("height:100%;min-height:145px")) "Packaged Stock Monitor must not retain the recursive Canvas sizing rule: $zipPath"
                 $packagedActions = @($zipManifest.metadata.capabilities.surface.actions | ForEach-Object { [string]$_.id } | Sort-Object)
                 Assert-True (($packagedActions -join ",") -eq "stock_interval_commit,stock_refresh,stock_symbol_commit") "Packaged Stock Monitor action set is invalid: $zipPath"
-                Assert-True ([string]$zipManifest.metadata.marketData.providerId -eq "eastmoney") "Packaged Stock Monitor provider is invalid: $zipPath"
+                Assert-True ([string]$zipManifest.metadata.marketData.providerId -eq "stock-api") "Packaged Stock Monitor provider is invalid: $zipPath"
+                Assert-True ([string]$zipManifest.metadata.mcp.packageId -eq "neuro.official/stock-api") "Packaged Stock Monitor MCP package is invalid: $zipPath"
+                Assert-True (@($zipManifest.metadata.mcp.calls).Count -eq 2) "Packaged Stock Monitor MCP call set is invalid: $zipPath"
                 Assert-True (-not [bool]$zipManifest.metadata.marketData.trading) "Packaged Stock Monitor must not advertise trading: $zipPath"
             }
             if ($entry.Value.executionType -eq "framework_art") {
@@ -348,6 +367,11 @@ $imageSearchMcpContract = Join-Path $scriptRoot "Test-LoomImageSearchMcpServer.p
 Assert-True (Test-Path -LiteralPath $imageSearchMcpContract -PathType Leaf) "Image-search MCP contract test is required: $imageSearchMcpContract"
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $imageSearchMcpContract
 Assert-True ($LASTEXITCODE -eq 0) "Independent image-search MCP server contract failed."
+
+$stockApiMcpContract = Join-Path $scriptRoot "Test-LoomStockApiMcpServer.ps1"
+Assert-True (Test-Path -LiteralPath $stockApiMcpContract -PathType Leaf) "stock-api MCP contract test is required: $stockApiMcpContract"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stockApiMcpContract
+Assert-True ($LASTEXITCODE -eq 0) "Independent stock-api MCP server contract failed."
 
 $stockMonitorContract = Join-Path $scriptRoot "Test-LoomStockMonitorArt.ps1"
 Assert-True (Test-Path -LiteralPath $stockMonitorContract -PathType Leaf) "Stock Monitor Art contract test is required: $stockMonitorContract"

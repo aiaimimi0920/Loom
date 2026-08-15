@@ -16,7 +16,10 @@
         blue: "#06b6d4",
         red: "#f43f5e"
     });
-    const INTERVALS = [5, 15, 30, 60];
+    const INTERVALS = [30, 60, 120, 300];
+    const MAX_CANVAS_WIDTH = 2048;
+    const MAX_CANVAS_HEIGHT = 1024;
+    const MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
 
     let rootElement = null;
     let snapshotValue = null;
@@ -28,7 +31,7 @@
     let disposed = false;
     let pending = false;
     let pendingRevision = -1;
-    let activeInterval = 15;
+    let activeInterval = 60;
 
     const asObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
     const asNumber = (value) => {
@@ -37,7 +40,7 @@
     };
     const stateOf = (snapshot) => asObject(snapshot && snapshot.authoritativeState);
     const quoteOf = (state) => asObject(state.quote);
-    const trendOf = (state) => Array.isArray(state.trend) ? state.trend : [];
+    const historyOf = (state) => Array.isArray(state.history) ? state.history : [];
     const text = (value, fallback) => typeof value === "string" && value.trim() ? value : fallback;
     const formatNumber = (value, digits) => {
         const number = asNumber(value);
@@ -52,17 +55,33 @@
         const sign = number > 0 ? "+" : "";
         return sign + formatNumber(number, 2) + (suffix || "");
     };
-    const formatAmount = (value) => {
+    const formatVolume = (value) => {
         const number = asNumber(value);
         if (number === null) return "--";
         if (Math.abs(number) >= 100000000) return formatNumber(number / 100000000, 2) + " 亿";
         if (Math.abs(number) >= 10000) return formatNumber(number / 10000, 2) + " 万";
         return formatNumber(number, 0);
     };
-    const formatVolume = (value) => {
-        const number = asNumber(value);
-        if (number === null) return "--";
-        return formatNumber(number / 10000, 2) + " 万手";
+    const formatTimestamp = (value) => {
+        if (typeof value !== "string" || !value.trim()) return "时间未知";
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime())
+            ? value
+            : parsed.toLocaleString("zh-CN", { hour12: false });
+    };
+    const normalizeCode = (value) => {
+        const input = String(value || "").trim().toUpperCase().replace(/\s+/g, "");
+        let match = input.match(/^(SH|SZ)[:._-]?(\d{6})$/);
+        if (match) return match[1] + match[2];
+        match = input.match(/^(\d{6})[:._-]?(SH|SZ)$/);
+        if (match) return match[2] + match[1];
+        if (/^\d{6}$/.test(input)) {
+            return (/^[569]/.test(input) ? "SH" : "SZ") + input;
+        }
+        match = input.match(/^HK[:._-]?(\d{1,5})$/);
+        if (match) return "HK" + match[1].padStart(5, "0");
+        match = input.match(/^US[:_-]?([A-Z][A-Z0-9.-]{0,19})$/);
+        return match ? "US" + match[1] : input;
     };
     const movement = (quote) => {
         const change = asNumber(quote.changePercent);
@@ -102,22 +121,23 @@
         ".quote-price{margin-top:5px;font:700 34px/1 Consolas,monospace;color:" + COLORS.text + ";white-space:nowrap}",
         ".quote-delta{margin-top:6px;font:700 13px/1.2 Consolas,monospace;white-space:nowrap}",
         ".quote-session{margin-top:9px;color:" + COLORS.muted + ";font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
-        ".chart-wrap{position:relative;min-width:0;min-height:160px;padding:9px 10px 7px;background:" + COLORS.surface + "}",
+        ".chart-wrap{position:relative;min-width:0;min-height:160px;overflow:hidden;contain:layout paint;padding:9px 10px 7px;background:" + COLORS.surface + "}",
         ".chart-legend{position:absolute;z-index:1;top:8px;left:10px;right:10px;display:flex;gap:12px;pointer-events:none;color:" + COLORS.muted + ";font-size:10px}",
         ".legend-item{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}",
         ".legend-line{width:14px;height:2px;background:" + COLORS.blue + "}",
-        ".legend-line.price{background:" + COLORS.green + "}",
-        ".stock-chart{display:block;width:100%;height:100%;min-height:145px}",
-        ".market-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));background:" + COLORS.panel + ";border-bottom:1px solid " + COLORS.line + "}",
+        ".legend-line.candle{background:linear-gradient(90deg," + COLORS.green + " 0 48%," + COLORS.red + " 52% 100%)}",
+        ".legend-line.average{background:" + COLORS.yellow + "}",
+        ".stock-chart{position:absolute;inset:0;display:block;width:100%;height:100%;min-width:0;min-height:0}",
+        ".market-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:" + COLORS.panel + ";border-bottom:1px solid " + COLORS.line + "}",
         ".market-cell{min-width:0;padding:8px 9px;border-right:1px solid " + COLORS.line + ";border-bottom:1px solid " + COLORS.line + "}",
-        ".market-cell:nth-child(6n){border-right:0}",
+        ".market-cell:nth-child(4n){border-right:0}",
         ".metric-label{display:block;color:" + COLORS.muted + ";font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
         ".metric-value{display:block;margin-top:3px;color:" + COLORS.text + ";font:600 12px/1.2 Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
         ".stock-footer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 12px;background:" + COLORS.surface + ";color:" + COLORS.muted + ";font-size:10px}",
         ".stock-error{min-width:0;color:" + COLORS.red + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
         ".stock-disclaimer{text-align:right;white-space:nowrap}",
-        "@media(max-width:560px){.stock-shell{grid-template-rows:auto auto auto minmax(160px,1fr) auto auto}.stock-header{padding:9px 10px}.stock-status{max-width:115px}.stock-controls{grid-template-columns:minmax(0,1fr) 82px 32px;padding:7px 10px}.quote-board{display:contents}.quote-summary{padding:10px;border-right:0;border-bottom:1px solid " + COLORS.line + "}.quote-price{font-size:30px}.chart-wrap{min-height:175px}.market-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.market-cell:nth-child(6n){border-right:1px solid " + COLORS.line + "}.market-cell:nth-child(3n){border-right:0}.stock-footer{grid-template-columns:1fr}.stock-disclaimer{text-align:left;white-space:normal}}",
-        "@media(max-width:390px){.stock-title{font-size:14px}.stock-status{display:none}.stock-header{grid-template-columns:1fr}.stock-controls{grid-template-columns:minmax(0,1fr) 76px 30px}.market-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.market-cell:nth-child(3n){border-right:1px solid " + COLORS.line + "}.market-cell:nth-child(2n){border-right:0}}",
+        "@media(max-width:560px){.stock-shell{grid-template-rows:auto auto auto minmax(160px,1fr) auto auto}.stock-header{padding:9px 10px}.stock-status{max-width:115px}.stock-controls{grid-template-columns:minmax(0,1fr) 82px 32px;padding:7px 10px}.quote-board{display:contents}.quote-summary{padding:10px;border-right:0;border-bottom:1px solid " + COLORS.line + "}.quote-price{font-size:30px}.chart-wrap{min-height:175px}.market-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.market-cell:nth-child(4n){border-right:1px solid " + COLORS.line + "}.market-cell:nth-child(2n){border-right:0}.stock-footer{grid-template-columns:1fr}.stock-disclaimer{text-align:left;white-space:normal}}",
+        "@media(max-width:390px){.stock-title{font-size:14px}.stock-status{display:none}.stock-header{grid-template-columns:1fr}.stock-controls{grid-template-columns:minmax(0,1fr) 76px 30px}}",
         "@media(prefers-reduced-motion:reduce){.stock-shell *{scroll-behavior:auto!important;transition:none!important}}"
     ].join("");
 
@@ -128,40 +148,36 @@
         '<div class="stock-status" data-ref="status" role="status" aria-live="polite">等待首次刷新</div>',
         '</header>',
         '<div class="stock-controls">',
-        '<input class="stock-control stock-symbol" data-ref="symbol" aria-label="沪深 A 股代码" inputmode="text" maxlength="12" value="000034">',
-        '<select class="stock-control stock-interval" data-ref="interval" aria-label="刷新间隔"><option value="5">5 秒</option><option value="15">15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select>',
+        '<input class="stock-control stock-symbol" data-ref="symbol" aria-label="股票统一代码" inputmode="text" maxlength="22" value="SZ000034">',
+        '<select class="stock-control stock-interval" data-ref="interval" aria-label="刷新间隔"><option value="30">30 秒</option><option value="60">60 秒</option><option value="120">2 分钟</option><option value="300">5 分钟</option></select>',
         '<button class="stock-control stock-refresh" data-ref="refresh" type="button" aria-label="刷新行情" title="刷新行情">↻</button>',
         '</div>',
         '<section class="quote-board">',
         '<div class="quote-summary">',
-        '<div class="quote-identity"><span class="quote-name" data-ref="name">等待行情</span><span class="quote-code" data-ref="code">000034 · SZ</span></div>',
+        '<div class="quote-identity"><span class="quote-name" data-ref="name">等待行情</span><span class="quote-code" data-ref="code">SZ000034 · SZ</span></div>',
         '<div class="quote-price" data-ref="price">--</div>',
         '<div class="quote-delta" data-ref="delta">等待真实价格</div>',
-        '<div class="quote-session" data-ref="session">数据源：东方财富</div>',
+        '<div class="quote-session" data-ref="session">数据源：stock-api MCP</div>',
         '</div>',
         '<div class="chart-wrap">',
-        '<div class="chart-legend"><span class="legend-item"><i class="legend-line price" data-ref="priceLegend"></i>价格</span><span class="legend-item"><i class="legend-line"></i>均价</span></div>',
-        '<canvas class="stock-chart" data-ref="chart" aria-label="分时价格与成交量图"></canvas>',
+        '<div class="chart-legend"><span class="legend-item"><i class="legend-line candle"></i>日 K</span><span class="legend-item"><i class="legend-line average"></i>MA5</span><span class="legend-item"><i class="legend-line"></i>成交量</span></div>',
+        '<canvas class="stock-chart" data-ref="chart" aria-label="日 K 线与成交量图"></canvas>',
         '</div>',
         '</section>',
         '<section class="market-grid" data-ref="metrics"></section>',
-        '<footer class="stock-footer"><span class="stock-error" data-ref="error"></span><span class="stock-disclaimer" data-ref="disclaimer">仅用于行情观察，不构成交易指令</span></footer>',
+        '<footer class="stock-footer"><span class="stock-error" data-ref="error"></span><span class="stock-disclaimer" data-ref="disclaimer">行情可能延迟，不构成投资建议或交易指令</span></footer>',
         '</section>'
     ].join("");
 
     const metricDefinitions = [
-        ["今开", "open", (value) => formatNumber(value, 2)],
-        ["最高", "high", (value) => formatNumber(value, 2)],
-        ["最低", "low", (value) => formatNumber(value, 2)],
-        ["昨收", "previousClose", (value) => formatNumber(value, 2)],
-        ["成交量", "volumeLots", formatVolume],
-        ["成交额", "amount", formatAmount],
-        ["换手率", "turnoverRate", (value) => formatNumber(value, 2) + (asNumber(value) === null ? "" : "%")],
-        ["量比", "volumeRatio", (value) => formatNumber(value, 2)],
-        ["振幅", "amplitude", (value) => formatNumber(value, 2) + (asNumber(value) === null ? "" : "%")],
-        ["市盈率", "peDynamic", (value) => formatNumber(value, 2)],
-        ["市净率", "pb", (value) => formatNumber(value, 2)],
-        ["流通市值", "floatMarketCap", formatAmount]
+        ["开盘", (quote) => formatNumber(quote.open, 2)],
+        ["最高", (quote) => formatNumber(quote.high, 2)],
+        ["最低", (quote) => formatNumber(quote.low, 2)],
+        ["昨收", (quote) => formatNumber(quote.previousClose, 2)],
+        ["K 线", (_quote, history) => history.length ? history.length + " 日" : "--"],
+        ["最新量", (_quote, history) => history.length ? formatVolume(asObject(history[history.length - 1]).volume) : "--"],
+        ["实际源", (quote) => text(quote.source, "--")],
+        ["观测时间", (quote) => formatTimestamp(quote.observedAt)]
     ];
 
     const emitAction = (nodeId, eventName, action, eventClass, payload) => {
@@ -177,7 +193,7 @@
                 refs.status.textContent = "刷新超时";
                 refs.status.className = "stock-status is-error";
             }
-        }, 16000);
+        }, 32000);
         render(snapshotValue);
         const accepted = NeuroSurface.emit({
             nodeId: nodeId,
@@ -195,10 +211,12 @@
         return accepted;
     };
 
-    const requestRefresh = () => emitAction("refresh", "click", "stock_refresh", "discrete", {});
+    const requestRefresh = () => emitAction("refresh", "click", "stock_refresh", "discrete", {
+        code: normalizeCode(refs.symbol && refs.symbol.value)
+    });
 
     const setRefreshTimer = (intervalSeconds) => {
-        const normalized = INTERVALS.includes(Number(intervalSeconds)) ? Number(intervalSeconds) : 15;
+        const normalized = INTERVALS.includes(Number(intervalSeconds)) ? Number(intervalSeconds) : 60;
         activeInterval = normalized;
         if (refreshTimer !== null) clearInterval(refreshTimer);
         refreshTimer = null;
@@ -209,7 +227,7 @@
         }
     };
 
-    const updateMetrics = (quote) => {
+    const updateMetrics = (quote, history) => {
         refs.metrics.replaceChildren();
         metricDefinitions.forEach((definition) => {
             const cell = document.createElement("div");
@@ -219,7 +237,7 @@
             label.textContent = definition[0];
             const value = document.createElement("strong");
             value.className = "metric-value";
-            value.textContent = definition[2](quote[definition[1]]);
+            value.textContent = definition[1](quote, history);
             cell.append(label, value);
             refs.metrics.append(cell);
         });
@@ -229,9 +247,11 @@
         if (!refs.chart || !snapshotValue) return;
         const canvas = refs.chart;
         const bounds = canvas.getBoundingClientRect();
-        const width = Math.max(260, Math.floor(bounds.width || 520));
-        const height = Math.max(145, Math.floor(bounds.height || 180));
-        const ratio = Math.min(2, Math.max(1, globalThis.devicePixelRatio || 1));
+        const width = Math.min(MAX_CANVAS_WIDTH, Math.max(260, Math.floor(bounds.width || 520)));
+        const height = Math.min(MAX_CANVAS_HEIGHT, Math.max(145, Math.floor(bounds.height || 180)));
+        const deviceRatio = Math.min(2, Math.max(1, globalThis.devicePixelRatio || 1));
+        const pixelRatio = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, width * height));
+        const ratio = Math.max(1, Math.min(deviceRatio, pixelRatio));
         canvas.width = Math.floor(width * ratio);
         canvas.height = Math.floor(height * ratio);
         const context = canvas.getContext("2d");
@@ -241,10 +261,10 @@
         context.fillStyle = COLORS.surface;
         context.fillRect(0, 0, width, height);
 
-        const left = 8;
-        const right = width - 8;
+        const left = 10;
+        const right = width - 10;
         const top = 28;
-        const volumeTop = Math.floor(height * 0.74);
+        const volumeTop = Math.floor(height * 0.76);
         const bottom = height - 10;
         context.strokeStyle = COLORS.grid;
         context.lineWidth = 1;
@@ -264,33 +284,27 @@
         }
 
         const state = stateOf(snapshotValue);
-        const quote = quoteOf(state);
-        const rawTrend = trendOf(state);
-        const points = rawTrend.map((item) => {
+        const points = historyOf(state).slice(-60).map((item) => {
             const row = asObject(item);
             return {
-                price: asNumber(row.price),
-                average: asNumber(row.average),
-                volume: asNumber(row.volumeLots)
+                date: text(row.date, ""),
+                open: asNumber(row.open),
+                close: asNumber(row.close),
+                high: asNumber(row.high),
+                low: asNumber(row.low),
+                volume: asNumber(row.volume)
             };
-        }).filter((item) => item.price !== null);
+        }).filter((item) => item.open !== null && item.close !== null && item.high !== null && item.low !== null && item.high >= item.low);
         if (points.length < 2) {
             context.fillStyle = COLORS.muted;
             context.font = "11px Segoe UI, Microsoft YaHei, sans-serif";
             context.textAlign = "center";
-            context.fillText("等待真实分时行情", width / 2, top + (volumeTop - top) / 2);
+            context.fillText("等待 stock-api 日 K 线", width / 2, top + (volumeTop - top) / 2);
             return;
         }
 
-        const values = [];
-        points.forEach((point) => {
-            values.push(point.price);
-            if (point.average !== null) values.push(point.average);
-        });
-        const previous = asNumber(quote.previousClose);
-        if (previous !== null) values.push(previous);
-        let minimum = Math.min.apply(null, values);
-        let maximum = Math.max.apply(null, values);
+        let minimum = Math.min.apply(null, points.map((point) => point.low));
+        let maximum = Math.max.apply(null, points.map((point) => point.high));
         if (minimum === maximum) {
             minimum -= 0.01;
             maximum += 0.01;
@@ -298,46 +312,64 @@
         const padding = Math.max((maximum - minimum) * 0.08, 0.01);
         minimum -= padding;
         maximum += padding;
-        const xAt = (index) => left + (right - left) * index / Math.max(1, points.length - 1);
+        const slotWidth = (right - left) / points.length;
+        const xAt = (index) => left + slotWidth * (index + 0.5);
         const yAt = (value) => top + (maximum - value) * (volumeTop - top - 4) / (maximum - minimum);
 
         const maxVolume = Math.max.apply(null, points.map((point) => point.volume || 0).concat([1]));
-        context.fillStyle = "rgba(146,154,159,0.34)";
-        const barWidth = Math.max(1, (right - left) / points.length * 0.72);
+        const candleWidth = Math.max(2, Math.min(12, slotWidth * 0.58));
         points.forEach((point, index) => {
+            const color = point.close >= point.open ? COLORS.green : COLORS.red;
+            const x = xAt(index);
             const barHeight = ((point.volume || 0) / maxVolume) * Math.max(8, bottom - volumeTop - 3);
-            context.fillRect(xAt(index) - barWidth / 2, bottom - barHeight, barWidth, barHeight);
+            context.globalAlpha = 0.34;
+            context.fillStyle = color;
+            context.fillRect(x - candleWidth / 2, bottom - barHeight, candleWidth, barHeight);
+            context.globalAlpha = 1;
+
+            context.strokeStyle = color;
+            context.lineWidth = 1;
+            context.beginPath();
+            context.moveTo(x + 0.5, yAt(point.high));
+            context.lineTo(x + 0.5, yAt(point.low));
+            context.stroke();
+            const bodyTop = Math.min(yAt(point.open), yAt(point.close));
+            const bodyHeight = Math.max(1, Math.abs(yAt(point.open) - yAt(point.close)));
+            context.fillStyle = color;
+            context.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
         });
 
-        const drawLine = (key, color, lineWidth) => {
-            context.beginPath();
-            let started = false;
-            points.forEach((point, index) => {
-                const value = point[key];
-                if (value === null) return;
-                const x = xAt(index);
-                const y = yAt(value);
-                if (!started) {
-                    context.moveTo(x, y);
-                    started = true;
-                } else {
-                    context.lineTo(x, y);
-                }
-            });
-            context.strokeStyle = color;
-            context.lineWidth = lineWidth;
-            context.lineJoin = "round";
-            context.lineCap = "round";
-            context.stroke();
-        };
-        drawLine("average", COLORS.blue, 1.2);
-        drawLine("price", movementColor(movement(quote)), 1.8);
+        const movingAverage = points.map((_point, index) => {
+            if (index < 4) return null;
+            const values = points.slice(index - 4, index + 1).map((point) => point.close);
+            return values.reduce((sum, value) => sum + value, 0) / values.length;
+        });
+        context.beginPath();
+        let started = false;
+        movingAverage.forEach((value, index) => {
+            if (value === null) return;
+            const x = xAt(index);
+            const y = yAt(value);
+            if (started) context.lineTo(x, y);
+            else {
+                context.moveTo(x, y);
+                started = true;
+            }
+        });
+        context.strokeStyle = COLORS.yellow;
+        context.lineWidth = 1.25;
+        context.lineJoin = "round";
+        context.lineCap = "round";
+        context.stroke();
 
         context.font = "10px Consolas, monospace";
         context.fillStyle = COLORS.muted;
         context.textAlign = "left";
         context.fillText(maximum.toFixed(2), left + 2, top + 10);
         context.fillText(minimum.toFixed(2), left + 2, volumeTop - 5);
+        context.fillText(points[0].date, left + 2, bottom - 2);
+        context.textAlign = "right";
+        context.fillText(points[points.length - 1].date, right - 2, bottom - 2);
     };
 
     const render = (snapshot) => {
@@ -350,16 +382,17 @@
         }
         const state = stateOf(snapshot);
         const quote = quoteOf(state);
+        const history = historyOf(state);
         const kind = movement(quote);
         const color = movementColor(kind);
-        const symbol = text(state.symbol, "000034");
-        const market = text(state.market, "SZ");
-        const interval = INTERVALS.includes(Number(state.intervalSeconds)) ? Number(state.intervalSeconds) : 15;
+        const code = normalizeCode(text(state.code, text(state.symbol, "SZ000034")));
+        const market = text(state.market, code.slice(0, 2) || "SZ");
+        const interval = INTERVALS.includes(Number(state.intervalSeconds)) ? Number(state.intervalSeconds) : 60;
         const hasQuote = asNumber(quote.price) !== null;
         const hasError = typeof state.error === "string" && state.error.trim().length > 0;
 
         refs.title.textContent = hasQuote ? text(quote.name, "股票盯盘") : "股票盯盘";
-        if (document.activeElement !== refs.symbol) refs.symbol.value = symbol;
+        if (document.activeElement !== refs.symbol) refs.symbol.value = code;
         refs.interval.value = String(interval);
         refs.refresh.disabled = pending;
         refs.status.textContent = pending ? "正在刷新" : hasError ? "行情异常" : text(state.statusText, "等待首次刷新");
@@ -367,21 +400,20 @@
         refs.status.className = "stock-status" + (pending ? " is-loading" : hasError ? " is-error" : state.status === "ready" ? " is-ready" : "");
         refs.name.textContent = hasQuote ? text(quote.name, "未知股票") : "等待行情";
         refs.name.title = refs.name.textContent;
-        refs.code.textContent = symbol + " · " + market;
+        refs.code.textContent = code + " · " + market;
         refs.price.textContent = hasQuote ? formatNumber(quote.price, 2) : "--";
         refs.price.style.color = hasQuote ? color : COLORS.text;
         refs.delta.textContent = hasQuote
             ? formatSigned(quote.change, "") + "  " + formatSigned(quote.changePercent, "%")
             : "等待真实价格";
         refs.delta.style.color = hasQuote ? color : COLORS.muted;
-        refs.priceLegend.style.background = color;
         refs.session.textContent = hasQuote
-            ? text(quote.marketStateLabel, "行情") + " · " + text(quote.timestamp, "时间未知") + " · 东方财富"
-            : "数据源：东方财富";
+            ? "stock-api / " + text(quote.source, "unknown") + " · " + formatTimestamp(quote.observedAt)
+            : "数据源：stock-api MCP";
         refs.error.textContent = hasError ? state.error : "";
         refs.error.title = hasError ? state.error : "";
-        refs.disclaimer.textContent = text(state.disclaimer, "仅用于行情观察，不构成交易指令");
-        updateMetrics(quote);
+        refs.disclaimer.textContent = text(state.disclaimer, "行情可能延迟，不构成投资建议或交易指令");
+        updateMetrics(quote, history);
         if (interval !== activeInterval) setRefreshTimer(interval);
         drawChart();
     };
@@ -391,10 +423,10 @@
         refs.symbol.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") return;
             event.preventDefault();
-            emitAction("symbol", "change", "stock_symbol_commit", "commit", { value: refs.symbol.value.trim() });
+            emitAction("symbol", "change", "stock_symbol_commit", "commit", { value: normalizeCode(refs.symbol.value) });
         });
         refs.symbol.addEventListener("change", () => {
-            emitAction("symbol", "change", "stock_symbol_commit", "commit", { value: refs.symbol.value.trim() });
+            emitAction("symbol", "change", "stock_symbol_commit", "commit", { value: normalizeCode(refs.symbol.value) });
         });
         refs.interval.addEventListener("change", () => {
             const value = Number(refs.interval.value);
