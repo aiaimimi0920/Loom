@@ -374,51 +374,93 @@ function Assert-McpServerPackages {
         return @()
     }
 
-    $expectedId = "neuro-image-search"
-    $expectedQualifiedId = "neuro.official/neuro-image-search"
+    $expected = [ordered]@{
+        "neuro-image-search" = [ordered]@{
+            qualifiedId = "neuro.official/neuro-image-search"
+            version = "0.1.0"
+            tools = @("brave_image_search")
+        }
+        "stock-api" = [ordered]@{
+            qualifiedId = "neuro.official/stock-api"
+            version = "2.7.3"
+            tools = @("get_stock", "get_stocks", "get_klines", "search_stocks", "inspect_stock")
+        }
+    }
     $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "mcpServerPackages")
-    Assert-Equal -Expected 1 -Actual $packageRecords.Count -Message "Manifest must contain one MCP server package record."
-    $zipRecord = $packageRecords[0]
-    Assert-Equal -Expected "mcp-server-package-zip" -Actual ([string]$zipRecord.kind) -Message "MCP server package kind mismatch."
-    Assert-Equal -Expected $expectedId -Actual ([string]$zipRecord.id) -Message "MCP server package id mismatch."
-    Assert-Equal -Expected $expectedQualifiedId -Actual ([string]$zipRecord.qualifiedId) -Message "MCP server package qualified id mismatch."
-    Assert-Equal -Expected "$expectedId.zip" -Actual ([string]$zipRecord.name) -Message "MCP server package name mismatch."
-    Assert-Equal -Expected "packages\mcp-servers\$expectedId.zip" -Actual (([string]$zipRecord.path).Replace("/", "\")) -Message "MCP server package path mismatch."
-
+    Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain two MCP server package records."
+    $actualIds = @($packageRecords | ForEach-Object { [string]$_.id } | Sort-Object)
+    Assert-Equal -Expected (@($expected.Keys | Sort-Object) -join ",") -Actual ($actualIds -join ",") -Message "MCP server package id set mismatch."
     $artifacts = @(Get-ManifestRecord -Manifest $Manifest -Name "artifacts")
     $payloadPaths = @()
-    $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $zipRecord
-    $sidecarRecord = @($artifacts | Where-Object {
-        (Test-LoomArtifactKind -Artifact $_ -Kind "mcp-server-package-zip-sha256") -and
-        [string]$_.id -eq $expectedId
-    })
-    Assert-Equal -Expected 1 -Actual $sidecarRecord.Count -Message "MCP server package checksum record count mismatch."
-    $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $sidecarRecord[0]
-    Assert-ZipChecksumSidecar -PackagePath $PackagePath -ZipRecord $zipRecord -SidecarRecord $sidecarRecord[0]
-
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord.path)
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-    try {
-        $manifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "mcp.server.json" })
-        Assert-Equal -Expected 1 -Actual $manifestEntry.Count -Message "MCP server ZIP must contain one root manifest."
-        $reader = [System.IO.StreamReader]::new($manifestEntry[0].Open())
+    foreach ($id in $expected.Keys) {
+        $zipRecords = @($packageRecords | Where-Object { [string]$_.id -eq $id })
+        Assert-Equal -Expected 1 -Actual $zipRecords.Count -Message "MCP server package record count mismatch for $id."
+        $zipRecord = $zipRecords[0]
+        Assert-Equal -Expected "mcp-server-package-zip" -Actual ([string]$zipRecord.kind) -Message "MCP server package kind mismatch for $id."
+        Assert-Equal -Expected ([string]$expected[$id].qualifiedId) -Actual ([string]$zipRecord.qualifiedId) -Message "MCP server package qualified id mismatch for $id."
+        Assert-Equal -Expected ([string]$expected[$id].version) -Actual ([string]$zipRecord.version) -Message "MCP server package version mismatch for $id."
+        Assert-Equal -Expected "$id.zip" -Actual ([string]$zipRecord.name) -Message "MCP server package name mismatch for $id."
+        Assert-Equal -Expected "packages\mcp-servers\$id.zip" -Actual (([string]$zipRecord.path).Replace("/", "\")) -Message "MCP server package path mismatch for $id."
+        $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $zipRecord
+        $sidecarRecord = @($artifacts | Where-Object {
+            (Test-LoomArtifactKind -Artifact $_ -Kind "mcp-server-package-zip-sha256") -and
+            [string]$_.id -eq $id
+        })
+        Assert-Equal -Expected 1 -Actual $sidecarRecord.Count -Message "MCP server package checksum record count mismatch for $id."
+        $payloadPaths += Assert-FileRecord -PackagePath $PackagePath -Record $sidecarRecord[0]
+        Assert-ZipChecksumSidecar -PackagePath $PackagePath -ZipRecord $zipRecord -SidecarRecord $sidecarRecord[0]
+
+        $zipPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$zipRecord.path)
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
         try {
-            $serverManifest = $reader.ReadToEnd() | ConvertFrom-Json
+            $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
+            $manifestEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "mcp.server.json" })
+            Assert-Equal -Expected 1 -Actual $manifestEntry.Count -Message "MCP server ZIP must contain one root manifest for $id."
+            $reader = [System.IO.StreamReader]::new($manifestEntry[0].Open())
+            try {
+                $serverManifest = $reader.ReadToEnd() | ConvertFrom-Json
+            }
+            finally {
+                $reader.Dispose()
+            }
+            Assert-Equal -Expected $id -Actual ([string]$serverManifest.id) -Message "MCP server ZIP manifest id mismatch for $id."
+            Assert-Equal -Expected ([string]$zipRecord.version) -Actual ([string]$serverManifest.version) -Message "MCP server ZIP manifest version mismatch for $id."
+            Assert-Equal -Expected "neuro.official" -Actual ([string]$serverManifest.publisher.id) -Message "MCP server ZIP publisher mismatch for $id."
+            $actualTools = @($serverManifest.tools | ForEach-Object { [string]$_ } | Sort-Object)
+            $expectedTools = @($expected[$id].tools | Sort-Object)
+            Assert-Equal -Expected ($expectedTools -join ",") -Actual ($actualTools -join ",") -Message "MCP server ZIP tool declaration mismatch for $id."
+            $runtimePath = ([string]$serverManifest.entry.command).Replace("\", "/")
+            Assert-True -Condition ($entryNames -contains $runtimePath) -Message "MCP server ZIP runtime entry is missing for $id."
+            if ($id -eq "stock-api") {
+                foreach ($requiredPath in @(
+                    "runtime/stock-api-entry.js",
+                    "runtime/node/node.exe",
+                    "runtime/node/LICENSE",
+                    "runtime/UPSTREAM.json",
+                    "runtime/vendor/stock-api/package.json",
+                    "runtime/vendor/stock-api/LICENSE",
+                    "runtime/vendor/stock-api/dist/mcp/server.js"
+                )) {
+                    Assert-True -Condition ($entryNames -contains $requiredPath) -Message "stock-api MCP ZIP is missing $requiredPath."
+                }
+                Assert-True -Condition ((Get-Item -LiteralPath $zipPath).Length -le 64MB) -Message "stock-api MCP ZIP exceeds the installer package limit."
+                $nodeEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq "runtime/node/node.exe" })[0]
+                $nodeStream = $nodeEntry.Open()
+                $algorithm = [System.Security.Cryptography.SHA256]::Create()
+                try {
+                    $nodeHash = ([System.BitConverter]::ToString($algorithm.ComputeHash($nodeStream))).Replace('-', '').ToLowerInvariant()
+                }
+                finally {
+                    $algorithm.Dispose()
+                    $nodeStream.Dispose()
+                }
+                Assert-Equal -Expected "ae1a50511be58e987483fdbc12125407443926d2d394669ade2352776e920dd3" -Actual $nodeHash -Message "Bundled stock-api Node.js hash mismatch."
+            }
         }
         finally {
-            $reader.Dispose()
+            $archive.Dispose()
         }
-        Assert-Equal -Expected $expectedId -Actual ([string]$serverManifest.id) -Message "MCP server ZIP manifest id mismatch."
-        Assert-Equal -Expected ([string]$zipRecord.version) -Actual ([string]$serverManifest.version) -Message "MCP server ZIP manifest version mismatch."
-        Assert-Equal -Expected "neuro.official" -Actual ([string]$serverManifest.publisher.id) -Message "MCP server ZIP publisher mismatch."
-        Assert-True -Condition (@($serverManifest.tools) -contains "brave_image_search") -Message "MCP server ZIP tool declaration is missing."
-        $runtimePath = ([string]$serverManifest.entry.command).Replace("\", "/")
-        $runtimeEntry = @($archive.Entries | Where-Object { $_.FullName.Replace("\", "/") -eq $runtimePath })
-        Assert-Equal -Expected 1 -Actual $runtimeEntry.Count -Message "MCP server ZIP runtime entry is missing."
-    }
-    finally {
-        $archive.Dispose()
     }
 
     $catalogRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "mcpServerCatalog")
@@ -432,11 +474,14 @@ function Assert-McpServerPackages {
     $catalogPath = Resolve-PackageRelativePath -BasePath $PackagePath -RelativePath ([string]$catalogRecords[0].path)
     $catalog = Get-Content -Raw -Encoding UTF8 -LiteralPath $catalogPath | ConvertFrom-Json
     $catalogEntries = @($catalog.servers)
-    Assert-Equal -Expected 1 -Actual $catalogEntries.Count -Message "MCP server catalog entry count mismatch."
-    Assert-Equal -Expected $expectedId -Actual ([string]$catalogEntries[0].id) -Message "MCP server catalog id mismatch."
-    Assert-Equal -Expected $expectedQualifiedId -Actual ([string]$catalogEntries[0].qualifiedId) -Message "MCP server catalog qualified id mismatch."
-    Assert-Equal -Expected ([string]$zipRecord.name) -Actual ([string]$catalogEntries[0].zip) -Message "MCP server catalog ZIP mismatch."
-    Assert-Equal -Expected ([string]$zipRecord.sha256) -Actual ([string]$catalogEntries[0].sha256) -Message "MCP server catalog hash mismatch."
+    Assert-Equal -Expected $expected.Count -Actual $catalogEntries.Count -Message "MCP server catalog entry count mismatch."
+    foreach ($record in $packageRecords) {
+        $entry = @($catalogEntries | Where-Object { [string]$_.id -eq [string]$record.id })
+        Assert-Equal -Expected 1 -Actual $entry.Count -Message "MCP server catalog entry is missing for $($record.id)."
+        Assert-Equal -Expected ([string]$record.qualifiedId) -Actual ([string]$entry[0].qualifiedId) -Message "MCP server catalog qualified id mismatch for $($record.id)."
+        Assert-Equal -Expected ([string]$record.name) -Actual ([string]$entry[0].zip) -Message "MCP server catalog ZIP mismatch for $($record.id)."
+        Assert-Equal -Expected ([string]$record.sha256) -Actual ([string]$entry[0].sha256) -Message "MCP server catalog hash mismatch for $($record.id)."
+    }
 
     return @($payloadPaths)
 }
@@ -458,7 +503,7 @@ function Assert-SampleArtPackages {
         "custom-1770131241684" = [ordered]@{ framework = "process"; executionType = "framework_art" }
         "custom-image-blend-script" = [ordered]@{ framework = "process"; executionType = "framework_art" }
         "custom-image-blend-compress-workflow" = [ordered]@{ framework = "workflow"; executionType = "workflow" }
-        "custom-stock-monitor" = [ordered]@{ framework = "process"; executionType = "framework_art" }
+        "custom-stock-monitor" = [ordered]@{ framework = "mcp"; executionType = "framework_art" }
     }
     $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "sampleArtPackages")
     Assert-Equal -Expected $expected.Count -Actual $packageRecords.Count -Message "Manifest must contain seven curated Art package records."
@@ -522,7 +567,9 @@ function Assert-SampleArtPackages {
                 $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
                 Assert-True -Condition ($entryNames -contains "surface/main.js") -Message "Stock Monitor ZIP is missing the JavaScript Surface entry."
                 Assert-True -Condition ($entryNames -contains "surface/fallback.json") -Message "Stock Monitor ZIP is missing the declarative fallback."
-                Assert-Equal -Expected "eastmoney" -Actual ([string]$artManifest.metadata.marketData.providerId) -Message "Stock Monitor provider metadata mismatch."
+                Assert-Equal -Expected "stock-api" -Actual ([string]$artManifest.metadata.marketData.providerId) -Message "Stock Monitor provider metadata mismatch."
+                Assert-Equal -Expected "neuro.official/stock-api" -Actual ([string]$artManifest.metadata.mcp.packageId) -Message "Stock Monitor MCP package metadata mismatch."
+                Assert-Equal -Expected 2 -Actual @($artManifest.metadata.mcp.calls).Count -Message "Stock Monitor MCP call count mismatch."
                 Assert-Equal -Expected $false -Actual ([bool]$artManifest.metadata.marketData.trading) -Message "Stock Monitor must not advertise trading."
             }
         }
@@ -570,9 +617,15 @@ function Assert-SupplyChainMetadata {
         if ($relative.EndsWith(".cdx.json", [System.StringComparison]::OrdinalIgnoreCase)) {
             Assert-Equal -Expected "CycloneDX" -Actual ([string]$document.bomFormat) -Message "CycloneDX SBOM format mismatch."
             Assert-Equal -Expected "1.6" -Actual ([string]$document.specVersion) -Message "CycloneDX SBOM version mismatch."
+            $componentIdentities = @($document.components | ForEach-Object { "$([string]$_.name)@$([string]$_.version)" })
+            Assert-True -Condition ($componentIdentities -contains "stock-api@2.7.3") -Message "CycloneDX SBOM is missing stock-api@2.7.3."
+            Assert-True -Condition ($componentIdentities -contains "nodejs@22.22.2") -Message "CycloneDX SBOM is missing the bundled Node.js runtime."
         }
         elseif ($relative.EndsWith(".spdx.json", [System.StringComparison]::OrdinalIgnoreCase)) {
             Assert-Equal -Expected "SPDX-2.3" -Actual ([string]$document.spdxVersion) -Message "SPDX SBOM version mismatch."
+            $packageIdentities = @($document.packages | ForEach-Object { "$([string]$_.name)@$([string]$_.versionInfo)" })
+            Assert-True -Condition ($packageIdentities -contains "stock-api@2.7.3") -Message "SPDX SBOM is missing stock-api@2.7.3."
+            Assert-True -Condition ($packageIdentities -contains "nodejs@22.22.2") -Message "SPDX SBOM is missing the bundled Node.js runtime."
         }
         else {
             throw "Unknown SBOM format: $relative"

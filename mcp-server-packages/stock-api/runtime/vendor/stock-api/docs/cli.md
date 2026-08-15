@@ -1,0 +1,249 @@
+# CLI 使用
+
+[English](cli.EN.md) | [简体中文](cli.md)
+
+`stock-api` 提供命令行入口，适合临时查询、shell 脚本、CI 检查或快速验证数据源。
+
+## 基本用法
+
+```shell
+npx stock-api <command> [...args] [--source auto|tencent|sina|eastmoney]
+```
+
+默认数据源是 `auto`，会按 `tencent -> sina -> eastmoney` 顺序自动兜底。
+
+也可以先全局或本地安装：
+
+```shell
+npm install stock-api
+npx stock-api --help
+```
+
+## 命令列表
+
+| 命令 | 说明 |
+| --- | --- |
+| `get-stock <code>` | 获取单只股票行情 |
+| `get-stocks <code...>` | 批量获取股票行情 |
+| `get-klines <code>` | 获取日 K / 周 K / 月 K |
+| `search-stocks <keyword>` | 搜索股票并返回行情数据 |
+| `mcp` | 启动 MCP stdio server，给 AI 客户端调用 |
+| `help` / `--help` | 查看帮助 |
+
+## 参数
+
+| 参数 | 简写 | 说明 | 默认值 |
+| --- | --- | --- | --- |
+| `--source` | `-s` | 指定数据源，可选 `auto` / `tencent` / `sina` / `eastmoney` | `auto` |
+| `--period` | `-p` | K 线周期，可选 `day` / `week` / `month` | `day` |
+| `--count` | `-c` | K 线返回条数 | `120` |
+| `--adjust` | - | 复权方式，可选 `none` / `qfq` / `hfq` | `none` |
+
+## get-stock
+
+获取单只股票行情。默认使用 `auto`：
+
+```shell
+npx stock-api get-stock SH510500
+```
+
+指定新浪：
+
+```shell
+npx stock-api get-stock SH510500 --source sina
+```
+
+指定东方财富：
+
+```shell
+npx stock-api get-stock SH600519 --source eastmoney
+```
+
+输出：
+
+```json
+{
+  "code": "SH510500",
+  "name": "中证500ETF南方",
+  "percent": -0.009791044776119473,
+  "now": 8.293,
+  "low": 8.242,
+  "high": 8.365,
+  "yesterday": 8.375,
+  "source": "tencent"
+}
+```
+
+`source` 表示最终返回数据的数据源。
+
+## get-stocks
+
+批量获取股票行情。
+
+```shell
+npx stock-api get-stocks SH510500 SZ000651
+```
+
+输出：
+
+```json
+[
+  {
+    "code": "SH510500",
+    "name": "中证500ETF南方",
+    "percent": -0.009791044776119473,
+    "now": 8.293,
+    "low": 8.242,
+    "high": 8.365,
+    "yesterday": 8.375,
+    "source": "tencent"
+  },
+  {
+    "code": "SZ000651",
+    "name": "格力电器",
+    "percent": 0.0010822510822510178,
+    "now": 37,
+    "low": 36.71,
+    "high": 37.11,
+    "yesterday": 36.96,
+    "source": "tencent"
+  }
+]
+```
+
+## search-stocks
+
+搜索股票，并返回匹配股票的行情数据。默认使用 `auto`：
+
+```shell
+npx stock-api search-stocks 格力电器
+```
+
+多个词会自动合并为一个关键词：
+
+```shell
+npx stock-api search-stocks 中证 500
+```
+
+指定数据源：
+
+```shell
+npx stock-api search-stocks 格力电器 -s sina
+npx stock-api search-stocks 贵州茅台 -s eastmoney
+```
+
+`search` 是旧版本兼容别名，新代码建议使用 `search-stocks`。
+
+## get-klines
+
+获取 K 线数据。默认使用 `auto`：
+
+```shell
+npx stock-api get-klines SH600519
+```
+
+指定周期和条数：
+
+```shell
+npx stock-api get-klines SH600519 --period week --count 20
+npx stock-api get-klines SH600519 --period month --source sina
+```
+
+输出：
+
+```json
+[
+  {
+    "date": "2026-05-22",
+    "open": 1310.95,
+    "close": 1290.2,
+    "high": 1311.91,
+    "low": 1290.12,
+    "source": "tencent",
+    "volume": 49157
+  }
+]
+```
+
+## 数据源选择
+
+| 用法 | 行为 |
+| --- | --- |
+| 不传 `--source` | 使用 `auto`，按 `tencent -> sina -> eastmoney` 自动兜底 |
+| `--source tencent` | 只使用腾讯 |
+| `--source sina` | 只使用新浪 |
+| `--source eastmoney` | 只使用东方财富 |
+
+## MCP
+
+`stock-api mcp` 会启动一个 MCP stdio server，适合 Claude、Cursor、Codex、Cherry Studio 等支持 MCP 的 AI 客户端使用。
+
+配置示例：
+
+```json
+{
+  "mcpServers": {
+    "stock-api": {
+      "command": "npx",
+      "args": ["-y", "stock-api", "mcp"]
+    }
+  }
+}
+```
+
+可用工具：
+
+| 工具 | 说明 |
+| --- | --- |
+| `get_stock` | 查询单只股票行情 |
+| `get_stocks` | 批量查询股票行情 |
+| `get_klines` | 查询 K 线数据 |
+| `search_stocks` | 搜索股票 |
+| `inspect_stock` | 诊断数据源可用性和兜底结果 |
+
+所有工具默认使用 `source: "auto"`，也可以传 `source: "tencent"` / `"sina"` / `"eastmoney"` 指定数据源。
+
+## 输出格式
+
+CLI 输出始终是 JSON。
+
+这意味着你可以继续交给其他工具处理：
+
+```shell
+npx stock-api get-stock SH510500 | jq .now
+npx stock-api get-stocks SH510500 SZ000651 > stocks.json
+```
+
+## 退出码
+
+| 场景 | 退出码 |
+| --- | --- |
+| 命令成功 | `0` |
+| 参数错误、未知命令、请求失败 | `1` |
+
+错误信息会输出到 `stderr`。
+
+## 本地测试 CLI
+
+开发时不需要发布到 npm，可以直接运行编译结果：
+
+```shell
+npm run build
+node dist/cli.js --help
+node dist/cli.js get-stock SH510500
+node dist/cli.js get-stocks SH510500 SZ000651
+node dist/cli.js get-klines SH600519 --period week --count 20
+node dist/cli.js search-stocks 格力电器
+```
+
+模拟发布后的 `npx`：
+
+```shell
+tmpdir=$(mktemp -d)
+npm pack --pack-destination "$tmpdir"
+mkdir "$tmpdir/app"
+cd "$tmpdir/app"
+npm init -y
+npm install "$tmpdir"/stock-api-*.tgz
+npx stock-api --help
+```

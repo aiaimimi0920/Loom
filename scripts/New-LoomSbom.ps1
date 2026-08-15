@@ -80,6 +80,32 @@ if (Test-Path -LiteralPath $packageLockPath -PathType Leaf) {
     }
 }
 
+$stockApiRoot = Join-Path $repoRoot "mcp-server-packages\stock-api\runtime"
+$stockApiMetadataPath = Join-Path $stockApiRoot "UPSTREAM.json"
+$nodeMetadataPath = Join-Path $stockApiRoot "node-runtime.json"
+if (-not (Test-Path -LiteralPath $stockApiMetadataPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $nodeMetadataPath -PathType Leaf)) {
+    throw "Stock API supply-chain metadata is required for the Loom SBOM."
+}
+$stockApiMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiMetadataPath | ConvertFrom-Json
+$stockApiPurl = Get-Purl -Type "npm" -Name ([string]$stockApiMetadata.name) -PackageVersion ([string]$stockApiMetadata.version)
+$componentsByRef[$stockApiPurl] = [ordered]@{
+    type = "library"
+    name = [string]$stockApiMetadata.name
+    version = [string]$stockApiMetadata.version
+    purl = $stockApiPurl
+    "bom-ref" = $stockApiPurl
+}
+$nodeMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $nodeMetadataPath | ConvertFrom-Json
+$nodePurl = Get-Purl -Type "generic" -Name "nodejs" -PackageVersion ([string]$nodeMetadata.version)
+$componentsByRef[$nodePurl] = [ordered]@{
+    type = "application"
+    name = "nodejs"
+    version = [string]$nodeMetadata.version
+    purl = $nodePurl
+    "bom-ref" = $nodePurl
+}
+
 $components = @($componentsByRef.Values | Sort-Object { [string]$_['bom-ref'] })
 $serial = "urn:uuid:$([Guid]::NewGuid())"
 $timestamp = (Get-Date).ToUniversalTime().ToString("o")

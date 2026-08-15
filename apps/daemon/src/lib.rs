@@ -105,6 +105,9 @@ const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 // JSON API carries ZIP bytes as base64, so package routes need a larger bounded
 // limit while ordinary daemon routes retain the conservative 1 MiB ceiling.
 const MAX_PACKAGE_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
+// MCP packages may include a pinned native runtime. Their decoded ZIP remains
+// bounded by loom_mcp; this limit accounts for Base64 and JSON transport overhead.
+const MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES: usize = 96 * 1024 * 1024;
 const MAX_PYTHON_SOURCE_BYTES: u64 = 512 * 1024;
 const MAX_ART_JSON_BYTES: u64 = 512 * 1024;
 const MAX_SURFACE_SCENE_BYTES: u64 = 1024 * 1024;
@@ -1703,13 +1706,13 @@ fn request_body_size_limit(headers: &str) -> usize {
         .split_whitespace();
     let method = request_line.next().unwrap_or_default();
     let path = request_line.next().unwrap_or_default();
-    let is_package_install = matches!(
-        path,
-        "/v1/frameworks/install" | "/v1/arts/install" | "/v1/mcp/servers/install"
-    );
+    let is_package_install = matches!(path, "/v1/frameworks/install" | "/v1/arts/install");
+    let is_mcp_server_package_install = path == "/v1/mcp/servers/install";
     let is_framework_upgrade = path.starts_with("/v1/frameworks/") && path.ends_with("/upgrade");
     let is_surface_resource = path == "/v1/surfaces/resources";
-    if method.eq_ignore_ascii_case("POST")
+    if method.eq_ignore_ascii_case("POST") && is_mcp_server_package_install {
+        MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES
+    } else if method.eq_ignore_ascii_case("POST")
         && (is_package_install || is_framework_upgrade || is_surface_resource)
     {
         MAX_PACKAGE_HTTP_BODY_BYTES
@@ -26085,6 +26088,7 @@ def run(args):
             "/v1/frameworks/install",
             "/v1/frameworks/third-party/upgrade",
             "/v1/arts/install",
+            "/v1/mcp/servers/install",
         ] {
             let request = format!("POST {path} HTTP/1.1\r\nContent-Length: {package_size}\r\n\r\n");
             assert!(
@@ -26102,6 +26106,18 @@ def run(args):
             "POST /v1/frameworks/install HTTP/1.1\r\nContent-Length: {oversized_package}\r\n\r\n"
         );
         assert!(request_exceeds_size_limit(oversized_request.as_bytes()));
+
+        let bundled_mcp_package = 48 * 1024 * 1024;
+        let mcp_request = format!(
+            "POST /v1/mcp/servers/install HTTP/1.1\r\nContent-Length: {bundled_mcp_package}\r\n\r\n"
+        );
+        assert!(!request_exceeds_size_limit(mcp_request.as_bytes()));
+
+        let oversized_mcp_package = MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES + 1;
+        let oversized_mcp_request = format!(
+            "POST /v1/mcp/servers/install HTTP/1.1\r\nContent-Length: {oversized_mcp_package}\r\n\r\n"
+        );
+        assert!(request_exceeds_size_limit(oversized_mcp_request.as_bytes()));
     }
 
     fn http_get(port: u16, path: &str) -> String {

@@ -82,6 +82,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LoomRunPersistenceSmokeContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LoomDaemonConcurrencySmokeContract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-LoomSampleArtPackageContract.ps1
 
   linux:
     name: Linux Rust validation

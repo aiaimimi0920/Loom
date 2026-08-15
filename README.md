@@ -340,6 +340,15 @@ that binding to `BRAVE_API_KEY` and starts the MCP package's
 over stdio MCP and calls the Brave image-search API without an npm or `npx`
 runtime dependency. The Art manifest and Art settings never own this key.
 
+The packaged `股票盯盘` Art similarly depends on the independently installed
+`neuro.official/stock-api` MCP server package at exact version `2.7.3`. Loom
+ships that upstream library together with a pinned Node.js runtime, so execution
+does not install npm packages or invoke `npx`. The generic `mcp` Framework makes
+the Art's quote and daily K-line calls over one stdio MCP session, while the Art
+runtime converts the structured responses into its candlestick visualization
+and formal market-data output. The package supports the upstream library's
+A-share, Hong Kong, and US code formats and does not expose trading actions.
+
 Every Art parameter can also switch from a literal default to a typed global
 encrypted value. Global values declare `string`, `number`, `integer`, `boolean`,
 or `json`; the editor only lists compatible values for each parameter. Art
@@ -373,10 +382,12 @@ target\framework-art-store-hook-smoke\<runId>\summary.json
 
 That broad Hook smoke intentionally uses a protocol fixture; it is not the
 independent MCP package proof. `scripts/tests/Test-LoomSampleArtInstallExecution.ps1`
-installs the real `custom-image-search.zip` and `neuro-image-search.zip`, writes
-the credential only to the independent MCP server scope, redirects only the
-provider endpoint to a local Brave API fixture, and verifies credential
-injection, image download, and the formal image result.
+installs the real `custom-image-search.zip`, `neuro-image-search.zip`,
+`custom-stock-monitor.zip`, and `stock-api.zip`. It writes the image-search
+credential only to the independent MCP server scope, redirects provider traffic
+only to isolated local fixtures, and verifies credential injection, image
+download, the stock quote plus daily K-line MCP calls, both formal results, and
+dependency cleanup.
 
 ## Third-party plugin boundary smoke
 
@@ -717,6 +728,10 @@ packages\frameworks\mcp.zip
 packages\frameworks\workflow.zip
 packages\frameworks\*.zip.sha256
 packages\frameworks\summary.json
+packages\mcp-servers\neuro-image-search.zip
+packages\mcp-servers\stock-api.zip
+packages\mcp-servers\*.zip.sha256
+packages\mcp-servers\summary.json
 packages\arts\*.zip
 packages\arts\*.zip.sha256
 packages\arts\summary.json
@@ -727,10 +742,11 @@ packages\Loom-CLI-<versionId>-windows-x64.zip.sha256
 ```
 
 The desktop ZIP contains `Loom.exe`, the runtime tree, the four independent
-framework ZIPs, and seven independent Art ZIPs. On desktop startup, the Art catalog
-is applied once to the writable control plane through the same install APIs used
-by external packages. The CLI ZIP contains only `loom.exe`, allowing command-line
-use without adding a second executable to the desktop package root. The embedded Python runtime exists only inside
+Framework ZIPs, two independent MCP server ZIPs, and seven independent Art ZIPs.
+On desktop startup, the MCP and Art catalogs are each applied once to the
+writable control plane through the same install APIs used by external packages.
+The CLI ZIP contains only `loom.exe`, allowing command-line use without adding a
+second executable to the desktop package root. The embedded Python runtime exists only inside
 `packages\frameworks\process.zip`; it is not duplicated in the default Loom
 runtime tree.
 
@@ -758,7 +774,7 @@ installs all four framework packages and six representative Arts, instantiates
 six Hook nodes, and executes all six. The fifth step independently compiles a temporary
 third-party framework outside the repository and proves the no-source-change
 plugin lifecycle through Loom and the Hook Bridge.
-The sixth step installs the process framework plus the stock card, shared device
+The sixth step installs the process Framework plus the stock-monitor, shared device
 dashboard, and project form Surface packages into an isolated control plane. It
 proves patch fanout, formal output, confirmation/cancellation, leased resource
 bytes, persistent-versus-temporary restart behavior, stream snapshot replay,

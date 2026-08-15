@@ -23,13 +23,85 @@ function ConvertTo-ProcessArgument {
     return '"' + $Argument.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
+function New-McpData {
+    param(
+        [switch]$QuoteError,
+        [switch]$HistoryError,
+        [switch]$Skipped
+    )
+
+    if ($Skipped) {
+        return [ordered]@{ mcp = [ordered]@{ serverId = "stock-api"; skipped = $true } }
+    }
+    $quoteResult = if ($QuoteError) {
+        [ordered]@{
+            isError = $true
+            structuredContent = [ordered]@{
+                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture quote failure" }
+            }
+        }
+    }
+    else {
+        [ordered]@{
+            structuredContent = [ordered]@{
+                input = [ordered]@{ code = "SZ000034"; source = "auto" }
+                response = [ordered]@{
+                    stock = [ordered]@{
+                        code = "SZ000034"
+                        name = "Digital China"
+                        percent = 0.004
+                        now = 24.99
+                        low = 24.60
+                        high = 25.20
+                        yesterday = 24.89
+                        source = "tencent"
+                    }
+                }
+            }
+        }
+    }
+    $historyResult = if ($HistoryError) {
+        [ordered]@{
+            isError = $true
+            structuredContent = [ordered]@{
+                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture history failure" }
+            }
+        }
+    }
+    else {
+        [ordered]@{
+            structuredContent = [ordered]@{
+                input = [ordered]@{ code = "SZ000034"; source = "auto"; period = "day"; count = 60; adjust = "none" }
+                response = [ordered]@{
+                    count = 3
+                    klines = @(
+                        [ordered]@{ date = "2026-08-12"; open = 24.50; close = 24.60; high = 24.80; low = 24.30; volume = 100000; source = "tencent" },
+                        [ordered]@{ date = "2026-08-13"; open = 24.62; close = 24.75; high = 24.90; low = 24.55; volume = 120000; source = "tencent" },
+                        [ordered]@{ date = "2026-08-14"; open = 24.80; close = 24.99; high = 25.20; low = 24.60; volume = 150000; source = "tencent" }
+                    )
+                }
+            }
+        }
+    }
+    return [ordered]@{
+        mcp = [ordered]@{
+            serverId = "stock-api"
+            results = [ordered]@{
+                quote = [ordered]@{ toolName = "get_stock"; result = $quoteResult }
+                history = [ordered]@{ toolName = "get_klines"; result = $historyResult }
+            }
+        }
+    }
+}
+
 function Invoke-StockRuntime {
     param(
         [string]$ArtDirectory,
-        [string]$ActionId,
-        [hashtable]$Payload,
-        [hashtable]$AuthoritativeState,
-        [string]$ApiBaseUrl = ""
+        [AllowEmptyString()][string]$ActionId,
+        [AllowNull()][object]$Payload,
+        [AllowNull()][object]$AuthoritativeState,
+        [AllowNull()][object]$FrameworkData,
+        [AllowNull()][object]$Params = @{}
     )
 
     $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $ArtDirectory "art.runtime.json") | ConvertFrom-Json
@@ -42,23 +114,25 @@ function Invoke-StockRuntime {
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    $psi.Environment["LOOM_STOCK_API_BASE_URL"] = $ApiBaseUrl
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $psi
     Assert-True $process.Start() "Failed to start Stock Monitor runtime."
     $request = [ordered]@{
         protocolVersion = "loom.framework.v1"
-        frameworkId = "process"
+        frameworkId = "mcp"
         artId = "custom-stock-monitor"
         inputs = @{}
-        params = @{}
-        surfaceAction = [ordered]@{
+        params = $Params
+        frameworkData = $FrameworkData
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ActionId)) {
+        $request.surfaceAction = [ordered]@{
             actionId = $ActionId
-            payload = $Payload
-            authoritativeState = $AuthoritativeState
+            payload = if ($null -eq $Payload) { @{} } else { $Payload }
+            authoritativeState = if ($null -eq $AuthoritativeState) { @{} } else { $AuthoritativeState }
         }
     }
-    $process.StandardInput.WriteLine(($request | ConvertTo-Json -Depth 30 -Compress))
+    $process.StandardInput.WriteLine(($request | ConvertTo-Json -Depth 40 -Compress))
     $process.StandardInput.Close()
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
@@ -70,16 +144,8 @@ function Invoke-StockRuntime {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
-. (Join-Path $repoRoot "scripts\LoomSmokePorts.ps1")
-$fixtureScript = Join-Path $scriptRoot "fixtures\StockMonitorApiFixture.ps1"
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("loom-stock-monitor-test-" + [Guid]::NewGuid().ToString("N"))
-$readyPath = Join-Path $workRoot "fixture.ready"
-$requestPath = Join-Path $workRoot "requests.log"
-$fixtureStdout = Join-Path $workRoot "fixture.stdout.log"
-$fixtureStderr = Join-Path $workRoot "fixture.stderr.log"
 $artDirectory = Join-Path $repoRoot "art-packages\samples\stock-monitor"
-$expandedArtDirectory = $null
-$fixture = $null
 
 New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
 try {
@@ -92,80 +158,62 @@ try {
         }
         $zipPath = Join-Path $artifactRootPath "custom-stock-monitor.zip"
         Assert-True (Test-Path -LiteralPath $zipPath -PathType Leaf) "Packaged Stock Monitor ZIP is missing: $zipPath"
-        $expandedArtDirectory = Join-Path $workRoot "packaged-art"
-        Expand-Archive -LiteralPath $zipPath -DestinationPath $expandedArtDirectory -Force
-        $artDirectory = $expandedArtDirectory
-    }
-    Assert-True (Test-Path -LiteralPath $fixtureScript -PathType Leaf) "Stock Monitor API fixture is missing."
-    Assert-True (Test-Path -LiteralPath (Join-Path $artDirectory "surface\main.js") -PathType Leaf) "Stock Monitor JavaScript Surface is missing."
-
-    $port = Get-LoomSmokePort
-    $fixtureArguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $fixtureScript,
-        "-Port", [string]$port,
-        "-ReadyPath", $readyPath,
-        "-RequestPath", $requestPath
-    )
-    $fixture = Start-Process -FilePath "powershell.exe" -ArgumentList (($fixtureArguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join " ") -WindowStyle Hidden -PassThru -RedirectStandardOutput $fixtureStdout -RedirectStandardError $fixtureStderr
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
-        if ($fixture.HasExited) {
-            throw "Stock Monitor API fixture exited before readiness: $([IO.File]::ReadAllText($fixtureStderr))"
-        }
-        if ([DateTime]::UtcNow -ge $deadline) { throw "Timed out waiting for Stock Monitor API fixture." }
-        Start-Sleep -Milliseconds 50
+        $artDirectory = Join-Path $workRoot "packaged-art"
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $artDirectory -Force
     }
 
-    $initialState = @{ symbol = "SZ:000034"; market = "SZ"; intervalSeconds = 15 }
-    $refresh = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{} -AuthoritativeState $initialState -ApiBaseUrl "http://127.0.0.1:$port"
+    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $artDirectory "manifest.json") | ConvertFrom-Json
+    Assert-Equal "mcp" ([string]$manifest.execution.framework) "Stock Monitor must execute through the MCP framework."
+    Assert-Equal "=2.7.3" ([string]$manifest.metadata.mcp.version) "Stock Monitor stock-api version must be exact."
+    Assert-Equal 2 @($manifest.metadata.mcp.calls).Count "Stock Monitor must declare quote and history MCP calls."
+    Assert-Equal 0 @($manifest.metadata.mcp.surfaceActions.stock_interval_commit.calls).Count "Interval updates must skip remote MCP calls."
+    Assert-Equal "neuro.official/stock-api" ([string]$manifest.metadata.dependencies.mcpServers[0].id) "Stock Monitor MCP dependency mismatch."
+
+    $surfacePath = Join-Path $artDirectory "surface\main.js"
+    $runtimePath = Join-Path $artDirectory "runtime\main.ps1"
+    Assert-True (Test-Path -LiteralPath $surfacePath -PathType Leaf) "Stock Monitor JavaScript Surface is missing."
+    $surfaceSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $surfacePath
+    $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath
+    Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS") -and $surfaceSource.Contains("movingAverage")) "Stock Monitor Surface must cap Canvas allocation and draw MA5 candles."
+    Assert-True ($runtimeSource -match 'frameworkData' -and $runtimeSource -match 'results') "Stock Monitor runtime must consume MCP framework results."
+    Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass the stock-api MCP server."
+
+    $initialState = @{ code = "SZ000034"; market = "SZ"; intervalSeconds = 60 }
+    $refresh = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $initialState -FrameworkData (New-McpData)
     Assert-Equal "success" ([string]$refresh.status) "Stock Monitor refresh did not return a runtime success envelope."
     $surfaceAction = $refresh.output.surfaceAction
     Assert-Equal "loom.surface.v1" ([string]$surfaceAction.protocolVersion) "Stock Monitor Surface protocol mismatch."
     Assert-Equal 1 @($surfaceAction.patches).Count "Stock Monitor refresh must return one authoritative patch."
+    Assert-Equal 2 ([int]$surfaceAction.patches[0].statePatch.schemaVersion) "Stock Monitor state schema did not migrate."
     Assert-Equal "ready" ([string]$surfaceAction.patches[0].statePatch.status) "Stock Monitor refresh state did not become ready."
     $quote = $surfaceAction.result.outputs.quote.value
-    Assert-Equal "eastmoney" ([string]$quote.provider) "Stock Monitor formal quote provider mismatch."
-    Assert-Equal "000034" ([string]$quote.symbol) "Stock Monitor symbol normalization failed."
-    Assert-Equal "神州数码" ([string]$quote.name) "Stock Monitor quote name mismatch."
-    Assert-True ([double]$quote.price -eq 24.99) "Stock Monitor quote price scaling failed."
-    Assert-True ([double]$quote.changePercent -eq 0.4) "Stock Monitor quote percent scaling failed."
-    Assert-Equal 3 @($quote.trend).Count "Stock Monitor trend parsing failed."
+    Assert-Equal "stock-api" ([string]$quote.provider) "Stock Monitor formal quote provider mismatch."
+    Assert-Equal "2.7.3" ([string]$quote.providerVersion) "Stock Monitor formal quote provider version mismatch."
+    Assert-Equal "tencent" ([string]$quote.source) "Stock Monitor selected provider source mismatch."
+    Assert-Equal "SZ000034" ([string]$quote.code) "Stock Monitor code normalization failed."
+    Assert-Equal "Digital China" ([string]$quote.name) "Stock Monitor quote name mismatch."
+    Assert-True ([double]$quote.price -eq 24.99) "Stock Monitor quote price parsing failed."
+    Assert-True ([double]$quote.changePercent -eq 0.4) "Stock Monitor quote percent conversion failed."
+    Assert-Equal 3 @($quote.history.rows).Count "Stock Monitor K-line parsing failed."
+    Assert-Equal "day" ([string]$quote.history.period) "Stock Monitor K-line period mismatch."
     Assert-True ($null -eq $surfaceAction.result.outputs.PSObject.Properties["trade"]) "Stock Monitor must not return a trading output."
 
-    Assert-True $fixture.WaitForExit(10000) "Stock Monitor API fixture did not receive both requests."
-    [void]$fixture.WaitForExit()
-    $fixture.Refresh()
-    $fixtureError = [IO.File]::ReadAllText($fixtureStderr)
-    if ($null -ne $fixture.ExitCode) {
-        Assert-Equal 0 $fixture.ExitCode "Stock Monitor API fixture failed: $fixtureError"
-    }
-    Assert-True ([string]::IsNullOrWhiteSpace($fixtureError)) "Stock Monitor API fixture wrote stderr: $fixtureError"
-    $fixture.Dispose()
-    $fixture = $null
-    $requests = Get-Content -Raw -Encoding UTF8 -LiteralPath $requestPath
-    Assert-True ($requests -match 'GET /api/qt/stock/get\?secid=0\.000034&fields=') "Stock Monitor quote request did not use the normalized Eastmoney secid."
-    Assert-True ($requests -match 'GET /api/qt/stock/trends2/get\?secid=0\.000034&fields1=') "Stock Monitor trend request did not use the normalized Eastmoney secid."
-
-    $interval = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_interval_commit" -Payload @{ value = 30 } -AuthoritativeState $initialState
-    Assert-Equal 30 ([int]$interval.output.surfaceAction.patches[0].statePatch.intervalSeconds) "Stock Monitor interval commit failed."
+    $interval = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_interval_commit" -Payload @{ value = 120 } -AuthoritativeState $initialState -FrameworkData (New-McpData -Skipped)
+    Assert-Equal 120 ([int]$interval.output.surfaceAction.patches[0].statePatch.intervalSeconds) "Stock Monitor interval commit failed."
     Assert-True ($null -eq $interval.output.surfaceAction.PSObject.Properties["result"]) "Interval changes must not fabricate a formal quote."
 
-    $invalid = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_symbol_commit" -Payload @{ value = "INVALID" } -AuthoritativeState $initialState
+    $invalid = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_symbol_commit" -Payload @{ value = "INVALID" } -AuthoritativeState $initialState -FrameworkData (New-McpData -QuoteError)
     Assert-Equal "error" ([string]$invalid.output.surfaceAction.patches[0].statePatch.status) "Invalid Stock Monitor symbols must become an explicit error state."
+    Assert-True ([string]$invalid.output.surfaceAction.patches[0].statePatch.error -match "fixture quote failure") "MCP error detail was not surfaced."
     Assert-True ($null -eq $invalid.output.surfaceAction.PSObject.Properties["result"]) "Invalid symbols must not produce a formal quote."
 
-    $unsafeOverride = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{} -AuthoritativeState $initialState -ApiBaseUrl "http://example.com"
-    Assert-Equal "error" ([string]$unsafeOverride.output.surfaceAction.patches[0].statePatch.status) "Non-loopback Stock Monitor test overrides must be rejected."
-    Assert-True ([string]$unsafeOverride.output.surfaceAction.patches[0].statePatch.error -match "回环") "Non-loopback override rejection message is missing."
+    $plain = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "" -Payload $null -AuthoritativeState $null -FrameworkData (New-McpData) -Params @{ code = "SZ000034"; interval_seconds = 60 }
+    Assert-Equal "success" ([string]$plain.status) "Non-Surface Stock Monitor execution failed."
+    Assert-Equal "SZ000034" ([string]$plain.output.quote.code) "Non-Surface Stock Monitor output mismatch."
+    Assert-Equal 3 @($plain.output.quote.history.rows).Count "Non-Surface Stock Monitor history mismatch."
 
-    Write-Host "Stock Monitor Art contract passed: provider=eastmoney price=24.99 trend=3 no-trading=true"
+    Write-Host "Stock Monitor Art contract passed: provider=stock-api@2.7.3 source=tencent candles=3 no-trading=true"
 }
 finally {
-    if ($null -ne $fixture) {
-        if (-not $fixture.HasExited) { Stop-Process -Id $fixture.Id -Force -ErrorAction SilentlyContinue }
-        $fixture.Dispose()
-    }
     Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

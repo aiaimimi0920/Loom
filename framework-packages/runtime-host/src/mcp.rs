@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -20,27 +20,80 @@ struct ArtMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpArtConfig {
     server_id: String,
     package_id: String,
     version: String,
+    #[serde(default)]
+    tool_name: Option<String>,
+    #[serde(default)]
+    arguments: Value,
+    #[serde(default)]
+    calls: Vec<McpCallConfig>,
+    #[serde(default)]
+    surface_actions: BTreeMap<String, McpSurfaceActionConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpCallConfig {
+    id: String,
     tool_name: String,
     #[serde(default)]
     arguments: Value,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpSurfaceActionConfig {
+    #[serde(default)]
+    calls: Option<Vec<String>>,
+    #[serde(default)]
+    arguments: BTreeMap<String, McpArgumentBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpArgumentBinding {
+    from: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ResolvedCall {
+    id: String,
+    tool_name: String,
+    arguments: Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCallExecution {
+    tool_name: String,
+    result: Value,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpExecution {
     server_id: String,
-    tool_name: String,
-    result: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    results: BTreeMap<String, McpCallExecution>,
+    #[serde(skip_serializing_if = "is_false")]
+    skipped: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpExecution, String> {
     let config = load_config(art_dir)?;
-    let arguments = build_arguments(request, &config.arguments)?;
+    let calls = resolve_calls(request, &config)?;
     let resolved = request
         .context
         .mcp_server
@@ -57,6 +110,15 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
             "resolved MCP package `{}` does not match Art dependency `{}`",
             resolved.package_id, config.package_id
         ));
+    }
+    if calls.is_empty() {
+        return Ok(McpExecution {
+            server_id: resolved.id.clone(),
+            tool_name: None,
+            result: None,
+            results: BTreeMap::new(),
+            skipped: true,
+        });
     }
     let transport = match resolved.transport.as_str() {
         "stdio" => McpTransport::Stdio,
@@ -90,12 +152,44 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
     server.env = environment;
     server.headers = headers;
 
-    let (_, result) = execute_tool(&server, &config.tool_name, &arguments)
+    let call_results = execute_tools(&server, &calls)
         .map_err(|error| redact_credentials(error, &request.context.credentials))?;
+    if config.calls.is_empty() {
+        let call = calls
+            .first()
+            .ok_or_else(|| "legacy MCP Art did not resolve a tool call".to_owned())?;
+        let result = call_results
+            .into_iter()
+            .next()
+            .ok_or_else(|| "legacy MCP Art did not return a tool result".to_owned())?;
+        return Ok(McpExecution {
+            server_id: resolved.id.clone(),
+            tool_name: Some(call.tool_name.clone()),
+            result: Some(result),
+            results: BTreeMap::new(),
+            skipped: false,
+        });
+    }
+
+    let results = calls
+        .into_iter()
+        .zip(call_results)
+        .map(|(call, result)| {
+            (
+                call.id,
+                McpCallExecution {
+                    tool_name: call.tool_name,
+                    result,
+                },
+            )
+        })
+        .collect();
     Ok(McpExecution {
         server_id: resolved.id.clone(),
-        tool_name: config.tool_name,
-        result,
+        tool_name: None,
+        result: None,
+        results,
+        skipped: false,
     })
 }
 
@@ -119,10 +213,165 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
     if config.version.trim().is_empty() {
         return Err("MCP Art metadata.mcp.version is required".to_owned());
     }
-    if config.tool_name.trim().is_empty() {
-        return Err("MCP Art metadata.mcp.toolName is required".to_owned());
-    }
+    validate_argument_object(&config.arguments, "metadata.mcp.arguments")?;
+    validate_call_config(&config)?;
+    validate_surface_actions(&config)?;
     Ok(config)
+}
+
+fn validate_call_config(config: &McpArtConfig) -> Result<(), String> {
+    if config.calls.is_empty() {
+        if config
+            .tool_name
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        {
+            return Err(
+                "MCP Art metadata.mcp.toolName or metadata.mcp.calls is required".to_owned(),
+            );
+        }
+        return Ok(());
+    }
+    if config.tool_name.is_some() {
+        return Err(
+            "MCP Art metadata.mcp.toolName cannot be combined with metadata.mcp.calls".to_owned(),
+        );
+    }
+    if config.calls.len() > 8 {
+        return Err("MCP Art metadata.mcp.calls cannot contain more than 8 calls".to_owned());
+    }
+
+    let mut ids = BTreeSet::new();
+    for call in &config.calls {
+        validate_identifier(&call.id, "metadata.mcp.calls[].id")?;
+        if !ids.insert(call.id.as_str()) {
+            return Err(format!("duplicate MCP call id `{}`", call.id));
+        }
+        if call.tool_name.trim().is_empty() || call.tool_name.len() > 256 {
+            return Err(format!(
+                "MCP call `{}` must declare a non-empty toolName",
+                call.id
+            ));
+        }
+        if call.tool_name.chars().any(char::is_control) {
+            return Err(format!("MCP call `{}` has an invalid toolName", call.id));
+        }
+        validate_argument_object(
+            &call.arguments,
+            &format!("metadata.mcp.calls[{}].arguments", call.id),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_surface_actions(config: &McpArtConfig) -> Result<(), String> {
+    if config.surface_actions.len() > 32 {
+        return Err(
+            "MCP Art metadata.mcp.surfaceActions cannot contain more than 32 actions".to_owned(),
+        );
+    }
+    let call_ids = if config.calls.is_empty() {
+        BTreeSet::from(["default"])
+    } else {
+        config.calls.iter().map(|call| call.id.as_str()).collect()
+    };
+    for (action_id, action) in &config.surface_actions {
+        validate_identifier(action_id, "metadata.mcp.surfaceActions action id")?;
+        if let Some(selected_calls) = &action.calls {
+            if selected_calls.len() > 8 {
+                return Err(format!(
+                    "MCP Surface action `{action_id}` cannot select more than 8 calls"
+                ));
+            }
+            let mut selected_ids = BTreeSet::new();
+            for call_id in selected_calls {
+                if !selected_ids.insert(call_id.as_str()) {
+                    return Err(format!(
+                        "MCP Surface action `{action_id}` selects call `{call_id}` more than once"
+                    ));
+                }
+                if !call_ids.contains(call_id.as_str()) {
+                    return Err(format!(
+                        "MCP Surface action `{action_id}` selects unknown call `{call_id}`"
+                    ));
+                }
+            }
+        }
+        if action.arguments.len() > 32 {
+            return Err(format!(
+                "MCP Surface action `{action_id}` cannot bind more than 32 arguments"
+            ));
+        }
+        for (argument_name, binding) in &action.arguments {
+            validate_argument_name(argument_name)?;
+            if binding.from.is_empty() || binding.from.len() > 4 {
+                return Err(format!(
+                    "MCP Surface argument `{argument_name}` must declare 1 to 4 source paths"
+                ));
+            }
+            for path in &binding.from {
+                validate_binding_path(path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_argument_object(value: &Value, label: &str) -> Result<(), String> {
+    if value.is_null() || value.is_object() {
+        Ok(())
+    } else {
+        Err(format!("MCP Art {label} must be a JSON object"))
+    }
+}
+
+fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
+    let value = value.trim();
+    let valid = !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+    valid
+        .then_some(())
+        .ok_or_else(|| format!("invalid {label} `{value}`"))
+}
+
+fn validate_argument_name(value: &str) -> Result<(), String> {
+    let mut bytes = value.bytes();
+    let valid = value.len() <= 128
+        && bytes
+            .next()
+            .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric());
+    valid
+        .then_some(())
+        .ok_or_else(|| format!("invalid MCP Surface argument name `{value}`"))
+}
+
+fn validate_binding_path(path: &str) -> Result<(), String> {
+    let segments = path.split('.').collect::<Vec<_>>();
+    let root_is_allowed = matches!(
+        segments.first().copied(),
+        Some("payload" | "authoritativeState")
+    );
+    let segments_are_safe = segments.len() >= 2
+        && segments.len() <= 8
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && segment.len() <= 64
+                && segment
+                    .bytes()
+                    .all(|byte| byte == b'_' || byte == b'-' || byte.is_ascii_alphanumeric())
+        });
+    if root_is_allowed && segments_are_safe {
+        Ok(())
+    } else {
+        Err(format!(
+            "MCP Surface binding path `{path}` must be rooted at payload or authoritativeState"
+        ))
+    }
 }
 
 fn build_environment(
@@ -265,9 +514,203 @@ fn expand_runtime_paths(value: &str, request: &FrameworkExecuteRequest, art_dir:
         .replace("{tempDir}", &request.context.temp_dir.to_string_lossy())
 }
 
+fn resolve_calls(
+    request: &FrameworkExecuteRequest,
+    config: &McpArtConfig,
+) -> Result<Vec<ResolvedCall>, String> {
+    let configured_calls = if config.calls.is_empty() {
+        vec![McpCallConfig {
+            id: "default".to_owned(),
+            tool_name: config
+                .tool_name
+                .clone()
+                .ok_or_else(|| "legacy MCP Art toolName is missing".to_owned())?,
+            arguments: Value::Null,
+        }]
+    } else {
+        config.calls.clone()
+    };
+
+    let surface_action = find_surface_action(request)?;
+    if let Some(surface_action) = surface_action.filter(|_| !config.surface_actions.is_empty()) {
+        let action_id = surface_action
+            .get("actionId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "MCP Surface invocation actionId is required".to_owned())?;
+        let action = config.surface_actions.get(action_id).ok_or_else(|| {
+            format!("MCP Surface action `{action_id}` is not declared by this Art")
+        })?;
+        let mapped_arguments = resolve_surface_argument_bindings(action, surface_action)?;
+        let selected_ids = action.calls.clone().unwrap_or_else(|| {
+            configured_calls
+                .iter()
+                .map(|call| call.id.clone())
+                .collect()
+        });
+        let calls_by_id = configured_calls
+            .iter()
+            .map(|call| (call.id.as_str(), call))
+            .collect::<BTreeMap<_, _>>();
+        return selected_ids
+            .iter()
+            .map(|call_id| {
+                let call = calls_by_id.get(call_id.as_str()).ok_or_else(|| {
+                    format!("MCP Surface action `{action_id}` selected unknown call `{call_id}`")
+                })?;
+                let mut arguments = Map::new();
+                merge_argument_object(&mut arguments, &config.arguments, "metadata.mcp.arguments")?;
+                merge_argument_object(
+                    &mut arguments,
+                    &call.arguments,
+                    &format!("metadata.mcp.calls[{call_id}].arguments"),
+                )?;
+                arguments.extend(
+                    mapped_arguments
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone())),
+                );
+                for name in &request.disabled_params {
+                    arguments.remove(name);
+                }
+                let arguments = Value::Object(arguments);
+                validate_resolved_arguments(&arguments)?;
+                Ok(ResolvedCall {
+                    id: call.id.clone(),
+                    tool_name: call.tool_name.clone(),
+                    arguments,
+                })
+            })
+            .collect();
+    }
+
+    configured_calls
+        .into_iter()
+        .map(|call| {
+            let arguments =
+                build_call_arguments(request, &config.arguments, &call.arguments, &call.id)?;
+            validate_resolved_arguments(&arguments)?;
+            Ok(ResolvedCall {
+                id: call.id,
+                tool_name: call.tool_name,
+                arguments,
+            })
+        })
+        .collect()
+}
+
+fn find_surface_action(request: &FrameworkExecuteRequest) -> Result<Option<&Value>, String> {
+    let from_inputs = request.inputs.get("surfaceAction");
+    let from_params = request.params.get("surfaceAction");
+    match (from_inputs, from_params) {
+        (Some(left), Some(right)) if left != right => {
+            Err("conflicting MCP Surface invocations were provided".to_owned())
+        }
+        (Some(value), _) | (_, Some(value)) => {
+            if value.is_object() {
+                Ok(Some(value))
+            } else {
+                Err("MCP Surface invocation must be a JSON object".to_owned())
+            }
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+fn resolve_surface_argument_bindings(
+    action: &McpSurfaceActionConfig,
+    invocation: &Value,
+) -> Result<Map<String, Value>, String> {
+    action
+        .arguments
+        .iter()
+        .map(|(argument_name, binding)| {
+            let value = binding
+                .from
+                .iter()
+                .find_map(|path| value_at_binding_path(invocation, path))
+                .ok_or_else(|| {
+                    format!(
+                        "MCP Surface argument `{argument_name}` is missing from all declared source paths"
+                    )
+                })?;
+            validate_bound_value(argument_name, value)?;
+            Ok((argument_name.clone(), value.clone()))
+        })
+        .collect()
+}
+
+fn value_at_binding_path<'a>(invocation: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = invocation;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    (!current.is_null()).then_some(current)
+}
+
+fn validate_bound_value(argument_name: &str, value: &Value) -> Result<(), String> {
+    let encoded = serde_json::to_vec(value).map_err(|error| {
+        format!("cannot encode MCP Surface argument `{argument_name}`: {error}")
+    })?;
+    if encoded.len() > 65_536 {
+        return Err(format!(
+            "MCP Surface argument `{argument_name}` exceeds the 64 KiB limit"
+        ));
+    }
+    if !value_is_within_depth(value, 0, 16) {
+        return Err(format!(
+            "MCP Surface argument `{argument_name}` exceeds the nesting limit"
+        ));
+    }
+    Ok(())
+}
+
+fn value_is_within_depth(value: &Value, depth: usize, max_depth: usize) -> bool {
+    if depth > max_depth {
+        return false;
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .all(|value| value_is_within_depth(value, depth + 1, max_depth)),
+        Value::Object(values) => values
+            .values()
+            .all(|value| value_is_within_depth(value, depth + 1, max_depth)),
+        _ => true,
+    }
+}
+
+fn validate_resolved_arguments(arguments: &Value) -> Result<(), String> {
+    let encoded = serde_json::to_vec(arguments)
+        .map_err(|error| format!("cannot encode resolved MCP arguments: {error}"))?;
+    if encoded.len() > 262_144 {
+        return Err("resolved MCP arguments exceed the 256 KiB limit".to_owned());
+    }
+    if !value_is_within_depth(arguments, 0, 24) {
+        return Err("resolved MCP arguments exceed the nesting limit".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn build_arguments(request: &FrameworkExecuteRequest, configured: &Value) -> Result<Value, String> {
+    build_call_arguments(request, configured, &Value::Null, "default")
+}
+
+fn build_call_arguments(
+    request: &FrameworkExecuteRequest,
+    configured: &Value,
+    call_configured: &Value,
+    call_id: &str,
+) -> Result<Value, String> {
     let mut arguments = Map::new();
     merge_argument_object(&mut arguments, configured, "metadata.mcp.arguments")?;
+    merge_argument_object(
+        &mut arguments,
+        call_configured,
+        &format!("metadata.mcp.calls[{call_id}].arguments"),
+    )?;
     merge_argument_object(&mut arguments, &request.inputs, "inputs")?;
     merge_argument_object(&mut arguments, &request.params, "params")?;
     for name in &request.disabled_params {
@@ -295,27 +738,31 @@ fn merge_argument_object(
     Ok(())
 }
 
-fn execute_tool(
-    server: &McpServerConfig,
-    tool_name: &str,
-    arguments: &Value,
-) -> Result<(Value, Value), String> {
+fn execute_tools(server: &McpServerConfig, calls: &[ResolvedCall]) -> Result<Vec<Value>, String> {
     let mut client = McpClient::connect(server)
         .map_err(|error| format!("failed to connect MCP server: {error}"))?;
-    client
-        .initialize()
-        .map_err(|error| format!("MCP initialize failed: {error}"))?;
-    let tools = client
-        .list_tools()
-        .map_err(|error| format!("MCP tools/list failed: {error}"))?;
-    let schema = find_tool_input_schema(&tools, tool_name)
-        .ok_or_else(|| format!("MCP server does not expose tool `{tool_name}`"))?;
-    let normalized_arguments = normalize_arguments(arguments, schema);
-    let result = client
-        .call_tool(tool_name, normalized_arguments.clone())
-        .map_err(|error| format!("MCP tools/call `{tool_name}` failed: {error}"));
+    let result = (|| {
+        client
+            .initialize()
+            .map_err(|error| format!("MCP initialize failed: {error}"))?;
+        let tools = client
+            .list_tools()
+            .map_err(|error| format!("MCP tools/list failed: {error}"))?;
+        calls
+            .iter()
+            .map(|call| {
+                let schema = find_tool_input_schema(&tools, &call.tool_name).ok_or_else(|| {
+                    format!("MCP server does not expose tool `{}`", call.tool_name)
+                })?;
+                let normalized_arguments = normalize_arguments(&call.arguments, schema);
+                client
+                    .call_tool(&call.tool_name, normalized_arguments)
+                    .map_err(|error| format!("MCP tools/call `{}` failed: {error}", call.tool_name))
+            })
+            .collect()
+    })();
     client.cancel();
-    result.map(|result| (normalized_arguments, result))
+    result
 }
 
 fn find_tool_input_schema<'a>(tools: &'a Value, tool_name: &str) -> Option<&'a Value> {
@@ -489,10 +936,7 @@ mod tests {
             version: "1.0.0".to_owned(),
             transport: "stdio".to_owned(),
             command: "fixture".to_owned(),
-            credential_env: BTreeMap::from([(
-                "BRAVE_API_KEY".to_owned(),
-                "api_key".to_owned(),
-            )]),
+            credential_env: BTreeMap::from([("BRAVE_API_KEY".to_owned(), "api_key".to_owned())]),
             ..FrameworkMcpServer::default()
         }
     }
@@ -513,6 +957,132 @@ mod tests {
                 "safesearch": "strict"
             })
         );
+    }
+
+    fn multi_call_config() -> McpArtConfig {
+        McpArtConfig {
+            server_id: "stock-api".to_owned(),
+            package_id: "neuro.official/stock-api".to_owned(),
+            version: "=2.7.3".to_owned(),
+            tool_name: None,
+            arguments: json!({ "source": "auto" }),
+            calls: vec![
+                McpCallConfig {
+                    id: "quote".to_owned(),
+                    tool_name: "get_stock".to_owned(),
+                    arguments: Value::Null,
+                },
+                McpCallConfig {
+                    id: "history".to_owned(),
+                    tool_name: "get_klines".to_owned(),
+                    arguments: json!({ "period": "day", "count": 60 }),
+                },
+            ],
+            surface_actions: BTreeMap::from([
+                (
+                    "stock_refresh".to_owned(),
+                    McpSurfaceActionConfig {
+                        calls: None,
+                        arguments: BTreeMap::from([(
+                            "code".to_owned(),
+                            McpArgumentBinding {
+                                from: vec!["authoritativeState.code".to_owned()],
+                            },
+                        )]),
+                    },
+                ),
+                (
+                    "stock_symbol_commit".to_owned(),
+                    McpSurfaceActionConfig {
+                        calls: None,
+                        arguments: BTreeMap::from([(
+                            "code".to_owned(),
+                            McpArgumentBinding {
+                                from: vec![
+                                    "payload.value".to_owned(),
+                                    "authoritativeState.code".to_owned(),
+                                ],
+                            },
+                        )]),
+                    },
+                ),
+                (
+                    "stock_interval_commit".to_owned(),
+                    McpSurfaceActionConfig {
+                        calls: Some(Vec::new()),
+                        arguments: BTreeMap::new(),
+                    },
+                ),
+            ]),
+        }
+    }
+
+    #[test]
+    fn surface_action_maps_only_declared_values_into_multiple_calls() {
+        let mut request = request();
+        request.inputs = json!({
+            "surfaceAction": {
+                "actionId": "stock_symbol_commit",
+                "payload": { "value": "SZ000034", "ignored": "do-not-forward" },
+                "authoritativeState": { "code": "SH600000" }
+            },
+            "untrusted": "do-not-forward"
+        });
+        request.params = json!({ "alsoUntrusted": true });
+
+        let calls = resolve_calls(&request, &multi_call_config()).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "quote");
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "source": "auto", "code": "SZ000034" })
+        );
+        assert_eq!(calls[1].id, "history");
+        assert_eq!(
+            calls[1].arguments,
+            json!({
+                "source": "auto",
+                "period": "day",
+                "count": 60,
+                "code": "SZ000034"
+            })
+        );
+    }
+
+    #[test]
+    fn surface_action_can_explicitly_skip_mcp_calls() {
+        let mut request = request();
+        request.inputs = json!({
+            "surfaceAction": {
+                "actionId": "stock_interval_commit",
+                "payload": { "value": 120 },
+                "authoritativeState": { "code": "SZ000034" }
+            }
+        });
+        request.params = json!({});
+
+        let calls = resolve_calls(&request, &multi_call_config()).unwrap();
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn surface_bindings_reject_context_and_credential_paths() {
+        let mut config = multi_call_config();
+        config.surface_actions.insert(
+            "stock_unsafe".to_owned(),
+            McpSurfaceActionConfig {
+                calls: None,
+                arguments: BTreeMap::from([(
+                    "code".to_owned(),
+                    McpArgumentBinding {
+                        from: vec!["context.credentials.0.value".to_owned()],
+                    },
+                )]),
+            },
+        );
+        assert!(validate_surface_actions(&config)
+            .unwrap_err()
+            .contains("payload or authoritativeState"));
     }
 
     #[test]
@@ -723,8 +1293,9 @@ mod tests {
 
         let execution = execute(&request, &art_dir).expect("execute independent MCP server");
         assert_eq!(execution.server_id, "neuro-image-search");
-        assert_eq!(execution.tool_name, "brave_image_search");
-        assert_eq!(execution.result["structuredContent"]["count"], 2);
+        assert_eq!(execution.tool_name.as_deref(), Some("brave_image_search"));
+        let result = execution.result.as_ref().expect("legacy MCP result");
+        assert_eq!(result["structuredContent"]["count"], 2);
         assert!(
             serde_json::to_value(&execution)
                 .expect("serialize MCP execution")
@@ -733,11 +1304,11 @@ mod tests {
             "MCP arguments must not be echoed into the Art runtime payload"
         );
         assert_eq!(
-            execution.result["structuredContent"]["candidates"][0]["imageUrl"],
+            result["structuredContent"]["candidates"][0]["imageUrl"],
             "https://cdn.example.test/image-1.png"
         );
         assert_eq!(
-            execution.result["structuredContent"]["candidates"][1]["imageUrl"],
+            result["structuredContent"]["candidates"][1]["imageUrl"],
             "https://cdn.example.test/image-2.png"
         );
 

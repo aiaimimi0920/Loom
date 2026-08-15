@@ -23,7 +23,7 @@ const ART_PACKAGE_CATALOG_ENV: &str = "LOOM_ART_PACKAGE_CATALOG_DIR";
 const MCP_SERVER_PACKAGE_CATALOG_ENV: &str = "LOOM_MCP_SERVER_PACKAGE_CATALOG_DIR";
 const BUNDLED_ART_SHA256_ALLOWLIST_ENV: &str = "LOOM_BUNDLED_ART_SHA256_ALLOWLIST";
 const ART_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
-const MCP_SERVER_PACKAGE_MAX_BYTES: u64 = 24 * 1024 * 1024;
+const MCP_SERVER_PACKAGE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const LOOM_DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const LOOM_MCP_REGISTRY_REQUEST_TIMEOUT: Duration = Duration::from_secs(50);
@@ -2791,7 +2791,7 @@ mod tests {
         fs::create_dir_all(&settings_dir).expect("settings dir");
         fs::write(
             settings_dir.join("settings.json"),
-            br#"{"general":{"minimize_to_tray":false}}"#,
+            br#"{"general":{"minimizeToTray":false}}"#,
         )
         .expect("settings file");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
@@ -2890,7 +2890,7 @@ mod tests {
             .expect("create settings directory");
         fs::write(
             &settings_path,
-            br#"{"loom_cache":{"art_cache_max_bytes":0,"art_cache_retention_days":0,"framework_temp_retention_days":0}}"#,
+            br#"{"loom_cache":{"artCacheMaxBytes":0,"artCacheRetentionDays":0,"frameworkTempRetentionDays":0}}"#,
         )
         .expect("write Loom cache settings");
 
@@ -3142,26 +3142,44 @@ mod tests {
         let control_plane_root = root.join("control-plane");
         fs::create_dir_all(&catalog_root).expect("create MCP catalog");
         fs::write(&desktop_exe, b"desktop").expect("write desktop placeholder");
-        let package = b"independent-mcp-package";
-        let hash = format!("{:x}", Sha256::digest(package));
-        let package_path = catalog_root.join("neuro-image-search.zip");
-        fs::write(&package_path, package).expect("write MCP package");
+        let image_package = b"independent-image-search-mcp-package";
+        let image_hash = format!("{:x}", Sha256::digest(image_package));
+        let image_package_path = catalog_root.join("neuro-image-search.zip");
+        fs::write(&image_package_path, image_package).expect("write image-search MCP package");
         fs::write(
-            package_path.with_extension("zip.sha256"),
-            format!("{hash}  neuro-image-search.zip\n"),
+            image_package_path.with_extension("zip.sha256"),
+            format!("{image_hash}  neuro-image-search.zip\n"),
         )
-        .expect("write MCP checksum");
+        .expect("write image-search MCP checksum");
+        let stock_package = b"independent-stock-api-mcp-package";
+        let stock_hash = format!("{:x}", Sha256::digest(stock_package));
+        let stock_package_path = catalog_root.join("stock-api.zip");
+        fs::write(&stock_package_path, stock_package).expect("write stock-api MCP package");
+        fs::write(
+            stock_package_path.with_extension("zip.sha256"),
+            format!("{stock_hash}  stock-api.zip\n"),
+        )
+        .expect("write stock-api MCP checksum");
         fs::write(
             catalog_root.join("summary.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "schemaVersion": 1,
-                "servers": [{
-                    "id": "neuro-image-search",
-                    "qualifiedId": "neuro.official/neuro-image-search",
-                    "version": "0.1.0",
-                    "zip": "neuro-image-search.zip",
-                    "sha256": hash,
-                }]
+                "servers": [
+                    {
+                        "id": "neuro-image-search",
+                        "qualifiedId": "neuro.official/neuro-image-search",
+                        "version": "0.1.0",
+                        "zip": "neuro-image-search.zip",
+                        "sha256": image_hash,
+                    },
+                    {
+                        "id": "stock-api",
+                        "qualifiedId": "neuro.official/stock-api",
+                        "version": "2.7.3",
+                        "zip": "stock-api.zip",
+                        "sha256": stock_hash,
+                    }
+                ]
             }))
             .expect("serialize MCP catalog"),
         )
@@ -3173,25 +3191,31 @@ mod tests {
             .expect("read MCP bootstrap fixture address");
         let (request_tx, request_rx) = mpsc::channel();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept MCP install request");
-            request_tx
-                .send(read_test_http_request(&mut stream))
-                .expect("record MCP install request");
-            write_test_json_response(
-                &mut stream,
-                "200 OK",
-                r#"{"server":{"id":"neuro-image-search"}}"#,
-            );
+            for id in ["neuro-image-search", "stock-api"] {
+                let (mut stream, _) = listener.accept().expect("accept MCP install request");
+                request_tx
+                    .send(read_test_http_request(&mut stream))
+                    .expect("record MCP install request");
+                write_test_json_response(
+                    &mut stream,
+                    "200 OK",
+                    &format!(r#"{{"server":{{"id":"{id}"}}}}"#),
+                );
+            }
         });
         let base_url = format!("http://127.0.0.1:{}", address.port());
         let installed =
             bootstrap_packaged_mcp_servers(&base_url, &desktop_exe, &control_plane_root)
                 .expect("bootstrap packaged MCP server");
         server.join().expect("join MCP bootstrap fixture");
-        assert_eq!(installed, vec!["neuro-image-search"]);
-        let request = request_rx.recv().expect("MCP install request");
-        assert!(request.starts_with("POST /v1/mcp/servers/install HTTP/1.1"));
-        assert!(request.contains("\"zipBase64\""));
+        assert_eq!(installed, vec!["neuro-image-search", "stock-api"]);
+        for request in [
+            request_rx.recv().expect("image-search MCP install request"),
+            request_rx.recv().expect("stock-api MCP install request"),
+        ] {
+            assert!(request.starts_with("POST /v1/mcp/servers/install HTTP/1.1"));
+            assert!(request.contains("\"zipBase64\""));
+        }
         assert!(control_plane_root
             .join("migrations/packaged-mcp-servers.sha256")
             .is_file());

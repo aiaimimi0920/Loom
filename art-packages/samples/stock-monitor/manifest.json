@@ -1,11 +1,11 @@
 {
   "id": "custom-stock-monitor",
   "name": "股票盯盘",
-  "description": "通过东方财富公开行情接口观察沪深 A 股实时价格、分时走势和关键指标，不提供交易功能。",
+  "description": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价和日 K 线，不提供交易功能。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
-    "framework": "process"
+    "framework": "mcp"
   },
   "inputs": [],
   "outputs": [
@@ -17,27 +17,27 @@
   ],
   "params": [
     {
-      "id": "symbol",
+      "id": "code",
       "label": "股票代码",
       "widget": "text",
       "required": true,
-      "default": "000034",
+      "default": "SZ000034",
       "data_type": "string"
     },
     {
       "id": "interval_seconds",
       "label": "刷新间隔（秒）",
       "widget": "slider",
-      "default": 15,
-      "min": 5,
-      "max": 60,
-      "step": 5,
+      "default": 60,
+      "min": 30,
+      "max": 300,
+      "step": 30,
       "data_type": "number"
     }
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "publisher": {
         "id": "neuro.official",
         "name": "Neuro",
@@ -56,20 +56,26 @@
         "en-US": "Stock Monitor"
       },
       "descriptions": {
-        "zh-CN": "观察沪深 A 股实时价格、分时走势和关键指标，不提供交易功能。",
-        "en-US": "Monitors Shanghai and Shenzhen A-share quotes, intraday trends, and key metrics without trading."
+        "zh-CN": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价和日 K 线，不提供交易功能。",
+        "en-US": "Monitors A-share, Hong Kong, and US quotes and daily candles through an independent stock-api MCP service without trading."
       }
     },
     "dependencies": {
-      "framework": "process",
-      "frameworkVersion": "^0.1"
+      "framework": "mcp",
+      "frameworkVersion": "^0.2",
+      "mcpServers": [
+        {
+          "id": "neuro.official/stock-api",
+          "version": "=2.7.3"
+        }
+      ]
     },
     "capabilities": {
       "parameters": "surface",
       "marketData": {
-        "providerId": "eastmoney",
-        "providerName": "东方财富",
-        "marketScope": "沪深 A 股",
+        "providerId": "stock-api",
+        "providerName": "stock-api",
+        "marketScope": "A 股 / 港股 / 美股",
         "apiKeyRequired": false,
         "trading": false
       },
@@ -103,7 +109,7 @@
             "idempotent": true,
             "confirmation": false,
             "cancelable": true,
-            "timeoutMs": 15000,
+            "timeoutMs": 30000,
             "progress": true
           },
           {
@@ -114,7 +120,7 @@
             "idempotent": true,
             "confirmation": false,
             "cancelable": true,
-            "timeoutMs": 15000,
+            "timeoutMs": 30000,
             "progress": true
           },
           {
@@ -130,22 +136,65 @@
           }
         ],
         "instanceMode": "independent",
-        "stateSchemaVersion": 1,
+        "stateSchemaVersion": 2,
         "themeMode": "custom"
       }
     },
+    "mcp": {
+      "serverId": "stock-api",
+      "packageId": "neuro.official/stock-api",
+      "version": "=2.7.3",
+      "calls": [
+        {
+          "id": "quote",
+          "toolName": "get_stock",
+          "arguments": {
+            "source": "auto"
+          }
+        },
+        {
+          "id": "history",
+          "toolName": "get_klines",
+          "arguments": {
+            "source": "auto",
+            "period": "day",
+            "count": 60,
+            "adjust": "none"
+          }
+        }
+      ],
+      "surfaceActions": {
+        "stock_refresh": {
+          "arguments": {
+            "code": {
+              "from": ["payload.code", "authoritativeState.code"]
+            }
+          }
+        },
+        "stock_symbol_commit": {
+          "arguments": {
+            "code": {
+              "from": ["payload.value", "authoritativeState.code"]
+            }
+          }
+        },
+        "stock_interval_commit": {
+          "calls": []
+        }
+      }
+    },
     "marketData": {
-      "providerId": "eastmoney",
-      "providerName": "东方财富",
-      "quoteHost": "push2.eastmoney.com",
-      "trendHost": "push2his.eastmoney.com",
-      "marketScope": "沪深 A 股",
+      "providerId": "stock-api",
+      "providerName": "stock-api",
+      "upstreamVersion": "2.7.3",
+      "sources": ["tencent", "sina", "eastmoney"],
+      "marketScope": "A 股 / 港股 / 美股",
       "apiKeyRequired": false,
       "trading": false,
-      "disclaimer": "仅用于行情观察，不构成交易指令"
+      "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
     },
     "plugin": {
-      "packageVersion": "1.0.0",
+      "packageVersion": "1.1.0",
       "runtimeMode": "surface"
     }
   }

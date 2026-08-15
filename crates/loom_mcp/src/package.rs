@@ -13,9 +13,9 @@ use zip::ZipArchive;
 use crate::{McpCredentialRequirement, McpServerConfig, McpServerPackageState, McpTransport};
 
 pub const MCP_SERVER_PACKAGE_MANIFEST: &str = "mcp.server.json";
-const MAX_PACKAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PACKAGE_FILES: usize = 128;
-const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_EXTRACTED_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

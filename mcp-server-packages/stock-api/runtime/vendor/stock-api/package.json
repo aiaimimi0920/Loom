@@ -1,0 +1,99 @@
+{
+  "name": "stock-api",
+  "version": "2.7.3",
+  "description": "Stock market data API for Node.js, browsers, and TypeScript",
+  "repository": "https://github.com/zhangxiangliang/stock-api",
+  "author": "zhangxiangliang",
+  "keywords": [
+    "stock",
+    "stocks",
+    "stock-api",
+    "stock-market",
+    "market-data",
+    "finance",
+    "quote",
+    "quotes",
+    "nodejs",
+    "typescript",
+    "a-share",
+    "china-stock",
+    "hong-kong-stock",
+    "us-stock",
+    "股票",
+    "股票接口",
+    "股票行情",
+    "A股",
+    "港股",
+    "美股",
+    "数据分析",
+    "接口"
+  ],
+  "main": "dist/index.js",
+  "module": "dist/browser/stock-api.esm.mjs",
+  "browser": "dist/browser/stock-api.esm.mjs",
+  "unpkg": "dist/browser/stock-api.iife.min.js",
+  "jsdelivr": "dist/browser/stock-api.iife.min.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "stock-api": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/browser/stock-api.esm.mjs",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/browser/stock-api.esm.mjs",
+      "default": "./dist/browser/stock-api.esm.mjs"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prebuild": "npm run clean",
+    "build": "npm run build:node && npm run build:browser",
+    "build:browser": "node scripts/build-browser.mjs",
+    "build:node": "tsc -p tsconfig.build.json",
+    "examples": "node scripts/serve-examples.mjs",
+    "postbuild": "node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "prepack": "npm run build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepare": "husky",
+    "ci": "npm run build && npm run typecheck && npm run test:unit",
+    "test:browser": "npm run build:browser && node scripts/browser-smoke.mjs",
+    "test:node": "jest --config jest.config.js --coverage",
+    "test:unit": "npm run test:node -- --runInBand",
+    "test:integration": "jest --config jest.integration.config.js --runInBand",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "validate": "npm run lint && npm run ci",
+    "validate:release": "npm run validate"
+  },
+  "license": "MIT",
+  "files": [
+    "dist/**/*",
+    "docs/**/*"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.2.1",
+    "globals": "^17.5.0",
+    "husky": "^9.1.7",
+    "jest": "^30.3.0",
+    "playwright": "^1.60.0",
+    "semantic-release": "^25.0.3",
+    "ts-jest": "^29.4.9",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.1"
+  }
+}

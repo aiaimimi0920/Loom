@@ -2,10 +2,8 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $script:SurfaceAction = $null
-$script:AllowedIntervals = @(5, 15, 30, 60)
-$script:QuoteFields = "f57,f58,f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f60,f116,f117,f162,f167,f168,f169,f170,f171"
-$script:TrendFields1 = "f1,f2,f3,f4,f5,f6,f7,f8"
-$script:TrendFields2 = "f51,f52,f53,f54,f55,f56,f57,f58"
+$script:AllowedIntervals = @(30, 60, 120, 300)
+$script:Disclaimer = "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
 
 function Get-ObjectPropertyValue {
     param(
@@ -76,21 +74,207 @@ function Get-ActionStateValue {
     return Get-ObjectPropertyValue -Value $state -Name $Name -DefaultValue $DefaultValue
 }
 
-function Convert-ScaledNumber {
+function Get-RequestValue {
+    param(
+        [object]$Request,
+        [string]$Name,
+        [AllowNull()][object]$DefaultValue = $null
+    )
+
+    foreach ($containerName in @("params", "inputs")) {
+        $container = Get-ObjectPropertyValue -Value $Request -Name $containerName
+        $value = Get-ObjectPropertyValue -Value $container -Name $Name
+        if ($null -ne $value) { return $value }
+    }
+    return $DefaultValue
+}
+
+function Convert-NullableNumber {
     param(
         [AllowNull()][object]$Value,
-        [double]$Scale = 1.0,
         [int]$Digits = 4
     )
 
     if ($null -eq $Value) { return $null }
-    $text = ([string]$Value).Trim()
-    if ([string]::IsNullOrWhiteSpace($text) -or $text -eq "-") { return $null }
     $number = 0.0
     $style = [System.Globalization.NumberStyles]::Float
     $culture = [System.Globalization.CultureInfo]::InvariantCulture
-    if (-not [double]::TryParse($text, $style, $culture, [ref]$number)) { return $null }
-    return [Math]::Round($number / $Scale, $Digits)
+    if (-not [double]::TryParse(([string]$Value).Trim(), $style, $culture, [ref]$number)) {
+        return $null
+    }
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $null }
+    return [Math]::Round($number, $Digits)
+}
+
+function Resolve-StockCode {
+    param([AllowNull()][object]$Value)
+
+    $input = ([string]$Value).Trim().ToUpperInvariant().Replace(" ", "")
+    if ([string]::IsNullOrWhiteSpace($input)) {
+        throw "请输入股票代码，例如 SZ000034、SH600519、HK00700 或 USAAPL"
+    }
+    if ($input -match '^(SH|SZ)[:._-]?(\d{6})$') {
+        return "$($Matches[1])$($Matches[2])"
+    }
+    if ($input -match '^(\d{6})[:._-]?(SH|SZ)$') {
+        return "$($Matches[2])$($Matches[1])"
+    }
+    if ($input -match '^(\d{6})$') {
+        $market = if ($input.StartsWith("5") -or $input.StartsWith("6") -or $input.StartsWith("9")) { "SH" } else { "SZ" }
+        return "$market$input"
+    }
+    if ($input -match '^HK[:._-]?(\d{1,5})$') {
+        return "HK$($Matches[1].PadLeft(5, '0'))"
+    }
+    if ($input -match '^US[:_-]?([A-Z][A-Z0-9.-]{0,19})$') {
+        return "US$($Matches[1])"
+    }
+    throw "股票代码格式无效；支持 SZ000034、SH600519、HK00700 和 USAAPL 等统一代码"
+}
+
+function Get-MarketFromCode {
+    param([string]$Code)
+    return $Code.Substring(0, 2)
+}
+
+function Get-CurrencyForMarket {
+    param([string]$Market)
+    switch ($Market) {
+        "HK" { return "HKD" }
+        "US" { return "USD" }
+        default { return "CNY" }
+    }
+}
+
+function Get-ProviderName {
+    param([string]$Source)
+    switch ($Source.ToLowerInvariant()) {
+        "tencent" { return "腾讯行情" }
+        "sina" { return "新浪财经" }
+        "eastmoney" { return "东方财富" }
+        default { return $Source }
+    }
+}
+
+function Resolve-RefreshInterval {
+    param([AllowNull()][object]$Value)
+
+    $parsed = 60
+    if (-not [int]::TryParse([string]$Value, [ref]$parsed)) { $parsed = 60 }
+    if ($parsed -notin $script:AllowedIntervals) { $parsed = 60 }
+    return $parsed
+}
+
+function Get-McpToolContent {
+    param(
+        [object]$Request,
+        [string]$CallId
+    )
+
+    $frameworkData = Get-ObjectPropertyValue -Value $Request -Name "frameworkData"
+    $mcp = Get-ObjectPropertyValue -Value $frameworkData -Name "mcp"
+    $results = Get-ObjectPropertyValue -Value $mcp -Name "results"
+    $execution = Get-ObjectPropertyValue -Value $results -Name $CallId
+    $result = Get-ObjectPropertyValue -Value $execution -Name "result"
+    if ($null -eq $result) {
+        throw "stock-api MCP 调用结果缺失：$CallId"
+    }
+    $structured = Get-ObjectPropertyValue -Value $result -Name "structuredContent"
+    if ([bool](Get-ObjectPropertyValue -Value $result -Name "isError" -DefaultValue $false)) {
+        $response = Get-ObjectPropertyValue -Value $structured -Name "response"
+        $message = [string](Get-ObjectPropertyValue -Value $response -Name "message" -DefaultValue "未知错误")
+        throw "stock-api MCP 调用失败（$CallId）：$message"
+    }
+    if ($null -eq $structured) {
+        throw "stock-api MCP 返回的结构化结果缺失：$CallId"
+    }
+    return $structured
+}
+
+function ConvertTo-HistoryRows {
+    param([AllowNull()][object]$Values)
+
+    $rows = @()
+    foreach ($value in @($Values | Select-Object -Last 120)) {
+        $date = ([string](Get-ObjectPropertyValue -Value $value -Name "date")).Trim()
+        $open = Convert-NullableNumber (Get-ObjectPropertyValue -Value $value -Name "open")
+        $close = Convert-NullableNumber (Get-ObjectPropertyValue -Value $value -Name "close")
+        $high = Convert-NullableNumber (Get-ObjectPropertyValue -Value $value -Name "high")
+        $low = Convert-NullableNumber (Get-ObjectPropertyValue -Value $value -Name "low")
+        if ([string]::IsNullOrWhiteSpace($date) -or $null -eq $open -or $null -eq $close -or $null -eq $high -or $null -eq $low) {
+            continue
+        }
+        if ($open -le 0 -or $close -le 0 -or $high -le 0 -or $low -le 0 -or $high -lt $low) {
+            continue
+        }
+        $source = ([string](Get-ObjectPropertyValue -Value $value -Name "source")).Trim().ToLowerInvariant()
+        $rows += [ordered]@{
+            date = $date
+            open = $open
+            close = $close
+            high = $high
+            low = $low
+            volume = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $value -Name "volume") -Digits 0
+            source = $source
+        }
+    }
+    return @($rows)
+}
+
+function Get-StockSnapshot {
+    param([object]$Request)
+
+    $quoteContent = Get-McpToolContent -Request $Request -CallId "quote"
+    $historyContent = Get-McpToolContent -Request $Request -CallId "history"
+    $quoteResponse = Get-ObjectPropertyValue -Value $quoteContent -Name "response"
+    $historyResponse = Get-ObjectPropertyValue -Value $historyContent -Name "response"
+    $stock = Get-ObjectPropertyValue -Value $quoteResponse -Name "stock"
+    if ($null -eq $stock) { throw "stock-api 未返回股票报价" }
+
+    $code = Resolve-StockCode (Get-ObjectPropertyValue -Value $stock -Name "code")
+    $name = ([string](Get-ObjectPropertyValue -Value $stock -Name "name")).Trim()
+    $price = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "now")
+    if ([string]::IsNullOrWhiteSpace($name) -or $name -eq "---" -or $null -eq $price -or $price -le 0) {
+        throw "stock-api 未找到该代码的有效报价"
+    }
+
+    $history = @(ConvertTo-HistoryRows (Get-ObjectPropertyValue -Value $historyResponse -Name "klines" -DefaultValue @()))
+    if ($history.Count -eq 0) { throw "stock-api 未返回可视化所需的日 K 线" }
+    $source = ([string](Get-ObjectPropertyValue -Value $stock -Name "source")).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        $source = [string]$history[-1].source
+    }
+    if ([string]::IsNullOrWhiteSpace($source)) { $source = "unknown" }
+
+    $market = Get-MarketFromCode -Code $code
+    $previousClose = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "yesterday")
+    $percentFraction = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $stock -Name "percent") -Digits 8
+    $change = if ($null -ne $previousClose -and $previousClose -gt 0) {
+        [Math]::Round($price - $previousClose, 4)
+    }
+    else { $null }
+    $changePercent = if ($null -ne $percentFraction) { [Math]::Round($percentFraction * 100, 4) } else { $null }
+    $latest = $history[-1]
+    $observedAt = [DateTimeOffset]::UtcNow.ToString("o")
+    $quote = [ordered]@{
+        provider = "stock-api"
+        providerVersion = "2.7.3"
+        source = $source
+        sourceName = Get-ProviderName -Source $source
+        code = $code
+        market = $market
+        name = $name
+        currency = Get-CurrencyForMarket -Market $market
+        price = $price
+        change = $change
+        changePercent = $changePercent
+        open = $latest.open
+        high = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "high")
+        low = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "low")
+        previousClose = $previousClose
+        observedAt = $observedAt
+    }
+    return [ordered]@{ quote = $quote; history = $history; latestKline = $latest }
 }
 
 function Format-Price {
@@ -115,157 +299,6 @@ function Format-SignedNumber {
     return $text + $Suffix
 }
 
-function Resolve-StockSymbol {
-    param([AllowNull()][object]$Value)
-
-    $input = ([string]$Value).Trim().ToUpperInvariant().Replace(" ", "")
-    if ([string]::IsNullOrWhiteSpace($input)) { $input = "000034" }
-
-    $market = ""
-    $code = ""
-    if ($input -match '^(SH|SZ)[:.-]?(\d{6})$') {
-        $market = $Matches[1]
-        $code = $Matches[2]
-    }
-    elseif ($input -match '^(\d{6})[:.-]?(SH|SZ)$') {
-        $code = $Matches[1]
-        $market = $Matches[2]
-    }
-    elseif ($input -match '^(\d{6})$') {
-        $code = $Matches[1]
-        if ($code.StartsWith("6")) { $market = "SH" } else { $market = "SZ" }
-    }
-    else {
-        throw "请输入 6 位沪深 A 股代码，例如 000034、SZ000034 或 600519.SH"
-    }
-
-    if ($market -eq "SH" -and -not $code.StartsWith("6")) {
-        throw "当前仅支持沪市 6 开头和深市 0/3 开头的 A 股代码"
-    }
-    if ($market -eq "SZ" -and -not ($code.StartsWith("0") -or $code.StartsWith("3"))) {
-        throw "当前仅支持沪市 6 开头和深市 0/3 开头的 A 股代码"
-    }
-
-    $marketId = if ($market -eq "SH") { 1 } else { 0 }
-    return [ordered]@{
-        code = $code
-        market = $market
-        secid = "$marketId.$code"
-    }
-}
-
-function Resolve-RefreshInterval {
-    param([AllowNull()][object]$Value)
-
-    $parsed = 15
-    if (-not [int]::TryParse([string]$Value, [ref]$parsed)) { $parsed = 15 }
-    if ($parsed -notin $script:AllowedIntervals) { $parsed = 15 }
-    return $parsed
-}
-
-function Resolve-ApiEndpoints {
-    param([AllowNull()][object]$ActionOverride)
-
-    $override = [string]$ActionOverride
-    if ([string]::IsNullOrWhiteSpace($override)) {
-        $override = [Environment]::GetEnvironmentVariable("LOOM_STOCK_API_BASE_URL", "Process")
-    }
-    if ([string]::IsNullOrWhiteSpace($override)) {
-        return [ordered]@{
-            quote = [Uri]"https://push2.eastmoney.com/api/qt/stock/get"
-            trend = [Uri]"https://push2his.eastmoney.com/api/qt/stock/trends2/get"
-        }
-    }
-
-    [Uri]$baseUri = $null
-    if (-not [Uri]::TryCreate($override.Trim(), [UriKind]::Absolute, [ref]$baseUri)) {
-        throw "股票行情测试 API 根地址必须是有效的回环 HTTP 地址"
-    }
-    if ($baseUri.Scheme -notin @("http", "https") -or -not $baseUri.IsLoopback) {
-        throw "股票行情测试 API 根地址仅允许用于回环测试服务"
-    }
-    return [ordered]@{
-        quote = [Uri]::new($baseUri, "/api/qt/stock/get")
-        trend = [Uri]::new($baseUri, "/api/qt/stock/trends2/get")
-    }
-}
-
-function New-RequestUri {
-    param(
-        [Uri]$BaseUri,
-        [string]$Query
-    )
-    $builder = [UriBuilder]::new($BaseUri)
-    $builder.Query = $Query
-    return $builder.Uri
-}
-
-function Invoke-EastmoneyRequest {
-    param([Uri]$Uri)
-
-    return Invoke-RestMethod -Uri $Uri.AbsoluteUri -Method Get -TimeoutSec 12 -Headers @{
-        "Accept" = "application/json"
-        "Referer" = "https://quote.eastmoney.com/"
-        "User-Agent" = "Neuro-Loom-Stock-Monitor/1.0"
-    }
-}
-
-function Get-ShanghaiNow {
-    try {
-        $zone = [TimeZoneInfo]::FindSystemTimeZoneById("China Standard Time")
-        return [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone)
-    }
-    catch {
-        return [DateTime]::UtcNow.AddHours(8)
-    }
-}
-
-function Get-MarketState {
-    param([AllowNull()][string]$ProviderTimestamp)
-
-    [DateTime]$providerTime = [DateTime]::MinValue
-    $culture = [System.Globalization.CultureInfo]::InvariantCulture
-    $parsed = [DateTime]::TryParseExact(
-        $ProviderTimestamp,
-        "yyyy-MM-dd HH:mm",
-        $culture,
-        [System.Globalization.DateTimeStyles]::None,
-        [ref]$providerTime
-    )
-    $now = Get-ShanghaiNow
-    $time = $now.TimeOfDay
-    $morning = $time -ge [TimeSpan]::FromHours(9.5) -and $time -le [TimeSpan]::FromHours(11.5)
-    $afternoon = $time -ge [TimeSpan]::FromHours(13) -and $time -le [TimeSpan]::FromHours(15)
-    $weekday = $now.DayOfWeek -notin @([DayOfWeek]::Saturday, [DayOfWeek]::Sunday)
-    if ($parsed -and $providerTime.Date -eq $now.Date -and $weekday -and ($morning -or $afternoon)) {
-        return [ordered]@{ id = "open"; label = "交易中" }
-    }
-    return [ordered]@{ id = "closed"; label = "已收盘" }
-}
-
-function Convert-EastmoneyTrend {
-    param([AllowNull()][object]$RawTrends)
-
-    $result = @()
-    foreach ($line in @($RawTrends | Select-Object -First 512)) {
-        $parts = ([string]$line).Split(',')
-        if ($parts.Count -lt 8) { continue }
-        $price = Convert-ScaledNumber -Value $parts[1] -Scale 1 -Digits 3
-        $average = Convert-ScaledNumber -Value $parts[7] -Scale 1 -Digits 3
-        if ($null -eq $price) { continue }
-        $timestamp = $parts[0].Trim()
-        $result += [ordered]@{
-            timestamp = $timestamp
-            time = if ($timestamp.Length -ge 16) { $timestamp.Substring(11, 5) } else { $timestamp }
-            price = $price
-            average = $average
-            volumeLots = Convert-ScaledNumber -Value $parts[5] -Scale 1 -Digits 0
-            amount = Convert-ScaledNumber -Value $parts[6] -Scale 1 -Digits 2
-        }
-    }
-    return @($result)
-}
-
 function New-SetOperation {
     param(
         [string]$NodeId,
@@ -286,23 +319,26 @@ function Write-SurfaceResponse {
         patches = $Patches
     }
     if ($null -ne $Result) { $surfaceAction.result = $Result }
-    $response = [ordered]@{
+    [Console]::Out.Write(([ordered]@{
         status = "success"
         output = [ordered]@{ surfaceAction = $surfaceAction }
-    }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 100 -Compress))
+    } | ConvertTo-Json -Depth 100 -Compress))
+}
+
+function Write-RuntimeSuccess {
+    param([object]$FormalQuote)
+    [Console]::Out.Write(([ordered]@{
+        status = "success"
+        output = [ordered]@{ quote = $FormalQuote }
+    } | ConvertTo-Json -Depth 100 -Compress))
 }
 
 function Write-RuntimeError {
     param([string]$Message)
-    $response = [ordered]@{
+    [Console]::Out.Write(([ordered]@{
         status = "error"
-        error = [ordered]@{
-            code = "stock_monitor_failed"
-            message = $Message
-        }
-    }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
+        error = [ordered]@{ code = "stock_monitor_failed"; message = $Message }
+    } | ConvertTo-Json -Depth 20 -Compress))
 }
 
 function Write-SurfaceErrorState {
@@ -311,198 +347,142 @@ function Write-SurfaceErrorState {
         [string]$Message
     )
 
-    $symbol = [string](Get-ActionStateValue -Action $Action -Name "symbol" -DefaultValue "000034")
-    $market = [string](Get-ActionStateValue -Action $Action -Name "market" -DefaultValue "SZ")
-    $interval = Resolve-RefreshInterval (Get-ActionStateValue -Action $Action -Name "intervalSeconds" -DefaultValue 15)
+    if ($Message.Length -gt 400) { $Message = $Message.Substring(0, 400) }
+    $rawCode = if ([string](Get-ObjectPropertyValue -Value $Action -Name "actionId") -eq "stock_symbol_commit") {
+        Get-ActionPayloadValue -Action $Action -Name "value" -DefaultValue "SZ000034"
+    }
+    else {
+        Get-ActionStateValue -Action $Action -Name "code" -DefaultValue "SZ000034"
+    }
+    try { $code = Resolve-StockCode $rawCode } catch { $code = ([string]$rawCode).Trim() }
+    $interval = Resolve-RefreshInterval (Get-ActionStateValue -Action $Action -Name "intervalSeconds" -DefaultValue 60)
     $statePatch = [ordered]@{
-        schemaVersion = 1
-        provider = [ordered]@{ id = "eastmoney"; name = "东方财富" }
-        marketScope = "沪深 A 股"
-        symbol = $symbol
-        market = $market
+        schemaVersion = 2
+        provider = [ordered]@{ id = "stock-api"; name = "stock-api" }
+        marketScope = "A 股 / 港股 / 美股"
+        code = $code
         intervalSeconds = $interval
         status = "error"
         statusText = "行情获取失败"
         error = $Message
-        disclaimer = "仅用于行情观察，不构成交易指令"
+        disclaimer = $script:Disclaimer
     }
-    $operations = [object[]]@(
-        (New-SetOperation -NodeId "status" -Path "/props/text" -Value "行情获取失败"),
-        (New-SetOperation -NodeId "quote_change" -Path "/props/text" -Value $Message),
-        (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value $symbol),
-        (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval))
-    )
     Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
-        operations = $operations
+        operations = [object[]]@(
+            (New-SetOperation -NodeId "status" -Path "/props/text" -Value "行情获取失败"),
+            (New-SetOperation -NodeId "quote_change" -Path "/props/text" -Value $Message),
+            (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value $code),
+            (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval))
+        )
         statePatch = $statePatch
     }))
 }
 
-function Get-StockSnapshot {
-    param(
-        [object]$ResolvedSymbol,
-        [AllowNull()][object]$ApiBaseUrl
-    )
-
-    $endpoints = Resolve-ApiEndpoints -ActionOverride $ApiBaseUrl
-    $secid = [Uri]::EscapeDataString([string]$ResolvedSymbol.secid)
-    $quoteQuery = "secid=$secid&fields=$script:QuoteFields"
-    $trendQuery = "secid=$secid&fields1=$script:TrendFields1&fields2=$script:TrendFields2&ndays=1&iscr=0&iscca=0"
-    $quoteResponse = Invoke-EastmoneyRequest -Uri (New-RequestUri -BaseUri $endpoints.quote -Query $quoteQuery)
-    $trendResponse = Invoke-EastmoneyRequest -Uri (New-RequestUri -BaseUri $endpoints.trend -Query $trendQuery)
-
-    if ([int](Get-ObjectPropertyValue -Value $quoteResponse -Name "rc" -DefaultValue -1) -ne 0) {
-        throw "东方财富报价接口返回失败"
-    }
-    if ([int](Get-ObjectPropertyValue -Value $trendResponse -Name "rc" -DefaultValue -1) -ne 0) {
-        throw "东方财富分时接口返回失败"
-    }
-    $quoteData = Get-ObjectPropertyValue -Value $quoteResponse -Name "data"
-    $trendData = Get-ObjectPropertyValue -Value $trendResponse -Name "data"
-    if ($null -eq $quoteData -or $null -eq $trendData) {
-        throw "未找到该股票代码的沪深 A 股行情"
-    }
-
-    $price = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f43") -Scale 100 -Digits 2
-    $name = ([string](Get-ObjectPropertyValue $quoteData "f58")).Trim()
-    if ($null -eq $price -or [string]::IsNullOrWhiteSpace($name)) {
-        throw "行情数据缺少股票名称或最新价格"
-    }
-
-    $trend = Convert-EastmoneyTrend -RawTrends (Get-ObjectPropertyValue $trendData "trends" @())
-    $providerTimestamp = if ($trend.Count -gt 0) { [string]$trend[-1].timestamp } else { $null }
-    $marketState = Get-MarketState -ProviderTimestamp $providerTimestamp
-    $symbol = ([string](Get-ObjectPropertyValue $quoteData "f57" $ResolvedSymbol.code)).Trim()
-    $quote = [ordered]@{
-        provider = "eastmoney"
-        providerName = "东方财富"
-        market = [string]$ResolvedSymbol.market
-        symbol = $symbol
-        name = $name
-        currency = "CNY"
-        price = $price
-        change = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f169") -Scale 100 -Digits 2
-        changePercent = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f170") -Scale 100 -Digits 2
-        open = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f46") -Scale 100 -Digits 2
-        high = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f44") -Scale 100 -Digits 2
-        low = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f45") -Scale 100 -Digits 2
-        previousClose = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f60") -Scale 100 -Digits 2
-        upperLimit = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f51") -Scale 100 -Digits 2
-        lowerLimit = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f52") -Scale 100 -Digits 2
-        volumeLots = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f47") -Scale 1 -Digits 0
-        amount = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f48") -Scale 1 -Digits 2
-        volumeRatio = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f50") -Scale 100 -Digits 2
-        totalMarketCap = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f116") -Scale 1 -Digits 2
-        floatMarketCap = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f117") -Scale 1 -Digits 2
-        peDynamic = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f162") -Scale 100 -Digits 2
-        pb = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f167") -Scale 100 -Digits 2
-        turnoverRate = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f168") -Scale 100 -Digits 2
-        amplitude = Convert-ScaledNumber -Value (Get-ObjectPropertyValue $quoteData "f171") -Scale 100 -Digits 2
-        timestamp = $providerTimestamp
-        marketState = $marketState.id
-        marketStateLabel = $marketState.label
-    }
-    return [ordered]@{ quote = $quote; trend = $trend }
-}
-
-try {
-    $requestText = [Console]::In.ReadToEnd()
-    if ([string]::IsNullOrWhiteSpace($requestText)) { throw "Surface action request is required" }
-    $request = $requestText | ConvertFrom-Json
-    $script:SurfaceAction = Find-SurfaceAction -Value $request
-    if ($null -eq $script:SurfaceAction) { throw "surfaceAction invocation is required" }
-
-    $actionId = [string](Get-ObjectPropertyValue -Value $script:SurfaceAction -Name "actionId")
-    if ($actionId -notin @("stock_refresh", "stock_symbol_commit", "stock_interval_commit")) {
-        throw "action is not declared by the stock monitor: $actionId"
-    }
-
-    if ($actionId -eq "stock_interval_commit") {
-        $interval = Resolve-RefreshInterval (Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue 15)
-        $statePatch = [ordered]@{
-            intervalSeconds = $interval
-            statusText = "每 $interval 秒刷新"
-            error = $null
-        }
-        Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
-            operations = [object[]]@(
-                (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval)),
-                (New-SetOperation -NodeId "status" -Path "/props/text" -Value "每 $interval 秒刷新")
-            )
-            statePatch = $statePatch
-        }))
-        exit 0
-    }
-
-    $symbolValue = if ($actionId -eq "stock_symbol_commit") {
-        Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue "000034"
-    }
-    else {
-        Get-ActionStateValue -Action $script:SurfaceAction -Name "symbol" -DefaultValue "000034"
-    }
-    $resolvedSymbol = Resolve-StockSymbol -Value $symbolValue
-    $interval = Resolve-RefreshInterval (Get-ActionStateValue -Action $script:SurfaceAction -Name "intervalSeconds" -DefaultValue 15)
-    $testApiBaseUrl = Get-ActionPayloadValue -Action $script:SurfaceAction -Name "testApiBaseUrl" -DefaultValue $null
-    $snapshot = Get-StockSnapshot -ResolvedSymbol $resolvedSymbol -ApiBaseUrl $testApiBaseUrl
-    $quote = $snapshot.quote
-    $trend = @($snapshot.trend)
-    $statusText = "$($quote.marketStateLabel) · 行情已更新"
-    $statePatch = [ordered]@{
-        schemaVersion = 1
-        provider = [ordered]@{ id = "eastmoney"; name = "东方财富" }
-        marketScope = "沪深 A 股"
-        symbol = [string]$quote.symbol
+function New-FormalQuote {
+    param([object]$Snapshot)
+    $quote = $Snapshot.quote
+    return [ordered]@{
+        provider = "stock-api"
+        providerVersion = "2.7.3"
+        source = [string]$quote.source
+        sourceName = [string]$quote.sourceName
+        code = [string]$quote.code
         market = [string]$quote.market
-        intervalSeconds = $interval
-        status = "ready"
-        statusText = $statusText
-        quote = $quote
-        trend = $trend
-        lastUpdatedAt = [string]$quote.timestamp
-        error = $null
-        disclaimer = "仅用于行情观察，不构成交易指令"
-    }
-    $metricsText = "今开 $(Format-Price $quote.open)  最高 $(Format-Price $quote.high)  最低 $(Format-Price $quote.low)  昨收 $(Format-Price $quote.previousClose)"
-    $operations = [object[]]@(
-        (New-SetOperation -NodeId "status" -Path "/props/text" -Value $statusText),
-        (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value ([string]$quote.symbol)),
-        (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval)),
-        (New-SetOperation -NodeId "quote_name" -Path "/props/text" -Value "$($quote.name) $($quote.symbol) · $($quote.market)"),
-        (New-SetOperation -NodeId "quote_price" -Path "/props/text" -Value (Format-Price $quote.price)),
-        (New-SetOperation -NodeId "quote_change" -Path "/props/text" -Value "$(Format-SignedNumber $quote.change)  $(Format-SignedNumber $quote.changePercent '%')"),
-        (New-SetOperation -NodeId "quote_metrics" -Path "/props/text" -Value $metricsText)
-    )
-    $formalQuote = [ordered]@{
-        provider = "eastmoney"
-        providerName = "东方财富"
-        market = [string]$quote.market
-        symbol = [string]$quote.symbol
         name = [string]$quote.name
-        currency = "CNY"
+        currency = [string]$quote.currency
         price = $quote.price
         change = $quote.change
         changePercent = $quote.changePercent
-        timestamp = [string]$quote.timestamp
-        marketState = [string]$quote.marketState
+        observedAt = [string]$quote.observedAt
         metrics = [ordered]@{
             open = $quote.open
             high = $quote.high
             low = $quote.low
             previousClose = $quote.previousClose
-            upperLimit = $quote.upperLimit
-            lowerLimit = $quote.lowerLimit
-            volumeLots = $quote.volumeLots
-            amount = $quote.amount
-            volumeRatio = $quote.volumeRatio
-            totalMarketCap = $quote.totalMarketCap
-            floatMarketCap = $quote.floatMarketCap
-            peDynamic = $quote.peDynamic
-            pb = $quote.pb
-            turnoverRate = $quote.turnoverRate
-            amplitude = $quote.amplitude
         }
-        trend = $trend
+        history = [ordered]@{
+            period = "day"
+            adjust = "none"
+            rows = @($Snapshot.history)
+        }
+        disclaimer = $script:Disclaimer
     }
+}
+
+try {
+    $requestText = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($requestText)) { throw "Stock Monitor request is required" }
+    $request = $requestText | ConvertFrom-Json
+    $script:SurfaceAction = Find-SurfaceAction -Value $request
+
+    if ($null -ne $script:SurfaceAction) {
+        $actionId = [string](Get-ObjectPropertyValue -Value $script:SurfaceAction -Name "actionId")
+        if ($actionId -notin @("stock_refresh", "stock_symbol_commit", "stock_interval_commit")) {
+            throw "action is not declared by the stock monitor: $actionId"
+        }
+        if ($actionId -eq "stock_interval_commit") {
+            $interval = Resolve-RefreshInterval (Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue 60)
+            $statePatch = [ordered]@{
+                intervalSeconds = $interval
+                statusText = "每 $interval 秒刷新"
+                error = $null
+            }
+            Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
+                operations = [object[]]@(
+                    (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval)),
+                    (New-SetOperation -NodeId "status" -Path "/props/text" -Value "每 $interval 秒刷新")
+                )
+                statePatch = $statePatch
+            }))
+            exit 0
+        }
+    }
+
+    $snapshot = Get-StockSnapshot -Request $request
+    $quote = $snapshot.quote
+    $history = @($snapshot.history)
+    $formalQuote = New-FormalQuote -Snapshot $snapshot
+    if ($null -eq $script:SurfaceAction) {
+        Write-RuntimeSuccess -FormalQuote $formalQuote
+        exit 0
+    }
+
+    $requestedCode = if ([string](Get-ObjectPropertyValue -Value $script:SurfaceAction -Name "actionId") -eq "stock_symbol_commit") {
+        Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue $quote.code
+    }
+    else {
+        Get-ActionStateValue -Action $script:SurfaceAction -Name "code" -DefaultValue $quote.code
+    }
+    if ((Resolve-StockCode $requestedCode) -ne [string]$quote.code) {
+        throw "stock-api 返回的股票代码与请求不一致"
+    }
+    $interval = Resolve-RefreshInterval (Get-ActionStateValue -Action $script:SurfaceAction -Name "intervalSeconds" -DefaultValue 60)
+    $statusText = "stock-api / $($quote.source) · 行情已更新"
+    $statePatch = [ordered]@{
+        schemaVersion = 2
+        provider = [ordered]@{ id = "stock-api"; name = "stock-api"; source = [string]$quote.source }
+        marketScope = "A 股 / 港股 / 美股"
+        code = [string]$quote.code
+        market = [string]$quote.market
+        intervalSeconds = $interval
+        status = "ready"
+        statusText = $statusText
+        quote = $quote
+        history = $history
+        lastUpdatedAt = [string]$quote.observedAt
+        error = $null
+        disclaimer = $script:Disclaimer
+    }
+    $metricsText = "开 $(Format-Price $quote.open)  高 $(Format-Price $quote.high)  低 $(Format-Price $quote.low)  昨收 $(Format-Price $quote.previousClose)"
+    $operations = [object[]]@(
+        (New-SetOperation -NodeId "status" -Path "/props/text" -Value $statusText),
+        (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value ([string]$quote.code)),
+        (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval)),
+        (New-SetOperation -NodeId "quote_name" -Path "/props/text" -Value "$($quote.name) $($quote.code) · $($quote.market)"),
+        (New-SetOperation -NodeId "quote_price" -Path "/props/text" -Value (Format-Price $quote.price)),
+        (New-SetOperation -NodeId "quote_change" -Path "/props/text" -Value "$(Format-SignedNumber $quote.change)  $(Format-SignedNumber $quote.changePercent '%')"),
+        (New-SetOperation -NodeId "quote_metrics" -Path "/props/text" -Value $metricsText)
+    )
     Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
         operations = $operations
         statePatch = $statePatch

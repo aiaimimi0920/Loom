@@ -14,19 +14,32 @@ function Write-Utf8NoBom {
     [IO.File]::WriteAllText($Path, $Value, [Text.UTF8Encoding]::new($false))
 }
 
+function Write-Response {
+    param(
+        [System.Net.HttpListenerContext]$Context,
+        [string]$Body,
+        [string]$ContentType,
+        [int]$StatusCode = 200
+    )
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Body)
+    $Context.Response.StatusCode = $StatusCode
+    $Context.Response.ContentType = $ContentType
+    $Context.Response.ContentLength64 = $bytes.Length
+    $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    $Context.Response.OutputStream.Close()
+}
+
 function Write-JsonResponse {
     param(
         [System.Net.HttpListenerContext]$Context,
         [object]$Value,
         [int]$StatusCode = 200
     )
-    $json = $Value | ConvertTo-Json -Depth 30 -Compress
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
-    $Context.Response.StatusCode = $StatusCode
-    $Context.Response.ContentType = "application/json; charset=utf-8"
-    $Context.Response.ContentLength64 = $bytes.Length
-    $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-    $Context.Response.OutputStream.Close()
+    Write-Response `
+        -Context $Context `
+        -Body ($Value | ConvertTo-Json -Depth 30 -Compress) `
+        -ContentType "application/json; charset=utf-8" `
+        -StatusCode $StatusCode
 }
 
 $listener = [System.Net.HttpListener]::new()
@@ -38,62 +51,57 @@ Write-Utf8NoBom -Path $ReadyPath -Value "ready`n"
 
 $servedApiRequests = 0
 try {
-    while ($servedApiRequests -lt 2) {
+    while ($servedApiRequests -lt 4) {
         $context = $listener.GetContext()
+        if ($context.Request.Url.AbsolutePath -ne "/proxy") {
+            Write-JsonResponse -Context $context -Value @{ error = "not found" } -StatusCode 404
+            continue
+        }
+        $target = [Uri]::UnescapeDataString([string]$context.Request.QueryString["url"])
         [IO.File]::AppendAllText(
             $RequestPath,
-            "$($context.Request.HttpMethod) $($context.Request.RawUrl)`n",
+            "$($context.Request.HttpMethod) $target`n",
             [Text.UTF8Encoding]::new($false)
         )
-        switch ($context.Request.Url.AbsolutePath) {
-            "/api/qt/stock/get" {
-                $servedApiRequests++
-                Write-JsonResponse -Context $context -Value ([ordered]@{
-                    rc = 0
-                    data = [ordered]@{
-                        f43 = 2499
-                        f44 = 2545
-                        f45 = 2459
-                        f46 = 2489
-                        f47 = 459631
-                        f48 = 1147741811.53
-                        f49 = 208267
-                        f50 = 105
-                        f51 = 2738
-                        f52 = 2240
-                        f57 = "000034"
-                        f58 = "神州数码"
-                        f60 = 2489
-                        f116 = 25408324178.37
-                        f117 = 21220204571.58
-                        f162 = 2692
-                        f167 = 227
-                        f168 = 541
-                        f169 = 10
-                        f170 = 40
-                        f171 = 346
-                    }
-                })
-            }
-            "/api/qt/stock/trends2/get" {
-                $servedApiRequests++
-                Write-JsonResponse -Context $context -Value ([ordered]@{
-                    rc = 0
-                    data = [ordered]@{
-                        code = "000034"
-                        market = 0
-                        name = "神州数码"
-                        trends = @(
-                            "2026-08-14 09:30,24.89,24.89,24.89,24.89,2430,6048270.00,24.890",
-                            "2026-08-14 10:30,25.10,25.10,25.10,25.10,3120,7823400.00,25.010",
-                            "2026-08-14 15:00,24.99,24.99,24.99,24.99,6916,17283084.00,24.971"
+        $servedApiRequests++
+        if ($target -match '^https://qt\.gtimg\.cn/q=sz000034$') {
+            $fields = @("51", "Digital China", "000034", "24.99", "24.89")
+            while ($fields.Count -lt 33) { $fields += "0" }
+            $fields += @("25.20", "24.60")
+            Write-Response -Context $context -Body ('v_sz000034="' + ($fields -join '~') + '";') -ContentType "text/plain; charset=utf-8"
+        }
+        elseif ($target -match '^https://hq\.sinajs\.cn/list=sz000034$') {
+            Write-Response -Context $context -Body "var hq_str_sz000034=`"`";`n" -ContentType "text/plain; charset=utf-8"
+        }
+        elseif ($target -match 'push2delay\.eastmoney\.com/api/qt/stock/get\?' -and $target -match 'secid=0(?:%2E|\.)000034') {
+            Write-JsonResponse -Context $context -Value ([ordered]@{
+                rc = 0
+                data = [ordered]@{
+                    f43 = 24.99
+                    f44 = 25.20
+                    f45 = 24.60
+                    f57 = "000034"
+                    f58 = "Digital China"
+                    f60 = 24.89
+                    f170 = 0.4
+                }
+            })
+        }
+        elseif ($target -match 'web\.ifzq\.gtimg\.cn/appstock/app/kline/kline\?' -and $target -match 'param=sz000034') {
+            Write-JsonResponse -Context $context -Value ([ordered]@{
+                data = [ordered]@{
+                    sz000034 = [ordered]@{
+                        day = @(
+                            @("2026-08-12", "24.50", "24.60", "24.80", "24.30", "100000"),
+                            @("2026-08-13", "24.62", "24.75", "24.90", "24.55", "120000"),
+                            @("2026-08-14", "24.80", "24.99", "25.20", "24.60", "150000")
                         )
                     }
-                })
-            }
-            default {
-                Write-JsonResponse -Context $context -Value @{ error = "not found" } -StatusCode 404
-            }
+                }
+            })
+        }
+        else {
+            throw "Unexpected stock-api target: $target"
         }
     }
 }

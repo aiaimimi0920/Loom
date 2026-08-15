@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "version": "22.22.2",
+  "platform": "win-x64",
+  "executable": "node.exe",
+  "sha256": "ae1a50511be58e987483fdbc12125407443926d2d394669ade2352776e920dd3",
+  "source": "https://nodejs.org/dist/v22.22.2/win-x64/node.exe",
+  "license": "MIT",
+  "licenseFile": "LICENSE"
+}

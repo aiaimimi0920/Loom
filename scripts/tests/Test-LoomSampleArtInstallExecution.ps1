@@ -125,6 +125,47 @@ function New-ImageSearchFixtureMcpPackage {
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
 }
 
+function New-StockApiFixtureMcpPackage {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceZip,
+        [Parameter(Mandatory = $true)][string]$DestinationZip,
+        [Parameter(Mandatory = $true)][string]$WorkRoot,
+        [Parameter(Mandatory = $true)][string]$TestBaseUrl
+    )
+
+    $stage = Join-Path $WorkRoot "stock-api-mcp-fixture"
+    Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
+    $serverPath = Join-Path $stage "runtime\stock-api-mcp.ps1"
+    Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Independent stock-api MCP server is missing: $serverPath"
+
+    $fixtureEntryPath = Join-Path $stage "runtime\stock-api-fixture.ps1"
+    $fixtureEntry = @'
+[CmdletBinding()]
+param([Parameter(Mandatory = $true)][string]$TestBaseUrl)
+
+$ErrorActionPreference = "Stop"
+$uri = [Uri]$TestBaseUrl
+if ($uri.Scheme -ne "http" -or $uri.Host -notin @("127.0.0.1", "::1") -or -not [string]::IsNullOrEmpty($uri.UserInfo) -or -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)) {
+    throw "TestBaseUrl must be an unauthenticated loopback HTTP URL"
+}
+$env:LOOM_STOCK_API_TEST_BASE_URL = $TestBaseUrl
+& (Join-Path $PSScriptRoot "stock-api-mcp.ps1")
+exit $LASTEXITCODE
+'@
+    Write-Utf8NoBomFile -Path $fixtureEntryPath -Content ($fixtureEntry + "`n")
+
+    $manifestPath = Join-Path $stage "mcp.server.json"
+    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
+    Assert-True ([string]$manifest.entry.command -eq "runtime/stock-api-mcp.ps1") "Stock API fixture must preserve the independent MCP entry."
+    $manifest.entry.command = "runtime/stock-api-fixture.ps1"
+    $manifest.entry.args = @("-TestBaseUrl", $TestBaseUrl)
+    Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
+    if (Test-Path -LiteralPath $DestinationZip) {
+        Remove-Item -LiteralPath $DestinationZip -Force
+    }
+    Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
+}
+
 function Start-ImageSearchApiFixture {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
@@ -282,7 +323,7 @@ $stockApiStdoutPath = Join-Path $controlPlane "stock-api.stdout.log"
 $stockApiStderrPath = Join-Path $controlPlane "stock-api.stderr.log"
 $succeeded = $false
 $oldEnvironment = @{}
-foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH", "LOOM_STOCK_API_BASE_URL")) {
+foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
     $oldEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name)
 }
 
@@ -322,7 +363,10 @@ New-Item -ItemType Directory -Force -Path $controlPlane, $configuration | Out-Nu
 try {
     $sourceImageSearchMcpZip = Join-Path $mcpServerRootPath "neuro-image-search.zip"
     Assert-True (Test-Path -LiteralPath $sourceImageSearchMcpZip -PathType Leaf) "Image-search MCP ZIP missing: $sourceImageSearchMcpZip"
+    $sourceStockApiMcpZip = Join-Path $mcpServerRootPath "stock-api.zip"
+    Assert-True (Test-Path -LiteralPath $sourceStockApiMcpZip -PathType Leaf) "stock-api MCP ZIP missing: $sourceStockApiMcpZip"
     $imageSearchMcpFixtureZip = Join-Path $controlPlane "neuro-image-search-fixture.zip"
+    $stockApiMcpFixtureZip = Join-Path $controlPlane "stock-api-fixture.zip"
     $imageSearchApiFixture = Start-ImageSearchApiFixture `
         -Port $imageSearchApiPort `
         -WorkRoot $controlPlane `
@@ -357,13 +401,17 @@ try {
         if ([DateTime]::UtcNow -ge $stockFixtureDeadline) { throw "Timed out waiting for Stock Monitor API fixture." }
         Start-Sleep -Milliseconds 50
     }
+    New-StockApiFixtureMcpPackage `
+        -SourceZip $sourceStockApiMcpZip `
+        -DestinationZip $stockApiMcpFixtureZip `
+        -WorkRoot $controlPlane `
+        -TestBaseUrl "http://127.0.0.1:$stockApiPort/"
 
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$port
     $env:LOOM_CONTROL_PLANE_ROOT = $controlPlane
     $env:LOOM_CONFIGURATION_ROOT = $configuration
     $env:LOOM_RUN_STORE_PATH = $runStore
-    $env:LOOM_STOCK_API_BASE_URL = "http://127.0.0.1:$stockApiPort"
     $daemon = Start-Process -FilePath $daemonPath -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
     $ready = $false
@@ -395,13 +443,18 @@ try {
         Assert-True ($null -ne $status -and [bool]$status.installed -and [bool]$status.enabled -and [bool]$status.ready) "Framework is not ready after package installation: $frameworkId"
     }
 
-    $installedMcp = Install-McpZip -Url $baseUrl -ZipPath $imageSearchMcpFixtureZip
-    Assert-True ([string]$installedMcp.server.id -eq "neuro-image-search") "Independent image-search MCP package was not installed."
+    $installedImageSearchMcp = Install-McpZip -Url $baseUrl -ZipPath $imageSearchMcpFixtureZip
+    Assert-True ([string]$installedImageSearchMcp.server.id -eq "neuro-image-search") "Independent image-search MCP package was not installed."
+    $installedStockApiMcp = Install-McpZip -Url $baseUrl -ZipPath $stockApiMcpFixtureZip
+    Assert-True ([string]$installedStockApiMcp.server.id -eq "stock-api") "Independent stock-api MCP package was not installed."
+    Assert-True ([string]$installedStockApiMcp.server.package.version -eq "2.7.3") "Installed stock-api MCP version mismatch."
     $configuredMcp = Invoke-LoomJson `
         -Method Put `
         -Url "$baseUrl/v1/mcp/servers/neuro-image-search/credentials" `
         -Body @{ values = @{ brave_api_key = "loom-package-smoke-key" }; clear = @() }
     Assert-True ([bool]$configuredMcp.server.credentialBound) "Image-search MCP credential was not stored in the MCP scope."
+    $installedMcpServers = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/mcp/servers" -Body $null
+    Assert-True ((@($installedMcpServers.servers | ForEach-Object { [string]$_.id } | Sort-Object) -join ",") -eq "neuro-image-search,stock-api") "Both independent MCP packages must be installed before Art execution."
 
     foreach ($case in $artCases) {
         $zipPath = Join-Path $artRootPath "$($case.id).zip"
@@ -506,24 +559,29 @@ try {
         class = "discrete"
         generation = [int64]$stockAttach.instance.descriptor.generation
         baseRevision = [int64]$stockSnapshot.revision
-        payload = @{ testApiBaseUrl = "http://127.0.0.1:$stockApiPort" }
+        payload = @{ code = "SZ000034" }
     }
     Assert-True ([string]$stockAck.status -in @("queued", "running")) "Stock Monitor refresh action was not accepted."
     $stockFinal = Wait-StockSurfaceAction -BaseUrl $baseUrl -InstanceId $stockInstanceId -EventId $stockEventId
     Assert-True ([string]$stockFinal.ack.status -eq "succeeded") "Stock Monitor Surface refresh failed: $($stockFinal.ack | ConvertTo-Json -Depth 10 -Compress)"
     $stockFormalQuote = $stockFinal.record.latestResult.outputs.quote.value
-    Assert-True ([string]$stockFormalQuote.provider -eq "eastmoney") "Installed Stock Monitor provider mismatch."
-    Assert-True ([string]$stockFormalQuote.symbol -eq "000034") "Installed Stock Monitor symbol mismatch."
+    Assert-True ([string]$stockFormalQuote.provider -eq "stock-api") "Installed Stock Monitor provider mismatch."
+    Assert-True ([string]$stockFormalQuote.providerVersion -eq "2.7.3") "Installed Stock Monitor provider version mismatch."
+    Assert-True ([string]$stockFormalQuote.source -eq "tencent") "Installed Stock Monitor source mismatch."
+    Assert-True ([string]$stockFormalQuote.code -eq "SZ000034") "Installed Stock Monitor code mismatch."
     Assert-True ([double]$stockFormalQuote.price -eq 24.99) "Installed Stock Monitor price mismatch."
-    Assert-True (@($stockFormalQuote.trend).Count -eq 3) "Installed Stock Monitor trend count mismatch."
+    $installedStockHistoryRows = @($stockFormalQuote.history.rows)
+    Assert-True ($installedStockHistoryRows.Count -eq 3) "Installed Stock Monitor K-line count mismatch: count=$($installedStockHistoryRows.Count) history=$($stockFormalQuote.history | ConvertTo-Json -Depth 10 -Compress)"
     $stockCurrentAttachment = Get-PropertyValue (Get-PropertyValue $stockFinal.record "attachments") $stockAttachmentId
     Assert-True ([string]$stockCurrentAttachment.snapshot.authoritativeState.status -eq "ready") "Installed Stock Monitor authoritative state is not ready."
-    Assert-True $stockApiFixture.WaitForExit(10000) "Stock Monitor API fixture did not observe quote and trend requests."
+    Assert-True $stockApiFixture.WaitForExit(10000) "Stock Monitor API fixture did not observe stock-api quote and K-line requests."
     $stockFixtureError = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiStderrPath
     Assert-True ([string]::IsNullOrWhiteSpace($stockFixtureError)) "Stock Monitor API fixture failed: $stockFixtureError"
     $capturedStockRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiRequestPath
-    Assert-True ($capturedStockRequests -match 'GET /api/qt/stock/get\?secid=0\.000034&fields=') "Installed Stock Monitor quote request is invalid."
-    Assert-True ($capturedStockRequests -match 'GET /api/qt/stock/trends2/get\?secid=0\.000034&fields1=') "Installed Stock Monitor trend request is invalid."
+    Assert-True ($capturedStockRequests -match 'GET https://qt\.gtimg\.cn/q=sz000034') "Installed stock-api MCP did not inspect the Tencent quote source."
+    Assert-True ($capturedStockRequests -match 'GET https://hq\.sinajs\.cn/list=sz000034') "Installed stock-api MCP did not inspect the Sina quote source."
+    Assert-True ($capturedStockRequests -match 'GET https://push2delay\.eastmoney\.com/api/qt/stock/get\?') "Installed stock-api MCP did not inspect the Eastmoney quote source."
+    Assert-True ($capturedStockRequests -match 'GET https://web\.ifzq\.gtimg\.cn/appstock/app/kline/kline\?') "Installed stock-api MCP did not request daily K-line data."
     Write-Host "PASS installed/executed Surface custom-stock-monitor"
 
     Assert-True $imageSearchApiFixture.WaitForExit(10000) "Image-search API fixture did not observe both the search and image requests."
@@ -539,7 +597,15 @@ try {
     Assert-True ([bool]$uninstallImageSearch.uninstalled) "Image-search Art uninstall did not succeed."
     Assert-True (@($uninstallImageSearch.removedMcpServers) -contains "neuro-image-search") "Unused image-search MCP server was not removed with the Art."
     $mcpAfterArtUninstall = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/mcp/servers" -Body $null
-    Assert-True (@($mcpAfterArtUninstall.servers).Count -eq 0) "Independent MCP server remained after optional unused dependency cleanup."
+    Assert-True ((@($mcpAfterArtUninstall.servers | ForEach-Object { [string]$_.id }) -join ",") -eq "stock-api") "Stock Monitor's MCP dependency must remain after image-search cleanup."
+    $uninstallStockMonitor = Invoke-LoomJson `
+        -Method Post `
+        -Url "$baseUrl/v1/arts/neuro.official%2Fcustom-stock-monitor/uninstall" `
+        -Body @{ removeUnusedMcpServers = $true }
+    Assert-True ([bool]$uninstallStockMonitor.uninstalled) "Stock Monitor Art uninstall did not succeed."
+    Assert-True (@($uninstallStockMonitor.removedMcpServers) -contains "stock-api") "Unused stock-api MCP server was not removed with the Art."
+    $mcpAfterStockUninstall = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/mcp/servers" -Body $null
+    Assert-True (@($mcpAfterStockUninstall.servers).Count -eq 0) "Independent MCP servers remained after both dependent Arts were removed."
     if (-not [string]::IsNullOrWhiteSpace($largeImagePathResolved)) {
         $executed = Invoke-LoomJson `
             -Method Post `
@@ -590,4 +656,4 @@ finally {
     }
 }
 
-Write-Host "Loom sample Art install/execution smoke passed for $($artCases.Count + 1) packages."
+Write-Host "Loom sample Art install/execution smoke passed for $($artCases.Count + 1) Arts and 2 MCP packages."

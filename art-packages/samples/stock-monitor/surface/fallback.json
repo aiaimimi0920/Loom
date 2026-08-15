@@ -58,8 +58,8 @@
             "id": "symbol",
             "type": "input",
             "props": {
-              "value": "000034",
-              "placeholder": "沪深 A 股代码"
+              "value": "SZ000034",
+              "placeholder": "SZ000034 / HK00700 / USAAPL"
             },
             "events": {
               "change": "stock_symbol_commit"
@@ -72,12 +72,12 @@
             "id": "interval",
             "type": "select",
             "props": {
-              "value": "15",
+              "value": "60",
               "options": [
-                { "value": "5", "label": "5 秒" },
-                { "value": "15", "label": "15 秒" },
                 { "value": "30", "label": "30 秒" },
-                { "value": "60", "label": "60 秒" }
+                { "value": "60", "label": "60 秒" },
+                { "value": "120", "label": "2 分钟" },
+                { "value": "300", "label": "5 分钟" }
               ]
             },
             "events": {
@@ -110,7 +110,7 @@
         "id": "quote_name",
         "type": "text",
         "props": {
-          "text": "000034 · SZ"
+          "text": "SZ000034 · SZ"
         },
         "style": {
           "color": "#929a9f",
@@ -148,7 +148,7 @@
         "id": "quote_metrics",
         "type": "text",
         "props": {
-          "text": "今开 --  最高 --  最低 --  昨收 --"
+          "text": "开 --  高 --  低 --  昨收 --"
         },
         "style": {
           "color": "#929a9f",
@@ -159,7 +159,7 @@
         "id": "provider",
         "type": "text",
         "props": {
-          "text": "数据源：东方财富 · 仅用于行情观察，不构成交易指令"
+          "text": "数据源：stock-api MCP · 行情可能延迟，不构成投资建议或交易指令"
         },
         "style": {
           "color": "#929a9f",
@@ -169,21 +169,21 @@
     ]
   },
   "authoritativeState": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "provider": {
-      "id": "eastmoney",
-      "name": "东方财富"
+      "id": "stock-api",
+      "name": "stock-api"
     },
-    "marketScope": "沪深 A 股",
-    "symbol": "000034",
+    "marketScope": "A 股 / 港股 / 美股",
+    "code": "SZ000034",
     "market": "SZ",
-    "intervalSeconds": 15,
+    "intervalSeconds": 60,
     "status": "idle",
     "statusText": "等待首次刷新",
     "quote": null,
-    "trend": [],
+    "history": [],
     "lastUpdatedAt": null,
     "error": null,
-    "disclaimer": "仅用于行情观察，不构成交易指令"
+    "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
   }
 }

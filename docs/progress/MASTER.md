@@ -130,6 +130,18 @@ separate projects.
   [details](./art-framework-refactor-audit-2026-08-12.md)
 - [x] Phase 69: Distributed Art Surface phase-one closure (10/10 gates)
   [details](./phase-69-distributed-art-surface.md)
+- [x] Phase 70: `loom.hook.v1` closure and legacy retirement
+  [details](./phase-70-loom-hook-v1-legacy-retirement.md)
+- [x] Phase 71: Art canonical-only layout and legacy zero
+  [details](./phase-71-art-canonical-layout-legacy-zero.md)
+- [x] Phase 72: Package-local image-search MCP
+  [details](./phase-72-packaged-image-search-mcp.md)
+- [x] Phase 73: 图片搜索 credential 生命周期与 Hook canonical 输入修复
+  [details](./phase-73-image-search-credential-lifecycle.md)
+- [x] Phase 74: 图片搜索 MCP 参数边界与服务可见性
+  [details](./phase-74-image-search-mcp-service-visibility.md)
+- [x] Phase 75: stock-api MCP 股票可视化 Art
+  [details](./phase-75-stock-api-mcp-stock-monitor-art.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -464,6 +476,18 @@ Latest completed phases:
   cleanup. Both were built from detached clean worktrees; Loom records
   `gitDirty=false` and `sourceGitDirty=false`. See
   `docs/progress/phase-69-distributed-art-surface.md`.
+- Phase 75 implementation and current-worktree R44 publication are complete.
+  Loom now packages pinned `stock-api@2.7.3` and Node.js `22.22.2` as an
+  independent stdio MCP server, while the generic MCP Framework performs bounded
+  quote plus daily-K-line calls in one session. The stock Art renders quote,
+  candlestick, volume, and MA5 data for A-share, Hong Kong, and US symbols and
+  publishes a structured formal result without trading actions. Source gates,
+  the 7-Art/2-MCP installed execution smoke, Hook R44 checks, and all seven Loom
+  release-verifier smokes passed. The candidates are
+  `release/Loom/20260815-stock-api-mcp-r44` and
+  `release/Hook/20260815-stock-api-mcp-r44/hook.exe`; both represent existing
+  dirty worktrees rather than clean-source publication. See
+  `docs/progress/phase-75-stock-api-mcp-stock-monitor-art.md`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local
@@ -507,14 +531,17 @@ Completed Phase 8 tasks:
 
 Last completed phase:
 
-- Phase 69 closed Distributed Art Surface phase one with clean-source R9/R9
-  publication and native dual-end evidence.
+- Phase 75 completed the pinned stock-api MCP package, generic MCP multi-call
+  execution, the stock quote/K-line Surface Art, full source gates, and verified
+  Hook/Loom R44 current-worktree artifacts.
 
 Current closure phase:
 
-- None. Phase 69 has passed implementation, source tests, browser budget smoke,
-  Loom packaged restart/resource smoke, clean-source provenance, and the formal
-  ten-minute packaged Hook/Loom native gate.
+- None. Phase 75 has passed implementation, deterministic native MCP/provider
+  contracts, 7-Art/2-MCP installed execution, full Loom/Hook source gates, and
+  every packaged Loom release-verifier smoke. External market-provider uptime,
+  Authenticode signing, and a separate manual long-running native GUI session are
+  documented operating limits rather than hidden completion claims.
 
 Repository status:
 

@@ -235,13 +235,13 @@ function Get-LoomCatalog {
             [ordered]@{ id = "custom-1770131241684"; framework = "process" }
             [ordered]@{ id = "custom-image-blend-script"; framework = "process" }
             [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow" }
-            [ordered]@{ id = "custom-stock-monitor"; framework = "process" }
+            [ordered]@{ id = "custom-stock-monitor"; framework = "mcp" }
         )
     }
 
     $mcpServerPackageCatalog = [ordered]@{
         outputRoot = [System.IO.Path]::GetFullPath($McpServerPackageOutputRoot)
-        expectedIds = @("neuro-image-search")
+        expectedIds = @("neuro-image-search", "stock-api")
     }
 
     return [ordered]@{

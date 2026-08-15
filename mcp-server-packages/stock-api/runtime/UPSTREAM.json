@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "name": "stock-api",
+  "version": "2.7.3",
+  "repository": "https://github.com/zhangxiangliang/stock-api",
+  "package": "https://registry.npmjs.org/stock-api/-/stock-api-2.7.3.tgz",
+  "npmIntegrity": "sha512-Glz7ofEqSViYPmspN6uR2dX9PGneK9V2a/8Tdv3tdMUr0CAm+G4bf4SDNoxgmkwCoGCZF0GV5c55X0Rqayw3pA==",
+  "npmShasum": "08eb25cc0248b19cd476e25cce1ad99ea5bd07bd",
+  "tarballSha256": "38cce5300e49a9e250196a75969881fcb44c71e0f13ac1cf5e0dc7f8a84589e2",
+  "gitHead": "9e0bc2c4eed95d1ba49fa163164620ca6fbde53f",
+  "license": "MIT",
+  "vendoredPath": "vendor/stock-api",
+  "vendoredFileCount": 104,
+  "vendoredTreeSha256": "ca02a1c1c5f36199eab96de7e1b22a3226e84e534dd3d72397b1f73f26d024de"
+}
