@@ -54,6 +54,7 @@ const HOST_OPERATION_TIMEOUT_MILLIS = 18000;
 const HOST_RETRY_ROUNDS = 2;
 const HOST_RETRY_DELAY_MILLIS = 150;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 1 * 1024 * 1024;
 const SUCCESS_CACHE_LIMIT = 64;
 const QUOTE_CACHE_TTL_MILLIS = 2 * 60 * 1000;
 const MARKET_SERIES_CACHE_TTL_MILLIS = 15 * 60 * 1000;
@@ -311,8 +312,10 @@ function xueqiuSymbol(value) {
 
 function xueqiuTimestamp(value) {
   const millis = quoteNumber(value);
-  if (millis === null || millis <= 0) return null;
-  return new Date(millis).toISOString();
+  if (millis === null || millis <= 0 || millis > 8.64e15) return null;
+  const date = new Date(millis);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toISOString();
 }
 
 function parseXueqiuRealtime(code, value, source = "xueqiu") {
@@ -928,10 +931,29 @@ async function runWrapperServer(input, output, upstreamHandle) {
   let buffer = "";
   input.on("data", (chunk) => {
     buffer += chunk;
+    if (buffer.indexOf("\n") < 0 && Buffer.byteLength(buffer, "utf8") > MAX_REQUEST_BYTES) {
+      buffer = "";
+      output.write(`${JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: `JSON-RPC request exceeds ${MAX_REQUEST_BYTES} bytes` },
+      })}\n`);
+      return;
+    }
     let newlineIndex = buffer.indexOf("\n");
     while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex).trim();
+      const rawLine = buffer.slice(0, newlineIndex);
       buffer = buffer.slice(newlineIndex + 1);
+      if (Buffer.byteLength(rawLine, "utf8") > MAX_REQUEST_BYTES) {
+        output.write(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32600, message: `JSON-RPC request exceeds ${MAX_REQUEST_BYTES} bytes` },
+        })}\n`);
+        newlineIndex = buffer.indexOf("\n");
+        continue;
+      }
+      const line = rawLine.trim();
       if (line) {
         void (async () => {
           let request;

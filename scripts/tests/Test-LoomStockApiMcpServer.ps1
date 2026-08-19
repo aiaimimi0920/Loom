@@ -56,6 +56,18 @@ function Read-JsonRpcResponse {
     return $response
 }
 
+function Read-JsonRpcLine {
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+
+    $readTask = $Process.StandardOutput.ReadLineAsync()
+    if (-not $readTask.Wait(20000)) { throw "Timed out waiting for JSON-RPC response" }
+    $line = $readTask.Result
+    if ([string]::IsNullOrWhiteSpace($line)) {
+        throw "stock-api MCP server exited before response: $($Process.StandardError.ReadToEnd())"
+    }
+    return $line | ConvertFrom-Json
+}
+
 function Write-Utf8JsonLine {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -115,7 +127,7 @@ $captured = @()
 $dayHistoryRequests = 0
 try {
     [System.IO.File]::WriteAllText($ReadyPath, "ready", [System.Text.UTF8Encoding]::new($false))
-    for ($index = 0; $index -lt 26; $index++) {
+    for ($index = 0; $index -lt 28; $index++) {
         $client = $listener.AcceptTcpClient()
         try {
             $stream = $client.GetStream()
@@ -177,12 +189,27 @@ try {
                     "2026-08-14,24.80,24.99,25.20,24.60,150000"
                 ) } } | ConvertTo-Json -Depth 8 -Compress
             }
+            elseif ($target -match '/v5/stock/realtime/pankou\.json' -and $target -match 'symbol=SZ999999') {
+                $body = @{ error_code = 0; error_description = ""; data = @{
+                    current = 25.53; bp1 = 25.53; bc1 = 152340; bn1 = 88; bp2 = 25.52; bc2 = 61200; bn2 = 41
+                    sp1 = 25.54; sc1 = 98700; sn1 = 55; sp2 = 25.55; sc2 = 44100; sn2 = 30
+                    buypct = 49.24; sellpct = 50.76; diff = -11455; ratio = 1.08; timestamp = 99999999999999999
+                } } | ConvertTo-Json -Depth 8 -Compress
+            }
             elseif ($target -match '/v5/stock/realtime/pankou\.json' -and $target -match 'symbol=SZ000034') {
                 $body = @{ error_code = 0; error_description = ""; data = @{
                     current = 25.53; bp1 = 25.53; bc1 = 152340; bn1 = 88; bp2 = 25.52; bc2 = 61200; bn2 = 41
                     sp1 = 25.54; sc1 = 98700; sn1 = 55; sp2 = 25.55; sc2 = 44100; sn2 = 30
                     buypct = 49.24; sellpct = 50.76; diff = -11455; ratio = 1.08; timestamp = 1786000485000
                 } } | ConvertTo-Json -Depth 8 -Compress
+            }
+            elseif ($target -match '/v5/stock/realtime/quotec\.json' -and $target -match 'symbol=SZ999999') {
+                $body = @{ error_code = 0; error_description = ""; data = @(@{
+                    symbol = "SZ999999"; current = 25.53; last_close = 25.20; open = 25.25; high = 25.60; low = 24.44
+                    chg = 0.33; percent = 1.31; avg_price = 25.199; volume = 18220000; amount = 459000000
+                    turnover_rate = 7.31; amplitude = 4.6; market_capital = 39800000000; is_trade = $false
+                    trade_session = 0; timestamp = 99999999999999999
+                }) } | ConvertTo-Json -Depth 8 -Compress
             }
             elseif ($target -match '/v5/stock/realtime/quotec\.json' -and $target -match 'symbol=SZ000034') {
                 $body = @{ error_code = 0; error_description = ""; data = @(@{
@@ -342,10 +369,25 @@ try {
     Assert-True ([string]$automatic.result.structuredContent.provider.liveSources.realtime -eq "pysnowball") "automatic live source did not prefer pysnowball quotec."
     Assert-True ([int]$automatic.result.structuredContent.response.cacheTtlMillis -eq 45000) "automatic live-source TTL mismatch."
 
+    $invalidTimestamp = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 12 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 12; method = "tools/call"
+        params = [ordered]@{ name = "get_order_book"; arguments = [ordered]@{ code = "SZ999999"; source = "xueqiu" } }
+    })
+    Assert-True ([string]$invalidTimestamp.result.structuredContent.response.orderBook.source -eq "xueqiu") "invalid timestamp fixture lost the order book result."
+    Assert-True ($null -eq $invalidTimestamp.result.structuredContent.response.orderBook.observedAt) "out-of-range order-book timestamp must be ignored."
+    Assert-True ($null -eq $invalidTimestamp.result.structuredContent.response.realtime.observedAt) "out-of-range realtime timestamp must be ignored."
+
+    $oversizedBytes = [System.Text.UTF8Encoding]::new($false).GetBytes('x' * (1024 * 1024 + 1))
+    $mcpProcess.StandardInput.BaseStream.Write($oversizedBytes, 0, $oversizedBytes.Length)
+    $mcpProcess.StandardInput.BaseStream.Flush()
+    $oversizedResponse = Read-JsonRpcLine -Process $mcpProcess
+    Assert-True ($null -eq $oversizedResponse.id) "oversized JSON-RPC request must not be assigned a client id."
+    Assert-True ([int]$oversizedResponse.error.code -eq -32600) "oversized JSON-RPC request must return invalid-request."
+
     Assert-True $fixtureProcess.WaitForExit(10000) "stock-api fixture did not receive all provider requests."
     Assert-True ($fixtureProcess.ExitCode -eq 0) "stock-api fixture failed: $($fixtureProcess.StandardError.ReadToEnd())"
     $capturedRequests = @(Get-Content -Encoding UTF8 -LiteralPath $requestPath)
-    Assert-True ($capturedRequests.Count -eq 26) "stock-api fixture request count mismatch."
+    Assert-True ($capturedRequests.Count -eq 28) "stock-api fixture request count mismatch."
     Assert-True ($capturedRequests[0] -match 'push2delay\.eastmoney\.com/.*/stock/get') "stock-api quote did not use the declared upstream library."
     Assert-True ($capturedRequests[1] -match '7\.push2his\.eastmoney\.com/.*/kline/get') "stock-api K-line did not prioritize the responsive upstream host."
     Assert-True ($capturedRequests[1] -match 'end=20500101' -and $capturedRequests[1] -match 'lmt=3') "stock-api K-line request is not bounded to the requested row count."
@@ -362,6 +404,7 @@ try {
     Assert-True (($capturedRequests[22..25] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "pysnowball-compatible quotec endpoint was not called."
     $entrySource = Get-Content -Raw -Encoding UTF8 -LiteralPath $entryPath
     Assert-True ($entrySource.Contains("MAX_RESPONSE_BYTES") -and $entrySource.Contains("response.body.getReader")) "stock-api provider responses must be byte-bounded before JSON parsing."
+    Assert-True ($entrySource.Contains("MAX_REQUEST_BYTES") -and $entrySource.Contains("Buffer.byteLength")) "stock-api JSON-RPC requests must be byte-bounded before parsing."
 
     $unsafeProcess = Start-RedirectedProcess -Executable $nodePath -Arguments @($entryPath) -Environment @{ LOOM_STOCK_API_TEST_BASE_URL = "https://example.com/" }
     Assert-True $unsafeProcess.WaitForExit(5000) "stock-api unsafe fixture override did not exit."
