@@ -51,7 +51,7 @@ Write-Utf8NoBom -Path $ReadyPath -Value "ready`n"
 
 $servedApiRequests = 0
 try {
-    while ($servedApiRequests -lt 4) {
+    while ($servedApiRequests -lt 2) {
         $context = $listener.GetContext()
         if ($context.Request.Url.AbsolutePath -ne "/proxy") {
             Write-JsonResponse -Context $context -Value @{ error = "not found" } -StatusCode 404
@@ -64,16 +64,7 @@ try {
             [Text.UTF8Encoding]::new($false)
         )
         $servedApiRequests++
-        if ($target -match '^https://qt\.gtimg\.cn/q=sz000034$') {
-            $fields = @("51", "Digital China", "000034", "24.99", "24.89")
-            while ($fields.Count -lt 33) { $fields += "0" }
-            $fields += @("25.20", "24.60")
-            Write-Response -Context $context -Body ('v_sz000034="' + ($fields -join '~') + '";') -ContentType "text/plain; charset=utf-8"
-        }
-        elseif ($target -match '^https://hq\.sinajs\.cn/list=sz000034$') {
-            Write-Response -Context $context -Body "var hq_str_sz000034=`"`";`n" -ContentType "text/plain; charset=utf-8"
-        }
-        elseif ($target -match 'push2delay\.eastmoney\.com/api/qt/stock/get\?' -and $target -match 'secid=0(?:%2E|\.)000034') {
+        if ($target -match 'push2delay\.eastmoney\.com/api/qt/stock/get\?' -and $target -match 'secid=0(?:%2E|\.)000034') {
             Write-JsonResponse -Context $context -Value ([ordered]@{
                 rc = 0
                 data = [ordered]@{
@@ -87,17 +78,14 @@ try {
                 }
             })
         }
-        elseif ($target -match 'web\.ifzq\.gtimg\.cn/appstock/app/kline/kline\?' -and $target -match 'param=sz000034') {
+        elseif ($target -match 'push2his\.eastmoney\.com/api/qt/stock/kline/get\?' -and $target -match 'secid=0(?:%2E|\.)000034' -and $target -match 'klt=(?:1|101)(?:&|$)') {
             Write-JsonResponse -Context $context -Value ([ordered]@{
-                data = [ordered]@{
-                    sz000034 = [ordered]@{
-                        day = @(
-                            @("2026-08-12", "24.50", "24.60", "24.80", "24.30", "100000"),
-                            @("2026-08-13", "24.62", "24.75", "24.90", "24.55", "120000"),
-                            @("2026-08-14", "24.80", "24.99", "25.20", "24.60", "150000")
-                        )
-                    }
-                }
+                rc = 0
+                data = [ordered]@{ klines = @(
+                    "2026-08-14 14:45,24.50,24.60,24.80,24.30,100000",
+                    "2026-08-14 14:50,24.62,24.75,24.90,24.55,120000",
+                    "2026-08-14 14:55,24.80,24.99,25.20,24.60,150000"
+                ) }
             })
         }
         else {

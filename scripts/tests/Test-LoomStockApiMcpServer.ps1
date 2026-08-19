@@ -111,9 +111,10 @@ $ErrorActionPreference = "Stop"
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
 $listener.Start()
 $captured = @()
+$dayHistoryRequests = 0
 try {
     [System.IO.File]::WriteAllText($ReadyPath, "ready", [System.Text.UTF8Encoding]::new($false))
-    for ($index = 0; $index -lt 2; $index++) {
+    for ($index = 0; $index -lt 21; $index++) {
         $client = $listener.AcceptTcpClient()
         try {
             $stream = $client.GetStream()
@@ -132,8 +133,38 @@ try {
             $encodedTarget = ($proxyUri.Query.TrimStart('?') -split '&' | Where-Object { $_ -like 'url=*' } | Select-Object -First 1).Substring(4)
             $target = [Uri]::UnescapeDataString($encodedTarget)
             $captured += $target
+            $statusCode = 200
             if ($target -match '/api/qt/stock/get\?' -and $target -match 'secid=0(?:%2E|\.)000034') {
                 $body = @{ rc = 0; data = @{ f57 = "000034"; f58 = "Digital China"; f43 = 24.99; f44 = 25.20; f45 = 24.60; f60 = 24.89; f170 = 0.4 } } | ConvertTo-Json -Depth 8 -Compress
+            }
+            elseif ($target -match '/api/qt/stock/kline/get\?' -and $target -match 'secid=0(?:%2E|\.)000034' -and $target -match 'klt=101' -and $target -match 'lmt=3') {
+                $dayHistoryRequests++
+                if ($dayHistoryRequests -eq 6) {
+                    $body = @{ rc = 0; data = @{ klines = @(
+                        "2026-08-12,24.50,24.60,24.80,24.30,100000",
+                        "2026-08-13,24.62,24.75,24.90,24.55,120000",
+                        "2026-08-14,24.80,24.99,25.20,24.60,150000"
+                    ) } } | ConvertTo-Json -Depth 8 -Compress
+                }
+                else {
+                    $statusCode = 503
+                    $body = @{ error = "transient fixture failure"; attempt = $dayHistoryRequests } | ConvertTo-Json -Compress
+                }
+            }
+            elseif ($target -match '/api/qt/stock/kline/get\?' -and $target -match 'secid=0(?:%2E|\.)000034' -and $target -match 'klt=5' -and $target -match 'lmt=2000') {
+                $body = @{ rc = 0; data = @{ klines = @(
+                    "2026-08-10 14:55,24.30,24.40,24.45,24.20,45000",
+                    "2026-08-11 14:55,24.40,24.50,24.55,24.35,46000",
+                    "2026-08-12 14:55,24.50,24.60,24.80,24.30,100000",
+                    "2026-08-13 14:55,24.62,24.75,24.90,24.55,120000",
+                    "2026-08-14 14:55,24.80,24.99,25.20,24.60,150000"
+                ) } } | ConvertTo-Json -Depth 8 -Compress
+            }
+            elseif ($target -match '/api/qt/stock/kline/get\?' -and $target -match 'secid=0(?:%2E|\.)000034' -and $target -match 'klt=5') {
+                $body = @{ rc = 0; data = @{ klines = @(
+                    "2026-08-14 14:50,24.80,24.90,25.00,24.75,50000",
+                    "2026-08-14 14:55,24.90,24.99,25.05,24.88,65000"
+                ) } } | ConvertTo-Json -Depth 8 -Compress
             }
             elseif ($target -match '/api/qt/stock/kline/get\?' -and $target -match 'secid=0(?:%2E|\.)000034') {
                 $body = @{ rc = 0; data = @{ klines = @(
@@ -142,11 +173,27 @@ try {
                     "2026-08-14,24.80,24.99,25.20,24.60,150000"
                 ) } } | ConvertTo-Json -Depth 8 -Compress
             }
+            elseif ($target -match '/v5/stock/realtime/pankou\.json' -and $target -match 'symbol=SZ000034') {
+                $body = @{ error_code = 0; error_description = ""; data = @{
+                    current = 25.53; bp1 = 25.53; bc1 = 152340; bn1 = 88; bp2 = 25.52; bc2 = 61200; bn2 = 41
+                    sp1 = 25.54; sc1 = 98700; sn1 = 55; sp2 = 25.55; sc2 = 44100; sn2 = 30
+                    buypct = 49.24; sellpct = 50.76; diff = -11455; ratio = 1.08; timestamp = 1786000485000
+                } } | ConvertTo-Json -Depth 8 -Compress
+            }
+            elseif ($target -match '/v5/stock/realtime/quotec\.json' -and $target -match 'symbol=SZ000034') {
+                $body = @{ error_code = 0; error_description = ""; data = @(@{
+                    symbol = "SZ000034"; current = 25.53; last_close = 25.20; open = 25.25; high = 25.60; low = 24.44
+                    chg = 0.33; percent = 1.31; avg_price = 25.199; volume = 18220000; amount = 459000000
+                    turnover_rate = 7.31; amplitude = 4.6; market_capital = 39800000000; is_trade = $false
+                    trade_session = 0; timestamp = 1786000485000
+                }) } | ConvertTo-Json -Depth 8 -Compress
+            }
             else {
                 throw "Unexpected stock-api target: $target"
             }
             $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-            $header = "HTTP/1.1 200 OK`r`nContent-Type: application/json; charset=utf-8`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+            $statusText = if ($statusCode -eq 200) { "OK" } else { "Service Unavailable" }
+            $header = "HTTP/1.1 $statusCode $statusText`r`nContent-Type: application/json; charset=utf-8`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
             $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
             $stream.Write($headerBytes, 0, $headerBytes.Length)
             $stream.Write($bodyBytes, 0, $bodyBytes.Length)
@@ -187,13 +234,13 @@ try {
     })
     Assert-True ([string]$initialize.result.protocolVersion -eq "2025-06-18") "stock-api MCP initialize protocol mismatch."
     Assert-True ([string]$initialize.result.serverInfo.name -eq "stock-api") "stock-api MCP identity mismatch."
-    Assert-True ([string]$initialize.result.serverInfo.version -eq "2.7.3") "stock-api MCP version mismatch."
+    Assert-True ([string]$initialize.result.serverInfo.version -eq "2.8.0") "stock-api MCP version mismatch."
     Write-Utf8JsonLine -Process $mcpProcess -Line '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
     $tools = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 2 -Request ([ordered]@{ jsonrpc = "2.0"; id = 2; method = "tools/list"; params = [ordered]@{} })
     $toolNames = @($tools.result.tools | ForEach-Object { [string]$_.name } | Sort-Object)
-    Assert-True ($toolNames.Count -eq 5) "stock-api MCP must expose exactly five tools."
-    foreach ($requiredTool in @("get_stock", "get_stocks", "get_klines", "search_stocks", "inspect_stock")) {
+    Assert-True ($toolNames.Count -eq 7) "stock-api MCP must expose exactly seven tools."
+    foreach ($requiredTool in @("get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock")) {
         Assert-True ($toolNames -contains $requiredTool) "stock-api MCP tool is missing: $requiredTool"
     }
 
@@ -218,12 +265,66 @@ try {
     Assert-True ([double]$history.result.structuredContent.response.klines[2].close -eq 24.99) "stock-api K-line close mismatch."
     Assert-True ([string]$history.result.structuredContent.response.klines[2].source -eq "eastmoney") "stock-api K-line source mismatch."
 
-    Assert-True $fixtureProcess.WaitForExit(10000) "stock-api fixture did not receive both provider requests."
+    $series = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 5 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 5; method = "tools/call"
+        params = [ordered]@{ name = "get_market_series"; arguments = [ordered]@{ code = "SZ000034"; source = "eastmoney"; period = "minute-5"; count = 2; adjust = "none" } }
+    })
+    $seriesErrorProperty = $series.result.PSObject.Properties["isError"]
+    Assert-True ($null -eq $seriesErrorProperty -or -not [bool]$seriesErrorProperty.Value) "stock-api get_market_series returned isError."
+    Assert-True ([string]$series.result.structuredContent.response.period -eq "minute-5") "stock-api market-series period mismatch."
+    Assert-True ([int]$series.result.structuredContent.response.count -eq 2) "stock-api market-series count mismatch."
+    Assert-True ([double]$series.result.structuredContent.response.klines[1].close -eq 24.99) "stock-api market-series close mismatch."
+
+    $fiveDay = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 6 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 6; method = "tools/call"
+        params = [ordered]@{ name = "get_market_series"; arguments = [ordered]@{ code = "SZ000034"; source = "eastmoney"; period = "five-day"; count = 2000; adjust = "none" } }
+    })
+    $fiveDayErrorProperty = $fiveDay.result.PSObject.Properties["isError"]
+    Assert-True ($null -eq $fiveDayErrorProperty -or -not [bool]$fiveDayErrorProperty.Value) "stock-api five-day market-series returned isError."
+    Assert-True ([int]$fiveDay.result.structuredContent.response.count -eq 5) "stock-api five-day series must retain the latest five trading dates."
+    Assert-True ([string]$fiveDay.result.structuredContent.response.period -eq "five-day") "stock-api five-day period mismatch."
+
+    $cachedHistory = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 7 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 7; method = "tools/call"
+        params = [ordered]@{ name = "get_klines"; arguments = [ordered]@{ code = "SZ000034"; source = "eastmoney"; period = "day"; count = 3; adjust = "none" } }
+    })
+    $cachedHistoryErrorProperty = $cachedHistory.result.PSObject.Properties["isError"]
+    Assert-True ($null -eq $cachedHistoryErrorProperty -or -not [bool]$cachedHistoryErrorProperty.Value) "stock-api cached history fallback returned isError."
+    Assert-True ([bool]$cachedHistory.result.structuredContent.response.cached) "stock-api did not mark the last-success history fallback."
+    Assert-True ([int]$cachedHistory.result.structuredContent.response.count -eq 3) "stock-api cached history fallback count mismatch."
+
+    $orderBook = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 8 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 8; method = "tools/call"
+        params = [ordered]@{ name = "get_order_book"; arguments = [ordered]@{ code = "SZ000034"; source = "xueqiu" } }
+    })
+    $orderBookErrorProperty = $orderBook.result.PSObject.Properties["isError"]
+    Assert-True ($null -eq $orderBookErrorProperty -or -not [bool]$orderBookErrorProperty.Value) "stock-api get_order_book returned isError."
+    $book = $orderBook.result.structuredContent.response.orderBook
+    Assert-True ([int]$book.levels -eq 2) "stock-api order book level count mismatch."
+    Assert-True ([double]$book.bids[0].price -eq 25.53 -and [double]$book.bids[0].volume -eq 152340) "stock-api order book best bid mismatch."
+    Assert-True ([double]$book.asks[0].price -eq 25.54) "stock-api order book best ask mismatch."
+    Assert-True ([double]$book.buyPercent -eq 49.24 -and [double]$book.netVolume -eq -11455) "stock-api order book imbalance mismatch."
+    Assert-True ([string]$book.source -eq "xueqiu") "stock-api order book source mismatch."
+    $tape = $orderBook.result.structuredContent.response.realtime
+    Assert-True ([double]$tape.now -eq 25.53) "stock-api realtime tape price mismatch."
+    Assert-True ([double]$tape.percent -eq 0.0131) "stock-api realtime tape percent normalization mismatch."
+    Assert-True ([double]$tape.avgPrice -eq 25.199 -and [double]$tape.turnoverRate -eq 7.31) "stock-api realtime tape intraday fields mismatch."
+
+    Assert-True $fixtureProcess.WaitForExit(10000) "stock-api fixture did not receive all provider requests."
     Assert-True ($fixtureProcess.ExitCode -eq 0) "stock-api fixture failed: $($fixtureProcess.StandardError.ReadToEnd())"
     $capturedRequests = @(Get-Content -Encoding UTF8 -LiteralPath $requestPath)
-    Assert-True ($capturedRequests.Count -eq 2) "stock-api fixture request count mismatch."
+    Assert-True ($capturedRequests.Count -eq 21) "stock-api fixture request count mismatch."
     Assert-True ($capturedRequests[0] -match 'push2delay\.eastmoney\.com/.*/stock/get') "stock-api quote did not use the declared upstream library."
-    Assert-True ($capturedRequests[1] -match 'push2his\.eastmoney\.com/.*/kline/get') "stock-api K-line did not use the declared upstream library."
+    Assert-True ($capturedRequests[1] -match '7\.push2his\.eastmoney\.com/.*/kline/get') "stock-api K-line did not prioritize the responsive upstream host."
+    Assert-True ($capturedRequests[1] -match 'end=20500101' -and $capturedRequests[1] -match 'lmt=3') "stock-api K-line request is not bounded to the requested row count."
+    Assert-True ($capturedRequests[1] -notmatch '(?:[?&])beg=') "stock-api K-line request must not ask Eastmoney for the full history."
+    Assert-True ($capturedRequests[5] -match '91\.push2his\.eastmoney\.com/.*/kline/get') "stock-api did not exhaust the bounded first host round."
+    Assert-True ($capturedRequests[6] -match '7\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[6] -match 'klt=101') "stock-api did not retry the provider host set after a transient failure."
+    Assert-True ($capturedRequests[7] -match '7\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[7] -match 'klt=5') "stock-api market-series did not use the declared Eastmoney interval."
+    Assert-True ($capturedRequests[8] -match '7\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[8] -match 'klt=5' -and $capturedRequests[8] -match 'lmt=2000') "stock-api five-day series did not use the multi-day Eastmoney interval."
+    Assert-True ($capturedRequests[18] -match '91\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[18] -match 'klt=101') "stock-api cached fallback did not exhaust the bounded retry attempts first."
+    Assert-True (($capturedRequests[19..20] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/pankou\.json') "stock-api order book did not query the Xueqiu ten-level endpoint."
+    Assert-True (($capturedRequests[19..20] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "stock-api order book did not query the Xueqiu realtime endpoint."
 
     $unsafeProcess = Start-RedirectedProcess -Executable $nodePath -Arguments @($entryPath) -Environment @{ LOOM_STOCK_API_TEST_BASE_URL = "https://example.com/" }
     Assert-True $unsafeProcess.WaitForExit(5000) "stock-api unsafe fixture override did not exit."
@@ -246,4 +347,4 @@ finally {
     }
 }
 
-Write-Host "Independent stock-api MCP server contract passed: version=2.7.3 tools=5 quote=24.99 candles=3"
+Write-Host "Independent stock-api MCP server contract passed: version=2.8.0 tools=7 quote=24.99 candles=3 bounded-history=verified series=2 five-day=5 retry=verified cache=verified order-book=2-levels tape=xueqiu"

@@ -46,8 +46,8 @@ $expected = [ordered]@{
     }
     "stock-api" = [ordered]@{
         qualifiedId = "neuro.official/stock-api"
-        version = "2.7.3"
-        tools = @("get_stock", "get_stocks", "get_klines", "search_stocks", "inspect_stock")
+        version = "2.8.0"
+        tools = @("get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock")
         runtime = "runtime/stock-api-mcp.ps1"
     }
 }
@@ -108,4 +108,4 @@ foreach ($entry in $expected.GetEnumerator()) {
     }
 }
 
-Write-Host "Independent MCP server package contract passed: packages=2 stock-api=2.7.3"
+Write-Host "Independent MCP server package contract passed: packages=2 stock-api=2.8.0 upstream=2.7.3"

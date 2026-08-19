@@ -5223,8 +5223,82 @@ fn attach_and_mount_surface(
             surface_resources,
             shared_images,
         );
+    } else {
+        dispose_superseded_surface_attachments(
+            &instance_id,
+            attachment_id,
+            request.hook_node_id.trim(),
+            request.device_id.trim(),
+            surface_instances,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+            authenticated_device_id,
+        )?;
     }
     Ok(mounted)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispose_superseded_surface_attachments(
+    current_instance_id: &str,
+    current_attachment_id: &str,
+    hook_node_id: &str,
+    device_id: &str,
+    surface_instances: &SharedSurfaceInstanceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+    surface_resources: &SharedSurfaceResourceStore,
+    shared_images: &SharedImageStoreHandle,
+    authenticated_device_id: Option<&str>,
+) -> Result<()> {
+    let superseded = {
+        let store = surface_instances
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+        let mut superseded = Vec::new();
+        for instance in store.list() {
+            for attachment in instance.attachments.values() {
+                if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed
+                    || (instance.descriptor.instance_id == current_instance_id
+                        && attachment.descriptor.attachment_id == current_attachment_id)
+                    || attachment.descriptor.hook_node_id != hook_node_id
+                    || attachment.descriptor.device_id != device_id
+                {
+                    continue;
+                }
+                superseded.push((
+                    instance.descriptor.instance_id.clone(),
+                    attachment.descriptor.attachment_id.clone(),
+                    attachment.lifecycle_revision,
+                ));
+            }
+        }
+        superseded
+    };
+
+    for (instance_id, attachment_id, lifecycle_revision) in superseded {
+        let event = SurfaceLifecycleEvent {
+            protocol_version: loom_protocol::SURFACE_PROTOCOL_VERSION.to_owned(),
+            instance_id: instance_id.clone(),
+            attachment_id,
+            state: loom_protocol::SurfaceLifecycleState::Disposed,
+            revision: lifecycle_revision.saturating_add(1),
+        };
+        let body = serde_json::to_string(&event)?;
+        let (status, response) = transition_surface_lifecycle(
+            &instance_id,
+            &body,
+            surface_instances,
+            hook_bridge,
+            surface_resources,
+            shared_images,
+            authenticated_device_id,
+        )?;
+        if status != 200 {
+            anyhow::bail!("superseded Surface attachment disposal returned {status}: {response}");
+        }
+    }
+    Ok(())
 }
 
 fn attach_surface_instance(
@@ -16119,34 +16193,62 @@ fn surface_snapshot_recovery_messages_for_device(
     let Ok(store) = surface_instances.lock() else {
         return Vec::new();
     };
-    let mut messages = store
-        .list()
+    let mut latest_by_binding =
+        BTreeMap::<(String, String), (u64, String, u64, SurfaceSnapshot)>::new();
+    for instance in store.list() {
+        let instance_id = instance.descriptor.instance_id.clone();
+        let generation = instance.descriptor.generation;
+        for attachment in instance.attachments.into_values() {
+            if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
+                continue;
+            }
+            if authenticated_device_id
+                .is_some_and(|device_id| attachment.descriptor.device_id != device_id)
+            {
+                continue;
+            }
+            let Some(snapshot) = attachment.snapshot else {
+                continue;
+            };
+            let key = (
+                attachment.descriptor.device_id,
+                attachment.descriptor.hook_node_id,
+            );
+            let replace = match latest_by_binding.get(&key) {
+                Some((created_at_ms, existing_instance_id, _, _)) => {
+                    (instance.created_at_ms, instance_id.as_str())
+                        > (*created_at_ms, existing_instance_id.as_str())
+                }
+                None => true,
+            };
+            if replace {
+                latest_by_binding.insert(
+                    key,
+                    (
+                        instance.created_at_ms,
+                        instance_id.clone(),
+                        generation,
+                        snapshot,
+                    ),
+                );
+            }
+        }
+    }
+    let mut messages = latest_by_binding
         .into_iter()
-        .flat_map(|instance| {
-            instance
-                .attachments
-                .into_values()
-                .filter_map(move |attachment| {
-                    if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
-                        return None;
-                    }
-                    if authenticated_device_id
-                        .is_some_and(|device_id| attachment.descriptor.device_id != device_id)
-                    {
-                        return None;
-                    }
-                    let snapshot = attachment.snapshot?;
-                    serde_json::to_string(&json!({
-                        "method": SURFACE_EVENT_SNAPSHOT,
-                        "params": {
-                            "hookNodeId": attachment.descriptor.hook_node_id,
-                            "snapshot": snapshot,
-                            "generation": instance.descriptor.generation,
-                        },
-                    }))
-                    .ok()
-                })
-        })
+        .filter_map(
+            |((_device_id, hook_node_id), (_created_at_ms, _instance_id, generation, snapshot))| {
+                serde_json::to_string(&json!({
+                    "method": SURFACE_EVENT_SNAPSHOT,
+                    "params": {
+                        "hookNodeId": hook_node_id,
+                        "snapshot": snapshot,
+                        "generation": generation,
+                    },
+                }))
+                .ok()
+            },
+        )
         .collect::<Vec<_>>();
     messages.extend(
         store
@@ -27353,6 +27455,242 @@ def run(args):
                 .list()
                 .len(),
             1
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn surface_attach_replaces_prior_binding_and_recovery_selects_one_instance() {
+        let root = unique_temp_dir("surface-attachment-rebind");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        runtime
+            .framework_registry
+            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .expect("install process framework");
+        let scene = json!({
+            "protocolVersion": "loom.surface.v1",
+            "scene": {
+                "id": "root",
+                "type": "column",
+                "children": [{ "id": "price", "type": "text", "props": { "text": "101.20" } }]
+            },
+            "authoritativeState": { "price": 101.2 }
+        });
+        loom_tool_registry::install::install_art_from_zip(
+            &surface_art_package_zip("surface-rebind", "1.0.0", &scene, "independent"),
+            &root,
+            &runtime.framework_registry,
+            &runtime.tool_registry,
+        )
+        .expect("install Surface Art");
+
+        let mount_without_rebind = || {
+            let (status, created) = route_with_runtime(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/surfaces/instances",
+                    &[],
+                    Some(
+                        &json!({
+                            "artId": "surface-rebind",
+                            "expectedVersion": "1.0.0"
+                        })
+                        .to_string(),
+                    ),
+                ),
+            )
+            .expect("create Surface instance");
+            assert_eq!(status, 201, "{created}");
+            let created: Value = serde_json::from_str(&created).expect("created JSON");
+            let instance_id = created["descriptor"]["instanceId"]
+                .as_str()
+                .expect("instance id")
+                .to_owned();
+            let attach_path = format!("/v1/surfaces/instances/{instance_id}/attachments");
+            let (status, attached) = route_with_runtime(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    &attach_path,
+                    &[],
+                    Some(
+                        &json!({
+                            "hookNodeId": "hook-node:rebind",
+                            "deviceId": "device-000-local",
+                            "capabilities": default_declarative_surface_host_capabilities()
+                        })
+                        .to_string(),
+                    ),
+                ),
+            )
+            .expect("attach Surface instance");
+            assert_eq!(status, 201, "{attached}");
+            let attached: Value = serde_json::from_str(&attached).expect("attached JSON");
+            let attachment_id = attached["descriptor"]["attachmentId"]
+                .as_str()
+                .expect("attachment id")
+                .to_owned();
+            let mount_path = format!("/v1/surfaces/instances/{instance_id}/mount");
+            let (status, mounted) = route_with_runtime(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    &mount_path,
+                    &[],
+                    Some(&json!({ "attachmentId": attachment_id }).to_string()),
+                ),
+            )
+            .expect("mount Surface instance");
+            assert_eq!(status, 200, "{mounted}");
+            (instance_id, attachment_id)
+        };
+
+        let (first_instance_id, first_attachment_id) = mount_without_rebind();
+        let (second_instance_id, second_attachment_id) = mount_without_rebind();
+        let expected_recovery_instance = runtime
+            .surface_instances
+            .lock()
+            .expect("Surface store")
+            .list()
+            .into_iter()
+            .filter(|instance| {
+                instance.attachments.values().any(|attachment| {
+                    attachment.descriptor.hook_node_id == "hook-node:rebind"
+                        && attachment.descriptor.device_id == "device-000-local"
+                        && attachment.lifecycle != loom_protocol::SurfaceLifecycleState::Disposed
+                        && attachment.snapshot.is_some()
+                })
+            })
+            .map(|instance| (instance.created_at_ms, instance.descriptor.instance_id))
+            .max()
+            .expect("latest recovery instance")
+            .1;
+        let recovery = surface_snapshot_recovery_messages(&runtime.surface_instances);
+        assert_eq!(
+            recovery.len(),
+            1,
+            "duplicate recovery snapshots: {recovery:?}"
+        );
+        let recovered: Value = serde_json::from_str(&recovery[0]).expect("recovery JSON");
+        assert_eq!(
+            recovered["params"]["snapshot"]["instanceId"],
+            expected_recovery_instance
+        );
+
+        let (surface_rx, _surface_subscription) = register_hook_bridge_subscription(
+            &runtime
+                .hook_bridge
+                .lock()
+                .expect("lock hook bridge")
+                .broadcast_hub,
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
+        );
+        let body = json!({
+            "artId": "surface-rebind",
+            "expectedVersion": "1.0.0",
+            "hookNodeId": "hook-node:rebind",
+            "deviceId": "device-000-local",
+            "capabilities": default_declarative_surface_host_capabilities()
+        })
+        .to_string();
+        let (status, mounted) = route_with_runtime(
+            &runtime,
+            &parsed_request("POST", "/v1/surfaces/attach", &[], Some(&body)),
+        )
+        .expect("replace Surface binding");
+        assert_eq!(status, 200, "{mounted}");
+        let mounted: Value = serde_json::from_str(&mounted).expect("mounted JSON");
+        let current_instance_id = mounted["instance"]["descriptor"]["instanceId"]
+            .as_str()
+            .expect("current instance id")
+            .to_owned();
+        let current_attachment_id = mounted["instance"]["attachments"]
+            .as_object()
+            .expect("current attachments")
+            .keys()
+            .next()
+            .expect("current attachment id")
+            .to_owned();
+
+        let instances = runtime
+            .surface_instances
+            .lock()
+            .expect("Surface store")
+            .list();
+        let bindings = instances
+            .iter()
+            .flat_map(|instance| {
+                instance.attachments.values().filter_map(|attachment| {
+                    (attachment.descriptor.hook_node_id == "hook-node:rebind"
+                        && attachment.descriptor.device_id == "device-000-local")
+                        .then_some((
+                            instance.descriptor.instance_id.as_str(),
+                            attachment.descriptor.attachment_id.as_str(),
+                            &attachment.lifecycle,
+                            attachment.snapshot.is_some(),
+                        ))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|(_, _, lifecycle, _)| {
+                    **lifecycle != loom_protocol::SurfaceLifecycleState::Disposed
+                })
+                .count(),
+            1
+        );
+        assert!(bindings
+            .iter()
+            .any(|(instance_id, attachment_id, lifecycle, snapshot)| {
+                *instance_id == current_instance_id
+                    && *attachment_id == current_attachment_id
+                    && **lifecycle == loom_protocol::SurfaceLifecycleState::Mounted
+                    && *snapshot
+            }));
+        for (instance_id, attachment_id) in [
+            (&first_instance_id, &first_attachment_id),
+            (&second_instance_id, &second_attachment_id),
+        ] {
+            assert!(bindings.iter().any(
+                |(candidate_instance, candidate_attachment, lifecycle, snapshot)| {
+                    *candidate_instance == instance_id
+                        && *candidate_attachment == attachment_id
+                        && **lifecycle == loom_protocol::SurfaceLifecycleState::Disposed
+                        && !*snapshot
+                }
+            ));
+        }
+
+        let broadcasts = (0..6)
+            .map(|_| {
+                surface_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("Surface rebind broadcast")
+            })
+            .collect::<Vec<_>>();
+        let disposed_instances = broadcasts
+            .iter()
+            .filter_map(|message| serde_json::from_str::<Value>(message).ok())
+            .filter(|message| message["method"] == SURFACE_EVENT_DISPOSE)
+            .filter_map(|message| message["params"]["instanceId"].as_str().map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            disposed_instances,
+            BTreeSet::from([first_instance_id, second_instance_id])
+        );
+        let recovery = surface_snapshot_recovery_messages(&runtime.surface_instances);
+        assert_eq!(recovery.len(), 1);
+        let recovered: Value = serde_json::from_str(&recovery[0]).expect("recovery JSON");
+        assert_eq!(
+            recovered["params"]["snapshot"]["instanceId"],
+            current_instance_id
         );
         let _ = fs::remove_dir_all(root);
     }

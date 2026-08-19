@@ -382,8 +382,8 @@ function Assert-McpServerPackages {
         }
         "stock-api" = [ordered]@{
             qualifiedId = "neuro.official/stock-api"
-            version = "2.7.3"
-            tools = @("get_stock", "get_stocks", "get_klines", "search_stocks", "inspect_stock")
+            version = "2.8.0"
+            tools = @("get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock")
         }
     }
     $packageRecords = @(Get-ManifestRecord -Manifest $Manifest -Name "mcpServerPackages")
@@ -569,7 +569,10 @@ function Assert-SampleArtPackages {
                 Assert-True -Condition ($entryNames -contains "surface/fallback.json") -Message "Stock Monitor ZIP is missing the declarative fallback."
                 Assert-Equal -Expected "stock-api" -Actual ([string]$artManifest.metadata.marketData.providerId) -Message "Stock Monitor provider metadata mismatch."
                 Assert-Equal -Expected "neuro.official/stock-api" -Actual ([string]$artManifest.metadata.mcp.packageId) -Message "Stock Monitor MCP package metadata mismatch."
-                Assert-Equal -Expected 2 -Actual @($artManifest.metadata.mcp.calls).Count -Message "Stock Monitor MCP call count mismatch."
+                Assert-Equal -Expected 3 -Actual @($artManifest.metadata.mcp.calls).Count -Message "Stock Monitor MCP call count mismatch."
+                $orderBookCalls = @($artManifest.metadata.mcp.calls | Where-Object { [string]$_.toolName -eq "get_order_book" })
+                Assert-Equal -Expected 1 -Actual $orderBookCalls.Count -Message "Stock Monitor must declare one order-book MCP call."
+                Assert-Equal -Expected "xueqiu" -Actual ([string]$orderBookCalls[0].arguments.source) -Message "Stock Monitor order-book source mismatch."
                 Assert-Equal -Expected $false -Actual ([bool]$artManifest.metadata.marketData.trading) -Message "Stock Monitor must not advertise trading."
             }
         }

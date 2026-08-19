@@ -69,15 +69,47 @@
             }
           },
           {
+            "id": "period",
+            "type": "select",
+            "props": {
+              "value": "minute",
+              "options": [
+                { "value": "minute", "label": "分时" },
+                { "value": "five-day", "label": "五日" },
+                { "value": "day", "label": "日 K" },
+                { "value": "week", "label": "周 K" },
+                { "value": "month", "label": "月 K" },
+                { "value": "quarter", "label": "季 K" },
+                { "value": "year", "label": "年 K" },
+                { "value": "minute-120", "label": "120 分钟" },
+                { "value": "minute-60", "label": "60 分钟" },
+                { "value": "minute-30", "label": "30 分钟" },
+                { "value": "minute-15", "label": "15 分钟" },
+                { "value": "minute-5", "label": "5 分钟" },
+                { "value": "minute-1", "label": "1 分钟" }
+              ]
+            },
+            "events": {
+              "change": "stock_period_commit"
+            },
+            "accessibility": {
+              "label": "行情周期"
+            }
+          },
+          {
             "id": "interval",
             "type": "select",
             "props": {
-              "value": "60",
+              "value": "5",
               "options": [
+                { "value": "1", "label": "1 秒" },
+                { "value": "3", "label": "3 秒" },
+                { "value": "5", "label": "5 秒" },
+                { "value": "15", "label": "15 秒" },
                 { "value": "30", "label": "30 秒" },
-                { "value": "60", "label": "60 秒" },
-                { "value": "120", "label": "2 分钟" },
-                { "value": "300", "label": "5 分钟" }
+                { "value": "60", "label": "1 分" },
+                { "value": "120", "label": "2 分" },
+                { "value": "300", "label": "5 分" }
               ]
             },
             "events": {
@@ -177,11 +209,17 @@
     "marketScope": "A 股 / 港股 / 美股",
     "code": "SZ000034",
     "market": "SZ",
-    "intervalSeconds": 60,
+    "intervalSeconds": 5,
+    "period": "minute",
+    "periodLabel": "分时",
+    "marketStatus": "closed",
+    "lastTradingDate": null,
     "status": "idle",
     "statusText": "等待首次刷新",
     "quote": null,
     "history": [],
+    "orderBook": null,
+    "liveTape": null,
     "lastUpdatedAt": null,
     "error": null,
     "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"

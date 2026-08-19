@@ -142,6 +142,8 @@ separate projects.
   [details](./phase-74-image-search-mcp-service-visibility.md)
 - [x] Phase 75: stock-api MCP 股票可视化 Art
   [details](./phase-75-stock-api-mcp-stock-monitor-art.md)
+- [x] Phase 76: 股票 Surface 悬浮读数、市场涨跌配色与准实时盯盘
+  [details](./phase-76-stock-hover-market-colors-live-tick.md)
 - [x] Standalone repository publication and Neuro submodule integration
   [details](../superpowers/plans/2026-07-20-loom-standalone-repository-migration.md)
 
@@ -488,6 +490,21 @@ Latest completed phases:
   `release/Hook/20260815-stock-api-mcp-r44/hook.exe`; both represent existing
   dirty worktrees rather than clean-source publication. See
   `docs/progress/phase-75-stock-api-mcp-stock-monitor-art.md`.
+- Phase 76 implementation and current-worktree R63/R71 publication are complete.
+  The stock Surface now shows a crosshair tooltip with the full reading of the
+  hovered point, colors gains and losses per market convention (red-up for
+  SH/SZ/BJ/HK, green-up elsewhere), and polls a lightweight
+  `stock_tick_refresh` action as fast as one second while a slow 60-second
+  timer keeps the full snapshot fresh. `stock-api` 2.8.0 adds a probed Xueqiu
+  `get_order_book` tool that returns the ten-level depth plus the intraday
+  realtime tape; the order book is an optional enhancement, so a failed depth
+  call keeps the tick ready and retains the last known levels. Xueqiu web has
+  no websocket market channel, so this round is near-realtime polling and the
+  daemon-initiated push channel remains future work. The candidates are
+  `release/Loom/20260819-stock-orderbook-live-r63` and
+  `release/Hook/20260819-stock-orderbook-live-r71/hook.exe`; both are dirty
+  worktree builds. See
+  `docs/progress/phase-76-stock-hover-market-colors-live-tick.md`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local
@@ -531,17 +548,20 @@ Completed Phase 8 tasks:
 
 Last completed phase:
 
-- Phase 75 completed the pinned stock-api MCP package, generic MCP multi-call
-  execution, the stock quote/K-line Surface Art, full source gates, and verified
-  Hook/Loom R44 current-worktree artifacts.
+- Phase 76 completed the stock Surface hover readout, market-aware up/down
+  colors, the Xueqiu order-book/tape tool in `stock-api` 2.8.0, the
+  near-realtime `stock_tick_refresh` channel, and verified Loom R63 / Hook R71
+  current-worktree artifacts.
 
 Current closure phase:
 
-- None. Phase 75 has passed implementation, deterministic native MCP/provider
-  contracts, 7-Art/2-MCP installed execution, full Loom/Hook source gates, and
-  every packaged Loom release-verifier smoke. External market-provider uptime,
-  Authenticode signing, and a separate manual long-running native GUI session are
-  documented operating limits rather than hidden completion claims.
+- None. Phase 76 has passed the stock-api native MCP contract, the Stock Monitor
+  Art contract, MCP and sample-Art package contracts, the 7-Art/2-MCP installed
+  execution smoke, and every packaged Loom release-verifier smoke. Xueqiu has no
+  websocket market channel, so server-initiated push remains explicitly future
+  work; external market-provider uptime, Authenticode signing, and a separate
+  manual long-running native GUI session are documented operating limits rather
+  than hidden completion claims.
 
 Repository status:
 

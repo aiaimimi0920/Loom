@@ -447,7 +447,7 @@ try {
     Assert-True ([string]$installedImageSearchMcp.server.id -eq "neuro-image-search") "Independent image-search MCP package was not installed."
     $installedStockApiMcp = Install-McpZip -Url $baseUrl -ZipPath $stockApiMcpFixtureZip
     Assert-True ([string]$installedStockApiMcp.server.id -eq "stock-api") "Independent stock-api MCP package was not installed."
-    Assert-True ([string]$installedStockApiMcp.server.package.version -eq "2.7.3") "Installed stock-api MCP version mismatch."
+    Assert-True ([string]$installedStockApiMcp.server.package.version -eq "2.8.0") "Installed stock-api MCP version mismatch."
     $configuredMcp = Invoke-LoomJson `
         -Method Put `
         -Url "$baseUrl/v1/mcp/servers/neuro-image-search/credentials" `
@@ -567,7 +567,7 @@ try {
     $stockFormalQuote = $stockFinal.record.latestResult.outputs.quote.value
     Assert-True ([string]$stockFormalQuote.provider -eq "stock-api") "Installed Stock Monitor provider mismatch."
     Assert-True ([string]$stockFormalQuote.providerVersion -eq "2.7.3") "Installed Stock Monitor provider version mismatch."
-    Assert-True ([string]$stockFormalQuote.source -eq "tencent") "Installed Stock Monitor source mismatch."
+    Assert-True ([string]$stockFormalQuote.source -eq "eastmoney") "Installed Stock Monitor source mismatch."
     Assert-True ([string]$stockFormalQuote.code -eq "SZ000034") "Installed Stock Monitor code mismatch."
     Assert-True ([double]$stockFormalQuote.price -eq 24.99) "Installed Stock Monitor price mismatch."
     $installedStockHistoryRows = @($stockFormalQuote.history.rows)
@@ -578,10 +578,8 @@ try {
     $stockFixtureError = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiStderrPath
     Assert-True ([string]::IsNullOrWhiteSpace($stockFixtureError)) "Stock Monitor API fixture failed: $stockFixtureError"
     $capturedStockRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiRequestPath
-    Assert-True ($capturedStockRequests -match 'GET https://qt\.gtimg\.cn/q=sz000034') "Installed stock-api MCP did not inspect the Tencent quote source."
-    Assert-True ($capturedStockRequests -match 'GET https://hq\.sinajs\.cn/list=sz000034') "Installed stock-api MCP did not inspect the Sina quote source."
     Assert-True ($capturedStockRequests -match 'GET https://push2delay\.eastmoney\.com/api/qt/stock/get\?') "Installed stock-api MCP did not inspect the Eastmoney quote source."
-    Assert-True ($capturedStockRequests -match 'GET https://web\.ifzq\.gtimg\.cn/appstock/app/kline/kline\?') "Installed stock-api MCP did not request daily K-line data."
+    Assert-True ($capturedStockRequests -match 'GET https://7\.push2his\.eastmoney\.com/api/qt/stock/kline/get\?') "Installed stock-api MCP did not request daily K-line data from the preferred history host."
     Write-Host "PASS installed/executed Surface custom-stock-monitor"
 
     Assert-True $imageSearchApiFixture.WaitForExit(10000) "Image-search API fixture did not observe both the search and image requests."

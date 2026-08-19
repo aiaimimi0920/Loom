@@ -77,8 +77,8 @@ function Add-StockApiNodeRuntime {
     if ([string]$vendoredPackage.name -ne "stock-api" -or [string]$vendoredPackage.version -ne [string]$upstreamMetadata.version) {
         throw "Vendored stock-api package identity does not match UPSTREAM.json."
     }
-    if ([string]$vendoredPackage.version -ne [string]$ServerManifest.version -or [string]$vendoredPackage.license -ne "MIT") {
-        throw "Vendored stock-api version or license does not match the MCP server manifest."
+    if ([string]$vendoredPackage.version -ne [string]$upstreamMetadata.version -or [string]$vendoredPackage.license -ne "MIT") {
+        throw "Vendored stock-api version or license does not match UPSTREAM.json."
     }
     $tree = Get-DirectoryTreeDigest -Root $vendoredRoot
     if ([int]$tree.count -ne [int]$upstreamMetadata.vendoredFileCount -or

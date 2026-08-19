@@ -1,7 +1,7 @@
 {
   "id": "custom-stock-monitor",
   "name": "股票盯盘",
-  "description": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价和日 K 线，不提供交易功能。",
+  "description": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -28,16 +28,16 @@
       "id": "interval_seconds",
       "label": "刷新间隔（秒）",
       "widget": "slider",
-      "default": 60,
-      "min": 30,
+      "default": 5,
+      "min": 1,
       "max": 300,
-      "step": 30,
+      "step": 1,
       "data_type": "number"
     }
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "1.1.0",
+      "version": "1.4.0",
       "publisher": {
         "id": "neuro.official",
         "name": "Neuro",
@@ -56,8 +56,8 @@
         "en-US": "Stock Monitor"
       },
       "descriptions": {
-        "zh-CN": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价和日 K 线，不提供交易功能。",
-        "en-US": "Monitors A-share, Hong Kong, and US quotes and daily candles through an independent stock-api MCP service without trading."
+        "zh-CN": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
+        "en-US": "Monitors A-share, Hong Kong, and US quotes plus intraday and multi-period candles through an independent stock-api MCP service without trading."
       }
     },
     "dependencies": {
@@ -66,7 +66,7 @@
       "mcpServers": [
         {
           "id": "neuro.official/stock-api",
-          "version": "=2.7.3"
+          "version": "=2.8.0"
         }
       ]
     },
@@ -97,8 +97,8 @@
         "requiredNodes": ["column", "row", "text", "input", "select", "button", "divider"],
         "requiredCapabilities": [],
         "minimumSize": {
-          "width": 360,
-          "height": 320
+          "width": 760,
+          "height": 640
         },
         "actions": [
           {
@@ -109,7 +109,7 @@
             "idempotent": true,
             "confirmation": false,
             "cancelable": true,
-            "timeoutMs": 30000,
+            "timeoutMs": 50000,
             "progress": true
           },
           {
@@ -120,7 +120,7 @@
             "idempotent": true,
             "confirmation": false,
             "cancelable": true,
-            "timeoutMs": 30000,
+            "timeoutMs": 50000,
             "progress": true
           },
           {
@@ -133,6 +133,28 @@
             "cancelable": false,
             "timeoutMs": 5000,
             "progress": false
+          },
+          {
+            "id": "stock_period_commit",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": true,
+            "timeoutMs": 50000,
+            "progress": true
+          },
+          {
+            "id": "stock_tick_refresh",
+            "risk": "low",
+            "offlinePolicy": "reject",
+            "concurrency": "replace_latest",
+            "idempotent": true,
+            "confirmation": false,
+            "cancelable": true,
+            "timeoutMs": 12000,
+            "progress": false
           }
         ],
         "instanceMode": "independent",
@@ -143,23 +165,30 @@
     "mcp": {
       "serverId": "stock-api",
       "packageId": "neuro.official/stock-api",
-      "version": "=2.7.3",
+      "version": "=2.8.0",
       "calls": [
         {
           "id": "quote",
           "toolName": "get_stock",
           "arguments": {
-            "source": "auto"
+            "source": "eastmoney"
           }
         },
         {
           "id": "history",
-          "toolName": "get_klines",
+          "toolName": "get_market_series",
           "arguments": {
-            "source": "auto",
+            "source": "eastmoney",
             "period": "day",
-            "count": 60,
+            "count": 2000,
             "adjust": "none"
+          }
+        },
+        {
+          "id": "orderbook",
+          "toolName": "get_order_book",
+          "arguments": {
+            "source": "xueqiu"
           }
         }
       ],
@@ -168,6 +197,9 @@
           "arguments": {
             "code": {
               "from": ["payload.code", "authoritativeState.code"]
+            },
+            "period": {
+              "from": ["authoritativeState.period"]
             }
           }
         },
@@ -175,11 +207,33 @@
           "arguments": {
             "code": {
               "from": ["payload.value", "authoritativeState.code"]
+            },
+            "period": {
+              "from": ["authoritativeState.period"]
             }
           }
         },
         "stock_interval_commit": {
           "calls": []
+        },
+        "stock_period_commit": {
+          "calls": ["history"],
+          "arguments": {
+            "code": {
+              "from": ["authoritativeState.code"]
+            },
+            "period": {
+              "from": ["payload.value", "authoritativeState.period"]
+            }
+          }
+        },
+        "stock_tick_refresh": {
+          "calls": ["quote", "orderbook"],
+          "arguments": {
+            "code": {
+              "from": ["payload.code", "authoritativeState.code"]
+            }
+          }
         }
       }
     },
@@ -187,14 +241,14 @@
       "providerId": "stock-api",
       "providerName": "stock-api",
       "upstreamVersion": "2.7.3",
-      "sources": ["tencent", "sina", "eastmoney"],
+      "sources": ["tencent", "sina", "eastmoney", "xueqiu"],
       "marketScope": "A 股 / 港股 / 美股",
       "apiKeyRequired": false,
       "trading": false,
       "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
     },
     "plugin": {
-      "packageVersion": "1.1.0",
+      "packageVersion": "1.4.0",
       "runtimeMode": "surface"
     }
   }
