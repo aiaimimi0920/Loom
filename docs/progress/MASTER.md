@@ -505,6 +505,16 @@ Latest completed phases:
   `release/Hook/20260819-stock-orderbook-live-r71/hook.exe`; both are dirty
   worktree builds. See
   `docs/progress/phase-76-stock-hover-market-colors-live-tick.md`.
+- Phase 77 implementation is complete in the current Loom worktree. Stock API
+  wrapper 2.9.0 preserves the aggregate quote/history providers and adds a
+  pysnowball 0.1.8-compatible Node adapter, optional `LOOM_PYSNOWBALL_TOKEN`
+  depth authentication, response byte limits, cache TTL/age metadata, and BJ
+  secid normalization. Stock Monitor Art 1.5.0 now sends orderbook-only ticks,
+  recovers the authoritative quote, prefers fresh live tape only while open,
+  uses the latest trading-day close while closed, and rejects over-age cached
+  depth/tape. Surface revision/timer regression tests and package/SBOM/license
+  contracts pass. See
+  `docs/progress/phase-77-stock-pysnowball-freshness.md`.
 
 - Phase 38 is complete with regenerated release evidence. It removes remaining
   user-visible English and internal daemon wording from the desktop local
@@ -549,13 +559,13 @@ Completed Phase 8 tasks:
 Last completed phase:
 
 - Phase 76 completed the stock Surface hover readout, market-aware up/down
-  colors, the Xueqiu order-book/tape tool in `stock-api` 2.8.0, the
+  colors, the Xueqiu order-book/tape tool in `stock-api` 2.9.0, the
   near-realtime `stock_tick_refresh` channel, and verified Loom R63 / Hook R71
   current-worktree artifacts.
 
 Current closure phase:
 
-- None. Phase 76 has passed the stock-api native MCP contract, the Stock Monitor
+- None. Phase 77 has passed the stock-api native MCP contract, the Stock Monitor
   Art contract, MCP and sample-Art package contracts, the 7-Art/2-MCP installed
   execution smoke, and every packaged Loom release-verifier smoke. Xueqiu has no
   websocket market channel, so server-initiated push remains explicitly future

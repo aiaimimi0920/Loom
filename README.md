@@ -341,7 +341,7 @@ over stdio MCP and calls the Brave image-search API without an npm or `npx`
 runtime dependency. The Art manifest and Art settings never own this key.
 
 The packaged `股票盯盘` Art similarly depends on the independently installed
-`neuro.official/stock-api` MCP server package at exact version `2.8.0`, which
+`neuro.official/stock-api` MCP server package at exact version `2.9.0`, which
 pins the upstream `stock-api@2.7.3` library. Loom ships that upstream library
 together with a pinned Node.js runtime, so execution
 does not install npm packages or invoke `npx`. The generic `mcp` Framework makes
@@ -350,11 +350,14 @@ while the Art runtime converts the structured responses into its candlestick
 visualization, ten-level depth panel, and formal market-data output. Gains and
 losses follow the convention of the quoted market, so SH/SZ/BJ/HK render up in
 red and other markets render up in green. The package supports the upstream
-library's A-share, Hong Kong, and US code formats and does not expose trading
-actions. Depth and the intraday realtime tape come from Xueqiu's anonymous
-realtime endpoints and are optional enhancements: when they are unavailable the
-quote and K-line path keeps working. Live monitoring is client-side polling; no
-provider on this path offers a websocket push channel.
+library's A-share, Hong Kong, and US code formats, including BJ codes, and does
+not expose trading actions. The 2.9.0 wrapper keeps Eastmoney/Sina/Tencent
+aggregation for full quotes and history, and adds a pysnowball-compatible Node
+adapter for live `quotec`/`pankou` semantics. Anonymous `quotec` works without a
+credential; an optional `LOOM_PYSNOWBALL_TOKEN` Cookie enables the credentialed
+depth path. The existing Xueqiu-compatible request path remains the automatic
+fallback, so the Art still works without a token. Live monitoring is bounded
+client-side polling; neither provider offers a websocket market channel.
 
 Every Art parameter can also switch from a literal default to a typed global
 encrypted value. Global values declare `string`, `number`, `integer`, `boolean`,

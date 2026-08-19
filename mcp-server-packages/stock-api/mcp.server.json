@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "stock-api",
   "name": "股票行情",
-  "description": "通过固定版本 stock-api 提供标准化股票报价、K 线、分时、十档盘口、搜索和数据源检查工具。",
-  "version": "2.8.0",
+  "description": "通过固定版本 stock-api 提供标准化聚合行情，并以 pysnowball 兼容实时源和既有 Xueqiu 回退提供十档盘口。",
+  "version": "2.9.0",
   "publisher": {
     "id": "neuro.official",
     "name": "Neuro"
@@ -14,5 +14,15 @@
     "args": []
   },
   "tools": ["get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock"],
-  "credentials": []
+  "credentials": [
+    {
+      "id": "pysnowball_token",
+      "label": "雪球 Cookie（可选）",
+      "required": false,
+      "target": {
+        "kind": "env",
+        "name": "LOOM_PYSNOWBALL_TOKEN"
+      }
+    }
+  ]
 }

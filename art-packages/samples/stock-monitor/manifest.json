@@ -1,7 +1,7 @@
 {
   "id": "custom-stock-monitor",
   "name": "股票盯盘",
-  "description": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
+  "description": "通过独立 stock-api MCP 服务聚合行情，并以 pysnowball 兼容实时源观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -37,7 +37,7 @@
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "1.4.0",
+      "version": "1.5.0",
       "publisher": {
         "id": "neuro.official",
         "name": "Neuro",
@@ -56,8 +56,8 @@
         "en-US": "Stock Monitor"
       },
       "descriptions": {
-        "zh-CN": "通过独立 stock-api MCP 服务观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
-        "en-US": "Monitors A-share, Hong Kong, and US quotes plus intraday and multi-period candles through an independent stock-api MCP service without trading."
+        "zh-CN": "通过独立 stock-api MCP 服务聚合行情，并以 pysnowball 兼容实时源观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
+        "en-US": "Monitors A-share, Hong Kong, and US quotes plus intraday and multi-period candles through stock-api aggregation and a pysnowball-compatible live source, without trading."
       }
     },
     "dependencies": {
@@ -66,7 +66,7 @@
       "mcpServers": [
         {
           "id": "neuro.official/stock-api",
-          "version": "=2.8.0"
+          "version": "=2.9.0"
         }
       ]
     },
@@ -153,7 +153,7 @@
             "idempotent": true,
             "confirmation": false,
             "cancelable": true,
-            "timeoutMs": 12000,
+            "timeoutMs": 30000,
             "progress": false
           }
         ],
@@ -165,7 +165,7 @@
     "mcp": {
       "serverId": "stock-api",
       "packageId": "neuro.official/stock-api",
-      "version": "=2.8.0",
+      "version": "=2.9.0",
       "calls": [
         {
           "id": "quote",
@@ -188,7 +188,7 @@
           "id": "orderbook",
           "toolName": "get_order_book",
           "arguments": {
-            "source": "xueqiu"
+            "source": "auto"
           }
         }
       ],
@@ -228,7 +228,7 @@
           }
         },
         "stock_tick_refresh": {
-          "calls": ["quote", "orderbook"],
+          "calls": ["orderbook"],
           "arguments": {
             "code": {
               "from": ["payload.code", "authoritativeState.code"]
@@ -241,14 +241,14 @@
       "providerId": "stock-api",
       "providerName": "stock-api",
       "upstreamVersion": "2.7.3",
-      "sources": ["tencent", "sina", "eastmoney", "xueqiu"],
+      "sources": ["tencent", "sina", "eastmoney", "xueqiu", "pysnowball"],
       "marketScope": "A 股 / 港股 / 美股",
       "apiKeyRequired": false,
       "trading": false,
       "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
     },
     "plugin": {
-      "packageVersion": "1.4.0",
+      "packageVersion": "1.5.0",
       "runtimeMode": "surface"
     }
   }

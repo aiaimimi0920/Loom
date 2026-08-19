@@ -102,7 +102,7 @@ try {
   }
 
   const stock = quote?.response?.stock;
-  if (initialized?.serverInfo?.version !== "2.8.0") {
+  if (initialized?.serverInfo?.version !== "2.9.0") {
     throw new Error(`unexpected wrapper version: ${initialized?.serverInfo?.version}`);
   }
   if (stock?.code !== "SZ000034" || stock?.source !== "eastmoney" || !(stock?.now > 0)) {
@@ -110,7 +110,7 @@ try {
   }
   const orderBook = structuredContent(await send("tools/call", {
     name: "get_order_book",
-    arguments: { code: "SZ000034", source: "xueqiu" },
+    arguments: { code: "SZ000034", source: "auto" },
   }), "get_order_book");
   const book = orderBook?.response?.orderBook;
   const tape = orderBook?.response?.realtime;
@@ -125,6 +125,7 @@ try {
     name: stock.name,
     price: stock.now,
     source: stock.source,
+    liveProvider: orderBook.provider,
     series: liveSeries,
     orderBook: {
       levels: book.levels,

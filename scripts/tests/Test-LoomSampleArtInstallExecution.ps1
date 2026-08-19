@@ -447,7 +447,7 @@ try {
     Assert-True ([string]$installedImageSearchMcp.server.id -eq "neuro-image-search") "Independent image-search MCP package was not installed."
     $installedStockApiMcp = Install-McpZip -Url $baseUrl -ZipPath $stockApiMcpFixtureZip
     Assert-True ([string]$installedStockApiMcp.server.id -eq "stock-api") "Independent stock-api MCP package was not installed."
-    Assert-True ([string]$installedStockApiMcp.server.package.version -eq "2.8.0") "Installed stock-api MCP version mismatch."
+    Assert-True ([string]$installedStockApiMcp.server.package.version -eq "2.9.0") "Installed stock-api MCP version mismatch."
     $configuredMcp = Invoke-LoomJson `
         -Method Put `
         -Url "$baseUrl/v1/mcp/servers/neuro-image-search/credentials" `
@@ -566,7 +566,7 @@ try {
     Assert-True ([string]$stockFinal.ack.status -eq "succeeded") "Stock Monitor Surface refresh failed: $($stockFinal.ack | ConvertTo-Json -Depth 10 -Compress)"
     $stockFormalQuote = $stockFinal.record.latestResult.outputs.quote.value
     Assert-True ([string]$stockFormalQuote.provider -eq "stock-api") "Installed Stock Monitor provider mismatch."
-    Assert-True ([string]$stockFormalQuote.providerVersion -eq "2.7.3") "Installed Stock Monitor provider version mismatch."
+    Assert-True ([string]$stockFormalQuote.providerVersion -eq "2.9.0") "Installed Stock Monitor provider version mismatch."
     Assert-True ([string]$stockFormalQuote.source -eq "eastmoney") "Installed Stock Monitor source mismatch."
     Assert-True ([string]$stockFormalQuote.code -eq "SZ000034") "Installed Stock Monitor code mismatch."
     Assert-True ([double]$stockFormalQuote.price -eq 24.99) "Installed Stock Monitor price mismatch."

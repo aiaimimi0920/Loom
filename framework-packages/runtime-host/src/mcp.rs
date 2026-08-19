@@ -411,6 +411,23 @@ fn build_environment(
             })?;
         environment.insert(environment_name.clone(), credential.value.clone());
     }
+    for (environment_name, credential_name) in &config.optional_credential_env {
+        validate_environment_name(environment_name)?;
+        let credential_name = credential_name.trim();
+        if credential_name.is_empty() {
+            return Err(format!(
+                "MCP optional credential mapping for `{environment_name}` is empty"
+            ));
+        }
+        if let Some(credential) = request
+            .context
+            .credentials
+            .iter()
+            .find(|credential| credential.name == credential_name)
+        {
+            environment.insert(environment_name.clone(), credential.value.clone());
+        }
+    }
     Ok(environment)
 }
 
@@ -449,6 +466,23 @@ fn build_headers(
                 )
             })?;
         headers.insert(header_name.clone(), credential.value.clone());
+    }
+    for (header_name, credential_name) in &config.optional_credential_headers {
+        validate_header_name(header_name)?;
+        let credential_name = credential_name.trim();
+        if credential_name.is_empty() {
+            return Err(format!(
+                "MCP optional credential mapping for header `{header_name}` is empty"
+            ));
+        }
+        if let Some(credential) = request
+            .context
+            .credentials
+            .iter()
+            .find(|credential| credential.name == credential_name)
+        {
+            headers.insert(header_name.clone(), credential.value.clone());
+        }
     }
     Ok(headers)
 }
@@ -963,7 +997,7 @@ mod tests {
         McpArtConfig {
             server_id: "stock-api".to_owned(),
             package_id: "neuro.official/stock-api".to_owned(),
-            version: "=2.7.3".to_owned(),
+            version: "=2.9.0".to_owned(),
             tool_name: None,
             arguments: json!({ "source": "auto" }),
             calls: vec![

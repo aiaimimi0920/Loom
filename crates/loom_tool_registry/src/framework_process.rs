@@ -836,6 +836,20 @@ fn resolve_mcp_server(
             )
         })?
         .unwrap_or_default();
+    let optional_credential_ids = server
+        .credential_requirements
+        .iter()
+        .filter(|requirement| !requirement.required)
+        .map(|requirement| requirement.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let (credential_env, optional_credential_env) = server
+        .credential_env
+        .into_iter()
+        .partition(|(_, credential_name)| !optional_credential_ids.contains(credential_name.as_str()));
+    let (credential_headers, optional_credential_headers) = server
+        .credential_headers
+        .into_iter()
+        .partition(|(_, credential_name)| !optional_credential_ids.contains(credential_name.as_str()));
     let resolved = FrameworkMcpServer {
         id: server.id,
         package_id: package.qualified_id.clone(),
@@ -846,8 +860,10 @@ fn resolve_mcp_server(
         env: server.env,
         url: server.url,
         headers: server.headers,
-        credential_env: server.credential_env,
-        credential_headers: server.credential_headers,
+        credential_env,
+        credential_headers,
+        optional_credential_env,
+        optional_credential_headers,
     };
     Ok((resolved, credentials))
 }

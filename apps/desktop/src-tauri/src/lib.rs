@@ -3175,7 +3175,7 @@ mod tests {
                     {
                         "id": "stock-api",
                         "qualifiedId": "neuro.official/stock-api",
-                        "version": "2.7.3",
+                        "version": "2.9.0",
                         "zip": "stock-api.zip",
                         "sha256": stock_hash,
                     }

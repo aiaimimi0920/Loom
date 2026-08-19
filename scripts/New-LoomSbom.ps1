@@ -82,8 +82,10 @@ if (Test-Path -LiteralPath $packageLockPath -PathType Leaf) {
 
 $stockApiRoot = Join-Path $repoRoot "mcp-server-packages\stock-api\runtime"
 $stockApiMetadataPath = Join-Path $stockApiRoot "UPSTREAM.json"
+$pysnowballMetadataPath = Join-Path $stockApiRoot "PYSNOWBALL.json"
 $nodeMetadataPath = Join-Path $stockApiRoot "node-runtime.json"
 if (-not (Test-Path -LiteralPath $stockApiMetadataPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $pysnowballMetadataPath -PathType Leaf) -or
     -not (Test-Path -LiteralPath $nodeMetadataPath -PathType Leaf)) {
     throw "Stock API supply-chain metadata is required for the Loom SBOM."
 }
@@ -95,6 +97,17 @@ $componentsByRef[$stockApiPurl] = [ordered]@{
     version = [string]$stockApiMetadata.version
     purl = $stockApiPurl
     "bom-ref" = $stockApiPurl
+    licenses = @([ordered]@{ license = [ordered]@{ id = [string]$stockApiMetadata.license } })
+}
+$pysnowballMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $pysnowballMetadataPath | ConvertFrom-Json
+$pysnowballPurl = Get-Purl -Type "pypi" -Name ([string]$pysnowballMetadata.name) -PackageVersion ([string]$pysnowballMetadata.version)
+$componentsByRef[$pysnowballPurl] = [ordered]@{
+    type = "library"
+    name = [string]$pysnowballMetadata.name
+    version = [string]$pysnowballMetadata.version
+    purl = $pysnowballPurl
+    "bom-ref" = $pysnowballPurl
+    licenses = @([ordered]@{ license = [ordered]@{ id = [string]$pysnowballMetadata.license } })
 }
 $nodeMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $nodeMetadataPath | ConvertFrom-Json
 $nodePurl = Get-Purl -Type "generic" -Name "nodejs" -PackageVersion ([string]$nodeMetadata.version)
@@ -135,14 +148,25 @@ $spdxPackages = @()
 $index = 0
 foreach ($component in $components) {
     $index++
+    $declaredLicense = "NOASSERTION"
+    $componentLicenses = @()
+    if ($component -is [System.Collections.IDictionary] -and $component.Contains("licenses")) {
+        $componentLicenses = @($component["licenses"])
+    }
+    elseif ($null -ne $component.PSObject.Properties["licenses"]) {
+        $componentLicenses = @($component.licenses)
+    }
+    if ($componentLicenses.Count -gt 0) {
+        $declaredLicense = [string]$componentLicenses[0].license.id
+    }
     $spdxPackages += [ordered]@{
         SPDXID = "SPDXRef-Package-$index"
         name = [string]$component.name
         versionInfo = [string]$component.version
         downloadLocation = "NOASSERTION"
         filesAnalyzed = $false
-        licenseConcluded = "NOASSERTION"
-        licenseDeclared = "NOASSERTION"
+        licenseConcluded = $declaredLicense
+        licenseDeclared = $declaredLicense
         copyrightText = "NOASSERTION"
         externalRefs = @([ordered]@{
             referenceCategory = "PACKAGE-MANAGER"

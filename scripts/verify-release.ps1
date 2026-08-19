@@ -382,7 +382,7 @@ function Assert-McpServerPackages {
         }
         "stock-api" = [ordered]@{
             qualifiedId = "neuro.official/stock-api"
-            version = "2.8.0"
+            version = "2.9.0"
             tools = @("get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock")
         }
     }
@@ -437,10 +437,14 @@ function Assert-McpServerPackages {
                     "runtime/stock-api-entry.js",
                     "runtime/node/node.exe",
                     "runtime/node/LICENSE",
+                    "runtime/node-runtime.json",
                     "runtime/UPSTREAM.json",
+                    "runtime/PYSNOWBALL.json",
                     "runtime/vendor/stock-api/package.json",
                     "runtime/vendor/stock-api/LICENSE",
-                    "runtime/vendor/stock-api/dist/mcp/server.js"
+                    "runtime/vendor/stock-api/dist/mcp/server.js",
+                    "runtime/vendor/pysnowball/LICENSE",
+                    "runtime/vendor/pysnowball/NOTICE.md"
                 )) {
                     Assert-True -Condition ($entryNames -contains $requiredPath) -Message "stock-api MCP ZIP is missing $requiredPath."
                 }
@@ -572,7 +576,7 @@ function Assert-SampleArtPackages {
                 Assert-Equal -Expected 3 -Actual @($artManifest.metadata.mcp.calls).Count -Message "Stock Monitor MCP call count mismatch."
                 $orderBookCalls = @($artManifest.metadata.mcp.calls | Where-Object { [string]$_.toolName -eq "get_order_book" })
                 Assert-Equal -Expected 1 -Actual $orderBookCalls.Count -Message "Stock Monitor must declare one order-book MCP call."
-                Assert-Equal -Expected "xueqiu" -Actual ([string]$orderBookCalls[0].arguments.source) -Message "Stock Monitor order-book source mismatch."
+                Assert-Equal -Expected "auto" -Actual ([string]$orderBookCalls[0].arguments.source) -Message "Stock Monitor order-book source mismatch."
                 Assert-Equal -Expected $false -Actual ([bool]$artManifest.metadata.marketData.trading) -Message "Stock Monitor must not advertise trading."
             }
         }
@@ -622,12 +626,18 @@ function Assert-SupplyChainMetadata {
             Assert-Equal -Expected "1.6" -Actual ([string]$document.specVersion) -Message "CycloneDX SBOM version mismatch."
             $componentIdentities = @($document.components | ForEach-Object { "$([string]$_.name)@$([string]$_.version)" })
             Assert-True -Condition ($componentIdentities -contains "stock-api@2.7.3") -Message "CycloneDX SBOM is missing stock-api@2.7.3."
+            Assert-True -Condition ($componentIdentities -contains "pysnowball@0.1.8") -Message "CycloneDX SBOM is missing pysnowball@0.1.8."
+            $pysnowballComponent = @($document.components | Where-Object { [string]$_.name -eq "pysnowball" })[0]
+            Assert-Equal -Expected "Apache-2.0" -Actual ([string]$pysnowballComponent.licenses[0].license.id) -Message "CycloneDX pysnowball license mismatch."
             Assert-True -Condition ($componentIdentities -contains "nodejs@22.22.2") -Message "CycloneDX SBOM is missing the bundled Node.js runtime."
         }
         elseif ($relative.EndsWith(".spdx.json", [System.StringComparison]::OrdinalIgnoreCase)) {
             Assert-Equal -Expected "SPDX-2.3" -Actual ([string]$document.spdxVersion) -Message "SPDX SBOM version mismatch."
             $packageIdentities = @($document.packages | ForEach-Object { "$([string]$_.name)@$([string]$_.versionInfo)" })
             Assert-True -Condition ($packageIdentities -contains "stock-api@2.7.3") -Message "SPDX SBOM is missing stock-api@2.7.3."
+            Assert-True -Condition ($packageIdentities -contains "pysnowball@0.1.8") -Message "SPDX SBOM is missing pysnowball@0.1.8."
+            $pysnowballPackage = @($document.packages | Where-Object { [string]$_.name -eq "pysnowball" })[0]
+            Assert-Equal -Expected "Apache-2.0" -Actual ([string]$pysnowballPackage.licenseDeclared) -Message "SPDX pysnowball declared license mismatch."
             Assert-True -Condition ($packageIdentities -contains "nodejs@22.22.2") -Message "SPDX SBOM is missing the bundled Node.js runtime."
         }
         else {

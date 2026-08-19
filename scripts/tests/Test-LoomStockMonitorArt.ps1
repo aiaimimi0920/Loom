@@ -30,8 +30,15 @@ function New-McpData {
         [switch]$Skipped,
         [switch]$HistoryOnly,
         [switch]$QuoteOnly,
+        [switch]$OrderBookOnly,
         [switch]$OrderBookError,
-        [string]$Period = "day"
+        [string]$Period = "day",
+        [string]$Code = "SZ000034",
+        [double]$QuotePrice = 24.99,
+        [double]$LivePrice = 24.99,
+        [switch]$LiveTrading,
+        [string]$LiveObservedAt = "2026-08-14T07:00:00.000Z",
+        [string]$LiveSource = "pysnowball"
     )
 
     if ($Skipped) {
@@ -48,13 +55,14 @@ function New-McpData {
     else {
         [ordered]@{
             structuredContent = [ordered]@{
-                input = [ordered]@{ code = "SZ000034"; source = "eastmoney" }
+                input = [ordered]@{ code = $Code; source = "eastmoney" }
                 response = [ordered]@{
+                    fetchedAt = [DateTimeOffset]::UtcNow.ToString("o")
                     stock = [ordered]@{
-                        code = "SZ000034"
+                        code = $Code
                         name = "Digital China"
                         percent = 0.004
-                        now = 24.99
+                        now = $QuotePrice
                         low = 24.60
                         high = 25.20
                         yesterday = 24.89
@@ -75,8 +83,9 @@ function New-McpData {
     else {
         [ordered]@{
             structuredContent = [ordered]@{
-                input = [ordered]@{ code = "SZ000034"; source = "eastmoney"; period = $Period; count = 2000; adjust = "none" }
+                input = [ordered]@{ code = $Code; source = "eastmoney"; period = $Period; count = 2000; adjust = "none" }
                 response = [ordered]@{
+                    fetchedAt = [DateTimeOffset]::UtcNow.ToString("o")
                     count = 3
                     period = $Period
                     lastTradingDate = "2026-08-14"
@@ -100,10 +109,11 @@ function New-McpData {
     else {
         [ordered]@{
             structuredContent = [ordered]@{
-                input = [ordered]@{ code = "SZ000034"; source = "xueqiu"; symbol = "SZ000034" }
+                input = [ordered]@{ code = $Code; source = "auto"; symbol = $Code }
                 response = [ordered]@{
+                    fetchedAt = [DateTimeOffset]::UtcNow.ToString("o")
                     orderBook = [ordered]@{
-                        code = "SZ000034"
+                        code = $Code
                         bids = @(
                             [ordered]@{ level = 1; price = 24.98; volume = 152340; orders = 88 },
                             [ordered]@{ level = 2; price = 24.97; volume = 61200; orders = 41 }
@@ -117,22 +127,26 @@ function New-McpData {
                         netVolume = -11455
                         ratio = 1.08
                         levels = 2
-                        observedAt = "2026-08-14T07:00:00.000Z"
-                        source = "xueqiu"
+                        observedAt = $LiveObservedAt
+                        source = $LiveSource
                     }
                     realtime = [ordered]@{
-                        code = "SZ000034"
-                        now = 24.99
+                        code = $Code
+                        now = $LivePrice
+                        open = 25.25
+                        high = 25.60
+                        low = 24.44
+                        yesterday = 25.20
                         avgPrice = 24.91
                         volume = 18220000
                         amount = 459000000
                         turnoverRate = 7.31
                         amplitude = 4.6
                         marketCapital = 39800000000
-                        isTrade = $false
+                        isTrade = [bool]$LiveTrading
                         tradeSession = 0
-                        observedAt = "2026-08-14T07:00:00.000Z"
-                        source = "xueqiu"
+                        observedAt = $LiveObservedAt
+                        source = $LiveSource
                     }
                 }
             }
@@ -146,6 +160,11 @@ function New-McpData {
     elseif ($QuoteOnly) {
         [ordered]@{
             quote = [ordered]@{ toolName = "get_stock"; result = $quoteResult }
+            orderbook = [ordered]@{ toolName = "get_order_book"; result = $orderBookResult }
+        }
+    }
+    elseif ($OrderBookOnly) {
+        [ordered]@{
             orderbook = [ordered]@{ toolName = "get_order_book"; result = $orderBookResult }
         }
     }
@@ -233,16 +252,17 @@ try {
     }
 
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $artDirectory "manifest.json") | ConvertFrom-Json
-    Assert-Equal "1.4.0" ([string]$manifest.metadata.packageSecurity.version) "Stock Monitor package version must force the Xueqiu order-book migration."
+    Assert-Equal "1.5.0" ([string]$manifest.metadata.packageSecurity.version) "Stock Monitor package version must force the pysnowball live-source migration."
     Assert-Equal "neuro.official/custom-stock-monitor" ([string]$manifest.metadata.art.qualifiedId) "Stock Monitor qualified Art identity mismatch."
     Assert-Equal "mcp" ([string]$manifest.execution.framework) "Stock Monitor must execute through the MCP framework."
-    Assert-Equal "=2.8.0" ([string]$manifest.metadata.mcp.version) "Stock Monitor stock-api wrapper version must be exact."
+    Assert-Equal "=2.9.0" ([string]$manifest.metadata.mcp.version) "Stock Monitor stock-api wrapper version must be exact."
     Assert-Equal 3 @($manifest.metadata.mcp.calls).Count "Stock Monitor must declare quote, history, and order-book MCP calls."
     Assert-True (@($manifest.metadata.mcp.calls | Where-Object { [string]$_.arguments.source -eq "eastmoney" }).Count -eq 2) "Stock Monitor quote and history calls must use the bounded eastmoney provider path."
     $orderBookCall = @($manifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "orderbook" })[0]
     Assert-Equal "get_order_book" ([string]$orderBookCall.toolName) "Stock Monitor order-book call must target the Xueqiu ten-level tool."
-    Assert-Equal "xueqiu" ([string]$orderBookCall.arguments.source) "Stock Monitor order-book call must request the Xueqiu source."
+    Assert-Equal "auto" ([string]$orderBookCall.arguments.source) "Stock Monitor order-book call must request the automatic pysnowball/Xueqiu source."
     Assert-True (@($manifest.metadata.marketData.sources) -contains "xueqiu") "Stock Monitor must declare Xueqiu among its market-data sources."
+    Assert-True (@($manifest.metadata.marketData.sources) -contains "pysnowball") "Stock Monitor must declare pysnowball among its market-data sources."
     Assert-Equal 50000 ([int]$manifest.metadata.capabilities.surface.actions[0].timeoutMs) "Stock Monitor refresh action timeout must cover bounded provider fallback."
     Assert-Equal 50000 ([int]$manifest.metadata.capabilities.surface.actions[1].timeoutMs) "Stock Monitor symbol action timeout must cover bounded provider fallback."
     $periodAction = @($manifest.metadata.capabilities.surface.actions | Where-Object { [string]$_.id -eq "stock_period_commit" })[0]
@@ -253,11 +273,10 @@ try {
     Assert-Equal "history" ([string]$manifest.metadata.mcp.surfaceActions.stock_period_commit.calls[0]) "Period switches must reuse the current quote and request only history."
     $tickAction = @($manifest.metadata.capabilities.surface.actions | Where-Object { [string]$_.id -eq "stock_tick_refresh" })[0]
     Assert-True ($null -ne $tickAction) "Stock Monitor must declare a near-realtime tick action."
-    Assert-Equal 12000 ([int]$tickAction.timeoutMs) "Tick action timeout must stay far below the full refresh budget."
+    Assert-Equal 30000 ([int]$tickAction.timeoutMs) "Tick action timeout must cover one bounded live-provider request."
     Assert-True (-not [bool]$tickAction.progress) "Tick action must not raise progress noise at second-level cadence."
-    Assert-Equal 2 @($manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls).Count "Tick refresh must request the quote and the order book only."
-    Assert-Equal "quote" ([string]$manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls[0]) "Tick refresh must fetch the quote first and reuse cached history."
-    Assert-Equal "orderbook" ([string]$manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls[1]) "Tick refresh must fetch the live order book alongside the quote."
+    Assert-Equal 1 @($manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls).Count "Tick refresh must request only the live order-book/tape call."
+    Assert-Equal "orderbook" ([string]$manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls[0]) "Tick refresh must reuse the authoritative quote and fetch only live data."
     $intervalParam = @($manifest.params | Where-Object { [string]$_.id -eq "interval_seconds" })[0]
     Assert-Equal 1 ([int]$intervalParam.min) "Refresh interval must reach one second for near-realtime monitoring."
     Assert-Equal 5 ([int]$intervalParam.default) "Default refresh interval must be the near-realtime cadence."
@@ -288,6 +307,10 @@ try {
     Assert-True ($runtimeSource.Contains('$script:MaxHistoryRows = 2000') -and $runtimeSource.Contains('Select-Object -Last $script:MaxHistoryRows')) "Stock Monitor runtime must bound provider history to 2000 rows."
     Assert-True ($runtimeSource.Contains('[System.Collections.Generic.List[object]]::new()') -and $runtimeSource.Contains('Get-StockFromActionState')) "Stock Monitor period switching must avoid quadratic history copies and reuse the current quote."
     Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass the stock-api MCP server."
+    $surfaceTestPath = Join-Path $repoRoot "scripts\tests\Test-LoomStockMonitorSurface.mjs"
+    $nodePath = [string](Get-Command node.exe -ErrorAction Stop).Source
+    & $nodePath $surfaceTestPath $surfacePath
+    Assert-Equal 0 $LASTEXITCODE "Stock Monitor Surface VM contract failed."
 
     $initialState = @{ code = "SZ000034"; market = "SZ"; intervalSeconds = 60; period = "day"; periodLabel = "日 K"; marketStatus = "closed"; lastTradingDate = "2026-08-14" }
     $refresh = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $initialState -FrameworkData (New-McpData)
@@ -299,7 +322,8 @@ try {
     Assert-Equal "ready" ([string]$surfaceAction.patches[0].statePatch.status) "Stock Monitor refresh state did not become ready: $([string]$surfaceAction.patches[0].statePatch.error)"
     $quote = $surfaceAction.result.outputs.quote.value
     Assert-Equal "stock-api" ([string]$quote.provider) "Stock Monitor formal quote provider mismatch."
-    Assert-Equal "2.7.3" ([string]$quote.providerVersion) "Stock Monitor formal quote provider version mismatch."
+    Assert-Equal "2.9.0" ([string]$quote.providerVersion) "Stock Monitor formal quote provider version mismatch."
+    Assert-Equal "2.7.3" ([string]$quote.upstreamVersion) "Stock Monitor formal quote upstream version mismatch."
     Assert-Equal "eastmoney" ([string]$quote.source) "Stock Monitor selected provider source mismatch."
     Assert-Equal "SZ000034" ([string]$quote.code) "Stock Monitor code normalization failed."
     Assert-Equal "Digital China" ([string]$quote.name) "Stock Monitor quote name mismatch."
@@ -309,6 +333,8 @@ try {
     Assert-Equal "day" ([string]$quote.history.period) "Stock Monitor K-line period mismatch."
     Assert-Equal "closed" ([string]$quote.marketStatus) "Stock Monitor must mark stale trading dates as closed."
     Assert-Equal "2026-08-14" ([string]$quote.lastTradingDate) "Stock Monitor last trading date mismatch."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$quote.fetchedAt)) "Stock Monitor formal quote fetch timestamp is missing."
+    Assert-True ($null -ne $quote.PSObject.Properties["stale"]) "Stock Monitor formal quote freshness metadata is missing."
     Assert-True ($null -eq $surfaceAction.result.outputs.PSObject.Properties["trade"]) "Stock Monitor must not return a trading output."
     $refreshBook = $surfaceAction.patches[0].statePatch.orderBook
     Assert-Equal 2 ([int]$refreshBook.levels) "Stock Monitor state must carry the Xueqiu order book depth."
@@ -350,20 +376,47 @@ try {
     Assert-Equal 1 ([int]$liveInterval.output.surfaceAction.patches[0].statePatch.intervalSeconds) "Stock Monitor must accept a one-second near-realtime cadence."
 
     $tickState = $surfaceAction.patches[0].statePatch
-    $tick = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_tick_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $tickState -FrameworkData (New-McpData -QuoteOnly)
+    $liveObservedAt = [DateTimeOffset]::UtcNow.ToString("o")
+    $tick = Invoke-StockRuntime `
+        -ArtDirectory $artDirectory `
+        -ActionId "stock_tick_refresh" `
+        -Payload @{ code = "SZ000034" } `
+        -AuthoritativeState $tickState `
+        -FrameworkData (New-McpData -OrderBookOnly -LivePrice 25.53 -LiveTrading -LiveObservedAt $liveObservedAt)
     $tickPatch = $tick.output.surfaceAction.patches[0].statePatch
     Assert-Equal "ready" ([string]$tickPatch.status) "Near-realtime tick must produce a ready state: $([string]$tickPatch.error)"
     Assert-Equal 3 @($tickPatch.history).Count "Near-realtime tick must reuse the cached curve instead of refetching history."
-    Assert-True ([double]$tickPatch.quote.price -eq 24.99) "Near-realtime tick lost the refreshed quote price."
+    Assert-True ([double]$tickPatch.quote.price -eq 25.53) "Near-realtime tick did not prioritize the fresh live tape price."
+    Assert-Equal "pysnowball" ([string]$tickPatch.quote.source) "Near-realtime tick did not expose the selected live source."
+    Assert-Equal "open" ([string]$tickPatch.marketStatus) "A trading live tape must mark the market session open."
     Assert-Equal "day" ([string]$tickPatch.period) "Near-realtime tick must preserve the selected period."
     Assert-Equal 2 ([int]$tickPatch.orderBook.levels) "Near-realtime tick must refresh the live order book."
-    Assert-True ([double]$tickPatch.liveTape.price -eq 24.99) "Near-realtime tick lost the realtime tape price."
+    Assert-True ([double]$tickPatch.liveTape.price -eq 25.53) "Near-realtime tick lost the realtime tape price."
+    Assert-True (-not [bool]$tickPatch.liveTape.stale -and [double]$tickPatch.liveTape.ageSeconds -le 90) "Fresh live tape metadata is invalid."
 
-    $bookFallback = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_tick_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $tickPatch -FrameworkData (New-McpData -QuoteOnly -OrderBookError)
+    $bookFallback = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_tick_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $tickPatch -FrameworkData (New-McpData -OrderBookOnly -OrderBookError)
     $bookFallbackPatch = $bookFallback.output.surfaceAction.patches[0].statePatch
     Assert-Equal "ready" ([string]$bookFallbackPatch.status) "A failed order-book call must not break the tick: $([string]$bookFallbackPatch.error)"
     Assert-Equal 2 ([int]$bookFallbackPatch.orderBook.levels) "A failed order-book call must retain the last known depth instead of blanking the panel."
-    Assert-True ([double]$bookFallbackPatch.quote.price -eq 24.99) "A failed order-book call discarded the refreshed quote."
+    Assert-True ([double]$bookFallbackPatch.quote.price -eq 25.53) "A failed order-book call discarded the authoritative live quote."
+
+    $staleState = $tickPatch | ConvertTo-Json -Depth 40 | ConvertFrom-Json
+    $staleState.orderBook.observedAt = "2020-01-01T00:00:00.000Z"
+    $staleState.orderBook.fetchedAt = "2020-01-01T00:00:00.000Z"
+    $staleState.liveTape.observedAt = "2020-01-01T00:00:00.000Z"
+    $staleState.liveTape.fetchedAt = "2020-01-01T00:00:00.000Z"
+    $staleFallback = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_tick_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $staleState -FrameworkData (New-McpData -OrderBookOnly -OrderBookError)
+    $staleFallbackPatch = $staleFallback.output.surfaceAction.patches[0].statePatch
+    Assert-True ($null -eq $staleFallbackPatch.orderBook) "An expired order book must not be reused indefinitely."
+    Assert-True ($null -eq $staleFallbackPatch.liveTape) "An expired live tape must not be reused indefinitely."
+
+    $closedPrice = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $initialState -FrameworkData (New-McpData -QuotePrice 26.00)
+    Assert-True ([double]$closedPrice.output.surfaceAction.patches[0].statePatch.quote.price -eq 24.99) "A closed market must display the latest trading-day close."
+
+    $bjState = @{ code = "BJ430047"; market = "BJ"; intervalSeconds = 60; period = "day"; periodLabel = "日 K"; marketStatus = "closed"; lastTradingDate = "2026-08-14" }
+    $bj = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "BJ430047" } -AuthoritativeState $bjState -FrameworkData (New-McpData -Code "BJ430047")
+    Assert-Equal "BJ430047" ([string]$bj.output.surfaceAction.patches[0].statePatch.quote.code) "Beijing Exchange code normalization failed."
+    Assert-Equal "BJ" ([string]$bj.output.surfaceAction.patches[0].statePatch.quote.market) "Beijing Exchange market classification failed."
 
     $periodState = $surfaceAction.patches[0].statePatch
     $period = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_period_commit" -Payload @{ value = "minute-5" } -AuthoritativeState $periodState -FrameworkData (New-McpData -Period "minute-5" -HistoryOnly)
@@ -387,7 +440,7 @@ try {
     Assert-Equal "SZ000034" ([string]$plain.output.quote.code) "Non-Surface Stock Monitor output mismatch."
     Assert-Equal 3 @($plain.output.quote.history.rows).Count "Non-Surface Stock Monitor history mismatch."
 
-    Write-Host "Stock Monitor Art contract passed: wrapper=2.8.0 upstream=2.7.3 source=eastmoney+xueqiu periods=13 candles=3 tick=1s order-book=2-levels red-up=CN/HK no-trading=true"
+    Write-Host "Stock Monitor Art contract passed: wrapper=2.9.0 upstream=2.7.3 source=aggregate+pysnowball+xueqiu periods=13 candles=3 tick=1s order-book=2-levels freshness=bounded BJ=verified red-up=CN/HK no-trading=true"
 }
 finally {
     Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue

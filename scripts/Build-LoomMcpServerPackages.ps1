@@ -64,8 +64,18 @@ function Add-StockApiNodeRuntime {
     $runtimeRoot = Join-Path $StageDirectory "runtime"
     $nodeMetadataPath = Join-Path $runtimeRoot "node-runtime.json"
     $upstreamMetadataPath = Join-Path $runtimeRoot "UPSTREAM.json"
+    $pysnowballMetadataPath = Join-Path $runtimeRoot "PYSNOWBALL.json"
     $vendoredRoot = Join-Path $runtimeRoot "vendor\stock-api"
-    foreach ($required in @($nodeMetadataPath, $upstreamMetadataPath, (Join-Path $vendoredRoot "package.json"), (Join-Path $vendoredRoot "LICENSE"))) {
+    $pysnowballRoot = Join-Path $runtimeRoot "vendor\pysnowball"
+    foreach ($required in @(
+        $nodeMetadataPath,
+        $upstreamMetadataPath,
+        $pysnowballMetadataPath,
+        (Join-Path $vendoredRoot "package.json"),
+        (Join-Path $vendoredRoot "LICENSE"),
+        (Join-Path $pysnowballRoot "LICENSE"),
+        (Join-Path $pysnowballRoot "NOTICE.md")
+    )) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Stock API supply-chain input is missing: $required"
         }
@@ -73,12 +83,24 @@ function Add-StockApiNodeRuntime {
 
     $nodeMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $nodeMetadataPath | ConvertFrom-Json
     $upstreamMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $upstreamMetadataPath | ConvertFrom-Json
+    $pysnowballMetadata = Get-Content -Raw -Encoding UTF8 -LiteralPath $pysnowballMetadataPath | ConvertFrom-Json
     $vendoredPackage = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $vendoredRoot "package.json") | ConvertFrom-Json
     if ([string]$vendoredPackage.name -ne "stock-api" -or [string]$vendoredPackage.version -ne [string]$upstreamMetadata.version) {
         throw "Vendored stock-api package identity does not match UPSTREAM.json."
     }
     if ([string]$vendoredPackage.version -ne [string]$upstreamMetadata.version -or [string]$vendoredPackage.license -ne "MIT") {
         throw "Vendored stock-api version or license does not match UPSTREAM.json."
+    }
+    if ([string]$pysnowballMetadata.name -ne "pysnowball" -or
+        [string]$pysnowballMetadata.version -ne "0.1.8" -or
+        [string]$pysnowballMetadata.license -ne "Apache-2.0" -or
+        [string]$pysnowballMetadata.integrationMode -ne "api-compatible-node-adapter" -or
+        [bool]$pysnowballMetadata.pythonRuntimeRequired) {
+        throw "pysnowball metadata must describe the pinned Apache-2.0 Node adapter contract."
+    }
+    $pysnowballLicense = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $pysnowballRoot "LICENSE")
+    if ($pysnowballLicense -notmatch 'Apache License\s+Version 2\.0') {
+        throw "pysnowball Apache-2.0 license text is invalid."
     }
     $tree = Get-DirectoryTreeDigest -Root $vendoredRoot
     if ([int]$tree.count -ne [int]$upstreamMetadata.vendoredFileCount -or

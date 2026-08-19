@@ -1,6 +1,7 @@
 "use strict";
 
-const WRAPPER_VERSION = "2.8.0";
+const WRAPPER_VERSION = "2.9.0";
+const PYSNOWBALL_VERSION = "0.1.8";
 const MARKET_PERIODS = Object.freeze([
   "minute",
   "five-day",
@@ -45,19 +46,25 @@ const QUOTE_HOSTS = Object.freeze([
 const XUEQIU_QUOTE_URL = "https://stock.xueqiu.com/v5/stock/realtime/quotec.json";
 const XUEQIU_ORDER_BOOK_URL = "https://stock.xueqiu.com/v5/stock/realtime/pankou.json";
 const XUEQIU_REFERER = "https://xueqiu.com/";
+const PYSNOWBALL_USER_AGENT = "Xueqiu iPhone 14.15.1";
+const LIVE_SOURCES = Object.freeze(["auto", "xueqiu", "pysnowball"]);
 const ORDER_BOOK_LEVELS = 10;
 const REQUEST_TIMEOUT_MILLIS = 8000;
 const HOST_OPERATION_TIMEOUT_MILLIS = 18000;
 const HOST_RETRY_ROUNDS = 2;
 const HOST_RETRY_DELAY_MILLIS = 150;
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const SUCCESS_CACHE_LIMIT = 64;
+const QUOTE_CACHE_TTL_MILLIS = 2 * 60 * 1000;
+const MARKET_SERIES_CACHE_TTL_MILLIS = 15 * 60 * 1000;
+const ORDER_BOOK_CACHE_TTL_MILLIS = 45 * 1000;
 const quoteCache = new Map();
 const marketSeriesCache = new Map();
 const orderBookCache = new Map();
 let loopbackFixtureEnabled = false;
 const ORDER_BOOK_TOOL = Object.freeze({
   name: "get_order_book",
-  description: "Get the Xueqiu ten-level order book and intraday realtime tape for live monitoring.",
+  description: "Get a ten-level order book and intraday realtime tape through the pysnowball-compatible API with the existing Xueqiu path as fallback.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -70,7 +77,7 @@ const ORDER_BOOK_TOOL = Object.freeze({
       },
       source: {
         type: "string",
-        enum: ["xueqiu"],
+        enum: LIVE_SOURCES,
       },
     },
   },
@@ -175,18 +182,54 @@ function cloneJson(value) {
 
 function rememberSuccess(cache, key, value) {
   cache.delete(key);
-  cache.set(key, cloneJson(value));
+  cache.set(key, { storedAtMillis: Date.now(), value: cloneJson(value) });
   while (cache.size > SUCCESS_CACHE_LIMIT) {
     cache.delete(cache.keys().next().value);
   }
 }
 
-function readRememberedSuccess(cache, key) {
-  const value = cache.get(key);
-  if (value === undefined) return undefined;
+function readRememberedSuccess(cache, key, ttlMillis) {
+  const entry = cache.get(key);
+  if (entry === undefined) return undefined;
+  const ageMillis = Math.max(0, Date.now() - Number(entry.storedAtMillis || 0));
+  if (ageMillis > ttlMillis) {
+    cache.delete(key);
+    return undefined;
+  }
   cache.delete(key);
-  cache.set(key, value);
-  return cloneJson(value);
+  cache.set(key, entry);
+  return { ageMillis, value: cloneJson(entry.value) };
+}
+
+function providerMetadata(source, extra = {}) {
+  return {
+    id: "stock-api",
+    wrapperVersion: WRAPPER_VERSION,
+    source,
+    ...extra,
+  };
+}
+
+function markFreshResult(result, ttlMillis) {
+  const response = asObject(result.response);
+  response.fetchedAt = new Date().toISOString();
+  response.cached = false;
+  response.cacheAgeMillis = 0;
+  response.cacheTtlMillis = ttlMillis;
+  response.stale = false;
+  result.response = response;
+  return result;
+}
+
+function markCachedResult(entry, ttlMillis) {
+  const result = entry.value;
+  const response = asObject(result.response);
+  response.cached = true;
+  response.cacheAgeMillis = entry.ageMillis;
+  response.cacheTtlMillis = ttlMillis;
+  response.stale = false;
+  result.response = response;
+  return result;
 }
 
 function marketSeriesError(args, error, toolName = MARKET_SERIES_TOOL.name) {
@@ -215,7 +258,7 @@ function parseKline(line) {
 
 function marketSecidCandidates(value) {
   const code = requireString(value, "code").toUpperCase();
-  let match = /^(SH|SZ)(\d{6})$/.exec(code);
+  let match = /^(SH|SZ|BJ)(\d{6})$/.exec(code);
   if (match) return [`${match[1] === "SH" ? "1" : "0"}.${match[2]}`];
   match = /^HK(\d{1,5})$/.exec(code);
   if (match) return [`116.${match[1].padStart(5, "0")}`];
@@ -272,7 +315,7 @@ function xueqiuTimestamp(value) {
   return new Date(millis).toISOString();
 }
 
-function parseXueqiuRealtime(code, value) {
+function parseXueqiuRealtime(code, value, source = "xueqiu") {
   const row = asObject(value);
   const current = quoteNumber(row.current);
   if (current === null || current <= 0) return null;
@@ -298,7 +341,7 @@ function parseXueqiuRealtime(code, value) {
     isTrade: row.is_trade === true,
     tradeSession: quoteNumber(row.trade_session),
     observedAt: xueqiuTimestamp(row.timestamp),
-    source: "xueqiu",
+    source,
   };
 }
 
@@ -314,7 +357,7 @@ function parseXueqiuOrderBookSide(value, pricePrefix, volumePrefix, orderPrefix)
   return levels;
 }
 
-function parseXueqiuOrderBook(code, value) {
+function parseXueqiuOrderBook(code, value, source = "xueqiu") {
   const row = asObject(value);
   const bids = parseXueqiuOrderBookSide(row, "bp", "bc", "bn");
   const asks = parseXueqiuOrderBookSide(row, "sp", "sc", "sn");
@@ -330,7 +373,7 @@ function parseXueqiuOrderBook(code, value) {
     ratio: quoteNumber(row.ratio),
     levels: Math.max(bids.length, asks.length),
     observedAt: xueqiuTimestamp(row.timestamp),
-    source: "xueqiu",
+    source,
   };
 }
 
@@ -526,22 +569,94 @@ async function fetchJson(url, timeoutMillis = REQUEST_TIMEOUT_MILLIS, extraHeade
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`${providerLabel} HTTP ${response.status}`);
-    return await response.json();
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+      throw new Error(`${providerLabel} response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+    }
+    if (!response.body) throw new Error(`${providerLabel} returned an empty response body`);
+    const reader = response.body.getReader();
+    const chunks = [];
+    let length = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error(`${providerLabel} response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+    } catch {
+      throw new Error(`${providerLabel} returned invalid JSON`);
+    }
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function fetchXueqiu(url, symbol) {
+function pysnowballCookie() {
+  const value = String(process.env.LOOM_PYSNOWBALL_TOKEN || "").trim();
+  if (!value) return null;
+  if (/[\r\n]/.test(value)) throw new Error("LOOM_PYSNOWBALL_TOKEN contains invalid characters");
+  return value;
+}
+
+async function fetchXueqiuLike(url, symbol, provider, requireToken = false) {
   const target = new URL(url);
   target.searchParams.set("symbol", symbol);
-  const payload = await fetchJson(target, REQUEST_TIMEOUT_MILLIS, { Referer: XUEQIU_REFERER }, "Xueqiu");
+  const cookie = provider === "pysnowball" ? pysnowballCookie() : null;
+  if (requireToken && !cookie) {
+    throw new Error("pysnowball order-book depth requires LOOM_PYSNOWBALL_TOKEN");
+  }
+  const headers = provider === "pysnowball"
+    ? {
+        Referer: XUEQIU_REFERER,
+        "User-Agent": PYSNOWBALL_USER_AGENT,
+        "Accept-Language": "zh-Hans-CN;q=1",
+        ...(cookie ? { Cookie: cookie } : {}),
+      }
+    : { Referer: XUEQIU_REFERER };
+  const providerLabel = provider === "pysnowball" ? "pysnowball" : "Xueqiu";
+  const payload = await fetchJson(target, REQUEST_TIMEOUT_MILLIS, headers, providerLabel);
   const errorCode = Number(asObject(payload).error_code ?? 0);
   if (errorCode !== 0) {
     const message = String(asObject(payload).error_description || "").trim();
-    throw new Error(`Xueqiu error ${errorCode}${message ? `: ${message}` : ""}`);
+    throw new Error(`${providerLabel} error ${errorCode}${message ? `: ${message}` : ""}`);
   }
   return asObject(payload).data;
+}
+
+async function fetchLiveValue(requestedSource, kind, symbol) {
+  const url = kind === "orderBook" ? XUEQIU_ORDER_BOOK_URL : XUEQIU_QUOTE_URL;
+  if (requestedSource === "xueqiu") {
+    return { data: await fetchXueqiuLike(url, symbol, "xueqiu"), provider: "xueqiu" };
+  }
+  if (requestedSource === "pysnowball") {
+    return {
+      data: await fetchXueqiuLike(url, symbol, "pysnowball", kind === "orderBook"),
+      provider: "pysnowball",
+    };
+  }
+
+  const primary = kind === "orderBook" && !pysnowballCookie() ? "xueqiu" : "pysnowball";
+  try {
+    return {
+      data: await fetchXueqiuLike(url, symbol, primary, primary === "pysnowball" && kind === "orderBook"),
+      provider: primary,
+    };
+  } catch (primaryError) {
+    if (primary === "xueqiu") throw primaryError;
+    return { data: await fetchXueqiuLike(url, symbol, "xueqiu"), provider: "xueqiu" };
+  }
 }
 
 async function fetchFromHosts(url, hosts) {
@@ -594,18 +709,18 @@ async function executeMarketQuote(rawArgs) {
     }
     const stock = parseQuote(code, response?.data);
     if (stock) {
-      const result = {
+      const result = markFreshResult({
         input: { code, source: "eastmoney" },
+        provider: providerMetadata("eastmoney"),
         response: { stock },
-      };
+      }, QUOTE_CACHE_TTL_MILLIS);
       rememberSuccess(quoteCache, code, result);
       return result;
     }
   }
-  const cached = readRememberedSuccess(quoteCache, code);
+  const cached = readRememberedSuccess(quoteCache, code, QUOTE_CACHE_TTL_MILLIS);
   if (cached) {
-    cached.response.cached = true;
-    return cached;
+    return markCachedResult(cached, QUOTE_CACHE_TTL_MILLIS);
   }
   if (lastError) throw lastError;
   throw new Error("Eastmoney did not return a valid stock quote");
@@ -614,34 +729,55 @@ async function executeMarketQuote(rawArgs) {
 async function executeOrderBook(rawArgs) {
   const args = asObject(rawArgs);
   const code = requireString(args.code, "code").toUpperCase();
-  if (args.source !== undefined && args.source !== "xueqiu") {
+  const requestedSource = args.source === undefined ? "auto" : String(args.source);
+  if (!LIVE_SOURCES.includes(requestedSource)) {
     throw new Error(`Invalid source: ${String(args.source)}`);
   }
   const symbol = xueqiuSymbol(code);
   const [bookSettled, realtimeSettled] = await Promise.allSettled([
-    fetchXueqiu(XUEQIU_ORDER_BOOK_URL, symbol),
-    fetchXueqiu(XUEQIU_QUOTE_URL, symbol),
+    fetchLiveValue(requestedSource, "orderBook", symbol),
+    fetchLiveValue(requestedSource, "realtime", symbol),
   ]);
   const orderBook = bookSettled.status === "fulfilled"
-    ? parseXueqiuOrderBook(code, bookSettled.value)
+    ? parseXueqiuOrderBook(code, bookSettled.value.data, bookSettled.value.provider)
     : null;
   const realtimeRow = realtimeSettled.status === "fulfilled"
-    ? (Array.isArray(realtimeSettled.value) ? realtimeSettled.value : [])
+    ? (Array.isArray(realtimeSettled.value.data) ? realtimeSettled.value.data : [])
       .find((row) => String(asObject(row).symbol || "").toUpperCase() === symbol)
     : null;
-  const realtime = realtimeRow ? parseXueqiuRealtime(code, realtimeRow) : null;
+  const realtime = realtimeRow
+    ? parseXueqiuRealtime(code, realtimeRow, realtimeSettled.value.provider)
+    : null;
   if (orderBook || realtime) {
-    const result = {
-      input: { code, source: "xueqiu", symbol },
-      response: { orderBook, realtime },
+    const liveSources = {
+      orderBook: orderBook?.source || null,
+      realtime: realtime?.source || null,
     };
-    rememberSuccess(orderBookCache, code, result);
+    const result = markFreshResult({
+      input: { code, source: requestedSource, symbol },
+      provider: providerMetadata(
+        liveSources.orderBook && liveSources.realtime && liveSources.orderBook !== liveSources.realtime
+          ? "mixed"
+          : liveSources.realtime || liveSources.orderBook || requestedSource,
+        {
+          requestedSource,
+          liveSources,
+          pysnowballVersion: PYSNOWBALL_VERSION,
+          pysnowballTokenConfigured: Boolean(pysnowballCookie()),
+        },
+      ),
+      response: { orderBook, realtime },
+    }, ORDER_BOOK_CACHE_TTL_MILLIS);
+    rememberSuccess(orderBookCache, `${code}|${requestedSource}`, result);
     return result;
   }
-  const cached = readRememberedSuccess(orderBookCache, code);
+  const cached = readRememberedSuccess(
+    orderBookCache,
+    `${code}|${requestedSource}`,
+    ORDER_BOOK_CACHE_TTL_MILLIS,
+  );
   if (cached) {
-    cached.response.cached = true;
-    return cached;
+    return markCachedResult(cached, ORDER_BOOK_CACHE_TTL_MILLIS);
   }
   for (const settled of [bookSettled, realtimeSettled]) {
     if (settled.status === "rejected") throw settled.reason;
@@ -701,15 +837,14 @@ async function executeMarketSeries(rawArgs, upstreamHandle) {
   }
   rows = rows.slice(-count);
   if (rows.length === 0) {
-    const cached = readRememberedSuccess(marketSeriesCache, cacheKey);
+    const cached = readRememberedSuccess(marketSeriesCache, cacheKey, MARKET_SERIES_CACHE_TTL_MILLIS);
     if (cached) {
-      cached.response.cached = true;
-      return cached;
+      return markCachedResult(cached, MARKET_SERIES_CACHE_TTL_MILLIS);
     }
     if (lastError) throw lastError;
     throw new Error("Eastmoney did not return market series rows");
   }
-  const result = {
+  const result = markFreshResult({
     input: {
       adjust: args.adjust || "none",
       code,
@@ -717,13 +852,14 @@ async function executeMarketSeries(rawArgs, upstreamHandle) {
       period,
       source: "eastmoney",
     },
+    provider: providerMetadata("eastmoney"),
     response: {
       count: rows.length,
       klines: rows,
       lastTradingDate: tradingDate(rows[rows.length - 1]),
       period,
     },
-  };
+  }, MARKET_SERIES_CACHE_TTL_MILLIS);
   rememberSuccess(marketSeriesCache, cacheKey, result);
   return result;
 }

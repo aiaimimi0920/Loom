@@ -46,7 +46,7 @@ $expected = [ordered]@{
     }
     "stock-api" = [ordered]@{
         qualifiedId = "neuro.official/stock-api"
-        version = "2.8.0"
+        version = "2.9.0"
         tools = @("get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock")
         runtime = "runtime/stock-api-mcp.ps1"
     }
@@ -91,9 +91,12 @@ foreach ($entry in $expected.GetEnumerator()) {
                 "runtime/node/LICENSE",
                 "runtime/node-runtime.json",
                 "runtime/UPSTREAM.json",
+                "runtime/PYSNOWBALL.json",
                 "runtime/vendor/stock-api/package.json",
                 "runtime/vendor/stock-api/LICENSE",
-                "runtime/vendor/stock-api/dist/mcp/server.js"
+                "runtime/vendor/stock-api/dist/mcp/server.js",
+                "runtime/vendor/pysnowball/LICENSE",
+                "runtime/vendor/pysnowball/NOTICE.md"
             )) {
                 Assert-True ($entries -contains $requiredPath) "stock-api MCP ZIP is missing: $requiredPath"
             }
@@ -108,4 +111,4 @@ foreach ($entry in $expected.GetEnumerator()) {
     }
 }
 
-Write-Host "Independent MCP server package contract passed: packages=2 stock-api=2.8.0 upstream=2.7.3"
+Write-Host "Independent MCP server package contract passed: packages=2 stock-api=2.9.0 upstream=2.7.3 pysnowball=0.1.8"

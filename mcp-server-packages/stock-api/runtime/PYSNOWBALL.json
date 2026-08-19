@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "name": "pysnowball",
+  "version": "0.1.8",
+  "repository": "https://github.com/uname-yang/pysnowball",
+  "gitHead": "e85fe550c5daed4ad1429d1f4e048dab239df921",
+  "license": "Apache-2.0",
+  "packageUrl": "pkg:pypi/pysnowball@0.1.8",
+  "integrationMode": "api-compatible-node-adapter",
+  "vendoredPath": "vendor/pysnowball",
+  "pythonRuntimeRequired": false,
+  "anonymousApi": "quotec",
+  "credentialedApis": ["pankou", "quote_detail", "kline"],
+  "credentialEnvironment": "LOOM_PYSNOWBALL_TOKEN"
+}

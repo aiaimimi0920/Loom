@@ -94,6 +94,7 @@ $unsafeProcess = $null
 
 Assert-True (Test-Path -LiteralPath $entryPath -PathType Leaf) "stock-api MCP entry is missing: $entryPath"
 Assert-True (Test-Path -LiteralPath (Join-Path $runtimeRoot "vendor\stock-api\LICENSE") -PathType Leaf) "Vendored stock-api license is missing."
+Assert-True (Test-Path -LiteralPath (Join-Path $runtimeRoot "vendor\pysnowball\LICENSE") -PathType Leaf) "pysnowball license is missing."
 New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
 
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -114,7 +115,7 @@ $captured = @()
 $dayHistoryRequests = 0
 try {
     [System.IO.File]::WriteAllText($ReadyPath, "ready", [System.Text.UTF8Encoding]::new($false))
-    for ($index = 0; $index -lt 21; $index++) {
+    for ($index = 0; $index -lt 26; $index++) {
         $client = $listener.AcceptTcpClient()
         try {
             $stream = $client.GetStream()
@@ -136,6 +137,9 @@ try {
             $statusCode = 200
             if ($target -match '/api/qt/stock/get\?' -and $target -match 'secid=0(?:%2E|\.)000034') {
                 $body = @{ rc = 0; data = @{ f57 = "000034"; f58 = "Digital China"; f43 = 24.99; f44 = 25.20; f45 = 24.60; f60 = 24.89; f170 = 0.4 } } | ConvertTo-Json -Depth 8 -Compress
+            }
+            elseif ($target -match '/api/qt/stock/get\?' -and $target -match 'secid=0(?:%2E|\.)430047') {
+                $body = @{ rc = 0; data = @{ f57 = "430047"; f58 = "BJ Fixture"; f43 = 12.34; f44 = 12.50; f45 = 12.10; f60 = 12.20; f170 = 1.15 } } | ConvertTo-Json -Depth 8 -Compress
             }
             elseif ($target -match '/api/qt/stock/kline/get\?' -and $target -match 'secid=0(?:%2E|\.)000034' -and $target -match 'klt=101' -and $target -match 'lmt=3') {
                 $dayHistoryRequests++
@@ -225,7 +229,7 @@ try {
     $mcpProcess = Start-RedirectedProcess `
         -Executable $nodePath `
         -Arguments @($entryPath) `
-        -Environment @{ LOOM_STOCK_API_TEST_BASE_URL = "http://127.0.0.1:$port/" }
+        -Environment @{ LOOM_STOCK_API_TEST_BASE_URL = "http://127.0.0.1:$port/"; LOOM_PYSNOWBALL_TOKEN = "xq_a_token=fixture-only" }
     $initialize = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 1 -Request ([ordered]@{
         jsonrpc = "2.0"
         id = 1
@@ -234,7 +238,7 @@ try {
     })
     Assert-True ([string]$initialize.result.protocolVersion -eq "2025-06-18") "stock-api MCP initialize protocol mismatch."
     Assert-True ([string]$initialize.result.serverInfo.name -eq "stock-api") "stock-api MCP identity mismatch."
-    Assert-True ([string]$initialize.result.serverInfo.version -eq "2.8.0") "stock-api MCP version mismatch."
+    Assert-True ([string]$initialize.result.serverInfo.version -eq "2.9.0") "stock-api MCP version mismatch."
     Write-Utf8JsonLine -Process $mcpProcess -Line '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
     $tools = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 2 -Request ([ordered]@{ jsonrpc = "2.0"; id = 2; method = "tools/list"; params = [ordered]@{} })
@@ -254,6 +258,8 @@ try {
     Assert-True ([string]$quote.result.structuredContent.response.stock.name -eq "Digital China") "stock-api quote name mismatch."
     Assert-True ([double]$quote.result.structuredContent.response.stock.now -eq 24.99) "stock-api quote price mismatch."
     Assert-True ([double]$quote.result.structuredContent.response.stock.percent -eq 0.004) "stock-api quote percent normalization mismatch."
+    Assert-True ([string]$quote.result.structuredContent.provider.wrapperVersion -eq "2.9.0") "stock-api quote provider metadata mismatch."
+    Assert-True (-not [bool]$quote.result.structuredContent.response.cached -and [int]$quote.result.structuredContent.response.cacheAgeMillis -eq 0) "stock-api fresh quote cache metadata mismatch."
 
     $history = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 4 -Request ([ordered]@{
         jsonrpc = "2.0"; id = 4; method = "tools/call"
@@ -292,9 +298,18 @@ try {
     Assert-True ($null -eq $cachedHistoryErrorProperty -or -not [bool]$cachedHistoryErrorProperty.Value) "stock-api cached history fallback returned isError."
     Assert-True ([bool]$cachedHistory.result.structuredContent.response.cached) "stock-api did not mark the last-success history fallback."
     Assert-True ([int]$cachedHistory.result.structuredContent.response.count -eq 3) "stock-api cached history fallback count mismatch."
+    Assert-True ([int]$cachedHistory.result.structuredContent.response.cacheAgeMillis -ge 0) "stock-api cached history age metadata is missing."
+    Assert-True ([int]$cachedHistory.result.structuredContent.response.cacheTtlMillis -eq 900000) "stock-api cached history TTL mismatch."
 
-    $orderBook = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 8 -Request ([ordered]@{
+    $beijingQuote = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 8 -Request ([ordered]@{
         jsonrpc = "2.0"; id = 8; method = "tools/call"
+        params = [ordered]@{ name = "get_stock"; arguments = [ordered]@{ code = "BJ430047"; source = "eastmoney" } }
+    })
+    Assert-True ([string]$beijingQuote.result.structuredContent.response.stock.code -eq "BJ430047") "stock-api Beijing Exchange quote code mismatch."
+    Assert-True ([double]$beijingQuote.result.structuredContent.response.stock.now -eq 12.34) "stock-api Beijing Exchange secid mapping failed."
+
+    $orderBook = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 9 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 9; method = "tools/call"
         params = [ordered]@{ name = "get_order_book"; arguments = [ordered]@{ code = "SZ000034"; source = "xueqiu" } }
     })
     $orderBookErrorProperty = $orderBook.result.PSObject.Properties["isError"]
@@ -310,10 +325,27 @@ try {
     Assert-True ([double]$tape.percent -eq 0.0131) "stock-api realtime tape percent normalization mismatch."
     Assert-True ([double]$tape.avgPrice -eq 25.199 -and [double]$tape.turnoverRate -eq 7.31) "stock-api realtime tape intraday fields mismatch."
 
+    $pysnowball = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 10 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 10; method = "tools/call"
+        params = [ordered]@{ name = "get_order_book"; arguments = [ordered]@{ code = "SZ000034"; source = "pysnowball" } }
+    })
+    Assert-True ([string]$pysnowball.result.structuredContent.response.orderBook.source -eq "pysnowball") "pysnowball depth source mismatch."
+    Assert-True ([string]$pysnowball.result.structuredContent.response.realtime.source -eq "pysnowball") "pysnowball quotec source mismatch."
+    Assert-True ([string]$pysnowball.result.structuredContent.provider.pysnowballVersion -eq "0.1.8") "pysnowball provider version metadata mismatch."
+    Assert-True ([bool]$pysnowball.result.structuredContent.provider.pysnowballTokenConfigured) "pysnowball fixture token was not detected."
+
+    $automatic = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 11 -Request ([ordered]@{
+        jsonrpc = "2.0"; id = 11; method = "tools/call"
+        params = [ordered]@{ name = "get_order_book"; arguments = [ordered]@{ code = "SZ000034"; source = "auto" } }
+    })
+    Assert-True ([string]$automatic.result.structuredContent.provider.requestedSource -eq "auto") "automatic live-source metadata mismatch."
+    Assert-True ([string]$automatic.result.structuredContent.provider.liveSources.realtime -eq "pysnowball") "automatic live source did not prefer pysnowball quotec."
+    Assert-True ([int]$automatic.result.structuredContent.response.cacheTtlMillis -eq 45000) "automatic live-source TTL mismatch."
+
     Assert-True $fixtureProcess.WaitForExit(10000) "stock-api fixture did not receive all provider requests."
     Assert-True ($fixtureProcess.ExitCode -eq 0) "stock-api fixture failed: $($fixtureProcess.StandardError.ReadToEnd())"
     $capturedRequests = @(Get-Content -Encoding UTF8 -LiteralPath $requestPath)
-    Assert-True ($capturedRequests.Count -eq 21) "stock-api fixture request count mismatch."
+    Assert-True ($capturedRequests.Count -eq 26) "stock-api fixture request count mismatch."
     Assert-True ($capturedRequests[0] -match 'push2delay\.eastmoney\.com/.*/stock/get') "stock-api quote did not use the declared upstream library."
     Assert-True ($capturedRequests[1] -match '7\.push2his\.eastmoney\.com/.*/kline/get') "stock-api K-line did not prioritize the responsive upstream host."
     Assert-True ($capturedRequests[1] -match 'end=20500101' -and $capturedRequests[1] -match 'lmt=3') "stock-api K-line request is not bounded to the requested row count."
@@ -323,8 +355,13 @@ try {
     Assert-True ($capturedRequests[7] -match '7\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[7] -match 'klt=5') "stock-api market-series did not use the declared Eastmoney interval."
     Assert-True ($capturedRequests[8] -match '7\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[8] -match 'klt=5' -and $capturedRequests[8] -match 'lmt=2000') "stock-api five-day series did not use the multi-day Eastmoney interval."
     Assert-True ($capturedRequests[18] -match '91\.push2his\.eastmoney\.com/.*/kline/get' -and $capturedRequests[18] -match 'klt=101') "stock-api cached fallback did not exhaust the bounded retry attempts first."
-    Assert-True (($capturedRequests[19..20] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/pankou\.json') "stock-api order book did not query the Xueqiu ten-level endpoint."
-    Assert-True (($capturedRequests[19..20] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "stock-api order book did not query the Xueqiu realtime endpoint."
+    Assert-True ($capturedRequests[19] -match 'secid=0(?:%2E|\.)430047') "stock-api did not map BJ430047 to the bounded Eastmoney secid."
+    Assert-True (($capturedRequests[20..21] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/pankou\.json') "stock-api legacy order book did not query the Xueqiu ten-level endpoint."
+    Assert-True (($capturedRequests[20..21] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "stock-api legacy order book did not query the Xueqiu realtime endpoint."
+    Assert-True (($capturedRequests[22..25] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/pankou\.json') "pysnowball-compatible depth endpoint was not called."
+    Assert-True (($capturedRequests[22..25] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "pysnowball-compatible quotec endpoint was not called."
+    $entrySource = Get-Content -Raw -Encoding UTF8 -LiteralPath $entryPath
+    Assert-True ($entrySource.Contains("MAX_RESPONSE_BYTES") -and $entrySource.Contains("response.body.getReader")) "stock-api provider responses must be byte-bounded before JSON parsing."
 
     $unsafeProcess = Start-RedirectedProcess -Executable $nodePath -Arguments @($entryPath) -Environment @{ LOOM_STOCK_API_TEST_BASE_URL = "https://example.com/" }
     Assert-True $unsafeProcess.WaitForExit(5000) "stock-api unsafe fixture override did not exit."
@@ -347,4 +384,4 @@ finally {
     }
 }
 
-Write-Host "Independent stock-api MCP server contract passed: version=2.8.0 tools=7 quote=24.99 candles=3 bounded-history=verified series=2 five-day=5 retry=verified cache=verified order-book=2-levels tape=xueqiu"
+Write-Host "Independent stock-api MCP server contract passed: version=2.9.0 tools=7 quote=24.99 BJ=verified candles=3 bounded-history=verified series=2 five-day=5 retry=verified ttl-cache=verified order-book=2-levels sources=xueqiu+pysnowball+auto"

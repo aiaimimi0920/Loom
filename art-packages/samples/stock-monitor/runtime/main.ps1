@@ -6,6 +6,10 @@ $script:AllowedIntervals = @(1, 3, 5, 15, 30, 60, 120, 300)
 $script:AllowedPeriods = @("minute", "five-day", "day", "week", "month", "quarter", "year", "minute-120", "minute-60", "minute-30", "minute-15", "minute-5", "minute-1")
 $script:MaxHistoryRows = 2000
 $script:MaxOrderBookLevels = 10
+$script:MaxLiveAgeSeconds = 90
+$script:MaxOrderBookAgeSeconds = 120
+$script:ProviderVersion = "2.9.0"
+$script:UpstreamVersion = "2.7.3"
 $script:Disclaimer = "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
 
 function Get-ObjectPropertyValue {
@@ -114,16 +118,22 @@ function Resolve-StockCode {
 
     $input = ([string]$Value).Trim().ToUpperInvariant().Replace(" ", "")
     if ([string]::IsNullOrWhiteSpace($input)) {
-        throw "请输入股票代码，例如 SZ000034、SH600519、HK00700 或 USAAPL"
+        throw "请输入股票代码，例如 SZ000034、SH600519、BJ430047、HK00700 或 USAAPL"
     }
-    if ($input -match '^(SH|SZ)[:._-]?(\d{6})$') {
+    if ($input -match '^(SH|SZ|BJ)[:._-]?(\d{6})$') {
         return "$($Matches[1])$($Matches[2])"
     }
-    if ($input -match '^(\d{6})[:._-]?(SH|SZ)$') {
+    if ($input -match '^(\d{6})[:._-]?(SH|SZ|BJ)$') {
         return "$($Matches[2])$($Matches[1])"
     }
     if ($input -match '^(\d{6})$') {
-        $market = if ($input.StartsWith("5") -or $input.StartsWith("6") -or $input.StartsWith("9")) { "SH" } else { "SZ" }
+        $market = if ($input.StartsWith("4") -or $input.StartsWith("8")) {
+            "BJ"
+        }
+        elseif ($input.StartsWith("5") -or $input.StartsWith("6") -or $input.StartsWith("9")) {
+            "SH"
+        }
+        else { "SZ" }
         return "$market$input"
     }
     if ($input -match '^HK[:._-]?(\d{1,5})$') {
@@ -132,7 +142,7 @@ function Resolve-StockCode {
     if ($input -match '^US[:_-]?([A-Z][A-Z0-9.-]{0,19})$') {
         return "US$($Matches[1])"
     }
-    throw "股票代码格式无效；支持 SZ000034、SH600519、HK00700 和 USAAPL 等统一代码"
+    throw "股票代码格式无效；支持 SZ000034、SH600519、BJ430047、HK00700 和 USAAPL 等统一代码"
 }
 
 function Get-MarketFromCode {
@@ -155,8 +165,41 @@ function Get-ProviderName {
         "tencent" { return "腾讯行情" }
         "sina" { return "新浪财经" }
         "eastmoney" { return "东方财富" }
+        "xueqiu" { return "雪球" }
+        "pysnowball" { return "pysnowball / 雪球" }
+        "mixed" { return "pysnowball + 雪球" }
         default { return $Source }
     }
+}
+
+function Resolve-UtcTimestamp {
+    param(
+        [AllowNull()][object]$Value,
+        [AllowNull()][object]$FallbackValue = $null
+    )
+
+    foreach ($candidate in @($Value, $FallbackValue)) {
+        $text = ([string]$candidate).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        try {
+            return [DateTimeOffset]::Parse(
+                $text,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::AssumeUniversal
+            ).ToUniversalTime().ToString("o")
+        }
+        catch {}
+    }
+    return $null
+}
+
+function Get-ObservationAgeSeconds {
+    param([AllowNull()][object]$Value)
+
+    $timestamp = Resolve-UtcTimestamp -Value $Value
+    if ($null -eq $timestamp) { return [double]::PositiveInfinity }
+    $age = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($timestamp)).TotalSeconds
+    return [Math]::Round([Math]::Max(0, $age), 3)
 }
 
 function Resolve-RefreshInterval {
@@ -313,6 +356,9 @@ function Get-StockFromActionState {
         yesterday = Convert-NullableNumber (Get-ObjectPropertyValue -Value $quote -Name "previousClose")
         percent = if ($null -eq $changePercent) { $null } else { $changePercent / 100.0 }
         source = ([string](Get-ObjectPropertyValue -Value $quote -Name "source" -DefaultValue "eastmoney")).Trim().ToLowerInvariant()
+        observedAt = [string](Get-ObjectPropertyValue -Value $quote -Name "observedAt")
+        fetchedAt = [string](Get-ObjectPropertyValue -Value $quote -Name "fetchedAt")
+        stale = [bool](Get-ObjectPropertyValue -Value $quote -Name "stale" -DefaultValue $false)
     }
 }
 
@@ -367,13 +413,18 @@ function ConvertTo-OrderBookLevels {
 function ConvertTo-OrderBook {
     param(
         [AllowNull()][object]$Value,
-        [string]$Code
+        [string]$Code,
+        [AllowNull()][object]$FetchedAt = $null
     )
 
     if ($null -eq $Value) { return $null }
     $bids = @(ConvertTo-OrderBookLevels (Get-ObjectPropertyValue -Value $Value -Name "bids" -DefaultValue @()))
     $asks = @(ConvertTo-OrderBookLevels (Get-ObjectPropertyValue -Value $Value -Name "asks" -DefaultValue @()))
     if ($bids.Count -eq 0 -and $asks.Count -eq 0) { return $null }
+    $normalizedFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "fetchedAt") -FallbackValue $FetchedAt
+    if ($null -eq $normalizedFetchedAt) { $normalizedFetchedAt = [DateTimeOffset]::UtcNow.ToString("o") }
+    $observedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "observedAt") -FallbackValue $normalizedFetchedAt
+    $ageSeconds = Get-ObservationAgeSeconds -Value $observedAt
     return [ordered]@{
         code = $Code
         bids = $bids
@@ -383,7 +434,11 @@ function ConvertTo-OrderBook {
         netVolume = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $Value -Name "netVolume") -Digits 0
         ratio = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "ratio")
         levels = [Math]::Max($bids.Count, $asks.Count)
-        observedAt = ([string](Get-ObjectPropertyValue -Value $Value -Name "observedAt")).Trim()
+        observedAt = $observedAt
+        fetchedAt = $normalizedFetchedAt
+        ageSeconds = $ageSeconds
+        maxAgeSeconds = $script:MaxOrderBookAgeSeconds
+        stale = $ageSeconds -gt $script:MaxOrderBookAgeSeconds
         source = ([string](Get-ObjectPropertyValue -Value $Value -Name "source" -DefaultValue "xueqiu")).Trim().ToLowerInvariant()
     }
 }
@@ -391,15 +446,24 @@ function ConvertTo-OrderBook {
 function ConvertTo-LiveTape {
     param(
         [AllowNull()][object]$Value,
-        [string]$Code
+        [string]$Code,
+        [AllowNull()][object]$FetchedAt = $null
     )
 
     if ($null -eq $Value) { return $null }
     $current = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "now" -DefaultValue (Get-ObjectPropertyValue -Value $Value -Name "price"))
     if ($null -eq $current -or $current -le 0) { return $null }
+    $normalizedFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "fetchedAt") -FallbackValue $FetchedAt
+    if ($null -eq $normalizedFetchedAt) { $normalizedFetchedAt = [DateTimeOffset]::UtcNow.ToString("o") }
+    $observedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "observedAt") -FallbackValue $normalizedFetchedAt
+    $ageSeconds = Get-ObservationAgeSeconds -Value $observedAt
     return [ordered]@{
         code = $Code
         price = $current
+        open = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "open")
+        high = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "high")
+        low = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "low")
+        previousClose = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "yesterday" -DefaultValue (Get-ObjectPropertyValue -Value $Value -Name "previousClose"))
         avgPrice = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "avgPrice")
         volume = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $Value -Name "volume") -Digits 0
         amount = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $Value -Name "amount") -Digits 0
@@ -408,7 +472,11 @@ function ConvertTo-LiveTape {
         marketCapital = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $Value -Name "marketCapital") -Digits 0
         isTrade = [bool](Get-ObjectPropertyValue -Value $Value -Name "isTrade" -DefaultValue $false)
         tradeSession = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $Value -Name "tradeSession") -Digits 0
-        observedAt = ([string](Get-ObjectPropertyValue -Value $Value -Name "observedAt")).Trim()
+        observedAt = $observedAt
+        fetchedAt = $normalizedFetchedAt
+        ageSeconds = $ageSeconds
+        maxAgeSeconds = $script:MaxLiveAgeSeconds
+        stale = $ageSeconds -gt $script:MaxLiveAgeSeconds
         source = ([string](Get-ObjectPropertyValue -Value $Value -Name "source" -DefaultValue "xueqiu")).Trim().ToLowerInvariant()
     }
 }
@@ -426,7 +494,7 @@ function Get-StockSnapshot {
     $historyResponse = Get-ObjectPropertyValue -Value $historyContent -Name "response"
     $historyInput = Get-ObjectPropertyValue -Value $historyContent -Name "input"
     $stock = Get-ObjectPropertyValue -Value $quoteResponse -Name "stock"
-    if ($null -eq $stock -and $actionId -eq "stock_period_commit") {
+    if ($null -eq $stock -and $null -ne $script:SurfaceAction) {
         $stock = Get-StockFromActionState -Action $script:SurfaceAction
     }
     if ($null -eq $stock) {
@@ -440,6 +508,15 @@ function Get-StockSnapshot {
     if ([string]::IsNullOrWhiteSpace($name) -or $name -eq "---" -or $null -eq $price -or $price -le 0) {
         throw "stock-api 未找到该代码的有效报价"
     }
+    $fetchCompletedAt = [DateTimeOffset]::UtcNow.ToString("o")
+    $quoteFetchedAt = Resolve-UtcTimestamp `
+        -Value (Get-ObjectPropertyValue -Value $quoteResponse -Name "fetchedAt") `
+        -FallbackValue (Get-ObjectPropertyValue -Value $stock -Name "fetchedAt" -DefaultValue $fetchCompletedAt)
+    if ($null -eq $quoteFetchedAt) { $quoteFetchedAt = $fetchCompletedAt }
+    $quoteObservedAt = Resolve-UtcTimestamp `
+        -Value (Get-ObjectPropertyValue -Value $stock -Name "observedAt") `
+        -FallbackValue $quoteFetchedAt
+    $quoteProviderStale = [bool](Get-ObjectPropertyValue -Value $quoteResponse -Name "stale" -DefaultValue (Get-ObjectPropertyValue -Value $stock -Name "stale" -DefaultValue $false))
 
     $requestedPeriodValue = if ($actionId -eq "stock_period_commit") {
         Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue "day"
@@ -507,42 +584,76 @@ function Get-StockSnapshot {
     if ($null -eq $lastTradingDate) {
         throw "stock-api 返回的最近交易日无效"
     }
-    $marketStatus = Get-MarketSessionState -Market $market -LastTradingDate $lastTradingDate
-    $displayPrice = if ($marketStatus -eq "closed") { $latest.close } else { $price }
-    $observedAt = [DateTimeOffset]::UtcNow.ToString("o")
     $bookAttempt = Try-Get-McpToolContent -Request $Request -CallId "orderbook"
     $bookResponse = Get-ObjectPropertyValue -Value (Get-ObjectPropertyValue -Value $bookAttempt -Name "content") -Name "response"
-    $orderBook = ConvertTo-OrderBook -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "orderBook") -Code $code
-    $liveTape = ConvertTo-LiveTape -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "realtime") -Code $code
+    $bookFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "fetchedAt") -FallbackValue $fetchCompletedAt
+    $orderBook = ConvertTo-OrderBook -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "orderBook") -Code $code -FetchedAt $bookFetchedAt
+    $liveTape = ConvertTo-LiveTape -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "realtime") -Code $code -FetchedAt $bookFetchedAt
     # 盘口是可选增强：雪球对港股不返回十档，失败时沿用上一次快照而不是清空面板。
     if (($null -eq $orderBook -or $null -eq $liveTape) -and $null -ne $script:SurfaceAction) {
         $cachedBook = Get-ActionStateValue -Action $script:SurfaceAction -Name "orderBook"
         $cachedTape = Get-ActionStateValue -Action $script:SurfaceAction -Name "liveTape"
         if ($null -eq $orderBook -and [string](Get-ObjectPropertyValue -Value $cachedBook -Name "code") -eq $code) {
-            $orderBook = ConvertTo-OrderBook -Value $cachedBook -Code $code
+            $cachedOrderBook = ConvertTo-OrderBook -Value $cachedBook -Code $code
+            if ($null -ne $cachedOrderBook -and -not [bool](Get-ObjectPropertyValue -Value $cachedOrderBook -Name "stale" -DefaultValue $true)) {
+                $orderBook = $cachedOrderBook
+            }
         }
         if ($null -eq $liveTape -and [string](Get-ObjectPropertyValue -Value $cachedTape -Name "code") -eq $code) {
-            $liveTape = ConvertTo-LiveTape -Value $cachedTape -Code $code
+            $cachedLiveTape = ConvertTo-LiveTape -Value $cachedTape -Code $code
+            if ($null -ne $cachedLiveTape -and -not [bool](Get-ObjectPropertyValue -Value $cachedLiveTape -Name "stale" -DefaultValue $true)) {
+                $liveTape = $cachedLiveTape
+            }
         }
     }
+    $liveTapeFresh = $null -ne $liveTape -and -not [bool](Get-ObjectPropertyValue -Value $liveTape -Name "stale" -DefaultValue $true)
+    $marketStatus = Get-MarketSessionState -Market $market -LastTradingDate $lastTradingDate
+    if ($liveTapeFresh -and [bool](Get-ObjectPropertyValue -Value $liveTape -Name "isTrade" -DefaultValue $false)) {
+        $marketStatus = "open"
+    }
+    $usesLivePrice = $marketStatus -eq "open" -and $liveTapeFresh
+    $displayPrice = if ($marketStatus -eq "closed") {
+        $latest.close
+    }
+    elseif ($usesLivePrice) {
+        $liveTape.price
+    }
+    else { $price }
+    $effectiveSource = if ($usesLivePrice) { [string]$liveTape.source } else { $source }
+    $effectiveObservedAt = if ($usesLivePrice) {
+        [string]$liveTape.observedAt
+    }
+    elseif ($marketStatus -eq "closed") {
+        Resolve-UtcTimestamp -Value ([string]$latest.date) -FallbackValue $quoteObservedAt
+    }
+    else { $quoteObservedAt }
+    $effectiveFetchedAt = if ($usesLivePrice) { [string]$liveTape.fetchedAt } else { $quoteFetchedAt }
+    $effectiveAgeSeconds = Get-ObservationAgeSeconds -Value $effectiveObservedAt
+    $quoteStale = $quoteProviderStale -or ($marketStatus -eq "open" -and $effectiveAgeSeconds -gt $script:MaxLiveAgeSeconds)
+    $effectivePreviousClose = if ($usesLivePrice -and $null -ne $liveTape.previousClose) { $liveTape.previousClose } else { $previousClose }
     $quote = [ordered]@{
         provider = "stock-api"
-        providerVersion = "2.7.3"
-        source = $source
-        sourceName = Get-ProviderName -Source $source
+        providerVersion = $script:ProviderVersion
+        upstreamVersion = $script:UpstreamVersion
+        source = $effectiveSource
+        sourceName = Get-ProviderName -Source $effectiveSource
         code = $code
         market = $market
         name = $name
         currency = Get-CurrencyForMarket -Market $market
         price = $displayPrice
         rawPrice = $price
-        change = if ($null -ne $previousClose) { [Math]::Round($displayPrice - $previousClose, 4) } else { $change }
-        changePercent = if ($null -ne $previousClose -and $previousClose -gt 0) { [Math]::Round((($displayPrice - $previousClose) / $previousClose) * 100, 4) } else { $changePercent }
-        open = $latest.open
-        high = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "high")
-        low = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "low")
-        previousClose = $previousClose
-        observedAt = $observedAt
+        change = if ($null -ne $effectivePreviousClose) { [Math]::Round($displayPrice - $effectivePreviousClose, 4) } else { $change }
+        changePercent = if ($null -ne $effectivePreviousClose -and $effectivePreviousClose -gt 0) { [Math]::Round((($displayPrice - $effectivePreviousClose) / $effectivePreviousClose) * 100, 4) } else { $changePercent }
+        open = if ($usesLivePrice -and $null -ne $liveTape.open) { $liveTape.open } else { $latest.open }
+        high = if ($usesLivePrice -and $null -ne $liveTape.high) { $liveTape.high } else { Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "high") }
+        low = if ($usesLivePrice -and $null -ne $liveTape.low) { $liveTape.low } else { Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "low") }
+        previousClose = $effectivePreviousClose
+        observedAt = $effectiveObservedAt
+        fetchedAt = $effectiveFetchedAt
+        ageSeconds = $effectiveAgeSeconds
+        maxAgeSeconds = $script:MaxLiveAgeSeconds
+        stale = $quoteStale
         marketStatus = $marketStatus
         lastTradingDate = $lastTradingDate
     }
@@ -674,7 +785,8 @@ function New-FormalQuote {
     $quote = $Snapshot.quote
     return [ordered]@{
         provider = "stock-api"
-        providerVersion = "2.7.3"
+        providerVersion = $script:ProviderVersion
+        upstreamVersion = $script:UpstreamVersion
         source = [string]$quote.source
         sourceName = [string]$quote.sourceName
         code = [string]$quote.code
@@ -685,6 +797,10 @@ function New-FormalQuote {
         change = $quote.change
         changePercent = $quote.changePercent
         observedAt = [string]$quote.observedAt
+        fetchedAt = [string]$quote.fetchedAt
+        ageSeconds = $quote.ageSeconds
+        maxAgeSeconds = $quote.maxAgeSeconds
+        stale = [bool]$quote.stale
         metrics = [ordered]@{
             open = $quote.open
             high = $quote.high
@@ -802,7 +918,7 @@ try {
         history = $history
         orderBook = $snapshot.orderBook
         liveTape = $snapshot.liveTape
-        lastUpdatedAt = [string]$quote.observedAt
+        lastUpdatedAt = [string]$quote.fetchedAt
         error = $null
         disclaimer = $script:Disclaimer
     }

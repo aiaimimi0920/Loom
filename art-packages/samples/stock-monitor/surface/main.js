@@ -31,7 +31,7 @@
     const FULL_REFRESH_SECONDS = 60;
     const CLOSED_MARKET_MIN_SECONDS = 30;
     const TICK_ACTION = "stock_tick_refresh";
-    const TICK_TIMEOUT_MILLIS = 12000;
+    const TICK_TIMEOUT_MILLIS = 32000;
     const RED_UP_MARKETS = Object.freeze(["SH", "SZ", "BJ", "HK"]);
     const PERIODS = Object.freeze([
         ["minute", "分时"],
@@ -71,9 +71,11 @@
     let pendingPeriod = null;
     let pendingRevision = -1;
     let tickPending = false;
+    let tickPendingRevision = -1;
     let tickSupported = true;
     let liveTickCount = 0;
     let activeInterval = DEFAULT_INTERVAL_SECONDS;
+    let activeTimerKey = "";
     let chartGeometry = null;
     let hoverIndex = -1;
     let hoverFrame = null;
@@ -165,12 +167,13 @@
     };
     const normalizeCode = (value) => {
         const input = String(value || "").trim().toUpperCase().replace(/\s+/g, "");
-        let match = input.match(/^(SH|SZ)[:._-]?(\d{6})$/);
+        let match = input.match(/^(SH|SZ|BJ)[:._-]?(\d{6})$/);
         if (match) return match[1] + match[2];
-        match = input.match(/^(\d{6})[:._-]?(SH|SZ)$/);
+        match = input.match(/^(\d{6})[:._-]?(SH|SZ|BJ)$/);
         if (match) return match[2] + match[1];
         if (/^\d{6}$/.test(input)) {
-            return (/^[569]/.test(input) ? "SH" : "SZ") + input;
+            const market = /^[48]/.test(input) ? "BJ" : /^[569]/.test(input) ? "SH" : "SZ";
+            return market + input;
         }
         match = input.match(/^HK[:._-]?(\d{1,5})$/);
         if (match) return "HK" + match[1].padStart(5, "0");
@@ -349,10 +352,12 @@
         if (isNetworkAction && pending) return false;
         if (isTickAction) {
             tickPending = true;
+            tickPendingRevision = Number(snapshotValue.revision) || 0;
             if (tickTimer !== null) clearTimeout(tickTimer);
             tickTimer = setTimeout(() => {
                 tickTimer = null;
                 tickPending = false;
+                tickPendingRevision = -1;
             }, TICK_TIMEOUT_MILLIS);
         }
         if (isNetworkAction) {
@@ -385,6 +390,7 @@
         if (!accepted) {
             if (isTickAction) {
                 tickPending = false;
+                tickPendingRevision = -1;
                 tickSupported = false;
                 if (tickTimer !== null) clearTimeout(tickTimer);
                 tickTimer = null;
@@ -416,36 +422,42 @@
         return accepted;
     };
 
-    const effectiveIntervalSeconds = (intervalSeconds) => {
+    const refreshPlan = (intervalSeconds, marketStatusValue) => {
         const normalized = INTERVALS.includes(Number(intervalSeconds))
             ? Number(intervalSeconds)
             : DEFAULT_INTERVAL_SECONDS;
-        const marketStatus = text(stateOf(snapshotValue).marketStatus, "closed");
+        const marketStatus = text(marketStatusValue, text(stateOf(snapshotValue).marketStatus, "closed"));
         // 休市时秒级轮询没有新成交，退到 30 秒，避免空转打上游。
-        return marketStatus === "open" ? normalized : Math.max(normalized, CLOSED_MARKET_MIN_SECONDS);
+        const cadence = marketStatus === "open" ? normalized : Math.max(normalized, CLOSED_MARKET_MIN_SECONDS);
+        const usesTick = cadence < FULL_REFRESH_SECONDS;
+        return {
+            cadence,
+            key: normalized + ":" + cadence + ":" + (usesTick ? "tick" : "full"),
+            normalized,
+            usesTick
+        };
     };
 
+    const effectiveIntervalSeconds = (intervalSeconds) => refreshPlan(intervalSeconds).cadence;
+
     const setRefreshTimer = (intervalSeconds) => {
-        const normalized = INTERVALS.includes(Number(intervalSeconds))
-            ? Number(intervalSeconds)
-            : DEFAULT_INTERVAL_SECONDS;
-        activeInterval = normalized;
+        const plan = refreshPlan(intervalSeconds);
+        activeInterval = plan.normalized;
+        activeTimerKey = plan.key;
         if (refreshTimer !== null) clearInterval(refreshTimer);
         if (fullRefreshTimer !== null) clearInterval(fullRefreshTimer);
         refreshTimer = null;
         fullRefreshTimer = null;
         if (disposed || suspended) return;
-        const cadence = effectiveIntervalSeconds(normalized);
-        const usesTick = cadence < FULL_REFRESH_SECONDS;
         refreshTimer = setInterval(() => {
-            if (pending) return;
-            if (usesTick) requestTick();
+            if (pending || tickPending) return;
+            if (plan.usesTick) requestTick();
             else requestRefresh();
-        }, cadence * 1000);
-        if (!usesTick) return;
+        }, plan.cadence * 1000);
+        if (!plan.usesTick) return;
         // 秒级 tick 只更新报价，仍需要一条慢速通道补齐 K 线。
         fullRefreshTimer = setInterval(() => {
-            if (!pending) requestRefresh();
+            if (!pending && !tickPending) requestRefresh();
         }, FULL_REFRESH_SECONDS * 1000);
     };
 
@@ -821,8 +833,8 @@
         }
         else {
             rows.push(tipRow("开", formatNumber(point.open, 2)));
-            rows.push(tipRow("高", formatNumber(point.high, 2), geometry.palette.up));
-            rows.push(tipRow("低", formatNumber(point.low, 2), geometry.palette.down));
+            rows.push(tipRow("高", formatNumber(point.high, 2), deltaColor(point.high - reference, geometry.palette)));
+            rows.push(tipRow("低", formatNumber(point.low, 2), deltaColor(point.low - reference, geometry.palette)));
             rows.push(tipRow("收", formatNumber(point.close, 2), changeColor));
             if (averageValue !== null && averageValue !== undefined) rows.push(tipRow("MA5", formatNumber(averageValue, 2), COLORS.yellow));
         }
@@ -896,7 +908,8 @@
     const render = (snapshot) => {
         if (!rootElement || !snapshot) return;
         snapshotValue = snapshot;
-        if (Number(snapshot.revision) > pendingRevision) {
+        const revision = Number(snapshot.revision);
+        if (revision > pendingRevision) {
             if (pending) {
                 pending = false;
                 pendingAction = null;
@@ -904,11 +917,12 @@
                 if (pendingTimer !== null) clearTimeout(pendingTimer);
                 pendingTimer = null;
             }
-            if (tickPending) {
-                tickPending = false;
-                if (tickTimer !== null) clearTimeout(tickTimer);
-                tickTimer = null;
-            }
+        }
+        if (tickPending && revision > tickPendingRevision) {
+            tickPending = false;
+            tickPendingRevision = -1;
+            if (tickTimer !== null) clearTimeout(tickTimer);
+            tickTimer = null;
         }
         const state = stateOf(snapshot);
         const quote = quoteOf(state);
@@ -956,16 +970,19 @@
             ? formatSigned(quote.change, "") + "  " + formatSigned(quote.changePercent, "%")
             : "等待真实价格";
         refs.delta.style.color = hasQuote ? color : COLORS.muted;
-        const cadence = effectiveIntervalSeconds(interval);
+        const timerPlan = refreshPlan(interval, marketStatus);
+        const cadence = timerPlan.cadence;
         const cadenceText = "自动 " + (INTERVAL_LABELS[cadence] || cadence + " 秒");
         const liveText = cadence < FULL_REFRESH_SECONDS && tickSupported ? " · 准实时" : "";
+        const fetchedAt = text(quote.fetchedAt, text(quote.observedAt, ""));
+        const freshnessText = quote.stale ? " · 数据可能陈旧" : "";
         refs.session.textContent = hasQuote
             ? marketStatus === "open"
-                ? "交易中 · " + periodLabel + " · 更新 " + formatClock(quote.observedAt) + " · " + cadenceText + liveText
-                : "休市 · 最近交易日 " + lastTradingDate + " · 最后价 " + formatNumber(quote.price, 2) + " · 更新 " + formatClock(quote.observedAt) + " · " + cadenceText
+                ? "交易中 · " + periodLabel + " · 更新 " + formatClock(fetchedAt) + " · " + cadenceText + liveText + freshnessText
+                : "休市 · 最近交易日 " + lastTradingDate + " · 最后价 " + formatNumber(quote.price, 2) + " · 更新 " + formatClock(fetchedAt) + " · " + cadenceText + freshnessText
             : "数据源：stock-api MCP";
         refs.session.title = hasQuote
-            ? refs.session.textContent + " · 观测时间 " + formatTimestamp(quote.observedAt) + " · 本次会话准实时刷新 " + liveTickCount + " 次"
+            ? refs.session.textContent + " · 观测时间 " + formatTimestamp(quote.observedAt) + " · 抓取时间 " + formatTimestamp(fetchedAt) + " · 本次会话准实时刷新 " + liveTickCount + " 次"
             : refs.session.textContent;
         const candleSwatch = '<i class="legend-line candle" style="background:linear-gradient(90deg,' + palette.up + ' 0 48%,' + palette.down + ' 52% 100%)"></i>';
         refs.legend.innerHTML = isIntradayPeriod(period)
@@ -977,7 +994,7 @@
         refs.disclaimer.textContent = text(state.disclaimer, "行情可能延迟，不构成投资建议或交易指令");
         updateMetrics(quote, history, state);
         updateOrderBook(state, quote, palette);
-        if (interval !== activeInterval) setRefreshTimer(interval);
+        if (timerPlan.key !== activeTimerKey) setRefreshTimer(interval);
         drawChart();
     };
 
@@ -1023,6 +1040,8 @@
         pendingTimer = null;
         tickTimer = null;
         tickPending = false;
+        tickPendingRevision = -1;
+        activeTimerKey = "";
     };
 
     const cleanup = () => {
@@ -1039,6 +1058,28 @@
         }
     };
 
+    const testHooks = globalThis.__LOOM_STOCK_MONITOR_TEST_HOOKS__;
+    if (testHooks && typeof testHooks === "object") {
+        Object.assign(testHooks, {
+            applyRevision(revision) {
+                if (tickPending && Number(revision) > tickPendingRevision) {
+                    tickPending = false;
+                    tickPendingRevision = -1;
+                    if (tickTimer !== null) clearTimeout(tickTimer);
+                    tickTimer = null;
+                }
+            },
+            beginTick(revision) {
+                snapshotValue = { revision: Number(revision) || 0, authoritativeState: { marketStatus: "open" } };
+                tickPending = true;
+                tickPendingRevision = Number(snapshotValue.revision) || 0;
+            },
+            paletteFor,
+            refreshPlan,
+            tickState: () => ({ pending: tickPending, revision: tickPendingRevision })
+        });
+    }
+
     NeuroSurface.define({
         mount({ root, snapshot }) {
             rootElement = root;
@@ -1052,7 +1093,6 @@
             resizeObserver = new ResizeObserver(drawChart);
             resizeObserver.observe(refs.chart);
             render(snapshot);
-            setRefreshTimer(stateOf(snapshot).intervalSeconds);
             if (!quoteOf(stateOf(snapshot)).price) {
                 setTimeout(() => {
                     if (!suspended && !disposed) requestRefresh();

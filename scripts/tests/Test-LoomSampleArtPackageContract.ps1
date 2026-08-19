@@ -52,7 +52,7 @@ $expected = [ordered]@{
     "color-transfer" = [ordered]@{ id = "custom-1770131241684"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802004"; version = "0.1.4" }
     "image-blend" = [ordered]@{ id = "custom-image-blend-script"; framework = "process"; executionType = "framework_art"; globalId = "NA20260802005"; version = "0.1.0" }
     "image-blend-compress" = [ordered]@{ id = "custom-image-blend-compress-workflow"; framework = "workflow"; executionType = "workflow"; globalId = "NA20260802006"; version = "0.1.0" }
-    "stock-monitor" = [ordered]@{ id = "custom-stock-monitor"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802007"; version = "1.4.0" }
+    "stock-monitor" = [ordered]@{ id = "custom-stock-monitor"; framework = "mcp"; executionType = "framework_art"; globalId = "NA20260802007"; version = "1.5.0" }
 }
 
 Assert-True (Test-Path -LiteralPath $packagesRoot -PathType Container) "Sample Art package source directory is required: $packagesRoot"
@@ -196,21 +196,21 @@ foreach ($entry in $expected.GetEnumerator()) {
         Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass stock-api."
         Assert-True ([string]$manifest.metadata.mcp.serverId -eq "stock-api") "Stock Monitor MCP server id is invalid."
         Assert-True ([string]$manifest.metadata.mcp.packageId -eq "neuro.official/stock-api") "Stock Monitor MCP package id is invalid."
-        Assert-True ([string]$manifest.metadata.mcp.version -eq "=2.8.0") "Stock Monitor MCP wrapper version must be exact."
+        Assert-True ([string]$manifest.metadata.mcp.version -eq "=2.9.0") "Stock Monitor MCP wrapper version must be exact."
         Assert-True ([version]$mcpFrameworkManifest.version -ge [version]"0.2.3") "Stock Monitor requires MCP framework 0.2.3 or newer for Surface action routing."
         Assert-True (@($manifest.metadata.mcp.calls).Count -eq 3) "Stock Monitor must declare quote, history, and order-book MCP calls."
         $historyCall = @($manifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "history" })[0]
         Assert-True ([string]$historyCall.toolName -eq "get_market_series") "Stock Monitor history must use the multi-period market-series tool."
         $orderBookCall = @($manifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "orderbook" })[0]
         Assert-True ([string]$orderBookCall.toolName -eq "get_order_book") "Stock Monitor depth must use the order-book tool."
-        Assert-True ([string]$orderBookCall.arguments.source -eq "xueqiu") "Stock Monitor order book must use the Xueqiu realtime path."
+        Assert-True ([string]$orderBookCall.arguments.source -eq "auto") "Stock Monitor order book must use the automatic pysnowball/Xueqiu realtime path."
         Assert-True (@($manifest.metadata.mcp.calls | Where-Object { [string]$_.arguments.source -eq "eastmoney" }).Count -eq 2) "Stock Monitor MCP calls must use the bounded eastmoney provider path."
         Assert-True (@($manifest.metadata.mcp.surfaceActions.stock_interval_commit.calls).Count -eq 0) "Stock Monitor interval action must skip MCP calls."
         Assert-True ((@($manifest.metadata.mcp.surfaceActions.stock_period_commit.calls) -join ",") -eq "history") "Stock Monitor period action must request only history and reuse the current quote."
-        Assert-True ((@($manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls) -join ",") -eq "quote,orderbook") "Stock Monitor tick action must poll only the quote and the order book."
+        Assert-True ((@($manifest.metadata.mcp.surfaceActions.stock_tick_refresh.calls) -join ",") -eq "orderbook") "Stock Monitor tick action must poll only live data and reuse the authoritative quote."
         $mcpDependencies = @($manifest.metadata.dependencies.mcpServers)
         Assert-True ($mcpDependencies.Count -eq 1) "Stock Monitor must declare exactly one MCP server dependency."
-        Assert-True ([string]$mcpDependencies[0].id -eq "neuro.official/stock-api" -and [string]$mcpDependencies[0].version -eq "=2.8.0") "Stock Monitor MCP dependency is invalid."
+        Assert-True ([string]$mcpDependencies[0].id -eq "neuro.official/stock-api" -and [string]$mcpDependencies[0].version -eq "=2.9.0") "Stock Monitor MCP dependency is invalid."
         Assert-True ($runtimeSource -notmatch '(?i)random|fake price|placeholder quote') "Stock Monitor runtime must not fabricate quotes."
     }
 
@@ -338,12 +338,12 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 Assert-True (($packagedActions -join ",") -eq "stock_interval_commit,stock_period_commit,stock_refresh,stock_symbol_commit,stock_tick_refresh") "Packaged Stock Monitor action set is invalid: $zipPath"
                 Assert-True ([string]$zipManifest.metadata.marketData.providerId -eq "stock-api") "Packaged Stock Monitor provider is invalid: $zipPath"
                 Assert-True ([string]$zipManifest.metadata.mcp.packageId -eq "neuro.official/stock-api") "Packaged Stock Monitor MCP package is invalid: $zipPath"
-                Assert-True ([string]$zipManifest.metadata.mcp.version -eq "=2.8.0") "Packaged Stock Monitor MCP wrapper version is invalid: $zipPath"
+                Assert-True ([string]$zipManifest.metadata.mcp.version -eq "=2.9.0") "Packaged Stock Monitor MCP wrapper version is invalid: $zipPath"
                 Assert-True (@($zipManifest.metadata.mcp.calls).Count -eq 3) "Packaged Stock Monitor MCP call set is invalid: $zipPath"
                 $packagedHistoryCall = @($zipManifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "history" })[0]
                 Assert-True ([string]$packagedHistoryCall.toolName -eq "get_market_series") "Packaged Stock Monitor history tool is invalid: $zipPath"
                 $packagedOrderBookCall = @($zipManifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "orderbook" })[0]
-                Assert-True ([string]$packagedOrderBookCall.toolName -eq "get_order_book" -and [string]$packagedOrderBookCall.arguments.source -eq "xueqiu") "Packaged Stock Monitor order-book call is invalid: $zipPath"
+                Assert-True ([string]$packagedOrderBookCall.toolName -eq "get_order_book" -and [string]$packagedOrderBookCall.arguments.source -eq "auto") "Packaged Stock Monitor order-book call is invalid: $zipPath"
                 Assert-True ($surfaceSource.Contains("updateOrderBook") -and $surfaceSource.Contains("book-board")) "Packaged Stock Monitor must render the order-book panel: $zipPath"
                 Assert-True (@($zipManifest.metadata.mcp.calls | Where-Object { [string]$_.arguments.source -eq "eastmoney" }).Count -eq 2) "Packaged Stock Monitor MCP calls must use the bounded eastmoney provider path: $zipPath"
                 Assert-True (-not [bool]$zipManifest.metadata.marketData.trading) "Packaged Stock Monitor must not advertise trading: $zipPath"
