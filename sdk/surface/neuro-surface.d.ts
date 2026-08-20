@@ -7,6 +7,17 @@ declare global {
 export type SurfaceRuntimeKind = "declarative" | "javascript" | "shader" | "loom_remote";
 export type SurfaceEventClass = "discrete" | "continuous" | "commit" | "local";
 
+export interface SurfaceSize {
+    width: number;
+    height: number;
+}
+
+export interface SurfaceViewDefinition {
+    id: string;
+    label: string;
+    fullSize: SurfaceSize;
+}
+
 export interface SurfaceNode {
     id: string;
     type: string;
@@ -48,6 +59,7 @@ export interface SurfaceSnapshot {
     revision: number;
     runtime?: SurfaceRuntimeKind;
     entryResourceId?: string;
+    viewId?: string;
     scene: SurfaceNode;
     authoritativeState?: unknown;
     resources?: SurfaceResourceDescriptor[];

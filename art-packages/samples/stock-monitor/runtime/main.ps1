@@ -362,6 +362,44 @@ function Get-StockFromActionState {
     }
 }
 
+function ConvertTo-FavoriteQuotes {
+    param([AllowNull()][object]$Values)
+
+    $quotes = [System.Collections.Generic.List[object]]::new()
+    foreach ($value in @($Values | Select-Object -First 12)) {
+        try { $code = Resolve-StockCode (Get-ObjectPropertyValue -Value $value -Name "code") }
+        catch { continue }
+        $name = ([string](Get-ObjectPropertyValue -Value $value -Name "name")).Trim()
+        $price = Convert-NullableNumber (Get-ObjectPropertyValue -Value $value -Name "now" -DefaultValue (Get-ObjectPropertyValue -Value $value -Name "price"))
+        if ([string]::IsNullOrWhiteSpace($name) -or $name -eq "---" -or $null -eq $price -or $price -le 0) { continue }
+        $previousClose = Convert-NullableNumber (Get-ObjectPropertyValue -Value $value -Name "yesterday" -DefaultValue (Get-ObjectPropertyValue -Value $value -Name "previousClose"))
+        $percentFraction = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $value -Name "percent") -Digits 8
+        $changePercent = Convert-NullableNumber -Value (Get-ObjectPropertyValue -Value $value -Name "changePercent") -Digits 4
+        if ($null -eq $changePercent -and $null -ne $percentFraction) {
+            $changePercent = [Math]::Round($percentFraction * 100, 4)
+        }
+        if ($null -eq $changePercent -and $null -ne $previousClose -and $previousClose -gt 0) {
+            $changePercent = [Math]::Round((($price - $previousClose) / $previousClose) * 100, 4)
+        }
+        $market = Get-MarketFromCode -Code $code
+        $quotes.Add([ordered]@{
+            code = $code
+            market = $market
+            name = $name
+            currency = Get-CurrencyForMarket -Market $market
+            price = $price
+            change = if ($null -ne $previousClose) { [Math]::Round($price - $previousClose, 4) } else { $null }
+            changePercent = $changePercent
+            previousClose = $previousClose
+            source = ([string](Get-ObjectPropertyValue -Value $value -Name "source" -DefaultValue "eastmoney")).Trim().ToLowerInvariant()
+            observedAt = [string](Get-ObjectPropertyValue -Value $value -Name "observedAt")
+            fetchedAt = [string](Get-ObjectPropertyValue -Value $value -Name "fetchedAt")
+            stale = [bool](Get-ObjectPropertyValue -Value $value -Name "stale" -DefaultValue $false)
+        })
+    }
+    return @($quotes.ToArray())
+}
+
 function ConvertTo-HistoryRows {
     param([AllowNull()][object]$Values)
 
@@ -657,6 +695,12 @@ function Get-StockSnapshot {
         marketStatus = $marketStatus
         lastTradingDate = $lastTradingDate
     }
+    $favoritesAttempt = Try-Get-McpToolContent -Request $Request -CallId "favorites"
+    $favoritesResponse = Get-ObjectPropertyValue -Value (Get-ObjectPropertyValue -Value $favoritesAttempt -Name "content") -Name "response"
+    $favoriteQuotes = @(ConvertTo-FavoriteQuotes (Get-ObjectPropertyValue -Value $favoritesResponse -Name "stocks" -DefaultValue @()))
+    if ($favoriteQuotes.Count -eq 0 -and $null -ne $script:SurfaceAction) {
+        $favoriteQuotes = @(ConvertTo-FavoriteQuotes (Get-ActionStateValue -Action $script:SurfaceAction -Name "favoriteQuotes" -DefaultValue @()))
+    }
     return [ordered]@{
         quote = $quote
         history = $history
@@ -666,6 +710,7 @@ function Get-StockSnapshot {
         marketStatus = $marketStatus
         orderBook = $orderBook
         liveTape = $liveTape
+        favoriteQuotes = $favoriteQuotes
         historyError = if ($history.Count -eq 0) { $historyError } else { $null }
     }
 }
@@ -816,6 +861,7 @@ function New-FormalQuote {
         }
         orderBook = $Snapshot.orderBook
         liveTape = $Snapshot.liveTape
+        favoriteQuotes = @($Snapshot.favoriteQuotes)
         disclaimer = $script:Disclaimer
     }
 }
@@ -918,6 +964,7 @@ try {
         history = $history
         orderBook = $snapshot.orderBook
         liveTape = $snapshot.liveTape
+        favoriteQuotes = @($snapshot.favoriteQuotes)
         lastUpdatedAt = [string]$quote.fetchedAt
         error = $null
         disclaimer = $script:Disclaimer

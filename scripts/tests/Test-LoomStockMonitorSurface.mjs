@@ -37,6 +37,9 @@ vm.runInContext(source, context, { filename: surfacePath });
 assert.ok(definition, "Stock Monitor Surface did not register a definition");
 assert.equal(typeof hooks.applyRevision, "function", "revision hook is missing");
 assert.equal(typeof hooks.refreshPlan, "function", "refresh-plan hook is missing");
+assert.equal(typeof hooks.viewOf, "function", "view resolver hook is missing");
+assert.equal(hooks.viewOf({ viewId: "favorites-summary" }), "favorites-summary");
+assert.equal(hooks.viewOf({ viewId: "unknown" }), "full");
 
 assert.deepEqual(
   { ...hooks.refreshPlan(1, "open") },

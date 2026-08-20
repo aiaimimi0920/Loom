@@ -96,6 +96,14 @@ pub struct SurfaceSize {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SurfaceViewDefinition {
+    pub id: String,
+    pub label: String,
+    pub full_size: SurfaceSize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SurfaceVariant {
     pub runtime: SurfaceRuntimeKind,
     pub entry: String,
@@ -136,6 +144,10 @@ pub struct SurfacePackageManifest {
     pub migrations: Vec<SurfaceStateMigration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum_size: Option<SurfaceSize>,
+    #[serde(default)]
+    pub views: Vec<SurfaceViewDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_view_id: Option<String>,
     #[serde(default)]
     pub theme_mode: SurfaceThemeMode,
 }
@@ -369,6 +381,8 @@ pub struct SurfaceSnapshot {
     pub runtime: SurfaceRuntimeKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_resource_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<String>,
     pub scene: SurfaceNode,
     #[serde(default)]
     pub authoritative_state: Value,
@@ -843,6 +857,15 @@ pub fn validate_surface_snapshot(snapshot: &SurfaceSnapshot) -> Result<(), Surfa
             return Err(SurfaceValidationError::UnsafeIdentifier((*id).clone()));
         }
     }
+    if snapshot
+        .view_id
+        .as_deref()
+        .is_some_and(|view_id| !is_safe_surface_identifier(view_id))
+    {
+        return Err(SurfaceValidationError::UnsafeIdentifier(
+            snapshot.view_id.clone().unwrap_or_default(),
+        ));
+    }
     validate_surface_node_tree(&snapshot.scene)?;
     for resource in &snapshot.resources {
         validate_surface_resource(resource)?;
@@ -1045,6 +1068,7 @@ mod tests {
             revision: 7,
             runtime: SurfaceRuntimeKind::Declarative,
             entry_resource_id: None,
+            view_id: Some("full".to_owned()),
             scene: node("root"),
             authoritative_state: serde_json::json!({"price": 221.18}),
             resources: Vec::new(),
@@ -1055,6 +1079,7 @@ mod tests {
         let value = serde_json::to_value(&snapshot).expect("serialize snapshot");
         assert_eq!(value["protocolVersion"], SURFACE_PROTOCOL_VERSION);
         assert_eq!(value["instanceId"], "instance:stock-01");
+        assert_eq!(value["viewId"], "full");
         assert_eq!(value["scene"]["type"], "text");
         assert_eq!(
             serde_json::from_value::<SurfaceSnapshot>(value).expect("deserialize snapshot"),

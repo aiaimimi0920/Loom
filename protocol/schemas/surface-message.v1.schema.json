@@ -282,6 +282,9 @@
           "type": "string",
           "pattern": "^sha256:[A-Fa-f0-9]{64}$"
         },
+        "viewId": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
         "scene": {
           "$ref": "#/$defs/node"
         },

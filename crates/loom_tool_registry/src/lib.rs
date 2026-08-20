@@ -347,6 +347,42 @@ fn validate_surface_package_manifest(
             )));
         }
     }
+    let mut view_ids = HashSet::new();
+    for view in &surface.views {
+        if !is_safe_surface_identifier(&view.id) {
+            return Err(invalid(format!("unsafe Surface view id {}", view.id)));
+        }
+        if !view_ids.insert(view.id.as_str()) {
+            return Err(invalid(format!("duplicate Surface view id {}", view.id)));
+        }
+        if view.label.trim().is_empty() || view.label.chars().count() > 80 {
+            return Err(invalid(format!(
+                "Surface view {} must declare a non-empty label of at most 80 characters",
+                view.id
+            )));
+        }
+        if view.full_size.width == 0
+            || view.full_size.height == 0
+            || view.full_size.width > 16_384
+            || view.full_size.height > 16_384
+        {
+            return Err(invalid(format!(
+                "Surface view {} full size must be between 1 and 16384 pixels",
+                view.id
+            )));
+        }
+    }
+    if let Some(default_view_id) = surface.default_view_id.as_deref() {
+        if !view_ids.contains(default_view_id) {
+            return Err(invalid(format!(
+                "Surface default view id {default_view_id} is not declared"
+            )));
+        }
+    } else if !surface.views.is_empty() {
+        return Err(invalid(
+            "Surface manifests with views must declare defaultViewId".to_owned(),
+        ));
+    }
     let mut action_ids = HashSet::new();
     for action in &surface.actions {
         if !is_safe_surface_identifier(&action.id) {
@@ -2398,6 +2434,44 @@ mod tests {
             tool.validate(),
             Err(ToolRegistryError::InvalidToolDefinition { reason, .. })
                 if reason.contains("entry path is unsafe")
+        ));
+    }
+
+    #[test]
+    fn surface_manifest_validates_named_view_full_sizes_and_default() {
+        let mut tool = ToolDefinition::new(
+            "stock-price",
+            "Stock Price",
+            "Interactive stock card",
+            ToolExecution::FrameworkArt {
+                framework: "framework_art".to_owned(),
+            },
+        );
+        tool.metadata = Some(serde_json::json!({
+            "capabilities": {
+                "surface": {
+                    "protocolVersion": "loom.surface.v1",
+                    "apiVersion": "1.0",
+                    "variants": [{
+                        "runtime": "javascript",
+                        "entry": "surface/main.js"
+                    }],
+                    "views": [
+                        { "id": "full", "label": "Full", "fullSize": { "width": 960, "height": 820 } },
+                        { "id": "price", "label": "Price", "fullSize": { "width": 620, "height": 560 } }
+                    ],
+                    "defaultViewId": "full"
+                }
+            }
+        }));
+        assert!(tool.validate().is_ok());
+
+        tool.metadata.as_mut().expect("metadata")["capabilities"]["surface"]["defaultViewId"] =
+            serde_json::json!("missing");
+        assert!(matches!(
+            tool.validate(),
+            Err(ToolRegistryError::InvalidToolDefinition { reason, .. })
+                if reason.contains("default view id missing is not declared")
         ));
     }
 

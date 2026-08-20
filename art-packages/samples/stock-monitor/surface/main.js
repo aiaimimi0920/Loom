@@ -54,6 +54,7 @@
     const MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
     const ACTION_TIMEOUT_MILLIS = 50000;
     const PENDING_TIMEOUT_MILLIS = ACTION_TIMEOUT_MILLIS + 2000;
+    const VIEW_IDS = Object.freeze(["full", "chart-table", "trade-price", "favorites-summary"]);
 
     let rootElement = null;
     let snapshotValue = null;
@@ -89,6 +90,8 @@
     const stateOf = (snapshot) => asObject(snapshot && snapshot.authoritativeState);
     const quoteOf = (state) => asObject(state.quote);
     const historyOf = (state) => Array.isArray(state.history) ? state.history : [];
+    const favoriteQuotesOf = (state) => Array.isArray(state.favoriteQuotes) ? state.favoriteQuotes : [];
+    const viewOf = (snapshot) => VIEW_IDS.includes(snapshot && snapshot.viewId) ? snapshot.viewId : "full";
     const periodOf = (state) => {
         const value = text(state.period, "minute");
         return PERIOD_VALUES.includes(value) ? value : "minute";
@@ -208,7 +211,7 @@
     const styleSource = [
         ":root{color-scheme:dark}",
         "html,body{background:transparent}",
-        ".stock-shell{min-width:0;min-height:100%;height:100%;overflow:auto;background:" + COLORS.background + ";color:" + COLORS.text + ";font-family:Segoe UI,Microsoft YaHei,sans-serif;font-size:12px;line-height:1.35;letter-spacing:0;display:grid;grid-template-rows:auto auto minmax(160px,1fr) auto auto auto}",
+        ".stock-shell{min-width:0;min-height:100%;height:100%;overflow:hidden;background:" + COLORS.background + ";color:" + COLORS.text + ";font-family:Segoe UI,Microsoft YaHei,sans-serif;font-size:12px;line-height:1.35;letter-spacing:0;display:grid;grid-template-rows:auto auto minmax(190px,1fr) auto auto auto}",
         ".stock-shell *{box-sizing:border-box;letter-spacing:0}",
         ".stock-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 12px 9px;background:" + COLORS.surface + ";border-bottom:1px solid " + COLORS.line + "}",
         ".stock-kicker{font:700 11px/1.2 Consolas,monospace;color:" + COLORS.yellow + ";white-space:nowrap}",
@@ -282,16 +285,47 @@
         ".tape-strip{display:flex;flex-wrap:wrap;gap:3px 10px;min-width:0;color:" + COLORS.muted + ";font:600 10px/1.45 Consolas,monospace}",
         ".tape-item{white-space:nowrap}",
         ".tape-item strong{margin-left:4px;color:" + COLORS.text + ";font-weight:700}",
+        ".history-board,.favorites-board{display:none;min-width:0;min-height:0;background:" + COLORS.panel + ";border-bottom:1px solid " + COLORS.line + "}",
+        ".history-board{grid-template-rows:auto minmax(0,1fr)}",
+        ".section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 12px;border-bottom:1px solid " + COLORS.line + ";color:" + COLORS.yellow + ";font:700 11px/1.2 Consolas,monospace}",
+        ".history-table{display:grid;grid-template-rows:auto repeat(8,minmax(0,1fr));min-height:0;padding:0 12px 8px}",
+        ".history-row{display:grid;grid-template-columns:minmax(120px,1.3fr) repeat(5,minmax(72px,1fr));align-items:center;min-height:0;border-bottom:1px solid " + COLORS.grid + ";font:600 11px/1.2 Consolas,monospace}",
+        ".history-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}",
+        ".history-row>span:first-child{text-align:left;color:" + COLORS.muted + "}",
+        ".history-row.is-head{color:" + COLORS.muted + ";font-size:10px}",
+        ".favorites-board{grid-template-rows:auto minmax(0,1fr)}",
+        ".favorites-refresh{height:26px;padding:0 9px;border:1px solid " + COLORS.yellow + ";background:transparent;color:" + COLORS.yellow + ";font:700 10px/1 Consolas,monospace;cursor:pointer}",
+        ".favorites-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(0,1fr);gap:1px;min-height:0;background:" + COLORS.line + "}",
+        ".favorite-card{min-width:0;padding:12px;background:" + COLORS.panel + ";display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;align-content:center;gap:5px 10px}",
+        ".favorite-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:700}",
+        ".favorite-code{color:" + COLORS.muted + ";font:600 10px/1 Consolas,monospace}",
+        ".favorite-price{grid-column:2;grid-row:1/3;align-self:center;font:700 22px/1 Consolas,monospace}",
+        ".favorite-delta{font:700 11px/1.2 Consolas,monospace}",
+        ".favorites-empty{grid-column:1/-1;display:grid;place-items:center;color:" + COLORS.muted + ";font:600 12px/1.4 Segoe UI,Microsoft YaHei,sans-serif}",
         ".stock-footer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 12px;background:" + COLORS.surface + ";color:" + COLORS.muted + ";font-size:10px}",
         ".stock-error{min-width:0;color:" + COLORS.red + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
         ".stock-disclaimer{text-align:right;white-space:nowrap}",
+        ".stock-shell[data-view=chart-table]{grid-template-rows:auto auto minmax(190px,.95fr) auto minmax(220px,1.05fr) auto}",
+        ".stock-shell[data-view=chart-table] .book-board{display:none!important}",
+        ".stock-shell[data-view=chart-table] .history-board{display:grid}",
+        ".stock-shell[data-view=trade-price]{grid-template-rows:auto auto minmax(126px,.55fr) auto minmax(0,1.45fr) auto}",
+        ".stock-shell[data-view=trade-price] .stock-controls{grid-template-rows:auto}",
+        ".stock-shell[data-view=trade-price] .stock-intervals,.stock-shell[data-view=trade-price] .stock-periods{display:none}",
+        ".stock-shell[data-view=trade-price] .quote-board{grid-template-columns:1fr}",
+        ".stock-shell[data-view=trade-price] .quote-summary{border-right:0}",
+        ".stock-shell[data-view=trade-price] .chart-wrap{display:none}",
+        ".stock-shell[data-view=trade-price] .market-grid{grid-template-columns:repeat(4,minmax(0,1fr))}",
+        ".stock-shell[data-view=trade-price] .book-board{display:grid}",
+        ".stock-shell[data-view=favorites-summary]{grid-template-rows:auto minmax(0,1fr) auto}",
+        ".stock-shell[data-view=favorites-summary] .stock-controls,.stock-shell[data-view=favorites-summary] .quote-board,.stock-shell[data-view=favorites-summary] .market-grid,.stock-shell[data-view=favorites-summary] .book-board,.stock-shell[data-view=favorites-summary] .history-board{display:none!important}",
+        ".stock-shell[data-view=favorites-summary] .favorites-board{display:grid}",
         "@media(max-width:560px){.stock-shell{grid-template-rows:auto auto auto minmax(160px,1fr) auto auto auto}.stock-header{padding:9px 10px}.stock-status{max-width:115px}.stock-controls{grid-template-columns:minmax(0,1fr) auto 32px;padding:7px 10px}.stock-intervals{grid-template-columns:repeat(4,minmax(0,1fr))}.stock-periods{grid-template-columns:repeat(4,minmax(0,1fr))}.quote-board{display:contents}.quote-summary{padding:10px;border-right:0;border-bottom:1px solid " + COLORS.line + "}.quote-price{font-size:30px}.chart-wrap{min-height:175px}.market-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.market-cell:nth-child(4n){border-right:1px solid " + COLORS.line + "}.market-cell:nth-child(2n){border-right:0}.book-board{padding:8px 10px}.book-head{grid-template-columns:1fr}.book-meta{justify-self:start}.stock-footer{grid-template-columns:1fr}.stock-disclaimer{text-align:left;white-space:normal}}",
         "@media(max-width:390px){.stock-title{font-size:14px}.stock-status{display:none}.stock-header{grid-template-columns:1fr}.stock-controls{grid-template-columns:minmax(0,1fr) 32px 30px}.stock-refresh{grid-column:2;grid-row:1}}",
         "@media(prefers-reduced-motion:reduce){.stock-shell *{scroll-behavior:auto!important;transition:none!important}}"
     ].join("");
 
     const markup = [
-        '<section class="stock-shell" aria-label="股票盯盘">',
+        '<section class="stock-shell" data-ref="shell" aria-label="股票盯盘">',
         '<header class="stock-header">',
         '<div><div class="stock-kicker">NEURO MARKET WATCH</div><h1 class="stock-title" data-ref="title">股票盯盘</h1></div>',
         '<div class="stock-status" data-ref="status" role="status" aria-live="polite">等待首次刷新</div>',
@@ -328,6 +362,14 @@
         '<div class="book-bar" data-ref="bookBar" aria-hidden="true"><span data-ref="bookBuyBar"></span><span data-ref="bookSellBar"></span></div>',
         '<div class="book-columns"><div class="book-side" data-ref="bids"></div><div class="book-side" data-ref="asks"></div></div>',
         '<div class="tape-strip" data-ref="tape"></div>',
+        '</section>',
+        '<section class="history-board" data-ref="historyBoard" aria-label="折线行情表格">',
+        '<div class="section-head"><span data-ref="historyTitle">最近行情</span><span data-ref="historyMeta"></span></div>',
+        '<div class="history-table" data-ref="historyRows"></div>',
+        '</section>',
+        '<section class="favorites-board" data-ref="favoritesBoard" aria-label="收藏股票价格汇总">',
+        '<div class="section-head"><span>收藏股票价格汇总</span><button class="favorites-refresh" data-ref="favoritesRefresh" type="button">刷新全部</button></div>',
+        '<div class="favorites-grid" data-ref="favoritesGrid"></div>',
         '</section>',
         '<footer class="stock-footer"><span class="stock-error" data-ref="error"></span><span class="stock-disclaimer" data-ref="disclaimer">行情可能延迟，不构成投资建议或交易指令</span></footer>',
         '</section>'
@@ -477,6 +519,86 @@
         });
     };
 
+    const appendHistoryRow = (values, className) => {
+        const row = document.createElement("div");
+        row.className = "history-row" + (className ? " " + className : "");
+        values.forEach((entry) => {
+            const cell = document.createElement("span");
+            cell.textContent = entry.text;
+            if (entry.color) cell.style.color = entry.color;
+            row.append(cell);
+        });
+        refs.historyRows.append(row);
+    };
+
+    const updateHistoryTable = (history, state, palette) => {
+        if (!refs.historyRows) return;
+        refs.historyRows.replaceChildren();
+        appendHistoryRow([
+            { text: "时间" }, { text: "开" }, { text: "高" },
+            { text: "低" }, { text: "收" }, { text: "成交量" }
+        ], "is-head");
+        const rows = history.slice(-8).reverse();
+        rows.forEach((value) => {
+            const row = asObject(value);
+            const open = asNumber(row.open);
+            const close = asNumber(row.close);
+            const color = open === null || close === null ? COLORS.text : deltaColor(close - open, palette);
+            appendHistoryRow([
+                { text: formatPointDate(row.date, isIntradayPeriod(periodOf(state))) },
+                { text: formatNumber(open, 2) },
+                { text: formatNumber(row.high, 2) },
+                { text: formatNumber(row.low, 2) },
+                { text: formatNumber(close, 2), color: color },
+                { text: formatVolume(row.volume) }
+            ]);
+        });
+        while (refs.historyRows.children.length < 9) {
+            appendHistoryRow([{ text: "--" }, { text: "--" }, { text: "--" }, { text: "--" }, { text: "--" }, { text: "--" }], "is-empty");
+        }
+        refs.historyTitle.textContent = periodLabelOf(state) + " · 最近 8 条";
+        refs.historyMeta.textContent = history.length + " 条数据";
+    };
+
+    const updateFavorites = (state) => {
+        if (!refs.favoritesGrid) return;
+        refs.favoritesGrid.replaceChildren();
+        const favorites = favoriteQuotesOf(state).slice(0, 8);
+        if (!favorites.length) {
+            const empty = document.createElement("div");
+            empty.className = "favorites-empty";
+            empty.textContent = "等待 stock-api 返回收藏股票报价";
+            refs.favoritesGrid.append(empty);
+            return;
+        }
+        favorites.forEach((value) => {
+            const quote = asObject(value);
+            const market = text(quote.market, text(quote.code, "").slice(0, 2));
+            const palette = paletteFor(market);
+            const kind = movement(quote);
+            const color = movementColor(kind, palette);
+            const card = document.createElement("article");
+            card.className = "favorite-card";
+            const name = document.createElement("strong");
+            name.className = "favorite-name";
+            name.textContent = text(quote.name, "未知股票");
+            name.title = name.textContent;
+            const code = document.createElement("span");
+            code.className = "favorite-code";
+            code.textContent = text(quote.code, "--") + " · " + market;
+            const price = document.createElement("strong");
+            price.className = "favorite-price";
+            price.style.color = color;
+            price.textContent = formatNumber(quote.price, 2);
+            const delta = document.createElement("span");
+            delta.className = "favorite-delta";
+            delta.style.color = color;
+            delta.textContent = formatSigned(quote.change, "") + "  " + formatSigned(quote.changePercent, "%");
+            card.append(name, code, price, delta);
+            refs.favoritesGrid.append(card);
+        });
+    };
+
     const bookLevelsOf = (value) => Array.isArray(value) ? value.filter((row) => asNumber(asObject(row).price) !== null) : [];
     const orderBookOf = (state) => {
         const book = asObject(state.orderBook);
@@ -584,6 +706,11 @@
 
     const drawChart = () => {
         if (!refs.chart || !snapshotValue) return;
+        if (viewOf(snapshotValue) === "trade-price" || viewOf(snapshotValue) === "favorites-summary") {
+            chartGeometry = null;
+            hideChartTip();
+            return;
+        }
         const canvas = refs.chart;
         const bounds = canvas.getBoundingClientRect();
         const width = Math.min(MAX_CANVAS_WIDTH, Math.max(260, Math.floor(bounds.width || 520)));
@@ -940,8 +1067,12 @@
         const lastTradingDate = text(state.lastTradingDate, "--");
         const hasQuote = asNumber(quote.price) !== null;
         const hasError = typeof state.error === "string" && state.error.trim().length > 0;
+        const activeView = viewOf(snapshot);
+        refs.shell.dataset.view = activeView;
 
-        refs.title.textContent = hasQuote ? text(quote.name, "股票盯盘") : "股票盯盘";
+        refs.title.textContent = activeView === "favorites-summary"
+            ? "收藏股票价格汇总"
+            : hasQuote ? text(quote.name, "股票盯盘") : "股票盯盘";
         if (document.activeElement !== refs.symbol) refs.symbol.value = code;
         refs.intervals.querySelectorAll("[data-interval-value]").forEach((button) => {
             const active = Number(button.dataset.intervalValue) === interval;
@@ -955,6 +1086,7 @@
             button.disabled = pending;
         });
         refs.refresh.disabled = pending;
+        refs.favoritesRefresh.disabled = pending;
         const pendingText = pendingAction === "stock_period_commit"
             ? "正在切换周期"
             : pendingAction === "stock_symbol_commit" ? "正在加载股票" : "正在刷新";
@@ -994,12 +1126,15 @@
         refs.disclaimer.textContent = text(state.disclaimer, "行情可能延迟，不构成投资建议或交易指令");
         updateMetrics(quote, history, state);
         updateOrderBook(state, quote, palette);
+        updateHistoryTable(history, state, palette);
+        updateFavorites(state);
         if (timerPlan.key !== activeTimerKey) setRefreshTimer(interval);
         drawChart();
     };
 
     const bindEvents = () => {
         refs.refresh.addEventListener("click", requestRefresh);
+        refs.favoritesRefresh.addEventListener("click", requestRefresh);
         refs.symbol.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") return;
             event.preventDefault();
@@ -1076,6 +1211,7 @@
             },
             paletteFor,
             refreshPlan,
+            viewOf,
             tickState: () => ({ pending: tickPending, revision: tickPendingRevision })
         });
     }

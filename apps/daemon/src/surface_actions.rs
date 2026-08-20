@@ -1367,6 +1367,7 @@ mod tests {
                         revision: 1,
                         runtime: SurfaceRuntimeKind::Declarative,
                         entry_resource_id: None,
+                        view_id: None,
                         scene: SurfaceNode {
                             id: "root".to_owned(),
                             node_type: "column".to_owned(),
@@ -1472,6 +1473,7 @@ mod tests {
                         revision: 1,
                         runtime: loom_protocol::SurfaceRuntimeKind::Declarative,
                         entry_resource_id: None,
+                        view_id: None,
                         scene: SurfaceNode {
                             id: "root".to_owned(),
                             node_type: "column".to_owned(),
@@ -1669,6 +1671,7 @@ mod tests {
                             revision: 1,
                             runtime: SurfaceRuntimeKind::Declarative,
                             entry_resource_id: None,
+                            view_id: None,
                             scene: SurfaceNode {
                                 id: "root".to_owned(),
                                 node_type: "column".to_owned(),
@@ -1924,6 +1927,7 @@ mod tests {
                         revision: 1,
                         runtime: SurfaceRuntimeKind::Declarative,
                         entry_resource_id: None,
+                        view_id: None,
                         scene: SurfaceNode {
                             id: "root".to_owned(),
                             node_type: "column".to_owned(),

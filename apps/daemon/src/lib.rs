@@ -6487,6 +6487,16 @@ fn mount_surface_instance(
                 .map(|source| source.revision)
         })
         .unwrap_or_else(|| instance.descriptor.surface_revision.saturating_add(1));
+    let view_id = snapshot_source
+        .and_then(|source| source.view_id.as_ref())
+        .filter(|view_id| {
+            manifest
+                .views
+                .iter()
+                .any(|view| view.id == view_id.as_str())
+        })
+        .cloned()
+        .or_else(|| manifest.default_view_id.clone());
     let snapshot = SurfaceSnapshot {
         protocol_version: loom_protocol::SURFACE_PROTOCOL_VERSION.to_owned(),
         instance_id: instance_id.to_owned(),
@@ -6496,6 +6506,7 @@ fn mount_surface_instance(
         revision,
         runtime: runtime.clone(),
         entry_resource_id,
+        view_id,
         scene,
         authoritative_state,
         resources,
@@ -18619,6 +18630,12 @@ nodes:
                             "runtime": "declarative",
                             "entry": "surface/main.json"
                         }],
+                        "views": [{
+                            "id": "full",
+                            "label": "Full",
+                            "fullSize": { "width": 640, "height": 480 }
+                        }],
+                        "defaultViewId": "full",
                         "requiredNodes": ["column", "text", "button"],
                         "actions": [{
                             "id": "refresh_price",
@@ -27082,6 +27099,7 @@ def run(args):
                         revision: 1,
                         runtime: SurfaceRuntimeKind::Declarative,
                         entry_resource_id: None,
+                        view_id: None,
                         scene: SurfaceNode {
                             id: "root".to_owned(),
                             node_type: "column".to_owned(),
@@ -27319,6 +27337,10 @@ def run(args):
         let mounted: Value = serde_json::from_str(&mounted).expect("mounted JSON");
         assert_eq!(mounted["runtime"], "declarative");
         assert_eq!(mounted["entry"], "surface/main.json");
+        assert_eq!(
+            mounted["instance"]["attachments"][&attachment_id]["snapshot"]["viewId"],
+            "full"
+        );
         assert_eq!(
             mounted["instance"]["attachments"][&attachment_id]["snapshot"]["scene"]["children"][0]
                 ["props"]["text"],

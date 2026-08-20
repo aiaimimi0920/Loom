@@ -32,6 +32,9 @@ function New-McpData {
         [switch]$QuoteOnly,
         [switch]$OrderBookOnly,
         [switch]$OrderBookError,
+        [switch]$FavoritesOmitted,
+        [switch]$FavoritesError,
+        [switch]$FavoritesMalformed,
         [string]$Period = "day",
         [string]$Code = "SZ000034",
         [double]$QuotePrice = 24.99,
@@ -152,6 +155,35 @@ function New-McpData {
             }
         }
     }
+    $favoritesResult = if ($FavoritesError) {
+        [ordered]@{
+            isError = $true
+            structuredContent = [ordered]@{
+                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture favorites failure" }
+            }
+        }
+    }
+    else {
+        [ordered]@{
+            structuredContent = [ordered]@{
+                input = [ordered]@{ codes = @("SZ000034", "SH600519", "HK00700", "USAAPL"); source = "eastmoney" }
+                response = [ordered]@{
+                    count = if ($FavoritesMalformed) { 1 } else { 4 }
+                    stocks = if ($FavoritesMalformed) {
+                        "not-a-stock-array"
+                    }
+                    else {
+                        @(
+                            [ordered]@{ code = "SZ000034"; name = "Digital China"; now = 24.99; yesterday = 24.89; percent = 0.004018; source = "eastmoney" },
+                            [ordered]@{ code = "SH600519"; name = "Kweichow Moutai"; now = 1418.00; yesterday = 1400.00; percent = 0.012857; source = "eastmoney" },
+                            [ordered]@{ code = "HK00700"; name = "Tencent"; now = 612.50; yesterday = 606.00; percent = 0.010726; source = "eastmoney" },
+                            [ordered]@{ code = "USAAPL"; name = "Apple"; now = 231.10; yesterday = 229.40; percent = 0.007411; source = "eastmoney" }
+                        )
+                    }
+                }
+            }
+        }
+    }
     $results = if ($HistoryOnly) {
         [ordered]@{
             history = [ordered]@{ toolName = "get_market_series"; result = $historyResult }
@@ -174,6 +206,9 @@ function New-McpData {
             history = [ordered]@{ toolName = "get_market_series"; result = $historyResult }
             orderbook = [ordered]@{ toolName = "get_order_book"; result = $orderBookResult }
         }
+    }
+    if (-not $FavoritesOmitted -and -not $HistoryOnly -and -not $QuoteOnly -and -not $OrderBookOnly) {
+        $results["favorites"] = [ordered]@{ toolName = "get_stocks"; result = $favoritesResult }
     }
     return [ordered]@{
         mcp = [ordered]@{
@@ -252,12 +287,12 @@ try {
     }
 
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $artDirectory "manifest.json") | ConvertFrom-Json
-    Assert-Equal "1.5.0" ([string]$manifest.metadata.packageSecurity.version) "Stock Monitor package version must force the pysnowball live-source migration."
+    Assert-Equal "1.6.0" ([string]$manifest.metadata.packageSecurity.version) "Stock Monitor package version must force the multi-view migration."
     Assert-Equal "neuro.official/custom-stock-monitor" ([string]$manifest.metadata.art.qualifiedId) "Stock Monitor qualified Art identity mismatch."
     Assert-Equal "mcp" ([string]$manifest.execution.framework) "Stock Monitor must execute through the MCP framework."
     Assert-Equal "=2.9.0" ([string]$manifest.metadata.mcp.version) "Stock Monitor stock-api wrapper version must be exact."
-    Assert-Equal 3 @($manifest.metadata.mcp.calls).Count "Stock Monitor must declare quote, history, and order-book MCP calls."
-    Assert-True (@($manifest.metadata.mcp.calls | Where-Object { [string]$_.arguments.source -eq "eastmoney" }).Count -eq 2) "Stock Monitor quote and history calls must use the bounded eastmoney provider path."
+    Assert-Equal 4 @($manifest.metadata.mcp.calls).Count "Stock Monitor must declare quote, history, order-book, and favorites MCP calls."
+    Assert-True (@($manifest.metadata.mcp.calls | Where-Object { [string]$_.arguments.source -eq "eastmoney" }).Count -eq 3) "Stock Monitor quote, history, and favorites calls must use the bounded eastmoney provider path."
     $orderBookCall = @($manifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "orderbook" })[0]
     Assert-Equal "get_order_book" ([string]$orderBookCall.toolName) "Stock Monitor order-book call must target the Xueqiu ten-level tool."
     Assert-Equal "auto" ([string]$orderBookCall.arguments.source) "Stock Monitor order-book call must request the automatic pysnowball/Xueqiu source."
@@ -267,8 +302,16 @@ try {
     Assert-Equal 50000 ([int]$manifest.metadata.capabilities.surface.actions[1].timeoutMs) "Stock Monitor symbol action timeout must cover bounded provider fallback."
     $periodAction = @($manifest.metadata.capabilities.surface.actions | Where-Object { [string]$_.id -eq "stock_period_commit" })[0]
     Assert-Equal 50000 ([int]$periodAction.timeoutMs) "Stock Monitor period action timeout must cover bounded provider fallback."
-    Assert-Equal 760 ([int]$manifest.metadata.capabilities.surface.minimumSize.width) "Stock Monitor Surface minimum width must keep all controls visible."
-    Assert-Equal 640 ([int]$manifest.metadata.capabilities.surface.minimumSize.height) "Stock Monitor Surface minimum height must keep the chart visible."
+    Assert-Equal 4 @($manifest.metadata.capabilities.surface.views).Count "Stock Monitor must declare four developer-defined views."
+    Assert-Equal "full" ([string]$manifest.metadata.capabilities.surface.defaultViewId) "Stock Monitor must open in its full view."
+    Assert-Equal 960 ([int]$manifest.metadata.capabilities.surface.views[0].fullSize.width) "Stock Monitor full view width mismatch."
+    Assert-Equal 820 ([int]$manifest.metadata.capabilities.surface.views[0].fullSize.height) "Stock Monitor full view height mismatch."
+    Assert-Equal 620 ([int]$manifest.metadata.capabilities.surface.views[2].fullSize.width) "Stock Monitor trade-price view width mismatch."
+    Assert-Equal 620 ([int]$manifest.metadata.capabilities.surface.views[2].fullSize.height) "Stock Monitor trade-price view must fit a complete ten-level order book without scrolling."
+    Assert-Equal "favorites-summary" ([string]$manifest.metadata.capabilities.surface.views[3].id) "Stock Monitor favorites view is missing."
+    $favoritesCall = @($manifest.metadata.mcp.calls | Where-Object { [string]$_.id -eq "favorites" })[0]
+    Assert-Equal "get_stocks" ([string]$favoritesCall.toolName) "Favorites summary must use the aggregate stock API."
+    Assert-Equal 4 @($favoritesCall.arguments.codes).Count "Favorites summary must declare a bounded default favorite list."
     Assert-Equal 0 @($manifest.metadata.mcp.surfaceActions.stock_interval_commit.calls).Count "Interval updates must skip remote MCP calls."
     Assert-Equal "history" ([string]$manifest.metadata.mcp.surfaceActions.stock_period_commit.calls[0]) "Period switches must reuse the current quote and request only history."
     $tickAction = @($manifest.metadata.capabilities.surface.actions | Where-Object { [string]$_.id -eq "stock_tick_refresh" })[0]
@@ -301,6 +344,9 @@ try {
     Assert-True ($surfaceSource.Contains("TICK_ACTION") -and $surfaceSource.Contains("fullRefreshTimer") -and $surfaceSource.Contains("CLOSED_MARKET_MIN_SECONDS")) "Stock Monitor Surface must drive near-realtime ticks with a slower full-refresh channel and a closed-market floor."
     Assert-True ($surfaceSource.Contains("updateOrderBook") -and $surfaceSource.Contains("renderBookSide") -and $surfaceSource.Contains("book-board")) "Stock Monitor Surface must render the ten-level order book panel."
     Assert-True ($surfaceSource.Contains("tapeDefinitions") -and $surfaceSource.Contains("换手") -and $surfaceSource.Contains("振幅")) "Stock Monitor Surface must expose the intraday realtime tape fields."
+    Assert-True ($surfaceSource.Contains('overflow:hidden;background:') -and -not $surfaceSource.Contains('.stock-shell{min-width:0;min-height:100%;height:100%;overflow:auto')) "Stock Monitor must not require root scrolling to reveal its target region."
+    Assert-True ($surfaceSource.Contains("chart-table") -and $surfaceSource.Contains("trade-price") -and $surfaceSource.Contains("favorites-summary")) "Stock Monitor Surface must render all declared views."
+    Assert-True ($surfaceSource.Contains("updateHistoryTable") -and $surfaceSource.Contains("updateFavorites")) "Stock Monitor specialized views must render their table and favorites data."
     Assert-True ($surfaceSource -match 'renderBookSide\(refs\.bids[^\n]*palette\)') "Order book levels must be colored through the market-aware palette."
     Assert-True ($runtimeSource.Contains("ConvertTo-OrderBook") -and $runtimeSource.Contains("ConvertTo-LiveTape") -and $runtimeSource.Contains('CallId "orderbook"')) "Stock Monitor runtime must project the Xueqiu order book and realtime tape into state."
     Assert-True ($runtimeSource -match 'frameworkData' -and $runtimeSource -match 'results') "Stock Monitor runtime must consume MCP framework results."
@@ -344,6 +390,34 @@ try {
     Assert-True ([double]$refreshTape.price -eq 24.99 -and [double]$refreshTape.turnoverRate -eq 7.31) "Stock Monitor realtime tape projection mismatch."
     Assert-Equal 2 ([int]$quote.orderBook.levels) "Formal quote must expose the order book depth."
     Assert-True ([double]$quote.liveTape.avgPrice -eq 24.91) "Formal quote must expose the intraday average price."
+    Assert-Equal 4 @($quote.favoriteQuotes).Count "Formal quote must expose the aggregated favorite prices."
+    Assert-Equal 4 @($surfaceAction.patches[0].statePatch.favoriteQuotes).Count "Surface state must preserve favorite prices across view changes."
+
+    foreach ($favoritesFailure in @(
+        @{ Label = "missing"; Data = (New-McpData -FavoritesOmitted) },
+        @{ Label = "error"; Data = (New-McpData -FavoritesError) },
+        @{ Label = "malformed"; Data = (New-McpData -FavoritesMalformed) }
+    )) {
+        $favoritesFallback = Invoke-StockRuntime `
+            -ArtDirectory $artDirectory `
+            -ActionId "stock_refresh" `
+            -Payload @{ code = "SZ000034" } `
+            -AuthoritativeState $surfaceAction.patches[0].statePatch `
+            -FrameworkData $favoritesFailure.Data
+        $favoritesFallbackPatch = $favoritesFallback.output.surfaceAction.patches[0].statePatch
+        Assert-Equal "ready" ([string]$favoritesFallbackPatch.status) "A $($favoritesFailure.Label) favorites result must not fail the main quote."
+        Assert-Equal 4 @($favoritesFallbackPatch.favoriteQuotes).Count "A $($favoritesFailure.Label) favorites result must retain the last valid summary."
+    }
+
+    $firstLoadWithoutFavorites = Invoke-StockRuntime `
+        -ArtDirectory $artDirectory `
+        -ActionId "stock_refresh" `
+        -Payload @{ code = "SZ000034" } `
+        -AuthoritativeState $initialState `
+        -FrameworkData (New-McpData -FavoritesOmitted)
+    $firstLoadWithoutFavoritesPatch = $firstLoadWithoutFavorites.output.surfaceAction.patches[0].statePatch
+    Assert-Equal "ready" ([string]$firstLoadWithoutFavoritesPatch.status) "A missing first-load favorites result must not fail the main quote."
+    Assert-Equal 0 @($firstLoadWithoutFavoritesPatch.favoriteQuotes).Count "A missing first-load favorites result must remain empty instead of fabricating prices."
 
     $historyFallback = Invoke-StockRuntime `
         -ArtDirectory $artDirectory `

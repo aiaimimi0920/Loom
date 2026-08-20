@@ -67,10 +67,30 @@
     "minimumSize": {
       "$ref": "#/$defs/size"
     },
+    "views": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/view"
+      },
+      "minItems": 1
+    },
+    "defaultViewId": {
+      "$ref": "#/$defs/safeIdentifier"
+    },
     "themeMode": {
       "enum": ["host", "custom"]
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["views"]
+      },
+      "then": {
+        "required": ["defaultViewId"]
+      }
+    }
+  ],
   "additionalProperties": true,
   "$defs": {
     "safeIdentifier": {
@@ -128,11 +148,31 @@
       "properties": {
         "width": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 16384
         },
         "height": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 16384
+        }
+      },
+      "additionalProperties": false
+    },
+    "view": {
+      "type": "object",
+      "required": ["id", "label", "fullSize"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/safeIdentifier"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "fullSize": {
+          "$ref": "#/$defs/size"
         }
       },
       "additionalProperties": false

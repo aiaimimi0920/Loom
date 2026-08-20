@@ -37,7 +37,7 @@
   ],
   "metadata": {
     "packageSecurity": {
-      "version": "1.5.0",
+      "version": "1.6.0",
       "publisher": {
         "id": "neuro.official",
         "name": "Neuro",
@@ -97,9 +97,32 @@
         "requiredNodes": ["column", "row", "text", "input", "select", "button", "divider"],
         "requiredCapabilities": [],
         "minimumSize": {
-          "width": 760,
-          "height": 640
+          "width": 320,
+          "height": 240
         },
+        "views": [
+          {
+            "id": "full",
+            "label": "全视图",
+            "fullSize": { "width": 960, "height": 820 }
+          },
+          {
+            "id": "chart-table",
+            "label": "折线表格视图",
+            "fullSize": { "width": 940, "height": 760 }
+          },
+          {
+            "id": "trade-price",
+            "label": "交易价格视图",
+            "fullSize": { "width": 620, "height": 620 }
+          },
+          {
+            "id": "favorites-summary",
+            "label": "收藏股票价格汇总视图",
+            "fullSize": { "width": 640, "height": 420 }
+          }
+        ],
+        "defaultViewId": "full",
         "actions": [
           {
             "id": "stock_refresh",
@@ -190,6 +213,14 @@
           "arguments": {
             "source": "auto"
           }
+        },
+        {
+          "id": "favorites",
+          "toolName": "get_stocks",
+          "arguments": {
+            "source": "eastmoney",
+            "codes": ["SZ000034", "SH600519", "HK00700", "USAAPL"]
+          }
         }
       ],
       "surfaceActions": {
@@ -248,7 +279,7 @@
       "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
     },
     "plugin": {
-      "packageVersion": "1.5.0",
+      "packageVersion": "1.6.0",
       "runtimeMode": "surface"
     }
   }
