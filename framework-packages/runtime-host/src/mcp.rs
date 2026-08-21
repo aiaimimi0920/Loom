@@ -7,6 +7,10 @@ use loom_protocol::{CredentialGrant, FrameworkExecuteRequest, FrameworkMcpServer
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// The caller-supplied key that carries a Surface invocation. Reserved by this framework, so it is
+/// never forwarded to an MCP server as a tool argument.
+const SURFACE_ACTION_KEY: &str = "surfaceAction";
+
 #[derive(Debug, Deserialize)]
 struct ArtManifest {
     #[serde(default)]
@@ -17,6 +21,25 @@ struct ArtManifest {
 struct ArtMetadata {
     #[serde(default)]
     mcp: Option<McpArtConfig>,
+    #[serde(default)]
+    dependencies: ArtDependencies,
+}
+
+/// The subset of `metadata.dependencies` this framework needs. Deliberately a local mirror of
+/// `loom_tool_registry::framework::ArtDependencies` rather than a dependency on that crate: the
+/// runtime host is a framework package that only speaks the framework protocol. If the manifest
+/// shape changes, this has to change with it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtDependencies {
+    #[serde(default)]
+    mcp_servers: Vec<ArtMcpServerDependency>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ArtMcpServerDependency {
+    id: String,
+    version: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -99,18 +122,7 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
         .mcp_server
         .as_ref()
         .ok_or_else(|| "MCP dependency was not resolved by the Loom host".to_owned())?;
-    if resolved.id != config.server_id {
-        return Err(format!(
-            "resolved MCP server `{}` does not match Art dependency `{}`",
-            resolved.id, config.server_id
-        ));
-    }
-    if resolved.package_id != config.package_id {
-        return Err(format!(
-            "resolved MCP package `{}` does not match Art dependency `{}`",
-            resolved.package_id, config.package_id
-        ));
-    }
+    validate_resolved_server(&config, resolved)?;
     if calls.is_empty() {
         return Ok(McpExecution {
             server_id: resolved.id.clone(),
@@ -193,6 +205,47 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
     })
 }
 
+/// Hold the server the host resolved to what the Art declared: same server id, same package, and a
+/// version the declared requirement admits. The version half is the part that used to be missing —
+/// `metadata.mcp.version` was parsed and then ignored, so an Art pinned to `=2.9.0` ran happily
+/// against whatever the host had installed.
+fn validate_resolved_server(
+    config: &McpArtConfig,
+    resolved: &FrameworkMcpServer,
+) -> Result<(), String> {
+    if resolved.id != config.server_id {
+        return Err(format!(
+            "resolved MCP server `{}` does not match Art dependency `{}`",
+            resolved.id, config.server_id
+        ));
+    }
+    if resolved.package_id != config.package_id {
+        return Err(format!(
+            "resolved MCP package `{}` does not match Art dependency `{}`",
+            resolved.package_id, config.package_id
+        ));
+    }
+    if resolved.version.trim().is_empty() {
+        return Err(format!(
+            "resolved MCP package `{}` reported no version, so Art dependency `{}` cannot be checked",
+            resolved.package_id, config.version
+        ));
+    }
+    if let Some(bounds) = requirement_bounds(&config.version) {
+        if !bounds.admits(&resolved.version) {
+            return Err(format!(
+                "resolved MCP package `{}` version `{}` does not satisfy Art dependency `{}` (needs >= {} and < {})",
+                resolved.package_id,
+                resolved.version.trim(),
+                config.version.trim(),
+                format_version(bounds.lower),
+                format_version(bounds.upper)
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
     let manifest_path = art_dir.join("manifest.json");
     let manifest: ArtManifest = serde_json::from_slice(
@@ -200,10 +253,11 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
             .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?,
     )
     .map_err(|error| format!("invalid {}: {error}", manifest_path.display()))?;
-    let config = manifest
+    let mut config = manifest
         .metadata
         .mcp
         .ok_or_else(|| "MCP Art metadata.mcp is required".to_owned())?;
+    normalize_config(&mut config)?;
     if config.server_id.trim().is_empty() {
         return Err("MCP Art metadata.mcp.serverId is required".to_owned());
     }
@@ -213,25 +267,167 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
     if config.version.trim().is_empty() {
         return Err("MCP Art metadata.mcp.version is required".to_owned());
     }
+    validate_declared_dependency(&config, &manifest.metadata.dependencies)?;
     validate_argument_object(&config.arguments, "metadata.mcp.arguments")?;
     validate_call_config(&config)?;
     validate_surface_actions(&config)?;
     Ok(config)
 }
 
+/// Re-check, at execution time, the tie between `metadata.mcp` and the dependency the Art
+/// declares. The installer already enforces this (`crates/loom_tool_registry/src/install.rs`,
+/// `validate_mcp_execution_dependency`), but the installer only sees the package it installs;
+/// this sees the manifest that is about to run, so a manifest edited in place after installation
+/// fails closed here instead of running against a server nobody declared.
+fn validate_declared_dependency(
+    config: &McpArtConfig,
+    dependencies: &ArtDependencies,
+) -> Result<(), String> {
+    let package_id = config.package_id.trim();
+    let declared = dependencies
+        .mcp_servers
+        .iter()
+        .filter(|dependency| dependency.id.trim() == package_id)
+        .collect::<Vec<_>>();
+    if declared.len() != 1 {
+        return Err(format!(
+            "MCP Art metadata.mcp.packageId `{package_id}` needs exactly one matching metadata.dependencies.mcpServers entry, found {}",
+            declared.len()
+        ));
+    }
+    if declared[0].version.trim() != config.version.trim() {
+        return Err(format!(
+            "MCP Art metadata.mcp.version `{}` disagrees with the declared dependency version `{}` for `{package_id}`",
+            config.version.trim(),
+            declared[0].version.trim()
+        ));
+    }
+    Ok(())
+}
+
+/// The half-open version range a declared requirement admits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VersionBounds {
+    lower: [u64; 3],
+    upper: [u64; 3],
+}
+
+impl VersionBounds {
+    /// `false` only when the concrete version is certainly outside the range. A version with a
+    /// pre-release tag is admitted rather than judged, because pre-release ordering is exactly
+    /// where a hand-written comparison would diverge from the host's real one.
+    fn admits(&self, version: &str) -> bool {
+        match parse_release_version(version) {
+            Some(parsed) => parsed >= self.lower && parsed < self.upper,
+            None => true,
+        }
+    }
+}
+
+/// Derive the half-open range for the comparator forms Art manifests actually use: a single `=`,
+/// `^`, `~` or bare comparator over one to three numeric components.
+///
+/// Returns `None` for everything else — conjunctions, inequality comparators, wildcards and
+/// pre-release comparators — which means "not checked here", not "satisfied". That is deliberate.
+/// The authoritative containment check belongs to the host and already runs with the real `semver`
+/// crate in `crates/loom_tool_registry/src/framework_process.rs` before the dependency is
+/// resolved; this one exists so that a resolved server the Art never declared cannot slip through
+/// a host that skipped, lost or predates that check. It is therefore written to be *sound* rather
+/// than complete: it must never reject a version the host would accept, so anything it cannot
+/// decide exactly it admits.
+///
+/// When `semver` can be added to this package's manifest, delete both this and
+/// `parse_release_version` and use `VersionReq::parse(requirement)` with `Version::parse(version)`
+/// instead. The dependency is absent today only because regenerating
+/// `framework-packages/runtime-host/Cargo.lock` is blocked by another lane's uncommitted crate;
+/// see F13 and H11 in `docs/progress/phase-78-lane-sync.md`.
+fn requirement_bounds(requirement: &str) -> Option<VersionBounds> {
+    let requirement = requirement.trim();
+    if requirement.contains(',') {
+        return None;
+    }
+    let (operator, rest) = match requirement.chars().next()? {
+        '^' => ('^', &requirement[1..]),
+        '~' => ('~', &requirement[1..]),
+        '=' => ('=', &requirement[1..]),
+        '0'..='9' => ('^', requirement),
+        _ => return None,
+    };
+    let components = parse_version_components(rest.trim())?;
+    let mut lower = [0_u64; 3];
+    for (index, component) in components.iter().enumerate() {
+        lower[index] = *component;
+    }
+    let upper = match operator {
+        '=' => match components.len() {
+            3 => [lower[0], lower[1], lower[2].saturating_add(1)],
+            2 => [lower[0], lower[1].saturating_add(1), 0],
+            _ => [lower[0].saturating_add(1), 0, 0],
+        },
+        '~' => match components.len() {
+            1 => [lower[0].saturating_add(1), 0, 0],
+            _ => [lower[0], lower[1].saturating_add(1), 0],
+        },
+        // Caret, including the bare form, bumps the leftmost non-zero component the requirement
+        // actually spelled out — so `^0.1` allows `0.1.9` but not `0.2.0`.
+        _ => {
+            if lower[0] > 0 {
+                [lower[0].saturating_add(1), 0, 0]
+            } else if components.len() == 1 {
+                [1, 0, 0]
+            } else if lower[1] > 0 {
+                [0, lower[1].saturating_add(1), 0]
+            } else if components.len() == 2 {
+                [0, 1, 0]
+            } else {
+                [0, 0, lower[2].saturating_add(1)]
+            }
+        }
+    };
+    Some(VersionBounds { lower, upper })
+}
+
+/// A concrete version as three numeric components, or `None` when it carries a pre-release tag or
+/// anything else this framework will not judge. Build metadata is dropped, because semver ignores
+/// it when comparing.
+fn parse_release_version(version: &str) -> Option<[u64; 3]> {
+    let version = version.trim();
+    let version = version.split_once('+').map_or(version, |(head, _)| head);
+    let components = parse_version_components(version)?;
+    let mut parsed = [0_u64; 3];
+    for (index, component) in components.iter().enumerate() {
+        parsed[index] = *component;
+    }
+    Some(parsed)
+}
+
+fn parse_version_components(value: &str) -> Option<Vec<u64>> {
+    let components = value
+        .split('.')
+        .map(|component| {
+            (!component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| component.parse::<u64>().ok())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (1..=3).contains(&components.len()).then_some(components)
+}
+
+fn format_version(version: [u64; 3]) -> String {
+    format!("{}.{}.{}", version[0], version[1], version[2])
+}
+
 fn validate_call_config(config: &McpArtConfig) -> Result<(), String> {
     if config.calls.is_empty() {
-        if config
-            .tool_name
-            .as_deref()
-            .map(str::trim)
-            .is_none_or(str::is_empty)
-        {
+        let Some(tool_name) = config.tool_name.as_deref() else {
             return Err(
                 "MCP Art metadata.mcp.toolName or metadata.mcp.calls is required".to_owned(),
             );
-        }
-        return Ok(());
+        };
+        // The legacy single-call shape used to be checked for emptiness only, so a megabyte-long
+        // tool name or one carrying control characters reached `tools/call` verbatim on this path
+        // while the multi-call path rejected it.
+        return validate_tool_name(tool_name, "default");
     }
     if config.tool_name.is_some() {
         return Err(
@@ -248,19 +444,64 @@ fn validate_call_config(config: &McpArtConfig) -> Result<(), String> {
         if !ids.insert(call.id.as_str()) {
             return Err(format!("duplicate MCP call id `{}`", call.id));
         }
-        if call.tool_name.trim().is_empty() || call.tool_name.len() > 256 {
-            return Err(format!(
-                "MCP call `{}` must declare a non-empty toolName",
-                call.id
-            ));
-        }
-        if call.tool_name.chars().any(char::is_control) {
-            return Err(format!("MCP call `{}` has an invalid toolName", call.id));
-        }
+        validate_tool_name(&call.tool_name, &call.id)?;
         validate_argument_object(
             &call.arguments,
             &format!("metadata.mcp.calls[{}].arguments", call.id),
         )?;
+    }
+    Ok(())
+}
+
+/// Store the bytes validation accepted. `validate_identifier` trims before checking, so a call
+/// declared as `" quote"` used to pass validation and then never match the `"quote"` a Surface
+/// action selects — and the untrimmed id was also the key serialized back to the Surface in the
+/// `results` map. Normalizing once here keeps validation, comparison, and output on the same bytes.
+fn normalize_config(config: &mut McpArtConfig) -> Result<(), String> {
+    trim_in_place(&mut config.server_id);
+    trim_in_place(&mut config.package_id);
+    trim_in_place(&mut config.version);
+    if let Some(tool_name) = config.tool_name.as_mut() {
+        trim_in_place(tool_name);
+    }
+    for call in &mut config.calls {
+        trim_in_place(&mut call.id);
+        trim_in_place(&mut call.tool_name);
+    }
+    let mut actions = BTreeMap::new();
+    for (action_id, mut action) in std::mem::take(&mut config.surface_actions) {
+        if let Some(selected_calls) = action.calls.as_mut() {
+            for call_id in selected_calls.iter_mut() {
+                trim_in_place(call_id);
+            }
+        }
+        let action_id = action_id.trim().to_owned();
+        // Two ids that differ only in whitespace collapse to one key here, and silently keeping
+        // whichever sorted last would drop a declared action.
+        if actions.insert(action_id.clone(), action).is_some() {
+            return Err(format!(
+                "duplicate MCP Surface action id `{action_id}` after trimming"
+            ));
+        }
+    }
+    config.surface_actions = actions;
+    Ok(())
+}
+
+fn trim_in_place(value: &mut String) {
+    if value.trim().len() != value.len() {
+        *value = value.trim().to_owned();
+    }
+}
+
+fn validate_tool_name(tool_name: &str, call_id: &str) -> Result<(), String> {
+    if tool_name.trim().is_empty() || tool_name.len() > 256 {
+        return Err(format!(
+            "MCP call `{call_id}` must declare a non-empty toolName"
+        ));
+    }
+    if tool_name.chars().any(char::is_control) {
+        return Err(format!("MCP call `{call_id}` has an invalid toolName"));
     }
     Ok(())
 }
@@ -413,6 +654,13 @@ fn build_environment(
     }
     for (environment_name, credential_name) in &config.optional_credential_env {
         validate_environment_name(environment_name)?;
+        // A name in both maps means the optional mapping would silently overwrite the required one
+        // with a different credential, and only for operators who happen to hold that alias.
+        if config.credential_env.contains_key(environment_name) {
+            return Err(format!(
+                "MCP credential mapping for `{environment_name}` is declared as both required and optional"
+            ));
+        }
         let credential_name = credential_name.trim();
         if credential_name.is_empty() {
             return Err(format!(
@@ -469,6 +717,13 @@ fn build_headers(
     }
     for (header_name, credential_name) in &config.optional_credential_headers {
         validate_header_name(header_name)?;
+        // Same collision as `build_environment`: the optional mapping must not be able to redirect
+        // a required credential header to a weaker alias.
+        if config.credential_headers.contains_key(header_name) {
+            return Err(format!(
+                "MCP credential mapping for header `{header_name}` is declared as both required and optional"
+            ));
+        }
         let credential_name = credential_name.trim();
         if credential_name.is_empty() {
             return Err(format!(
@@ -619,11 +874,17 @@ fn resolve_calls(
             .collect();
     }
 
+    let caller_allowlist = declared_argument_allowlist(config);
     configured_calls
         .into_iter()
         .map(|call| {
-            let arguments =
-                build_call_arguments(request, &config.arguments, &call.arguments, &call.id)?;
+            let arguments = build_call_arguments(
+                request,
+                &config.arguments,
+                &call.arguments,
+                &call.id,
+                caller_allowlist.as_ref(),
+            )?;
             validate_resolved_arguments(&arguments)?;
             Ok(ResolvedCall {
                 id: call.id,
@@ -634,9 +895,46 @@ fn resolve_calls(
         .collect()
 }
 
+/// The argument names an Art that declares Surface bindings is allowed to receive from the caller.
+///
+/// An Art that declares `surfaceActions` has told the host exactly which arguments a caller may
+/// influence, and `resolve_surface_argument_bindings` holds callers to that list on the Surface
+/// path. Without this, the ordinary path — any execution that carries no `surfaceAction`, which is
+/// every plain render — merged `inputs` and `params` wholesale, so the allowlist was worth nothing
+/// to anyone who simply left the invocation object out.
+///
+/// The allowlist is the union of every argument name the manifest spells out: `metadata.mcp`
+/// defaults, per-call defaults, and every Surface binding target. It is not the Surface bindings
+/// alone, because the plain path has no invocation object to bind against — Stock Monitor's `code`
+/// arrives as an Art param there and only as `payload.code` on the Surface path — so
+/// bindings-only would leave that Art unable to run at all outside a Surface action.
+///
+/// `None` means "no allowlist": an Art that declares no bindings has expressed no policy, and
+/// filtering it would break every existing MCP Art that passes its params straight through.
+fn declared_argument_allowlist(config: &McpArtConfig) -> Option<BTreeSet<String>> {
+    if config.surface_actions.is_empty() {
+        return None;
+    }
+    let mut names = BTreeSet::new();
+    collect_argument_names(&config.arguments, &mut names);
+    for call in &config.calls {
+        collect_argument_names(&call.arguments, &mut names);
+    }
+    for action in config.surface_actions.values() {
+        names.extend(action.arguments.keys().cloned());
+    }
+    Some(names)
+}
+
+fn collect_argument_names(arguments: &Value, names: &mut BTreeSet<String>) {
+    if let Some(arguments) = arguments.as_object() {
+        names.extend(arguments.keys().cloned());
+    }
+}
+
 fn find_surface_action(request: &FrameworkExecuteRequest) -> Result<Option<&Value>, String> {
-    let from_inputs = request.inputs.get("surfaceAction");
-    let from_params = request.params.get("surfaceAction");
+    let from_inputs = request.inputs.get(SURFACE_ACTION_KEY);
+    let from_params = request.params.get(SURFACE_ACTION_KEY);
     match (from_inputs, from_params) {
         (Some(left), Some(right)) if left != right => {
             Err("conflicting MCP Surface invocations were provided".to_owned())
@@ -729,7 +1027,7 @@ fn validate_resolved_arguments(arguments: &Value) -> Result<(), String> {
 
 #[cfg(test)]
 fn build_arguments(request: &FrameworkExecuteRequest, configured: &Value) -> Result<Value, String> {
-    build_call_arguments(request, configured, &Value::Null, "default")
+    build_call_arguments(request, configured, &Value::Null, "default", None)
 }
 
 fn build_call_arguments(
@@ -737,6 +1035,7 @@ fn build_call_arguments(
     configured: &Value,
     call_configured: &Value,
     call_id: &str,
+    caller_allowlist: Option<&BTreeSet<String>>,
 ) -> Result<Value, String> {
     let mut arguments = Map::new();
     merge_argument_object(&mut arguments, configured, "metadata.mcp.arguments")?;
@@ -745,12 +1044,41 @@ fn build_call_arguments(
         call_configured,
         &format!("metadata.mcp.calls[{call_id}].arguments"),
     )?;
-    merge_argument_object(&mut arguments, &request.inputs, "inputs")?;
-    merge_argument_object(&mut arguments, &request.params, "params")?;
+    merge_caller_arguments(&mut arguments, &request.inputs, "inputs", caller_allowlist)?;
+    merge_caller_arguments(&mut arguments, &request.params, "params", caller_allowlist)?;
     for name in &request.disabled_params {
         arguments.remove(name);
     }
     Ok(Value::Object(arguments))
+}
+
+/// Merge caller-supplied values, minus the Surface control key and minus anything outside the
+/// Art's declared argument names when it has declared any.
+fn merge_caller_arguments(
+    target: &mut Map<String, Value>,
+    source: &Value,
+    label: &str,
+    allowlist: Option<&BTreeSet<String>>,
+) -> Result<(), String> {
+    if source.is_null() {
+        return Ok(());
+    }
+    let source = source
+        .as_object()
+        .ok_or_else(|| format!("MCP Art {label} must be a JSON object"))?;
+    for (name, value) in source {
+        // `surfaceAction` is how a caller addresses this framework, never a tool argument. An Art
+        // that declares no `surfaceActions` used to forward the whole invocation object — payload,
+        // authoritative state and all — to the MCP server under that name.
+        if name == SURFACE_ACTION_KEY {
+            continue;
+        }
+        if allowlist.is_some_and(|allowlist| !allowlist.contains(name)) {
+            continue;
+        }
+        target.insert(name.clone(), value.clone());
+    }
+    Ok(())
 }
 
 fn merge_argument_object(
@@ -1126,6 +1454,234 @@ mod tests {
         assert_eq!(
             environment.get("BRAVE_API_KEY"),
             Some(&"secret-value".to_owned())
+        );
+    }
+
+    #[test]
+    fn credential_mapping_declared_required_and_optional_is_rejected() {
+        let mut config = resolved_server();
+        config
+            .optional_credential_env
+            .insert("BRAVE_API_KEY".to_owned(), "weaker_alias".to_owned());
+        assert!(build_environment(&request(), &config)
+            .unwrap_err()
+            .contains("both required and optional"));
+
+        let mut config = resolved_server();
+        config
+            .credential_headers
+            .insert("X-Api-Key".to_owned(), "api_key".to_owned());
+        config
+            .optional_credential_headers
+            .insert("X-Api-Key".to_owned(), "weaker_alias".to_owned());
+        assert!(build_headers(&request(), &config)
+            .unwrap_err()
+            .contains("both required and optional"));
+    }
+
+    fn declared_dependency(id: &str, version: &str) -> ArtDependencies {
+        ArtDependencies {
+            mcp_servers: vec![ArtMcpServerDependency {
+                id: id.to_owned(),
+                version: version.to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn declared_dependency_must_match_the_mcp_package_and_version() {
+        let config = multi_call_config();
+        validate_declared_dependency(
+            &config,
+            &declared_dependency("neuro.official/stock-api", "=2.9.0"),
+        )
+        .unwrap();
+
+        assert!(
+            validate_declared_dependency(&config, &ArtDependencies::default())
+                .unwrap_err()
+                .contains("found 0")
+        );
+        assert!(validate_declared_dependency(
+            &config,
+            &declared_dependency("neuro.official/stock-api", "=2.9.1")
+        )
+        .unwrap_err()
+        .contains("disagrees with the declared dependency version"));
+    }
+
+    #[test]
+    fn requirement_bounds_cover_the_comparator_forms_art_manifests_use() {
+        for (requirement, lower, upper) in [
+            ("=2.9.0", [2, 9, 0], [2, 9, 1]),
+            ("=2.9", [2, 9, 0], [2, 10, 0]),
+            ("^0.1", [0, 1, 0], [0, 2, 0]),
+            ("^0.0.3", [0, 0, 3], [0, 0, 4]),
+            ("^0", [0, 0, 0], [1, 0, 0]),
+            ("1.2.3", [1, 2, 3], [2, 0, 0]),
+            ("~1.2", [1, 2, 0], [1, 3, 0]),
+            ("~1.2.3", [1, 2, 3], [1, 3, 0]),
+            ("~1", [1, 0, 0], [2, 0, 0]),
+        ] {
+            assert_eq!(
+                requirement_bounds(requirement),
+                Some(VersionBounds { lower, upper }),
+                "{requirement}"
+            );
+        }
+    }
+
+    #[test]
+    fn undecidable_requirements_are_left_to_the_authoritative_checker() {
+        // `None` means "this framework will not judge it", which is why nothing downstream may read
+        // it as "satisfied".
+        for requirement in [
+            ">=1.0.0",
+            "<2",
+            "*",
+            ">=1.0.0, <2.0.0",
+            "1.x",
+            "^1.0.0-rc.1",
+            "",
+        ] {
+            assert_eq!(requirement_bounds(requirement), None, "{requirement}");
+        }
+    }
+
+    #[test]
+    fn resolved_version_outside_the_declared_range_is_rejected() {
+        let mut config = multi_call_config();
+        config.server_id = "fixture".to_owned();
+        config.package_id = "publisher.test/fixture".to_owned();
+        config.version = "^0.1".to_owned();
+
+        let mut resolved = resolved_server();
+        resolved.version = "0.1.9".to_owned();
+        validate_resolved_server(&config, &resolved).unwrap();
+
+        resolved.version = "0.2.0".to_owned();
+        let error = validate_resolved_server(&config, &resolved).unwrap_err();
+        assert!(
+            error.contains("does not satisfy Art dependency `^0.1`"),
+            "{error}"
+        );
+        assert!(error.contains("needs >= 0.1.0 and < 0.2.0"), "{error}");
+
+        resolved.version = "   ".to_owned();
+        assert!(validate_resolved_server(&config, &resolved)
+            .unwrap_err()
+            .contains("reported no version"));
+
+        // Build metadata is ignored, pre-release ordering is not judged, and a requirement this
+        // framework cannot parse leaves the decision to the host.
+        resolved.version = "0.1.4+build.7".to_owned();
+        validate_resolved_server(&config, &resolved).unwrap();
+        resolved.version = "0.2.0-rc.1".to_owned();
+        validate_resolved_server(&config, &resolved).unwrap();
+        config.version = ">=0.1.0".to_owned();
+        resolved.version = "9.9.9".to_owned();
+        validate_resolved_server(&config, &resolved).unwrap();
+    }
+
+    #[test]
+    fn config_identifiers_are_stored_trimmed_so_selections_match() {
+        let mut config = multi_call_config();
+        config.version = " =2.9.0 ".to_owned();
+        config.calls[0].id = " quote ".to_owned();
+        config.calls[0].tool_name = " get_stock ".to_owned();
+        config.surface_actions.insert(
+            " stock_trimmed ".to_owned(),
+            McpSurfaceActionConfig {
+                calls: Some(vec![" quote ".to_owned()]),
+                arguments: BTreeMap::new(),
+            },
+        );
+
+        normalize_config(&mut config).unwrap();
+        assert_eq!(config.version, "=2.9.0");
+        assert_eq!(config.calls[0].id, "quote");
+        assert_eq!(config.calls[0].tool_name, "get_stock");
+        assert_eq!(
+            config.surface_actions["stock_trimmed"].calls.as_deref(),
+            Some(["quote".to_owned()].as_slice())
+        );
+        validate_call_config(&config).unwrap();
+        validate_surface_actions(&config).unwrap();
+    }
+
+    #[test]
+    fn surface_action_ids_that_collide_after_trimming_are_rejected() {
+        let mut config = multi_call_config();
+        config.surface_actions.insert(
+            " stock_refresh".to_owned(),
+            McpSurfaceActionConfig::default(),
+        );
+        assert!(normalize_config(&mut config)
+            .unwrap_err()
+            .contains("duplicate MCP Surface action id"));
+    }
+
+    #[test]
+    fn legacy_tool_name_is_held_to_the_multi_call_rules() {
+        let mut config = multi_call_config();
+        config.calls.clear();
+        config.surface_actions.clear();
+
+        config.tool_name = Some("get\u{7}stock".to_owned());
+        assert!(validate_call_config(&config)
+            .unwrap_err()
+            .contains("invalid toolName"));
+        config.tool_name = Some("x".repeat(257));
+        assert!(validate_call_config(&config)
+            .unwrap_err()
+            .contains("non-empty toolName"));
+        config.tool_name = Some("get_stock".to_owned());
+        validate_call_config(&config).unwrap();
+    }
+
+    #[test]
+    fn plain_calls_drop_caller_arguments_the_art_never_declared() {
+        let mut request = request();
+        request.inputs = json!({});
+        request.params = json!({ "code": "SZ000034", "interval_seconds": 120 });
+        request.disabled_params = Vec::new();
+
+        let calls = resolve_calls(&request, &multi_call_config()).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "source": "auto", "code": "SZ000034" })
+        );
+        assert_eq!(
+            calls[1].arguments,
+            json!({ "source": "auto", "period": "day", "count": 60, "code": "SZ000034" })
+        );
+    }
+
+    #[test]
+    fn surface_invocation_object_is_never_forwarded_as_a_tool_argument() {
+        // An Art with no declared actions gets no allowlist, but the control key is still not an
+        // argument: the whole invocation object used to reach the MCP server as `surfaceAction`.
+        let mut config = multi_call_config();
+        config.surface_actions.clear();
+        let mut request = request();
+        request.inputs = json!({
+            "surfaceAction": {
+                "actionId": "stock_symbol_commit",
+                "payload": { "value": "SZ000034" }
+            }
+        });
+        request.params = json!({ "code": "SZ000034", "interval_seconds": 120 });
+        request.disabled_params = Vec::new();
+
+        let calls = resolve_calls(&request, &config).unwrap();
+        assert_eq!(calls.len(), 2);
+        for call in &calls {
+            assert!(call.arguments.get(SURFACE_ACTION_KEY).is_none());
+        }
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "source": "auto", "code": "SZ000034", "interval_seconds": 120 })
         );
     }
 
