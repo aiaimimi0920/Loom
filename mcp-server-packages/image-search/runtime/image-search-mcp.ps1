@@ -1,13 +1,78 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^https?://')]
-    [string]$Endpoint = "https://api.search.brave.com/res/v1/images/search"
+    # Declared only so that a manifest which still passes the old switch fails loudly instead of
+    # being silently ignored. The endpoint is not configurable; see $script:BraveEndpoint below.
+    [AllowNull()][AllowEmptyString()]
+    [string]$Endpoint
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:ToolName = "brave_image_search"
 $script:MaximumResponseBytes = 8MB
+
+# The only endpoint this server ever talks to. It is a constant rather than an input because every
+# request carries the user's Brave subscription key in `X-Subscription-Token`: whoever chooses the
+# endpoint chooses where that key is sent. A package manifest supplies both `entry.args` and
+# `entry.env`, and both reach this process verbatim, so neither a switch nor a bare environment
+# variable is a place where the destination of a credential can be decided.
+$script:BraveEndpoint = "https://api.search.brave.com/res/v1/images/search"
+
+# Offline tests still have to point the server at a local fixture. That stays possible, but only at
+# a loopback address: whatever supplies the value — a test harness or a hostile manifest — the key
+# cannot leave the machine, so redirecting it is no longer a way to collect it remotely.
+$script:EndpointOverrideVariable = "LOOM_IMAGE_SEARCH_ENDPOINT_OVERRIDE"
+
+function Test-LoopbackEndpoint {
+    param([Parameter(Mandatory = $true)][Uri]$Uri)
+
+    if (@("http", "https") -notcontains $Uri.Scheme) {
+        return $false
+    }
+    # Credentials embedded in the override would be sent to the fixture as well.
+    if (-not [string]::IsNullOrEmpty($Uri.UserInfo)) {
+        return $false
+    }
+    $hostName = $Uri.DnsSafeHost
+    if ([string]::IsNullOrWhiteSpace($hostName)) {
+        return $false
+    }
+    if ($hostName -eq "localhost") {
+        return $true
+    }
+    # Only literal loopback addresses count: a resolvable name could be made to point anywhere,
+    # and re-resolving it here would not be what the HTTP client resolves later anyway.
+    $address = $null
+    if (-not [System.Net.IPAddress]::TryParse($hostName, [ref]$address)) {
+        return $false
+    }
+    return [System.Net.IPAddress]::IsLoopback($address)
+}
+
+function Resolve-SearchEndpoint {
+    if (-not [string]::IsNullOrWhiteSpace($Endpoint)) {
+        throw "The image-search endpoint is fixed and -Endpoint is not accepted; set $($script:EndpointOverrideVariable) to a loopback URL for offline tests."
+    }
+    $override = [Environment]::GetEnvironmentVariable($script:EndpointOverrideVariable)
+    if ([string]::IsNullOrWhiteSpace($override)) {
+        return $script:BraveEndpoint
+    }
+    $uri = $null
+    if (-not [Uri]::TryCreate($override.Trim(), [UriKind]::Absolute, [ref]$uri) -or
+        -not (Test-LoopbackEndpoint -Uri $uri)) {
+        throw "$($script:EndpointOverrideVariable) must be an unauthenticated loopback http(s) URL"
+    }
+    return $uri.AbsoluteUri
+}
+
+try {
+    $script:SearchEndpoint = Resolve-SearchEndpoint
+}
+catch {
+    # Refusing to start is the point: a server that cannot say where the key goes must not send it.
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
 
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -118,7 +183,7 @@ function New-SearchUri {
         [Parameter(Mandatory = $true)][int]$Count
     )
 
-    $builder = [UriBuilder]::new($Endpoint)
+    $builder = [UriBuilder]::new($script:SearchEndpoint)
     $parameters = @(
         "q=$([Uri]::EscapeDataString($Query))",
         "count=$Count",

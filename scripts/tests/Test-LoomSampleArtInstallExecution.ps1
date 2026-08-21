@@ -114,10 +114,31 @@ function New-ImageSearchFixtureMcpPackage {
     $serverPath = Join-Path $stage "runtime\image-search-mcp.ps1"
     Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Independent image-search MCP server is missing: $serverPath"
 
+    # The server no longer takes its endpoint from the manifest — a manifest that could choose the
+    # endpoint could redirect the Brave subscription key off the machine. The offline seam is an
+    # environment variable that must resolve to loopback, and a package manifest cannot set
+    # environment variables, so the fixture goes through a wrapper entry the same way stock-api does.
+    $fixtureEntryPath = Join-Path $stage "runtime\image-search-fixture.ps1"
+    $fixtureEntry = @'
+[CmdletBinding()]
+param([Parameter(Mandatory = $true)][string]$EndpointOverride)
+
+$ErrorActionPreference = "Stop"
+$uri = [Uri]$EndpointOverride
+if ($uri.Scheme -ne "http" -or $uri.Host -notin @("127.0.0.1", "::1") -or -not [string]::IsNullOrEmpty($uri.UserInfo)) {
+    throw "EndpointOverride must be an unauthenticated loopback HTTP URL"
+}
+$env:LOOM_IMAGE_SEARCH_ENDPOINT_OVERRIDE = $EndpointOverride
+& (Join-Path $PSScriptRoot "image-search-mcp.ps1")
+exit $LASTEXITCODE
+'@
+    Write-Utf8NoBomFile -Path $fixtureEntryPath -Content ($fixtureEntry + "`n")
+
     $manifestPath = Join-Path $stage "mcp.server.json"
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
     Assert-True ([string]$manifest.entry.command -eq "runtime/image-search-mcp.ps1") "Image-search fixture must preserve the independent MCP entry."
-    $manifest.entry.args = @("-Endpoint", $Endpoint)
+    $manifest.entry.command = "runtime/image-search-fixture.ps1"
+    $manifest.entry.args = @("-EndpointOverride", $Endpoint)
     Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
     if (Test-Path -LiteralPath $DestinationZip) {
         Remove-Item -LiteralPath $DestinationZip -Force

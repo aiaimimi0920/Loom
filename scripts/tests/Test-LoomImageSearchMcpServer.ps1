@@ -24,7 +24,7 @@ function Quote-ProcessArgument {
 function Start-RedirectedPowerShell {
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string[]]$Arguments = @(),
         [hashtable]$Environment = @{}
     )
 
@@ -104,6 +104,8 @@ $readyPath = Join-Path $workRoot "fixture-ready"
 $requestPath = Join-Path $workRoot "request.txt"
 $fixtureProcess = $null
 $mcpProcess = $null
+$manifestEndpointProcess = $null
+$remoteOverrideProcess = $null
 
 Assert-True (Test-Path -LiteralPath $serverScript -PathType Leaf) "Image-search MCP server is missing: $serverScript"
 New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
@@ -194,10 +196,14 @@ try {
         Start-Sleep -Milliseconds 50
     }
 
+    # The endpoint is a constant in the server; the only seam is a loopback-checked environment
+    # variable, which a package manifest cannot set.
     $mcpProcess = Start-RedirectedPowerShell `
         -ScriptPath $serverScript `
-        -Arguments @("-Endpoint", "http://127.0.0.1:$port/res/v1/images/search") `
-        -Environment @{ BRAVE_API_KEY = "fixture-api-key" }
+        -Environment @{
+            BRAVE_API_KEY = "fixture-api-key"
+            LOOM_IMAGE_SEARCH_ENDPOINT_OVERRIDE = "http://127.0.0.1:$port/res/v1/images/search"
+        }
 
     $initialize = Send-JsonRpcRequest -Process $mcpProcess -ExpectedId 1 -Request ([ordered]@{
         jsonrpc = "2.0"
@@ -248,14 +254,42 @@ try {
     $capturedRequest = Get-Content -Raw -Encoding UTF8 -LiteralPath $requestPath
     Assert-True ($capturedRequest -match 'GET /res/v1/images/search\?q=loom%20framework&count=3&safesearch=strict HTTP/1\.1') "Image-search request URI is invalid: $capturedRequest"
     Assert-True ($capturedRequest -match '(?im)^X-Subscription-Token:\s*fixture-api-key\s*$') "Brave API credential header was not sent."
+
+    # A package manifest owns `entry.args`, so an endpoint taken from a switch is an endpoint the
+    # manifest chooses — and every request carries the operator's Brave subscription key. The
+    # endpoint is a constant now, and the switch is refused rather than ignored so that a manifest
+    # still passing it fails visibly instead of quietly searching somewhere else.
+    $serverSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $serverScript
+    Assert-True ($serverSource -match '(?m)^\$script:BraveEndpoint\s*=\s*"https://api\.search\.brave\.com/res/v1/images/search"$') "Image-search endpoint must be a constant in the server."
+    $manifestEndpointProcess = Start-RedirectedPowerShell `
+        -ScriptPath $serverScript `
+        -Arguments @("-Endpoint", "http://127.0.0.1:$port/res/v1/images/search") `
+        -Environment @{ BRAVE_API_KEY = "fixture-api-key" }
+    Assert-True $manifestEndpointProcess.WaitForExit(15000) "Manifest-supplied -Endpoint did not exit."
+    Assert-True ($manifestEndpointProcess.ExitCode -ne 0) "Manifest-supplied -Endpoint must fail closed."
+    Assert-True ($manifestEndpointProcess.StandardError.ReadToEnd() -match "-Endpoint is not accepted") "Manifest-supplied -Endpoint rejection is missing."
+
+    # The environment seam is not a second way to reach a collector: the override must resolve to a
+    # loopback address, so a credential mapped into this variable by a hostile manifest — the one
+    # channel a manifest does control — still cannot send the key anywhere off the machine.
+    $remoteOverrideProcess = Start-RedirectedPowerShell `
+        -ScriptPath $serverScript `
+        -Environment @{
+            BRAVE_API_KEY = "fixture-api-key"
+            LOOM_IMAGE_SEARCH_ENDPOINT_OVERRIDE = "https://collector.example/res/v1/images/search"
+        }
+    Assert-True $remoteOverrideProcess.WaitForExit(15000) "Remote endpoint override did not exit."
+    Assert-True ($remoteOverrideProcess.ExitCode -ne 0) "Remote endpoint override must fail closed."
+    Assert-True ($remoteOverrideProcess.StandardError.ReadToEnd() -match "loopback") "Remote endpoint override rejection is missing."
 }
 finally {
-    if ($null -ne $mcpProcess) {
-        try { $mcpProcess.StandardInput.Close() } catch {}
-        if (-not $mcpProcess.WaitForExit(5000)) {
-            Stop-Process -Id $mcpProcess.Id -Force -ErrorAction SilentlyContinue
+    foreach ($process in @($mcpProcess, $manifestEndpointProcess, $remoteOverrideProcess)) {
+        if ($null -eq $process) { continue }
+        try { $process.StandardInput.Close() } catch {}
+        if (-not $process.HasExited -and -not $process.WaitForExit(5000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         }
-        $mcpProcess.Dispose()
+        $process.Dispose()
     }
     if ($null -ne $fixtureProcess) {
         if (-not $fixtureProcess.HasExited) {

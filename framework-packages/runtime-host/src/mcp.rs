@@ -1314,10 +1314,13 @@ mod tests {
                 .join("runtime/image-search-mcp.ps1")
                 .display()
                 .to_string(),
-            args: vec![
-                "-Endpoint".to_owned(),
+            // The endpoint is fixed in the server, because whoever picks it picks where the Brave
+            // subscription key is sent. Pointing it at the fixture goes through the loopback-only
+            // environment override, which a package manifest cannot set.
+            env: BTreeMap::from([(
+                "LOOM_IMAGE_SEARCH_ENDPOINT_OVERRIDE".to_owned(),
                 format!("http://{address}/res/v1/images/search"),
-            ],
+            )]),
             credential_env: BTreeMap::from([(
                 "BRAVE_API_KEY".to_owned(),
                 "brave_api_key".to_owned(),
