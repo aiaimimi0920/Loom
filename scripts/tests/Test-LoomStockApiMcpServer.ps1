@@ -384,6 +384,17 @@ try {
     Assert-True ($null -eq $oversizedResponse.id) "oversized JSON-RPC request must not be assigned a client id."
     Assert-True ([int]$oversizedResponse.error.code -eq -32600) "oversized JSON-RPC request must return invalid-request."
 
+    # The oversized write above carried no newline, so everything up to the next newline still belongs
+    # to the message that was already answered. Framing recovery means dropping that orphaned tail: if
+    # it were parsed as a fresh line it would be answered a second time, and from then on every
+    # response would belong to the wrong request. Only the request after the boundary may be answered.
+    Write-Utf8JsonLine -Process $mcpProcess -Line '{"jsonrpc":"2.0","id":13,"method":"tools/list","params":{}}'
+    Write-Utf8JsonLine -Process $mcpProcess -Line '{"jsonrpc":"2.0","id":14,"method":"tools/list","params":{}}'
+    $resynced = Read-JsonRpcLine -Process $mcpProcess
+    Assert-True ([int]$resynced.id -eq 14) "stock-api JSON-RPC framing did not resynchronize after an oversized request: $($resynced | ConvertTo-Json -Depth 5 -Compress)"
+    Assert-True ($null -eq $resynced.PSObject.Properties["error"]) "resynchronized tools/list must succeed."
+    Assert-True (@($resynced.result.tools).Count -gt 0) "resynchronized tools/list returned no tools."
+
     Assert-True $fixtureProcess.WaitForExit(10000) "stock-api fixture did not receive all provider requests."
     Assert-True ($fixtureProcess.ExitCode -eq 0) "stock-api fixture failed: $($fixtureProcess.StandardError.ReadToEnd())"
     $capturedRequests = @(Get-Content -Encoding UTF8 -LiteralPath $requestPath)

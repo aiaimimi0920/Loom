@@ -929,15 +929,35 @@ async function handleWrapperRequest(request, upstreamHandle) {
 async function runWrapperServer(input, output, upstreamHandle) {
   input.setEncoding("utf8");
   let buffer = "";
+  // Set when an oversized line is rejected before its terminating newline has arrived. Every byte
+  // up to that newline still belongs to the message that was already answered, so it is dropped
+  // instead of parsed: treating the tail as a fresh line would answer a fragment, and from then on
+  // every response would belong to the wrong request — the framing never recovers on its own.
+  let discardingUntilNewline = false;
+  const rejectOversizedRequest = () => {
+    output.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32600, message: `JSON-RPC request exceeds ${MAX_REQUEST_BYTES} bytes` },
+    })}\n`);
+  };
   input.on("data", (chunk) => {
     buffer += chunk;
+    if (discardingUntilNewline) {
+      const boundary = buffer.indexOf("\n");
+      if (boundary < 0) {
+        // Still inside the rejected message: drop what arrived and keep waiting for the boundary,
+        // so a client that never stops writing cannot grow the buffer either.
+        buffer = "";
+        return;
+      }
+      buffer = buffer.slice(boundary + 1);
+      discardingUntilNewline = false;
+    }
     if (buffer.indexOf("\n") < 0 && Buffer.byteLength(buffer, "utf8") > MAX_REQUEST_BYTES) {
       buffer = "";
-      output.write(`${JSON.stringify({
-        jsonrpc: "2.0",
-        id: null,
-        error: { code: -32600, message: `JSON-RPC request exceeds ${MAX_REQUEST_BYTES} bytes` },
-      })}\n`);
+      discardingUntilNewline = true;
+      rejectOversizedRequest();
       return;
     }
     let newlineIndex = buffer.indexOf("\n");
@@ -945,11 +965,8 @@ async function runWrapperServer(input, output, upstreamHandle) {
       const rawLine = buffer.slice(0, newlineIndex);
       buffer = buffer.slice(newlineIndex + 1);
       if (Buffer.byteLength(rawLine, "utf8") > MAX_REQUEST_BYTES) {
-        output.write(`${JSON.stringify({
-          jsonrpc: "2.0",
-          id: null,
-          error: { code: -32600, message: `JSON-RPC request exceeds ${MAX_REQUEST_BYTES} bytes` },
-        })}\n`);
+        // This line is already complete, so the same invalid-request answer needs no discard state.
+        rejectOversizedRequest();
         newlineIndex = buffer.indexOf("\n");
         continue;
       }
