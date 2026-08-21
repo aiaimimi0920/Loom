@@ -49,11 +49,11 @@ release package, so `r76` remains free for whoever packages next — most likely
 | F5 | B | done | 2026-08-21. Stock-monitor Surface correctness: S8d3-1, S8d3-2, S8d1-1, S8d2-1, S8d2-2, S8d3-3. `node --check` and `Test-LoomStockMonitorSurface.mjs` pass. `Test-LoomStockMonitorArt.ps1` run by Lane A and passing — see H5; also re-run in this lane 2026-08-22, same result. |
 | F6 | B | done | 2026-08-21. Stock-monitor Surface performance: S8d1-2, S8d2-3, S8d2-6, S8d3-4. `node --check` and `Test-LoomStockMonitorSurface.mjs` pass. `Test-LoomStockMonitorArt.ps1` run by Lane A and passing — see H5; also re-run in this lane 2026-08-22, same result. |
 | F7 | B | done | 2026-08-21, PowerShell side verified in this lane 2026-08-22. Stock-monitor runtime: S8c1-1, S8c1-2, S8c1-3, S8c2-1, S8c2-2, S8c2-3, S8c2-4, S8d2-9. `node --check` and `Test-LoomStockMonitorSurface.mjs` pass (two new behavioural hook groups). `Test-LoomStockMonitorArt.ps1` gained eleven runtime source contracts, two Surface source contracts and four behavioural blocks; run by Lane A 2026-08-21 (H6) and re-run independently by Lane B 2026-08-22 once `powershell.exe` started working here, both passing. Unblocks F9. |
-| F8 | A | in progress | Started 2026-08-21. Sweeping S1–S7c2 for remaining P2s. Sub-batches done: F8a (S4b-4, S4a-2, S4a-3, S4a-4), F8b (S4b-1, S4b-2), F8c (S4b-3 persistence half), F8d (S4b-3 lock-scope half), F8e (S5a-3) in `apps/daemon/src`, F8f (S6b2c1-2, S6b2c1-3), F8g (S6b2c1-4), F8h (S6b2c2-1), F8i (S6b2a-1, S6b2b1-2), F8j (S6b2c3-1) and F8k (S6b2c3-2 host half) in `crates/loom_tool_registry`, F8l (S6b2c3-2 Art half, thumbnail downscale) in `art-packages/shared` and `art-packages/samples/image-search`, F8m (S6b2c3-2 Art half, the duplicate `output_base64`) in the same two plus `art-packages/samples/color-transfer/runtime/main.py` and `scripts/tests/Test-LoomSampleArtRuntime.ps1`, F8n (S6b2d1-1) in `crates/loom_tool_registry`, F8o (S6b2d2-3, S6b2d2-4) in `crates/loom_tool_registry` plus `docs/plugin-permissions.md`, F8p (S6b2d2-2) in `crates/loom_tool_registry` plus `docs/plugin-permissions.md` and `docs/analysis/phase-21-cloud-multipart-template-audit.md`, F8q (S6b2d2-1) in the same three; all recorded in the review document. F8r (S6b2d3-1, S6b2d3-3) in `crates/loom_tool_registry` plus `docs/plugin-permissions.md`: an MCP image-search tool's image downloads no longer hardcode loopback access and the whole candidate download loop is now bounded by one wall-clock budget and an attempt cap. F8r also declared `permissionPolicy.network.allowLocalhost` on the MCP image fixture tool in `apps/daemon/src/lib.rs` tests, the same reserved-by-neither-lane fallout as F8o; no `scripts/**` file registers an MCP image tool, so nothing there needed changing. F8s answers handoff H10(3): the image-search sample Art now has an explicit loopback test seam, described in the H10 row below, plus the `crates/loom_process` allowlist entry that lets it survive the two spawns between the daemon and the Art. Seam-on coverage landed with it in `scripts/tests/Test-LoomSampleArtRuntime.ps1` (announced under H4 before the touch): a new `scripts/tests/fixtures/LoopbackImageFixture.ps1` serves one PNG from an `HttpListener` on `127.0.0.1`, the case sets the seam variable for that one execution, and the assertion is that the fixture logged a `GET /fixture.png` — so the seam is pinned to a real download rather than to a success status. That smoke now runs 12 cases and the seam-off SSRF rejection beside it is unchanged. F8t (S8b2-2) replaced the per-pixel `GetPixel`/`SetPixel` loop in `Blend-Bitmaps` (`art-packages/shared/image-runtime-common.ps1`) with two GDI+ draws — a `SourceCopy` of the source and a `SourceOver` of the reference through a `ColorMatrix` alpha — so a 1920x1080 blend went from millions of interop calls to about 50 ms and a 4000x3000 blend no longer runs past the 120 s framework process timeout. That answers handoff H10(2). F8s also repackaged the sample Arts with `scripts/Build-LoomSampleArtPackages.ps1`, because the store zips under `.loom-art-store-data/arts` were stale for every sample Art with an edited runtime, not only image-search; Lane B may see a refreshed `custom-stock-monitor.zip` as a result, built from the current working tree. F8f and F8g each also needed a fixture repair in `apps/daemon/src/lib.rs` tests (a signed framework package under a strict trust policy) — noted here because `apps/daemon` is reserved by neither lane, and F8m touched `art-packages/samples/color-transfer` and `scripts/tests` for the same reason. F8o repaired three more `apps/daemon/src/lib.rs` cloud fixtures, which now have to declare `permissionPolicy.network.allowLocalhost` to reach a loopback test server. F8p closed that same fallout in `scripts/smoke-release.ps1` (three loopback cloud tools) and `scripts/Invoke-LoomFrameworkArtStoreHookSmoke.ps1` (one), both reserved by neither lane; without those declarations the release smoke would have failed at cloud execution. F8u (S7a-3, plus the reuse half of S7a-4) in `crates/loom_mcp` and `crates/loom_tool_registry`: an MCP server package's extracted files are now hashed individually at install, `active.json` is a real record with a shared public reader instead of a write-only decoration, and a package-backed stdio server's entry file is re-verified against that record inside `StdioMcpClient::spawn_with_timeout` before it is spawned with the user's credentials. Reinstalling over an existing version directory now verifies that tree rather than discarding the fresh extraction. `install.rs` lost its private duplicate of the state struct and calls the shared reader. No package signature yet — that is S7a-2, still open. F8v (S7b1-1) in `crates/loom_mcp`: a packaged stdio server's command is re-anchored at spawn — the resolved command must sit inside the resolved package directory, an extensionless entry is refused on Windows because `PATHEXT` could substitute another file, and `resolve_windows_spawn_command` no longer consults `PATHEXT` or `PATH` for a packaged server at all. Unpackaged servers unchanged. Lane B owns S1-2 (Hook half), S2-1, S2-2, S3-3 out of this sweep. |
+| F8 | A | in progress | Started 2026-08-21. Sweeping S1–S7c2 for remaining P2s. Sub-batches done: F8a (S4b-4, S4a-2, S4a-3, S4a-4), F8b (S4b-1, S4b-2), F8c (S4b-3 persistence half), F8d (S4b-3 lock-scope half), F8e (S5a-3) in `apps/daemon/src`, F8f (S6b2c1-2, S6b2c1-3), F8g (S6b2c1-4), F8h (S6b2c2-1), F8i (S6b2a-1, S6b2b1-2), F8j (S6b2c3-1) and F8k (S6b2c3-2 host half) in `crates/loom_tool_registry`, F8l (S6b2c3-2 Art half, thumbnail downscale) in `art-packages/shared` and `art-packages/samples/image-search`, F8m (S6b2c3-2 Art half, the duplicate `output_base64`) in the same two plus `art-packages/samples/color-transfer/runtime/main.py` and `scripts/tests/Test-LoomSampleArtRuntime.ps1`, F8n (S6b2d1-1) in `crates/loom_tool_registry`, F8o (S6b2d2-3, S6b2d2-4) in `crates/loom_tool_registry` plus `docs/plugin-permissions.md`, F8p (S6b2d2-2) in `crates/loom_tool_registry` plus `docs/plugin-permissions.md` and `docs/analysis/phase-21-cloud-multipart-template-audit.md`, F8q (S6b2d2-1) in the same three; all recorded in the review document. F8r (S6b2d3-1, S6b2d3-3) in `crates/loom_tool_registry` plus `docs/plugin-permissions.md`: an MCP image-search tool's image downloads no longer hardcode loopback access and the whole candidate download loop is now bounded by one wall-clock budget and an attempt cap. F8r also declared `permissionPolicy.network.allowLocalhost` on the MCP image fixture tool in `apps/daemon/src/lib.rs` tests, the same reserved-by-neither-lane fallout as F8o; no `scripts/**` file registers an MCP image tool, so nothing there needed changing. F8s answers handoff H10(3): the image-search sample Art now has an explicit loopback test seam, described in the H10 row below, plus the `crates/loom_process` allowlist entry that lets it survive the two spawns between the daemon and the Art. Seam-on coverage landed with it in `scripts/tests/Test-LoomSampleArtRuntime.ps1` (announced under H4 before the touch): a new `scripts/tests/fixtures/LoopbackImageFixture.ps1` serves one PNG from an `HttpListener` on `127.0.0.1`, the case sets the seam variable for that one execution, and the assertion is that the fixture logged a `GET /fixture.png` — so the seam is pinned to a real download rather than to a success status. That smoke now runs 12 cases and the seam-off SSRF rejection beside it is unchanged. F8t (S8b2-2) replaced the per-pixel `GetPixel`/`SetPixel` loop in `Blend-Bitmaps` (`art-packages/shared/image-runtime-common.ps1`) with two GDI+ draws — a `SourceCopy` of the source and a `SourceOver` of the reference through a `ColorMatrix` alpha — so a 1920x1080 blend went from millions of interop calls to about 50 ms and a 4000x3000 blend no longer runs past the 120 s framework process timeout. That answers handoff H10(2). F8s also repackaged the sample Arts with `scripts/Build-LoomSampleArtPackages.ps1`, because the store zips under `.loom-art-store-data/arts` were stale for every sample Art with an edited runtime, not only image-search; Lane B may see a refreshed `custom-stock-monitor.zip` as a result, built from the current working tree. F8f and F8g each also needed a fixture repair in `apps/daemon/src/lib.rs` tests (a signed framework package under a strict trust policy) — noted here because `apps/daemon` is reserved by neither lane, and F8m touched `art-packages/samples/color-transfer` and `scripts/tests` for the same reason. F8o repaired three more `apps/daemon/src/lib.rs` cloud fixtures, which now have to declare `permissionPolicy.network.allowLocalhost` to reach a loopback test server. F8p closed that same fallout in `scripts/smoke-release.ps1` (three loopback cloud tools) and `scripts/Invoke-LoomFrameworkArtStoreHookSmoke.ps1` (one), both reserved by neither lane; without those declarations the release smoke would have failed at cloud execution. F8u (S7a-3, plus the reuse half of S7a-4) in `crates/loom_mcp` and `crates/loom_tool_registry`: an MCP server package's extracted files are now hashed individually at install, `active.json` is a real record with a shared public reader instead of a write-only decoration, and a package-backed stdio server's entry file is re-verified against that record inside `StdioMcpClient::spawn_with_timeout` before it is spawned with the user's credentials. Reinstalling over an existing version directory now verifies that tree rather than discarding the fresh extraction. `install.rs` lost its private duplicate of the state struct and calls the shared reader. No package signature yet — that is S7a-2, still open. F8v (S7b1-1) in `crates/loom_mcp`: a packaged stdio server's command is re-anchored at spawn — the resolved command must sit inside the resolved package directory, an extensionless entry is refused on Windows because `PATHEXT` could substitute another file, and `resolve_windows_spawn_command` no longer consults `PATHEXT` or `PATH` for a packaged server at all. Unpackaged servers unchanged. F8w (S7a-2 batch 1) in `crates/loom_mcp`: an MCP server package manifest may now carry a `packageSecurity.signature` in the same shape an Art carries, and `install_server_package` verifies it against the shared `plugin-trust.json` and enforces the store's effective trust policy before the staged tree is hashed or moved, so `require-signed` and `require-trusted` finally apply to MCP servers and not just Arts. The stored default is still `allow-unsigned`, so existing unsigned packages install unchanged. Binding the accepted publisher id to the verified key, and persisting the trust status into `active.json`, is F8x. F8x (S7a-2 batch 2) in `crates/loom_mcp` plus one fixture line in `crates/loom_tool_registry/src/framework_process.rs`: a signature whose key id is not one the trust store records for the publisher the manifest names is refused, so a valid key can no longer borrow a pinned publisher's name under `require-signed`; a publisher with no records is still governed by policy alone. The install-time verdict is recorded in `McpServerPackageState` and `active.json` as `trustStatus`, defaulting to `unsigned` for packages installed before signatures existed. S7a-2 closed; F8's remainder is P3s only. Lane B owns S1-2 (Hook half), S2-1, S2-2, S3-3 out of this sweep. |
 | F9 | A | not started | Needs F3, F6, F7 — all three are now done, so F9 is unblocked as of 2026-08-21. |
 | F11 | B | done | 2026-08-21 → 2026-08-22. The four Hook-side items Lane B took out of F8, plus one that belonged to no batch at all, all closed. Numbered F11 only because F1–F10 were already allocated; like every other fix batch it ran *before* F10. S1-2 (Hook half) done 2026-08-21 — contract in H2. S2-1 done 2026-08-21, S2-2 done 2026-08-22, S3-3 done 2026-08-22 — each recorded below and in the review document next to the finding. S3-3 also updated two of Lane A's connector source-shape contract tests; see the F11/S3-3 record. **S3-4 done 2026-08-22** — a P3 the review left unassigned to any batch, claimed by Lane B on 2026-08-22 because it lives in the same file as S3-3; see H8 and the F11/S3-4 record. |
 | F12 | B | done | 2026-08-22. The two P2s in `mcp-server-packages/**` that no batch had claimed: S8a1-1 (image-search credential exfiltration through a manifest-chosen `-Endpoint`) and S8a2b-1 (permanent JSON-RPC framing desync in the stock-api wrapper). Both live in a Lane B reserved path, so claiming them needed no boundary change. Also touched `scripts/tests/Test-LoomImageSearchMcpServer.ps1`, `scripts/tests/Test-LoomStockApiMcpServer.ps1`, `scripts/tests/Test-LoomSampleArtInstallExecution.ps1` and `framework-packages/runtime-host/src/mcp.rs` — announced in H4, and the Rust one is a Lane A path, see H10. Three focused tests pass; `Test-LoomSampleArtInstallExecution.ps1` is blocked by unrelated Lane A work, also H10. **No Loom release package was built and `r76` was not consumed.** |
-| F13 | B | done | 2026-08-22. The two P2s in `framework-packages/runtime-host/src/mcp.rs` that no batch had claimed: S7c1-1 (declared MCP server version validated then never enforced) and S7c2-1 (Surface argument allowlist bypassed on any call without a `surfaceAction`), plus four co-located P3s fixed in passing: S7c1-2, S7c1-4, S7c1-5 and the security half of S7c2-2. That file is a Lane A reserved path, so the ownership table was amended in both copies first; see H11. The remaining fifteen P3s in those two slices are listed individually as accepted backlog in the F13 record, with a reason each. Only `src/mcp.rs` changed — no manifest, no lock, no dependency added, which is what `--locked` proves. Three `ci.yml:87-94` commands pass; `cargo test --locked` is **21 passed; 0 failed**, up from 11. **No Loom release package was built and `r76` was not consumed.** |
+| F13 | B | done | 2026-08-22. The two P2s in `framework-packages/runtime-host/src/mcp.rs` that no batch had claimed: S7c1-1 (declared MCP server version validated then never enforced) and S7c2-1 (Surface argument allowlist bypassed on any call without a `surfaceAction`), plus four co-located P3s fixed in passing: S7c1-2, S7c1-4, S7c1-5 and the security half of S7c2-2. That file is a Lane A reserved path, so the ownership table was amended in both copies first; see H11. The remaining fifteen P3s in those two slices are listed individually as accepted backlog in the F13 record, with a reason each. Only `src/mcp.rs` changed — no manifest, no lock, no dependency added, which is what `--locked` proves. Three `ci.yml:87-94` commands pass; `cargo test --locked` is **21 passed; 0 failed**, up from 11. The same handoff's second half is recorded in this batch too: **S3-1** (pure Hook, zero boundary change) — the remote / device-session Surface half now sits behind Hook's `remote-surface` Cargo feature, off by default, with `Hook/docs/REMOTE_SURFACE_STAGED.md` recording the staged status and the S1-1 / S1-3 / S3-2 gate conditions as work that must land *before* the flag is flipped. The manifest validator was not relaxed. Both feature combinations verified: **273 passing with the flag off, 276 with it on**, plus F4's `lint` / `typecheck:test` / `test:surface-browser`. **No Loom release package was built and `r76` was not consumed; no Hook package was built and `r92` was not consumed** (no reachable behaviour changed). |
 | F10 | joint | not started | Single owner, last. Both lanes must be committed first. |
 
 ## Open handoffs
@@ -840,6 +840,115 @@ and this file. `framework-packages/runtime-host/Cargo.lock` is modified in the w
 and was left out. Conclusion notes were added beside S7c1-1, S7c1-2, S7c1-4, S7c1-5, S7c2-1 and
 S7c2-2 in `docs/progress/phase-78-post-baseline-review.md`, which stays **untracked** in the working
 tree — the same choice F12's commit made, since Lane A is still writing that document.
+
+#### S3-1 — the remote Surface half is now explicitly compiled out (Hook)
+
+The same handoff assigned S3-1 to this batch, so it is recorded here rather than as its own number.
+Zero boundary change: nothing in Loom was touched, only `Hook/`.
+
+The finding is that the remote / device-session half of Hook's Surface runtime cannot execute in a
+shipped binary. `loom_connector::read_default_loom_manifest` validates before returning, and
+`validate_loom_manifest` accepts only an origin-only `http` loopback `baseUrl`, so every one of the
+eight `authorize_surface_request` call sites receives a loopback manifest,
+`loopback_surface_authorization` always answers, and about 500 of `device_session.rs`'s 611 lines are
+unreachable. `loom_hook`'s `remote_surface` predicate is permanently false for the same reason.
+
+The owner's 2026-08-21 decision (recorded at `phase-78-post-baseline-review.md:388-390`) is the
+second reading: remote is staged for later. So the work was to make "already turned off" **explicit**,
+not to turn it on.
+
+What shipped:
+
+- `Hook/src-tauri/Cargo.toml` declares `remote-surface = []`, **off by default**, commented in the
+  style of the existing `diag_capture` entry.
+- `device_session.rs` gates the remote half per item with `#[cfg(feature = "remote-surface")]`:
+  the `Device` credential variant and its `apply` arm, `validate_secure_loom_base_url`, the session
+  cache, the whole identity / pairing / session-token chain, the four response structs, the helpers
+  (`surface_client`, `decode_signing_key`, `device_session_signature_message`, `random_url_safe`,
+  `unix_time_millis`), and the four tests that only mean something with a remote peer. The remote
+  body of `authorize_surface_request` moved into a gated `remote_surface_authorization`; with the flag
+  off the function refuses a non-loopback endpoint through a new `staged_remote_surface_error`, whose
+  message names both the feature and the document. A module doc comment at the top of the file states
+  why the code is there and why it does not run.
+- `loom_hook.rs` gates the `remote_surface` predicate (it is a `let … = false;` with the flag off),
+  `loom_base_url_is_loopback`, `start_remote_surface_poll_listener` and `poll_remote_surface_once`.
+- `Hook/docs/REMOTE_SURFACE_STAGED.md` is new: the staged status, why the path is unreachable, the
+  exact list of what the flag covers, the intended feature (Loom pushes *rendered* frames to paired
+  displays; the loopback snapshot/push pipeline is unaffected and stays in scope), a
+  flip-it checklist, and the verification recipe for both combinations.
+
+Design choices worth recording:
+
+- **Per-item `cfg` rather than a nested module.** Moving ~350 lines into `mod remote { … }` would
+  re-indent the entire half and make the diff unreadable for a change that alters no logic. A grep
+  first confirmed no Loom or Hook test asserts on `device_session` source text, so the nested-module
+  option was available — it was rejected on review cost, not on risk.
+- **`cfg` rather than `#[allow(dead_code)]`.** An `allow` hides rot; a real `cfg` makes the flag
+  load-bearing, which is why both feature combinations are now part of the verification recipe.
+- **Two items stay compiled in both combinations**, because live loopback code depends on them:
+  `invalidate_surface_sessions` (called from a loopback path in `loom_hook.rs`; with the flag off its
+  body is `cfg`'d away and it is a documented no-op) and `DeviceSessionAuthorization::device_id` (read
+  on live request paths). `surface_stream_envelope` / `describe_stream_protocol_version` likewise stay
+  compiled so their five protocol-version tests keep running by default; the former carries
+  `#[cfg_attr(not(feature = "remote-surface"), allow(dead_code))]`.
+
+Scope discipline, per the handoff:
+
+- **The manifest validator was not relaxed.** `validate_loom_manifest`'s strictness is the only gate
+  and it is untouched. The document says in as many words that widening it is the same act as
+  flipping the flag.
+- **S1-1, S1-3 and S3-2 were not fixed** — they are gate conditions. `REMOTE_SURFACE_STAGED.md`
+  carries them in a table with the dependency stated the right way round: they must land *before* the
+  flag is flipped, because each is latent only while this path is unreachable. S3-2's two prefix
+  matchers were annotated in place (`validate_secure_loom_base_url`, `loom_base_url_is_loopback`) with
+  a note that they are gated, not fixed, and a pointer at the document. They stay open in the review
+  document.
+- **S5b-1 is not in this flag's scope** and the document says so explicitly.
+
+Verification — both combinations, as required:
+
+| gate | default (flag off) | `--features remote-surface` |
+| --- | --- | --- |
+| `cargo fmt --check` | clean | clean |
+| `cargo clippy --all-targets` | no warning in the edited ranges | no warning in the edited ranges |
+| `cargo test --no-fail-fast` | **273 passed; 0 failed; 1 ignored** | **276 passed; 0 failed; 1 ignored** |
+
+The 276 with the flag on matches the pre-existing baseline exactly. The 273 is arithmetic, not loss:
+four remote-only tests compile out and one new flag-off test
+(`staged_remote_surface_error_names_the_feature_and_the_document`) compiles in. Clippy's warning set
+is identical in both runs and every entry is pre-existing; nothing lands in the ranges this batch
+edited. `cargo`/`rustc` were confirmed idle before starting (H5).
+
+F4's three CI gates also pass: `npm run lint` (`eslint src --max-warnings 0`), `npm run
+typecheck:test`, and `npm run test:surface-browser` (`"passed": true`).
+
+**No Hook release package was built, so `r92` was not consumed** and stays free for the next batch.
+The reason is the handoff's own rule: no reachable behaviour changed. Every path a shipped binary can
+take is byte-for-byte the same decision it made before — the endpoint the new refusal fires on is one
+`validate_loom_manifest` already rejects upstream. What changed is that ~500 lines of unreachable
+code are no longer in the default build and are no longer readable as a live security control.
+
+**No Loom release package was built and `r76` was not consumed** by this half either; F10 was not run.
+
+Commit scope — **the Hook changes were deliberately left uncommitted in the working tree.** Hook's
+tree already carries a large complete-but-uncommitted batch that predates this work, and
+`src-tauri/src/loom_hook.rs` is one of the files it touches: a `git diff` of that file shows foreign
+hunks this batch did not write (the surface-stream protocol-version constant near `:267`, the
+`loom_hook_listener_subscription_tests` module near `:1474`, and the rewritten
+`authorize_surface_request` call sites at `:2365`, `:2608`, `:2704`, `:2765`, `:2797`, `:2827`,
+`:3007`). `git commit -- <path>` is file-granular, so committing that path would silently publish
+another batch's work, and `git add -A` is forbidden. Committing only the two files that *are* entirely
+this batch's (`src-tauri/Cargo.toml`, `src-tauri/src/device_session.rs`) plus the new document would be
+worse: it would land a `[features]` declaration and half the gating without `loom_hook.rs`'s half,
+which is a build that does not compile with the flag on. So nothing was committed in the Hook
+repository; whoever commits that in-flight batch should pick these four paths up with it —
+`src-tauri/Cargo.toml`, `src-tauri/src/device_session.rs`, `src-tauri/src/loom_hook.rs`,
+`docs/REMOTE_SURFACE_STAGED.md`. Both feature combinations were verified against the working tree as
+it stands, so the four paths are consistent as a set.
+
+In the Loom repository only this file was committed, path-scoped. The S3-1 conclusion note went into
+`docs/progress/phase-78-post-baseline-review.md`, which stays **untracked** — same choice as F13's
+first half and F12 before it.
 
 ## Lane A records
 
