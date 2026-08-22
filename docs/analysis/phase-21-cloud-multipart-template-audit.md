@@ -126,6 +126,21 @@ Template rendering is applied to:
 - explicit body
 - multipart field values
 
+Rendering is destination-aware rather than plain text splicing. A value substituted
+into the endpoint is percent-encoded, so it can only ever be one path segment or
+one parameter value and cannot introduce userinfo, a port, a query, or a fragment;
+when the author wrote a fixed authority, the rendered endpoint has to still carry
+exactly that authority, and the rendered URL is re-checked against the declared
+domain policy before the request goes out. The header block and a JSON body are
+parsed first and the arguments are substituted into the parsed document's strings,
+so an argument carrying a quote stays a single value instead of adding request
+members beside it. Header names and values carrying control characters are
+refused. A body template that is not valid JSON before substitution — a
+placeholder standing in for an unquoted number — keeps the original
+splice-then-parse path. Multipart field values and a non-JSON body are still
+substituted as plain text, because neither position has structure an argument
+could break out of.
+
 ### Multipart execution
 
 When `contentType` is `multipart/form-data`, Loom parses `body` as a JSON map
@@ -136,6 +151,15 @@ Fields are skipped when the rendered value is empty, equals `__DISABLED__`, or
 still contains `{{`. File parts use `Form::file` when the field is recognized as
 a file field and the rendered path exists. Multipart requests deliberately do
 not set a manual `Content-Type` header because reqwest must add the boundary.
+
+The file-field recognition described above is the old ArtLoom behaviour, and it
+no longer describes Loom. A field name such as `file`, `image`, `image_file`, or
+`*_file` let a caller pass any absolute path as an ordinary text value and have
+the host read that file and upload it. Loom now recognizes a file field only
+from the author's own path binding (`{{inputs.x.path}}`, or `{{inputs.image}}`),
+and the resolved path has to canonicalize to a real file inside the Art package
+directory, the control plane root, or a Loom-owned staged input directory. See
+`docs/plugin-permissions.md`.
 
 ### Hook Bridge cloud image input
 

@@ -122,7 +122,10 @@ is not a supported deployment boundary.
 Remote Surface pushes use the resumable `/v1/surfaces/stream` cursor protocol.
 The bounded replay window reports `reset: true` after cursor loss and includes
 current snapshots on initial or reset polls. Local same-host clients may keep
-using the shared-memory and loopback WebSocket fast paths.
+using the shared-memory and loopback WebSocket fast paths. The poll response
+envelope is `schemas/surface-stream.v1.schema.json`; `protocolVersion` is
+required there because a reader that finds it absent is talking to a broken
+producer, not to an older Loom.
 
 Package-local declarative entries use
 `schemas/surface-scene.v1.schema.json`. They may contain a bare root node or a

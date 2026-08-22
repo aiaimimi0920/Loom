@@ -4,9 +4,17 @@ Framework manifests declare a structured `permissionPolicy`.
 
 ## Vocabulary
 
-- `network.domains`: intended remote domain allowlist.
-- `network.allowLocalhost`: explicit local-development access.
+- `network.domains`: intended remote domain allowlist. It names the hosts the Art
+  or tool itself calls. It deliberately does not constrain the image URLs an MCP
+  image-search result points at, because those are CDN hosts chosen by the
+  upstream service rather than hosts the package can declare.
+- `network.allowLocalhost`: explicit local-development access. It defaults to
+  `false` for cloud Arts, for an MCP tool's image downloads, and for the host's
+  own HTTP client, so an Art or tool that talks to a local service — a model
+  server, Hook, the Loom daemon — has to declare it.
 - `network.allowPrivateNetworks`: private network declaration.
+- `cloudApi.timeoutMs`: deadline a cloud Art asks for when the caller states
+  none. The default is 30 s and the host ceiling is 600 s.
 - `filesystem.read` / `filesystem.write`: logical scopes such as `inputs`,
   `packageResources`, `state`, `cache`, and `outputs`.
 - `process.spawn` / `process.maxProcesses`: descendant process capability.
@@ -19,6 +27,9 @@ Framework manifests declare a structured `permissionPolicy`.
 | Boundary | Current enforcement |
 | --- | --- |
 | Package/resource path | Canonical containment and immutable package root |
+| Cloud multipart upload | Author-declared `{{inputs.x.path}}` bindings only, with canonical containment in the Art package, control plane, or staged input root |
+| Cloud request templating | Endpoint substitutions percent-encoded with a fixed-authority check; header and JSON body substitutions inserted as values into the parsed template |
+| MCP image download | Candidate URLs chosen by the MCP server are fetched under the tool's own `allowLocalhost` / `allowPrivateNetworks` declaration, with the whole candidate loop bounded by one wall-clock budget and an attempt cap |
 | State/cache/output | Dedicated writable directories outside version code |
 | Timeout/stdout/stderr | Enforced on Windows and Unix |
 | Memory/active process count | Windows Job Object enforced; Unix declared only |
