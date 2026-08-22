@@ -1297,6 +1297,7 @@ dependencies = [
  "loom_memory",
  "loom_native_image",
  "loom_ocr",
+ "loom_perf",
  "loom_plugin_security",
  "loom_protocol",
  "loom_sandbox",
@@ -1425,7 +1426,10 @@ name = "loom_mcp"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "loom_plugin_security",
  "loom_process",
+ "loom_protocol",
+ "loom_security",
  "reqwest",
  "semver",
  "serde",
@@ -1469,6 +1473,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom_perf"
+version = "0.1.0"
+
+[[package]]
 name = "loom_plugin_security"
 version = "0.1.0"
 dependencies = [
@@ -1488,6 +1496,7 @@ name = "loom_process"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "loom_perf",
  "loom_protocol",
  "thiserror 1.0.69",
  "windows-sys 0.61.2",
@@ -1515,6 +1524,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom_security"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror 1.0.69",
+ "zip",
+]
+
+[[package]]
 name = "loom_shared_image"
 version = "0.1.0"
 dependencies = [
@@ -1534,9 +1553,11 @@ dependencies = [
  "chrono",
  "loom_image_io",
  "loom_mcp",
+ "loom_perf",
  "loom_plugin_security",
  "loom_process",
  "loom_protocol",
+ "loom_security",
  "reqwest",
  "semver",
  "serde",

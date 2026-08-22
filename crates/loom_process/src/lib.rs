@@ -78,6 +78,13 @@ pub struct SupervisedOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub diagnostics: ExecutionDiagnostics,
+    /// Peak memory ever charged to the child and everything it started, in bytes. This is a local
+    /// observation rather than part of `diagnostics`, because `ExecutionDiagnostics` is a wire type
+    /// shared with framework responses and a framework cannot report this number about itself.
+    ///
+    /// `None` means no measurement rather than a measurement of zero: platforms without a Windows
+    /// job object have no equivalent counter, and Windows reports an unrecorded counter as zero.
+    pub peak_memory_bytes: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -214,6 +221,18 @@ fn apply_supervised_environment(command: &mut Command, spec: &ProcessSpec) {
     command.envs(&spec.env);
 }
 
+/// The environment a managed process inherits, filtered down to an allowlist so that host secrets in
+/// the Loom process environment never reach a plugin.
+///
+/// `LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES` is a test seam rather than a product capability. The
+/// image-search sample Art refuses to download an image from a loopback address, which is correct for
+/// the shipped Art but leaves the install-and-execute test with nowhere to serve its fixture image
+/// from. With the variable set, that Art — and only that Art — permits a loopback address written
+/// literally in an image URL; a hostname that resolves to loopback stays refused, as does every other
+/// blocked range. It is allowlisted here because an Art runs two spawns deep, so the daemon, the
+/// framework runtime host, and the Art entry each scrub the environment. No package can set it: an
+/// Art runtime manifest declares a command and its arguments and nothing else, so only whoever
+/// launches Loom can turn the seam on.
 fn inherited_runtime_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     #[cfg(windows)]
     const ALLOWED: &[&str] = &[
@@ -237,11 +256,22 @@ fn inherited_runtime_environment() -> Vec<(std::ffi::OsString, std::ffi::OsStrin
         "LOCALAPPDATA",
         "PROGRAMDATA",
         "PUBLIC",
+        "LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES",
     ];
     #[cfg(not(windows))]
     const ALLOWED: &[&str] = &[
-        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM", "TZ",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TMPDIR",
+        "TERM",
+        "TZ",
         "SHELL",
+        "LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES",
     ];
     std::env::vars_os()
         .filter(|(key, _)| {
@@ -410,11 +440,15 @@ fn run_with_input_internal(
     join_stdin_writer(stdin_writer.take())?;
     let stdout = join_reader(stdout_reader)?;
     let stderr = join_reader(stderr_reader)?;
+    // Read the counter while the isolation group is still open; it is destroyed when `isolation`
+    // drops at the end of this function.
+    let peak_memory_bytes = isolation.peak_memory_bytes();
     Ok(SupervisedOutput {
         diagnostics: diagnostics(started, status.code(), &stdout, &stderr, false, false),
         status,
         stdout: stdout.bytes,
         stderr: stderr.bytes,
+        peak_memory_bytes,
     })
 }
 
@@ -516,6 +550,12 @@ impl ProcessIsolation {
 
     fn kill_tree(&self, child: &mut std::process::Child) {
         kill_process_tree(self, child);
+    }
+
+    /// Peak memory charged to this isolation group so far, in bytes, or `None` when the platform
+    /// keeps no such counter. Valid only while the group is open.
+    fn peak_memory_bytes(&self) -> Option<u64> {
+        isolation_peak_memory_bytes(self)
     }
 }
 
@@ -633,6 +673,45 @@ fn kill_process_tree(isolation: &ProcessIsolation, child: &mut std::process::Chi
 #[cfg(not(any(windows, unix)))]
 fn kill_process_tree(_isolation: &ProcessIsolation, child: &mut std::process::Child) {
     let _ = child.kill();
+}
+
+#[cfg(windows)]
+fn isolation_peak_memory_bytes(isolation: &ProcessIsolation) -> Option<u64> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, QueryInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+
+    if isolation.job.is_null() {
+        return None;
+    }
+    unsafe {
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
+        let mut returned = 0u32;
+        if QueryInformationJobObject(
+            isolation.job,
+            JobObjectExtendedLimitInformation,
+            &mut info as *mut _ as *mut _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            &mut returned,
+        ) == 0
+        {
+            return None;
+        }
+        // A process that used no memory at all does not exist, so a zero counter means Windows
+        // recorded nothing rather than that there is nothing to record.
+        let peak = info.PeakJobMemoryUsed as u64;
+        (peak > 0).then_some(peak)
+    }
+}
+
+#[cfg(not(windows))]
+fn isolation_peak_memory_bytes(_isolation: &ProcessIsolation) -> Option<u64> {
+    // A process group is not an accounting boundary the way a job object is: there is no kernel
+    // counter to read, and summing `/proc` samples would measure when Loom happened to look rather
+    // than the peak. Reporting nothing is more honest than reporting a sample.
+    None
 }
 
 pub fn executable_path_within(root: &Path, relative: &Path) -> Result<PathBuf, String> {
@@ -843,5 +922,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn supervised_process_inherits_the_image_search_loopback_seam() {
+        const SEAM: &str = "LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES";
+        const UNRELATED: &str = "LOOM_IMAGE_SEARCH_UNRELATED_SETTING";
+        let previous_seam = std::env::var_os(SEAM);
+        std::env::set_var(SEAM, "1");
+        std::env::set_var(UNRELATED, "1");
+        let result = std::panic::catch_unwind(|| {
+            let inherited = inherited_runtime_environment()
+                .into_iter()
+                .map(|(key, value)| (key.to_string_lossy().to_string(), value))
+                .collect::<std::collections::HashMap<_, _>>();
+            assert_eq!(
+                inherited.get(SEAM).map(|value| value.to_string_lossy()),
+                Some(std::borrow::Cow::Borrowed("1")),
+                "the loopback test seam must survive the environment scrub, because the Art that \
+                 reads it runs two spawns deep"
+            );
+            // The seam is one named exception, not a `LOOM_`-prefixed passthrough.
+            assert!(
+                !inherited.contains_key(UNRELATED),
+                "an unrelated Loom variable must still be scrubbed"
+            );
+        });
+        std::env::remove_var(UNRELATED);
+        match previous_seam {
+            Some(value) => std::env::set_var(SEAM, value),
+            None => std::env::remove_var(SEAM),
+        }
+        result.expect("loopback seam inheritance probe");
+    }
+
+    /// Loom's peak-memory budget for one framework process. Every framework Loom ships runs as a
+    /// supervised interpreter started once per execution, so the number this measures is the floor
+    /// under every art execution: whatever the interpreter costs before the work begins.
+    ///
+    /// The child here is PowerShell because that is what Loom's own sample art frameworks run on,
+    /// and the budget is generous on purpose. It is not a claim about how much memory PowerShell
+    /// should need; it exists so that supervising a framework process cannot quietly start costing
+    /// hundreds of megabytes more than it does today.
+    #[test]
+    fn one_framework_process_stays_within_its_peak_memory_budget() {
+        // Measured at 65,544,192 bytes (about 63 MiB) on 2026-08-22. The ceiling is well above that
+        // but still below the 512 MiB the default limits enforce, since a job that hits the enforced
+        // limit is killed and would never reach this assertion.
+        const BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+
+        let mut spec = if cfg!(windows) {
+            let mut spec = ProcessSpec::new("powershell.exe");
+            spec.args = vec![
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                "Write-Output ok".to_owned(),
+            ];
+            spec
+        } else {
+            let mut spec = ProcessSpec::new("sh");
+            spec.args = vec!["-c".to_owned(), "printf ok".to_owned()];
+            spec
+        };
+        spec.limits.timeout = Duration::from_secs(30);
+
+        let output = run_with_input(&spec, b"").expect("run one framework-shaped process");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+
+        let Some(peak) = output.peak_memory_bytes else {
+            // The platform keeps no such counter, so there is no measurement to compare. Passing
+            // here reports the truth: nothing was measured, as opposed to a small number measured.
+            println!(
+                "perf budget framework_process_peak_memory_bytes: not measured on this platform"
+            );
+            return;
+        };
+        loom_perf::assert_within(
+            "framework_process_peak_memory_bytes",
+            "bytes",
+            peak,
+            BUDGET_BYTES,
+        );
     }
 }

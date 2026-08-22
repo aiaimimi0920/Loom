@@ -1,0 +1,10 @@
+[package]
+name = "loom_perf"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Performance budgets for Loom's test gates: named limits with environment overrides and a uniform failure message"
+
+[dependencies]

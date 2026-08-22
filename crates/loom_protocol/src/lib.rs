@@ -43,6 +43,8 @@ pub mod schemas {
         include_str!("../../../protocol/schemas/surface-message.v1.schema.json");
     pub const SURFACE_SCENE_V1: &str =
         include_str!("../../../protocol/schemas/surface-scene.v1.schema.json");
+    pub const SURFACE_STREAM_V1: &str =
+        include_str!("../../../protocol/schemas/surface-stream.v1.schema.json");
     pub const DEVICE_SESSION_V1: &str =
         include_str!("../../../protocol/schemas/device-session.v1.schema.json");
     pub const HOOK_MESSAGE_V1: &str =
@@ -793,5 +795,27 @@ mod tests {
         assert_eq!(serialized["stdoutMiB"], 64);
         assert_eq!(serialized["stderrMiB"], 8);
         assert_eq!(serialized["memoryMiB"], 512);
+    }
+
+    /// The surface stream envelope is the one Hook parses without going through a Rust type, so the
+    /// schema and the constant have to agree. Hook also rejects an envelope with no
+    /// `protocolVersion` instead of treating it as an older daemon, which is why the field stays
+    /// required here rather than optional.
+    #[test]
+    fn surface_stream_schema_pins_the_protocol_version_constant() {
+        let schema: Value = serde_json::from_str(schemas::SURFACE_STREAM_V1).expect("schema JSON");
+        assert_eq!(
+            schema["properties"]["protocolVersion"]["const"],
+            Value::String(surface::SURFACE_STREAM_PROTOCOL_VERSION.to_owned())
+        );
+        let required = schema["required"]
+            .as_array()
+            .expect("required list")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        for field in ["protocolVersion", "next", "reset", "messages"] {
+            assert!(required.contains(&field), "`{field}` must stay required");
+        }
     }
 }

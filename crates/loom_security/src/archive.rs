@@ -1,3 +1,8 @@
+//! Hardened zip extraction for packages that arrive from outside the host.
+//!
+//! Moved out of `loom_tool_registry` so that `loom_mcp` can use the same extractor; see the
+//! crate-level documentation for why a leaf crate is required.
+
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Cursor, Read, Write};
@@ -11,7 +16,7 @@ const MAX_RELATIVE_PATH_BYTES: usize = 240;
 const MAX_COMPRESSION_RATIO: u64 = 200;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum SecureZipError {
+pub enum SecureZipError {
     #[error("archive exceeds compressed size limit of {MAX_COMPRESSED_BYTES} bytes")]
     CompressedSize,
     #[error("archive contains more than {MAX_FILES} entries")]
@@ -36,7 +41,7 @@ pub(crate) enum SecureZipError {
     Io(#[from] io::Error),
 }
 
-pub(crate) fn extract_zip_securely(
+pub fn extract_zip_securely(
     zip_bytes: &[u8],
     destination: &Path,
 ) -> Result<Vec<String>, SecureZipError> {
@@ -185,7 +190,7 @@ mod tests {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
             for (name, content) in entries {
                 writer
-                    .start_file(name, SimpleFileOptions::default())
+                    .start_file(*name, SimpleFileOptions::default())
                     .expect("start file");
                 writer.write_all(content).expect("content");
             }
@@ -238,6 +243,31 @@ mod tests {
         let error = extract_zip_securely(&archive(&[("CON.txt", b"bad")]), &destination)
             .expect_err("reserved name");
         assert!(matches!(error, SecureZipError::UnsafeWindowsName(_)));
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn rejects_parent_directory_traversal() {
+        let destination = temp_dir("traversal");
+        let error = extract_zip_securely(&archive(&[("../escape.txt", b"bad")]), &destination)
+            .expect_err("traversal");
+        assert!(matches!(error, SecureZipError::UnsafePath(_)));
+        assert!(!destination.parent().unwrap().join("escape.txt").exists());
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn rejects_absolute_and_drive_qualified_entries() {
+        let destination = temp_dir("absolute");
+        let error = extract_zip_securely(
+            &archive(&[("C:/windows/system32/a.txt", b"bad")]),
+            &destination,
+        )
+        .expect_err("drive qualified");
+        assert!(matches!(
+            error,
+            SecureZipError::UnsafePath(_) | SecureZipError::UnsafeWindowsName(_)
+        ));
         let _ = fs::remove_dir_all(destination);
     }
 }

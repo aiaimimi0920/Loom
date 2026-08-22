@@ -12,6 +12,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub const SURFACE_PROTOCOL_VERSION: &str = "loom.surface.v1";
+/// Version tag on the daemon's surface stream poll envelope. Hook carries its own copy of this
+/// literal, so changing the value here is a two-repo change and has to be announced before it lands.
+pub const SURFACE_STREAM_PROTOCOL_VERSION: &str = "loom.surface-stream.v1";
 pub const SURFACE_API_VERSION: &str = "1.0";
 pub const SURFACE_EVENT_SNAPSHOT: &str = "loom.surface.snapshot";
 pub const SURFACE_EVENT_PATCH: &str = "loom.surface.patch";

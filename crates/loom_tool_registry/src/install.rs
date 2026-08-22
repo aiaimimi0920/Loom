@@ -134,15 +134,15 @@ struct ArtLifecycleJournal {
     old_activation: Option<ArtActivationState>,
     next_activation: ArtActivationState,
     target: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct McpPackageActiveState {
-    qualified_id: String,
-    version: String,
-    digest: String,
-    package_dir: PathBuf,
+    /// Whether `target` was created by the operation this journal describes.
+    ///
+    /// Recovery may only delete a version directory the interrupted operation itself put on disk.
+    /// An install that reuses an already-present directory, and an activation that points at an
+    /// older version, both name a directory that predates the operation; deleting it would destroy
+    /// the very version recovery is supposed to restore. Journals written by an older build lack
+    /// the field, so the default is `false`: never delete.
+    #[serde(default)]
+    created_target: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -655,6 +655,7 @@ fn install_art_from_zip_with_source(
                 old_activation: old_activation.clone(),
                 next_activation: activation.clone(),
                 target: active_relative.to_string_lossy().replace('\\', "/"),
+                created_target: target_created,
             },
         )?;
         if let Err(error) = write_art_activation(&active_path, &activation) {
@@ -872,9 +873,14 @@ pub fn recover_art_lifecycle(control_plane_root: &Path) -> Result<(), ArtInstall
             } else {
                 let _ = std::fs::remove_file(&activation_path);
             }
-            let target = art_root.join(&journal.target);
-            if target.exists() {
-                let _ = remove_tree(&target);
+            // Only a directory this operation created may be removed. Reused and older directories
+            // hold versions that existed before the interrupted operation, and the activation just
+            // restored above may well point at one of them.
+            if journal.created_target {
+                let target = art_root.join(&journal.target);
+                if target.exists() {
+                    let _ = remove_tree(&target);
+                }
             }
         }
         let _ = std::fs::remove_file(journal_path);
@@ -1503,9 +1509,18 @@ fn activate_art_pointer(
             old_activation: Some(activation.clone()),
             next_activation: next.clone(),
             target: next.active.path.clone(),
+            // This activation points at a version that is already on disk; recovery must never
+            // delete it.
+            created_target: false,
         },
     )?;
-    write_art_activation(active_path, &next)?;
+    if let Err(error) = write_art_activation(active_path, &next) {
+        // The journal describes an activation that was never written. Leaving it behind would make
+        // the next startup restore `old_activation` over an activation that already holds exactly
+        // that value, so drop it instead.
+        clear_art_lifecycle(art_root);
+        return Err(error);
+    }
     let tool = tool_registry.save_tool(tool).map_err(|error| {
         let _ = write_art_activation(active_path, &activation);
         clear_art_lifecycle(art_root);
@@ -1852,20 +1867,14 @@ fn verify_active_mcp_package(
         .join("packages")
         .join(publisher)
         .join(id);
-    let active_path = package_root.join("active.json");
-    let active: McpPackageActiveState =
-        serde_json::from_slice(&std::fs::read(&active_path).map_err(|error| {
+    let active = loom_mcp::package::read_active_state(control_plane_root, publisher, id).map_err(
+        |error| {
             ArtInstallError::InvalidPackage(format!(
                 "installed MCP package `{}` has no readable active state: {error}",
                 package.qualified_id
             ))
-        })?)
-        .map_err(|error| {
-            ArtInstallError::InvalidPackage(format!(
-                "installed MCP package `{}` active state is invalid: {error}",
-                package.qualified_id
-            ))
-        })?;
+        },
+    )?;
     if active.qualified_id != package.qualified_id
         || active.version != package.version
         || !active.digest.eq_ignore_ascii_case(&package.digest)
@@ -2944,6 +2953,79 @@ mod tests {
             .expect("install test framework");
     }
 
+    /// Installs the same test framework as `install_test_framework`, but signed.
+    ///
+    /// A framework package is checked against the trust policy every time its readiness is probed,
+    /// not only when it is installed, so a test that sets a strict policy needs a framework whose
+    /// signature satisfies that policy — otherwise every Art install in the test fails on framework
+    /// readiness before reaching the behaviour under test.
+    fn install_signed_test_framework(
+        framework: &FrameworkRegistry,
+        id: &str,
+        key: &loom_plugin_security::SigningKeyDocument,
+    ) {
+        let command = match id {
+            "process" => "runtime/loom-framework-process.exe",
+            "cloud_api" => "runtime/loom-framework-cloud-api.exe",
+            "mcp" => "runtime/loom-framework-mcp.exe",
+            "workflow" => "runtime/loom-framework-workflow.exe",
+            other => panic!("unknown test framework: {other}"),
+        };
+        let package_root = temp_root();
+        let package = package_root.join("signed-framework");
+        std::fs::create_dir_all(package.join("runtime")).expect("package directory");
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": format!("{id} signed test framework"),
+            "description": "signed test framework",
+            "version": "0.1.0",
+            "publisher": { "id": "publisher.test", "name": "Publisher Test" },
+            "signature": {
+                "algorithm": "ed25519",
+                "keyId": key.key_id.clone(),
+                "file": "signature.json"
+            },
+            "protocolVersion": "loom.framework.v1",
+            "platforms": ["windows-x64"],
+            "entry": {
+                "kind": "process",
+                "command": command,
+                "args": ["--stdio"],
+                "processModel": "per_execution"
+            },
+            "permissions": ["process.spawn"],
+            "artExecution": {
+                "requestSchema": "loom.art.execute.v1",
+                "responseSchema": "loom.art.result.v1"
+            }
+        });
+        std::fs::write(
+            package.join("framework.manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .expect("framework manifest");
+        std::fs::write(package.join(command), b"MZ-test-framework").expect("framework entry");
+        loom_plugin_security::sign_package(&package, "signature.json", key)
+            .expect("sign framework package");
+
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options = SimpleFileOptions::default();
+            for relative in ["framework.manifest.json", command, "signature.json"] {
+                writer.start_file(relative, options).unwrap();
+                writer
+                    .write_all(&std::fs::read(package.join(relative)).unwrap())
+                    .unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        std::fs::remove_dir_all(package_root).ok();
+        framework
+            .install_framework_package_from_zip(&bytes)
+            .expect("install signed test framework");
+    }
+
     #[test]
     fn reads_manifest_from_zip() {
         let manifest = r#"{"id":"art-x","name":"X","description":"d","enabled":true,
@@ -3152,7 +3234,11 @@ mod tests {
     {
         let root = temp_root();
         let framework = FrameworkRegistry::new(&root);
-        install_test_framework(&framework, "process");
+        let key = loom_plugin_security::generate_signing_key("framework-key");
+        // The framework has to be signed: `framework_ready_in` enforces the persisted policy on
+        // every readiness probe, so an unsigned framework would fail all three Art installs below
+        // on framework readiness instead of on the Art install policy under test.
+        install_signed_test_framework(&framework, "process", &key);
         let registry = ToolRegistry::new(root.join("tools"));
         let mut trust = TrustStore::default();
         trust.set_policy(loom_plugin_security::TrustPolicy::RequireSigned);
@@ -4132,6 +4218,7 @@ mod tests {
                     bundled_catalog: old.bundled_catalog,
                 },
                 target: orphan_relative,
+                created_target: true,
             },
         )
         .unwrap();
@@ -4162,6 +4249,117 @@ mod tests {
         recover_art_lifecycle(&root).expect("quarantine unsafe journal");
         assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
         assert!(art_root.join("lifecycle.corrupt").is_file());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn art_recovery_keeps_a_version_the_interrupted_operation_did_not_create() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "process");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"keep-art","name":"Keep","description":"d","enabled":true,
+            "execution":{"type":"framework_art","framework":"process"},
+            "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#;
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"version-one")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install first Art");
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"version-two")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install second Art");
+        let art_root = root.join("arts/publisher.test/keep-art");
+        let active_path = art_root.join("active.json");
+        let live = read_art_activation(&active_path).expect("activation");
+        let older = live.previous.clone().expect("previous version");
+        let older_dir = art_root.join(&older.path);
+        assert!(older_dir.is_dir());
+
+        // A rollback interrupted between its journal write and its activation write. The journal
+        // names the older version, which has been on disk since it was installed.
+        write_art_lifecycle(
+            &art_root,
+            &ArtLifecycleJournal {
+                old_activation: Some(live.clone()),
+                next_activation: ArtActivationState {
+                    active: older.clone(),
+                    previous: Some(live.active.clone()),
+                    local_authoring: live.local_authoring,
+                    bundled_catalog: live.bundled_catalog,
+                },
+                target: older.path.clone(),
+                created_target: false,
+            },
+        )
+        .expect("write lifecycle journal");
+
+        recover_art_lifecycle(&root).expect("recover interrupted rollback");
+        assert_eq!(read_art_activation(&active_path), Some(live));
+        assert!(
+            older_dir.is_dir(),
+            "recovery deleted a version it did not create"
+        );
+        assert!(!art_root.join(ART_LIFECYCLE_FILE).exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_failed_art_activation_write_leaves_no_lifecycle_journal_behind() {
+        let root = temp_root();
+        let framework = FrameworkRegistry::new(&root);
+        install_test_framework(&framework, "process");
+        let registry = ToolRegistry::new(root.join("tools"));
+        let manifest = r#"{"id":"journal-art","name":"Journal","description":"d","enabled":true,
+            "execution":{"type":"framework_art","framework":"process"},
+            "metadata":{"packageSecurity":{"version":"1.0.0"}}}"#;
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"version-one")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install first Art");
+        install_art_from_zip(
+            &build_zip(manifest, &[("bin/tool.exe", b"version-two")]),
+            &root,
+            &framework,
+            &registry,
+        )
+        .expect("install second Art");
+        let art_root = root.join("arts/publisher.test/journal-art");
+        let active_path = art_root.join("active.json");
+        let live = read_art_activation(&active_path).expect("activation");
+        let older_dir = art_root.join(&live.previous.as_ref().expect("previous version").path);
+
+        // Occupy the staging path the activation write needs, so that write fails after the journal
+        // has already been written.
+        std::fs::create_dir_all(art_root.join("active.json.tmp")).expect("block staging path");
+        // A sentinel journal, so that "no journal on disk" can only mean the rollback reached its
+        // own journal write and then cleaned up — not that it failed before ever journalling.
+        write_art_lifecycle(
+            &art_root,
+            &ArtLifecycleJournal {
+                old_activation: None,
+                next_activation: live.clone(),
+                target: "versions/sentinel".to_owned(),
+                created_target: false,
+            },
+        )
+        .expect("write sentinel journal");
+        assert!(rollback_art_package(&root, "journal-art", &registry, &framework).is_err());
+        assert!(
+            !art_root.join(ART_LIFECYCLE_FILE).exists(),
+            "a rollback that never activated left its journal behind"
+        );
+        assert_eq!(read_art_activation(&active_path), Some(live));
+        assert!(older_dir.is_dir());
         std::fs::remove_dir_all(&root).ok();
     }
 

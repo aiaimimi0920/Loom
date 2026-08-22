@@ -12,13 +12,13 @@ use loom_protocol::{
     SurfaceActionConcurrency, SurfaceActionDefinition, SurfaceActionInvocation,
     SurfaceActionProgress, SurfaceActionResponse, SurfaceActionStatus, SurfaceConfirmationDecision,
     SurfaceConfirmationRequest, SurfaceEvent, SurfaceExecutionError, SurfaceExecutionFailure,
-    SurfaceInstanceMode, SurfacePatch, SurfacePreviewCommit, SurfaceResultCommit,
-    SURFACE_EVENT_ACTION_ACK, SURFACE_EVENT_ACTION_PROGRESS, SURFACE_EVENT_CONFIRMATION_REQUEST,
-    SURFACE_EVENT_FAILURE, SURFACE_EVENT_PATCH, SURFACE_EVENT_PREVIEW, SURFACE_EVENT_RESULT,
-    SURFACE_PROTOCOL_VERSION,
+    SurfaceInstanceMode, SurfacePackageManifest, SurfacePatch, SurfacePreviewCommit,
+    SurfaceResultCommit, SURFACE_EVENT_ACTION_ACK, SURFACE_EVENT_ACTION_PROGRESS,
+    SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_FAILURE, SURFACE_EVENT_PATCH,
+    SURFACE_EVENT_PREVIEW, SURFACE_EVENT_RESULT, SURFACE_PROTOCOL_VERSION,
 };
 use loom_tool_registry::{framework::FrameworkRegistry, ToolDefinition, ToolRegistry};
-use loom_workflow_runtime::execute_tool_with_workflows_timeout;
+use loom_workflow_runtime::execute_tool_with_workflows_timeout_and_cancellation;
 use loom_workflow_store::WorkflowStore;
 use serde_json::{json, Value};
 
@@ -34,6 +34,24 @@ const SURFACE_ACTION_QUEUE_CAPACITY: usize = 64;
 const DEFAULT_SURFACE_ACTION_TIMEOUT_MILLIS: u64 = 30_000;
 const MAX_SURFACE_ACTION_TIMEOUT_MILLIS: u64 = 120_000;
 const SURFACE_ACTION_POLL_MILLIS: u64 = 20;
+/// How long a worker waits for an abandoned runner thread to finish before it gives up on
+/// reclaiming it. A cancelled or timed-out job must not release its `Serial` lock while the runner
+/// it started is still executing, but a thread cannot be stopped from the outside, so the wait has
+/// to end somewhere. The runner is bounded by the same timeout as the worker's polling loop, so it
+/// normally returns within a poll or two of the loop breaking.
+const SURFACE_ACTION_RUNNER_REAP_MILLIS: u64 = 5_000;
+/// How many times a submit re-reads the store after resolving a package before it gives up.
+///
+/// The resolve happens with no lock held, so the instance can be migrated to a different package
+/// underneath it. That is rare and self-clearing, but a caller that retried forever would spin
+/// against a migration loop, so the attempts are bounded and the last one reports a conflict.
+const SURFACE_ACTION_PREPARE_ATTEMPTS: usize = 3;
+/// How many Surface manifests are cached before the cache is dropped wholesale.
+///
+/// Entries are keyed by locked package identity, so an entry can never go stale — it can only pile
+/// up as instances migrate to new Art versions. Clearing past the cap keeps the bound without
+/// pretending to know which entry is the coldest.
+const SURFACE_MANIFEST_CACHE_LIMIT: usize = 64;
 
 pub(crate) type SharedSurfaceActionExecutor = Arc<SurfaceActionExecutor>;
 
@@ -67,6 +85,10 @@ pub(crate) struct SurfaceActionExecutor {
     coordinator: Arc<Mutex<SurfaceActionCoordinator>>,
     surface_instances: SharedSurfaceInstanceStore,
     tool_resolver: Arc<SurfaceToolResolver>,
+    /// Surface manifests by locked package identity, so a burst of events against one instance parses
+    /// the manifest once instead of once per event. Guarded by its own mutex: it must not be reachable
+    /// only while the Surface store lock is held, which is the whole point of caching it.
+    manifest_cache: Mutex<BTreeMap<String, Arc<SurfacePackageManifest>>>,
     hook_bridge: SharedHookBridgeRuntime,
 }
 
@@ -111,13 +133,17 @@ impl SurfaceActionExecutor {
                     execution_error("surface_action_execution_failed", error.to_string())
                 })
             } else {
-                execute_tool_with_workflows_timeout(
+                // The runner is the only place that can hand the flag to a non-framework tool. Until it
+                // did, a cancelled MCP or cloud action ran on to its timeout and its result was recorded
+                // as if the caller still wanted it.
+                execute_tool_with_workflows_timeout_and_cancellation(
                     &job.tool,
                     &servers,
                     &workflow_store,
                     &runner_registry,
                     arguments,
                     timeout,
+                    job.cancellation.as_ref(),
                 )
                 .map_err(|error| {
                     execution_error("surface_action_execution_failed", error.to_string())
@@ -210,6 +236,7 @@ impl SurfaceActionExecutor {
             coordinator,
             surface_instances,
             tool_resolver,
+            manifest_cache: Mutex::new(BTreeMap::new()),
             hook_bridge,
         })
     }
@@ -250,46 +277,35 @@ impl SurfaceActionExecutor {
         request: SurfaceActionCancelRequest,
     ) -> Result<SurfaceActionAck, SurfaceStoreError> {
         let (event, action) = {
-            let store = self
-                .surface_instances
-                .lock()
-                .map_err(|_| SurfaceStoreError::Conflict("Surface store is unavailable".into()))?;
-            let instance = store
-                .get(&request.instance_id)
-                .ok_or_else(|| SurfaceStoreError::NotFound(request.instance_id.clone()))?;
-            let ack = instance
-                .event_acks
-                .values()
-                .find(|ack| ack.request_id == request.request_id)
-                .ok_or_else(|| SurfaceStoreError::NotFound(request.request_id.clone()))?;
-            let event = instance
-                .pending_events
-                .iter()
-                .find(|event| event.event_id == ack.event_id)
-                .cloned()
-                .ok_or_else(|| {
-                    SurfaceStoreError::Conflict(
-                        "Surface action is no longer pending or running".to_owned(),
-                    )
+            let (descriptor, event) = {
+                let store = self.surface_instances.lock().map_err(|_| {
+                    SurfaceStoreError::Conflict("Surface store is unavailable".into())
                 })?;
-            let tool = (self.tool_resolver)(&instance.descriptor)?;
+                let instance = store
+                    .get(&request.instance_id)
+                    .ok_or_else(|| SurfaceStoreError::NotFound(request.instance_id.clone()))?;
+                let ack = instance
+                    .event_acks
+                    .values()
+                    .find(|ack| ack.request_id == request.request_id)
+                    .ok_or_else(|| SurfaceStoreError::NotFound(request.request_id.clone()))?;
+                let event = instance
+                    .pending_events
+                    .iter()
+                    .find(|event| event.event_id == ack.event_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        SurfaceStoreError::Conflict(
+                            "Surface action is no longer pending or running".to_owned(),
+                        )
+                    })?;
+                (instance.descriptor.clone(), event)
+            };
             let action_id = event.action.as_deref().ok_or_else(|| {
                 SurfaceStoreError::Invalid("Surface event has no declared action".into())
             })?;
-            let action = tool
-                .surface_manifest()
-                .map_err(|error| SurfaceStoreError::Invalid(error.to_string()))?
-                .and_then(|manifest| {
-                    manifest
-                        .actions
-                        .into_iter()
-                        .find(|action| action.id == action_id)
-                })
-                .ok_or_else(|| {
-                    SurfaceStoreError::Invalid(format!(
-                        "Surface action {action_id} is not declared"
-                    ))
-                })?;
+            // Resolved with the store lock released: the resolve reads the installed package from disk.
+            let (_, action) = self.resolve_action(&descriptor, action_id)?;
             (event, action)
         };
         if !action.cancelable {
@@ -313,50 +329,127 @@ impl SurfaceActionExecutor {
         Ok(ack)
     }
 
+    /// Resolves the locked Art package for `descriptor` and picks `action_id` out of its Surface
+    /// manifest.
+    ///
+    /// Callers must not hold the Surface store lock across this: the resolver reads the installed
+    /// package from disk, so holding the store lock made every other Surface request — for any
+    /// instance — queue behind one instance's package I/O.
+    fn resolve_action(
+        &self,
+        descriptor: &loom_protocol::SurfaceInstanceDescriptor,
+        action_id: &str,
+    ) -> Result<(ToolDefinition, SurfaceActionDefinition), SurfaceStoreError> {
+        let tool = (self.tool_resolver)(descriptor)?;
+        let manifest = self.surface_manifest(descriptor, &tool)?;
+        let action = manifest
+            .actions
+            .iter()
+            .find(|action| action.id == action_id)
+            .cloned()
+            .ok_or_else(|| {
+                SurfaceStoreError::Invalid(format!(
+                    "Surface action {action_id} is not declared by the locked Art package"
+                ))
+            })?;
+        Ok((tool, action))
+    }
+
+    /// Returns the Surface manifest of a resolved package, parsing it at most once per locked package
+    /// identity.
+    ///
+    /// The key is `art_id`, `art_version` and `package_digest`, which together pin the package
+    /// content, so a cached manifest cannot describe anything but the package the caller resolved. A
+    /// poisoned cache is treated as a cache miss rather than an error: the manifest is still available
+    /// from the tool, and a Surface action failing because a cache lock was poisoned would be worse
+    /// than parsing it again.
+    fn surface_manifest(
+        &self,
+        descriptor: &loom_protocol::SurfaceInstanceDescriptor,
+        tool: &ToolDefinition,
+    ) -> Result<Arc<SurfacePackageManifest>, SurfaceStoreError> {
+        let key = format!(
+            "{}@{}#{}",
+            descriptor.art_id, descriptor.art_version, descriptor.package_digest
+        );
+        if let Ok(cache) = self.manifest_cache.lock() {
+            if let Some(manifest) = cache.get(&key) {
+                return Ok(Arc::clone(manifest));
+            }
+        }
+        let manifest = tool
+            .surface_manifest()
+            .map_err(|error| SurfaceStoreError::Invalid(error.to_string()))?
+            .ok_or_else(|| SurfaceStoreError::Invalid("Art has no Surface manifest".into()))?;
+        let manifest = Arc::new(manifest);
+        if let Ok(mut cache) = self.manifest_cache.lock() {
+            if cache.len() >= SURFACE_MANIFEST_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, Arc::clone(&manifest));
+        }
+        Ok(manifest)
+    }
+
     fn submit_internal(
         &self,
         instance_id: &str,
         event: SurfaceEvent,
         recovering: bool,
     ) -> Result<SurfaceActionAck, SurfaceStoreError> {
-        let (tool, action, invocation, existing_ack, cancellation) = {
+        let action_id = event
+            .action
+            .as_deref()
+            .ok_or_else(|| {
+                SurfaceStoreError::Invalid("Surface event has no declared action".into())
+            })?
+            .to_owned();
+        let mut attempt = 0;
+        let (tool, action, invocation, existing_ack, cancellation) = loop {
+            attempt += 1;
+            // Read the locked package, then let go of the store. Nothing is reserved or accepted yet,
+            // so releasing the lock here costs only the re-read in the third phase below.
+            let descriptor = {
+                let store = self.surface_instances.lock().map_err(|_| {
+                    SurfaceStoreError::Conflict("Surface store is unavailable".into())
+                })?;
+                let previous_ack = store.event_ack(instance_id, &event.event_id);
+                if let Some(ack) = settled_ack(previous_ack.as_ref(), recovering) {
+                    return Ok(ack);
+                }
+                store
+                    .descriptor(instance_id)
+                    .ok_or_else(|| SurfaceStoreError::NotFound(instance_id.to_owned()))?
+            };
+            // Resolved with no lock held: the resolver reads the installed package from disk, and the
+            // manifest parse behind it is pure CPU.
+            let (tool, action) = self.resolve_action(&descriptor, &action_id)?;
+
             let mut store = self
                 .surface_instances
                 .lock()
                 .map_err(|_| SurfaceStoreError::Conflict("Surface store is unavailable".into()))?;
-            let previous_ack = store.event_ack(instance_id, &event.event_id);
-            if let Some(existing) = previous_ack.as_ref() {
-                if !recovering
-                    || !matches!(
-                        &existing.status,
-                        SurfaceActionStatus::Queued
-                            | SurfaceActionStatus::Interrupted
-                            | SurfaceActionStatus::CancelRequested
-                    )
-                {
-                    return Ok(existing.clone());
-                }
-            }
             let instance = store
                 .get(instance_id)
                 .ok_or_else(|| SurfaceStoreError::NotFound(instance_id.to_owned()))?;
-            let tool = (self.tool_resolver)(&instance.descriptor)?;
-            let manifest = tool
-                .surface_manifest()
-                .map_err(|error| SurfaceStoreError::Invalid(error.to_string()))?
-                .ok_or_else(|| SurfaceStoreError::Invalid("Art has no Surface manifest".into()))?;
-            let action_id = event.action.as_deref().ok_or_else(|| {
-                SurfaceStoreError::Invalid("Surface event has no declared action".into())
-            })?;
-            let action = manifest
-                .actions
-                .into_iter()
-                .find(|action| action.id == action_id)
-                .ok_or_else(|| {
-                    SurfaceStoreError::Invalid(format!(
-                        "Surface action {action_id} is not declared by the locked Art package"
-                    ))
-                })?;
+            if !same_locked_package(&instance.descriptor, &descriptor) {
+                // The instance migrated to a different package while its manifest was being read, so
+                // the action definition in hand may not be the one the instance now declares.
+                drop(store);
+                if attempt >= SURFACE_ACTION_PREPARE_ATTEMPTS {
+                    return Err(SurfaceStoreError::Conflict(
+                        "Surface instance kept changing packages while its action was prepared"
+                            .to_owned(),
+                    ));
+                }
+                continue;
+            }
+            // Re-read the ack under the second lock: another submit of the same event may have been
+            // accepted while the package was resolving, and that ack is the one the caller must see.
+            let previous_ack = store.event_ack(instance_id, &event.event_id);
+            if let Some(ack) = settled_ack(previous_ack.as_ref(), recovering) {
+                return Ok(ack);
+            }
             let already_confirmed = recovering
                 && previous_ack
                     .as_ref()
@@ -402,7 +495,7 @@ impl SurfaceActionExecutor {
                 payload: event.payload.clone(),
                 authoritative_state: instance.authoritative_state,
             };
-            (tool, action, invocation, ack, cancellation)
+            break (tool, action, invocation, ack, cancellation);
         };
 
         let job = SurfaceActionJob {
@@ -507,6 +600,44 @@ fn action_key(instance_id: &str, action_id: &str) -> String {
     format!("{instance_id}:{action_id}")
 }
 
+/// Returns the ack a submit should hand straight back, if there is one.
+///
+/// Submitting an event is idempotent: an event that already has an ack does not run a second time.
+/// Recovery is the exception — it deliberately re-submits the acks that never reached a terminal
+/// state, which is what the three statuses below are.
+///
+/// A submit calls this twice, once on each side of the package resolve, because a concurrent submit
+/// of the same event may have been accepted while this one held no lock.
+fn settled_ack(previous: Option<&SurfaceActionAck>, recovering: bool) -> Option<SurfaceActionAck> {
+    let existing = previous?;
+    if recovering
+        && matches!(
+            &existing.status,
+            SurfaceActionStatus::Queued
+                | SurfaceActionStatus::Interrupted
+                | SurfaceActionStatus::CancelRequested
+        )
+    {
+        return None;
+    }
+    Some(existing.clone())
+}
+
+/// Whether two readings of one instance's descriptor still name the same locked Art package.
+///
+/// Only the three fields that pin package content are compared. The rest of the descriptor carries
+/// counters — `generation`, `surface_revision`, `preview_revision`, `result_revision` — that move on
+/// ordinary traffic such as a snapshot, so comparing whole descriptors would report a package change
+/// on nearly every concurrent event and turn the retry into a spin.
+fn same_locked_package(
+    left: &loom_protocol::SurfaceInstanceDescriptor,
+    right: &loom_protocol::SurfaceInstanceDescriptor,
+) -> bool {
+    left.art_id == right.art_id
+        && left.art_version == right.art_version
+        && left.package_digest == right.package_digest
+}
+
 fn reserve_action(
     coordinator: &Arc<Mutex<SurfaceActionCoordinator>>,
     instance_id: &str,
@@ -607,6 +738,75 @@ fn is_latest(coordinator: &Arc<Mutex<SurfaceActionCoordinator>>, job: &SurfaceAc
         .is_some_and(|latest| latest == job.ack.request_id)
 }
 
+/// Owns the release of an action's reservation for as long as the job body runs, and reports a
+/// panic in that body as a failure the caller can see.
+///
+/// `request_executor::worker_loop` catches the unwind from a worker handler, so a panic inside a
+/// Surface action job neither crashes the daemon nor reaches any of the bookkeeping below the panic
+/// site. Without this guard a `RejectWhileRunning` action stayed reserved for the rest of the
+/// daemon's life — every later invocation of that `instance:action` pair answered "is already
+/// running" — and the last persisted ack was the `Running` one, so Hook waited on a request that
+/// could never resolve.
+struct SurfaceActionJobGuard<'a> {
+    job: &'a SurfaceActionJob,
+    surface_instances: &'a SharedSurfaceInstanceStore,
+    hook_bridge: &'a SharedHookBridgeRuntime,
+    coordinator: &'a Arc<Mutex<SurfaceActionCoordinator>>,
+    /// Set once the body has persisted a terminal ack of its own. A guard that drops while this is
+    /// still false was dropped by an unwind.
+    settled: bool,
+}
+
+impl<'a> SurfaceActionJobGuard<'a> {
+    fn new(
+        job: &'a SurfaceActionJob,
+        surface_instances: &'a SharedSurfaceInstanceStore,
+        hook_bridge: &'a SharedHookBridgeRuntime,
+        coordinator: &'a Arc<Mutex<SurfaceActionCoordinator>>,
+    ) -> Self {
+        Self {
+            job,
+            surface_instances,
+            hook_bridge,
+            coordinator,
+            settled: false,
+        }
+    }
+
+    fn settle(&mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for SurfaceActionJobGuard<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            eprintln!(
+                "loom surface action {} panicked while handling request {}",
+                self.job.action.id, self.job.ack.request_id
+            );
+            // Every store access on this path tolerates a poisoned mutex, because the panic may
+            // well have happened while this thread was holding one. A destructor that panicked
+            // during an unwind would abort the process.
+            finish_failed(
+                self.job,
+                execution_error(
+                    "surface_action_panicked",
+                    "Surface action handling panicked before it reached a terminal state",
+                ),
+                self.surface_instances,
+                self.hook_bridge,
+            );
+        }
+        release_reservation(
+            self.coordinator,
+            &self.job.event.instance_id,
+            &self.job.action,
+            Some(&self.job.ack.request_id),
+        );
+    }
+}
+
 fn execute_surface_action_job(
     job: SurfaceActionJob,
     surface_instances: &SharedSurfaceInstanceStore,
@@ -617,8 +817,12 @@ fn execute_surface_action_job(
 ) {
     let serial = serial_lock(coordinator, &job);
     let _serial_guard = serial.as_ref().and_then(|lock| lock.lock().ok());
+    // Declared after the serial lock so it drops first: the reservation is released before the
+    // lock that serializes the action, never the other way around.
+    let mut guard = SurfaceActionJobGuard::new(&job, surface_instances, hook_bridge, coordinator);
     if !is_latest(coordinator, &job) || job.cancellation.load(Ordering::Acquire) {
-        finish_cancelled(&job, surface_instances, hook_bridge, coordinator);
+        finish_cancelled(&job, surface_instances, hook_bridge);
+        guard.settle();
         return;
     }
 
@@ -645,43 +849,48 @@ fn execute_surface_action_job(
         });
     let mut timed_out = false;
     let mut cancelled = false;
+    let mut runner_thread = None;
     let result = match spawn {
         Err(error) => Err(execution_error(
             "surface_action_runner_failed",
             format!("Surface action runner could not start: {error}"),
         )),
-        Ok(_runner_thread) => loop {
-            if job.cancellation.load(Ordering::Acquire) || !is_latest(coordinator, &job) {
-                cancelled = true;
-                break Err(execution_error(
-                    "surface_action_cancelled",
-                    "Surface action was cancelled",
-                ));
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                timed_out = true;
-                job.cancellation.store(true, Ordering::Release);
-                break Err(execution_error(
-                    "surface_action_timeout",
-                    format!("Surface action exceeded its {timeout_millis} ms budget"),
-                ));
-            }
-            let wait = deadline
-                .saturating_duration_since(now)
-                .min(Duration::from_millis(SURFACE_ACTION_POLL_MILLIS));
-            match result_rx.recv_timeout(wait) {
-                Ok(result) => break result,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => {
+        Ok(thread) => {
+            runner_thread = Some(thread);
+            loop {
+                if job.cancellation.load(Ordering::Acquire) || !is_latest(coordinator, &job) {
+                    cancelled = true;
                     break Err(execution_error(
-                        "surface_action_runner_failed",
-                        "Surface action runner stopped without a result",
-                    ))
+                        "surface_action_cancelled",
+                        "Surface action was cancelled",
+                    ));
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    timed_out = true;
+                    job.cancellation.store(true, Ordering::Release);
+                    break Err(execution_error(
+                        "surface_action_timeout",
+                        format!("Surface action exceeded its {timeout_millis} ms budget"),
+                    ));
+                }
+                let wait = deadline
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(SURFACE_ACTION_POLL_MILLIS));
+                match result_rx.recv_timeout(wait) {
+                    Ok(result) => break result,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        break Err(execution_error(
+                            "surface_action_runner_failed",
+                            "Surface action runner stopped without a result",
+                        ))
+                    }
                 }
             }
-        },
+        }
     };
+    let abandoned_runner = cancelled || timed_out;
     // The runner can observe cancellation and return before this worker's polling loop
     // observes the token. Re-check it after receiving the result so that a cooperative
     // runner cannot race a late success commit over an accepted cancellation.
@@ -689,65 +898,94 @@ fn execute_surface_action_job(
         || (!timed_out && job.cancellation.load(Ordering::Acquire))
         || !is_latest(coordinator, &job)
     {
-        finish_cancelled(&job, surface_instances, hook_bridge, coordinator);
-        return;
-    }
-    let result = result.and_then(parse_surface_action_response);
+        finish_cancelled(&job, surface_instances, hook_bridge);
+        guard.settle();
+    } else {
+        let result = result.and_then(parse_surface_action_response);
 
-    match result.and_then(|response| {
-        apply_action_response(
-            &job,
-            response,
-            surface_instances,
-            surface_resources,
-            hook_bridge,
-        )
-    }) {
-        Ok(()) => {
-            let mut succeeded = job.ack.clone();
-            succeeded.status = SurfaceActionStatus::Succeeded;
-            persist_ack(surface_instances, &succeeded, true);
-            broadcast_progress(hook_bridge, &job, Some(1.0), "succeeded");
-            broadcast_ack(hook_bridge, &succeeded);
-        }
-        Err(error) => {
-            let failure = SurfaceExecutionFailure {
-                protocol_version: SURFACE_PROTOCOL_VERSION.to_owned(),
-                instance_id: job.event.instance_id.clone(),
-                request_id: job.ack.request_id.clone(),
-                generation: job.event.generation,
-                error: error.clone(),
-                last_successful_result_revision: None,
-            };
-            if let Ok(mut store) = surface_instances.lock() {
-                let _ = store.record_failure(&job.event.instance_id, failure.clone());
-            }
-            let mut failed = job.ack.clone();
-            failed.status = SurfaceActionStatus::Failed;
-            failed.error = Some(error);
-            persist_ack(surface_instances, &failed, true);
-            broadcast_ack(hook_bridge, &failed);
-            broadcast_hook_bridge_json(
+        match result.and_then(|response| {
+            apply_action_response(
+                &job,
+                response,
+                surface_instances,
+                surface_resources,
                 hook_bridge,
-                json!({
-                    "method": SURFACE_EVENT_FAILURE,
-                    "params": {
-                        "hookNodeId": hook_node_id(surface_instances, &job.event.instance_id, &job.event.attachment_id),
-                        "failure": failure,
-                    }
-                }),
-            );
-            if timed_out {
-                broadcast_progress(hook_bridge, &job, None, "timeout");
+            )
+        }) {
+            Ok(()) => {
+                let mut succeeded = job.ack.clone();
+                succeeded.status = SurfaceActionStatus::Succeeded;
+                persist_ack(surface_instances, &succeeded, true);
+                broadcast_progress(hook_bridge, &job, Some(1.0), "succeeded");
+                broadcast_ack(hook_bridge, &succeeded);
+            }
+            Err(error) => {
+                finish_failed(&job, error, surface_instances, hook_bridge);
+                if timed_out {
+                    broadcast_progress(hook_bridge, &job, None, "timeout");
+                }
+            }
+        }
+        guard.settle();
+    }
+    // The ack is out, so Hook is no longer waiting. Reclaim the runner before `guard` releases the
+    // reservation and `_serial_guard` releases the serial lock, so a `Serial` follow-up cannot
+    // start while the runner this job spawned is still executing.
+    reap_runner_thread(
+        runner_thread,
+        &result_rx,
+        &job.ack.request_id,
+        abandoned_runner,
+        Duration::from_millis(SURFACE_ACTION_RUNNER_REAP_MILLIS),
+    );
+}
+
+/// Waits for a spawned runner thread to finish, then joins it.
+///
+/// The join handle used to be dropped as soon as the polling loop broke, which detached the thread.
+/// On a timeout or a cancellation that meant the worker released its `Serial` lock and its
+/// reservation while the runner was still running, so the next invocation of the same action ran
+/// concurrently with the abandoned one — the opposite of what `Serial` promises — and nothing ever
+/// reported a runner that ignored its budget.
+///
+/// The runner sends its result immediately before returning, so the result channel doubles as the
+/// "thread is about to finish" signal and the join that follows it does not block. `grace` bounds
+/// the wait because a thread cannot be stopped from the outside; when it runs out the handle is
+/// dropped and the thread is left to finish on its own, which is reported rather than hidden.
+fn reap_runner_thread(
+    thread: Option<std::thread::JoinHandle<()>>,
+    result_rx: &mpsc::Receiver<Result<Value, SurfaceExecutionError>>,
+    request_id: &str,
+    abandoned: bool,
+    grace: Duration,
+) {
+    let Some(thread) = thread else {
+        return;
+    };
+    if abandoned {
+        let deadline = Instant::now() + grace;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                eprintln!(
+                    "loom surface action runner {} outlived its budget by more than {} ms and was abandoned",
+                    request_id,
+                    grace.as_millis()
+                );
+                return;
+            }
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(SURFACE_ACTION_POLL_MILLIS));
+            match result_rx.recv_timeout(wait) {
+                // A late result is discarded: the terminal ack for this request has already been
+                // decided and sent. All that matters here is that the thread is finishing.
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => continue,
             }
         }
     }
-    release_reservation(
-        coordinator,
-        &job.event.instance_id,
-        &job.action,
-        Some(&job.ack.request_id),
-    );
+    let _ = thread.join();
 }
 
 fn parse_surface_action_response(
@@ -1129,17 +1367,49 @@ fn finish_cancelled(
     job: &SurfaceActionJob,
     surface_instances: &SharedSurfaceInstanceStore,
     hook_bridge: &SharedHookBridgeRuntime,
-    coordinator: &Arc<Mutex<SurfaceActionCoordinator>>,
 ) {
     let mut cancelled = job.ack.clone();
     cancelled.status = SurfaceActionStatus::Cancelled;
     persist_ack(surface_instances, &cancelled, true);
     broadcast_ack(hook_bridge, &cancelled);
-    release_reservation(
-        coordinator,
-        &job.event.instance_id,
-        &job.action,
-        Some(&job.ack.request_id),
+}
+
+/// Records a failure and persists the `Failed` ack for it.
+///
+/// Shared by the normal error path and by `SurfaceActionJobGuard::drop`, so a panic produces the
+/// same three observable effects as a returned error: a recorded failure on the instance, a terminal
+/// ack, and a failure broadcast.
+fn finish_failed(
+    job: &SurfaceActionJob,
+    error: SurfaceExecutionError,
+    surface_instances: &SharedSurfaceInstanceStore,
+    hook_bridge: &SharedHookBridgeRuntime,
+) {
+    let failure = SurfaceExecutionFailure {
+        protocol_version: SURFACE_PROTOCOL_VERSION.to_owned(),
+        instance_id: job.event.instance_id.clone(),
+        request_id: job.ack.request_id.clone(),
+        generation: job.event.generation,
+        error: error.clone(),
+        last_successful_result_revision: None,
+    };
+    if let Ok(mut store) = surface_instances.lock() {
+        let _ = store.record_failure(&job.event.instance_id, failure.clone());
+    }
+    let mut failed = job.ack.clone();
+    failed.status = SurfaceActionStatus::Failed;
+    failed.error = Some(error);
+    persist_ack(surface_instances, &failed, true);
+    broadcast_ack(hook_bridge, &failed);
+    broadcast_hook_bridge_json(
+        hook_bridge,
+        json!({
+            "method": SURFACE_EVENT_FAILURE,
+            "params": {
+                "hookNodeId": hook_node_id(surface_instances, &job.event.instance_id, &job.event.attachment_id),
+                "failure": failure,
+            }
+        }),
     );
 }
 
@@ -1252,6 +1522,10 @@ mod tests {
     }
 
     fn surface_tool(digest: &str) -> ToolDefinition {
+        surface_tool_at("1.0.0", digest)
+    }
+
+    fn surface_tool_at(version: &str, digest: &str) -> ToolDefinition {
         ToolDefinition {
             id: "surface-action-test".to_owned(),
             name: "Surface Action Test".to_owned(),
@@ -1265,9 +1539,9 @@ mod tests {
             params: Vec::new(),
             metadata: Some(json!({
                 "dependencies": { "framework": "process" },
-                "packageSecurity": { "version": "1.0.0" },
+                "packageSecurity": { "version": version },
                 "artPackage": {
-                    "version": "1.0.0",
+                    "version": version,
                     "digest": digest,
                     "dir": "unused"
                 },
@@ -2364,6 +2638,519 @@ mod tests {
             drop(record);
             std::thread::sleep(Duration::from_millis(10));
         }
+        drop(executor);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn panic_guard_job(
+        tool: ToolDefinition,
+        instance_id: &str,
+        attachment_id: &str,
+        event: &SurfaceEvent,
+        action: SurfaceActionDefinition,
+        ack: SurfaceActionAck,
+        cancellation: Arc<AtomicBool>,
+    ) -> SurfaceActionJob {
+        SurfaceActionJob {
+            event: event.clone(),
+            ack: ack.clone(),
+            action: action.clone(),
+            tool,
+            invocation: SurfaceActionInvocation {
+                protocol_version: SURFACE_PROTOCOL_VERSION.to_owned(),
+                instance_id: instance_id.to_owned(),
+                attachment_id: attachment_id.to_owned(),
+                request_id: ack.request_id,
+                event_id: event.event_id.clone(),
+                action_id: action.id,
+                event_class: event.class.clone(),
+                generation: event.generation,
+                base_revision: event.base_revision,
+                payload: event.payload.clone(),
+                authoritative_state: json!({"value": 0}),
+            },
+            cancellation,
+        }
+    }
+
+    #[test]
+    fn a_panicking_job_body_releases_the_reservation_and_persists_a_failed_ack() {
+        let root = temp_root("panic-guard");
+        let digest = "e".repeat(64);
+        let tool = surface_tool(&digest);
+        let (_registry, instances, _resources, hook_bridge, instance_id, attachment_id) =
+            setup_action_fixture(&root, tool.clone(), "hook-node:panic");
+        let mut action = tool
+            .surface_manifest()
+            .expect("read Surface manifest")
+            .expect("Surface manifest")
+            .actions
+            .remove(0);
+        // `RejectWhileRunning` is the mode a leaked reservation breaks permanently: the key stays in
+        // the coordinator and every later invocation of the pair answers "is already running".
+        action.concurrency = SurfaceActionConcurrency::RejectWhileRunning;
+        let event = fixture_event(&instance_id, &attachment_id, "event:panic-1", json!({}));
+        let coordinator = Arc::new(Mutex::new(SurfaceActionCoordinator::default()));
+        let cancellation =
+            reserve_action(&coordinator, &instance_id, &action, &event).expect("reserve action");
+        let ack = instances
+            .lock()
+            .expect("lock Surface store")
+            .accept_event(&instance_id, event.clone())
+            .expect("accept event");
+        let job = panic_guard_job(
+            tool,
+            &instance_id,
+            &attachment_id,
+            &event,
+            action.clone(),
+            ack,
+            cancellation,
+        );
+
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = SurfaceActionJobGuard::new(&job, &instances, &hook_bridge, &coordinator);
+            panic!("surface action body exploded");
+        }));
+        std::panic::set_hook(previous_hook);
+        assert!(outcome.is_err(), "the guarded body panicked");
+
+        assert!(
+            coordinator
+                .lock()
+                .expect("lock coordinator")
+                .reject_reservations
+                .is_empty(),
+            "an unwind must not leave the action reserved"
+        );
+        // A second invocation of the same pair is accepted again, which is what the leaked key used
+        // to make impossible for the rest of the daemon's life.
+        let next_event = fixture_event(&instance_id, &attachment_id, "event:panic-2", json!({}));
+        reserve_action(&coordinator, &instance_id, &action, &next_event)
+            .expect("reserve the action again after the panic");
+
+        let persisted = instances
+            .lock()
+            .expect("lock Surface store")
+            .event_ack(&instance_id, &event.event_id)
+            .expect("persisted ack");
+        assert_eq!(persisted.status, SurfaceActionStatus::Failed);
+        assert_eq!(
+            persisted.error.expect("failure error").code,
+            "surface_action_panicked"
+        );
+        let record = instances
+            .lock()
+            .expect("lock Surface store")
+            .get(&instance_id)
+            .expect("instance record");
+        assert!(
+            record.pending_events.is_empty(),
+            "the panicked event is no longer pending"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_settled_job_guard_releases_without_synthesizing_a_failure() {
+        let root = temp_root("settled-guard");
+        let digest = "f".repeat(64);
+        let tool = surface_tool(&digest);
+        let (_registry, instances, _resources, hook_bridge, instance_id, attachment_id) =
+            setup_action_fixture(&root, tool.clone(), "hook-node:settled");
+        let mut action = tool
+            .surface_manifest()
+            .expect("read Surface manifest")
+            .expect("Surface manifest")
+            .actions
+            .remove(0);
+        action.concurrency = SurfaceActionConcurrency::RejectWhileRunning;
+        let event = fixture_event(&instance_id, &attachment_id, "event:settled-1", json!({}));
+        let coordinator = Arc::new(Mutex::new(SurfaceActionCoordinator::default()));
+        let cancellation =
+            reserve_action(&coordinator, &instance_id, &action, &event).expect("reserve action");
+        let ack = instances
+            .lock()
+            .expect("lock Surface store")
+            .accept_event(&instance_id, event.clone())
+            .expect("accept event");
+        let job = panic_guard_job(
+            tool,
+            &instance_id,
+            &attachment_id,
+            &event,
+            action,
+            ack,
+            cancellation,
+        );
+        {
+            let mut guard =
+                SurfaceActionJobGuard::new(&job, &instances, &hook_bridge, &coordinator);
+            finish_cancelled(&job, &instances, &hook_bridge);
+            guard.settle();
+        }
+        let persisted = instances
+            .lock()
+            .expect("lock Surface store")
+            .event_ack(&instance_id, &event.event_id)
+            .expect("persisted ack");
+        assert_eq!(
+            persisted.status,
+            SurfaceActionStatus::Cancelled,
+            "a settled guard leaves the terminal ack the body already wrote"
+        );
+        assert!(coordinator
+            .lock()
+            .expect("lock coordinator")
+            .reject_reservations
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_abandoned_runner_thread_is_joined_when_it_finishes_and_given_up_on_when_it_does_not() {
+        // A runner that finishes shortly after the worker stopped waiting: the result channel is the
+        // signal, and the join that follows it must actually run to completion.
+        let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, SurfaceExecutionError>>(1);
+        let ran_to_completion = Arc::new(AtomicBool::new(false));
+        let thread_flag = Arc::clone(&ran_to_completion);
+        let thread = std::thread::Builder::new()
+            .name("loom-surface-runner-test-late".to_owned())
+            .spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                let _ = result_tx.send(Ok(json!({})));
+                thread_flag.store(true, Ordering::SeqCst);
+            })
+            .expect("spawn a late runner");
+        reap_runner_thread(
+            Some(thread),
+            &result_rx,
+            "request:late",
+            true,
+            Duration::from_millis(2_000),
+        );
+        assert!(
+            ran_to_completion.load(Ordering::SeqCst),
+            "a reclaimed runner is joined, not merely observed"
+        );
+
+        // A runner that ignores its budget cannot be stopped, so the wait has to end. It must last
+        // at least the grace window and no longer than that plus a poll.
+        let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, SurfaceExecutionError>>(1);
+        let release = Arc::new(AtomicBool::new(false));
+        let thread_release = Arc::clone(&release);
+        let thread = std::thread::Builder::new()
+            .name("loom-surface-runner-test-stuck".to_owned())
+            .spawn(move || {
+                while !thread_release.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = result_tx.send(Ok(json!({})));
+            })
+            .expect("spawn a stuck runner");
+        let started = Instant::now();
+        reap_runner_thread(
+            Some(thread),
+            &result_rx,
+            "request:stuck",
+            true,
+            Duration::from_millis(120),
+        );
+        let waited = started.elapsed();
+        release.store(true, Ordering::SeqCst);
+        assert!(
+            waited >= Duration::from_millis(120),
+            "the grace window is honoured: {waited:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(2),
+            "giving up on a stuck runner is bounded: {waited:?}"
+        );
+
+        // The normal path already holds the result, so no grace window is spent at all.
+        let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, SurfaceExecutionError>>(1);
+        let ran_to_completion = Arc::new(AtomicBool::new(false));
+        let thread_flag = Arc::clone(&ran_to_completion);
+        let thread = std::thread::Builder::new()
+            .name("loom-surface-runner-test-done".to_owned())
+            .spawn(move || {
+                let _ = result_tx.send(Ok(json!({})));
+                thread_flag.store(true, Ordering::SeqCst);
+            })
+            .expect("spawn a finished runner");
+        let started = Instant::now();
+        reap_runner_thread(
+            Some(thread),
+            &result_rx,
+            "request:done",
+            false,
+            Duration::from_millis(2_000),
+        );
+        assert!(ran_to_completion.load(Ordering::SeqCst));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a runner that already returned is joined immediately"
+        );
+    }
+
+    /// A runner for tests that only exercise the submit prologue. The job never has to produce a
+    /// result, so failing immediately keeps the worker out of the way of the assertions.
+    fn unused_runner() -> Arc<SurfaceActionRunner> {
+        Arc::new(|_job| {
+            Err(execution_error(
+                "test_runner_unused",
+                "this test does not exercise the runner",
+            ))
+        })
+    }
+
+    #[test]
+    fn a_burst_of_events_reuses_one_parsed_surface_manifest() {
+        let root = temp_root("manifest-cache");
+        let digest = "a".repeat(64);
+        let (tool_registry, instances, resources, hook_bridge, instance_id, attachment_id) =
+            setup_action_fixture(&root, surface_tool(&digest), "hook-node:cache");
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let resolver_resolves = Arc::clone(&resolves);
+        let resolver: Arc<SurfaceToolResolver> = Arc::new(move |descriptor| {
+            resolver_resolves.fetch_add(1, Ordering::SeqCst);
+            let tool = tool_registry
+                .get_tool(&descriptor.art_id)
+                .map_err(|error| SurfaceStoreError::Invalid(error.to_string()))?
+                .ok_or_else(|| SurfaceStoreError::NotFound(descriptor.art_id.clone()))?;
+            validate_locked_tool(descriptor, &tool)?;
+            Ok(tool)
+        });
+        let executor = SurfaceActionExecutor::new_with_components(
+            resolver,
+            instances,
+            resources,
+            hook_bridge,
+            unused_runner(),
+            1,
+            8,
+        )
+        .expect("build Surface action executor");
+        for index in 0..3 {
+            executor
+                .submit(
+                    &instance_id,
+                    fixture_event(
+                        &instance_id,
+                        &attachment_id,
+                        &format!("event:cache-{index}"),
+                        json!({}),
+                    ),
+                )
+                .expect("submit Surface event");
+        }
+        assert_eq!(
+            resolves.load(Ordering::SeqCst),
+            3,
+            "the package is still resolved per submit, because that is what re-checks installation and trust"
+        );
+        let cache = executor
+            .manifest_cache
+            .lock()
+            .expect("lock the manifest cache");
+        assert_eq!(
+            cache.len(),
+            1,
+            "three events against one locked package parse one manifest"
+        );
+    }
+
+    #[test]
+    fn a_package_migration_during_resolve_makes_the_submit_prepare_again() {
+        let root = temp_root("migrate-under-resolve");
+        let first_digest = "a".repeat(64);
+        let second_digest = "b".repeat(64);
+        let (tool_registry, instances, resources, hook_bridge, instance_id, attachment_id) =
+            setup_action_fixture(
+                &root,
+                surface_tool_at("1.0.0", &first_digest),
+                "hook-node:migrate",
+            );
+        let resolves = Arc::new(AtomicUsize::new(0));
+        let resolver_resolves = Arc::clone(&resolves);
+        let resolver_instances = Arc::clone(&instances);
+        let migrated_digest = second_digest.clone();
+        let resolver: Arc<SurfaceToolResolver> = Arc::new(move |descriptor| {
+            let tool = tool_registry
+                .get_tool(&descriptor.art_id)
+                .map_err(|error| SurfaceStoreError::Invalid(error.to_string()))?
+                .ok_or_else(|| SurfaceStoreError::NotFound(descriptor.art_id.clone()))?;
+            validate_locked_tool(descriptor, &tool)?;
+            // On the first resolve only, migrate the instance to a different package behind the
+            // caller's back. That is exactly the race the re-validation exists for: this resolver
+            // runs with no store lock held, so the descriptor it was handed can go stale.
+            if resolver_resolves.fetch_add(1, Ordering::SeqCst) == 0 {
+                tool_registry
+                    .save_tool(surface_tool_at("2.0.0", &migrated_digest))
+                    .expect("publish the migrated Art package");
+                resolver_instances
+                    .lock()
+                    .expect("lock Surface store")
+                    .migrate_instance(
+                        &descriptor.instance_id,
+                        None,
+                        "2.0.0",
+                        &migrated_digest,
+                        1,
+                        json!({"value": 0}),
+                    )
+                    .expect("migrate the instance mid-resolve");
+            }
+            Ok(tool)
+        });
+        let executor = SurfaceActionExecutor::new_with_components(
+            resolver,
+            Arc::clone(&instances),
+            resources,
+            hook_bridge,
+            unused_runner(),
+            1,
+            8,
+        )
+        .expect("build Surface action executor");
+        // The migration bumps the instance generation, so the event this test submits is stale by the
+        // time the second prepare reaches `accept_event`. That rejection is the point: it can only
+        // come from a prepare that re-read the store after the resolve. A prepare that trusted its
+        // first reading would have accepted the event against the package the instance has left.
+        let error = executor
+            .submit(
+                &instance_id,
+                fixture_event(&instance_id, &attachment_id, "event:migrate", json!({})),
+            )
+            .expect_err("the migrated instance rejects an event from the old generation");
+        assert_eq!(
+            resolves.load(Ordering::SeqCst),
+            2,
+            "the first prepare is discarded and the submit resolves the package the instance moved to"
+        );
+        assert!(
+            matches!(&error, SurfaceStoreError::Conflict(message) if message.contains("stale")),
+            "expected a staleness conflict from the fresh instance, got {error:?}"
+        );
+        assert_eq!(
+            instances
+                .lock()
+                .expect("lock Surface store")
+                .descriptor(&instance_id)
+                .expect("instance is still there")
+                .package_digest,
+            second_digest,
+            "the second prepare saw the package the instance ended up on"
+        );
+        let cache = executor
+            .manifest_cache
+            .lock()
+            .expect("lock the manifest cache");
+        assert_eq!(
+            cache.len(),
+            2,
+            "each locked package identity gets its own manifest entry"
+        );
+    }
+
+    /// Loom's first wire-size budget, and the reason `loom_perf` exists. It measures everything Loom
+    /// pushes to a Hook client for one completed declarative action: the queued and succeeded acks,
+    /// the committed patch, and the formal result. A regression that re-sends a whole snapshot where
+    /// a patch would do, or serialises the same payload several times into one message, shows up
+    /// here as a multiple of the budget rather than as a silent slowdown on a remote device.
+    ///
+    /// The ceiling is deliberately loose. It is not a benchmark of Loom's best case and it should
+    /// not be tightened onto the measured number, because a legitimate new field would then break
+    /// the build for a few dozen bytes.
+    #[test]
+    fn one_surface_action_stays_within_its_response_byte_budget() {
+        // Measured at 1,665 bytes on 2026-08-22. The budget is about three times that, so ordinary
+        // growth of the envelope is fine and an order-of-magnitude regression is not.
+        const BUDGET_BYTES: u64 = 5_120;
+
+        let root = temp_root("perf-response-bytes");
+        let digest = "e".repeat(64);
+        let (tool_registry, instances, resources, hook_bridge, instance_id, attachment_id) =
+            setup_action_fixture(&root, surface_tool(&digest), "hook-node:perf");
+        let (rx, _subscription) = register_hook_bridge_subscription(
+            &hook_bridge.lock().expect("lock bridge").broadcast_hub,
+            loom_protocol::SURFACE_EVENT_METHODS
+                .iter()
+                .map(|method| (*method).to_owned())
+                .collect(),
+        );
+        let runner: Arc<SurfaceActionRunner> = Arc::new(move |_job| {
+            Ok(json!({
+                "surfaceAction": {
+                    "protocolVersion": SURFACE_PROTOCOL_VERSION,
+                    "patches": [{
+                        "operations": [{
+                            "op": "set",
+                            "nodeId": "refresh",
+                            "path": "/props/label",
+                            "value": "done"
+                        }],
+                        "statePatch": {"value": 1}
+                    }],
+                    "result": {
+                        "outputs": {"value": {"kind": "value", "value": 1}},
+                        "statePatch": {"value": 1}
+                    }
+                }
+            }))
+        });
+        let executor = SurfaceActionExecutor::new_with_runner(
+            tool_registry,
+            Arc::clone(&instances),
+            resources,
+            Arc::clone(&hook_bridge),
+            runner,
+            1,
+            4,
+        )
+        .expect("start executor");
+        executor
+            .submit(
+                &instance_id,
+                fixture_event(&instance_id, &attachment_id, "event:perf-1", json!({})),
+            )
+            .expect("queue action");
+
+        let mut broadcast_bytes = 0u64;
+        let mut saw_patch = false;
+        let mut saw_result = false;
+        let mut saw_success = false;
+        for _ in 0..8 {
+            let message = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Surface action broadcast");
+            broadcast_bytes += message.len() as u64;
+            let parsed: Value = serde_json::from_str(&message).expect("broadcast JSON");
+            match parsed["method"].as_str() {
+                Some(SURFACE_EVENT_PATCH) => saw_patch = true,
+                Some(SURFACE_EVENT_RESULT) => saw_result = true,
+                Some(SURFACE_EVENT_ACTION_ACK) if parsed["params"]["status"] == "succeeded" => {
+                    saw_success = true;
+                }
+                _ => {}
+            }
+            if saw_patch && saw_result && saw_success {
+                break;
+            }
+        }
+        assert!(
+            saw_patch && saw_result && saw_success,
+            "the action has to run to completion before its wire cost means anything"
+        );
+        loom_perf::assert_within(
+            "surface_action_response_bytes",
+            "bytes",
+            broadcast_bytes,
+            BUDGET_BYTES,
+        );
+
         drop(executor);
         let _ = std::fs::remove_dir_all(root);
     }

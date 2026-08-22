@@ -1,0 +1,14 @@
+[package]
+name = "loom_security"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared security primitives for Loom: archive extraction, outbound network policy, and untrusted JSON limits"
+
+[dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zip.workspace = true

@@ -93,6 +93,32 @@ pub fn execute_tool_with_workflows_timeout(
     )
 }
 
+/// Run a tool under a caller-owned timeout and cancellation flag, with no preview stream.
+///
+/// The preview variant of this call already existed, and a caller that wants cancellation without
+/// previews had to pass a callback that discards everything it is handed. The surface action runner is
+/// such a caller: an action has nowhere to show intermediate output, but it does need to be cancellable.
+pub fn execute_tool_with_workflows_timeout_and_cancellation(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    workflow_store: &WorkflowStore,
+    tool_registry: &ToolRegistry,
+    arguments: JsonValue,
+    timeout: Duration,
+    cancellation: &AtomicBool,
+) -> WorkflowRuntimeResult<serde_json::Value> {
+    execute_tool_with_workflows_internal(
+        tool,
+        mcp_servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        &mut |_| {},
+        Some(Instant::now() + timeout.max(Duration::from_millis(1))),
+        Some(cancellation),
+    )
+}
+
 pub fn execute_tool_with_workflows_and_preview<F>(
     tool: &ToolDefinition,
     mcp_servers: &[loom_mcp::McpServerConfig],
@@ -1013,15 +1039,7 @@ fn is_sticker_art(uses: &str) -> bool {
 }
 
 fn is_image_like(value: &str) -> bool {
-    value.starts_with("data:image/") || looks_like_base64_payload(value)
-}
-
-fn looks_like_base64_payload(value: &str) -> bool {
-    value.len() >= 8
-        && !value.chars().any(char::is_whitespace)
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_'))
+    value.starts_with("data:image/") || loom_image_io::looks_like_base64_image_payload(value)
 }
 
 fn image_content_response(data: &str, mime_type: &str) -> JsonValue {

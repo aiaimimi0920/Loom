@@ -135,7 +135,7 @@ fn help_text() -> &'static str {
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",
-        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, device-session, hook-message\n",
+        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, hook-message\n",
     )
 }
 
@@ -149,6 +149,7 @@ fn schema(name: &str) -> Result<&'static str> {
         "surface-manifest" => Ok(schemas::SURFACE_MANIFEST_V1),
         "surface-message" => Ok(schemas::SURFACE_MESSAGE_V1),
         "surface-scene" => Ok(schemas::SURFACE_SCENE_V1),
+        "surface-stream" => Ok(schemas::SURFACE_STREAM_V1),
         "device-session" => Ok(schemas::DEVICE_SESSION_V1),
         "hook-message" => Ok(schemas::HOOK_MESSAGE_V1),
         _ => bail!("unknown schema `{name}`"),
@@ -960,6 +961,7 @@ mod tests {
             schemas::SURFACE_MANIFEST_V1,
             schemas::SURFACE_MESSAGE_V1,
             schemas::SURFACE_SCENE_V1,
+            schemas::SURFACE_STREAM_V1,
             schemas::DEVICE_SESSION_V1,
             schemas::HOOK_MESSAGE_V1,
         ] {

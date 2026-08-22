@@ -9,7 +9,10 @@ description = "Loom MCP server and tool invocation contracts"
 
 [dependencies]
 base64.workspace = true
+loom_plugin_security.workspace = true
 loom_process.workspace = true
+loom_protocol.workspace = true
+loom_security.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true

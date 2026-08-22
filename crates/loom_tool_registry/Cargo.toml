@@ -15,6 +15,7 @@ loom_mcp.workspace = true
 loom_plugin_security.workspace = true
 loom_process.workspace = true
 loom_protocol.workspace = true
+loom_security.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
@@ -25,3 +26,6 @@ zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[dev-dependencies]
+loom_perf.workspace = true

@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,15 @@ struct FrameworkLifecycleJournal {
     old_activation: Option<FrameworkActivationState>,
     next_activation: FrameworkActivationState,
     target: String,
+    /// Whether `target` was created by the operation this journal describes.
+    ///
+    /// Recovery may only delete a version directory the interrupted operation itself put on disk.
+    /// An install that reuses an already-present directory, and a rollback that activates an older
+    /// version, both name a directory that predates the operation; deleting it would destroy the
+    /// very version recovery is supposed to restore. Journals written by an older build lack the
+    /// field, so the default is `false`: never delete.
+    #[serde(default)]
+    created_target: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -330,8 +340,11 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
         return (false, "未提供框架包目录".to_owned());
     };
     let package_dir = match resolve_framework_package_dir(root, id) {
-        Some(package_dir) => package_dir,
-        None => return (false, "未找到活动框架包".to_owned()),
+        Ok(package_dir) => package_dir,
+        Err(FrameworkError::FrameworkNotInstalled(_) | FrameworkError::UnknownFramework(_)) => {
+            return (false, "未找到活动框架包".to_owned())
+        }
+        Err(error) => return (false, format!("框架包目录解析失败：{error}")),
     };
     let manifest_path = package_dir.join(FRAMEWORK_MANIFEST_FILE);
     let manifest = match read_framework_manifest(&manifest_path) {
@@ -386,7 +399,10 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
         Ok(status) => status,
         Err(error) => return (false, format!("框架包签名验证失败：{error}")),
     };
-    if let Err(error) = TrustPolicy::from_env().enforce(trust_status) {
+    // The persisted policy, not just the environment override: an operator who sets
+    // `require-trusted` in the trust store must not have framework packages — the components that
+    // execute Art code with the highest privilege — fall back to allowing unsigned ones.
+    if let Err(error) = trust_store.effective_policy().enforce(trust_status) {
         return (false, format!("框架包信任策略拒绝执行：{error}"));
     }
     let control_plane_root = root.parent().unwrap_or(root);
@@ -399,31 +415,57 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     )
 }
 
-pub fn resolve_framework_package_dir(runtime_root: &Path, id: &str) -> Option<PathBuf> {
+/// Locates the active package directory of `id` under `runtime_root`.
+///
+/// Failures that belong to one candidate — an unreadable directory entry, a sibling package with a
+/// damaged manifest — skip that candidate instead of ending the scan, so one broken publisher cannot
+/// make a healthy framework unresolvable. A local id carried by more than one publisher is reported
+/// as ambiguous rather than as missing, because the two cases need different operator action.
+pub fn resolve_framework_package_dir(
+    runtime_root: &Path,
+    id: &str,
+) -> Result<PathBuf, FrameworkError> {
     if !is_valid_framework_reference(id) {
-        return None;
+        return Err(FrameworkError::UnknownFramework(id.to_owned()));
     }
     if id.contains('/') {
         return framework_storage_path(id)
             .map(|path| runtime_root.join(path))
             .as_deref()
-            .and_then(resolve_framework_package_root);
+            .and_then(resolve_framework_package_root)
+            .ok_or_else(|| FrameworkError::FrameworkNotInstalled(id.to_owned()));
     }
+    let publishers = match fs::read_dir(runtime_root) {
+        Ok(publishers) => publishers,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(FrameworkError::FrameworkNotInstalled(id.to_owned()))
+        }
+        Err(error) => return Err(error.into()),
+    };
     let mut matches = Vec::new();
-    for publisher in fs::read_dir(runtime_root).ok()? {
-        let publisher = publisher.ok()?;
+    for publisher in publishers {
+        let Ok(publisher) = publisher else {
+            continue;
+        };
         if !publisher.path().is_dir() {
             continue;
         }
         let candidate = publisher.path().join(id);
         if let Some(package) = resolve_framework_package_root(&candidate) {
-            let manifest = read_framework_manifest(&package.join(FRAMEWORK_MANIFEST_FILE)).ok()?;
+            let Ok(manifest) = read_framework_manifest(&package.join(FRAMEWORK_MANIFEST_FILE))
+            else {
+                continue;
+            };
             if manifest.id == id {
                 matches.push(package);
             }
         }
     }
-    (matches.len() == 1).then(|| matches.remove(0))
+    match matches.len() {
+        0 => Err(FrameworkError::FrameworkNotInstalled(id.to_owned())),
+        1 => Ok(matches.remove(0)),
+        _ => Err(FrameworkError::AmbiguousFramework(id.to_owned())),
+    }
 }
 
 fn resolve_framework_package_root(package_root: &Path) -> Option<PathBuf> {
@@ -542,7 +584,7 @@ impl FrameworkRegistry {
     /// `<root>/frameworks/<publisher>/<id>/versions/<version-digest>/`.
     pub fn runtime_dir(&self, id: &str) -> PathBuf {
         resolve_framework_package_dir(&self.root.join(FRAMEWORK_PACKAGES_DIR), id)
-            .unwrap_or_else(|| self.package_root(id))
+            .unwrap_or_else(|_| self.package_root(id))
     }
 
     fn package_root(&self, reference: &str) -> PathBuf {
@@ -566,7 +608,7 @@ impl FrameworkRegistry {
     }
 
     fn resolve_state_key(&self, reference: &str) -> Result<Option<String>, FrameworkError> {
-        let states = self.installation_states();
+        let states = self.installation_states()?;
         if states.contains_key(reference) {
             return Ok(Some(reference.to_owned()));
         }
@@ -678,9 +720,14 @@ impl FrameworkRegistry {
                 } else {
                     let _ = fs::remove_file(&activation_path);
                 }
-                let target = package_root.join(&journal.target);
-                if target.exists() {
-                    let _ = remove_framework_tree(&target);
+                // Only a directory this operation created may be removed. Reused and older
+                // directories hold versions that existed before the interrupted operation, and the
+                // activation just restored above may well point at one of them.
+                if journal.created_target {
+                    let target = package_root.join(&journal.target);
+                    if target.exists() {
+                        let _ = remove_framework_tree(&target);
+                    }
                 }
             }
             let _ = fs::remove_file(journal_path);
@@ -705,7 +752,10 @@ impl FrameworkRegistry {
                 parents.push(path);
             }
         }
-        let installed = self.installation_states();
+        // Restore-versus-delete is decided from this map, so a corrupt file must abort the
+        // recovery: an empty map would delete every pending tombstone and silently complete
+        // uninstalls the operator never asked for.
+        let installed = self.installation_states()?;
         for parent in parents {
             for entry in fs::read_dir(&parent)? {
                 let tombstone = entry?.path();
@@ -797,7 +847,10 @@ impl FrameworkRegistry {
     /// The set of installed framework ids. A persisted state entry is not
     /// enough by itself: the package manifest must also be present.
     pub fn installed_ids(&self) -> BTreeSet<String> {
+        // Reporting cannot fail, so a corrupt state file lists nothing here. It cannot become
+        // permanent: every mutating path propagates the error instead of rewriting the file.
         self.installation_states()
+            .unwrap_or_default()
             .into_iter()
             .filter_map(|(id, _)| {
                 if !is_valid_framework_reference(&id) {
@@ -825,6 +878,7 @@ impl FrameworkRegistry {
         self.package_manifest(&key).is_some()
             && self
                 .installation_states()
+                .unwrap_or_default()
                 .get(&key)
                 .is_some_and(|state| state.enabled)
     }
@@ -941,7 +995,7 @@ impl FrameworkRegistry {
         let key = self
             .resolve_state_key(id)?
             .ok_or_else(|| FrameworkError::FrameworkNotInstalled(id.to_owned()))?;
-        let mut installed = self.installation_states();
+        let mut installed = self.installation_states()?;
         let state = installed
             .get_mut(&key)
             .ok_or_else(|| FrameworkError::FrameworkNotInstalled(id.to_owned()))?;
@@ -993,12 +1047,16 @@ impl FrameworkRegistry {
                 manifest.signature.as_ref(),
                 &trust_store,
             )?;
-            TrustPolicy::from_env().enforce(trust_status)?;
+            trust_store.effective_policy().enforce(trust_status)?;
             run_framework_self_test(&manifest, &staging)?;
 
             let storage_key = manifest.qualified_id();
             let packages_root = self.root.join(FRAMEWORK_PACKAGES_DIR);
             fs::create_dir_all(&packages_root)?;
+            // Read the persisted state before any package file moves into place: a corrupt state
+            // file has to abort the install rather than leave a package on disk that no state
+            // entry describes.
+            let mut installed = self.installation_states()?;
             let package_root = self.package_root(&storage_key);
             let versions_root = package_root.join(FRAMEWORK_VERSIONS_DIR);
             fs::create_dir_all(&versions_root)?;
@@ -1078,6 +1136,7 @@ impl FrameworkRegistry {
                     old_activation: old_activation.clone(),
                     next_activation: activation.clone(),
                     target: active_relative.to_string_lossy().replace('\\', "/"),
+                    created_target: target_created,
                 },
             )?;
             if let Err(error) = self.write_activation(&storage_key, &activation) {
@@ -1088,7 +1147,6 @@ impl FrameworkRegistry {
                 return Err(error);
             }
 
-            let mut installed = self.installation_states();
             installed.insert(
                 storage_key.clone(),
                 FrameworkInstallationState {
@@ -1173,7 +1231,7 @@ impl FrameworkRegistry {
             manifest.signature.as_ref(),
             &trust_store,
         )?;
-        TrustPolicy::from_env().enforce(trust_status)?;
+        trust_store.effective_policy().enforce(trust_status)?;
         let digest = canonical_package_digest(
             &target,
             manifest
@@ -1201,10 +1259,29 @@ impl FrameworkRegistry {
                 old_activation: Some(activation.clone()),
                 next_activation: next.clone(),
                 target: next.active.clone(),
+                // A rollback activates a version that is already on disk; recovery must never
+                // delete it.
+                created_target: false,
             },
         )?;
-        self.write_activation(&key, &next)?;
-        let mut installed = self.installation_states();
+        if let Err(error) = self.write_activation(&key, &next) {
+            // The journal describes an activation that was never written. Leaving it behind would
+            // make the next startup restore `old_activation` over an activation that already holds
+            // exactly that value, so drop it instead.
+            self.clear_lifecycle_journal(&key);
+            return Err(error);
+        }
+        // A corrupt state file gets the same treatment as a failed state write: the activation
+        // that was just written has to go back, or the package would run at the rolled-back
+        // version while the state file still claims the newer one.
+        let mut installed = match self.installation_states() {
+            Ok(installed) => installed,
+            Err(error) => {
+                let _ = self.write_activation(&key, &activation);
+                self.clear_lifecycle_journal(&key);
+                return Err(error);
+            }
+        };
         if let Some(state) = installed.get_mut(&key) {
             state.version = manifest.version;
         }
@@ -1235,7 +1312,18 @@ impl FrameworkRegistry {
         } else {
             None
         };
-        let mut installed = self.installation_states();
+        // `resolve_state_key` above already refused a corrupt state file, so this read only fails
+        // if the file was damaged while the uninstall was in flight. Put the package back either
+        // way rather than leaving it in a tombstone that no state entry mentions.
+        let mut installed = match self.installation_states() {
+            Ok(installed) => installed,
+            Err(error) => {
+                if let Some(tombstone) = &tombstone {
+                    let _ = fs::rename(tombstone, &package_root);
+                }
+                return Err(error);
+            }
+        };
         installed.remove(&key);
         if let Err(error) = self.write_installed(&installed) {
             if let Some(tombstone) = &tombstone {
@@ -1255,7 +1343,9 @@ impl FrameworkRegistry {
         let state_key = self.resolve_state_key(id).ok().flatten();
         let state = state_key
             .as_ref()
-            .and_then(|key| self.installation_states().get(key).cloned());
+            // A status report cannot fail; `resolve_state_key` has already returned `None` above if
+            // the state file is corrupt, so this reports the package as not installed.
+            .and_then(|key| self.installation_states().ok()?.get(key).cloned());
         let installed = state.is_some() && manifest.is_some();
         let enabled = installed && state.as_ref().map(|value| value.enabled).unwrap_or(false);
         let (name, description, version) = match &manifest {
@@ -1338,12 +1428,26 @@ impl FrameworkRegistry {
         .then_some(manifest)
     }
 
-    fn installation_states(&self) -> BTreeMap<String, FrameworkInstallationState> {
-        let Ok(text) = fs::read_to_string(&self.path) else {
-            return BTreeMap::new();
+    /// The persisted installation state.
+    ///
+    /// A missing file means nothing has been installed yet, which is an empty map. Anything else —
+    /// an unreadable file or one whose contents are not the expected map — is an error, never an
+    /// empty map: reporting corruption as "no frameworks installed" hides intact packages, and the
+    /// next write would drop every entry the file still held.
+    fn installation_states(
+        &self,
+    ) -> Result<BTreeMap<String, FrameworkInstallationState>, FrameworkError> {
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(error) => return Err(FrameworkError::Io(error)),
         };
-        serde_json::from_str::<BTreeMap<String, FrameworkInstallationState>>(&text)
-            .unwrap_or_default()
+        serde_json::from_str::<BTreeMap<String, FrameworkInstallationState>>(&text).map_err(
+            |error| FrameworkError::CorruptState {
+                path: self.path.display().to_string(),
+                reason: error.to_string(),
+            },
+        )
     }
 
     fn write_installed(
@@ -1904,7 +2008,7 @@ fn run_framework_self_test(
             reason: format!(
                 "framework self-test exited with {:?}: {}",
                 output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                crate::bounded_error_text(&String::from_utf8_lossy(&output.stderr))
             ),
         });
     }
@@ -1980,6 +2084,10 @@ pub enum FrameworkError {
     RuntimeUnpackFailed { id: String, reason: String },
     #[error("framework `{id}` runtime installed but still not runnable: {reason}")]
     RuntimeUnavailable { id: String, reason: String },
+    #[error(
+        "frameworks state file `{path}` cannot be read ({reason}); repair or remove it before installing, enabling or uninstalling a framework"
+    )]
+    CorruptState { path: String, reason: String },
     #[error("frameworks store io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("frameworks store serialize error: {0}")]
@@ -2604,6 +2712,7 @@ mod tests {
                         previous: Some(old.active.clone()),
                     },
                     target: orphan_relative,
+                    created_target: true,
                 },
             )
             .expect("write lifecycle journal");
@@ -2612,6 +2721,106 @@ mod tests {
         assert_eq!(recovered.activation("process"), Some(old));
         assert!(!orphan.exists());
         assert!(!package_root.join(FRAMEWORK_LIFECYCLE_FILE).exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn framework_recovery_keeps_a_version_the_interrupted_operation_did_not_create() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
+                "process", "1.0.0",
+            ))
+            .expect("install v1");
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
+                "process", "2.0.0",
+            ))
+            .expect("install v2");
+        let package_root = root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process");
+        let live = registry.activation("process").expect("activation");
+        let older_relative = live.previous.clone().expect("previous version");
+        let older = package_root.join(&older_relative);
+        assert!(older.is_dir());
+
+        // A rollback interrupted between its journal write and its activation write. The journal
+        // names the older version, which has been on disk since it was installed.
+        registry
+            .write_lifecycle_journal(
+                "process",
+                &FrameworkLifecycleJournal {
+                    old_activation: Some(live.clone()),
+                    next_activation: FrameworkActivationState {
+                        active: older_relative.clone(),
+                        previous: Some(live.active.clone()),
+                    },
+                    target: older_relative,
+                    created_target: false,
+                },
+            )
+            .expect("write lifecycle journal");
+
+        let recovered = FrameworkRegistry::new(&root);
+        assert_eq!(recovered.activation("process"), Some(live));
+        assert!(
+            older.is_dir(),
+            "recovery deleted a version it did not create"
+        );
+        assert!(!package_root.join(FRAMEWORK_LIFECYCLE_FILE).exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_failed_rollback_activation_leaves_no_lifecycle_journal_behind() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
+                "process", "1.0.0",
+            ))
+            .expect("install v1");
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_version(
+                "process", "2.0.0",
+            ))
+            .expect("install v2");
+        let package_root = root
+            .join(FRAMEWORK_PACKAGES_DIR)
+            .join("publisher.test")
+            .join("process");
+        let live = registry.activation("process").expect("activation");
+        let older = package_root.join(live.previous.clone().expect("previous version"));
+
+        // Occupy the staging path the activation write needs, so that write fails after the
+        // journal has already been written.
+        std::fs::create_dir_all(package_root.join("active.json.tmp")).expect("block staging path");
+        // A sentinel journal, so that "no journal on disk" can only mean the rollback reached its
+        // own journal write and then cleaned up — not that it failed before ever journalling.
+        registry
+            .write_lifecycle_journal(
+                "process",
+                &FrameworkLifecycleJournal {
+                    old_activation: None,
+                    next_activation: FrameworkActivationState {
+                        active: "versions/sentinel".to_owned(),
+                        previous: None,
+                    },
+                    target: "versions/sentinel".to_owned(),
+                    created_target: false,
+                },
+            )
+            .expect("write sentinel journal");
+        assert!(registry.rollback("process").is_err());
+        assert!(
+            !package_root.join(FRAMEWORK_LIFECYCLE_FILE).exists(),
+            "a rollback that never activated left its journal behind"
+        );
+        assert_eq!(registry.activation("process"), Some(live));
+        assert!(older.is_dir());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -2751,10 +2960,231 @@ mod tests {
         .expect("flat activation");
         std::fs::write(active.join(FRAMEWORK_MANIFEST_FILE), b"{}").expect("flat manifest");
 
-        assert!(
-            resolve_framework_package_dir(&root.join("frameworks"), "flat-framework").is_none()
-        );
+        assert!(resolve_framework_package_dir(&root.join("frameworks"), "flat-framework").is_err());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Writes a package directory whose manifest is unreadable, under a publisher name that sorts
+    /// before the healthy publishers a test installs, so a scan that stopped at the first failure
+    /// would stop before reaching them.
+    fn write_damaged_framework_package(packages_root: &Path, id: &str) {
+        let broken = packages_root.join("aaa.broken.publisher").join(id);
+        let version = broken.join("versions").join("0.0.1");
+        std::fs::create_dir_all(&version).expect("damaged package directory");
+        std::fs::write(
+            broken.join(FRAMEWORK_ACTIVE_FILE),
+            serde_json::to_vec(&FrameworkActivationState {
+                active: "versions/0.0.1".to_owned(),
+                previous: None,
+            })
+            .unwrap(),
+        )
+        .expect("damaged activation");
+        std::fs::write(version.join(FRAMEWORK_MANIFEST_FILE), b"{ truncated")
+            .expect("damaged manifest");
+    }
+
+    #[test]
+    fn a_damaged_framework_package_does_not_hide_a_healthy_one() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let id = "resolver-framework";
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                id,
+                "0.1.0",
+                Some("publisher.alpha"),
+            ))
+            .expect("install the healthy package");
+        let packages_root = root.join(FRAMEWORK_PACKAGES_DIR);
+        write_damaged_framework_package(&packages_root, id);
+
+        let resolved = resolve_framework_package_dir(&packages_root, id)
+            .expect("the healthy package must still resolve");
+        assert!(
+            resolved.starts_with(packages_root.join("publisher.alpha")),
+            "expected the intact publisher's package, got {}",
+            resolved.display()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_local_id_shipped_by_two_publishers_resolves_as_ambiguous_not_missing() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let id = "contested-framework";
+        for publisher in ["publisher.alpha", "publisher.beta"] {
+            registry
+                .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                    id,
+                    "0.1.0",
+                    Some(publisher),
+                ))
+                .expect("install a competing package");
+        }
+
+        let error = resolve_framework_package_dir(&root.join(FRAMEWORK_PACKAGES_DIR), id)
+            .expect_err("a bare id carried by two publishers cannot resolve");
+        assert!(
+            matches!(&error, FrameworkError::AmbiguousFramework(reported) if reported == id),
+            "expected an ambiguity error, got {error:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_persisted_trust_policy_blocks_framework_readiness_and_installs() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let id = "policy-framework";
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                id,
+                "0.1.0",
+                Some("publisher.alpha"),
+            ))
+            .expect("install while unsigned packages are still allowed");
+        let packages_root = root.join(FRAMEWORK_PACKAGES_DIR);
+        let (ready, _) =
+            framework_ready_in("publisher.alpha/policy-framework", Some(&packages_root));
+        assert!(
+            ready,
+            "the package must be runnable under the default policy"
+        );
+
+        registry
+            .set_trust_policy(TrustPolicy::RequireTrusted)
+            .expect("persist the strict policy");
+
+        // The policy lives in the trust store, not in the environment: an operator who requires
+        // trusted packages must not have frameworks keep executing unsigned code.
+        let (ready, reason) =
+            framework_ready_in("publisher.alpha/policy-framework", Some(&packages_root));
+        assert!(!ready, "readiness must honour the persisted policy");
+        assert!(
+            reason.contains("信任策略"),
+            "expected a trust policy refusal, got {reason}"
+        );
+        let error = registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                "second-policy-framework",
+                "0.1.0",
+                Some("publisher.beta"),
+            ))
+            .expect_err("installing an unsigned package must be refused too");
+        assert!(
+            matches!(error, FrameworkError::Security(_)),
+            "expected a trust policy refusal from the installer, got {error:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_corrupt_state_file_is_reported_and_never_silently_rewritten() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let id = "corrupt-state-framework";
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                id,
+                "0.1.0",
+                Some("publisher.alpha"),
+            ))
+            .expect("install a healthy package first");
+        let qualified = format!("publisher.alpha/{id}");
+        let state_path = root.join(FRAMEWORKS_FILE);
+        let damaged = "{ \"publisher.alpha/corrupt-state-framework\": ";
+        std::fs::write(&state_path, damaged).expect("damage the state file");
+
+        // Not "未安装": the packages are intact on disk and the operator has to be told which file
+        // to repair.
+        let (ready, reason) = registry.readiness(&qualified);
+        assert!(
+            !ready,
+            "a corrupt state file cannot report a ready framework"
+        );
+        assert!(
+            reason.contains(FRAMEWORKS_FILE),
+            "expected the corrupt state file to be named, got {reason}"
+        );
+
+        for (label, result) in [
+            ("disable", registry.set_enabled(&qualified, false)),
+            ("uninstall", registry.uninstall(&qualified)),
+        ] {
+            let error = result.expect_err("a mutating call must refuse a corrupt state file");
+            assert!(
+                matches!(error, FrameworkError::CorruptState { .. }),
+                "expected {label} to report the corrupt state, got {error:?}"
+            );
+        }
+        let installed = registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                "second-corrupt-state-framework",
+                "0.1.0",
+                Some("publisher.beta"),
+            ))
+            .expect_err("an install must not rewrite a state file it could not read");
+        assert!(
+            matches!(installed, FrameworkError::CorruptState { .. }),
+            "expected the installer to report the corrupt state, got {installed:?}"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&state_path).expect("read the state file back"),
+            damaged,
+            "the damaged file must survive verbatim so it can be repaired"
+        );
+        assert!(
+            root.join(FRAMEWORK_PACKAGES_DIR)
+                .join("publisher.alpha")
+                .join(id)
+                .is_dir(),
+            "the installed package must still be on disk"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_corrupt_state_file_leaves_an_interrupted_uninstall_recoverable() {
+        let root = temp_root();
+        let registry = FrameworkRegistry::new(&root);
+        let id = "tombstone-framework";
+        registry
+            .install_framework_package_from_zip(&fake_framework_package_zip_with_identity(
+                id,
+                "0.1.0",
+                Some("publisher.alpha"),
+            ))
+            .expect("install a healthy package first");
+        let state_path = root.join(FRAMEWORKS_FILE);
+        let intact = std::fs::read_to_string(&state_path).expect("read the healthy state file");
+
+        // Stage the state a crash mid-uninstall leaves behind: the package is in a tombstone and
+        // the state file still lists it, so recovery must put it back.
+        let publisher_root = root.join(FRAMEWORK_PACKAGES_DIR).join("publisher.alpha");
+        let live = publisher_root.join(id);
+        let tombstone =
+            publisher_root.join(format!("{FRAMEWORK_UNINSTALL_TOMBSTONE_PREFIX}{id}--1"));
+        std::fs::rename(&live, &tombstone).expect("stage the tombstone");
+        std::fs::write(&state_path, "{ truncated").expect("damage the state file");
+
+        let _ = FrameworkRegistry::new(&root);
+        assert!(
+            tombstone.is_dir(),
+            "recovery read an unusable state file, so it must not decide to delete"
+        );
+        assert!(!live.exists(), "nothing should have been restored yet");
+
+        std::fs::write(&state_path, intact).expect("repair the state file");
+        let _ = FrameworkRegistry::new(&root);
+        assert!(
+            live.is_dir(),
+            "once the state file is readable the package must be restored"
+        );
+        assert!(!tombstone.exists(), "the tombstone must be consumed");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

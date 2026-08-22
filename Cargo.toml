@@ -26,6 +26,8 @@ members = [
     "crates/loom_protocol",
     "crates/loom_plugin_security",
     "crates/loom_process",
+    "crates/loom_security",
+    "crates/loom_perf",
 ]
 
 [workspace.package]
@@ -84,3 +86,5 @@ loom_ocr = { path = "crates/loom_ocr" }
 loom_protocol = { path = "crates/loom_protocol" }
 loom_plugin_security = { path = "crates/loom_plugin_security" }
 loom_process = { path = "crates/loom_process" }
+loom_security = { path = "crates/loom_security" }
+loom_perf = { path = "crates/loom_perf" }

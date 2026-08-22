@@ -94,10 +94,12 @@ use request_executor::{
 };
 use surface_actions::{SharedSurfaceActionExecutor, SurfaceActionExecutor};
 use surface_resources::{
-    SharedSurfaceResourceStore, SurfaceResourceStore, SurfaceResourceStoreError,
-    MAX_SURFACE_RESOURCE_BYTES,
+    SharedSurfaceResourceStore, SurfaceResourceGcOutcome, SurfaceResourceStore,
+    SurfaceResourceStoreError, MAX_SURFACE_RESOURCE_BYTES,
 };
-use surface_store::{SharedSurfaceInstanceStore, SurfaceInstanceStore, SurfaceStoreError};
+use surface_store::{
+    SharedSurfaceInstanceStore, SurfaceInstanceRecord, SurfaceInstanceStore, SurfaceStoreError,
+};
 
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
@@ -447,6 +449,8 @@ struct DaemonRuntime {
     request_submission_observer: Option<Arc<RequestSubmissionObserver>>,
     #[cfg(test)]
     shutdown_observer: Option<Arc<DaemonShutdownObserver>>,
+    #[cfg(test)]
+    connection_accept_observer: Option<Arc<ConnectionAcceptObserver>>,
 }
 
 pub struct LoomDaemon {
@@ -544,6 +548,11 @@ impl LoomDaemon {
             SurfaceResourceStore::new(control_plane_root.join("surface-resources"))
                 .context("open Surface resource store")?,
         ));
+        // Startup is the one moment the whole reference set is knowable and nothing is mid-flight:
+        // every lease minted by the previous process is either persisted or gone, and no request has
+        // been accepted yet. Objects whose carrying instance was deleted while the daemon was down
+        // are collected here; a running daemon collects on delete instead.
+        collect_surface_resource_garbage_logged(&surface_instances, &surface_resources, "startup");
         let surface_actions = Arc::new(
             SurfaceActionExecutor::new(
                 Arc::clone(&mcp_servers),
@@ -572,10 +581,13 @@ impl LoomDaemon {
             control_plane_root: control_plane_root.to_path_buf(),
             bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
             hook_bridge,
-            device_registry: Arc::new(Mutex::new(DeviceRegistryStore::new(
-                control_plane_root.join("settings").join("devices.json"),
-                local_addr,
-            ))),
+            device_registry: Arc::new(Mutex::new(
+                DeviceRegistryStore::new(
+                    control_plane_root.join("settings").join("devices.json"),
+                    local_addr,
+                )
+                .context("open device registry")?,
+            )),
             surface_instances,
             surface_actions,
             surface_resources,
@@ -594,6 +606,8 @@ impl LoomDaemon {
             request_submission_observer: None,
             #[cfg(test)]
             shutdown_observer: None,
+            #[cfg(test)]
+            connection_accept_observer: None,
         };
         Ok(Self {
             listener,
@@ -628,124 +642,352 @@ impl LoomDaemon {
             move |job: RequestJob| handle_request_job(job, &surface_stream_runtime),
         )?;
 
-        let serve_result: Result<()> = loop {
+        // Reads happen on their own pool and come back through `ready_rx`, so the accept thread
+        // never touches a client's byte stream. See `CONNECTION_READ_WORKERS`.
+        let (ready_tx, ready_rx) = mpsc::channel::<ReadyConnection>();
+        let read_draining = Arc::new(AtomicBool::new(false));
+        let reader_draining = Arc::clone(&read_draining);
+        let mut read_stage = BoundedRequestExecutor::new(
+            "loom-read",
+            CONNECTION_READ_WORKERS,
+            CONNECTION_READ_QUEUE_CAPACITY,
+            move |job: ConnectionReadJob| read_connection(job, &reader_draining),
+        )?;
+
+        let mut read_stage_result: std::io::Result<()> = Ok(());
+        let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
-                record_shutdown_observed(&self.runtime);
-                if let Some(request_executor) = executor.as_mut() {
-                    request_executor.close();
+                // Read the backlog before the listener goes away: shutdown can be observed before
+                // the first accept, and dropping a queued connection resets it.
+                let drained = drain_accept_backlog(&self.listener);
+                begin_shutdown(
+                    &self.runtime,
+                    &mut executor,
+                    &mut surface_stream_executor,
+                    &read_draining,
+                );
+                // The readers are joined before the drain so that every connection which finished
+                // reading is answered, rather than being dropped by a worker racing the drain.
+                read_stage_result = read_stage.shutdown();
+                for ready in drained {
+                    dispatch_connection(
+                        ready,
+                        &self.runtime,
+                        &executor,
+                        &surface_stream_executor,
+                        true,
+                    );
                 }
-                surface_stream_executor.close();
+                while let Ok(ready) = ready_rx.try_recv() {
+                    dispatch_connection(
+                        ready,
+                        &self.runtime,
+                        &executor,
+                        &surface_stream_executor,
+                        true,
+                    );
+                }
                 break Ok(());
             }
 
+            let mut accepted = false;
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    let Some((stream, outcome)) = read_connection(stream) else {
-                        continue;
-                    };
-                    let shutdown_after_read = shutdown.try_recv().is_ok();
-                    if shutdown_after_read {
-                        record_shutdown_observed(&self.runtime);
-                        if let Some(request_executor) = executor.as_mut() {
-                            request_executor.close();
-                        }
-                        surface_stream_executor.close();
-                    }
-                    match outcome {
-                        HttpReadOutcome::Empty => {}
-                        HttpReadOutcome::Rejected { status, body } => {
-                            write_response_safely(stream, status, &body);
-                        }
-                        HttpReadOutcome::Request(request) => {
-                            let request = ParsedHttpRequest::from_raw(&request);
-                            let job = RequestJob { stream, request };
-                            if shutdown_after_read
-                                && (executor.is_none() || is_reserved_probe(&job.request))
-                            {
+                    accepted = true;
+                    if let Some(stream) = prepare_connection(stream) {
+                        let job = ConnectionReadJob {
+                            stream,
+                            ready: ready_tx.clone(),
+                        };
+                        match read_stage.try_submit(job) {
+                            Ok(()) => record_connection_accepted(&self.runtime),
+                            Err(SubmitError::Full(job)) => {
+                                let (status, body) = daemon_busy_response();
+                                write_response_safely(job.stream, status, &body);
+                            }
+                            Err(SubmitError::Closed(job)) => {
                                 let (status, body) = daemon_shutting_down_response();
                                 write_response_safely(job.stream, status, &body);
-                                break Ok(());
-                            }
-                            if executor.is_none() {
-                                handle_request_job(job, &self.runtime);
-                                continue;
-                            }
-                            if is_reserved_probe(&job.request) {
-                                handle_parsed_request(job.stream, job.request, &self.runtime);
-                                continue;
-                            }
-                            if is_surface_stream_request(&job.request) {
-                                match surface_stream_executor.try_submit(job) {
-                                    Ok(()) => record_request_submission(&self.runtime),
-                                    Err(SubmitError::Full(job)) => {
-                                        let (status, body) = daemon_busy_response();
-                                        write_response_safely(job.stream, status, &body);
-                                    }
-                                    Err(SubmitError::Closed(job)) => {
-                                        let (status, body) = daemon_shutting_down_response();
-                                        write_response_safely(job.stream, status, &body);
-                                    }
-                                }
-                                continue;
-                            }
-                            let request_executor =
-                                executor.as_ref().expect("bounded executor is available");
-                            match request_executor.try_submit(job) {
-                                Ok(()) => record_request_submission(&self.runtime),
-                                Err(SubmitError::Full(job)) => {
-                                    let (status, body) = daemon_busy_response();
-                                    write_response_safely(job.stream, status, &body);
-                                }
-                                Err(SubmitError::Closed(job)) => {
-                                    let (status, body) = daemon_shutting_down_response();
-                                    write_response_safely(job.stream, status, &body);
-                                }
                             }
                         }
                     }
-                    if shutdown_after_read {
-                        break Ok(());
-                    }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
-                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => break Err(error).context("accept daemon connection"),
+            }
+
+            // A pass that accepted something takes only the reads already waiting; a pass that did
+            // not waits briefly for one. That wait is what keeps this loop from spinning.
+            let mut pending = if accepted {
+                ready_rx.try_recv().ok()
+            } else {
+                let wait = Duration::from_millis(ACCEPT_IDLE_WAIT_MILLIS);
+                ready_rx.recv_timeout(wait).ok()
+            };
+            while let Some(ready) = pending {
+                let shutdown_after_read = shutdown.try_recv().is_ok();
+                if shutdown_after_read {
+                    begin_shutdown(
+                        &self.runtime,
+                        &mut executor,
+                        &mut surface_stream_executor,
+                        &read_draining,
+                    );
+                }
+                let outcome = dispatch_connection(
+                    ready,
+                    &self.runtime,
+                    &executor,
+                    &surface_stream_executor,
+                    shutdown_after_read,
+                );
+                if matches!(outcome, DispatchOutcome::Stop) {
+                    // The listener is about to go away here too, so the backlog gets the same
+                    // treatment it gets at the top of the loop.
+                    let drained = drain_accept_backlog(&self.listener);
+                    read_stage_result = read_stage.shutdown();
+                    for ready in drained {
+                        dispatch_connection(
+                            ready,
+                            &self.runtime,
+                            &executor,
+                            &surface_stream_executor,
+                            true,
+                        );
+                    }
+                    break 'serve Ok(());
+                }
+                pending = ready_rx.try_recv().ok();
             }
         };
 
+        // Sockets still queued for a read are answered rather than read: the daemon is on its way
+        // out, and a queued client may be one that never finishes sending.
+        read_draining.store(true, Ordering::SeqCst);
         let shutdown_result = executor
             .as_mut()
             .map(BoundedRequestExecutor::shutdown)
             .transpose();
         let surface_stream_shutdown_result = surface_stream_executor.shutdown();
+        let read_stage_shutdown_result = read_stage.shutdown();
         if let Err(error) = serve_result {
             let _ = shutdown_result;
             let _ = surface_stream_shutdown_result;
+            let _ = read_stage_shutdown_result;
+            let _ = read_stage_result;
             return Err(error);
         }
         shutdown_result.context("shutdown Loom request executor")?;
         surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
+        read_stage_result.context("shutdown Loom connection reader")?;
+        read_stage_shutdown_result.context("shutdown Loom connection reader")?;
         Ok(())
     }
 }
 
-fn read_connection(mut stream: TcpStream) -> Option<(TcpStream, HttpReadOutcome)> {
+/// Size of the pool that reads requests off accepted sockets.
+///
+/// Reading used to happen inline on the accept thread, which meant one client sending its request
+/// head a byte at a time stalled every other connection — including `/health` — for as long as it
+/// cared to keep dribbling. The reads now happen here; the accept thread only sets socket options
+/// and hands the socket over.
+const CONNECTION_READ_WORKERS: usize = 4;
+const CONNECTION_READ_QUEUE_CAPACITY: usize = 64;
+
+/// Per-`read` timeout. Bounds how long a single syscall can block, not the whole request.
+const CONNECTION_READ_TIMEOUT_MILLIS: u64 = 2_000;
+
+/// Write timeout for every accepted socket. Without one, a peer that stops reading its response
+/// parks the worker that is writing it forever.
+const RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 30_000;
+
+/// How long the accept loop waits for work when there is nothing to accept and nothing to dispatch.
+const ACCEPT_IDLE_WAIT_MILLIS: u64 = 10;
+
+/// Total budget for finishing the requests that were already in flight when shutdown arrived.
+///
+/// It bounds two things: the backlog the listener accepted but never handed to a reader, and the
+/// extra time a reader gives a request whose first bytes had already arrived. Dropping either kind
+/// of socket unread makes the platform answer the peer with an RST, which destroys any response
+/// that was already on the wire, so both are worth a short wait — but only a short one, since
+/// shutdown must not wait on a client that may never finish sending.
+const SHUTDOWN_READ_GRACE_MILLIS: u64 = 500;
+
+/// A socket handed from the accept thread to a read worker.
+///
+/// The reply channel travels inside the job so the read stage needs no shared state beyond the
+/// draining flag, and so a job only has to be `Send`.
+struct ConnectionReadJob {
+    stream: TcpStream,
+    ready: Sender<ReadyConnection>,
+}
+
+/// A socket whose request has been read and is ready to dispatch.
+struct ReadyConnection {
+    stream: TcpStream,
+    outcome: HttpReadOutcome,
+}
+
+enum DispatchOutcome {
+    Continue,
+    Stop,
+}
+
+/// Applies the socket options, on the accept thread, before the socket reaches a read worker.
+///
+/// The write timeout is set here rather than in the read stage because the accept thread itself
+/// writes responses — a queue-full 503 goes out on a socket no worker ever touches.
+fn prepare_connection(stream: TcpStream) -> Option<TcpStream> {
+    let read_timeout = Duration::from_millis(CONNECTION_READ_TIMEOUT_MILLIS);
+    let write_timeout = Duration::from_millis(RESPONSE_WRITE_TIMEOUT_MILLIS);
     if let Err(error) = stream.set_nonblocking(false) {
         eprintln!("loom connection setup failed: {error}");
         return None;
     }
-    if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(2))) {
+    if let Err(error) = stream.set_read_timeout(Some(read_timeout)) {
         eprintln!("loom connection read-timeout setup failed: {error}");
         return None;
     }
-    match read_http_request(&mut stream) {
-        Ok(outcome) => Some((stream, outcome)),
-        Err(error) => {
-            eprintln!("loom request read failed: {error:#}");
-            None
+    if let Err(error) = stream.set_write_timeout(Some(write_timeout)) {
+        eprintln!("loom connection write-timeout setup failed: {error}");
+        return None;
+    }
+    Some(stream)
+}
+
+/// Reads whatever the listener has already accepted but not yet handed to a read worker.
+///
+/// Closing the listener with a connection still sitting in its backlog resets that connection, and a
+/// reset destroys a response the peer has not read yet — so a client whose request arrived just
+/// before shutdown would see a dropped connection instead of the 503 it was owed. Reading happens
+/// inline here rather than on the read stage: the accept thread has nothing left to protect at
+/// shutdown, and one shared deadline bounds the whole drain no matter how many sockets are queued.
+///
+/// The returned connections still have to be dispatched; this only gets them read.
+fn drain_accept_backlog(listener: &TcpListener) -> Vec<ReadyConnection> {
+    let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_READ_GRACE_MILLIS);
+    let abort = AtomicBool::new(false);
+    let mut drained = Vec::new();
+    while drained.len() < CONNECTION_READ_QUEUE_CAPACITY {
+        // The listener is non-blocking, so an empty backlog ends the loop instead of waiting on one.
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(_) => break,
+        };
+        let mut stream = match prepare_connection(stream) {
+            Some(stream) => stream,
+            None => continue,
+        };
+        match read_http_request_until(&mut stream, deadline, &abort) {
+            Ok(outcome) => drained.push(ReadyConnection { stream, outcome }),
+            Err(error) => eprintln!("loom shutdown drain read failed: {error:#}"),
         }
     }
+    drained
+}
+
+/// Reads one request on a read worker and returns the socket to the accept loop.
+///
+/// Once `draining` is set the daemon is shutting down, so a socket that has not sent anything yet is
+/// answered with 503 instead of being read: shutdown must not wait on a client that may never finish
+/// sending. A read already holding bytes is finished under the grace window instead — see
+/// `read_http_request_until`.
+fn read_connection(job: ConnectionReadJob, draining: &AtomicBool) {
+    let ConnectionReadJob { mut stream, ready } = job;
+    if draining.load(Ordering::SeqCst) {
+        let (status, body) = daemon_shutting_down_response();
+        write_response_safely(stream, status, &body);
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_millis(MAX_REQUEST_READ_MILLIS);
+    match read_http_request_until(&mut stream, deadline, draining) {
+        Ok(outcome) => {
+            // A failed send means the accept loop has already stopped receiving, which only happens
+            // after shutdown drained the channel. Dropping the socket then is the right answer.
+            let _ = ready.send(ReadyConnection { stream, outcome });
+        }
+        Err(error) => eprintln!("loom request read failed: {error:#}"),
+    }
+}
+
+/// Hands a parsed request to a bounded executor, answering the caller when it cannot be queued.
+fn submit_request_job(
+    job: RequestJob,
+    executor: &BoundedRequestExecutor<RequestJob>,
+    runtime: &DaemonRuntime,
+) {
+    match executor.try_submit(job) {
+        Ok(()) => record_request_submission(runtime),
+        Err(SubmitError::Full(job)) => {
+            let (status, body) = daemon_busy_response();
+            write_response_safely(job.stream, status, &body);
+        }
+        Err(SubmitError::Closed(job)) => {
+            let (status, body) = daemon_shutting_down_response();
+            write_response_safely(job.stream, status, &body);
+        }
+    }
+}
+
+/// Routes one already-read connection to whichever executor owns it.
+///
+/// `Stop` means the accept loop should end: either shutdown was observed while this request was in
+/// flight, or it was observed before the request could be queued.
+fn dispatch_connection(
+    ready: ReadyConnection,
+    runtime: &DaemonRuntime,
+    executor: &Option<BoundedRequestExecutor<RequestJob>>,
+    surface_stream_executor: &BoundedRequestExecutor<RequestJob>,
+    shutdown_after_read: bool,
+) -> DispatchOutcome {
+    let ReadyConnection { stream, outcome } = ready;
+    match outcome {
+        HttpReadOutcome::Empty => {}
+        HttpReadOutcome::Rejected { status, body } => {
+            write_response_safely(stream, status, &body);
+        }
+        HttpReadOutcome::Request(request) => {
+            let request = ParsedHttpRequest::from_raw(request);
+            let job = RequestJob { stream, request };
+            if shutdown_after_read && (executor.is_none() || is_reserved_probe(&job.request)) {
+                let (status, body) = daemon_shutting_down_response();
+                write_response_safely(job.stream, status, &body);
+                return DispatchOutcome::Stop;
+            }
+            match executor.as_ref() {
+                None => handle_request_job(job, runtime),
+                Some(_) if is_reserved_probe(&job.request) => {
+                    handle_parsed_request(job.stream, job.request, runtime);
+                }
+                Some(_) if is_surface_stream_request(&job.request) => {
+                    submit_request_job(job, surface_stream_executor, runtime);
+                }
+                Some(request_executor) => submit_request_job(job, request_executor, runtime),
+            }
+        }
+    }
+    if shutdown_after_read {
+        return DispatchOutcome::Stop;
+    }
+    DispatchOutcome::Continue
+}
+
+/// Closes every intake once shutdown has been observed.
+///
+/// Closing rather than joining: queued work still runs, but nothing new is taken, and the reader
+/// stops reading so that shutdown does not wait on a client that may never finish sending.
+fn begin_shutdown(
+    runtime: &DaemonRuntime,
+    executor: &mut Option<BoundedRequestExecutor<RequestJob>>,
+    surface_stream_executor: &mut BoundedRequestExecutor<RequestJob>,
+    read_draining: &AtomicBool,
+) {
+    record_shutdown_observed(runtime);
+    if let Some(request_executor) = executor.as_mut() {
+        request_executor.close();
+    }
+    surface_stream_executor.close();
+    read_draining.store(true, Ordering::SeqCst);
 }
 
 fn route_with_runtime(
@@ -805,6 +1047,18 @@ struct RequestSubmissionObserver {
 #[cfg(test)]
 struct DaemonShutdownObserver {
     observed: Mutex<bool>,
+    signal: std::sync::Condvar,
+}
+
+/// Counts connections the serve loop has accepted and handed to a read worker.
+///
+/// A test that wants shutdown to land after a connection was accepted but before its request was
+/// answered cannot get that ordering from a sleep: the sleep either outlasts the accept, in which case
+/// it is wasted time, or it does not, in which case the test measures a different code path than the one
+/// it names and reports the mismatch as a timeout on the response read.
+#[cfg(test)]
+struct ConnectionAcceptObserver {
+    accepted: Mutex<usize>,
     signal: std::sync::Condvar,
 }
 
@@ -872,6 +1126,42 @@ impl DaemonShutdownObserver {
                 .expect("wait daemon shutdown");
             observed = next;
             if timeout.timed_out() && !*observed {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+impl ConnectionAcceptObserver {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            accepted: Mutex::new(0),
+            signal: std::sync::Condvar::new(),
+        })
+    }
+
+    fn record(&self) {
+        let mut accepted = self.accepted.lock().expect("record accepted connection");
+        *accepted += 1;
+        self.signal.notify_all();
+    }
+
+    fn wait_for_count(&self, expected: usize, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut accepted = self.accepted.lock().expect("read accepted connections");
+        while *accepted < expected {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, timeout) = self
+                .signal
+                .wait_timeout(accepted, remaining)
+                .expect("wait accepted connections");
+            accepted = next;
+            if timeout.timed_out() && *accepted < expected {
                 return false;
             }
         }
@@ -987,6 +1277,13 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/mcp/registry") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/hook-bridge/canvas") => RequestConcurrencyClass::Concurrent,
+        // A Surface stream long-poll parks for up to five seconds waiting for something to
+        // happen. Serialized, it would hold `serialized_route_lock` for that whole time — and the
+        // message that would end the poll early arrives over `POST /v1/surfaces/{id}/events`,
+        // itself a serialized route, so the idle poll would be blocking the only thing that could
+        // release it. The poll reads no state a serialized route is part-way through mutating: it
+        // observes the instance store under that store's own lock and returns.
+        ("GET", "/v1/surfaces/stream") => RequestConcurrencyClass::Concurrent,
         ("GET", path) if hook_canvas_preview_node_id("GET", path).is_some() => {
             RequestConcurrencyClass::Concurrent
         }
@@ -1169,6 +1466,15 @@ fn handle_request_job(job: RequestJob, runtime: &DaemonRuntime) {
 fn record_shutdown_observed(runtime: &DaemonRuntime) {
     #[cfg(test)]
     if let Some(observer) = runtime.shutdown_observer.as_ref() {
+        observer.record();
+    }
+    #[cfg(not(test))]
+    let _ = runtime;
+}
+
+fn record_connection_accepted(runtime: &DaemonRuntime) {
+    #[cfg(test)]
+    if let Some(observer) = runtime.connection_accept_observer.as_ref() {
         observer.record();
     }
     #[cfg(not(test))]
@@ -1412,6 +1718,151 @@ fn sync_sensitive_parent(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether an atomic write should narrow the replaced file's permissions or carry the previous
+/// file's permissions forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AtomicWritePermissions {
+    /// The daemon owns the file. Both the temporary and the replacement are restricted to this
+    /// user, the same sequence `write_local_capability_manifest` uses.
+    Restrict,
+    /// Another process owns the file — Hook's canvas is the only such case. The write is still
+    /// atomic, but an existing file's permissions are carried onto the replacement instead of
+    /// being narrowed: tightening the ACL on a file this daemon does not own is a policy change,
+    /// not part of a crash-safety fix.
+    Preserve,
+}
+
+/// Serialize `value` as pretty JSON and replace `path` with it atomically.
+///
+/// Every persistence site in this file that owns its file should go through here rather than
+/// calling `fs::write`, which truncates the destination in place: a crash, power loss or full
+/// disk during a bare `fs::write` leaves a half-written file, and every loader downstream then
+/// has to decide what to do with unparsable bytes. The sequence is temporary file, `sync_all`,
+/// restrict, atomic replace, restrict, flush the parent — so a reader either sees the previous
+/// complete file or the new complete file, never a partial one.
+fn write_json_atomically<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value)
+        .with_context(|| format!("serialize JSON for `{}`", path.display()))?;
+    bytes.push(b'\n');
+    write_bytes_atomically(path, &bytes, AtomicWritePermissions::Restrict)
+}
+
+/// The byte-level half of `write_json_atomically`, for callers that own their serialization —
+/// Hook's canvas is written compactly and its exact bytes are returned to the caller.
+fn write_bytes_atomically(
+    path: &Path,
+    bytes: &[u8],
+    permissions: AtomicWritePermissions,
+) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("atomic write target `{}` has no parent", path.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create directory `{}` for atomic write", parent.display()))?;
+    let (temporary, mut file) = create_sensitive_temporary(path).with_context(|| {
+        format!(
+            "create temporary for `{}` in `{}`",
+            path.display(),
+            parent.display()
+        )
+    })?;
+    let result = (|| -> Result<()> {
+        file.write_all(bytes)
+            .with_context(|| format!("write temporary `{}`", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("flush temporary `{}`", temporary.display()))?;
+        drop(file);
+        match permissions {
+            AtomicWritePermissions::Restrict => {
+                restrict_sensitive_path_permissions(&temporary, false).with_context(|| {
+                    format!("restrict temporary permissions `{}`", temporary.display())
+                })?;
+                if path.is_file() {
+                    restrict_sensitive_path_permissions(path, false).with_context(|| {
+                        format!(
+                            "refresh permissions before replacement `{}`",
+                            path.display()
+                        )
+                    })?;
+                }
+            }
+            AtomicWritePermissions::Preserve => {
+                // `create_sensitive_temporary` opens the temporary as 0o600 on unix, so without
+                // this the replacement would silently narrow a file the daemon does not own. A
+                // failure here is not worth losing the write over: the bytes still land, with the
+                // permissions a new file in this directory would have.
+                if let Ok(metadata) = fs::metadata(path) {
+                    let _ = fs::set_permissions(&temporary, metadata.permissions());
+                }
+            }
+        }
+        replace_sensitive_file_with_retry(&temporary, path)
+            .with_context(|| format!("atomically replace `{}`", path.display()))?;
+        if permissions == AtomicWritePermissions::Restrict {
+            restrict_sensitive_path_permissions(path, false)
+                .with_context(|| format!("restrict permissions `{}`", path.display()))?;
+        }
+        sync_sensitive_parent(path)
+            .with_context(|| format!("flush directory `{}`", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // The destination still holds its previous contents; drop the partial temporary so a
+        // failed write leaves nothing behind for the next reader or the next `create_dir_all`.
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// `replace_sensitive_file`, retried briefly before giving up.
+///
+/// On Windows a rename-with-replace fails with `ERROR_ACCESS_DENIED` while another handle holds the
+/// destination open, which happens whenever a reader, an editor or a virus scanner touches the file
+/// at the wrong moment. The replacement is the one step of an atomic write that cannot be skipped
+/// and the conflict window is milliseconds wide, so a short bounded retry turns a spurious failure
+/// into a success without weakening the guarantee — each attempt is still a single atomic
+/// replacement. A destination that genuinely cannot be replaced still fails, one backoff later.
+fn replace_sensitive_file_with_retry(source: &Path, destination: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 20;
+    let mut outcome = replace_sensitive_file(source, destination);
+    let mut attempt = 1;
+    while outcome.is_err() && attempt < ATTEMPTS {
+        std::thread::sleep(Duration::from_millis(5));
+        outcome = replace_sensitive_file(source, destination);
+        attempt += 1;
+    }
+    outcome
+}
+
+/// Move an unparsable file aside so its bytes survive for recovery, and return the path it went
+/// to. Used where refusing to start would be worse than continuing with defaults; anything that
+/// carries authorization state should refuse instead — see `DeviceRegistryStore::new`.
+fn quarantine_unreadable_file(path: &Path, reason: &str) -> Option<PathBuf> {
+    let file_name = path.file_name().and_then(|name| name.to_str())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let quarantined = path.with_file_name(format!("{file_name}.corrupt-{stamp}"));
+    match fs::rename(path, &quarantined) {
+        Ok(()) => {
+            eprintln!(
+                "[WARN] loom moved an unreadable file aside: `{}` -> `{}` ({reason})",
+                path.display(),
+                quarantined.display()
+            );
+            Some(quarantined)
+        }
+        Err(error) => {
+            eprintln!(
+                "[WARN] loom could not move the unreadable file `{}` aside ({reason}): {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 fn is_loopback_bind_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
@@ -1484,8 +1935,16 @@ fn repair_legacy_control_plane_permissions(root: &Path) -> std::io::Result<()> {
         ));
     }
     fs::create_dir_all(&migration_dir)?;
-    fs::write(&marker, format!("2 skipped={}\n", quarantined.len()))?;
-    loom_plugin_security::restrict_private_path_permissions(&marker, false)
+    // The marker's existence short-circuits every later run, so record *which* entries were
+    // skipped and not just how many — a count alone leaves a future version nothing to re-attempt.
+    // The write itself is atomic for the same reason every other persist site here is: a truncated
+    // marker would either be read as "migration done" or leave the migration wedged.
+    let mut body = format!("2 skipped={}\n", quarantined.len());
+    for entry in &quarantined {
+        body.push_str(&format!("skipped-path={}\n", entry.display()));
+    }
+    write_bytes_atomically(&marker, body.as_bytes(), AtomicWritePermissions::Restrict)
+        .map_err(std::io::Error::other)
 }
 
 #[cfg(not(windows))]
@@ -1503,31 +1962,43 @@ fn mcp_registry_cache_path(control_plane_root: &Path) -> PathBuf {
 
 fn load_persisted_mcp_servers(control_plane_root: &Path) -> HashMap<String, McpServerConfig> {
     let path = mcp_server_store_path(control_plane_root);
-    let Some(content) = fs::read_to_string(path).ok() else {
-        return HashMap::new();
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        // An absent store is the normal first-run state.
+        Err(error) if error.kind() == ErrorKind::NotFound => return HashMap::new(),
+        Err(error) => {
+            eprintln!(
+                "[WARN] loom could not read the MCP server store `{}`: {error}",
+                path.display()
+            );
+            return HashMap::new();
+        }
     };
 
-    serde_json::from_str::<Vec<McpServerConfig>>(&content)
-        .ok()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|server| (server.id.clone(), server))
-        .collect()
+    match serde_json::from_str::<Vec<McpServerConfig>>(&content) {
+        Ok(servers) => servers
+            .into_iter()
+            .map(|server| (server.id.clone(), server))
+            .collect(),
+        // The store is authoritative, so an unparsable file must not be silently overwritten by
+        // the next snapshot: move it aside first, which keeps the configured servers recoverable.
+        // Unlike the device registry this is re-addable configuration and carries no revocation
+        // state, so it degrades to an empty list rather than refusing to start.
+        Err(error) => {
+            quarantine_unreadable_file(&path, &format!("unparsable MCP server store: {error}"));
+            HashMap::new()
+        }
+    }
 }
 
 fn persist_mcp_servers_snapshot(
     path: &Path,
     servers: &HashMap<String, McpServerConfig>,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create MCP server store dir {}", parent.display()))?;
-    }
     let mut ordered = servers.values().cloned().collect::<Vec<_>>();
     ordered.sort_by(|left, right| left.id.cmp(&right.id));
-    fs::write(path, serde_json::to_string_pretty(&ordered)?)
-        .with_context(|| format!("write MCP server store {}", path.display()))?;
-    Ok(())
+    write_json_atomically(path, &ordered)
+        .with_context(|| format!("write MCP server store {}", path.display()))
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1644,24 +2115,123 @@ fn cache_mcp_registry_response(path: &Path, key: &str, response: &Value, fetched
 
 enum HttpReadOutcome {
     Empty,
-    Request(String),
+    Request(Vec<u8>),
     Rejected { status: u16, body: String },
 }
 
+/// How much of a request is read per `read` call.
+///
+/// A `MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES` install is 96 MiB, which at the previous 512 bytes was
+/// about 196 000 syscalls for one upload.
+const HTTP_READ_CHUNK_BYTES: usize = 64 * 1024;
+
+/// How long one request may take to arrive in full.
+///
+/// `CONNECTION_READ_TIMEOUT_MILLIS` bounds a single `read`; it does not bound the request. A client
+/// that sends one byte just inside every read timeout satisfies the per-read timeout forever, so
+/// the whole read needs a wall-clock deadline of its own.
+const MAX_REQUEST_READ_MILLIS: u64 = 30_000;
+
+/// What the reader needs to know about a request head while it is still waiting for the body.
+///
+/// Parsed once, when the header terminator first appears. The offset of that terminator cannot move
+/// afterwards, so neither the size limit nor the completeness check has to re-scan the bytes already
+/// received — which, for a large upload, meant re-scanning the whole accumulated buffer per chunk.
+struct RequestHead {
+    header_end: usize,
+    content_length: usize,
+    body_limit: usize,
+}
+
+impl RequestHead {
+    fn body_start(&self) -> usize {
+        self.header_end + 4
+    }
+
+    fn exceeds_size_limit(&self, received: usize) -> bool {
+        self.header_end > MAX_HTTP_HEADER_BYTES
+            || self.content_length > self.body_limit
+            || received.saturating_sub(self.body_start()) > self.body_limit
+    }
+
+    fn has_full_body(&self, received: usize) -> bool {
+        received.saturating_sub(self.body_start()) >= self.content_length
+    }
+}
+
+/// Locates the header terminator and reads the two headers the reader depends on.
+///
+/// `scan_from` is where the search for the terminator starts; a caller that has already searched a
+/// prefix passes the offset three bytes back from the end of it, so a terminator split across two
+/// reads is still found.
+fn parse_request_head(request: &[u8], scan_from: usize) -> Option<RequestHead> {
+    let tail = request.get(scan_from..)?;
+    let header_end = scan_from + tail.windows(4).position(|window| window == b"\r\n\r\n")?;
+    let header_text = String::from_utf8_lossy(&request[..header_end]);
+    Some(RequestHead {
+        header_end,
+        content_length: content_length(&header_text),
+        body_limit: request_body_size_limit(&header_text),
+    })
+}
+
+/// The deadline-free reader the read tests use: they drive a complete byte source and have no
+/// wall-clock behaviour to state.
+#[cfg(test)]
 fn read_http_request(stream: &mut impl Read) -> Result<HttpReadOutcome> {
+    let deadline = Instant::now() + Duration::from_millis(MAX_REQUEST_READ_MILLIS);
+    read_http_request_until(stream, deadline, &AtomicBool::new(false))
+}
+
+/// Reads one request, answering 408 at `deadline` and giving up once `abort` is set.
+fn read_http_request_until(
+    stream: &mut impl Read,
+    mut deadline: Instant,
+    abort: &AtomicBool,
+) -> Result<HttpReadOutcome> {
     let mut request = Vec::new();
-    let mut buffer = [0_u8; 512];
+    let mut buffer = vec![0_u8; HTTP_READ_CHUNK_BYTES];
+    let mut head: Option<RequestHead> = None;
+    let mut shutdown_grace_applied = false;
     loop {
+        // A request that has already begun arriving is worth a bounded grace period at shutdown:
+        // dropping the socket with its bytes still unread makes Windows answer the client with an
+        // RST, so a request that was about to be answerable becomes a reset instead of a 503. One
+        // that has sent nothing has nothing to salvage and goes immediately.
+        if abort.load(Ordering::SeqCst) {
+            if request.is_empty() {
+                return Ok(HttpReadOutcome::Empty);
+            }
+            if !shutdown_grace_applied {
+                shutdown_grace_applied = true;
+                let grace = Instant::now() + Duration::from_millis(SHUTDOWN_READ_GRACE_MILLIS);
+                if grace < deadline {
+                    deadline = grace;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(request_timeout_response());
+        }
         match stream.read(&mut buffer) {
             Ok(0) if request.is_empty() => return Ok(HttpReadOutcome::Empty),
             Ok(0) => break,
             Ok(bytes) => {
+                let scan_from = request.len().saturating_sub(3);
                 request.extend_from_slice(&buffer[..bytes]);
-                if request_exceeds_size_limit(&request) {
-                    return Ok(payload_too_large_response());
+                if head.is_none() {
+                    head = parse_request_head(&request, scan_from);
+                    if head.is_none() && request.len() > MAX_HTTP_HEADER_BYTES {
+                        return Ok(payload_too_large_response());
+                    }
                 }
-                if request_has_full_body(&request) {
-                    break;
+                if let Some(head) = head.as_ref() {
+                    if head.exceeds_size_limit(request.len()) {
+                        return Ok(payload_too_large_response());
+                    }
+                    if head.has_full_body(request.len()) {
+                        break;
+                    }
                 }
             }
             Err(error)
@@ -1684,9 +2254,19 @@ fn read_http_request(stream: &mut impl Read) -> Result<HttpReadOutcome> {
         }
     }
 
-    Ok(HttpReadOutcome::Request(
-        String::from_utf8_lossy(&request).to_string(),
-    ))
+    // The accumulated buffer is handed over rather than copied into a `String`: for a package install
+    // that copy, plus the one the parser used to make of the body, was two extra copies of the whole
+    // upload resident at once.
+    Ok(HttpReadOutcome::Request(request))
+}
+
+/// Converts owned bytes to text the way `String::from_utf8_lossy` would, without copying when the
+/// bytes are already valid UTF-8 — which, for a request body, is the case that matters.
+fn into_lossy_string(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
 }
 
 fn payload_too_large_response() -> HttpReadOutcome {
@@ -1703,19 +2283,32 @@ fn payload_too_large_response() -> HttpReadOutcome {
     }
 }
 
-fn request_exceeds_size_limit(request: &[u8]) -> bool {
-    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return request.len() > MAX_HTTP_HEADER_BYTES;
-    };
-    if header_end > MAX_HTTP_HEADER_BYTES {
-        return true;
+/// Answer for a request that never finished arriving.
+///
+/// 408 rather than 413: nothing about the request was too large, it simply never turned up in full.
+fn request_timeout_response() -> HttpReadOutcome {
+    HttpReadOutcome::Rejected {
+        status: 408,
+        body: json!({
+            "error": {
+                "code": "request_timeout",
+                "message": "request was not received in full before the read deadline"
+            },
+            "status": "failed"
+        })
+        .to_string(),
     }
+}
 
-    let header_text = String::from_utf8_lossy(&request[..header_end]);
-    let content_length = content_length(&header_text);
-    let body_limit = request_body_size_limit(&header_text);
-    let body_start = header_end + 4;
-    content_length > body_limit || request.len().saturating_sub(body_start) > body_limit
+/// The whole-buffer form of the check the reader now makes incrementally, kept for the tests that
+/// state the limit rules against a complete request. It delegates rather than reimplementing, so it
+/// cannot drift from what the reader does.
+#[cfg(test)]
+fn request_exceeds_size_limit(request: &[u8]) -> bool {
+    match parse_request_head(request, 0) {
+        Some(head) => head.exceeds_size_limit(request.len()),
+        None => request.len() > MAX_HTTP_HEADER_BYTES,
+    }
 }
 
 fn request_body_size_limit(headers: &str) -> usize {
@@ -1741,16 +2334,6 @@ fn request_body_size_limit(headers: &str) -> usize {
     }
 }
 
-fn request_has_full_body(request: &[u8]) -> bool {
-    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
-    let header_text = String::from_utf8_lossy(&request[..header_end]);
-    let content_length = content_length(&header_text);
-    let body_start = header_end + 4;
-    request.len().saturating_sub(body_start) >= content_length
-}
-
 fn content_length(headers: &str) -> usize {
     headers
         .lines()
@@ -1772,8 +2355,24 @@ struct ParsedHttpRequest {
 }
 
 impl ParsedHttpRequest {
-    fn from_raw(raw: &str) -> Self {
-        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+    /// Takes ownership of the bytes the reader accumulated and moves the body out of them.
+    ///
+    /// The split happens on the bytes rather than on a decoded copy of the whole request, so a large
+    /// body is decoded in place and never duplicated.
+    fn from_raw(mut raw: Vec<u8>) -> Self {
+        let body = match raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|header_end| header_end + 4)
+        {
+            Some(body_start) => {
+                let body = raw.split_off(body_start);
+                raw.truncate(body_start - 4);
+                body
+            }
+            None => Vec::new(),
+        };
+        let head = String::from_utf8_lossy(&raw);
         let mut lines = head.lines();
         let mut request_line = lines.next().unwrap_or("").split_whitespace();
         let headers = lines
@@ -1786,7 +2385,7 @@ impl ParsedHttpRequest {
             method: request_line.next().unwrap_or("GET").to_string(),
             path: request_line.next().unwrap_or("/").to_string(),
             headers,
-            body: body.to_string(),
+            body: into_lossy_string(body),
         }
     }
 
@@ -2172,6 +2771,10 @@ fn runtime_log_error(message: impl AsRef<str>) {
     runtime_log(RuntimeLogLevel::Error, message.as_ref());
 }
 
+fn runtime_log_warn(message: impl AsRef<str>) {
+    runtime_log(RuntimeLogLevel::Warn, message.as_ref());
+}
+
 fn runtime_log_debug(message: impl AsRef<str>) {
     runtime_log(RuntimeLogLevel::Debug, message.as_ref());
 }
@@ -2481,21 +3084,37 @@ struct LoomSettingsStore {
 
 impl LoomSettingsStore {
     fn new(path: PathBuf) -> Self {
-        let settings = fs::read_to_string(&path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<LoomSettings>(&content).ok())
-            .unwrap_or_default();
+        let settings = match fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<LoomSettings>(&content) {
+                Ok(settings) => settings,
+                // Defaulting silently here used to be invisible, and the next `save` would then
+                // overwrite the user's real settings with those defaults. Settings are recoverable
+                // configuration rather than authorization state, so this degrades instead of
+                // refusing to start — but the previous bytes are moved aside first.
+                Err(error) => {
+                    quarantine_unreadable_file(
+                        &path,
+                        &format!("unparsable Loom settings: {error}"),
+                    );
+                    LoomSettings::default()
+                }
+            },
+            // An absent settings file is the normal first-run state.
+            Err(error) if error.kind() == ErrorKind::NotFound => LoomSettings::default(),
+            Err(error) => {
+                eprintln!(
+                    "[WARN] loom could not read settings `{}`, continuing with defaults: {error}",
+                    path.display()
+                );
+                LoomSettings::default()
+            }
+        };
         Self { path, settings }
     }
 
     fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create Loom settings dir {}", parent.display()))?;
-        }
-        fs::write(&self.path, serde_json::to_string_pretty(&self.settings)?)
-            .with_context(|| format!("write Loom settings {}", self.path.display()))?;
-        Ok(())
+        write_json_atomically(&self.path, &self.settings)
+            .with_context(|| format!("write Loom settings {}", self.path.display()))
     }
 }
 
@@ -2842,18 +3461,39 @@ impl DeviceAuthError {
 }
 
 impl DeviceRegistryStore {
-    fn new(path: PathBuf, local_addr: SocketAddr) -> Self {
-        let mut devices: BTreeMap<String, ManagedDevice> = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<DeviceRegistryDocument>(&bytes).ok())
-            .map(|document| {
-                document
-                    .devices
-                    .into_iter()
-                    .map(|device| (device.id.clone(), device))
-                    .collect()
-            })
-            .unwrap_or_default();
+    /// Open the device registry, refusing to start when the file exists but cannot be read.
+    ///
+    /// This is deliberately fallible. The registry holds each paired device's `public_key`,
+    /// `key_fingerprint` and `session_epoch`, and `session_epoch` is the revocation counter: a
+    /// loader that treated unparsable bytes as "no devices" would insert the synthetic local host,
+    /// persist that, and thereby discard every revocation on record — a device revoked by bumping
+    /// its epoch could then be re-paired. An absent file is a legitimately empty registry; a file
+    /// that is present and unreadable is an operator problem, so it fails closed with the path in
+    /// the message rather than quietly resetting the authorizations.
+    fn new(path: PathBuf, local_addr: SocketAddr) -> Result<Self> {
+        let mut devices: BTreeMap<String, ManagedDevice> = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<DeviceRegistryDocument>(&bytes)
+                .with_context(|| {
+                    format!(
+                        "parse device registry `{}` — it exists but is unreadable, so refusing to \
+                         start rather than discarding the paired devices and their revocation \
+                         counters; move the file aside to start with an empty registry",
+                        path.display()
+                    )
+                })?
+                .devices
+                .into_iter()
+                .map(|device| (device.id.clone(), device))
+                .collect(),
+            Err(error) if error.kind() == ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "read device registry `{}` — refusing to start rather than discarding the \
+                     paired devices and their revocation counters",
+                    path.display()
+                )))
+            }
+        };
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2895,19 +3535,14 @@ impl DeviceRegistryStore {
         if let Err(error) = store.persist() {
             eprintln!("loom device registry could not persist the local host: {error:#}");
         }
-        store
+        Ok(store)
     }
 
     fn persist(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("create device registry directory `{}`", parent.display())
-            })?;
-        }
         let document = DeviceRegistryDocument {
             devices: self.devices.values().cloned().collect(),
         };
-        fs::write(&self.path, serde_json::to_vec_pretty(&document)?)
+        write_json_atomically(&self.path, &document)
             .with_context(|| format!("write device registry `{}`", self.path.display()))
     }
 
@@ -3336,21 +3971,31 @@ fn route(
         .next()
         .unwrap_or(request.path.as_str());
     let public_device_auth_route = is_public_device_auth_route(request.method.as_str(), route_path);
+    let admin_authenticated = auth_token
+        .map(|token| request.has_bearer(token))
+        .unwrap_or(false);
+    // The administrator bearer is decided first on purpose. A desktop client that has just been
+    // re-paired still sends its previous `Authorization: Device …` credential, and surfacing that
+    // credential's error ahead of a valid administrator bearer would reject a request the caller
+    // was already entitled to make. A stale device credential alongside a valid admin bearer is
+    // therefore ignored rather than fatal; with no admin bearer it is still reported in full.
     let authenticated_device_id = match authenticate_http_device_session(request, device_registry) {
         Ok(device_id) => device_id,
+        Err(_) if admin_authenticated => None,
         Err(error) => return device_auth_error_response(error),
     };
-    if let Some(token) = auth_token {
-        let admin_authenticated = request.has_bearer(token);
-        if !public_device_auth_route && !admin_authenticated && authenticated_device_id.is_none() {
-            return structured_error(
-                401,
-                json!({
-                    "code": "unauthorized",
-                    "message": "missing or invalid Loom administrator or device session credential",
-                }),
-            );
-        }
+    if auth_token.is_some()
+        && !public_device_auth_route
+        && !admin_authenticated
+        && authenticated_device_id.is_none()
+    {
+        return structured_error(
+            401,
+            json!({
+                "code": "unauthorized",
+                "message": "missing or invalid Loom administrator or device session credential",
+            }),
+        );
     }
     if authenticated_device_id.is_some()
         && !device_session_route_allowed(request.method.as_str(), route_path)
@@ -4253,7 +4898,7 @@ fn poll_surface_stream(
     Ok((
         200,
         serde_json::to_string(&json!({
-            "protocolVersion": "loom.surface-stream.v1",
+            "protocolVersion": loom_protocol::SURFACE_STREAM_PROTOCOL_VERSION,
             "next": cursor,
             "reset": reset,
             "messages": messages,
@@ -4824,6 +5469,98 @@ fn release_surface_resource_lease(
     }
 }
 
+/// Every content address a Surface instance record mentions, wherever it mentions it.
+///
+/// The scan runs over the record's serialized JSON instead of over named fields on purpose. A
+/// resource id can sit in an attachment snapshot, in a lease, in authoritative state a framework
+/// wrote for itself, in a queued event, or in a migration checkpoint, and a field added later can
+/// start carrying one without this function being updated. Under-reporting is the one direction the
+/// collector cannot survive — the garbage collector would delete an object a live Surface is still
+/// painting with — so the cost of a serialization per instance buys the safe kind of wrong answer.
+fn collect_surface_resource_ids(records: &[SurfaceInstanceRecord]) -> BTreeSet<String> {
+    const PREFIX: &str = "sha256:";
+    const DIGEST_CHARS: usize = 64;
+    let mut ids = BTreeSet::new();
+    for record in records {
+        let text = match serde_json::to_string(record) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        for (offset, _) in text.match_indices(PREFIX) {
+            let start = offset.saturating_add(PREFIX.len());
+            let digest = match text.get(start..start.saturating_add(DIGEST_CHARS)) {
+                Some(digest) => digest,
+                None => continue,
+            };
+            if digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                ids.insert(format!("{PREFIX}{}", digest.to_ascii_lowercase()));
+            }
+        }
+    }
+    ids
+}
+
+/// Runs one Surface resource collection pass.
+///
+/// The instance store is read and its lock released *before* the resource store's lock is taken,
+/// which is the order `delete_surface_instance` already established. That is also why the resource
+/// store cannot look up its own references: it would have to take the two locks the other way
+/// round.
+///
+/// `SurfaceInstanceStore::list` returns temporary instances alongside persisted ones, so the
+/// reference set is a superset of what survives a restart. That is deliberate — a resource held
+/// only by a temporary instance is still in use right now.
+fn collect_surface_resource_garbage(
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> Result<SurfaceResourceGcOutcome> {
+    let records = {
+        let store = surface_instances
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+        store.list()
+    };
+    let referenced = collect_surface_resource_ids(&records);
+    let mut store = surface_resources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+    Ok(store.collect_garbage(&referenced))
+}
+
+/// Collects Surface resource garbage and reports the result to the runtime log. A failed pass is
+/// never fatal: the store keeps working, the objects stay on disk, and the next pass tries again.
+fn collect_surface_resource_garbage_logged(
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_resources: &SharedSurfaceResourceStore,
+    reason: &str,
+) {
+    match collect_surface_resource_garbage(surface_instances, surface_resources) {
+        Ok(outcome) => {
+            let SurfaceResourceGcOutcome {
+                removed_objects,
+                removed_bytes,
+                removed_orphan_files,
+                retained_objects,
+                failures,
+            } = outcome;
+            if removed_objects > 0 || removed_orphan_files > 0 || failures > 0 {
+                runtime_log_info(format!(
+                    "loom Surface resource GC ({reason}) removed {removed_objects} objects, \
+                     {removed_bytes} bytes and {removed_orphan_files} orphan files; retained \
+                     {retained_objects} objects with {failures} failures"
+                ));
+            } else {
+                runtime_log_debug(format!(
+                    "loom Surface resource GC ({reason}) retained {retained_objects} objects"
+                ));
+            }
+        }
+        Err(error) => runtime_log_warn(format!(
+            "loom Surface resource GC ({reason}) could not run: {error}"
+        )),
+    }
+}
+
 fn release_surface_resource_leases(
     surface_resources: &SharedSurfaceResourceStore,
     lease_ids: &[String],
@@ -5096,6 +5833,15 @@ fn delete_surface_instance(
                     .map(|lease| lease.lease_id.clone())
                     .collect::<Vec<_>>();
                 release_surface_resource_leases(surface_resources, &lease_ids, shared_images)?;
+                // The deleted instance was the last thing referring to its resources, so this is
+                // the moment they become collectable. The pass runs after the leases are released
+                // so it sees them gone, and it re-reads the instance store, so a resource this
+                // instance shared with another one is still protected.
+                collect_surface_resource_garbage_logged(
+                    surface_instances,
+                    surface_resources,
+                    "instance deleted",
+                );
                 for attachment in existing.attachments.values() {
                     broadcast_hook_bridge_json(
                         hook_bridge,
@@ -9270,17 +10016,13 @@ fn save_publisher_identity(
     control_plane_root: &Path,
     identity: &LocalPublisherIdentity,
 ) -> std::result::Result<(), String> {
-    fs::create_dir_all(control_plane_root).map_err(|error| error.to_string())?;
+    // The previous sequence wrote a fixed-name temporary, deleted the live file, then renamed —
+    // leaving a window with no identity file on disk at all, which is the one outcome a temporary
+    // exists to prevent. `write_json_atomically` replaces the file in one step, so a reader always
+    // sees either the old identity or the new one, and the unique temporary name means two
+    // concurrent callers cannot overwrite each other's partial bytes.
     let path = publisher_identity_path(control_plane_root);
-    let temporary = control_plane_root.join(format!(".{PUBLISHER_IDENTITY_FILE}.tmp"));
-    let mut bytes = serde_json::to_vec_pretty(identity).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    if path.is_file() {
-        fs::remove_file(&path).map_err(|error| error.to_string())?;
-    }
-    fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-    Ok(())
+    write_json_atomically(&path, identity).map_err(|error| format!("{error:#}"))
 }
 
 fn save_current_signing_key(
@@ -10946,6 +11688,17 @@ fn framework_error_response(
             json!({
                 "code": "invalid_framework_package",
                 "message": format!("框架包 `{package_id}` 无效：{reason}")
+            }),
+        ),
+        FrameworkError::CorruptState { path, reason } => structured_error(
+            500,
+            json!({
+                "code": "framework_state_corrupt",
+                "framework": id,
+                "path": path,
+                "message": format!(
+                    "框架状态文件 `{path}` 无法读取（{reason}）：请先修复或删除该文件，再安装、启停或卸载框架"
+                )
             }),
         ),
         other => structured_error(
@@ -14426,11 +15179,13 @@ fn apply_hook_canvas_persist_patch(
 
 fn write_hook_canvas_root(path: &Path, root: &Value) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(root).context("serialize Hook canvas root")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create Hook canvas dir `{}`", parent.display()))?;
-    }
-    fs::write(path, &bytes)
+    // Atomic because a truncate-then-fill here is observable by Hook: Hook owns this file and may
+    // be reading it concurrently, and a bare `fs::write` lets it parse a zero-length or half-written
+    // document. Permissions are preserved rather than restricted — see `AtomicWritePermissions`.
+    // This does not make the write safe against concurrent *edits*: there is still no lock, lease
+    // or generation shared with Hook, so a Loom write can overwrite an edit Hook made between
+    // Loom's read and this write. That boundary question is recorded in the F16 batch notes.
+    write_bytes_atomically(path, &bytes, AtomicWritePermissions::Preserve)
         .with_context(|| format!("write Hook canvas root `{}`", path.display()))?;
     Ok(bytes)
 }
@@ -16426,6 +17181,17 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
                 "tool_id": id,
             }),
         ),
+        // A cancelled run is not a server fault, so it is reported as a conflict with the state the
+        // caller itself put the run into rather than as a 500. The code matches the `cancelled` code
+        // already used for a cancelled Art run on the Hook bridge, so a client recognises both alike.
+        ToolRegistryError::ExecutionCancelled { id } => structured_error(
+            409,
+            json!({
+                "code": "cancelled",
+                "message": format!("tool `{id}` execution was cancelled"),
+                "tool_id": id,
+            }),
+        ),
         ToolRegistryError::ParameterBinding { id, reason } => structured_error(
             400,
             json!({
@@ -17487,6 +18253,7 @@ fn response_reason(status: u16) -> &'static str {
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        408 => "Request Timeout",
         409 => "Conflict",
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
@@ -17512,6 +18279,27 @@ mod tests {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static HOOK_ART_REQUEST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take one of the test serialization locks above, treating an earlier panic as no obstacle.
+    ///
+    /// Both mutexes guard `()`. They exist to stop tests that mutate process-wide state — environment
+    /// variables, the Hook canvas runtime — from running at the same time, and they carry no data that a
+    /// panicking test could have left half-written. Poisoning is therefore the wrong signal here: the
+    /// state each test depends on is state that test sets up itself, so the next holder of the lock is
+    /// unaffected by whatever the previous one did before it panicked.
+    ///
+    /// With `.expect(...)` at every site it was worse than merely wrong. One test panicking while holding
+    /// the lock poisoned it for the rest of the run, so every later env-locked test failed on the poison
+    /// rather than on anything of its own: a single flake was observed reporting as 38 or 39 simultaneous
+    /// failures, which buries the one real fault in a wall of noise and makes a full-suite run useless as
+    /// evidence. Recovering the guard from the poison keeps the failure count equal to the fault count.
+    fn lock_ignoring_poison(
+        mutex: &'static std::sync::Mutex<()>,
+    ) -> std::sync::MutexGuard<'static, ()> {
+        mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn hook_art_request(request_id: &str, node_id: &str, generation: u64) -> HookArtExecuteRequest {
         HookArtExecuteRequest {
@@ -17548,9 +18336,7 @@ mod tests {
 
     #[test]
     fn hook_art_request_ids_are_idempotent_and_generations_replace_previous_work() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let first = hook_art_request("request:first", "node:one", 1);
@@ -17597,9 +18383,7 @@ mod tests {
 
     #[test]
     fn hook_art_generation_resets_after_client_restart_when_node_is_idle() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let first = hook_art_request("request:completed", "node:restart", 5);
@@ -17628,9 +18412,7 @@ mod tests {
 
     #[test]
     fn hook_art_request_coordination_is_scoped_by_device() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let device_one = hook_art_request("request:shared", "node:shared", 4);
@@ -17683,9 +18465,7 @@ mod tests {
 
     #[test]
     fn hook_art_request_id_replay_requires_an_identical_request() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let request = hook_art_request("request:identity", "node:identity", 1);
@@ -17710,9 +18490,7 @@ mod tests {
 
     #[test]
     fn hook_art_cancellation_binds_node_generation_and_device() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let request = hook_art_request("request:cancel", "node:cancel", 4);
@@ -17767,7 +18545,7 @@ mod tests {
         let root = unique_temp_dir("local-host-device");
         let path = root.join("settings").join("devices.json");
         let address = "127.0.0.1:18766".parse().expect("local address");
-        let store = DeviceRegistryStore::new(path.clone(), address);
+        let store = DeviceRegistryStore::new(path.clone(), address).expect("open device registry");
         let local = store
             .devices
             .get("device-000-local")
@@ -17777,7 +18555,7 @@ mod tests {
         assert_eq!(local.approval, "approved");
         drop(store);
 
-        let reloaded = DeviceRegistryStore::new(path, address);
+        let reloaded = DeviceRegistryStore::new(path, address).expect("reopen device registry");
         assert_eq!(reloaded.devices.len(), 1);
         let registry = Arc::new(Mutex::new(reloaded));
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
@@ -17787,13 +18565,247 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// Every temporary that `create_sensitive_temporary` could have produced for `path`.
+    fn temporary_siblings(path: &Path) -> Vec<PathBuf> {
+        let parent = path.parent().expect("temporary parent");
+        let prefix = format!(
+            ".{}.tmp-",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .expect("temporary file name")
+        );
+        let Ok(entries) = fs::read_dir(parent) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name.starts_with(&prefix))
+                    .unwrap_or(false)
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    #[test]
+    fn device_registry_refuses_to_start_when_the_stored_file_is_unparsable() {
+        let root = unique_temp_dir("device-registry-corrupt");
+        let path = root.join("settings").join("devices.json");
+        fs::create_dir_all(path.parent().expect("settings directory")).expect("settings directory");
+        let corrupt = br#"{"devices": [ {"id": "device-001-remote", "sessionEp"#;
+        fs::write(&path, corrupt).expect("write a corrupt registry");
+        let address = "127.0.0.1:18767".parse().expect("local address");
+
+        // Matched rather than `expect_err` on purpose: the store holds live session material, so
+        // it deliberately does not implement `Debug`.
+        let error = match DeviceRegistryStore::new(path.clone(), address) {
+            Ok(_) => panic!("an unparsable registry must not be read as an empty one"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("device registry"), "{message}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+
+        // The paired devices and their revocation counters are still on disk for recovery: a
+        // loader that defaulted here would have persisted a registry holding only the local host.
+        assert_eq!(
+            fs::read(&path).expect("read the registry back"),
+            corrupt.to_vec()
+        );
+
+        // An absent file is the legitimate first-run case and still bootstraps the local host.
+        fs::remove_file(&path).expect("remove the corrupt registry");
+        let store = DeviceRegistryStore::new(path, address).expect("an empty registry bootstraps");
+        assert_eq!(store.devices.len(), 1);
+        assert!(
+            store
+                .devices
+                .get("device-000-local")
+                .expect("local host device")
+                .is_local
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publisher_identity_replacement_always_leaves_a_readable_file() {
+        let root = unique_temp_dir("publisher-identity-atomic");
+        fs::create_dir_all(&root).expect("control plane root");
+        let identity = |generation: u32| LocalPublisherIdentity {
+            schema_version: publisher_identity_schema_version(),
+            user_id: format!("NU100000000{generation:02}"),
+            current_key_id: format!("key-{generation}"),
+            public_key: format!("public-{generation}"),
+        };
+        save_publisher_identity(&root, &identity(0)).expect("seed the identity");
+
+        // Read the identity as fast as the filesystem allows while it is being replaced. The
+        // previous implementation deleted the live file before renaming the temporary over it, so
+        // a reader in that window saw `Ok(None)` — no identity at all — and this loop catches it.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let reader_root = root.clone();
+        let reader_stop = Arc::clone(&stop);
+        let reader_observed = Arc::clone(&observed);
+        let reader = thread::spawn(move || -> std::result::Result<u32, String> {
+            let mut reads = 0_u32;
+            // Read once before consulting `stop`: on a loaded machine this thread can be scheduled
+            // for the first time after the writer below has already finished, and a reader that
+            // never looked at the file would report a vacuous pass.
+            loop {
+                match load_publisher_identity(&reader_root) {
+                    Ok(Some(_)) => {
+                        reads = reads.saturating_add(1);
+                        reader_observed.store(reads, std::sync::atomic::Ordering::Release);
+                    }
+                    Ok(None) => {
+                        return Err("the identity file was missing during a replacement".to_owned())
+                    }
+                    // A parse failure means the reader saw half-written bytes, which is the defect
+                    // this test exists to catch. A read failure is different: Windows can refuse to
+                    // open the destination for the instant a replacement holds it, and that refusal
+                    // says nothing about the file's contents, so it is not counted as a violation.
+                    Err(error) if error.starts_with("用户签名身份无效") => {
+                        return Err(format!("a partial identity was observed: {error}"))
+                    }
+                    Err(_) => {}
+                }
+                if reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                // Sample often but not in a hot spin: a busy loop here would both starve the
+                // timing-sensitive tests running alongside and keep the file open so continuously
+                // that no replacement could win the race.
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(reads)
+        });
+        // Do not start replacing until the reader is actually running, so the writes below overlap
+        // it instead of racing thread startup.
+        for _ in 0..2_000 {
+            if observed.load(std::sync::atomic::Ordering::Acquire) > 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let generations = 12_u32;
+        let mut contended_replacements = 0_u32;
+        for generation in 1..=generations {
+            match save_publisher_identity(&root, &identity(generation)) {
+                Ok(()) => contended_replacements = contended_replacements.saturating_add(1),
+                // Windows refuses a rename-with-replace, and sometimes even the creation of the
+                // temporary, while another handle has the directory entry open — and the reader
+                // below holds one for most of this loop. Any such refusal is a safe outcome: the
+                // previous identity stays whole, which is exactly the property under test, so the
+                // loop tolerates it and the reader is what has to stay clean. A serialization
+                // failure is not an I/O race, so that one still fails the test.
+                Err(error) => assert!(
+                    !error.contains("serialize JSON"),
+                    "unexpected identity write failure: {error}"
+                ),
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let reads = reader
+            .join()
+            .expect("reader thread")
+            .expect("every read saw a whole identity");
+        assert!(
+            reads > 0,
+            "the reader never observed the identity file \
+             (contended replacements: {contended_replacements})"
+        );
+        // Every contended replacement above is allowed to be refused, so one write with the reader
+        // stopped anchors the final-state assertions below without depending on how the race played
+        // out. Windows can still hold the directory entry briefly after the reader's last open, so
+        // this write gets a bounded retry rather than one chance.
+        let final_generation = generations + 1;
+        let mut settled = save_publisher_identity(&root, &identity(final_generation));
+        for _ in 0..50 {
+            if settled.is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+            settled = save_publisher_identity(&root, &identity(final_generation));
+        }
+        settled.expect("uncontended replacement");
+
+        let stored = load_publisher_identity(&root)
+            .expect("load the final identity")
+            .expect("the final identity is present");
+        assert_eq!(stored.current_key_id, format!("key-{final_generation}"));
+        assert!(
+            temporary_siblings(&publisher_identity_path(&root)).is_empty(),
+            "the replacements left temporaries behind"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn atomic_json_writes_keep_the_previous_file_and_leave_no_temporary() {
+        let root = unique_temp_dir("atomic-json-write");
+        let path = root.join("nested").join("state.json");
+
+        write_json_atomically(&path, &json!({ "generation": 1 })).expect("first atomic write");
+        let succeeded = fs::read(&path).expect("read after a successful write");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&succeeded).expect("parse after a successful write"),
+            json!({ "generation": 1 })
+        );
+        assert!(
+            temporary_siblings(&path).is_empty(),
+            "a successful write left a temporary behind"
+        );
+
+        // A serialization failure happens before the destination is touched at all.
+        let mut unserializable: BTreeMap<(u8, u8), u8> = BTreeMap::new();
+        unserializable.insert((1, 2), 3);
+        let error = write_json_atomically(&path, &unserializable)
+            .expect_err("a map with tuple keys cannot be JSON");
+        assert!(format!("{error:#}").contains("serialize JSON"), "{error:#}");
+
+        // A replacement that cannot complete must clean up its temporary and leave the
+        // destination exactly as it was. A directory in the destination's place is the cheapest
+        // portable way to make `replace_sensitive_file` fail after the temporary exists.
+        let blocked = root.join("nested").join("blocked.json");
+        fs::create_dir_all(blocked.join("child")).expect("put a directory in the way");
+        let error = write_json_atomically(&blocked, &json!({ "generation": 2 }))
+            .expect_err("replacing a directory must fail");
+        assert!(
+            format!("{error:#}").contains("atomically replace"),
+            "{error:#}"
+        );
+        assert!(
+            blocked.join("child").is_dir(),
+            "the destination was damaged"
+        );
+        assert!(
+            temporary_siblings(&blocked).is_empty(),
+            "the failed write left a temporary behind"
+        );
+
+        assert_eq!(
+            fs::read(&path).expect("read after the failures"),
+            succeeded,
+            "the previous contents did not survive a failed write"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn device_update_persists_enabled_state_and_removal() {
         let root = unique_temp_dir("device-update");
-        let registry = Arc::new(Mutex::new(DeviceRegistryStore::new(
-            root.join("settings").join("devices.json"),
-            "127.0.0.1:18766".parse().expect("local address"),
-        )));
+        let registry = Arc::new(Mutex::new(
+            DeviceRegistryStore::new(
+                root.join("settings").join("devices.json"),
+                "127.0.0.1:18766".parse().expect("local address"),
+            )
+            .expect("open device registry"),
+        ));
         let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
         add_managed_device(
             r#"{"name":"iPad","kind":"tablet","address":"192.168.1.36"}"#,
@@ -18057,6 +19069,35 @@ mod tests {
     }
 
     #[test]
+    fn stale_device_credential_does_not_mask_a_valid_administrator_bearer() {
+        let root = unique_temp_dir("stale-device-credential");
+        let runtime = test_daemon_runtime(&root, Some("loom-admin-test"));
+        let stale_device_headers = [
+            ("Authorization", "Bearer loom-admin-test"),
+            ("Authorization", "Device loom_device_session_stale_token"),
+            ("X-Loom-Device-Nonce", "request_nonce_000000000000010"),
+        ];
+        // A desktop client that was re-paired keeps sending its previous device credential, so the
+        // same request legitimately carries both headers. The administrator bearer must win.
+        let (status, response) = route_with_runtime(
+            &runtime,
+            &parsed_request("GET", "/v1/devices", &stale_device_headers, None),
+        )
+        .expect("administrator bearer outranks a stale device credential");
+        assert_eq!(status, 200, "{response}");
+
+        // Without the administrator bearer the stale credential is still reported in full rather
+        // than being silently downgraded to an anonymous request.
+        let (status, rejected) = route_with_runtime(
+            &runtime,
+            &parsed_request("GET", "/v1/devices", &stale_device_headers[1..], None),
+        )
+        .expect("reject the stale device credential on its own");
+        assert_eq!(status, 401, "{rejected}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn surface_stream_history_is_ordered_bounded_and_reports_cursor_reset() {
         let hub = HookBridgeBroadcastHub::new();
         broadcast_hook_bridge_messages(
@@ -18171,6 +19212,10 @@ mod tests {
         .expect("poll device A stream");
         assert_eq!(status, 200, "{body}");
         let response: Value = serde_json::from_str(&body).expect("stream JSON");
+        // Hook carries its own copy of this string and rejects an envelope without it, so the wire
+        // value is spelled out here rather than read from the constant: changing it has to break a
+        // test in this repository, not only in Hook's.
+        assert_eq!(response["protocolVersion"], "loom.surface-stream.v1");
         assert_eq!(response["next"], 2);
         assert_eq!(response["messages"].as_array().map(Vec::len), Some(1));
         assert_eq!(
@@ -18491,6 +19536,76 @@ nodes:
                 .expect("runtime bytes");
             writer.finish().expect("finish package");
         }
+        bytes
+    }
+
+    /// The same package as `framework_package_zip`, signed with `key`.
+    ///
+    /// A framework package is checked against the trust policy on every readiness probe, not only
+    /// when it is installed, so a test that persists a strict policy needs a framework whose
+    /// signature satisfies it — otherwise the framework install itself is refused and no Art can
+    /// run.
+    fn signed_framework_package_zip(
+        id: &str,
+        version: &str,
+        key: &loom_plugin_security::SigningKeyDocument,
+    ) -> Vec<u8> {
+        let command = match id {
+            "process" => "runtime/loom-framework-process.exe",
+            "cloud_api" => "runtime/loom-framework-cloud-api.exe",
+            "mcp" => "runtime/loom-framework-mcp.exe",
+            "workflow" => "runtime/loom-framework-workflow.exe",
+            other => panic!("unsupported test framework: {other}"),
+        };
+        let package = unique_temp_dir("signed-framework-package");
+        fs::create_dir_all(package.join("runtime")).expect("package directory");
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": format!("{id} daemon test framework"),
+            "description": "daemon framework package test",
+            "version": version,
+            "publisher": { "id": "publisher.test", "name": "Publisher Test" },
+            "signature": {
+                "algorithm": "ed25519",
+                "keyId": key.key_id.clone(),
+                "file": "signature.json"
+            },
+            "protocolVersion": "loom.framework.v1",
+            "platforms": ["windows-x64"],
+            "entry": {
+                "kind": "process",
+                "command": command,
+                "args": ["--stdio"],
+                "processModel": "per_execution"
+            },
+            "permissions": ["process.spawn"],
+            "artExecution": {
+                "requestSchema": "loom.art.execute.v1",
+                "responseSchema": "loom.art.result.v1"
+            }
+        });
+        fs::write(
+            package.join("framework.manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("manifest bytes"),
+        )
+        .expect("write manifest");
+        fs::write(package.join(command), b"MZ-test-framework").expect("write runtime entry");
+        loom_plugin_security::sign_package(&package, "signature.json", key)
+            .expect("sign framework package");
+
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            for relative in ["framework.manifest.json", command, "signature.json"] {
+                writer.start_file(relative, options).expect("package entry");
+                writer
+                    .write_all(&fs::read(package.join(relative)).expect("package file"))
+                    .expect("package bytes");
+            }
+            writer.finish().expect("finish package");
+        }
+        fs::remove_dir_all(&package).ok();
         bytes
     }
 
@@ -18917,14 +20032,28 @@ nodes:
             .with_bundled_art_sha256_allowlist([package_sha256])
             .expect("configure bundled Art allowlist");
         let runtime = test_daemon_runtime_from_config(&root, config);
+        let framework_key = loom_plugin_security::generate_signing_key("framework-key");
         let mut trust = loom_plugin_security::TrustStore::default();
         trust.set_policy(TrustPolicy::RequireTrusted);
+        // The framework's publisher has to be trusted, not merely signed: the strict policy is
+        // enforced on every framework readiness probe, so an untrusted framework would fail the
+        // Art installs below on readiness instead of on the external-package policy under test.
+        trust.trust(loom_protocol::PublisherTrustRecord {
+            publisher_id: "publisher.test".to_owned(),
+            key_id: framework_key.key_id.clone(),
+            public_key: framework_key.public_key.clone(),
+            revoked: false,
+        });
         trust
             .write_atomic(&root.join("plugin-trust.json"))
             .expect("write strict trust policy");
         runtime
             .framework_registry
-            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .install_framework_package_from_zip(&signed_framework_package_zip(
+                "process",
+                "1.0.0",
+                &framework_key,
+            ))
             .expect("install process framework");
         let encoded = format!("data:application/zip;base64,{}", BASE64.encode(&zip));
 
@@ -18997,14 +20126,21 @@ nodes:
         fs::write(source_root.join("nested/helper.txt"), "helper\n")
             .expect("write authored helper");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+        let framework_key = loom_plugin_security::generate_signing_key("framework-key");
         let mut trust = loom_plugin_security::TrustStore::default();
         trust.set_policy(TrustPolicy::RequireSigned);
         trust
             .write_atomic(&root.join("plugin-trust.json"))
             .expect("write strict authored Art trust policy");
+        // Signed, because the strict policy is enforced on every framework readiness probe and the
+        // authored-Art routes below all need a ready framework.
         runtime
             .framework_registry
-            .install_framework_package_from_zip(&framework_package_zip("process", "1.0.0"))
+            .install_framework_package_from_zip(&signed_framework_package_zip(
+                "process",
+                "1.0.0",
+                &framework_key,
+            ))
             .expect("install process framework");
         let request = |version: &str| {
             serde_json::to_string(&json!({
@@ -20101,10 +21237,13 @@ nodes:
             control_plane_root: control_plane_root.to_path_buf(),
             bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
             hook_bridge,
-            device_registry: Arc::new(Mutex::new(DeviceRegistryStore::new(
-                control_plane_root.join("settings").join("devices.json"),
-                "127.0.0.1:0".parse().expect("test daemon address"),
-            ))),
+            device_registry: Arc::new(Mutex::new(
+                DeviceRegistryStore::new(
+                    control_plane_root.join("settings").join("devices.json"),
+                    "127.0.0.1:0".parse().expect("test daemon address"),
+                )
+                .expect("open test device registry"),
+            )),
             surface_instances,
             surface_actions,
             surface_resources,
@@ -20125,6 +21264,8 @@ nodes:
             request_submission_observer: None,
             #[cfg(test)]
             shutdown_observer: None,
+            #[cfg(test)]
+            connection_accept_observer: None,
         }
     }
 
@@ -20351,7 +21492,7 @@ nodes:
 
     #[test]
     fn daemon_hook_bridge_streams_workflow_preview_before_formal_result() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("workflow-preview-stream");
         let runtime = test_daemon_runtime(&root, None);
         runtime
@@ -20421,7 +21562,7 @@ nodes:
 
     #[test]
     fn daemon_hook_bridge_returns_successful_formal_output_after_workflow_preview() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("workflow-preview-success");
         let runtime = test_daemon_runtime(&root, None);
         runtime
@@ -21055,9 +22196,12 @@ nodes:
 
     #[test]
     fn daemon_returns_shutting_down_for_request_accepted_before_shutdown() {
-        let daemon =
+        let accepted = ConnectionAcceptObserver::new();
+        let mut daemon =
             LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(1, 1))
                 .expect("bind daemon");
+        let runtime = Arc::get_mut(&mut daemon.runtime).expect("exclusive daemon runtime");
+        runtime.connection_accept_observer = Some(Arc::clone(&accepted));
         let port = daemon.local_addr().expect("address").port();
         let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect client");
         client
@@ -21073,7 +22217,14 @@ nodes:
 
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
-        thread::sleep(Duration::from_millis(100));
+        // The connection has to be accepted before shutdown is asked for, otherwise this exercises the
+        // backlog drain rather than the accepted-then-shutdown path the test is named for. Waiting for
+        // the accept itself says so; the fixed 100ms sleep this replaces only guessed at it, and on a
+        // loaded machine the guess was wrong in the direction that made the response read time out.
+        assert!(
+            accepted.wait_for_count(1, Duration::from_secs(3)),
+            "serve loop did not accept the connection before the deadline"
+        );
         shutdown_tx.send(()).expect("request shutdown");
         client
             .write_all(body.as_bytes())
@@ -21118,7 +22269,7 @@ nodes:
 
     #[test]
     fn serialized_routes_do_not_overlap_while_probes_remain_available() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("serialized-routes");
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
@@ -21168,6 +22319,89 @@ nodes:
         assert!(!observer.wait_until_entered(Duration::from_millis(25)));
     }
 
+    /// A Surface stream long-poll used to fall through `request_concurrency_class` to `Serialized`,
+    /// so an idle poll held `serialized_route_lock` for its whole five-second parking period. Every
+    /// Surface write — events, patches, resource registrations — queued behind it, including
+    /// the one message that would have ended the poll early.
+    #[test]
+    fn a_serialized_route_completes_while_a_surface_stream_long_poll_is_parked() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        let root = unique_temp_dir("surface-stream-does-not-serialize");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+
+        let daemon =
+            LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(3, 4))
+                .expect("bind daemon");
+        let port = daemon.local_addr().expect("address").port();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
+
+        let poll =
+            thread::spawn(move || http_get(port, "/v1/surfaces/stream?after=0&timeoutMs=3000"));
+        thread::sleep(Duration::from_millis(250));
+        let started = Instant::now();
+        let serialized = http_get(port, "/v1/workflows");
+        let waited = started.elapsed();
+        let polled = poll.join().expect("Surface stream client");
+
+        shutdown_tx.send(()).expect("request shutdown");
+        server.join().expect("server thread").expect("serve daemon");
+
+        assert!(serialized.starts_with("HTTP/1.1 200 OK"), "{serialized}");
+        assert!(polled.starts_with("HTTP/1.1 200 OK"), "{polled}");
+        assert!(
+            waited < Duration::from_millis(1_500),
+            "a serialized route waited {waited:?} behind an idle Surface stream long-poll"
+        );
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup Surface stream concurrency root");
+    }
+
+    /// `serve_until` used to run the reader inline on the accept thread, so one client that sent a
+    /// partial head and then went quiet owned the daemon's front door until its read timed
+    /// out — two seconds in which nothing else, `/health` included, could even be accepted.
+    #[test]
+    fn a_trickling_request_does_not_block_the_accept_loop() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        let root = unique_temp_dir("trickling-request-accept-loop");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+
+        let daemon =
+            LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(3, 4))
+                .expect("bind daemon");
+        let port = daemon.local_addr().expect("address").port();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
+
+        let mut trickler = TcpStream::connect(("127.0.0.1", port)).expect("connect trickler");
+        trickler
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")
+            .expect("write a partial request head");
+        trickler.flush().expect("flush the partial head");
+        thread::sleep(Duration::from_millis(150));
+
+        let started = Instant::now();
+        let health = http_get(port, "/health");
+        let waited = started.elapsed();
+
+        // Finishing the head lets the read worker return at once, so the join below stays quick.
+        trickler.write_all(b"\r\n").expect("finish the head");
+        trickler.flush().expect("flush the head terminator");
+        drop(trickler);
+        shutdown_tx.send(()).expect("request shutdown");
+        server.join().expect("server thread").expect("serve daemon");
+
+        assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
+        assert!(
+            waited < Duration::from_millis(1_500),
+            "/health waited {waited:?} behind a client that had sent only a partial head"
+        );
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        fs::remove_dir_all(root).expect("cleanup trickling request root");
+    }
+
     #[test]
     fn request_concurrency_classification_is_conservative() {
         let request = |method: &str, path: &str, capability: Option<&str>| ParsedHttpRequest {
@@ -21185,6 +22419,8 @@ nodes:
             ("GET", "/v1/capabilities", None),
             ("GET", "/v1/hook-bridge/canvas", None),
             ("GET", "/v1/hook-bridge/canvas/nodes/capture/preview", None),
+            ("GET", "/v1/surfaces/stream", None),
+            ("GET", "/v1/surfaces/stream?since=7", None),
             ("GET", "/v1/runs/run-1", None),
             ("GET", "/v1/runs/run-1/events", None),
             ("POST", "/v1/invoke", Some("brain.plan")),
@@ -21423,7 +22659,7 @@ nodes:
 
     #[test]
     fn daemon_reads_and_writes_mcp_servers() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("control-plane-mcp");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -21501,7 +22737,7 @@ nodes:
 
     #[test]
     fn daemon_manages_independent_mcp_server_package_lifecycle() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("control-plane-independent-mcp");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let package = mcp_server_package_zip();
@@ -21642,7 +22878,7 @@ nodes:
 
     #[test]
     fn daemon_persists_mcp_servers_across_runtime_reloads() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("control-plane-mcp-persist");
         let fixture = current_test_binary_mcp_fixture_config();
 
@@ -21752,7 +22988,7 @@ nodes:
 
     #[test]
     fn daemon_exposes_mcp_registry_and_connection_test_contracts() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let registry_fixture = McpRegistryFixture::start();
         let previous_registry_endpoint = std::env::var("LOOM_MCP_REGISTRY_ENDPOINT").ok();
         std::env::set_var(
@@ -22001,7 +23237,7 @@ def run(args):
 
     #[test]
     fn daemon_recovers_trailing_tool_registry_data_before_listing_tools() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("control-plane-trailing-tools");
         let tools_root = root.join("tools");
         fs::create_dir_all(&tools_root).expect("create tool registry root");
@@ -22037,7 +23273,7 @@ def run(args):
 
     #[test]
     fn daemon_reads_and_writes_tool_and_workflow_contracts() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("control-plane-tools-workflows");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -22155,7 +23391,7 @@ def run(args):
 
     #[test]
     fn daemon_executes_mcp_backed_tool_contract() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("mcp-backed-tool");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
@@ -22208,7 +23444,7 @@ def run(args):
 
     #[test]
     fn daemon_executes_cloud_api_backed_tool_contract() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("cloud-tool");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
@@ -22230,6 +23466,11 @@ def run(args):
                     "type": "cloud_api",
                     "endpoint": fixture.url("/text"),
                     "method": "POST"
+                },
+                // A cloud Art only reaches a loopback endpoint when it declares that it wants to,
+                // so this fixture-backed tool declares it the way a local-service Art would.
+                "metadata": {
+                    "permissionPolicy": { "network": { "allowLocalhost": true } }
                 }
             })
             .to_string(),
@@ -22258,7 +23499,7 @@ def run(args):
 
     #[test]
     fn daemon_reports_hook_bridge_status_contract() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let appdata_root = unique_temp_dir("empty-hook-appdata");
         let control_plane_root = unique_temp_dir("hook-bridge-status-control-plane");
         let previous_appdata = std::env::var("APPDATA").ok();
@@ -22316,7 +23557,7 @@ def run(args):
 
     #[test]
     fn daemon_exposes_hook_canvas_snapshot_contract() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         clear_hook_canvas_runtime_state(None);
         let appdata = unique_temp_dir("hook-canvas-appdata");
         let session_dir = appdata.join("com.yamiyu.hook");
@@ -22353,7 +23594,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         clear_hook_canvas_runtime_state(None);
         let root = unique_temp_dir("hook-canvas-live-workflow");
         let appdata = unique_temp_dir("hook-canvas-live-workflow-appdata");
@@ -22432,7 +23673,7 @@ def run(args):
 
     #[test]
     fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         clear_hook_canvas_runtime_state(None);
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let previous_appdata = std::env::var("APPDATA").ok();
@@ -22528,7 +23769,7 @@ def run(args):
 
     #[test]
     fn daemon_serves_only_registered_hook_canvas_preview_images() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let appdata = unique_temp_dir("hook-canvas-preview-appdata");
         let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
@@ -22571,7 +23812,7 @@ def run(args):
 
     #[test]
     fn daemon_prefers_data_url_hook_canvas_preview_over_file_backed_src() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let appdata = unique_temp_dir("hook-canvas-preview-data-url");
         let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
@@ -22625,7 +23866,7 @@ def run(args):
 
     #[test]
     fn daemon_validates_hook_canvas_preview_type_and_size() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let appdata = unique_temp_dir("hook-canvas-preview-validation");
         let session_dir = appdata.join("com.yamiyu.hook");
         let images = session_dir.join("images");
@@ -22674,7 +23915,7 @@ def run(args):
 
     #[test]
     fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let appdata = unique_temp_dir("hook-canvas-auth-appdata");
         let control_plane_root = unique_temp_dir("hook-canvas-auth-control-plane");
         let session_dir = appdata.join("com.yamiyu.hook");
@@ -23122,7 +24363,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("hook-bridge-fanout");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -23192,7 +24433,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_accepts_versioned_surface_subscriptions() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("hook-bridge-surface-subscription");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -23248,7 +24489,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("hook-bridge-channel-filter");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -23308,7 +24549,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_executes_mcp_backed_art_node() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("mcp-art-node");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let fixture = current_test_binary_mcp_fixture_config();
@@ -23385,7 +24626,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("mcp-image-search-art-node");
         let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
         let image_data = test_png_base64();
@@ -23437,7 +24678,10 @@ def run(args):
                   "type": "image",
                   "execution_type": "image_buffer"
                 }
-              ]
+              ],
+              "metadata": {
+                "permissionPolicy": { "network": { "allowLocalhost": true } }
+              }
             }"#,
                     ),
                 ),
@@ -23635,7 +24879,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_ocr_image_fixture_provider_returns_success() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_fixture = std::env::var("LOOM_OCR_FIXTURE_TEXT").ok();
         std::env::set_var("LOOM_OCR_FIXTURE_TEXT", "hello loom ocr");
         let root = unique_temp_dir("ocr-fixture");
@@ -23676,7 +24920,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_translate_text_uses_configured_provider() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let fixture = TranslateFixture::start();
         let previous_endpoint = std::env::var("LOOM_TRANSLATE_ENDPOINT").ok();
         std::env::set_var("LOOM_TRANSLATE_ENDPOINT", fixture.url("/translate"));
@@ -23716,7 +24960,7 @@ def run(args):
         ignore = "packaged OCR validation requires the bundled Windows ONNX Runtime"
     )]
     fn daemon_hook_bridge_ocr_image_real_provider_returns_success() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_fixture = std::env::var("LOOM_OCR_FIXTURE_TEXT").ok();
         let previous_model_dir = std::env::var("LOOM_OCR_MODEL_DIR").ok();
         std::env::remove_var("LOOM_OCR_FIXTURE_TEXT");
@@ -23793,7 +25037,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_ocr_image_unavailable_by_default() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_fixture = std::env::var("LOOM_OCR_FIXTURE_TEXT").ok();
         let previous_model_dir = std::env::var("LOOM_OCR_MODEL_DIR").ok();
         std::env::remove_var("LOOM_OCR_FIXTURE_TEXT");
@@ -23984,9 +25228,7 @@ def run(args):
 
     #[test]
     fn hook_art_resource_release_closes_shared_memory_and_is_idempotent() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let execution = hook_art_request("request:1", "node:1", 1);
@@ -24047,9 +25289,7 @@ def run(args):
 
     #[test]
     fn hook_art_resource_release_rejects_cross_execution_identity() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let owner = hook_art_request("request:owner", "node:owner", 7);
@@ -24159,9 +25399,7 @@ def run(args):
 
     #[test]
     fn released_preview_resources_do_not_invalidate_live_final_replay() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let execution = hook_art_request("request:preview-final", "node:preview-final", 1);
@@ -24223,9 +25461,7 @@ def run(args):
 
     #[test]
     fn hook_art_replacement_and_cancellation_reclaim_owned_resources() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let first = hook_art_request("request:first-resource", "node:resource", 1);
@@ -24294,9 +25530,7 @@ def run(args):
 
     #[test]
     fn hook_art_terminal_eviction_reclaims_unreleased_resources() {
-        let _guard = HOOK_ART_REQUEST_TEST_LOCK
-            .lock()
-            .expect("Hook Art request test lock");
+        let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
         clear_hook_canvas_runtime_state(None);
         let store = Arc::new(Mutex::new(SharedImageStore::new()));
         let first = hook_art_request("request:terminal:0", "node:terminal:0", 1);
@@ -24353,7 +25587,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_executes_cloud_api_art_node_image_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("cloud-art-node");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
@@ -24376,6 +25610,10 @@ def run(args):
                     "type": "cloud_api",
                     "endpoint": fixture.url("/image"),
                     "method": "POST"
+                },
+                // A cloud Art only reaches a loopback endpoint when it declares that it wants to.
+                "metadata": {
+                    "permissionPolicy": { "network": { "allowLocalhost": true } }
                 }
             })
             .to_string(),
@@ -24413,7 +25651,7 @@ def run(args):
 
     #[test]
     fn daemon_hook_bridge_executes_cloud_api_multipart_art_node_with_input_file() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("cloud-multipart-art-node");
         std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
@@ -24440,6 +25678,10 @@ def run(args):
                     "contentType": "multipart/form-data",
                     "headers": "{\"X-Trace\":\"{{inputs.trace.value}}\"}",
                     "body": "{\"file\":\"{{inputs.input.path}}\",\"prompt\":\"{{inputs.prompt.value}}\"}"
+                },
+                // A cloud Art only reaches a loopback endpoint when it declares that it wants to.
+                "metadata": {
+                    "permissionPolicy": { "network": { "allowLocalhost": true } }
                 }
             })
             .to_string(),
@@ -25263,7 +26505,7 @@ def run(args):
 
     #[test]
     fn daemon_reports_default_tea_configuration_claim() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
         let previous_base = std::env::var("LOOM_SETTINGS_BASE_URL").ok();
         std::env::remove_var("LOOM_MANAGED_CONFIG_APPS");
@@ -25289,7 +26531,7 @@ def run(args):
 
     #[test]
     fn daemon_reports_managed_tea_configuration_claim_from_env() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
         let previous_base = std::env::var("LOOM_SETTINGS_BASE_URL").ok();
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "hook,tea,talk");
@@ -25316,7 +26558,7 @@ def run(args):
 
     #[test]
     fn daemon_claim_response_includes_owner_source_and_schema_version() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
         let previous_base = std::env::var("LOOM_SETTINGS_BASE_URL").ok();
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "tea");
@@ -25345,7 +26587,7 @@ def run(args):
 
     #[test]
     fn daemon_configuration_api_reads_writes_and_rejects_stale_revisions() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
         let previous_root = std::env::var("LOOM_CONFIGURATION_ROOT").ok();
         let root =
@@ -25415,7 +26657,7 @@ def run(args):
 
     #[test]
     fn daemon_settings_pages_render_real_html() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
         let previous_root = std::env::var("LOOM_CONFIGURATION_ROOT").ok();
         let root =
@@ -26257,6 +27499,166 @@ def run(args):
             "POST /v1/mcp/servers/install HTTP/1.1\r\nContent-Length: {oversized_mcp_package}\r\n\r\n"
         );
         assert!(request_exceeds_size_limit(oversized_mcp_request.as_bytes()));
+    }
+
+    /// A reader that hands out at most `chunk` bytes per call and counts the calls, so a test can
+    /// state both how a request is reassembled and how many reads it took.
+    struct ChunkedReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        chunk: usize,
+        reads: usize,
+    }
+
+    impl ChunkedReader {
+        fn new(bytes: Vec<u8>, chunk: usize) -> Self {
+            Self {
+                bytes,
+                offset: 0,
+                chunk,
+                reads: 0,
+            }
+        }
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            let remaining = self.bytes.len() - self.offset;
+            let take = remaining.min(self.chunk).min(buffer.len());
+            buffer[..take].copy_from_slice(&self.bytes[self.offset..self.offset + take]);
+            self.offset += take;
+            Ok(take)
+        }
+    }
+
+    #[test]
+    fn a_request_arriving_one_byte_at_a_time_is_still_split_at_its_first_header_terminator() {
+        // The body carries a blank line of its own, so a parser that searched the decoded request for
+        // any terminator, or that re-searched from the start of each chunk, would cut it in the wrong
+        // place.
+        let body = "line\r\n\r\nstill body";
+        let raw = format!(
+            "POST /v1/ping HTTP/1.1\r\nContent-Length: {}\r\nX-Test: yes\r\n\r\n{body}",
+            body.len()
+        );
+        let mut reader = ChunkedReader::new(raw.clone().into_bytes(), 1);
+        let outcome = read_http_request(&mut reader).expect("read the request");
+        let HttpReadOutcome::Request(bytes) = outcome else {
+            panic!("expected a complete request");
+        };
+        assert_eq!(bytes, raw.as_bytes());
+        let request = ParsedHttpRequest::from_raw(bytes);
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/ping");
+        assert_eq!(request.body, body);
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "X-Test" && value == "yes"));
+    }
+
+    #[test]
+    fn a_large_body_is_read_in_few_reads_and_handed_over_without_a_copy_per_layer() {
+        let body = "b".repeat(200_000);
+        let raw = format!(
+            "POST /v1/surfaces/resources HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut reader = ChunkedReader::new(raw.into_bytes(), HTTP_READ_CHUNK_BYTES);
+        let outcome = read_http_request(&mut reader).expect("read the request");
+        let HttpReadOutcome::Request(bytes) = outcome else {
+            panic!("expected a complete request");
+        };
+        let expected_reads = 200_000_usize.div_ceil(HTTP_READ_CHUNK_BYTES) + 1;
+        assert!(
+            reader.reads <= expected_reads,
+            "expected at most {expected_reads} reads, took {}",
+            reader.reads
+        );
+        let request = ParsedHttpRequest::from_raw(bytes);
+        assert_eq!(request.body.len(), body.len());
+        assert_eq!(request.body, body);
+    }
+
+    #[test]
+    fn a_declared_body_over_the_route_limit_is_rejected_before_the_body_is_read() {
+        let declared = MAX_HTTP_BODY_BYTES + 1;
+        let raw = format!("POST /v1/invoke HTTP/1.1\r\nContent-Length: {declared}\r\n\r\n");
+        let mut reader = ChunkedReader::new(raw.into_bytes(), HTTP_READ_CHUNK_BYTES);
+        let outcome = read_http_request(&mut reader).expect("read the request");
+        let HttpReadOutcome::Rejected { status, .. } = outcome else {
+            panic!("expected the oversized request to be rejected");
+        };
+        assert_eq!(status, 413);
+        assert_eq!(
+            reader.reads, 1,
+            "the declared length is enough to reject; no body should be read"
+        );
+    }
+
+    /// A reader that delivers a request head and then dribbles one byte per `read`, the way a
+    /// client holding a connection open against a per-read timeout does.
+    struct TricklingReader {
+        head: Vec<u8>,
+        offset: usize,
+        step: Duration,
+    }
+
+    impl TricklingReader {
+        fn new(head: &str, step: Duration) -> Self {
+            Self {
+                head: head.as_bytes().to_vec(),
+                offset: 0,
+                step,
+            }
+        }
+    }
+
+    impl Read for TricklingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            thread::sleep(self.step);
+            if self.offset < self.head.len() {
+                let take = (self.head.len() - self.offset).min(buffer.len());
+                buffer[..take].copy_from_slice(&self.head[self.offset..self.offset + take]);
+                self.offset += take;
+                return Ok(take);
+            }
+            buffer[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn a_trickling_request_is_rejected_when_it_outlives_the_read_deadline() {
+        // Every read succeeds, so the per-read timeout never fires and cannot end this; only the
+        // wall-clock deadline can. Without it the reader stayed here until the body was complete,
+        // which for a large declared length is hours.
+        let head = "POST /v1/invoke HTTP/1.1\r\nContent-Length: 4096\r\n\r\n";
+        let mut reader = TricklingReader::new(head, Duration::from_millis(5));
+        let deadline = Instant::now() + Duration::from_millis(200);
+        let outcome = read_http_request_until(&mut reader, deadline, &AtomicBool::new(false))
+            .expect("read the request");
+        let HttpReadOutcome::Rejected { status, .. } = outcome else {
+            panic!("expected the trickling request to be rejected");
+        };
+        assert_eq!(status, 408);
+        assert!(Instant::now() >= deadline, "returned before the deadline");
+    }
+
+    #[test]
+    fn a_read_is_abandoned_once_the_daemon_starts_draining() {
+        // Shutdown must not wait on a client that may never finish sending, so a draining reader
+        // stops before its next read rather than seeing the request through.
+        let head = "POST /v1/invoke HTTP/1.1\r\nContent-Length: 4096\r\n\r\n";
+        let mut reader = TricklingReader::new(head, Duration::from_millis(1));
+        let deadline = Instant::now() + Duration::from_millis(MAX_REQUEST_READ_MILLIS);
+        let outcome = read_http_request_until(&mut reader, deadline, &AtomicBool::new(true))
+            .expect("read the request");
+        assert!(
+            matches!(outcome, HttpReadOutcome::Empty),
+            "a draining read should hand back nothing to dispatch"
+        );
     }
 
     fn http_get(port: u16, path: &str) -> String {

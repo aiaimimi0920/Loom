@@ -166,7 +166,42 @@ impl ArtSettingsStore {
         if !self.path.exists() {
             return Ok(ArtSettingsFile::default());
         }
-        Ok(serde_json::from_slice(&fs::read(&self.path)?)?)
+        let bytes = fs::read(&self.path)?;
+        match serde_json::from_slice(&bytes) {
+            Ok(file) => Ok(file),
+            Err(_) => {
+                // A damaged preferences file must not make the Art unusable. `tools.json` already
+                // recovers from corruption by copying the damaged bytes aside and rewriting the
+                // file, and this file — which holds nothing but user preferences — has no reason to
+                // be stricter: propagating the parse error here fails every registry read, so one
+                // truncated preferences file empties the whole Art list.
+                //
+                // Both writes are best effort on purpose. If the backup or the reset cannot be
+                // written (a read-only control-plane directory, a full disk), reads still have to
+                // succeed, so the failure is dropped and the caller sees "no settings" either way.
+                self.write_corruption_backup(&bytes);
+                let recovered = ArtSettingsFile::default();
+                let _ = self.write_file(&recovered);
+                Ok(recovered)
+            }
+        }
+    }
+
+    /// Copies damaged settings bytes to a sibling file so the user's preferences can be recovered
+    /// by hand. Named like the registry's own corruption backups (`<file>.corrupt-<pid>-<nanos>`)
+    /// so both land in the control plane with the same recognisable shape.
+    fn write_corruption_backup(&self, bytes: &[u8]) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let Some(name) = self.path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let backup = self
+            .path
+            .with_file_name(format!("{name}.corrupt-{}-{timestamp}", std::process::id()));
+        let _ = fs::write(backup, bytes);
     }
 
     fn write_file(&self, file: &ArtSettingsFile) -> Result<(), ArtSettingsError> {
@@ -507,7 +542,7 @@ fn tool_value_bindings(tool: &ToolDefinition) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-fn control_plane_root_for_tool(tool: &ToolDefinition) -> Option<PathBuf> {
+pub(crate) fn control_plane_root_for_tool(tool: &ToolDefinition) -> Option<PathBuf> {
     tool.metadata
         .as_ref()
         .and_then(|metadata| metadata.get("artPackage"))
@@ -650,6 +685,59 @@ mod tests {
         store.save("sample", settings.clone()).unwrap();
         assert_eq!(store.get("sample").unwrap(), settings);
         assert!(!root.join("art-user-settings.json.tmp").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn corruption_backups(root: &Path) -> Vec<PathBuf> {
+        fs::read_dir(root)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("art-user-settings.json.corrupt-"))
+                    .then_some(path)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_damaged_settings_file_is_backed_up_and_reset_instead_of_failing_every_read() {
+        let root = temp_root();
+        let store = ArtSettingsStore::new(&root);
+        let path = root.join("art-user-settings.json");
+        let damaged = b"{\"schemaVersion\":1,\"arts\":{\"sample\":{\"autoUpd";
+        fs::write(&path, damaged).unwrap();
+
+        // The read has to succeed: the caller is a registry read, and one truncated preferences
+        // file must not hide every Art.
+        assert_eq!(store.get_optional("sample").unwrap(), None);
+        assert!(store.get("sample").unwrap().auto_update);
+        assert!(store.list().unwrap().is_empty());
+
+        let backups = corruption_backups(&root);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), damaged);
+        // The file itself is usable again, so the recovery happens once rather than on every read.
+        assert!(serde_json::from_slice::<ArtSettingsFile>(&fs::read(&path).unwrap()).is_ok());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_settings_file_still_accepts_the_next_save() {
+        let root = temp_root();
+        let store = ArtSettingsStore::new(&root);
+        fs::write(root.join("art-user-settings.json"), b"not json at all").unwrap();
+
+        let settings = ArtUserSettings {
+            auto_update: false,
+            ..ArtUserSettings::default()
+        };
+        store.save("sample", settings.clone()).unwrap();
+        assert_eq!(store.get("sample").unwrap(), settings);
+        assert_eq!(corruption_backups(&root).len(), 1);
+
         fs::remove_dir_all(root).unwrap();
     }
 

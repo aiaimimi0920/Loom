@@ -1,5 +1,11 @@
+//! Outbound network policy and bounded HTTP helpers.
+//!
+//! Moved out of `loom_tool_registry` so `loom_mcp` can enforce the same policy; see the
+//! crate-level documentation for why a leaf crate is required.
+
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::path::{Component, Path, Prefix};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
@@ -171,6 +177,30 @@ pub fn validate_outbound_url(url: &Url, policy: &OutboundPolicy) -> Result<(), S
     Ok(())
 }
 
+/// Validate a string that is supposed to name a *local* file before the host reads or writes
+/// it on behalf of untrusted content.
+///
+/// `validate_outbound_url` only sees values that parse as a URL with an `http`/`https`
+/// scheme, so it never inspects a plain filesystem path. A UNC path (`\\host\share\...`),
+/// its verbatim form (`\\?\UNC\host\share`), a forward-slash UNC (`//host/share`) or a Win32
+/// device path (`\\.\PhysicalDrive0`) all reach the network or the raw device without ever
+/// looking like a URL, which is the gap this covers.
+pub fn validate_local_path(path: &Path) -> Result<(), String> {
+    let display = path.display().to_string();
+    if display.starts_with("//") {
+        return Err(format!("remote or device path `{display}` is not allowed"));
+    }
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..) => {
+                Err(format!("remote or device path `{display}` is not allowed"))
+            }
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
 fn validate_url_without_dns(url: &Url, policy: &OutboundPolicy) -> Result<(), String> {
     let host = url
         .host_str()
@@ -202,7 +232,13 @@ fn domain_allowed(host: &str, allowed: &[String]) -> bool {
     })
 }
 
-fn host_is_loopback_literal(host: &str) -> bool {
+/// Report whether `host` names the local machine without a DNS lookup.
+///
+/// Callers that must decide whether plain `http` is acceptable need this answer before any
+/// resolution happens, which is why it only accepts `localhost` and loopback IP literals: a
+/// name that merely resolves to `127.0.0.1` today is under the control of whoever answers DNS.
+#[must_use]
+pub fn host_is_loopback_literal(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<IpAddr>()
@@ -252,6 +288,7 @@ fn ipv6_is_private_or_special(ip: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn blocks_metadata_private_and_unlisted_domains() {
@@ -297,5 +334,50 @@ mod tests {
         );
         assert!(configure_runtime_proxy("custom", "http", "").is_err());
         configure_runtime_proxy("system", "http", "").unwrap();
+    }
+
+    #[test]
+    fn non_http_schemes_are_rejected_before_any_lookup() {
+        let policy = OutboundPolicy::default();
+        for value in [
+            "file:///C:/Windows/win.ini",
+            "ftp://example.com/payload",
+            "smb://example.com/share",
+        ] {
+            let url = Url::parse(value).expect("parse");
+            assert!(
+                validate_url_without_dns(&url, &policy).is_err(),
+                "scheme of `{value}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_and_device_paths_are_rejected() {
+        for value in [
+            r"\\fileserver\share\payload.zip",
+            r"\\?\UNC\fileserver\share\payload.zip",
+            r"\\.\PhysicalDrive0",
+            "//fileserver/share/payload.zip",
+        ] {
+            assert!(
+                validate_local_path(&PathBuf::from(value)).is_err(),
+                "`{value}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_local_paths_are_accepted() {
+        for value in [
+            r"C:\Users\example\AppData\Local\Loom\cache\art.zip",
+            r"\\?\C:\Users\example\long-path\art.zip",
+            "relative/inside/package.zip",
+        ] {
+            assert!(
+                validate_local_path(&PathBuf::from(value)).is_ok(),
+                "`{value}` must be accepted"
+            );
+        }
     }
 }

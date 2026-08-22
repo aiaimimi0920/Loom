@@ -5,15 +5,20 @@ pub mod package;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use loom_protocol::PackageTrustStatus;
+use loom_security::network::{
+    apply_runtime_proxy, host_is_loopback_literal, validate_outbound_url, OutboundPolicy,
+};
 use reqwest::blocking::{Client as HttpClient, Response as HttpResponse};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::redirect::Policy as RedirectPolicy;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
@@ -57,6 +62,8 @@ pub enum McpError {
     Disabled { server_id: String },
     #[error("invalid MCP configuration: {0}")]
     InvalidConfig(String),
+    #[error("MCP server package integrity check failed: {0}")]
+    PackageIntegrity(String),
     #[error("MCP transport `{0}` is not supported")]
     UnsupportedTransport(String),
     #[error("MCP HTTP request failed: {0}")]
@@ -93,6 +100,14 @@ pub struct McpServerPackageState {
     pub version: String,
     pub digest: String,
     pub package_dir: PathBuf,
+    /// SHA-256 of every file extracted at install, keyed by package-relative path with `/`
+    /// separators. Checked against the package's `active.json` before a stdio server is spawned.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
+    /// What the install-time trust check concluded about this package's signature. Defaults to
+    /// `Unsigned`, which is also what a package installed before signatures existed reports.
+    #[serde(default)]
+    pub trust_status: PackageTrustStatus,
 }
 
 impl McpTransport {
@@ -236,7 +251,7 @@ impl McpServerConfig {
                 "stdio command is required".to_owned(),
             )),
             McpTransport::StreamableHttp => validate_remote_config(self),
-            McpTransport::Stdio => Ok(()),
+            McpTransport::Stdio => validate_stdio_command(&self.command),
         }
     }
 
@@ -245,6 +260,30 @@ impl McpServerConfig {
         self.enabled = false;
         self
     }
+}
+
+/// Reject a stdio command whose meaning depends on where the daemon happens to have been started.
+///
+/// A path with a parent but no root — `runtime/server.exe`, `./server`, `..\server.exe` — is completed
+/// by the process's current directory, so which binary runs is decided by the daemon's working
+/// directory rather than by the configuration. A packaged server never needs one, since the installer
+/// records an absolute path under the package directory, and an operator writing the row by hand can
+/// say what they mean.
+///
+/// A bare program name is still allowed: that is a `PATH` lookup, which is how servers are normally
+/// launched (`npx`, `node`, `python`), and taking it away would rule out most of the ecosystem.
+fn validate_stdio_command(command: &str) -> McpResult<()> {
+    let path = Path::new(command.trim());
+    let is_bare_name = !path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    if path.is_absolute() || is_bare_name {
+        return Ok(());
+    }
+    Err(McpError::InvalidConfig(format!(
+        "stdio command `{command}` is a relative path, so which file runs depends on the daemon's \
+         working directory; use an absolute path, or a bare program name to look up on PATH"
+    )))
 }
 
 fn spawn_command_spec(config: &McpServerConfig) -> SpawnCommandSpec {
@@ -265,6 +304,14 @@ fn resolve_windows_spawn_command(config: &McpServerConfig) -> Option<SpawnComman
     }
 
     if command.extension().is_some() {
+        return None;
+    }
+
+    // A packaged server runs the file the installer extracted and `verify_installed_entry` hashed.
+    // Resolving an extensionless command here would search `PATHEXT`, and for a bare name `PATH`
+    // too, which can only ever land on a file other than the verified one. Packaged servers get no
+    // such search; the verifier rejects the extensionless command before it reaches this point.
+    if config.package.is_some() {
         return None;
     }
 
@@ -549,10 +596,81 @@ const MCP_MAX_STDERR_BYTES: usize = 1024 * 1024;
 static MCP_REQUEST_TIMEOUT_SECONDS: AtomicU64 = AtomicU64::new(DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS);
 static MCP_MEMORY_LIMIT_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_MCP_MEMORY_LIMIT_BYTES);
 
+/// Environment variable that lets an operator point a remote MCP server at their own machine.
+const MCP_LOCAL_SERVERS_ENV: &str = "LOOM_MCP_ALLOW_LOCAL_SERVERS";
+static MCP_ALLOW_LOCAL_SERVERS: AtomicBool = AtomicBool::new(false);
+
 /// Applies process-wide defaults used by newly spawned MCP stdio clients.
 pub fn configure_runtime_limits(request_timeout_seconds: u64, memory_limit_bytes: u64) {
     MCP_REQUEST_TIMEOUT_SECONDS.store(request_timeout_seconds.max(1), Ordering::Relaxed);
     MCP_MEMORY_LIMIT_BYTES.store(memory_limit_bytes.max(1), Ordering::Relaxed);
+}
+
+/// Allows remote MCP servers to address loopback and private networks.
+///
+/// This is off by default: a remote server URL can arrive from a package manifest that nobody
+/// signed, and the credential headers configured for that server are attached to every request.
+/// Pointing such a URL at `127.0.0.1`, at a LAN device, or at a cloud metadata endpoint turns
+/// the daemon into a confused deputy, so those destinations require an explicit decision by the
+/// operator, either through this call or by setting `LOOM_MCP_ALLOW_LOCAL_SERVERS=1`.
+pub fn configure_local_servers(allowed: bool) {
+    MCP_ALLOW_LOCAL_SERVERS.store(allowed, Ordering::Relaxed);
+}
+
+/// Report whether local and private destinations are currently allowed for remote MCP servers.
+#[must_use]
+pub fn local_servers_allowed() -> bool {
+    MCP_ALLOW_LOCAL_SERVERS.load(Ordering::Relaxed) || environment_allows_local_servers()
+}
+
+fn environment_allows_local_servers() -> bool {
+    std::env::var(MCP_LOCAL_SERVERS_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// The outbound policy applied to every remote MCP request.
+///
+/// Remote MCP servers get the same policy the Art and cloud paths use, with redirects refused
+/// outright: Streamable HTTP has no use for them, and a redirect is the cheapest way to move a
+/// request holding operator credentials from an allowed host to a forbidden one.
+fn remote_outbound_policy(allow_local: bool) -> OutboundPolicy {
+    OutboundPolicy {
+        allow_http_loopback: allow_local,
+        allow_private_networks: allow_local,
+        allowed_domains: Vec::new(),
+        max_redirects: 0,
+    }
+}
+
+/// Reject a remote MCP URL whose scheme cannot protect what Loom is about to send.
+///
+/// This runs during configuration validation, so it must not perform a DNS lookup; the address
+/// classes are checked in [`StreamableHttpMcpClient::connect_with_timeout`] instead, where a
+/// lookup is already unavoidable. Keeping the two apart means saving a server never depends on
+/// name resolution while connecting to one still refuses loopback, private and link-local
+/// destinations.
+fn ensure_remote_scheme_allowed(url: &Url, credentialed: bool, allow_local: bool) -> McpResult<()> {
+    let host = url.host_str().unwrap_or_default();
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if allow_local && host_is_loopback_literal(host) => Ok(()),
+        "http" if credentialed => Err(McpError::InvalidConfig(format!(
+            "remote MCP URL must use https because credential headers are attached; plain http \
+             would send them in cleartext. Plain http is only accepted for a loopback \
+             development endpoint, and only with {MCP_LOCAL_SERVERS_ENV}=1"
+        ))),
+        "http" => Err(McpError::InvalidConfig(format!(
+            "remote MCP URL must use https; plain http is only accepted for a loopback \
+             development endpoint, and only with {MCP_LOCAL_SERVERS_ENV}=1"
+        ))),
+        scheme => Err(McpError::InvalidConfig(format!(
+            "remote MCP URL scheme `{scheme}` is not supported"
+        ))),
+    }
 }
 
 #[must_use]
@@ -620,6 +738,11 @@ impl StdioMcpClient {
                 config.transport.label().to_owned(),
             ));
         }
+        // A package-backed server runs a file the installer extracted, and it runs it with the
+        // user's credentials in its environment, so the digests recorded at install are checked
+        // here rather than trusted from `servers.json`.
+        crate::package::verify_installed_entry(config)
+            .map_err(|error| McpError::PackageIntegrity(error.to_string()))?;
         let spawn_spec = spawn_command_spec(config);
         let mut process_spec = loom_process::ProcessSpec::new(&spawn_spec.program);
         process_spec.args = spawn_spec.args;
@@ -796,12 +919,28 @@ impl StreamableHttpMcpClient {
         }
 
         let request_timeout = request_timeout.max(Duration::from_millis(1));
-        let client = HttpClient::builder()
+        let url = Url::parse(config.url.trim())
+            .map_err(|error| McpError::InvalidConfig(format!("invalid remote MCP URL: {error}")))?;
+        // `config.validate()` above rejected the schemes this policy would also reject, without
+        // touching the network. The check here is the one that needs a lookup: it resolves the
+        // host and refuses loopback, private, link-local and metadata addresses unless the
+        // operator opted in. A hostile DNS answer can still change between this check and the
+        // request, which is why redirects are refused as well.
+        let policy = remote_outbound_policy(local_servers_allowed());
+        validate_outbound_url(&url, &policy).map_err(|error| {
+            McpError::InvalidConfig(format!(
+                "remote MCP URL `{}` is not allowed: {error}",
+                config.url.trim()
+            ))
+        })?;
+
+        let builder = HttpClient::builder()
             .connect_timeout(request_timeout.min(Duration::from_secs(15)))
             .timeout(request_timeout)
-            .redirect(RedirectPolicy::none())
-            .build()
-            .map_err(|error| McpError::Http(error.to_string()))?;
+            .redirect(RedirectPolicy::none());
+        let client = apply_runtime_proxy(builder)
+            .and_then(|builder| builder.build().map_err(|error| error.to_string()))
+            .map_err(McpError::Http)?;
         let headers = build_remote_headers(&config.headers)?;
 
         Ok(Self {
@@ -920,7 +1059,7 @@ impl StreamableHttpMcpClient {
 }
 
 fn validate_remote_config(config: &McpServerConfig) -> McpResult<()> {
-    let url = reqwest::Url::parse(config.url.trim())
+    let url = Url::parse(config.url.trim())
         .map_err(|error| McpError::InvalidConfig(format!("invalid remote MCP URL: {error}")))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(McpError::InvalidConfig(
@@ -942,6 +1081,10 @@ fn validate_remote_config(config: &McpServerConfig) -> McpResult<()> {
             "remote MCP URL still contains unresolved template variables".to_owned(),
         ));
     }
+    // Both maps mean secrets end up on the wire: `headers` holds the values that are sent, and
+    // `credential_headers` names the vault entries the daemon resolves into them before a call.
+    let credentialed = !config.headers.is_empty() || !config.credential_headers.is_empty();
+    ensure_remote_scheme_allowed(&url, credentialed, local_servers_allowed())?;
     build_remote_headers(&config.headers).map(|_| ())
 }
 
@@ -1212,6 +1355,38 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_stdio_command_is_refused() {
+        // A relative path is completed by the daemon's working directory, so the same configuration
+        // starts different files depending on where the daemon was launched from.
+        let relative = McpServerConfig::new("local", "Local", "runtime/server.exe");
+        assert!(
+            matches!(relative.validate(), Err(McpError::InvalidConfig(message))
+                if message.contains("relative path")),
+            "a relative stdio command must be refused"
+        );
+        assert!(
+            McpServerConfig::new("local", "Local", "./server")
+                .validate()
+                .is_err(),
+            "an explicitly current-directory command must be refused too"
+        );
+
+        // A bare name is a `PATH` lookup, which is how servers are normally launched, and an absolute
+        // path says exactly what it means. Both stay valid.
+        McpServerConfig::new("local", "Local", "npx")
+            .validate()
+            .expect("a bare program name is a PATH lookup");
+        let absolute = if cfg!(windows) {
+            r"C:\tools\server.exe"
+        } else {
+            "/usr/bin/server"
+        };
+        McpServerConfig::new("local", "Local", absolute)
+            .validate()
+            .expect("an absolute command is unambiguous");
+    }
+
+    #[test]
     fn remote_server_config_rejects_embedded_credentials_and_templates() {
         let embedded =
             McpServerConfig::remote("remote", "Remote", "https://user:secret@example.test/mcp");
@@ -1226,6 +1401,59 @@ mod tests {
             templated.validate(),
             Err(McpError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn remote_config_requires_https_unless_the_operator_allows_a_loopback_endpoint() {
+        let public = Url::parse("http://mcp.example.test/mcp").expect("public URL");
+        let error = ensure_remote_scheme_allowed(&public, true, false)
+            .expect_err("credentialed plain http must be refused");
+        assert!(
+            error.to_string().contains("cleartext"),
+            "unexpected error: {error}"
+        );
+        assert!(ensure_remote_scheme_allowed(&public, false, false).is_err());
+        // Opting in covers the local machine only; a name that merely resolves to loopback is
+        // controlled by whoever answers DNS, so it stays refused.
+        assert!(ensure_remote_scheme_allowed(&public, false, true).is_err());
+
+        let loopback = Url::parse("http://127.0.0.1:9000/mcp").expect("loopback URL");
+        assert!(ensure_remote_scheme_allowed(&loopback, true, false).is_err());
+        assert!(ensure_remote_scheme_allowed(&loopback, true, true).is_ok());
+
+        let secure = Url::parse("https://mcp.example.test/mcp").expect("https URL");
+        assert!(ensure_remote_scheme_allowed(&secure, true, false).is_ok());
+    }
+
+    #[test]
+    fn remote_outbound_policy_refuses_local_private_and_metadata_addresses() {
+        let policy = remote_outbound_policy(false);
+        assert_eq!(
+            policy.max_redirects, 0,
+            "a redirect can move a credentialed request to a forbidden host"
+        );
+        for address in [
+            "http://127.0.0.1:9200/",
+            "https://127.0.0.1:9200/",
+            "https://192.168.1.1/admin",
+            "http://169.254.169.254/latest/meta-data/",
+            "https://[fd00::1]/mcp",
+        ] {
+            let url = Url::parse(address).expect("test URL");
+            assert!(
+                validate_outbound_url(&url, &policy).is_err(),
+                "{address} must be refused by default"
+            );
+        }
+
+        let opted_in = remote_outbound_policy(true);
+        for address in ["http://127.0.0.1:9200/", "https://192.168.1.1/admin"] {
+            let url = Url::parse(address).expect("test URL");
+            assert!(
+                validate_outbound_url(&url, &opted_in).is_ok(),
+                "{address} must be reachable once the operator opts in"
+            );
+        }
     }
 
     #[test]
@@ -1306,6 +1534,10 @@ mod tests {
 
     #[test]
     fn streamable_http_client_initializes_lists_and_calls_tools() {
+        // The fixture listens on loopback over plain http and the config carries a bearer token,
+        // which is exactly the combination the outbound policy refuses by default; a developer
+        // running a local MCP server opts in the same way.
+        configure_local_servers(true);
         let fixture = StreamableHttpFixture::start();
         let config = McpServerConfig::remote("remote", "Remote MCP", fixture.url())
             .header("Authorization", "Bearer fixture-token");

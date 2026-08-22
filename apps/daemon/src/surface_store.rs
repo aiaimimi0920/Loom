@@ -155,12 +155,18 @@ pub(crate) struct SurfaceInstanceStore {
     path: PathBuf,
     instances: BTreeMap<String, SurfaceInstanceRecord>,
     latest_continuous_events: BTreeMap<String, SurfaceEvent>,
+    /// The document bytes last known to be on disk, or `None` when nothing is known to be there
+    /// yet. `persist` compares the bytes it is about to write against this and returns without
+    /// touching the filesystem when they are identical, which is the common case: every mutation
+    /// of a temporary instance is filtered out of the document, and several of the per-event
+    /// mutations rewrite state that the document does not carry.
+    persisted: Option<Vec<u8>>,
 }
 
 impl SurfaceInstanceStore {
     pub(crate) fn new(path: impl AsRef<Path>) -> Result<Self, SurfaceStoreError> {
         let path = path.as_ref().to_path_buf();
-        let instances = match fs::read(&path) {
+        let stored = match fs::read(&path) {
             Ok(bytes) => {
                 let document = serde_json::from_slice::<SurfaceStoreDocument>(&bytes)?;
                 if document.schema_version != SURFACE_STORE_SCHEMA_VERSION {
@@ -168,21 +174,35 @@ impl SurfaceInstanceStore {
                         document.schema_version,
                     ));
                 }
-                document
-                    .instances
-                    .into_iter()
-                    .filter(|(_, record)| {
-                        record.descriptor.persistence == SurfaceInstancePersistence::Persistent
-                    })
-                    .collect()
+                Some(
+                    document
+                        .instances
+                        .into_iter()
+                        .filter(|(_, record)| {
+                            record.descriptor.persistence == SurfaceInstancePersistence::Persistent
+                        })
+                        .collect(),
+                )
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
+        };
+        // A store that found no file leaves `persisted` unset, so its first persist writes the file
+        // even if the projection happens to be empty. A store that loaded one records what that file
+        // is expected to contain, so an opening run of mutations that changes nothing persistent
+        // writes nothing.
+        let (instances, persisted) = match stored {
+            Some(instances) => {
+                let bytes = document_bytes(&instances)?;
+                (instances, Some(bytes))
+            }
+            None => (BTreeMap::new(), None),
         };
         Ok(Self {
             path,
             instances,
             latest_continuous_events: BTreeMap::new(),
+            persisted,
         })
     }
 
@@ -192,6 +212,17 @@ impl SurfaceInstanceStore {
 
     pub(crate) fn get(&self, instance_id: &str) -> Option<SurfaceInstanceRecord> {
         self.instances.get(instance_id).cloned()
+    }
+
+    /// Returns only the locked package descriptor of an instance.
+    ///
+    /// `get` clones the whole record, including its pending events, acks and authoritative state. A
+    /// caller that only needs to know which Art package an instance is locked to — so that it can
+    /// resolve that package with this lock released — should not pay for the rest.
+    pub(crate) fn descriptor(&self, instance_id: &str) -> Option<SurfaceInstanceDescriptor> {
+        self.instances
+            .get(instance_id)
+            .map(|instance| instance.descriptor.clone())
     }
 
     pub(crate) fn event_ack(&self, instance_id: &str, event_id: &str) -> Option<SurfaceActionAck> {
@@ -959,6 +990,18 @@ impl SurfaceInstanceStore {
         &mut self,
     ) -> Result<Vec<SurfaceActionAck>, SurfaceStoreError> {
         let now = unix_time_millis();
+        // `recover_pending` ticks this on a timer, and almost every tick has nothing to do. The scan
+        // is read-only, so the common case no longer clones the whole instance map inside a
+        // transaction just to discover that it changed nothing.
+        let any_expired = self.instances.values().any(|instance| {
+            instance
+                .pending_confirmations
+                .values()
+                .any(|pending| pending.request.expires_at_ms <= now)
+        });
+        if !any_expired {
+            return Ok(Vec::new());
+        }
         self.transaction(|instances| {
             let mut expired = Vec::new();
             for instance in instances.values_mut() {
@@ -1102,24 +1145,19 @@ impl SurfaceInstanceStore {
         Ok(output)
     }
 
-    fn persist(&self) -> Result<(), SurfaceStoreError> {
+    fn persist(&mut self) -> Result<(), SurfaceStoreError> {
         let parent = self.path.parent().ok_or_else(|| {
             SurfaceStoreError::Invalid("Surface store path has no parent".to_owned())
         })?;
+        let bytes = document_bytes(&self.instances)?;
+        // Serializing is cheap next to `create_dir_all` plus a temporary file plus an `fsync` plus an
+        // atomic replace, so the comparison happens first and the filesystem is only touched when the
+        // projection actually moved. Nothing is deferred: whatever does change is durable before the
+        // transaction that changed it returns, which `recover_pending` depends on.
+        if self.persisted.as_deref() == Some(bytes.as_slice()) {
+            return Ok(());
+        }
         fs::create_dir_all(parent)?;
-        let document = SurfaceStoreDocument {
-            schema_version: SURFACE_STORE_SCHEMA_VERSION,
-            instances: self
-                .instances
-                .iter()
-                .filter(|(_, record)| {
-                    record.descriptor.persistence == SurfaceInstancePersistence::Persistent
-                })
-                .map(|(id, record)| (id.clone(), record.clone()))
-                .collect(),
-        };
-        let mut bytes = serde_json::to_vec_pretty(&document)?;
-        bytes.push(b'\n');
         let (temporary, mut file) = create_sensitive_temporary(&self.path)?;
         let result = (|| -> Result<(), SurfaceStoreError> {
             file.write_all(&bytes)?;
@@ -1130,9 +1168,33 @@ impl SurfaceInstanceStore {
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
+            return result;
         }
+        self.persisted = Some(bytes);
         result
     }
+}
+
+/// Serializes the persistent projection of `instances` exactly as `persist` writes it.
+///
+/// Temporary instances are dropped here rather than at the call sites, so a mutation that only
+/// touches one of them produces the same bytes as before it ran and `persist` can skip its write.
+fn document_bytes(
+    instances: &BTreeMap<String, SurfaceInstanceRecord>,
+) -> Result<Vec<u8>, SurfaceStoreError> {
+    let document = SurfaceStoreDocument {
+        schema_version: SURFACE_STORE_SCHEMA_VERSION,
+        instances: instances
+            .iter()
+            .filter(|(_, record)| {
+                record.descriptor.persistence == SurfaceInstancePersistence::Persistent
+            })
+            .map(|(id, record)| (id.clone(), record.clone()))
+            .collect(),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&document)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn instance_mut<'a>(
@@ -1534,6 +1596,21 @@ fn pointer_tokens(path: &str) -> Result<Vec<String>, SurfaceStoreError> {
         .collect())
 }
 
+/// Parses one pointer token as an RFC 6901 array index.
+///
+/// The grammar is deliberately narrow: `0`, or a digit string with no leading zero. `01`, `+1`,
+/// ` 1` and `1.0` are not indices, so a patch that means to address an object key never lands on
+/// an array element by accident.
+fn pointer_array_index(token: &str) -> Option<usize> {
+    if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if token.len() > 1 && token.starts_with('0') {
+        return None;
+    }
+    token.parse::<usize>().ok()
+}
+
 fn set_json_pointer(target: &mut Value, path: &str, value: Value) -> Result<(), SurfaceStoreError> {
     let tokens = pointer_tokens(path)?;
     let (last, parents) = tokens
@@ -1541,22 +1618,72 @@ fn set_json_pointer(target: &mut Value, path: &str, value: Value) -> Result<(), 
         .ok_or_else(|| SurfaceStoreError::Invalid("cannot replace the entire node".to_owned()))?;
     let mut cursor = target;
     for token in parents {
-        if !cursor.is_object() {
+        // A missing intermediate object is created, which is what makes `/props/a/b` work on a node
+        // that has no `a` yet. An intermediate that exists but is the wrong kind is an error: the
+        // previous code replaced it with `{}`, so `/props/items/0` on `items: [a, b, c]` quietly
+        // turned the array into `{"0": ...}` and dropped the other two elements.
+        if cursor.is_null() {
             *cursor = Value::Object(Default::default());
         }
-        cursor = cursor
-            .as_object_mut()
-            .expect("object initialized")
-            .entry(token.clone())
-            .or_insert_with(|| Value::Object(Default::default()));
+        cursor = match cursor {
+            Value::Object(map) => map
+                .entry(token.clone())
+                .or_insert_with(|| Value::Object(Default::default())),
+            Value::Array(items) => {
+                let count = items.len();
+                let index = pointer_array_index(token).ok_or_else(|| {
+                    SurfaceStoreError::Invalid(format!(
+                        "node patch path segment `{token}` is not an array index"
+                    ))
+                })?;
+                items.get_mut(index).ok_or_else(|| {
+                    SurfaceStoreError::Invalid(format!(
+                        "node patch path index {index} is out of range for an array of {count}"
+                    ))
+                })?
+            }
+            _ => {
+                return Err(SurfaceStoreError::Invalid(format!(
+                    "node patch path segment `{token}` traverses a value that is not an object or array"
+                )))
+            }
+        };
     }
-    if !cursor.is_object() {
+    if cursor.is_null() {
         *cursor = Value::Object(Default::default());
     }
-    cursor
-        .as_object_mut()
-        .expect("object initialized")
-        .insert(last.clone(), value);
+    match cursor {
+        Value::Object(map) => {
+            map.insert(last.clone(), value);
+        }
+        Value::Array(items) => {
+            // `-` is RFC 6901's "the element after the last one", i.e. an append.
+            if last == "-" {
+                items.push(value);
+            } else {
+                let count = items.len();
+                let index = pointer_array_index(last).ok_or_else(|| {
+                    SurfaceStoreError::Invalid(format!(
+                        "node patch path segment `{last}` is not an array index"
+                    ))
+                })?;
+                match index.cmp(&count) {
+                    std::cmp::Ordering::Less => items[index] = value,
+                    std::cmp::Ordering::Equal => items.push(value),
+                    std::cmp::Ordering::Greater => {
+                        return Err(SurfaceStoreError::Invalid(format!(
+                            "node patch path index {index} is out of range for an array of {count}"
+                        )))
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(SurfaceStoreError::Invalid(format!(
+                "node patch path segment `{last}` targets a value that is not an object or array"
+            )))
+        }
+    }
     Ok(())
 }
 
@@ -1567,16 +1694,53 @@ fn remove_json_pointer(target: &mut Value, path: &str) -> Result<(), SurfaceStor
         .ok_or_else(|| SurfaceStoreError::Invalid("cannot remove the entire node".to_owned()))?;
     let mut cursor = target;
     for token in parents {
-        let Some(next) = cursor
-            .as_object_mut()
-            .and_then(|object| object.get_mut(token))
-        else {
-            return Ok(());
+        // Removing something that is not there stays a no-op, so a repeated patch is harmless.
+        // Removing *through* a value of the wrong kind is an error rather than the silent success
+        // the previous code returned for every array on the way down.
+        cursor = match cursor {
+            Value::Object(map) => match map.get_mut(token) {
+                Some(next) => next,
+                None => return Ok(()),
+            },
+            Value::Array(items) => {
+                let index = pointer_array_index(token).ok_or_else(|| {
+                    SurfaceStoreError::Invalid(format!(
+                        "node patch path segment `{token}` is not an array index"
+                    ))
+                })?;
+                match items.get_mut(index) {
+                    Some(next) => next,
+                    None => return Ok(()),
+                }
+            }
+            Value::Null => return Ok(()),
+            _ => {
+                return Err(SurfaceStoreError::Invalid(format!(
+                    "node patch path segment `{token}` traverses a value that is not an object or array"
+                )))
+            }
         };
-        cursor = next;
     }
-    if let Some(object) = cursor.as_object_mut() {
-        object.remove(last);
+    match cursor {
+        Value::Object(map) => {
+            map.remove(last);
+        }
+        Value::Array(items) => {
+            let index = pointer_array_index(last).ok_or_else(|| {
+                SurfaceStoreError::Invalid(format!(
+                    "node patch path segment `{last}` is not an array index"
+                ))
+            })?;
+            if index < items.len() {
+                items.remove(index);
+            }
+        }
+        Value::Null => {}
+        _ => {
+            return Err(SurfaceStoreError::Invalid(format!(
+                "node patch path segment `{last}` targets a value that is not an object or array"
+            )))
+        }
     }
     Ok(())
 }
@@ -1632,6 +1796,101 @@ mod tests {
             resources: Vec::new(),
             resource_leases: Vec::new(),
         }
+    }
+
+    #[test]
+    fn json_pointer_set_addresses_array_elements_instead_of_destroying_the_array() {
+        let mut target = serde_json::json!({"props": {"items": ["a", "b", "c"]}});
+        set_json_pointer(&mut target, "/props/items/1", serde_json::json!("B"))
+            .expect("replace an array element");
+        assert_eq!(target["props"]["items"], serde_json::json!(["a", "B", "c"]));
+
+        set_json_pointer(&mut target, "/props/items/-", serde_json::json!("d"))
+            .expect("append with the dash token");
+        assert_eq!(
+            target["props"]["items"],
+            serde_json::json!(["a", "B", "c", "d"])
+        );
+
+        set_json_pointer(&mut target, "/props/items/4", serde_json::json!("e"))
+            .expect("append at the end index");
+        assert_eq!(
+            target["props"]["items"],
+            serde_json::json!(["a", "B", "c", "d", "e"])
+        );
+
+        let mut nested = serde_json::json!({"props": {"rows": [{"label": "one"}]}});
+        set_json_pointer(&mut nested, "/props/rows/0/label", serde_json::json!("two"))
+            .expect("traverse through an array element");
+        assert_eq!(
+            nested["props"]["rows"],
+            serde_json::json!([{"label": "two"}])
+        );
+    }
+
+    #[test]
+    fn json_pointer_set_rejects_bad_indexes_and_scalar_containers() {
+        let mut target = serde_json::json!({"props": {"items": ["a"], "title": "hi"}});
+        for path in [
+            "/props/items/7",
+            "/props/items/01",
+            "/props/items/last",
+            "/props/items/7/label",
+            "/props/items/x/label",
+            "/props/title/bold",
+        ] {
+            let error = set_json_pointer(&mut target, path, serde_json::json!(1))
+                .expect_err("bad pointer must be rejected");
+            assert!(
+                matches!(error, SurfaceStoreError::Invalid(_)),
+                "{path} produced {error:?}"
+            );
+        }
+        assert_eq!(target["props"]["items"], serde_json::json!(["a"]));
+        assert_eq!(target["props"]["title"], serde_json::json!("hi"));
+    }
+
+    #[test]
+    fn json_pointer_remove_deletes_array_elements_and_stays_a_no_op_when_absent() {
+        let mut target = serde_json::json!({"props": {"items": ["a", "b", "c"]}});
+        remove_json_pointer(&mut target, "/props/items/1").expect("remove an array element");
+        assert_eq!(target["props"]["items"], serde_json::json!(["a", "c"]));
+
+        remove_json_pointer(&mut target, "/props/items/9").expect("out of range is a no-op");
+        remove_json_pointer(&mut target, "/props/missing/0").expect("missing branch is a no-op");
+        remove_json_pointer(&mut target, "/props/items/5/label")
+            .expect("missing array element on the way down is a no-op");
+        assert_eq!(target["props"]["items"], serde_json::json!(["a", "c"]));
+
+        let error = remove_json_pointer(&mut target, "/props/items/last")
+            .expect_err("a non-index token on an array must be rejected");
+        assert!(matches!(error, SurfaceStoreError::Invalid(_)));
+        let error = remove_json_pointer(&mut target, "/props/items/0/label")
+            .expect_err("traversing through a string must be rejected");
+        assert!(matches!(error, SurfaceStoreError::Invalid(_)));
+        assert_eq!(target["props"]["items"], serde_json::json!(["a", "c"]));
+    }
+
+    #[test]
+    fn node_patch_keeps_sibling_array_elements() {
+        let mut root = SurfaceNode {
+            id: "root".to_owned(),
+            node_type: "column".to_owned(),
+            props: serde_json::json!({"items": ["a", "b", "c"]}),
+            ..SurfaceNode::default()
+        };
+        mutate_node_json(
+            &mut root,
+            "root",
+            "/props/items/2",
+            Some(serde_json::json!("C")),
+        )
+        .expect("patch an array element through the node encoder");
+        assert_eq!(root.props["items"], serde_json::json!(["a", "b", "C"]));
+
+        mutate_node_json(&mut root, "root", "/props/items/0", None)
+            .expect("remove an array element through the node encoder");
+        assert_eq!(root.props["items"], serde_json::json!(["b", "C"]));
     }
 
     #[test]
@@ -2058,6 +2317,168 @@ mod tests {
         assert_eq!(disposed.lifecycle, SurfaceLifecycleState::Disposed);
         assert!(disposed.snapshot.is_none());
         assert!(disposed.host_capabilities.is_none());
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    /// Bytes that no store write could ever produce, planted over the store file so that the next
+    /// real write is observable: if the file still holds them, `persist` skipped the filesystem.
+    const NOT_A_STORE_DOCUMENT: &[u8] = b"not a Surface store document\n";
+
+    #[test]
+    fn a_mutation_that_leaves_the_persistent_projection_alone_writes_nothing() {
+        let path = temp_path("persist-skip");
+        let mut store = SurfaceInstanceStore::new(&path).expect("open store");
+        let persistent = create(&mut store);
+        assert!(
+            path.exists(),
+            "creating a persistent instance must write the store"
+        );
+        fs::write(&path, NOT_A_STORE_DOCUMENT).expect("plant sentinel bytes");
+
+        let temporary = store
+            .create(
+                "neuro.official/stock-price",
+                "1.2.3",
+                &"b".repeat(64),
+                1,
+                SurfaceInstancePersistence::Temporary,
+                SurfaceInstanceMode::Independent,
+            )
+            .expect("create temporary instance");
+        store
+            .attach(
+                &temporary.descriptor.instance_id,
+                "hook-node:stock",
+                "device-000-local",
+                None,
+            )
+            .expect("attach to the temporary instance");
+        assert_eq!(
+            fs::read(&path).expect("read store file"),
+            NOT_A_STORE_DOCUMENT,
+            "temporary instances are filtered out of the document, so nothing changed on disk"
+        );
+
+        let attachment = store
+            .attach(
+                &persistent.descriptor.instance_id,
+                "hook-node:stock",
+                "device-000-local",
+                None,
+            )
+            .expect("attach to the persistent instance");
+        assert_ne!(
+            fs::read(&path).expect("read store file"),
+            NOT_A_STORE_DOCUMENT,
+            "a change to a persistent instance must still be written"
+        );
+
+        let reloaded = SurfaceInstanceStore::new(&path).expect("reload store");
+        let record = reloaded
+            .get(&persistent.descriptor.instance_id)
+            .expect("persistent instance survives the reload");
+        assert!(record
+            .attachments
+            .contains_key(&attachment.descriptor.attachment_id));
+        assert!(reloaded.get(&temporary.descriptor.instance_id).is_none());
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn a_store_that_found_no_file_writes_on_its_first_persist() {
+        let path = temp_path("first-persist");
+        let mut store = SurfaceInstanceStore::new(&path).expect("open store");
+        assert!(!path.exists());
+        store
+            .create(
+                "neuro.official/stock-price",
+                "1.2.3",
+                &"c".repeat(64),
+                1,
+                SurfaceInstancePersistence::Temporary,
+                SurfaceInstanceMode::Independent,
+            )
+            .expect("create temporary instance");
+        assert!(
+            path.exists(),
+            "the first persist creates the file even when the projection is empty"
+        );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn an_expiry_tick_writes_only_when_something_expired() {
+        let path = temp_path("expire-tick");
+        let mut store = SurfaceInstanceStore::new(&path).expect("open store");
+        let record = create(&mut store);
+        let attachment = store
+            .attach(
+                &record.descriptor.instance_id,
+                "hook-node:stock",
+                "device-000-local",
+                None,
+            )
+            .expect("attach Surface");
+        store
+            .put_snapshot(
+                &record.descriptor.instance_id,
+                snapshot(&record, &attachment.descriptor.attachment_id),
+            )
+            .expect("mount Surface");
+        let event = SurfaceEvent {
+            protocol_version: SURFACE_PROTOCOL_VERSION.to_owned(),
+            instance_id: record.descriptor.instance_id.clone(),
+            attachment_id: attachment.descriptor.attachment_id.clone(),
+            event_id: "event:expire-one".to_owned(),
+            node_id: "price".to_owned(),
+            event: "click".to_owned(),
+            action: Some("refresh".to_owned()),
+            class: SurfaceEventClass::Discrete,
+            generation: 0,
+            base_revision: 1,
+            payload: serde_json::json!({"symbol": "MSFT"}),
+        };
+        store
+            .await_confirmation(
+                &record.descriptor.instance_id,
+                event.clone(),
+                SurfaceActionRisk::High,
+            )
+            .expect("await confirmation");
+        fs::write(&path, NOT_A_STORE_DOCUMENT).expect("plant sentinel bytes");
+
+        assert!(store
+            .expire_confirmations()
+            .expect("run an idle expiry tick")
+            .is_empty());
+        assert_eq!(
+            fs::read(&path).expect("read store file"),
+            NOT_A_STORE_DOCUMENT,
+            "a tick with nothing to expire must not write"
+        );
+
+        for pending in store
+            .instances
+            .get_mut(&record.descriptor.instance_id)
+            .expect("instance")
+            .pending_confirmations
+            .values_mut()
+        {
+            pending.request.expires_at_ms = 1;
+        }
+        let expired = store.expire_confirmations().expect("run an expiry tick");
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].status, SurfaceActionStatus::Failed);
+        assert_eq!(
+            expired[0].error.as_ref().map(|error| error.code.as_str()),
+            Some("surface_confirmation_expired")
+        );
+        assert_ne!(
+            fs::read(&path).expect("read store file"),
+            NOT_A_STORE_DOCUMENT,
+            "an expiry that changed the document must be written"
+        );
+        assert!(store.pending_confirmations().is_empty());
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }
