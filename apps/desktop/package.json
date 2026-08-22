@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "dev": "rsbuild dev --port 1423",
-    "test": "node --test src/services/*.test.ts",
+    "test": "node --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "build": "rsbuild build",
     "preview": "rsbuild preview",
     "tauri": "tauri",
