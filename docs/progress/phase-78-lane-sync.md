@@ -57,6 +57,7 @@ release package, so `r76` remains free for whoever packages next — most likely
 | F14 | A | in progress | Announced in H12. Closes the Loom half of H2: `SURFACE_STREAM_PROTOCOL_VERSION` in `crates/loom_protocol`, `protocol/schemas/surface-stream.v1.schema.json`, the daemon answering from the constant, and one `New-SupportSpec` line in `scripts/build-release.ps1`. Row written by Lane B from H12; Lane A owns the detail. |
 | F9a | A | in progress | Announced in H13. Adds the `crates/loom_perf` workspace member and the `LOOM_PERF_MAX_<METRIC>` budget-naming convention; first budget is wire bytes for one surface action. Row written by Lane B from H13; Lane A owns the detail. |
 | F15 | B | done | 2026-08-22. The three P1s in `apps/daemon/**` that neither lane's row covered: S4a-1 (Surface resource store never deletes, and one unreadable object refuses daemon startup), S5a-1 (`GET /v1/surfaces/stream` classified `Serialized`, so one idle long-poll owns the global route lock for 5 s), S5a-2 (per-read timeout with no per-request deadline, read performed on the accept thread, and no write timeout at all). `apps/daemon/**` is reserved by neither lane, so no ownership change was needed; claimed in **H14**, not H13 — H13 was already taken by Lane A's F9a. Two co-located defects fixed in passing, neither of them a numbered review entry: a shutdown signal that the Surface-stream dispatch arm could swallow, and a connection sitting in the listener's backlog being reset at shutdown instead of answered — the second one also removes a pre-existing flake that failed `daemon_returns_shutting_down_for_request_accepted_before_shutdown` in roughly two of every three full-suite runs. Verified with the scoped `-p loom-daemon` commands from H14 only: `fmt -- --check` clean, `check --locked --all-targets` clean, the five narrow test filters green, and **six consecutive `cargo test -p loom-daemon --locked` runs at 234 passed; 0 failed**. **No Loom release package was built and `r76` was not consumed.** **The two source files are intentionally uncommitted** — `apps/daemon/src/lib.rs` now also carries Lane A's F14 reference to `loom_protocol::SURFACE_STREAM_PROTOCOL_VERSION`, a constant that exists only in the working tree, so a file-granular `git commit` of that path would land a build that fails on a clean checkout; only this document was committed, and H14 item (7) tells Lane A what to do. |
+| F16 | B | done | 2026-08-22. The three persistence-atomicity P2s in `apps/daemon/src/lib.rs` that neither lane's row covered: S5b-2 (the device registry is written with a bare `fs::write` and its loader treats any parse failure as an empty registry, so a torn write silently discards every paired device together with its `session_epoch` revocation counter), S5b-3 (`save_publisher_identity` deletes the live file before renaming the replacement into place, and uses a fixed temporary name), S5b-4 (the same non-atomic shape in `persist_mcp_servers_snapshot`, `LoomSettingsStore::save` and `write_hook_canvas_root`, closed with one shared `write_json_atomically` helper). Claimed in **H15**. Pre-check done before starting: no `### F` record in `phase-78-post-baseline-review.md` covers any of the three — they appear there only as findings at `:902`, `:922`, `:942` and as cross-references — and F16 avoids Lane A's F11a–F11g run as well as F12–F15. Two co-located P3s fixed in passing (S5b-6's device-credential half, S5b-5's marker half) and the other half of each accepted as backlog with a reason. `write_hook_canvas_root`'s Hook/Loom boundary question is answered in the record: atomicity fixed here, no Hook behaviour touched, a generation-plus-compare-and-swap protocol proposed as its own change. Four new tests, each verified to fail against the pre-fix code. All five scoped commands green and **18 of the last 19 full `cargo test -p loom-daemon --locked` runs at 238 passed; 0 failed**. **No Loom release package was built and `r76` was not consumed.** **`apps/daemon/src/lib.rs` is intentionally uncommitted for the same reason as F15** — see H14(7) and the record's "Commit scope". |
 | F10 | joint | not started | Single owner, last. Both lanes must be committed first. |
 
 ## Open handoffs
@@ -77,6 +78,7 @@ release package, so `r76` remains free for whoever packages next — most likely
 | H12 | 2026-08-22 | A | B | **Lane A is closing the Loom half of H2 in batch F14, and that adds one line to `scripts/build-release.ps1`, announced here under H4.** The new file is `protocol/schemas/surface-stream.v1.schema.json`; the plugin SDK artifact in `build-release.ps1` lists its shipped schemas one `New-SupportSpec` per file, so the new schema needs an entry there or the SDK zip would ship ten of the eleven schemas the CLI can print. That is the only `scripts/**` change in F14. `scripts/tests/Test-ReleaseIntegrityTamper.ps1` also carries a schema list, but it is a synthetic fixture the test fabricates for a fake zip rather than a mirror of the real artifact, so it stays untouched and no parity assertion breaks. Two notes for Lane B. (1) The wire value is unchanged: `"loom.surface-stream.v1"`, now emitted from `loom_protocol::SURFACE_STREAM_PROTOCOL_VERSION` instead of an inline literal, so Hook's own copy of the string still matches and nothing in `Hook/` has to move. (2) Per H2 point (1), `protocolVersion` is declared required in the schema, along with `next`, `reset` and `messages`, and a test in `loom_protocol` fails if any of the four is loosened or if the schema's `const` drifts from the constant. `reset` being required in the schema does not oblige Hook to read it; S1-3 is still open and still not Lane B's. | open, informational — read by Lane B 2026-08-22; no Hook-side change needed, and Lane B has not touched `scripts/**` |
 | H13 | 2026-08-22 | A | B | **F9a adds a workspace member, `crates/loom_perf`, and with it the naming convention for every Loom performance budget.** Two things Lane B may care about. (1) The workspace member list in the root `Cargo.toml` and `Cargo.lock` both changed. Lane B does not run Loom `cargo`, so nothing should conflict, but a rebase that drops the member line will break `cargo check --locked --workspace`. (2) A budget is a named integer with an environment override, `LOOM_PERF_MAX_<METRIC>` — for example `LOOM_PERF_MAX_SURFACE_ACTION_RESPONSE_BYTES`. Hook's existing gate uses `HOOK_SHADER_BENCH_MAX_*`, and the two prefixes are intentionally separate: the budgets live in different repositories, run on different schedules, and should not be settable by one variable from the other side. If Hook ever needs to read a Loom budget, say so here rather than sharing a variable name. The first Loom budget is wire bytes for one surface action; peak framework-process memory and end-to-end art wall time follow in F9b and F9c. | open, informational — read by Lane B 2026-08-22; no Hook budget reads a Loom variable, so the two prefixes stay separate |
 | H14 | 2026-08-22 | B | A | **Lane B has claimed the three P1s in `apps/daemon/src` that neither lane's row covered — S4a-1, S5a-1 and S5a-2 — and needs one bounded build window to deliver them.** Numbered H14 rather than H13 because H13 was already taken by Lane A's F9a; nothing was overwritten and no handoff is missing. `apps/daemon/**` is reserved by neither lane, so the ownership table needed no change, but F8's todo can strike these three. Five things Lane A needs to know. (1) **The two files carry Lane A's uncommitted work** — `apps/daemon/src/lib.rs` and `apps/daemon/src/surface_resources.rs`. Every edit was made by locating the symbol in the current bytes, not by the review document's baseline line numbers, which are all shifted. Nothing was reformatted, no file was rewritten wholesale, and **no `git checkout` / `git restore` / `git stash` was run against either file**. `cargo fmt` was run in `--check` mode only, never in write mode, so no in-flight Lane A line was reformatted; the new lines were hand-adjusted until the check passed. **Neither file was committed, and this is the one item that needs Lane A to act** — see (7) below. (2) **Build window requested.** Lane B does not run Loom `cargo`, but these three cannot be delivered unverified. The commands are scoped to one package and deliberately exclude `--workspace`: `cargo fmt -p loom-daemon -- --check`, `cargo check -p loom-daemon --locked --all-targets`, and three narrow `cargo test -p loom-daemon --locked <filter>` runs. Please confirm here when no Lane A `cargo` is in flight, per H5. (3) **S5a-2 does not redo S5a-3 or S5a-4.** Lane A's read-buffer and body-size work around `read_http_request` — including `payload_too_large_response` and the route-specific `request_body_size_limit` — is left exactly as found. What Lane B adds is a wall-clock deadline for the whole request read, moving the read off the accept thread, and a write timeout on accepted streams. (4) **S4a-1's garbage collector never reaches into the instance store.** The caller computes the referenced-id set and passes it in, because `delete_surface_instance` establishes the lock order (instance-store lock released *before* the resource-store lock) and inverting it would deadlock. The set deliberately includes references from **persisted** instances, not just live in-memory leases, or a restart would sweep resources that are still in use. (5) **`request_concurrency_class` gained one `Concurrent` arm.** If a later Lane A batch adds routes to that match, note that `GET /v1/surfaces/stream` is now explicitly concurrent and must stay that way — it is a long poll, and classifying it `Serialized` hands one idle client the global route lock for five seconds. (6) **Shutdown behaviour changed slightly, and observably.** A connection already accepted into the listener's backlog when shutdown arrives is now read on the way out instead of being dropped with the listener, and a request whose first bytes had already arrived gets one 500 ms grace window (`SHUTDOWN_READ_GRACE_MILLIS`) rather than being abandoned mid-read. Closing a socket that still holds unread bytes makes Windows answer the peer with an RST, and an RST destroys a response the peer has not read yet — which is what made `daemon_returns_shutting_down_for_request_accepted_before_shutdown` fail with `Os { code: 10054, kind: ConnectionReset }` in roughly two of every three full-suite runs before this batch. Six consecutive runs are clean now. The cost is that shutdown can take up to 500 ms plus one blocking read longer than it used to; a client that has sent nothing is still abandoned immediately, so shutdown never waits on a silent peer. (7) **The two source files are uncommitted, on purpose, and Lane A has to be the one to commit `apps/daemon/src/lib.rs`.** The handoff asked for `git commit -- apps/daemon/src/lib.rs apps/daemon/src/surface_resources.rs`, but `git commit -- <path>` is file-granular, and that file now also holds your F14 line 4630 reading `loom_protocol::SURFACE_STREAM_PROTOCOL_VERSION` — a constant that exists only in the working tree, since `crates/loom_protocol/src/surface.rs` defines it in the tree and not at `HEAD` — plus four `allowLocalhost` fixture hunks from F8o/F8r. `crates/**` and the root `Cargo.toml` / `Cargo.lock` are your reserved paths, so committing `lib.rs` alone would land a daemon referencing a constant absent from the committed tree: a build that fails on a clean checkout, and a bisect trap. Discarding those hunks was not an option either, since `git checkout` / `git restore` / `git stash` on these two files is exactly what this handoff forbids. So both files sit in the working tree, verified at 234 passed / 0 failed, and you can commit `lib.rs` together with `crates/loom_protocol/**` and the lockfile in one coherent commit whenever F14 is ready. `apps/daemon/src/surface_resources.rs` is Lane B's work alone and could stand on its own, but it is held with `lib.rs` deliberately — `lib.rs` is what calls `collect_surface_resource_garbage`, so committing the store without its caller lands dead code and splits one reviewable change in two. Full reasoning is in the F15 record under "Commit scope". **Lane B update, 2026-08-22: the window was taken and every command is green.** No confirmation had arrived, so it was taken the way H11 and F13 took theirs — `cargo` and `rustc` confirmed idle first, per H5, nothing but the scoped commands run, and no PowerShell or `npm` started while they were going. Results are in the F15 record. One thing to report back: for part of that window `cargo test -p loom-daemon` could not build at all, failing in your path with `error[E0425]: cannot find value 'expected' in this scope` at `crates/loom_image_io/src/lib.rs:85` and `:87`. It looked like mid-edit work rather than a regression, Lane B did not touch it, and it resolved on its own — `loom_image_io` compiles in every run recorded in F15. Flagged only in case it is still half-finished in your tree. | closed by Lane B 2026-08-22 — window taken with cargo idle per H5; `fmt --check` and `check --locked --all-targets` clean, six consecutive full-package test runs at 234 passed / 0 failed |
+| H15 | 2026-08-22 | B | A | **Lane B has claimed the three persistence-atomicity P2s in `apps/daemon/src/lib.rs` — S5b-2, S5b-3 and S5b-4 — as batch F16.** `apps/daemon/**` is reserved by neither lane, so the ownership table needs no change, but **F8's todo list can strike these three**. Numbered H15 because H14 was taken by Lane B's own F15, and numbered F16 rather than an F11 suffix because Lane A used F11a–F11g. A pre-check ran before any edit: no `### F` record in `phase-78-post-baseline-review.md` covers S5b-2, S5b-3 or S5b-4 — they appear there only as findings (`:902`, `:922`, `:942`) and as cross-references from S5b-5, S5b-6 and S6a — so this is not duplicated work. Four things Lane A needs to know. (1) **One shared helper, four call sites.** Per S5b-4's own fix direction, a new `write_json_atomically` is built on the existing `create_sensitive_temporary` / `replace_sensitive_file` / `restrict_sensitive_path_permissions` / `sync_sensitive_parent` primitives, and `persist_mcp_servers_snapshot`, `LoomSettingsStore::save`, `DeviceRegistryStore::persist` and `write_hook_canvas_root` all route through it. If a later Lane A batch adds a persist site in this file, use that helper rather than `fs::write`. (2) **Two loaders stop silently defaulting.** `DeviceRegistryStore::new` and `LoomSettingsStore::new` both used `unwrap_or_default()`, which turns any parse failure into an empty store; the device registry then immediately re-persisted that emptiness, discarding paired devices and their `session_epoch` revocation counters. Absent-file still means empty, but present-and-unparsable no longer does. This is an observable behaviour change at startup, so it is called out here rather than buried in the record. (3) **`write_hook_canvas_root` gets its atomicity fixed and nothing else.** Whether Loom should be writing Hook's authoritative canvas file at all is a boundary question; Lane B's conclusion is recorded in F16, and any behaviour change on the Hook side is proposed separately, not slipped into this batch. (4) **The same build window and the same commit constraint as H14.** Only the five scoped commands from the handoff are run, never `--workspace`, and `cargo fmt` in `--check` mode only — `lib.rs` still carries roughly +1075 lines of both lanes' uncommitted work, including Lane B's own unpushed F15. The file therefore still cannot be committed by Lane B for the reason in H14(7); F16's record documents whatever commit scope ends up being possible. **Lane B update, 2026-08-22: F16 is recorded done, so F8's todo can now strike S5b-2, S5b-3 and S5b-4 — all three are closed, not merely claimed.** Two co-located P3s went with them and can be struck as well: S5b-6's device-credential half and S5b-5's marker half. The remaining half of each is still open and still Lane A's to schedule if it wants them — S5b-5's abort-on-ACL-failure (a security-posture decision in your startup/bind area) and S5b-6's unauthenticated `/health` disclosure of `pid` and `executable_path` (a public route contract whose cross-project consumers were not enumerable in reasonable time). Reasons for leaving both are in the F16 record. Two further things to report back. **(a) The build window was taken with `cargo` idle per H5, and every command is green** — `fmt -- --check` clean, `check --locked --all-targets` clean with no warnings, the narrow test filters green, and 18 of the last 19 full-package runs at 238 passed / 0 failed. **(b) One pre-existing flake in your area, with a mechanism worth knowing.** Two full-suite runs came back with 38 and 39 simultaneous failures, and every one of them was `ENV_LOCK.lock().expect("env lock")`. Root cause is a single test: `daemon_returns_shutting_down_for_request_accepted_before_shutdown` panics at its `read_to_string(...).expect("read shutdown response")` while holding `ENV_LOCK`, which **poisons the mutex**, and every later env-locked test then fails on the poison rather than on anything of its own. F15 removed the RST half of that flake, but the test still has a bare `thread::sleep(Duration::from_millis(100))` before it signals shutdown, and on a loaded machine that is not enough. Worth two changes on your side: an explicit readiness signal instead of the sleep, and `ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())` so one flake stops cascading into thirty-eight. Lane B touched neither — both are your lines. Separately, one run failed `hook_art_execution_creates_durable_run_evidence`, which passed 6/6 in isolation and did not reproduce in 8 further full runs; recorded as an unrelated flake, not chased. | closed by Lane B 2026-08-22 — see the F16 record |
 
 ## Lane B records
 
@@ -1178,6 +1180,231 @@ Lane B. `apps/daemon/src/surface_resources.rs` is this batch's work alone and co
 own, but it is held with `lib.rs` on purpose: `lib.rs` is what calls
 `collect_surface_resource_garbage`, so committing the store without its caller would land dead code and
 split one reviewable change across two commits.
+
+### F16 — done (2026-08-22)
+
+Scope: the three persistence-atomicity P2s in `apps/daemon/src/lib.rs` that neither lane's row
+covers — **S5b-2**, **S5b-3**, **S5b-4** — claimed in **H15**. Every edit was located by symbol
+name in the current bytes, never by the review document's baseline line numbers, which are all
+shifted by both lanes' in-flight work.
+
+#### S5b-4 first: one shared helper
+
+The fix direction for S5b-4 asked for a helper that does not exist yet, and the other two findings
+are call sites of it, so it was built first. Two functions were added next to the existing
+`sync_sensitive_parent`:
+
+- `write_json_atomically(path, value)` — serializes pretty JSON with a trailing newline and hands
+  the bytes to the byte-level half below.
+- `write_bytes_atomically(path, bytes, permissions)` — `create_dir_all(parent)` →
+  `create_sensitive_temporary` → `write_all` → `sync_all` → drop the handle → restrict permissions
+  → atomic replace → restrict again → `sync_sensitive_parent`. Any error removes the temporary
+  before returning, so a failed write leaves neither a partial destination nor a stray file.
+
+That is the same sequence `write_local_capability_manifest` and `persist_mcp_registry_cache`
+already used by hand; the point of the helper is that "which persistence site is crash-safe" stops
+being per-site knowledge.
+
+`AtomicWritePermissions` has two variants on purpose. `Restrict` is for the files the daemon owns.
+`Preserve` exists for exactly one caller — Hook's canvas — because the temporary is created 0o600
+on unix, and an atomicity fix must not silently narrow the ACL of a file this process does not own.
+The helper also deliberately does **not** re-ACL the parent directory on every write; the parent is
+restricted once at startup, and doing it per write would be churn, not safety.
+
+Four call sites now route through it: `persist_mcp_servers_snapshot`, `LoomSettingsStore::save`,
+`DeviceRegistryStore::persist` and `write_hook_canvas_root` (the byte-level variant, since it
+returns the exact compact bytes it wrote to its caller).
+
+**One discovery that changed the helper.** On Windows a rename-with-replace fails with
+`ERROR_ACCESS_DENIED` (`os error 5`) while any other handle holds the destination open — including a
+reader that is merely reading it, an antivirus scanner, or the search indexer. The old
+delete-then-rename shape was accidentally tolerant of this, so a naive atomic replacement would
+have been *less* robust in production than what it replaced. `replace_sensitive_file_with_retry`
+was added for this: up to 20 attempts, 5 ms apart. Each attempt is still one atomic replacement —
+the retry adds patience, not a second window.
+
+#### S5b-2 — the device registry fails closed
+
+`DeviceRegistryStore::persist` used a bare `fs::write`, and `::new` loaded with
+`fs::read().ok().and_then(...).unwrap_or_default()`. A torn write therefore produced an empty
+registry at the next start, and the store then re-persisted that emptiness — so every paired device
+disappeared *and* every device's `session_epoch` reset. `session_epoch` is the revocation counter:
+losing it means a device that was explicitly revoked can pair again and come back. That is the
+sharpest edge in this batch, and it is why this one loader is not allowed to degrade.
+
+`DeviceRegistryStore::new` is now fallible (`-> Result<Self>`) and distinguishes three cases:
+
+| on disk | behaviour |
+| --- | --- |
+| file absent (`ErrorKind::NotFound`) | legitimate empty registry — bootstrap one local host and continue |
+| file present, unparsable | **refuse to start**, naming the path and saying to move the file aside |
+| file present, unreadable for any other reason | **refuse to start** — an ACL or lock problem must not read as "no devices" |
+
+Failing closed rather than quarantining is the deliberate choice here: quarantining would let the
+daemon come up with revocation state that was silently thrown away, which is the exact outcome the
+finding is about. The corrupt bytes are left untouched on disk so an operator can inspect them.
+Five call sites were updated for the fallible constructor — one production path with
+`.context("open device registry")?` and four test paths.
+
+`LoomSettingsStore::new` and `load_persisted_mcp_servers` are different: nothing security-relevant
+is lost by starting from defaults, and refusing to boot over a corrupt preference file would be a
+worse failure than continuing. Both now **quarantine and degrade** — the unparsable file is renamed
+to `<name>.corrupt-<unix_millis>` by a new `quarantine_unreadable_file`, a `[WARN]` line records it,
+and startup proceeds with defaults. What neither does any more is discard the file silently.
+
+#### S5b-3 — the publisher identity is never absent
+
+`save_publisher_identity` wrote a fixed-name temporary, then `fs::remove_file(&path)`, then
+`fs::rename`. Between the remove and the rename there was no identity file on disk at all, and an
+interruption in that window loses the publisher identity permanently. The whole body is now two
+lines through `write_json_atomically`. The `remove_file` was not replaced by anything: on Windows
+`replace_sensitive_file` uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`, and on unix
+`fs::rename` replaces an existing destination, so no platform needed it. The fixed temporary name
+is gone too — `create_sensitive_temporary` mints `.{file_name}.tmp-{pid}-{nonce}-{attempt}`, so two
+concurrent callers can no longer scribble over each other's partial bytes.
+
+#### `write_hook_canvas_root` — the boundary conclusion H15(3) promised
+
+Atomicity is fixed; **no Hook behaviour was changed in this batch**, and no Hook file was touched.
+The conclusion, for the record:
+
+**The write path should not be removed, but it should not stay as it is either.** Loom is the
+viewer and Hook is the editor that holds the raw project data, so Loom truncating and rewriting
+Hook's authoritative canvas file is an inversion of that boundary. But the path is not gratuitous —
+it is how a canvas edit made in Loom reaches Hook at all, and deleting it would remove a working
+feature rather than fix a defect. What is actually missing is coordination: Loom and Hook share no
+lock, no lease and no generation number on that file, so a Hook editor session with the canvas open
+can overwrite Loom's write, or be overwritten by it, with neither side detecting the loss. Atomicity
+alone narrows the window to zero-length but does not resolve who wins.
+
+The proposal — **separate, not in this batch** — is a generation number in the canvas document plus
+compare-and-swap on write: Loom sends the generation it read, Hook (or the write path) refuses the
+write if the file has moved on, and Loom surfaces a conflict instead of silently winning. That is a
+protocol change across two repositories and needs Hook's editor to participate, so it belongs in its
+own change with its own review, not slipped into an atomicity fix. A comment at the call site records
+this and points at F16.
+
+#### P3s fixed in passing
+
+Both are local and cheap and sit inside files this batch already had open, per the grading rule.
+
+- **S5b-6, the device-credential half.** `route_with_runtime` evaluated the device credential first
+  and returned its error before the administrator bearer was ever considered. Since
+  `ParsedHttpRequest::has_bearer` and `authorization_credential` both scan *all* headers — verified
+  before changing anything — one request can legitimately carry both `Authorization: Bearer …` and a
+  stale `Authorization: Device …`, which is exactly what a just-re-paired desktop client sends. The
+  bearer is now decided first, and `Err(_) if admin_authenticated => None` ignores a stale device
+  credential when the caller is already entitled to the request. With no admin bearer the device
+  error is still reported in full.
+- **S5b-5, the marker half.** The Windows ACL-repair marker recorded only a count, so a skipped
+  entry could never be found again. It now lists each skipped path (`skipped-path=…`) and is written
+  through `write_bytes_atomically` instead of `fs::write`.
+
+#### Accepted as backlog, with reasons — nothing dropped silently
+
+- **S5b-5, the abort-on-failure half.** A single un-repairable entry still aborts startup via `?`,
+  and skipped entries are never retried. Not changed here: turning an abort into a warn-and-continue
+  is a security-posture decision, not a crash-safety fix — the restriction on the control-plane root
+  is what actually protects the tree — and the code sits in Lane A's startup/bind area. It deserves
+  its own change with its own review. The marker now at least names what was skipped, which is what
+  a retry pass would need.
+- **S5b-6, the `/health` half.** The unauthenticated `/health` response still carries `pid` and
+  `executable_path`. Not changed here: `/health` is a public route contract and the consumers are
+  cross-project (Hook, the desktop app, packaging and CI probes). A repo-wide search for consumers
+  did not finish in reasonable time and was stopped rather than left running, so the blast radius of
+  removing those two fields is genuinely unverified. Redacting them for unauthenticated callers is
+  the right change; it needs the consumer list first.
+
+#### Tests — four added, all in the existing `#[cfg(test)]` module
+
+The three the handoff required, plus one for the S5b-6 fix. Each one was checked against the *old*
+code to prove it discriminates, by temporarily restoring the old sequence, running the test, and
+restoring the fix.
+
+1. `device_registry_refuses_to_start_when_the_stored_file_is_unparsable` — writes truncated JSON,
+   asserts `DeviceRegistryStore::new` errors with a message naming both "device registry" and the
+   path, asserts the corrupt bytes are still byte-identical afterwards, then removes the file and
+   shows the same call bootstraps one local host. It matches on the error instead of using
+   `expect_err` because `expect_err` needs `T: Debug` and `DeviceRegistryStore` deliberately has
+   none — it holds live session material. Deriving `Debug` to satisfy a test was rejected.
+2. `publisher_identity_replacement_always_leaves_a_readable_file` — a reader thread loops
+   `load_publisher_identity` while the main thread performs 12 replacements. The reader fails the
+   test on `Ok(None)` ("the identity file was missing during a replacement") and on a parse error
+   (half-written bytes). Against the old delete-then-rename body it fails on `Ok(None)` every time
+   it was tried — 8 runs, 8 failures, all with that exact message.
+3. `atomic_json_writes_keep_the_previous_file_and_leave_no_temporary` — a successful write leaves no
+   temporary; a value that cannot serialize (`BTreeMap<(u8,u8),u8>`) fails before the destination is
+   touched; a directory standing where the destination should be makes the replace fail, and
+   afterwards the directory survives, no temporary remains, and the earlier file's bytes are
+   unchanged.
+4. `stale_device_credential_does_not_mask_a_valid_administrator_bearer` — a request carrying both a
+   valid admin bearer and a stale `Device` credential succeeds; the same stale credential alone is
+   still rejected. Against the pre-fix ordering the first assertion fails with
+   `401 device_session_invalid`, which is the bug S5b-6 describes.
+
+**What it took to make test 2 stable, since the honest version matters.** Three separate flakes,
+all in the test rather than the product:
+
+- Windows refusing the replace while the reader held the file (`os error 5`). Fixed in the product
+  by the retry helper above, and in the test by tolerating a refusal — a refused replace leaves the
+  previous identity whole, which is the property under test.
+- The reader counting a transient *open* failure as a violation. A failed open says nothing about
+  the file's contents; only a parse failure means torn bytes. The reader now fails on `Ok(None)` and
+  on `用户签名身份无效` (parse) and ignores `无法读取用户签名身份` (open).
+- `reads > 0` failing with `contended replacements: 12`, i.e. the reader thread was first scheduled
+  *after* all 12 writes had finished, so it never looked at the file — a vacuous pass that the
+  assertion correctly caught. The reader now reads once before consulting the stop flag and
+  publishes a counter, and the writer waits for the first read before starting, so overlap is
+  guaranteed rather than hoped for. The final state assertion is anchored by one write taken after
+  the reader has stopped, with a bounded retry.
+
+#### Verification — the five scoped commands, actual results
+
+The window was taken with `cargo` and `rustc` confirmed idle first, per H5, and nothing but scoped
+`-p loom-daemon` commands was run — no `--workspace`, no full `--all-targets` sweep of the tree, no
+`cargo fmt` in write mode, and no PowerShell or `npm` started while they were in flight.
+
+| command | result |
+| --- | --- |
+| `cargo fmt -p loom-daemon -- --check` | exit 0, no diff. One of this batch's own new lines needed hand-wrapping to get there; no other lane's line was reformatted. |
+| `cargo check -p loom-daemon --locked --all-targets` | `Finished`, no warnings. Two `unused_assignments` warnings appeared mid-batch on this batch's own test code and were fixed rather than allowed. |
+| `cargo test -p loom-daemon --locked device_registry` | `ok. 2 passed; 0 failed` |
+| `cargo test -p loom-daemon --locked publisher_identity` | `ok. 2 passed; 0 failed` |
+| `cargo test -p loom-daemon --locked atomic_json_writes_keep_the_previous_file_and_leave_no_temporary` | `ok. 1 passed; 0 failed` |
+
+Also run, beyond the required five: `cargo test -p loom-daemon --locked stale_device_credential`
+(`ok. 1 passed`) for the S5b-6 test, and the full package suite. After the final test hardening,
+**18 of the last 19 full `cargo test -p loom-daemon --locked` runs were clean at 238 passed; 0
+failed**. The single failure was `hook_art_execution_creates_durable_run_evidence`, which touches
+none of the four persistence sites, passed 6/6 in isolation, and did not reproduce in 8 further full
+runs.
+
+**One finding for Lane A, free of charge.** During this batch's stress runs two full-suite runs came
+back with 38 and 39 simultaneous failures. Every one of them was
+`ENV_LOCK.lock().expect("env lock")`: `daemon_returns_shutting_down_for_request_accepted_before_shutdown`
+panics at its `read_to_string(...).expect("read shutdown response")` while holding `ENV_LOCK`, which
+**poisons the mutex**, and every later env-locked test then fails on the poison rather than on
+anything of its own. So a single flake in that test masquerades as a catastrophic suite failure. The
+test still has a bare `thread::sleep(Duration::from_millis(100))` before it signals shutdown, and on
+a loaded machine (CPU was sitting near 60% from unrelated processes throughout) that sleep is not
+enough. Two things worth doing on Lane A's side: replace the sleep with an explicit readiness
+signal, and consider `ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())` so one
+flake stops cascading. Lane B did not touch either — both are Lane A's lines.
+
+#### Commit scope
+
+**Only this document was committed** (`git commit -- docs/progress/phase-78-lane-sync.md`), path-scoped;
+`git add -A` was never run, and nothing was appended to `phase-78-post-baseline-review.md`.
+`apps/daemon/src/lib.rs` is intentionally left in the working tree for the same reason as F15, and
+that reason is unchanged and re-verified today: the file still carries Lane A's F14 reference to
+`loom_protocol::SURFACE_STREAM_PROTOCOL_VERSION`, and `git show HEAD:crates/loom_protocol/src/surface.rs`
+still does not contain that constant. A file-granular commit of `lib.rs` alone would therefore land a
+daemon that does not build on a clean checkout. `crates/**` is Lane A's reserved path, and
+`git checkout` / `git restore` / `git stash` on this file is what H15 forbids, so the code waits in
+the tree — verified at 238 passed / 0 failed — for Lane A to commit `lib.rs` together with
+`crates/loom_protocol/**` and the lockfile, exactly as H14(7) already asked.
+
+**No Loom release package was built and `r76` was not consumed.**
 
 ## Lane A records
 
