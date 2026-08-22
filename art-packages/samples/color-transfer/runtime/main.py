@@ -555,10 +555,12 @@ def main(request):
     output_path = os.path.join(work_root, "color-transfer-output.png")
     encode_png(output_path, width, height, transferred)
     encoded = data_url(output_path)
+    # The image travels once, inside `content`. `output_base64` would be a second full copy of the
+    # same bytes in the same response, and the host strips that key anyway once `output_path` is
+    # present, so emitting it only inflates this runtime's stdout.
     return {
         "status": "success",
         "output": {
-            "output_base64": encoded,
             "output_path": output_path,
             "width": width,
             "height": height,

@@ -1,10 +1,20 @@
+$ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $workRoot = Get-RequestWorkRoot -Request $request
+$allowedRoots = Get-RequestImageRoots -Request $request -WorkRoot $workRoot
 
 try {
-    $sourcePath = Resolve-ImagePath -Value (Get-RequestInputValue -Request $request -Names @("input", "source", "image")) -Label "blend-source" -WorkRoot $workRoot
-    $referencePath = Resolve-ImagePath -Value (Get-RequestInputValue -Request $request -Names @("reference", "referenceImage", "ref")) -Label "blend-reference" -WorkRoot $workRoot
+    $sourcePath = Resolve-ImagePath `
+        -Value (Get-RequestInputValue -Request $request -Names @("input", "source", "image")) `
+        -Label "blend-source" `
+        -WorkRoot $workRoot `
+        -AllowedRoots $allowedRoots
+    $referencePath = Resolve-ImagePath `
+        -Value (Get-RequestInputValue -Request $request -Names @("reference", "referenceImage", "ref")) `
+        -Label "blend-reference" `
+        -WorkRoot $workRoot `
+        -AllowedRoots $allowedRoots
     if ([string]::IsNullOrWhiteSpace($sourcePath) -or [string]::IsNullOrWhiteSpace($referencePath)) {
         throw "input and reference images are required"
     }
@@ -15,7 +25,7 @@ try {
     try {
         $outputBitmap = Blend-Bitmaps -Source $source -Reference $reference -Alpha ($ratio / 100.0)
         try {
-            $outputPath = Join-Path $workRoot "image-blend-output.png"
+            $outputPath = Join-Path $workRoot (New-WorkRootFileName -Stem "image-blend-output")
             Save-Png -Bitmap $outputBitmap -Path $outputPath
         }
         finally {

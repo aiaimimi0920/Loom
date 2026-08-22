@@ -1,15 +1,21 @@
+$ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $workRoot = Get-RequestWorkRoot -Request $request
+$allowedRoots = Get-RequestImageRoots -Request $request -WorkRoot $workRoot
 
 try {
     $inputValue = Get-RequestInputValue -Request $request -Names @("input", "image", "source")
-    $inputPath = Resolve-ImagePath -Value $inputValue -Label "compress" -WorkRoot $workRoot
+    $inputPath = Resolve-ImagePath `
+        -Value $inputValue `
+        -Label "compress" `
+        -WorkRoot $workRoot `
+        -AllowedRoots $allowedRoots
     if ([string]::IsNullOrWhiteSpace($inputPath)) {
         throw "input image is required"
     }
 
-    $outputPath = Join-Path $workRoot "image-compress-output.png"
+    $outputPath = Join-Path $workRoot (New-WorkRootFileName -Stem "image-compress-output")
     $bitmap = Load-BitmapArgb -Path $inputPath
     try {
         Save-Png -Bitmap $bitmap -Path $outputPath
