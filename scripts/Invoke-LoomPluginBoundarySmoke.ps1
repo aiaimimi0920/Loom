@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$script:LoomAuthorizationHeader = ""
 
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 
@@ -105,6 +106,9 @@ function Invoke-LoomRaw {
     $request.Timeout = 120000
     $request.ReadWriteTimeout = 120000
     $request.ContentType = "application/json"
+    if (-not [string]::IsNullOrWhiteSpace($script:LoomAuthorizationHeader)) {
+        $request.Headers["Authorization"] = $script:LoomAuthorizationHeader
+    }
     if ($null -ne $Body) {
         $json = $Body | ConvertTo-Json -Depth 50 -Compress
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
@@ -441,7 +445,7 @@ $hookBridgeRunning = $false
 $succeeded = $false
 $oldEnvironment = @{}
 
-foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
+foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_DAEMON_TOKEN", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
     $oldEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name)
 }
 
@@ -518,6 +522,8 @@ $response = [ordered]@{
 
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$port
+    $env:LOOM_DAEMON_TOKEN = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+    $script:LoomAuthorizationHeader = "Bearer $env:LOOM_DAEMON_TOKEN"
     $env:LOOM_CONTROL_PLANE_ROOT = $controlPlane
     $env:LOOM_CONFIGURATION_ROOT = $configuration
     $env:LOOM_RUN_STORE_PATH = $runStore

@@ -43,6 +43,7 @@ async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+fs2 = "0.4"
 libc = "0.2"
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 num_cpus = "1.17"
@@ -50,7 +51,7 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "
 paddle-ocr-rs = { version = "=0.6.0", default-features = false }
 rayon = "1.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -58,7 +59,7 @@ serde_yaml = "0.9"
 semver = "1.0"
 sha2 = "0.10"
 thiserror = "1.0"
-tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tungstenite = "0.24"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Threading"] }

@@ -5,6 +5,15 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$automaticRefreshLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6Ieq5YqoIA=="))
+$turnoverLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5o2i5omL"))
+$amplitudeLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5oyv5bmF"))
+$undeclaredActionMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6KGM5oOF5Yqo5L2c5pyq6KKr5aOw5piO77yM5bey5ouS57ud5omn6KGM"))
+$dayPeriodLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5pelIEs="))
+$pendingCurveMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5puy57q/5bCG5Zyo5LiL5qyh5Yi35paw6KGl6b2Q"))
+$fiveMinutePeriodLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("NSDliIbpkp8="))
+$periodMismatchMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6KGM5oOF5ZGo5pyf5LiO6K+35rGC5LiN5LiA6Ie0"))
+
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
@@ -335,30 +344,58 @@ try {
     Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS") -and $surfaceSource.Contains("averageValues")) "Stock Monitor Surface must cap Canvas allocation and draw intraday average or MA5 data."
     Assert-True ($surfaceSource.Contains("PERIODS") -and $surfaceSource.Contains("stock_period_commit") -and $surfaceSource.Contains("isIntradayPeriod")) "Stock Monitor Surface must expose multi-period controls and distinct intraday rendering."
     Assert-True ($surfaceSource.Contains("downsampleRows") -and $surfaceSource.Contains("maxPoints")) "Stock Monitor Surface must downsample long market series before Canvas rendering."
-    Assert-True ($surfaceSource.Contains("point.close") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains("自动 ")) "Stock Monitor Surface must draw a close-price curve and expose automatic refresh recency."
+    Assert-True ($surfaceSource.Contains("point.close") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains($automaticRefreshLabel)) "Stock Monitor Surface must draw a close-price curve and expose automatic refresh recency."
     Assert-True ($surfaceSource.Contains("PENDING_TIMEOUT_MILLIS") -and $surfaceSource.Contains("ACTION_TIMEOUT_MILLIS")) "Stock Monitor Surface must keep its pending deadline aligned with the action budget."
     Assert-True ($surfaceSource.Contains("RED_UP_MARKETS") -and $surfaceSource.Contains("paletteFor")) "Stock Monitor Surface must pick up/down colors per market convention."
     Assert-True ($surfaceSource -match 'RED_UP_MARKETS\s*=\s*Object\.freeze\(\["SH",\s*"SZ",\s*"BJ",\s*"HK"\]\)') "A-share and Hong Kong markets must render gains red and losses green."
     Assert-True ($surfaceSource.Contains("chart-tip") -and $surfaceSource.Contains("drawCrosshair") -and $surfaceSource.Contains("indexAtPointer")) "Stock Monitor Surface must show a hover tooltip with a crosshair at the pointed data point."
     Assert-True ($surfaceSource.Contains("pointermove") -and $surfaceSource.Contains("pointerleave")) "Hover tooltip must bind pointer enter and leave handling."
-    Assert-True ($surfaceSource.Contains("TICK_ACTION") -and $surfaceSource.Contains("fullRefreshTimer") -and $surfaceSource.Contains("CLOSED_MARKET_MIN_SECONDS")) "Stock Monitor Surface must drive near-realtime ticks with a slower full-refresh channel and a closed-market floor."
+    Assert-True ($surfaceSource.Contains("TICK_ACTION") -and $surfaceSource.Contains("ticksSinceFullRefresh") -and $surfaceSource.Contains("ticksPerFullRefresh") -and $surfaceSource.Contains("CLOSED_MARKET_MIN_SECONDS")) "Stock Monitor Surface must promote every N-th tick to a full refresh on a single timer and keep the closed-market floor."
+    Assert-True ($surfaceSource.Contains("TICK_RETRY_COOLDOWN_MILLIS") -and $surfaceSource.Contains("tickChannelEnabled")) "A refused tick must disable the near-realtime channel for a cooldown only, not for the whole surface lifetime."
+    Assert-True ($surfaceSource.Contains("actionBudgetsMillis") -and $surfaceSource.Contains("ACTION_DISPATCH_GRACE_MILLIS") -and $surfaceSource.Contains("clientDeadlineOf")) "Stock Monitor Surface must derive its client timeout from the host action budget instead of a fixed constant."
+    Assert-True ($surfaceSource.Contains("TICK_ACTION_TIMEOUT_MILLIS = " + [int]$tickAction.timeoutMs)) "Surface tick budget mirror must match the manifest tick timeout."
+    $intervalAction = @($manifest.metadata.capabilities.surface.actions | Where-Object { [string]$_.id -eq "stock_interval_commit" })[0]
+    Assert-True ($surfaceSource.Contains("INTERVAL_COMMIT_TIMEOUT_MILLIS = " + [int]$intervalAction.timeoutMs)) "Surface interval-commit budget mirror must match the manifest timeout."
+    Assert-True ($surfaceSource.Contains("pendingRequestId") -and $surfaceSource.Contains("lastRequestId") -and $surfaceSource.Contains("settledBy")) "Pending state must be released by the action that produced the revision, not by any revision bump."
+    Assert-True (-not ($surfaceSource -match 'refs\.(tip|legend)\.innerHTML')) "Chart tooltip and legend must be built from DOM nodes, not interpolated provider text."
+    Assert-True ($surfaceSource.Contains("refs.tip.replaceChildren") -and $surfaceSource.Contains("refs.legend.replaceChildren")) "Chart tooltip and legend must be swapped in through replaceChildren."
     Assert-True ($surfaceSource.Contains("updateOrderBook") -and $surfaceSource.Contains("renderBookSide") -and $surfaceSource.Contains("book-board")) "Stock Monitor Surface must render the ten-level order book panel."
-    Assert-True ($surfaceSource.Contains("tapeDefinitions") -and $surfaceSource.Contains("换手") -and $surfaceSource.Contains("振幅")) "Stock Monitor Surface must expose the intraday realtime tape fields."
+    Assert-True ($surfaceSource.Contains("tapeDefinitions") -and $surfaceSource.Contains($turnoverLabel) -and $surfaceSource.Contains($amplitudeLabel)) "Stock Monitor Surface must expose the intraday realtime tape fields."
     Assert-True ($surfaceSource.Contains('overflow:hidden;background:') -and -not $surfaceSource.Contains('.stock-shell{min-width:0;min-height:100%;height:100%;overflow:auto')) "Stock Monitor must not require root scrolling to reveal its target region."
     Assert-True ($surfaceSource.Contains("chart-table") -and $surfaceSource.Contains("trade-price") -and $surfaceSource.Contains("favorites-summary")) "Stock Monitor Surface must render all declared views."
     Assert-True ($surfaceSource.Contains("updateHistoryTable") -and $surfaceSource.Contains("updateFavorites")) "Stock Monitor specialized views must render their table and favorites data."
     Assert-True ($surfaceSource -match 'renderBookSide\(refs\.bids[^\n]*palette\)') "Order book levels must be colored through the market-aware palette."
+    Assert-True ($surfaceSource.Contains("if (canvas.width !== nextWidth)") -and $surfaceSource.Contains("if (canvas.height !== nextHeight)")) "Canvas pixel size must only be assigned when it changed; assigning it reallocates the backing bitmap on every redraw."
+    Assert-True ($surfaceSource.Contains("new ResizeObserver(scheduleChartRedraw)") -and $surfaceSource.Contains("resizeFrame")) "Resize redraws must be coalesced into one animation frame instead of calling drawChart per observer callback."
+    Assert-True ($surfaceSource.Contains("chartSampleOf") -and $surfaceSource.Contains("seriesCache") -and $surfaceSource.Contains("sampleCache")) "The derived chart series and its downsampled points must be memoized across redraws."
+    Assert-True ($surfaceSource.Contains("MOVING_AVERAGE_WINDOW") -and -not ($surfaceSource -match 'points\.slice\(index - 4')) "The moving average must use a rolling accumulator, not a slice/map/reduce per point."
+    Assert-True ($surfaceSource.Contains("ensureChildren") -and $surfaceSource.Contains("paintedKey")) "The market, order book, history and favorites blocks must reuse their nodes and skip repaints when the revision did not change."
+    Assert-True (-not ($surfaceSource -match 'replaceChildren\(\);\s*\r?\n\s*(levels|metricDefinitions|tapeDefinitions)')) "No updater may rebuild its rows from scratch on every frame."
     Assert-True ($runtimeSource.Contains("ConvertTo-OrderBook") -and $runtimeSource.Contains("ConvertTo-LiveTape") -and $runtimeSource.Contains('CallId "orderbook"')) "Stock Monitor runtime must project the Xueqiu order book and realtime tape into state."
     Assert-True ($runtimeSource -match 'frameworkData' -and $runtimeSource -match 'results') "Stock Monitor runtime must consume MCP framework results."
     Assert-True ($runtimeSource.Contains('$script:MaxHistoryRows = 2000') -and $runtimeSource.Contains('Select-Object -Last $script:MaxHistoryRows')) "Stock Monitor runtime must bound provider history to 2000 rows."
     Assert-True ($runtimeSource.Contains('[System.Collections.Generic.List[object]]::new()') -and $runtimeSource.Contains('Get-StockFromActionState')) "Stock Monitor period switching must avoid quadratic history copies and reuse the current quote."
     Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass the stock-api MCP server."
+    Assert-True ($runtimeSource.Contains("Get-SurfaceActionBudgets") -and $runtimeSource.Contains("lastRequestId") -and $runtimeSource.Contains("actionBudgetsMillis")) "Stock Monitor runtime must echo the action correlation and publish its effective action budgets."
+    Assert-Equal 3 ([regex]::Matches($runtimeSource, 'Add-ActionEcho -StatePatch').Count) "Every Stock Monitor state patch must carry the action echo; statePatch merge semantics would otherwise leave a stale correlation id."
+    Assert-True ($runtimeSource.Contains("function Resolve-SurfaceAction") -and $runtimeSource -notmatch 'Find-SurfaceAction') "The Surface action must be resolved from fixed request positions; a recursive search lets any MCP result that carries a surfaceAction key fabricate an action invocation."
+    Assert-True ($runtimeSource.Contains("conflicting surfaceAction invocations were provided")) "Two different surfaceAction objects in one request must be rejected instead of silently resolving to one of them."
+    Assert-True ($runtimeSource.Contains('[System.Globalization.DateTimeStyles]::None') -and $runtimeSource -notmatch 'DateTimeStyles\]::AssumeUniversal') "Upstream timestamps must not be parsed with AssumeUniversal; a local-time string would be read as UTC and understate the record age by the whole offset."
+    Assert-True ($runtimeSource.Contains('(?:[Zz]|[+-]\d{2}:?\d{2})$')) "Upstream timestamps must carry an explicit UTC offset to be accepted."
+    Assert-Equal 0 ([regex]::Matches($runtimeSource, 'normalizedFetchedAt = \[DateTimeOffset\]::UtcNow').Count) "The runtime must not synthesize an observation timestamp for a provider record that shipped without one; that turns an unknown age into a fresh one."
+    Assert-True ($runtimeSource.Contains('($null -eq $ageSeconds) -or ($ageSeconds -gt $script:MaxOrderBookAgeSeconds)') -and $runtimeSource.Contains('($null -eq $ageSeconds) -or ($ageSeconds -gt $script:MaxLiveAgeSeconds)')) 'An unknown record age must fail closed as stale; $null -gt 90 is false in PowerShell, so the age comparison alone would report an ageless record fresh.'
+    Assert-True ($runtimeSource.Contains("function Limit-MessageLength") -and $runtimeSource.Contains("GetTextElementEnumerator")) "Error text must be truncated on text-element boundaries so a surrogate pair or combining mark is never split."
+    Assert-True ($runtimeSource.Contains('New-FormalQuote -Snapshot $snapshot -ReferenceState') -and $runtimeSource.Contains("authoritativeState.history")) "The Surface-path formal quote must reference the authoritative state instead of serializing the same collections a second time."
+    Assert-True ($runtimeSource.Contains('statePatch = [ordered]@{}')) "The Surface result must carry an empty no-op state patch; omitting the field deserializes to null and the daemon merge replaces the whole authoritative state."
+    Assert-True ($runtimeSource.Contains($undeclaredActionMessage) -and $runtimeSource.Contains("-RejectAction")) "An undeclared action must be refused with a fixed message instead of a throw that interpolates the caller's action id."
+    Assert-True ($surfaceSource.Contains("staleLabel") -and $surfaceSource.Contains("is-stale")) "The Surface must badge stale order-book and tape records; the runtime already decides staleness but the clock string alone looks identical either way."
+    Assert-True ($surfaceSource.Contains("state.historyWarning")) "The Surface must render the non-fatal history warning; otherwise a chart-less panel never says why."
     $surfaceTestPath = Join-Path $repoRoot "scripts\tests\Test-LoomStockMonitorSurface.mjs"
     $nodePath = [string](Get-Command node.exe -ErrorAction Stop).Source
     & $nodePath $surfaceTestPath $surfacePath
     Assert-Equal 0 $LASTEXITCODE "Stock Monitor Surface VM contract failed."
 
-    $initialState = @{ code = "SZ000034"; market = "SZ"; intervalSeconds = 60; period = "day"; periodLabel = "日 K"; marketStatus = "closed"; lastTradingDate = "2026-08-14" }
+    $initialState = @{ code = "SZ000034"; market = "SZ"; intervalSeconds = 60; period = "day"; periodLabel = $dayPeriodLabel; marketStatus = "closed"; lastTradingDate = "2026-08-14" }
     $refresh = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $initialState -FrameworkData (New-McpData)
     Assert-Equal "success" ([string]$refresh.status) "Stock Monitor refresh did not return a runtime success envelope."
     $surfaceAction = $refresh.output.surfaceAction
@@ -375,7 +412,10 @@ try {
     Assert-Equal "Digital China" ([string]$quote.name) "Stock Monitor quote name mismatch."
     Assert-True ([double]$quote.price -eq 24.99) "Stock Monitor quote price parsing failed."
     Assert-True ([double]$quote.changePercent -eq 0.4018) "Stock Monitor quote percent conversion failed."
-    Assert-Equal 3 @($quote.history.rows).Count "Stock Monitor K-line parsing failed."
+    Assert-True ($null -eq $quote.history.PSObject.Properties["rows"]) "The Surface-path formal quote must not repeat the K-line rows that the same response already carries in its state patch."
+    Assert-Equal 3 ([int]$quote.history.rowCount) "Stock Monitor K-line parsing failed."
+    Assert-Equal "authoritativeState.history" ([string]$quote.history.rowsIn) "The Surface-path formal quote must point at the authoritative state instead of duplicating the rows."
+    Assert-Equal 3 @($surfaceAction.patches[0].statePatch.history).Count "Stock Monitor state patch must carry the parsed K-line rows."
     Assert-Equal "day" ([string]$quote.history.period) "Stock Monitor K-line period mismatch."
     Assert-Equal "closed" ([string]$quote.marketStatus) "Stock Monitor must mark stale trading dates as closed."
     Assert-Equal "2026-08-14" ([string]$quote.lastTradingDate) "Stock Monitor last trading date mismatch."
@@ -388,10 +428,15 @@ try {
     Assert-True ([double]$refreshBook.netVolume -eq -11455) "Stock Monitor order book projection lost the order imbalance."
     $refreshTape = $surfaceAction.patches[0].statePatch.liveTape
     Assert-True ([double]$refreshTape.price -eq 24.99 -and [double]$refreshTape.turnoverRate -eq 7.31) "Stock Monitor realtime tape projection mismatch."
-    Assert-Equal 2 ([int]$quote.orderBook.levels) "Formal quote must expose the order book depth."
-    Assert-True ([double]$quote.liveTape.avgPrice -eq 24.91) "Formal quote must expose the intraday average price."
-    Assert-Equal 4 @($quote.favoriteQuotes).Count "Formal quote must expose the aggregated favorite prices."
+    Assert-Equal "authoritativeState" ([string]$quote.collectionsIn) "The Surface-path formal quote must reference the authoritative state for its collections."
+    Assert-True ($null -eq $quote.PSObject.Properties["orderBook"] -and $null -eq $quote.PSObject.Properties["liveTape"] -and $null -eq $quote.PSObject.Properties["favoriteQuotes"]) "The Surface-path formal quote must not repeat the order book, tape, and favorites that the same response already carries in its state patch."
+    Assert-Equal 2 ([int]$quote.orderBookLevels) "Formal quote must expose the order book depth."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$quote.liveTapeObservedAt)) "Formal quote must expose the realtime tape observation time."
+    Assert-True ([double]$refreshTape.avgPrice -eq 24.91) "Stock Monitor state must expose the intraday average price."
+    Assert-Equal 4 ([int]$quote.favoriteQuoteCount) "Formal quote must expose the aggregated favorite count."
     Assert-Equal 4 @($surfaceAction.patches[0].statePatch.favoriteQuotes).Count "Surface state must preserve favorite prices across view changes."
+    Assert-True ($null -ne $surfaceAction.result.PSObject.Properties["statePatch"]) "The Surface result must still declare a state patch field; omitting it deserializes to null and the daemon merge replaces the whole authoritative state."
+    Assert-Equal 0 @($surfaceAction.result.statePatch.PSObject.Properties).Count "The Surface result patch must be an empty no-op object; the real patch travels once, in patches[0]."
 
     foreach ($favoritesFailure in @(
         @{ Label = "missing"; Data = (New-McpData -FavoritesOmitted) },
@@ -440,7 +485,10 @@ try {
     Assert-Equal "ready" ([string]$quoteOnlyPatch.status) "A first-load history failure must not discard a valid real quote."
     Assert-True ([double]$quoteOnlyPatch.quote.price -eq 24.99) "A first-load history failure lost the real quote price."
     Assert-Equal 0 @($quoteOnlyPatch.history).Count "Quote-only fallback must not fabricate market-history rows."
-    Assert-True ([string]$quoteOnlyPatch.statusText -match "曲线将在下次刷新补齐") "Quote-only fallback status did not explain the pending curve refresh."
+    Assert-True ([string]$quoteOnlyPatch.statusText -match [regex]::Escape($pendingCurveMessage)) "Quote-only fallback status did not explain the pending curve refresh."
+    Assert-True ([string]$quoteOnlyPatch.historyWarning -match "fixture history failure") "A chart-less quote must forward the upstream history failure as a non-fatal warning instead of dropping it."
+    Assert-True ($null -eq $historyFallbackPatch.historyWarning) "A history failure that kept the previous curve must not raise a warning about a missing chart."
+    Assert-True ($null -eq $surfaceAction.patches[0].statePatch.historyWarning) "A fully successful refresh must not raise a history warning."
 
     $interval = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_interval_commit" -Payload @{ value = 120 } -AuthoritativeState $initialState -FrameworkData (New-McpData -Skipped)
     Assert-Equal 120 ([int]$interval.output.surfaceAction.patches[0].statePatch.intervalSeconds) "Stock Monitor interval commit failed."
@@ -484,10 +532,28 @@ try {
     Assert-True ($null -eq $staleFallbackPatch.orderBook) "An expired order book must not be reused indefinitely."
     Assert-True ($null -eq $staleFallbackPatch.liveTape) "An expired live tape must not be reused indefinitely."
 
+    $naiveState = $tickPatch | ConvertTo-Json -Depth 40 | ConvertFrom-Json
+    $naiveState.orderBook.observedAt = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff")
+    $naiveState.orderBook.fetchedAt = $naiveState.orderBook.observedAt
+    $naiveState.liveTape.observedAt = $naiveState.orderBook.observedAt
+    $naiveState.liveTape.fetchedAt = $naiveState.orderBook.observedAt
+    $naiveFallback = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_tick_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $naiveState -FrameworkData (New-McpData -OrderBookOnly -OrderBookError)
+    $naiveFallbackPatch = $naiveFallback.output.surfaceAction.patches[0].statePatch
+    Assert-True ($null -eq $naiveFallbackPatch.orderBook) "A timestamp without an explicit UTC offset must be rejected instead of assumed to be UTC; the order book age is unknown, so it must not be reused."
+    Assert-True ($null -eq $naiveFallbackPatch.liveTape) "A timestamp without an explicit UTC offset must not keep the live tape alive."
+
+    $undeclared = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_evil_action" -Payload @{ value = "BJ430047" } -AuthoritativeState $initialState -FrameworkData (New-McpData -Skipped)
+    $undeclaredPatch = $undeclared.output.surfaceAction.patches[0].statePatch
+    Assert-Equal "error" ([string]$undeclaredPatch.status) "An undeclared action id must produce an explicit error state."
+    Assert-Equal $undeclaredActionMessage ([string]$undeclaredPatch.error) "A rejected action must report a fixed message; interpolating the caller's action id lets an undeclared action push arbitrary text into stored state and onto the panel."
+    Assert-Equal "SZ000034" ([string]$undeclaredPatch.code) "A rejected action must take its symbol from the authoritative state, not from the rejected payload."
+    Assert-True ($null -eq $undeclaredPatch.lastActionId -and $null -eq $undeclaredPatch.lastRequestId) "A rejected action must not be echoed into the stored correlation fields."
+    Assert-True ($null -eq $undeclared.output.surfaceAction.PSObject.Properties["result"]) "A rejected action must not produce a formal quote."
+
     $closedPrice = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "SZ000034" } -AuthoritativeState $initialState -FrameworkData (New-McpData -QuotePrice 26.00)
     Assert-True ([double]$closedPrice.output.surfaceAction.patches[0].statePatch.quote.price -eq 24.99) "A closed market must display the latest trading-day close."
 
-    $bjState = @{ code = "BJ430047"; market = "BJ"; intervalSeconds = 60; period = "day"; periodLabel = "日 K"; marketStatus = "closed"; lastTradingDate = "2026-08-14" }
+    $bjState = @{ code = "BJ430047"; market = "BJ"; intervalSeconds = 60; period = "day"; periodLabel = $dayPeriodLabel; marketStatus = "closed"; lastTradingDate = "2026-08-14" }
     $bj = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_refresh" -Payload @{ code = "BJ430047" } -AuthoritativeState $bjState -FrameworkData (New-McpData -Code "BJ430047")
     Assert-Equal "BJ430047" ([string]$bj.output.surfaceAction.patches[0].statePatch.quote.code) "Beijing Exchange code normalization failed."
     Assert-Equal "BJ" ([string]$bj.output.surfaceAction.patches[0].statePatch.quote.market) "Beijing Exchange market classification failed."
@@ -495,12 +561,12 @@ try {
     $periodState = $surfaceAction.patches[0].statePatch
     $period = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_period_commit" -Payload @{ value = "minute-5" } -AuthoritativeState $periodState -FrameworkData (New-McpData -Period "minute-5" -HistoryOnly)
     Assert-Equal "minute-5" ([string]$period.output.surfaceAction.patches[0].statePatch.period) "Stock Monitor period commit failed."
-    Assert-Equal "5 分钟" ([string]$period.output.surfaceAction.patches[0].statePatch.periodLabel) "Stock Monitor period label mismatch."
+    Assert-Equal $fiveMinutePeriodLabel ([string]$period.output.surfaceAction.patches[0].statePatch.periodLabel) "Stock Monitor period label mismatch."
     Assert-Equal "minute-5" ([string]$period.output.surfaceAction.result.outputs.quote.value.history.period) "Formal quote did not preserve the selected period."
 
     $periodMismatch = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_period_commit" -Payload @{ value = "minute-5" } -AuthoritativeState $periodState -FrameworkData (New-McpData -Period "day" -HistoryOnly)
     Assert-Equal "error" ([string]$periodMismatch.output.surfaceAction.patches[0].statePatch.status) "Mismatched provider periods must become an explicit error state."
-    Assert-True ([string]$periodMismatch.output.surfaceAction.patches[0].statePatch.error -match "行情周期与请求不一致") "Period mismatch detail was not surfaced."
+    Assert-True ([string]$periodMismatch.output.surfaceAction.patches[0].statePatch.error -match [regex]::Escape($periodMismatchMessage)) "Period mismatch detail was not surfaced."
 
     $invalid = Invoke-StockRuntime -ArtDirectory $artDirectory -ActionId "stock_symbol_commit" -Payload @{ value = "INVALID" } -AuthoritativeState $initialState -FrameworkData (New-McpData -QuoteError)
     Assert-Equal "error" ([string]$invalid.output.surfaceAction.patches[0].statePatch.status) "Invalid Stock Monitor symbols must become an explicit error state."

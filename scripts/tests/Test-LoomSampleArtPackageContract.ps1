@@ -5,6 +5,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$automaticRefreshLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6Ieq5YqoIA=="))
+
 function Assert-True {
     param(
         [bool]$Condition,
@@ -187,7 +189,7 @@ foreach ($entry in $expected.GetEnumerator()) {
         $surfaceSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $surfaceSourcePath
         Assert-True ($surfaceSource.Contains("PERIODS") -and $surfaceSource.Contains("stock_period_commit") -and $surfaceSource.Contains("isIntradayPeriod")) "Stock Monitor JavaScript Surface must implement all period controls and intraday rendering."
         Assert-True ($surfaceSource.Contains("downsampleRows") -and $surfaceSource.Contains("maxPoints")) "Stock Monitor JavaScript Surface must downsample long market series."
-        Assert-True ($surfaceSource.Contains("averageValues") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains("自动 ")) "Stock Monitor JavaScript Surface must keep its price curve and automatic refresh recency visible."
+        Assert-True ($surfaceSource.Contains("averageValues") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains($automaticRefreshLabel)) "Stock Monitor JavaScript Surface must keep its price curve and automatic refresh recency visible."
         $secretParameters = @($manifest.params | Where-Object { [string]$_.id -match '(?i)key|secret|token|credential' })
         Assert-True ($secretParameters.Count -eq 0) "Stock Monitor must not own provider credentials."
         Assert-True (-not (@($surface.actions | Where-Object { [string]$_.id -match '(?i)buy|sell|trade|order|purchase' }).Count)) "Stock Monitor must not declare trading actions."
@@ -332,7 +334,7 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                     $surfaceReader.Dispose()
                 }
                 Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS")) "Packaged Stock Monitor must cap Canvas allocation: $zipPath"
-                Assert-True ($surfaceSource.Contains("averageValues") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains("自动 ")) "Packaged Stock Monitor must retain its price curve and automatic refresh recency: $zipPath"
+                Assert-True ($surfaceSource.Contains("averageValues") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains($automaticRefreshLabel)) "Packaged Stock Monitor must retain its price curve and automatic refresh recency: $zipPath"
                 Assert-True ($surfaceSource.Contains("position:absolute;inset:0")) "Packaged Stock Monitor Canvas must not contribute intrinsic Grid size: $zipPath"
                 Assert-True (-not $surfaceSource.Contains("height:100%;min-height:145px")) "Packaged Stock Monitor must not retain the recursive Canvas sizing rule: $zipPath"
                 Assert-True ($surfaceSource.Contains("new CSSStyleSheet()")) "Packaged Stock Monitor must use a CSP-compatible constructed stylesheet: $zipPath"

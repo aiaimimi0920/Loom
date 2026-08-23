@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:DaemonAuthHeaders = @{}
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 
 function Assert-True {
@@ -180,7 +181,7 @@ function Wait-ForHealth {
 function Invoke-JsonGet {
     param([string]$Uri)
 
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 15
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonAuthHeaders -TimeoutSec 15
 }
 
 function Invoke-JsonPost {
@@ -190,7 +191,7 @@ function Invoke-JsonPost {
     )
 
     $json = $Body | ConvertTo-Json -Depth 30 -Compress
-    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec 30
+    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonAuthHeaders -ContentType "application/json" -Body $json -TimeoutSec 30
 }
 
 function Invoke-Executable {
@@ -523,6 +524,24 @@ try {
     }
     $summary.daemonPid = $daemonProcess.Id
 
+    $daemonTokenPath = Join-Path $controlPlaneRoot "daemon-token"
+    $tokenDeadline = (Get-Date).AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf)) {
+        $daemonProcess.Refresh()
+        if ($daemonProcess.HasExited) {
+            throw "loom-daemon exited before writing its administrator token with code $($daemonProcess.ExitCode)"
+        }
+        if ((Get-Date) -ge $tokenDeadline) {
+            throw "Timed out waiting for Loom daemon administrator token"
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $daemonToken = [System.IO.File]::ReadAllText($daemonTokenPath, [System.Text.Encoding]::UTF8).Trim()
+    if ([string]::IsNullOrWhiteSpace($daemonToken)) {
+        throw "Loom daemon administrator token file was empty"
+    }
+    $script:DaemonAuthHeaders = @{ Authorization = "Bearer $daemonToken" }
+
     $health = Wait-ForHealth -BaseUrl $daemonBaseUrl -Process $daemonProcess
     Assert-Equal "ok" ([string]$health.status) "Loom health status mismatch"
     $status = Invoke-JsonGet -Uri "$daemonBaseUrl/status"
@@ -535,7 +554,9 @@ try {
     $summary.cliStatus = [string]$status.status
 
     $oldCliToken = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_TOKEN", "Process")
+    $oldCliControlPlaneRoot = [Environment]::GetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", "Process")
     Set-Item -LiteralPath "Env:LOOM_DAEMON_TOKEN" -Value ""
+    Set-Item -LiteralPath "Env:LOOM_CONTROL_PLANE_ROOT" -Value $controlPlaneRoot
     try {
         $cliStatus = Invoke-Executable -FilePath $loomExe -Arguments @(
             "status",
@@ -545,6 +566,7 @@ try {
     }
     finally {
         Restore-EnvironmentValue -Name "LOOM_DAEMON_TOKEN" -Value $oldCliToken
+        Restore-EnvironmentValue -Name "LOOM_CONTROL_PLANE_ROOT" -Value $oldCliControlPlaneRoot
     }
     if ($cliStatus.exitCode -ne 0) {
         throw "packaged loom.exe status failed with exit code $($cliStatus.exitCode): $(Redact-Text $cliStatus.output)"

@@ -19,6 +19,7 @@ $resolvedApps = @("Loom")
 $ExpectedLoomCapabilityIds = "brain.plan,tea.ticket.decompose.v1,tea.ticket.execute.v1,tea.ticket.review.v1"
 $script:SmokeEvidenceRunId = ""
 $script:SmokeEvidenceRunDir = ""
+$script:DaemonAuthHeaders = @{}
 if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
     $EvidenceRoot = Join-Path $repoRoot "target\runtime-smoke"
 }
@@ -117,7 +118,7 @@ function Wait-ForFileJson {
 function Invoke-JsonGet {
     param(
         [string]$Uri,
-        [hashtable]$Headers = @{}
+        [hashtable]$Headers = $script:DaemonAuthHeaders
     )
 
     return Invoke-RestMethod -Uri $Uri -Method Get -Headers $Headers -TimeoutSec 10
@@ -127,7 +128,7 @@ function Invoke-JsonPost {
     param(
         [string]$Uri,
         [object]$Body,
-        [hashtable]$Headers = @{}
+        [hashtable]$Headers = $script:DaemonAuthHeaders
     )
 
     $json = $Body | ConvertTo-Json -Depth 20
@@ -138,7 +139,7 @@ function Invoke-JsonPut {
     param(
         [string]$Uri,
         [object]$Body,
-        [hashtable]$Headers = @{}
+        [hashtable]$Headers = $script:DaemonAuthHeaders
     )
 
     $json = $Body | ConvertTo-Json -Depth 20
@@ -148,7 +149,7 @@ function Invoke-JsonPut {
 function Invoke-JsonDelete {
     param(
         [string]$Uri,
-        [hashtable]$Headers = @{}
+        [hashtable]$Headers = $script:DaemonAuthHeaders
     )
 
     return Invoke-RestMethod -Uri $Uri -Method Delete -Headers $Headers -TimeoutSec 20
@@ -807,7 +808,10 @@ function Start-LoomCloudApiFixtureJob {
                             path = [string]$request["path"]
                             multipartSeen = $rawLower.Contains("content-type: multipart/form-data; boundary=")
                             fileFieldSeen = $raw.Contains('name="file"')
-                            tempFilenameSeen = $raw.Contains('filename="loom-cloud-input-')
+                            # The host names the uploaded part `loom-cloud-input.<ext>` when the
+                            # input arrives as a data URL, and `loom-cloud-input-<pid>-<stamp>.png`
+                            # when it arrives as a staged temp file. Match the shared prefix.
+                            tempFilenameSeen = $raw.Contains('filename="loom-cloud-input')
                             promptSeen = $raw.Contains("release cloud multipart")
                             traceSeen = $rawLower.Contains("x-trace: release-trace")
                             unresolvedTemplateSeen = $raw.Contains("{{")
@@ -1030,7 +1034,16 @@ function Test-LoomRelease {
         Assert-Equal "loom" $manifest.appId "Loom manifest appId mismatch."
         Assert-Equal "Loom" $manifest.displayName "Loom manifest displayName mismatch."
         Assert-Equal "http" $manifest.transport.type "Loom manifest transport type mismatch."
-        Assert-Equal "none" $manifest.transport.auth "Loom manifest auth mismatch."
+        Assert-Equal "bearer" $manifest.transport.auth "Loom manifest auth mismatch."
+        $manifestToken = [string]$manifest.transport.authToken
+        if ([string]::IsNullOrWhiteSpace($manifestToken)) {
+            throw "Loom manifest did not contain the generated administrator token."
+        }
+        Assert-Equal `
+            $manifestToken `
+            ([System.IO.File]::ReadAllText((Join-Path $controlPlaneRoot "daemon-token"), [System.Text.Encoding]::UTF8).Trim()) `
+            "Loom persisted daemon token mismatch."
+        $script:DaemonAuthHeaders = @{ Authorization = "Bearer $manifestToken" }
         $manifestCapabilityIds = @($manifest.capabilities) -join ","
         Assert-Equal $ExpectedLoomCapabilityIds $manifestCapabilityIds "Loom manifest capability list mismatch."
 
@@ -1280,6 +1293,11 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 endpoint = "http://127.0.0.1:$cloudPort/text"
                 method = "POST"
             }
+            # A cloud Art only reaches a loopback endpoint when it declares that it wants to, so the
+            # fixture-backed smoke tools declare it the way a real local-service Art would.
+            metadata = @{
+                permissionPolicy = @{ network = @{ allowLocalhost = $true } }
+            }
         }
         Assert-Equal "fixture-cloud-text" $savedCloudTextTool.tool.id "Loom cloud API text tool save id mismatch."
         Assert-Equal "cloud_api" $savedCloudTextTool.tool.execution.type "Loom cloud API text execution type mismatch."
@@ -1301,6 +1319,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 endpoint = "http://127.0.0.1:$cloudPort/process"
                 method = "POST"
             }
+            metadata = @{
+                permissionPolicy = @{ network = @{ allowLocalhost = $true } }
+            }
         }
         Assert-Equal "fixture-cloud-art" $savedCloudArtTool.tool.id "Loom cloud API Art tool save id mismatch."
         Assert-Equal "cloud_api" $savedCloudArtTool.tool.execution.type "Loom cloud API Art execution type mismatch."
@@ -1317,6 +1338,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 contentType = "multipart/form-data"
                 headers = '{"X-Trace":"{{inputs.trace.value}}"}'
                 body = '{"file":"{{inputs.input.path}}","prompt":"{{inputs.prompt.value}}"}'
+            }
+            metadata = @{
+                permissionPolicy = @{ network = @{ allowLocalhost = $true } }
             }
         }
         Assert-Equal "fixture-cloud-multipart-art" $savedCloudMultipartArtTool.tool.id "Loom cloud multipart Art tool save id mismatch."

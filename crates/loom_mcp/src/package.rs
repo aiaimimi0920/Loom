@@ -13,7 +13,12 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zip::ZipArchive;
 
-use crate::{McpCredentialRequirement, McpServerConfig, McpServerPackageState, McpTransport};
+use crate::{
+    validate_mcp_environment_name, validate_mcp_header_name, validate_mcp_tool_identifier,
+    McpCredentialRequirement, McpServerConfig, McpServerPackageState, McpTransport,
+    MAX_MCP_ARGUMENTS, MAX_MCP_ARGUMENT_BYTES, MAX_MCP_CREDENTIALS, MAX_MCP_CREDENTIAL_LABEL_BYTES,
+    MAX_MCP_SERVER_DESCRIPTION_BYTES, MAX_MCP_SERVER_NAME_BYTES, MAX_MCP_TOOLS,
+};
 
 pub const MCP_SERVER_PACKAGE_MANIFEST: &str = "mcp.server.json";
 const MAX_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -36,7 +41,7 @@ const MAX_EXTRACTED_BYTES: u64 = 128 * 1024 * 1024;
 /// the digest is not spent on the path: an MCP server that vendors its dependencies nests deeply
 /// inside this directory, and every character here comes out of the `MAX_PATH` budget those files
 /// need. The full digest is recorded in `active.json` and in the server config either way.
-const PACKAGE_DIRECTORY_DIGEST_CHARS: usize = 32;
+pub const PACKAGE_DIRECTORY_DIGEST_CHARS: usize = 32;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -515,8 +520,51 @@ fn validate_manifest(
             "name is required".to_owned(),
         ));
     }
+    validate_manifest_text("name", &manifest.name, MAX_MCP_SERVER_NAME_BYTES, true)?;
+    validate_manifest_text(
+        "description",
+        &manifest.description,
+        MAX_MCP_SERVER_DESCRIPTION_BYTES,
+        false,
+    )?;
+    validate_manifest_text(
+        "publisher.name",
+        &manifest.publisher.name,
+        MAX_MCP_SERVER_NAME_BYTES,
+        true,
+    )?;
+    if manifest.tools.len() > MAX_MCP_TOOLS {
+        return Err(McpPackageError::InvalidManifest(format!(
+            "tools contains {} entries; limit is {MAX_MCP_TOOLS}",
+            manifest.tools.len()
+        )));
+    }
+    for (index, tool) in manifest.tools.iter().enumerate() {
+        validate_mcp_tool_identifier(&format!("tools[{index}]"), tool)
+            .map_err(|error| McpPackageError::InvalidManifest(error.to_string()))?;
+    }
+    if manifest.entry.args.len() > MAX_MCP_ARGUMENTS {
+        return Err(McpPackageError::InvalidManifest(format!(
+            "entry.args contains {} entries; limit is {MAX_MCP_ARGUMENTS}",
+            manifest.entry.args.len()
+        )));
+    }
+    for (index, argument) in manifest.entry.args.iter().enumerate() {
+        validate_manifest_text(
+            &format!("entry.args[{index}]"),
+            argument,
+            MAX_MCP_ARGUMENT_BYTES,
+            false,
+        )?;
+    }
+    if manifest.credentials.len() > MAX_MCP_CREDENTIALS {
+        return Err(McpPackageError::InvalidManifest(format!(
+            "credentials contains {} entries; limit is {MAX_MCP_CREDENTIALS}",
+            manifest.credentials.len()
+        )));
+    }
     let mut credential_ids = BTreeMap::new();
-    for credential in &manifest.credentials {
+    for (index, credential) in manifest.credentials.iter().enumerate() {
         if !is_safe_identity(&credential.id) || credential.target.name.trim().is_empty() {
             return Err(McpPackageError::InvalidManifest(
                 "credential id and target name are required".to_owned(),
@@ -528,6 +576,21 @@ fn validate_manifest(
                 credential.id
             )));
         }
+        validate_manifest_text(
+            &format!("credentials[{index}].label"),
+            &credential.label,
+            MAX_MCP_CREDENTIAL_LABEL_BYTES,
+            true,
+        )?;
+        match credential.target.kind {
+            McpPackageCredentialTargetKind::Env => {
+                validate_mcp_environment_name(&credential.target.name)
+            }
+            McpPackageCredentialTargetKind::Header => {
+                validate_mcp_header_name(&credential.target.name)
+            }
+        }
+        .map_err(|error| McpPackageError::InvalidManifest(error.to_string()))?;
     }
     match manifest.transport {
         McpTransport::Stdio => {
@@ -549,6 +612,26 @@ fn validate_manifest(
             ));
         }
         McpTransport::StreamableHttp => {}
+    }
+    Ok(())
+}
+
+fn validate_manifest_text(
+    field: &str,
+    value: &str,
+    max_bytes: usize,
+    required: bool,
+) -> Result<(), McpPackageError> {
+    if required && value.trim().is_empty() {
+        return Err(McpPackageError::InvalidManifest(format!(
+            "{field} is required"
+        )));
+    }
+    if value.len() > max_bytes {
+        return Err(McpPackageError::InvalidManifest(format!(
+            "{field} is {} bytes; limit is {max_bytes}",
+            value.len()
+        )));
     }
     Ok(())
 }
@@ -999,6 +1082,56 @@ mod tests {
             }"#,
             b"Write-Output ready",
         )
+    }
+
+    #[test]
+    fn manifest_validation_bounds_tools_arguments_and_credential_labels() {
+        let root = std::env::temp_dir().join(staging_name());
+        fs::create_dir_all(root.join("runtime")).expect("create package validation fixture");
+        fs::write(root.join("runtime/server.ps1"), b"Write-Output ready")
+            .expect("write package validation entry");
+        let mut manifest: McpServerPackageManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "fixture-search",
+            "name": "Fixture Search",
+            "description": "bounded",
+            "version": "1.2.3",
+            "publisher": {"id": "publisher.test", "name": "Publisher"},
+            "transport": "stdio",
+            "entry": {"command": "runtime/server.ps1", "args": []},
+            "tools": [],
+            "credentials": []
+        }))
+        .expect("parse package validation manifest");
+
+        manifest.tools = vec!["search".to_owned(); MAX_MCP_TOOLS + 1];
+        assert!(validate_manifest(&manifest, &root)
+            .unwrap_err()
+            .to_string()
+            .contains("tools contains"));
+
+        manifest.tools.clear();
+        manifest.entry.args = vec!["argument".to_owned(); MAX_MCP_ARGUMENTS + 1];
+        assert!(validate_manifest(&manifest, &root)
+            .unwrap_err()
+            .to_string()
+            .contains("entry.args"));
+
+        manifest.entry.args.clear();
+        manifest.credentials = vec![McpPackageCredential {
+            id: "api_key".to_owned(),
+            label: "x".repeat(MAX_MCP_CREDENTIAL_LABEL_BYTES + 1),
+            required: true,
+            target: McpPackageCredentialTarget {
+                kind: McpPackageCredentialTargetKind::Env,
+                name: "API_KEY".to_owned(),
+            },
+        }];
+        assert!(validate_manifest(&manifest, &root)
+            .unwrap_err()
+            .to_string()
+            .contains("credentials[0].label"));
+        fs::remove_dir_all(root).expect("cleanup package validation fixture");
     }
 
     #[test]

@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:DaemonRequestHeaders = @{}
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 . (Join-Path $PSScriptRoot "LoomReleaseLayout.ps1")
@@ -98,7 +99,7 @@ function Start-InheritedEnvProcess {
 
 function Invoke-JsonGet {
     param([string]$Uri)
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 10
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonRequestHeaders -TimeoutSec 10
 }
 
 function Wait-ForDaemon {
@@ -221,12 +222,15 @@ $downloadPath = Join-Path $runDir "failed-art.preview.png"
 $daemonProcess = $null
 $daemonPid = $null
 $failure = $null
+$daemonToken = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+$script:DaemonRequestHeaders = @{ Authorization = "Bearer $daemonToken" }
 
 try {
     Write-HookFixture -AppDataRoot $appDataRoot
     $daemonEnvironment = @{
         LOOM_DAEMON_HOST = "127.0.0.1"
         LOOM_DAEMON_PORT = [string]$daemonPort
+        LOOM_DAEMON_TOKEN = $daemonToken
         LOOM_CONTROL_PLANE_ROOT = $controlPlaneRoot
         APPDATA = $appDataRoot
         LOCALAPPDATA = $localAppDataRoot
@@ -255,7 +259,7 @@ try {
     Assert-True (-not [string]::IsNullOrWhiteSpace($previewUrl)) "failed-art preview URL is missing."
     Assert-True $previewUrl.Contains("/failed-art/preview") "failed-art preview URL should target the failed-art node."
 
-    Invoke-WebRequest -Uri ($daemonUrl + $previewUrl) -OutFile $downloadPath -TimeoutSec 15 | Out-Null
+    Invoke-WebRequest -Uri ($daemonUrl + $previewUrl) -Headers $script:DaemonRequestHeaders -OutFile $downloadPath -TimeoutSec 15 | Out-Null
 
     $failedArtSourcePath = Join-Path $appDataRoot "com.yamiyu.hook\images\failed-art.png"
     $upstreamSourcePath = Join-Path $appDataRoot "com.yamiyu.hook\images\upstream.png"

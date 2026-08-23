@@ -41,17 +41,34 @@ assert.equal(typeof hooks.viewOf, "function", "view resolver hook is missing");
 assert.equal(hooks.viewOf({ viewId: "favorites-summary" }), "favorites-summary");
 assert.equal(hooks.viewOf({ viewId: "unknown" }), "full");
 
+assert.equal(typeof hooks.disableTickChannel, "function", "tick-channel hook is missing");
+
 assert.deepEqual(
   { ...hooks.refreshPlan(1, "open") },
-  { cadence: 1, key: "1:1:tick", normalized: 1, usesTick: true },
+  { cadence: 1, key: "1:1:tick", normalized: 1, ticksPerFullRefresh: 60, usesTick: true },
 );
 assert.deepEqual(
   { ...hooks.refreshPlan(1, "closed") },
-  { cadence: 30, key: "1:30:tick", normalized: 1, usesTick: true },
+  { cadence: 30, key: "1:30:tick", normalized: 1, ticksPerFullRefresh: 2, usesTick: true },
 );
 assert.deepEqual(
   { ...hooks.refreshPlan(60, "open") },
-  { cadence: 60, key: "60:60:full", normalized: 60, usesTick: false },
+  { cadence: 60, key: "60:60:full", normalized: 60, ticksPerFullRefresh: 0, usesTick: false },
+);
+
+// A host that refuses the tick action must also slow the cadence down: a 1-second full
+// refresh is four upstream calls per second, which is the load the tick channel avoids.
+hooks.disableTickChannel();
+assert.deepEqual(
+  { ...hooks.refreshPlan(1, "open") },
+  { cadence: 60, key: "1:60:full", normalized: 1, ticksPerFullRefresh: 0, usesTick: false },
+  "an unavailable tick channel must raise the cadence to the full-refresh period",
+);
+hooks.enableTickChannel();
+assert.equal(
+  hooks.refreshPlan(1, "open").usesTick,
+  true,
+  "the tick channel must be probed again once the cooldown is cleared",
 );
 
 hooks.beginTick(7);
@@ -74,4 +91,129 @@ assert.equal(usPalette.redUp, false);
 assert.equal(usPalette.up, "#22c55e");
 assert.equal(usPalette.down, "#f43f5e");
 
-console.log("Stock Monitor Surface VM contract passed: revision-lock=verified cadence=open/closed palette=CN/US");
+// The moving average is now a rolling accumulator instead of a slice/map/reduce per point.
+// Compare it against the naive definition it replaced, because an off-by-one in the window
+// would draw a plausible-looking but wrong MA5 line.
+assert.equal(typeof hooks.movingAverages, "function", "moving-average hook is missing");
+const closes = [10, 11, 9, 12, 13, 15, 14, 12, 11, 16, 18, 17];
+const points = closes.map((close) => ({ close: close }));
+const naiveDaily = closes.map((_close, index) => {
+  if (index < 4) return null;
+  const window = closes.slice(index - 4, index + 1);
+  return window.reduce((sum, value) => sum + value, 0) / window.length;
+});
+const naiveIntraday = closes.map((_close, index) => {
+  const window = closes.slice(0, index + 1);
+  return window.reduce((sum, value) => sum + value, 0) / window.length;
+});
+const rollingDaily = hooks.movingAverages(points, false);
+const rollingIntraday = hooks.movingAverages(points, true);
+assert.equal(rollingDaily.length, closes.length, "MA5 must produce one value per point");
+naiveDaily.forEach((expected, index) => {
+  if (expected === null) {
+    assert.equal(rollingDaily[index], null, "MA5 must stay empty for the first four points");
+    return;
+  }
+  assert.ok(
+    Math.abs(rollingDaily[index] - expected) < 1e-9,
+    "MA5 at index " + index + " is " + rollingDaily[index] + ", expected " + expected,
+  );
+});
+naiveIntraday.forEach((expected, index) => {
+  assert.ok(
+    Math.abs(rollingIntraday[index] - expected) < 1e-9,
+    "intraday average at index " + index + " is " + rollingIntraday[index] + ", expected " + expected,
+  );
+});
+
+// The derived chart series is memoized on (code, period, revision, row count). A repeated
+// draw at the same revision must hand back the same object; a new revision must not.
+assert.equal(typeof hooks.chartSampleOf, "function", "chart-sample hook is missing");
+const sampleState = {
+  code: "SZ000034",
+  period: "day",
+  history: closes.map((close, index) => ({
+    date: "2026-08-0" + ((index % 9) + 1),
+    open: close - 1,
+    close: close,
+    high: close + 1,
+    low: close - 2,
+    volume: 1000 + index,
+  })),
+};
+const firstSample = hooks.chartSampleOf(sampleState, 4, 240, false);
+assert.equal(firstSample.points.length, closes.length);
+assert.equal(
+  hooks.chartSampleOf(sampleState, 4, 240, false),
+  firstSample,
+  "the same revision must reuse the cached sample instead of rebuilding the series",
+);
+assert.notEqual(
+  hooks.chartSampleOf(sampleState, 5, 240, false),
+  firstSample,
+  "a new revision must invalidate the cached sample",
+);
+assert.notEqual(
+  hooks.chartSampleOf(sampleState, 5, 120, false),
+  hooks.chartSampleOf(sampleState, 5, 240, false),
+  "a different point budget must produce its own sample",
+);
+
+// The runtime already decides staleness and no longer synthesizes an observation time, so the
+// panel must say so: an ageless record is the fail-closed case and must not read as fresh.
+assert.equal(typeof hooks.staleLabel, "function", "stale-label hook is missing");
+assert.equal(hooks.staleLabel(null), "");
+assert.equal(hooks.staleLabel({ stale: false, ageSeconds: 900 }), "");
+assert.equal(hooks.staleLabel({ stale: true, ageSeconds: 132, maxAgeSeconds: 90 }), "已陈旧 132/90 秒");
+assert.equal(hooks.staleLabel({ stale: true, ageSeconds: 132 }), "已陈旧 132 秒");
+assert.equal(
+  hooks.staleLabel({ stale: true, ageSeconds: null, maxAgeSeconds: 90 }),
+  "已陈旧（观测时间不可用）",
+  "a record whose age is unknown must be labelled, not silently drawn as if it were current",
+);
+
+// A quote that arrived without its chart stays status=ready, so the footer is the only place
+// the failure can surface. It must not be dressed as a fatal error, and a real error wins.
+assert.equal(typeof hooks.footerNoticeOf, "function", "footer-notice hook is missing");
+assert.deepEqual({ ...hooks.footerNoticeOf({}) }, { text: "", warning: false });
+assert.deepEqual(
+  { ...hooks.footerNoticeOf({ historyWarning: "  upstream history failure  " }) },
+  { text: "K 线数据不可用：upstream history failure", warning: true },
+);
+assert.deepEqual(
+  { ...hooks.footerNoticeOf({ error: "行情获取失败", historyWarning: "upstream history failure" }) },
+  { text: "行情获取失败", warning: false },
+  "a fatal error must keep the footer slot and its error styling",
+);
+
+const sourceText = source;
+assert.ok(
+  sourceText.includes('".book-meta.is-stale{color:" + COLORS.yellow')
+    && sourceText.includes('".tape-strip.is-stale strong{color:" + COLORS.yellow')
+    && sourceText.includes('".stock-error.is-warning{color:" + COLORS.yellow'),
+  "the stale badge and the non-fatal warning must render in the warning color, not the error color",
+);
+assert.ok(
+  /refs\.bookMeta\.classList\.toggle\("is-stale"/.test(sourceText)
+    && /refs\.tape\.classList\.toggle\("is-stale"/.test(sourceText),
+  "both the order book meta line and the tape strip must toggle the stale class they style",
+);
+assert.ok(
+  !/\n\s*canvas\.width = /.test(sourceText),
+  "canvas.width must only be assigned when the pixel size actually changed",
+);
+assert.ok(
+  sourceText.includes("if (canvas.width !== nextWidth)")
+    && sourceText.includes("if (canvas.height !== nextHeight)"),
+  "the canvas resize must be gated on a size change to avoid reallocating the backing bitmap",
+);
+assert.ok(
+  sourceText.includes("new ResizeObserver(scheduleChartRedraw)"),
+  "resize redraws must go through the animation-frame coalescer, not straight into drawChart",
+);
+assert.ok(
+  !/replaceChildren\(\);\s*\n\s*levels\.forEach/.test(sourceText),
+  "the order book must reuse its rows instead of rebuilding them every frame",
+);
+
+console.log("Stock Monitor Surface VM contract passed: revision-lock=verified cadence=open/closed/no-tick palette=CN/US ma5=rolling sample-cache=verified stale-badge=verified history-warning=verified");

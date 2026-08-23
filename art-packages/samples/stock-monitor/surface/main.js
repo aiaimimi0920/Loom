@@ -31,7 +31,9 @@
     const FULL_REFRESH_SECONDS = 60;
     const CLOSED_MARKET_MIN_SECONDS = 30;
     const TICK_ACTION = "stock_tick_refresh";
-    const TICK_TIMEOUT_MILLIS = 32000;
+    const INTERVAL_COMMIT_ACTION = "stock_interval_commit";
+    // 宿主拒绝一次 tick 后的冷却时间。过期后重新探测准实时通道，而不是整个生命周期都降级。
+    const TICK_RETRY_COOLDOWN_MILLIS = 300000;
     const RED_UP_MARKETS = Object.freeze(["SH", "SZ", "BJ", "HK"]);
     const PERIODS = Object.freeze([
         ["minute", "分时"],
@@ -52,15 +54,37 @@
     const MAX_CANVAS_WIDTH = 2048;
     const MAX_CANVAS_HEIGHT = 1024;
     const MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
+    const MOVING_AVERAGE_WINDOW = 5;
+    const HISTORY_ROW_CELLS = 6;
+    const HISTORY_ROW_COUNT = 9;
+    const HISTORY_HEAD_CELLS = Object.freeze([
+        { text: "时间" }, { text: "开" }, { text: "高" },
+        { text: "低" }, { text: "收" }, { text: "成交量" }
+    ]);
+    const HISTORY_EMPTY_CELLS = Object.freeze([
+        { text: "--" }, { text: "--" }, { text: "--" },
+        { text: "--" }, { text: "--" }, { text: "--" }
+    ]);
+    // 宿主侧动作预算。这些数字镜像 manifest.json 的
+    // metadata.capabilities.surface.actions[].timeoutMs 与 art.runtime.json 的
+    // limits.timeoutMs；运行时会把实际生效值通过 state.actionBudgetsMillis 回传，
+    // 首帧之前（还没有任何回传）才用这里的常量。
     const ACTION_TIMEOUT_MILLIS = 50000;
-    const PENDING_TIMEOUT_MILLIS = ACTION_TIMEOUT_MILLIS + 2000;
+    const TICK_ACTION_TIMEOUT_MILLIS = 30000;
+    const INTERVAL_COMMIT_TIMEOUT_MILLIS = 5000;
+    // 宿主的截止时间从任务开始计时，排队、进程启动、补丁回传都在这之外；而超时的动作
+    // 不会推进 revision，所以客户端计时器是唯一的兜底。它必须晚于宿主放弃的时刻，
+    // 否则会在请求仍在运行时清掉 pending 并误报超时。
+    const ACTION_DISPATCH_GRACE_MILLIS = 8000;
+    const MIN_CLIENT_TIMEOUT_MILLIS = 3000;
+    const MAX_CLIENT_TIMEOUT_MILLIS = 180000;
+    const PENDING_TIMEOUT_MILLIS = ACTION_TIMEOUT_MILLIS + ACTION_DISPATCH_GRACE_MILLIS;
     const VIEW_IDS = Object.freeze(["full", "chart-table", "trade-price", "favorites-summary"]);
 
     let rootElement = null;
     let snapshotValue = null;
     let refs = {};
     let refreshTimer = null;
-    let fullRefreshTimer = null;
     let pendingTimer = null;
     let tickTimer = null;
     let resizeObserver = null;
@@ -71,16 +95,25 @@
     let pendingAction = null;
     let pendingPeriod = null;
     let pendingRevision = -1;
+    let pendingRequestId = null;
     let tickPending = false;
     let tickPendingRevision = -1;
-    let tickSupported = true;
+    let tickRequestId = null;
+    let tickDisabledUntil = 0;
+    let requestCounter = 0;
     let liveTickCount = 0;
+    let ticksSinceFullRefresh = 0;
     let activeInterval = DEFAULT_INTERVAL_SECONDS;
     let activeTimerKey = "";
     let chartGeometry = null;
     let hoverIndex = -1;
     let hoverFrame = null;
     let hoverPointer = null;
+    let resizeFrame = null;
+    let seriesCache = null;
+    let sampleCache = null;
+    let paintedKey = "";
+    let legendPaintedKey = "";
 
     const asObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
     const asNumber = (value) => {
@@ -99,7 +132,8 @@
     const periodLabelOf = (state) => {
         const value = periodOf(state);
         const found = PERIODS.find((period) => period[0] === value);
-        return text(state.periodLabel, found ? found[1] : "日 K");
+        // 标签只从本地封闭表取：state.periodLabel 由另一个进程写入，不能当作可信显示文本。
+        return found ? found[1] : "日 K";
     };
     const isIntradayPeriod = (period) => period === "minute" || period === "five-day" || period.indexOf("minute-") === 0;
     const chartRowsOf = (state) => historyOf(state).map((item) => {
@@ -132,6 +166,45 @@
             });
         }
         return result;
+    };
+    // 均线用滚动累加。每点重新 slice/map/reduce 一次，一次绘制要多出三倍于点数的中间数组。
+    const movingAverages = (points, intraday) => {
+        const values = new Array(points.length);
+        let total = 0;
+        if (intraday) {
+            for (let index = 0; index < points.length; index += 1) {
+                total += points[index].close;
+                values[index] = total / (index + 1);
+            }
+            return values;
+        }
+        for (let index = 0; index < points.length; index += 1) {
+            total += points[index].close;
+            if (index >= MOVING_AVERAGE_WINDOW) total -= points[index - MOVING_AVERAGE_WINDOW].close;
+            values[index] = index < MOVING_AVERAGE_WINDOW - 1 ? null : total / MOVING_AVERAGE_WINDOW;
+        }
+        return values;
+    };
+    const revisionOf = (snapshot) => {
+        const value = Number(snapshot && snapshot.revision);
+        return Number.isFinite(value) ? value : -1;
+    };
+    // 派生序列按 (代码, 周期, revision, 行数) 缓存。运行时的历史上限是 2000 行，最小刷新间隔
+    // 是一秒，而重绘还会被 resize、悬浮和动作拒绝路径额外触发多次；没有缓存时每次都要重新
+    // 分配整个序列。revision 只在状态真的变化时前进，所以它同时是正确性边界和失效条件。
+    const chartSeriesOf = (state, revision) => {
+        const key = text(state.code, text(state.symbol, "")) + "|" + periodOf(state) + "|" + revision + "|" + historyOf(state).length;
+        if (seriesCache && seriesCache.key === key) return seriesCache.rows;
+        seriesCache = { key: key, rows: chartRowsOf(state) };
+        return seriesCache.rows;
+    };
+    const chartSampleOf = (state, revision, maxPoints, intraday) => {
+        const rows = chartSeriesOf(state, revision);
+        const key = seriesCache.key + "|" + maxPoints + "|" + (intraday ? "i" : "k");
+        if (sampleCache && sampleCache.key === key) return sampleCache;
+        const points = downsampleRows(rows, maxPoints);
+        sampleCache = { key: key, points: points, averageValues: movingAverages(points, intraday) };
+        return sampleCache;
     };
     const text = (value, fallback) => typeof value === "string" && value.trim() ? value : fallback;
     const formatNumber = (value, digits) => {
@@ -274,6 +347,7 @@
         ".book-head{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:baseline}",
         ".book-title{color:" + COLORS.yellow + ";font:700 11px/1.2 Consolas,monospace;white-space:nowrap}",
         ".book-meta{justify-self:end;min-width:0;color:" + COLORS.muted + ";font:600 10px/1.2 Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+        ".book-meta.is-stale{color:" + COLORS.yellow + "}",
         ".book-bar{display:flex;height:4px;border-radius:2px;overflow:hidden;background:" + COLORS.control + "}",
         ".book-bar span{display:block;height:100%}",
         ".book-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 10px;min-width:0}",
@@ -283,6 +357,7 @@
         ".book-price{min-width:0;text-align:right;overflow:hidden;text-overflow:ellipsis}",
         ".book-volume{color:" + COLORS.muted + ";font-size:10px;font-weight:600;text-align:right}",
         ".tape-strip{display:flex;flex-wrap:wrap;gap:3px 10px;min-width:0;color:" + COLORS.muted + ";font:600 10px/1.45 Consolas,monospace}",
+        ".tape-strip.is-stale strong{color:" + COLORS.yellow + "}",
         ".tape-item{white-space:nowrap}",
         ".tape-item strong{margin-left:4px;color:" + COLORS.text + ";font-weight:700}",
         ".history-board,.favorites-board{display:none;min-width:0;min-height:0;background:" + COLORS.panel + ";border-bottom:1px solid " + COLORS.line + "}",
@@ -304,6 +379,7 @@
         ".favorites-empty{grid-column:1/-1;display:grid;place-items:center;color:" + COLORS.muted + ";font:600 12px/1.4 Segoe UI,Microsoft YaHei,sans-serif}",
         ".stock-footer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 12px;background:" + COLORS.surface + ";color:" + COLORS.muted + ";font-size:10px}",
         ".stock-error{min-width:0;color:" + COLORS.red + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+        ".stock-error.is-warning{color:" + COLORS.yellow + "}",
         ".stock-disclaimer{text-align:right;white-space:nowrap}",
         ".stock-shell[data-view=chart-table]{grid-template-rows:auto auto minmax(190px,.95fr) auto minmax(220px,1.05fr) auto}",
         ".stock-shell[data-view=chart-table] .book-board{display:none!important}",
@@ -386,21 +462,44 @@
         ["最近交易日", (_quote, _history, state) => text(state.lastTradingDate, "--")]
     ];
 
+    // 客户端兜底计时器必须晚于宿主的动作预算：优先用运行时回传的真实预算，没有回传时
+    // 退回镜像常量。宿主超时既不会推补丁也不会推进 revision，所以这条计时器早于宿主
+    // 触发就会在请求仍在运行时解锁控件，允许第二次并发请求。
+    const hostBudgetOf = (action) => {
+        const published = asObject(stateOf(snapshotValue).actionBudgetsMillis);
+        const declared = asNumber(published[action]);
+        if (declared !== null && declared > 0) return declared;
+        if (action === TICK_ACTION) return TICK_ACTION_TIMEOUT_MILLIS;
+        if (action === INTERVAL_COMMIT_ACTION) return INTERVAL_COMMIT_TIMEOUT_MILLIS;
+        return ACTION_TIMEOUT_MILLIS;
+    };
+
+    const clientDeadlineOf = (action) => Math.min(
+        MAX_CLIENT_TIMEOUT_MILLIS,
+        Math.max(MIN_CLIENT_TIMEOUT_MILLIS, hostBudgetOf(action) + ACTION_DISPATCH_GRACE_MILLIS)
+    );
+
+    const tickChannelEnabled = () => tickDisabledUntil === 0 || Date.now() >= tickDisabledUntil;
+
     const emitAction = (nodeId, eventName, action, eventClass, payload) => {
         if (disposed || suspended || !snapshotValue) return false;
         const isTickAction = action === TICK_ACTION;
-        const isNetworkAction = action !== "stock_interval_commit" && !isTickAction;
+        const isNetworkAction = action !== INTERVAL_COMMIT_ACTION && !isTickAction;
         if (isTickAction && (pending || tickPending)) return false;
         if (isNetworkAction && pending) return false;
+        requestCounter += 1;
+        const requestId = action + "#" + requestCounter;
         if (isTickAction) {
             tickPending = true;
             tickPendingRevision = Number(snapshotValue.revision) || 0;
+            tickRequestId = requestId;
             if (tickTimer !== null) clearTimeout(tickTimer);
             tickTimer = setTimeout(() => {
                 tickTimer = null;
                 tickPending = false;
                 tickPendingRevision = -1;
-            }, TICK_TIMEOUT_MILLIS);
+                tickRequestId = null;
+            }, clientDeadlineOf(action));
         }
         if (isNetworkAction) {
             pending = true;
@@ -409,17 +508,19 @@
                 ? payload.value
                 : null;
             pendingRevision = Number(snapshotValue.revision) || 0;
+            pendingRequestId = requestId;
             if (pendingTimer !== null) clearTimeout(pendingTimer);
             pendingTimer = setTimeout(() => {
                 pendingTimer = null;
                 pending = false;
                 pendingAction = null;
                 pendingPeriod = null;
+                pendingRequestId = null;
                 if (refs.status) {
                     refs.status.textContent = action === "stock_period_commit" ? "周期切换超时" : "刷新超时";
                     refs.status.className = "stock-status is-error";
                 }
-            }, PENDING_TIMEOUT_MILLIS);
+            }, clientDeadlineOf(action));
         }
         render(snapshotValue);
         const accepted = NeuroSurface.emit({
@@ -427,13 +528,15 @@
             event: eventName,
             action: action,
             class: eventClass,
-            payload: payload || {}
+            // requestId 让运行时把结果标注回状态里，render 才能只解锁真正属于这次动作的 revision。
+            payload: Object.assign({}, payload || {}, { requestId: requestId })
         });
         if (!accepted) {
             if (isTickAction) {
                 tickPending = false;
                 tickPendingRevision = -1;
-                tickSupported = false;
+                tickRequestId = null;
+                tickDisabledUntil = Date.now() + TICK_RETRY_COOLDOWN_MILLIS;
                 if (tickTimer !== null) clearTimeout(tickTimer);
                 tickTimer = null;
             }
@@ -441,6 +544,7 @@
                 pending = false;
                 pendingAction = null;
                 pendingPeriod = null;
+                pendingRequestId = null;
                 if (pendingTimer !== null) clearTimeout(pendingTimer);
                 pendingTimer = null;
             }
@@ -455,13 +559,18 @@
 
     // 准实时通道：只拉最新一笔报价，不重取整段 K 线，所以可以按秒级触发。
     const requestTick = () => {
-        if (!tickSupported) return requestRefresh();
+        if (!tickChannelEnabled()) return requestRefresh();
         const accepted = emitAction("refresh", "tick", TICK_ACTION, "discrete", {
             code: normalizeCode(refs.symbol && refs.symbol.value)
         });
-        if (accepted) liveTickCount += 1;
-        else if (!tickSupported) return requestRefresh();
-        return accepted;
+        if (accepted) {
+            liveTickCount += 1;
+            ticksSinceFullRefresh += 1;
+            return true;
+        }
+        // 只有这次拒绝真的关掉了通道才退回整段刷新；被 pending 挡住时保持静默。
+        if (!tickChannelEnabled()) return requestRefresh();
+        return false;
     };
 
     const refreshPlan = (intervalSeconds, marketStatusValue) => {
@@ -469,13 +578,17 @@
             ? Number(intervalSeconds)
             : DEFAULT_INTERVAL_SECONDS;
         const marketStatus = text(marketStatusValue, text(stateOf(snapshotValue).marketStatus, "closed"));
+        const tickCapable = tickChannelEnabled();
         // 休市时秒级轮询没有新成交，退到 30 秒，避免空转打上游。
-        const cadence = marketStatus === "open" ? normalized : Math.max(normalized, CLOSED_MARKET_MIN_SECONDS);
-        const usesTick = cadence < FULL_REFRESH_SECONDS;
+        const requested = marketStatus === "open" ? normalized : Math.max(normalized, CLOSED_MARKET_MIN_SECONDS);
+        // 没有准实时通道时不能继续按秒级发整段快照（每次四路 MCP 调用），把节奏抬到整段刷新周期。
+        const cadence = tickCapable ? requested : Math.max(requested, FULL_REFRESH_SECONDS);
+        const usesTick = tickCapable && cadence < FULL_REFRESH_SECONDS;
         return {
             cadence,
             key: normalized + ":" + cadence + ":" + (usesTick ? "tick" : "full"),
             normalized,
+            ticksPerFullRefresh: usesTick ? Math.max(1, Math.round(FULL_REFRESH_SECONDS / cadence)) : 0,
             usesTick
         };
     };
@@ -486,116 +599,146 @@
         const plan = refreshPlan(intervalSeconds);
         activeInterval = plan.normalized;
         activeTimerKey = plan.key;
+        ticksSinceFullRefresh = 0;
         if (refreshTimer !== null) clearInterval(refreshTimer);
-        if (fullRefreshTimer !== null) clearInterval(fullRefreshTimer);
         refreshTimer = null;
-        fullRefreshTimer = null;
         if (disposed || suspended) return;
+        // 单通道：tick 只更新报价，所以每累计满一个整段刷新周期就把这一拍升级为整段刷新补齐
+        // K 线。两个独立定时器同频时慢通道会被 tick 永久抢占，K 线从此不再推进。
         refreshTimer = setInterval(() => {
             if (pending || tickPending) return;
-            if (plan.usesTick) requestTick();
+            if (plan.usesTick && ticksSinceFullRefresh < plan.ticksPerFullRefresh) requestTick();
             else requestRefresh();
         }, plan.cadence * 1000);
-        if (!plan.usesTick) return;
-        // 秒级 tick 只更新报价，仍需要一条慢速通道补齐 K 线。
-        fullRefreshTimer = setInterval(() => {
-            if (!pending && !tickPending) requestRefresh();
-        }, FULL_REFRESH_SECONDS * 1000);
+    };
+
+    // 四个更新函数原来都以 replaceChildren() 开头，每帧丢掉并重建约 200 个节点。行数固定或
+    // 有上界，所以改成"补齐节点数量、再原地写文本"，只有真正变化的文本才落到 DOM 上。
+    const ensureChildren = (host, count, build) => {
+        while (host.children.length > count) host.removeChild(host.lastChild);
+        while (host.children.length < count) host.appendChild(build(host.children.length));
+        return host.children;
+    };
+    const clearHost = (host) => {
+        if (host && host.firstChild) host.replaceChildren();
+    };
+    const writeText = (node, value) => {
+        if (node.textContent !== value) node.textContent = value;
+    };
+
+    const buildMetricCell = (index) => {
+        const cell = document.createElement("div");
+        cell.className = "market-cell";
+        const label = document.createElement("span");
+        label.className = "metric-label";
+        label.textContent = metricDefinitions[index][0];
+        const value = document.createElement("strong");
+        value.className = "metric-value";
+        cell.append(label, value);
+        return cell;
     };
 
     const updateMetrics = (quote, history, state) => {
-        refs.metrics.replaceChildren();
-        metricDefinitions.forEach((definition) => {
-            const cell = document.createElement("div");
-            cell.className = "market-cell";
-            const label = document.createElement("span");
-            label.className = "metric-label";
-            label.textContent = definition[0];
-            const value = document.createElement("strong");
-            value.className = "metric-value";
-            value.textContent = definition[1](quote, history, state);
-            cell.append(label, value);
-            refs.metrics.append(cell);
+        const cells = ensureChildren(refs.metrics, metricDefinitions.length, buildMetricCell);
+        metricDefinitions.forEach((definition, index) => {
+            writeText(cells[index].lastElementChild, definition[1](quote, history, state));
         });
     };
 
-    const appendHistoryRow = (values, className) => {
+    const buildHistoryRow = () => {
         const row = document.createElement("div");
-        row.className = "history-row" + (className ? " " + className : "");
-        values.forEach((entry) => {
-            const cell = document.createElement("span");
-            cell.textContent = entry.text;
-            if (entry.color) cell.style.color = entry.color;
-            row.append(cell);
-        });
-        refs.historyRows.append(row);
+        row.className = "history-row";
+        for (let index = 0; index < HISTORY_ROW_CELLS; index += 1) row.appendChild(document.createElement("span"));
+        return row;
+    };
+
+    const writeHistoryRow = (row, cells, className) => {
+        const nextClass = "history-row" + (className ? " " + className : "");
+        if (row.className !== nextClass) row.className = nextClass;
+        for (let index = 0; index < HISTORY_ROW_CELLS; index += 1) {
+            const cell = row.children[index];
+            writeText(cell, cells[index].text);
+            // style.color 读回来是 rgb() 形式，和写进去的 #rrggbb 永远不相等，所以这里不比较。
+            cell.style.color = cells[index].color || "";
+        }
     };
 
     const updateHistoryTable = (history, state, palette) => {
         if (!refs.historyRows) return;
-        refs.historyRows.replaceChildren();
-        appendHistoryRow([
-            { text: "时间" }, { text: "开" }, { text: "高" },
-            { text: "低" }, { text: "收" }, { text: "成交量" }
-        ], "is-head");
         const rows = history.slice(-8).reverse();
-        rows.forEach((value) => {
+        const hostRows = ensureChildren(refs.historyRows, HISTORY_ROW_COUNT, buildHistoryRow);
+        writeHistoryRow(hostRows[0], HISTORY_HEAD_CELLS, "is-head");
+        const intraday = isIntradayPeriod(periodOf(state));
+        for (let index = 1; index < HISTORY_ROW_COUNT; index += 1) {
+            const value = rows[index - 1];
+            if (value === undefined) {
+                writeHistoryRow(hostRows[index], HISTORY_EMPTY_CELLS, "is-empty");
+                continue;
+            }
             const row = asObject(value);
             const open = asNumber(row.open);
             const close = asNumber(row.close);
             const color = open === null || close === null ? COLORS.text : deltaColor(close - open, palette);
-            appendHistoryRow([
-                { text: formatPointDate(row.date, isIntradayPeriod(periodOf(state))) },
+            writeHistoryRow(hostRows[index], [
+                { text: formatPointDate(row.date, intraday) },
                 { text: formatNumber(open, 2) },
                 { text: formatNumber(row.high, 2) },
                 { text: formatNumber(row.low, 2) },
                 { text: formatNumber(close, 2), color: color },
                 { text: formatVolume(row.volume) }
-            ]);
-        });
-        while (refs.historyRows.children.length < 9) {
-            appendHistoryRow([{ text: "--" }, { text: "--" }, { text: "--" }, { text: "--" }, { text: "--" }, { text: "--" }], "is-empty");
+            ], "");
         }
-        refs.historyTitle.textContent = periodLabelOf(state) + " · 最近 8 条";
-        refs.historyMeta.textContent = history.length + " 条数据";
+        writeText(refs.historyTitle, periodLabelOf(state) + " · 最近 8 条");
+        writeText(refs.historyMeta, history.length + " 条数据");
+    };
+
+    const buildFavoriteCard = () => {
+        const card = document.createElement("article");
+        card.className = "favorite-card";
+        const name = document.createElement("strong");
+        name.className = "favorite-name";
+        const code = document.createElement("span");
+        code.className = "favorite-code";
+        const price = document.createElement("strong");
+        price.className = "favorite-price";
+        const delta = document.createElement("span");
+        delta.className = "favorite-delta";
+        card.append(name, code, price, delta);
+        return card;
     };
 
     const updateFavorites = (state) => {
         if (!refs.favoritesGrid) return;
-        refs.favoritesGrid.replaceChildren();
         const favorites = favoriteQuotesOf(state).slice(0, 8);
         if (!favorites.length) {
+            const existing = refs.favoritesGrid.firstElementChild;
+            if (refs.favoritesGrid.children.length === 1 && existing.classList.contains("favorites-empty")) return;
             const empty = document.createElement("div");
             empty.className = "favorites-empty";
             empty.textContent = "等待 stock-api 返回收藏股票报价";
-            refs.favoritesGrid.append(empty);
+            refs.favoritesGrid.replaceChildren(empty);
             return;
         }
-        favorites.forEach((value) => {
+        const first = refs.favoritesGrid.firstElementChild;
+        // 空态节点和卡片形状不同，切回有数据时先清掉它，否则 ensureChildren 会当成卡片写。
+        if (first && !first.classList.contains("favorite-card")) refs.favoritesGrid.replaceChildren();
+        const cards = ensureChildren(refs.favoritesGrid, favorites.length, buildFavoriteCard);
+        favorites.forEach((value, index) => {
             const quote = asObject(value);
             const market = text(quote.market, text(quote.code, "").slice(0, 2));
             const palette = paletteFor(market);
-            const kind = movement(quote);
-            const color = movementColor(kind, palette);
-            const card = document.createElement("article");
-            card.className = "favorite-card";
-            const name = document.createElement("strong");
-            name.className = "favorite-name";
-            name.textContent = text(quote.name, "未知股票");
+            const color = movementColor(movement(quote), palette);
+            const card = cards[index];
+            const name = card.children[0];
+            writeText(name, text(quote.name, "未知股票"));
             name.title = name.textContent;
-            const code = document.createElement("span");
-            code.className = "favorite-code";
-            code.textContent = text(quote.code, "--") + " · " + market;
-            const price = document.createElement("strong");
-            price.className = "favorite-price";
+            writeText(card.children[1], text(quote.code, "--") + " · " + market);
+            const price = card.children[2];
+            writeText(price, formatNumber(quote.price, 2));
             price.style.color = color;
-            price.textContent = formatNumber(quote.price, 2);
-            const delta = document.createElement("span");
-            delta.className = "favorite-delta";
+            const delta = card.children[3];
+            writeText(delta, formatSigned(quote.change, "") + "  " + formatSigned(quote.changePercent, "%"));
             delta.style.color = color;
-            delta.textContent = formatSigned(quote.change, "") + "  " + formatSigned(quote.changePercent, "%");
-            card.append(name, code, price, delta);
-            refs.favoritesGrid.append(card);
         });
     };
 
@@ -606,30 +749,36 @@
         const asks = bookLevelsOf(book.asks);
         return bids.length || asks.length ? { book: book, bids: bids, asks: asks } : null;
     };
+    const buildBookRow = () => {
+        const line = document.createElement("div");
+        line.className = "book-row";
+        const label = document.createElement("span");
+        label.className = "book-tag";
+        const price = document.createElement("span");
+        price.className = "book-price";
+        const volume = document.createElement("span");
+        volume.className = "book-volume";
+        line.append(label, price, volume);
+        return line;
+    };
     const renderBookSide = (host, levels, tag, previousClose, palette) => {
-        host.replaceChildren();
+        const rows = ensureChildren(host, levels.length, buildBookRow);
         levels.forEach((row, index) => {
             const level = asObject(row);
-            const line = document.createElement("div");
-            line.className = "book-row";
-            const label = document.createElement("span");
-            label.className = "book-tag";
-            label.textContent = tag + (asNumber(level.level) || index + 1);
-            const price = document.createElement("span");
-            price.className = "book-price";
-            price.textContent = formatNumber(level.price, 2);
-            price.style.color = previousClose === null
+            const line = rows[index];
+            const label = tag + (asNumber(level.level) || index + 1);
+            const priceText = formatNumber(level.price, 2);
+            const volumeText = formatVolume(level.volume);
+            const orders = asNumber(level.orders);
+            writeText(line.children[0], label);
+            writeText(line.children[1], priceText);
+            line.children[1].style.color = previousClose === null
                 ? COLORS.text
                 : deltaColor(asNumber(level.price) - previousClose, palette);
-            const volume = document.createElement("span");
-            volume.className = "book-volume";
-            volume.textContent = formatVolume(level.volume);
-            const orders = asNumber(level.orders);
-            line.title = tag + (asNumber(level.level) || index + 1) + " " + formatNumber(level.price, 2)
-                + " · 委托量 " + formatVolume(level.volume)
+            writeText(line.children[2], volumeText);
+            line.title = label + " " + priceText
+                + " · 委托量 " + volumeText
                 + (orders === null ? "" : " · 笔数 " + formatVolume(orders));
-            line.append(label, price, volume);
-            host.append(line);
         });
     };
     const tapeDefinitions = [
@@ -640,6 +789,44 @@
         ["振幅", (tape) => asNumber(tape.amplitude) === null ? "--" : formatNumber(tape.amplitude, 2) + "%"],
         ["总市值", (tape) => formatVolume(tape.marketCapital)]
     ];
+    // 标签是常量，值在 strong 里。原来把标签写进 item.textContent 再 append strong，所以
+    // 每帧都要重建整个 span；这里把标签放进独立文本节点，只有值需要改写。
+    const buildTapeItem = (index) => {
+        const item = document.createElement("span");
+        item.className = "tape-item";
+        item.append(document.createTextNode(tapeDefinitions[index][0]), document.createElement("strong"));
+        return item;
+    };
+    // 运行时已经判定过新鲜度（stale/ageSeconds/maxAgeSeconds），但界面此前只画一个时钟串，
+    // 陈旧记录和最新记录长得一模一样。把判定显式标出来，年龄已知时连秒数一起给。
+    // asNumber 不能用在这里：Number(null) 是 0，观测时间缺失的记录会被写成"已陈旧 0 秒"，
+    // 也就是刚刚才观测到——正好和运行时 fail-closed 的判定相反。
+    const asAgeSeconds = (value) => {
+        if (value === null || value === undefined || value === "") return null;
+        return asNumber(value);
+    };
+    const staleLabel = (record) => {
+        if (!record || record.stale !== true) return "";
+        const age = asAgeSeconds(record.ageSeconds);
+        const limit = asAgeSeconds(record.maxAgeSeconds);
+        if (age === null) return "已陈旧（观测时间不可用）";
+        if (limit === null) return "已陈旧 " + formatNumber(age, 0) + " 秒";
+        return "已陈旧 " + formatNumber(age, 0) + "/" + formatNumber(limit, 0) + " 秒";
+    };
+    const withStale = (base, record) => {
+        const label = staleLabel(record);
+        return label ? base + " · " + label : base;
+    };
+    // 报价成功但 K 线抓取失败时，运行时会送来 historyWarning：状态仍然是 ready，可图表画不
+    // 出来。借用页脚同一个位置显示，用黄色和 error 的红色区分非致命告警；错误优先，因为报价
+    // 本身都没拿到时，抱怨图表没有意义。
+    const footerNoticeOf = (state) => {
+        const error = typeof state.error === "string" ? state.error.trim() : "";
+        if (error !== "") return { text: state.error, warning: false };
+        const historyWarning = typeof state.historyWarning === "string" ? state.historyWarning.trim() : "";
+        if (historyWarning === "") return { text: "", warning: false };
+        return { text: "K 线数据不可用：" + historyWarning, warning: true };
+    };
     const updateOrderBook = (state, quote, palette) => {
         if (!refs.book) return;
         const snapshot = orderBookOf(state);
@@ -647,9 +834,9 @@
         const hasTape = asNumber(tape.price) !== null;
         refs.book.classList.toggle("is-visible", Boolean(snapshot) || hasTape);
         if (!snapshot && !hasTape) {
-            refs.bids.replaceChildren();
-            refs.asks.replaceChildren();
-            refs.tape.replaceChildren();
+            clearHost(refs.bids);
+            clearHost(refs.asks);
+            clearHost(refs.tape);
             return;
         }
         const previousClose = asNumber(quote.previousClose);
@@ -659,7 +846,7 @@
         if (snapshot) {
             const book = snapshot.book;
             const levels = asNumber(book.levels) || Math.max(snapshot.bids.length, snapshot.asks.length);
-            refs.bookTitle.textContent = levels + " 档盘口";
+            writeText(refs.bookTitle, levels + " 档盘口");
             const buyPercent = asNumber(book.buyPercent);
             const sellPercent = asNumber(book.sellPercent);
             const netVolume = asNumber(book.netVolume);
@@ -669,9 +856,14 @@
             }
             if (netVolume !== null) parts.push("委差 " + formatSigned(netVolume, ""));
             if (asNumber(book.ratio) !== null) parts.push("量比 " + formatNumber(book.ratio, 2));
-            parts.push(text(book.source, "xueqiu") + " · " + formatClock(book.observedAt));
-            refs.bookMeta.textContent = parts.join(" · ");
+            parts.push(withStale(text(book.source, "xueqiu") + " · " + formatClock(book.observedAt), book));
+            if (hasTape) {
+                const tapeStale = staleLabel(tape);
+                if (tapeStale) parts.push("实时逐笔" + tapeStale);
+            }
+            writeText(refs.bookMeta, parts.join(" · "));
             refs.bookMeta.title = refs.bookMeta.textContent;
+            refs.bookMeta.classList.toggle("is-stale", book.stale === true || (hasTape && tape.stale === true));
             const buyShare = buyPercent === null || sellPercent === null
                 ? 50
                 : Math.max(0, Math.min(100, buyPercent));
@@ -683,25 +875,27 @@
             renderBookSide(refs.asks, snapshot.asks, "卖", previousClose, palette);
         }
         else {
-            refs.bookTitle.textContent = "盘中实时";
-            refs.bookMeta.textContent = hasTape
-                ? text(tape.source, "xueqiu") + " · " + formatClock(tape.observedAt) + " · 该市场不提供十档盘口"
-                : "";
+            writeText(refs.bookTitle, "盘中实时");
+            writeText(refs.bookMeta, hasTape
+                ? withStale(text(tape.source, "xueqiu") + " · " + formatClock(tape.observedAt) + " · 该市场不提供十档盘口", tape)
+                : "");
             refs.bookMeta.title = refs.bookMeta.textContent;
-            refs.bids.replaceChildren();
-            refs.asks.replaceChildren();
+            refs.bookMeta.classList.toggle("is-stale", hasTape && tape.stale === true);
+            clearHost(refs.bids);
+            clearHost(refs.asks);
         }
-        refs.tape.replaceChildren();
-        if (!hasTape) return;
-        tapeDefinitions.forEach((definition) => {
-            const item = document.createElement("span");
-            item.className = "tape-item";
-            item.textContent = definition[0];
-            const value = document.createElement("strong");
-            value.textContent = definition[1](tape);
-            item.append(value);
-            refs.tape.append(item);
+        if (!hasTape) {
+            clearHost(refs.tape);
+            return;
+        }
+        const items = ensureChildren(refs.tape, tapeDefinitions.length, buildTapeItem);
+        tapeDefinitions.forEach((definition, index) => {
+            writeText(items[index].lastElementChild, definition[1](tape));
         });
+        // 逐笔派生量（均价/成交额/换手）全部来自这一条记录，记录陈旧时这些数字也陈旧。
+        const tapeStaleLabel = staleLabel(tape);
+        refs.tape.classList.toggle("is-stale", tapeStaleLabel !== "");
+        refs.tape.title = tapeStaleLabel;
     };
 
     const drawChart = () => {
@@ -718,11 +912,16 @@
         const deviceRatio = Math.min(2, Math.max(1, globalThis.devicePixelRatio || 1));
         const pixelRatio = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, width * height));
         const ratio = Math.max(1, Math.min(deviceRatio, pixelRatio));
-        canvas.width = Math.floor(width * ratio);
-        canvas.height = Math.floor(height * ratio);
+        // 给 canvas.width/height 赋值会重新分配后备位图，即使赋的是同一个数字。两块画布在
+        // 上限尺寸下各约 16 MB，而重绘每秒至少一次，还会被 resize 和悬浮额外触发。只在尺寸真的
+        // 变化时赋值；尺寸不变时下面的 clearRect + fillRect 依旧把整块画布清干净。
+        const nextWidth = Math.floor(width * ratio);
+        const nextHeight = Math.floor(height * ratio);
+        if (canvas.width !== nextWidth) canvas.width = nextWidth;
+        if (canvas.height !== nextHeight) canvas.height = nextHeight;
         if (refs.overlay) {
-            refs.overlay.width = canvas.width;
-            refs.overlay.height = canvas.height;
+            if (refs.overlay.width !== nextWidth) refs.overlay.width = nextWidth;
+            if (refs.overlay.height !== nextHeight) refs.overlay.height = nextHeight;
         }
         const context = canvas.getContext("2d");
         if (!context) return;
@@ -759,7 +958,8 @@
         const intraday = isIntradayPeriod(period);
         const palette = paletteFor(marketOf(state, text(state.code, text(state.symbol, "SZ000034"))));
         const maxPoints = Math.min(240, Math.max(48, Math.floor((right - left) / (intraday ? 2 : 3))));
-        const points = downsampleRows(chartRowsOf(state), maxPoints);
+        const sample = chartSampleOf(state, revisionOf(snapshotValue), maxPoints, intraday);
+        const points = sample.points;
         if (points.length < 2) {
             chartGeometry = null;
             hideChartTip();
@@ -822,17 +1022,7 @@
         context.stroke();
         context.globalAlpha = 1;
 
-        let runningCloseTotal = 0;
-        const averageValues = intraday
-            ? points.map((point, index) => {
-                runningCloseTotal += point.close;
-                return runningCloseTotal / (index + 1);
-            })
-            : points.map((_point, index) => {
-                if (index < 4) return null;
-                const values = points.slice(index - 4, index + 1).map((point) => point.close);
-                return values.reduce((sum, value) => sum + value, 0) / values.length;
-            });
+        const averageValues = sample.averageValues;
         context.beginPath();
         let started = false;
         averageValues.forEach((value, index) => {
@@ -942,8 +1132,22 @@
         context.restore();
     };
 
-    const tipRow = (key, value, color) => '<div class="chart-tip-row"><span class="chart-tip-key">' + key
-        + '</span><span class="chart-tip-value"' + (color ? ' style="color:' + color + '"' : '') + '>' + value + '</span></div>';
+    // 提示框用 DOM 构建，不拼 innerHTML：日期这类字段直接来自另一个进程的 JSON，拼进
+    // 标记里就会把状态内容当 HTML 执行。颜色只来自本地 COLORS/paletteFor 的封闭集合。
+    const tipRow = (key, value, color) => {
+        const row = document.createElement("div");
+        row.className = "chart-tip-row";
+        const keyNode = document.createElement("span");
+        keyNode.className = "chart-tip-key";
+        keyNode.textContent = key;
+        const valueNode = document.createElement("span");
+        valueNode.className = "chart-tip-value";
+        valueNode.textContent = value;
+        if (color) valueNode.style.color = color;
+        row.appendChild(keyNode);
+        row.appendChild(valueNode);
+        return row;
+    };
 
     const buildTipContent = (geometry, index) => {
         const point = geometry.points[index];
@@ -953,22 +1157,26 @@
         const changePercent = reference ? ((point.close - reference) / reference) * 100 : null;
         const changeColor = deltaColor(change, geometry.palette);
         const averageValue = Array.isArray(geometry.averageValues) ? geometry.averageValues[index] : null;
-        const rows = ['<div class="chart-tip-title">' + formatPointDate(point.date, geometry.intraday) + '</div>'];
+        const fragment = document.createDocumentFragment();
+        const title = document.createElement("div");
+        title.className = "chart-tip-title";
+        title.textContent = formatPointDate(point.date, geometry.intraday);
+        fragment.appendChild(title);
         if (geometry.intraday) {
-            rows.push(tipRow("价格", formatNumber(point.close, 2), changeColor));
-            if (averageValue !== null && averageValue !== undefined) rows.push(tipRow("均价", formatNumber(averageValue, 2), COLORS.yellow));
+            fragment.appendChild(tipRow("价格", formatNumber(point.close, 2), changeColor));
+            if (averageValue !== null && averageValue !== undefined) fragment.appendChild(tipRow("均价", formatNumber(averageValue, 2), COLORS.yellow));
         }
         else {
-            rows.push(tipRow("开", formatNumber(point.open, 2)));
-            rows.push(tipRow("高", formatNumber(point.high, 2), deltaColor(point.high - reference, geometry.palette)));
-            rows.push(tipRow("低", formatNumber(point.low, 2), deltaColor(point.low - reference, geometry.palette)));
-            rows.push(tipRow("收", formatNumber(point.close, 2), changeColor));
-            if (averageValue !== null && averageValue !== undefined) rows.push(tipRow("MA5", formatNumber(averageValue, 2), COLORS.yellow));
+            fragment.appendChild(tipRow("开", formatNumber(point.open, 2)));
+            fragment.appendChild(tipRow("高", formatNumber(point.high, 2), deltaColor(point.high - reference, geometry.palette)));
+            fragment.appendChild(tipRow("低", formatNumber(point.low, 2), deltaColor(point.low - reference, geometry.palette)));
+            fragment.appendChild(tipRow("收", formatNumber(point.close, 2), changeColor));
+            if (averageValue !== null && averageValue !== undefined) fragment.appendChild(tipRow("MA5", formatNumber(averageValue, 2), COLORS.yellow));
         }
-        rows.push(tipRow("涨跌", change === null ? "--" : formatSigned(change, ""), changeColor));
-        rows.push(tipRow("涨幅", changePercent === null ? "--" : formatSigned(changePercent, "%"), changeColor));
-        rows.push(tipRow("成交量", formatVolume(point.volume)));
-        return rows.join("");
+        fragment.appendChild(tipRow("涨跌", change === null ? "--" : formatSigned(change, ""), changeColor));
+        fragment.appendChild(tipRow("涨幅", changePercent === null ? "--" : formatSigned(changePercent, "%"), changeColor));
+        fragment.appendChild(tipRow("成交量", formatVolume(point.volume)));
+        return fragment;
     };
 
     const positionTip = (pointerX, pointerY) => {
@@ -1011,7 +1219,7 @@
         }
         hoverIndex = index;
         drawCrosshair(index);
-        refs.tip.innerHTML = buildTipContent(geometry, index);
+        refs.tip.replaceChildren(buildTipContent(geometry, index));
         refs.tip.classList.add("is-visible");
         refs.tip.setAttribute("aria-hidden", "false");
         const anchorX = pointer ? pointer.x : geometry.xAt(index);
@@ -1032,26 +1240,50 @@
         });
     };
 
+    // 图例同样用 DOM 构建，避免把 periodLabel（来自状态）拼进标记。
+    const legendItem = (label, swatchClass, swatchBackground) => {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const swatch = document.createElement("i");
+        swatch.className = "legend-line " + swatchClass;
+        if (swatchBackground) swatch.style.background = swatchBackground;
+        item.appendChild(swatch);
+        item.appendChild(document.createTextNode(label));
+        return item;
+    };
+
     const render = (snapshot) => {
         if (!rootElement || !snapshot) return;
         snapshotValue = snapshot;
+        const state = stateOf(snapshot);
         const revision = Number(snapshot.revision);
-        if (revision > pendingRevision) {
-            if (pending) {
-                pending = false;
-                pendingAction = null;
-                pendingPeriod = null;
-                if (pendingTimer !== null) clearTimeout(pendingTimer);
-                pendingTimer = null;
-            }
+        // 只有确认这次 revision 属于自己发出的那次动作才解锁。statePatch 是合并语义，
+        // 任何后台刷新都会推进 revision，只看 revision 会在请求仍在运行时放开控件。
+        const echoedRequestId = text(state.lastRequestId, "");
+        const echoedActionId = text(state.lastActionId, "");
+        const settledBy = (requestId, actionId) => {
+            if (echoedRequestId) return echoedRequestId === requestId;
+            // 运行时尚未回声（旧包）时退回按 revision 解锁，否则会永久卡住。
+            if (echoedActionId) return echoedActionId === actionId;
+            return true;
+        };
+        if (pending && revision > pendingRevision && settledBy(pendingRequestId, pendingAction)) {
+            pending = false;
+            pendingAction = null;
+            pendingPeriod = null;
+            pendingRequestId = null;
+            // 整段刷新刚落地，重新开始累计 tick。
+            ticksSinceFullRefresh = 0;
+            if (pendingTimer !== null) clearTimeout(pendingTimer);
+            pendingTimer = null;
         }
-        if (tickPending && revision > tickPendingRevision) {
+        if (tickPending && revision > tickPendingRevision && settledBy(tickRequestId, TICK_ACTION)) {
             tickPending = false;
             tickPendingRevision = -1;
+            tickRequestId = null;
             if (tickTimer !== null) clearTimeout(tickTimer);
             tickTimer = null;
         }
-        const state = stateOf(snapshot);
         const quote = quoteOf(state);
         const history = historyOf(state);
         const kind = movement(quote);
@@ -1105,7 +1337,7 @@
         const timerPlan = refreshPlan(interval, marketStatus);
         const cadence = timerPlan.cadence;
         const cadenceText = "自动 " + (INTERVAL_LABELS[cadence] || cadence + " 秒");
-        const liveText = cadence < FULL_REFRESH_SECONDS && tickSupported ? " · 准实时" : "";
+        const liveText = timerPlan.usesTick ? " · 准实时" : "";
         const fetchedAt = text(quote.fetchedAt, text(quote.observedAt, ""));
         const freshnessText = quote.stale ? " · 数据可能陈旧" : "";
         refs.session.textContent = hasQuote
@@ -1116,18 +1348,34 @@
         refs.session.title = hasQuote
             ? refs.session.textContent + " · 观测时间 " + formatTimestamp(quote.observedAt) + " · 抓取时间 " + formatTimestamp(fetchedAt) + " · 本次会话准实时刷新 " + liveTickCount + " 次"
             : refs.session.textContent;
-        const candleSwatch = '<i class="legend-line candle" style="background:linear-gradient(90deg,' + palette.up + ' 0 48%,' + palette.down + ' 52% 100%)"></i>';
-        refs.legend.innerHTML = isIntradayPeriod(period)
-            ? '<span class="legend-item"><i class="legend-line close"></i>' + periodLabel + '价格</span><span class="legend-item"><i class="legend-line average"></i>均价</span><span class="legend-item"><i class="legend-line volume"></i>成交量</span>'
-            : '<span class="legend-item">' + candleSwatch + periodLabel + '</span><span class="legend-item"><i class="legend-line close"></i>收盘</span><span class="legend-item"><i class="legend-line average"></i>MA5</span><span class="legend-item"><i class="legend-line volume"></i>成交量</span>';
-        refs.chart.setAttribute("aria-label", periodLabel + (isIntradayPeriod(period) ? "价格走势与成交量图" : "K 线、MA5 与成交量图"));
-        refs.error.textContent = hasError ? state.error : "";
-        refs.error.title = hasError ? state.error : "";
+        // 图例只随周期和市场（涨跌配色）变化，不随行情变化，所以不必每帧重建。
+        const legendKey = period + "|" + palette.up + "|" + palette.down;
+        if (legendKey !== legendPaintedKey) {
+            legendPaintedKey = legendKey;
+            const candleGradient = "linear-gradient(90deg," + palette.up + " 0 48%," + palette.down + " 52% 100%)";
+            refs.legend.replaceChildren(...(isIntradayPeriod(period)
+                ? [legendItem(periodLabel + "价格", "close"), legendItem("均价", "average"), legendItem("成交量", "volume")]
+                : [legendItem(periodLabel, "candle", candleGradient), legendItem("收盘", "close"), legendItem("MA5", "average"), legendItem("成交量", "volume")]));
+            refs.chart.setAttribute("aria-label", periodLabel + (isIntradayPeriod(period) ? "价格走势与成交量图" : "K 线、MA5 与成交量图"));
+        }
+        const footerNotice = footerNoticeOf(state);
+        refs.error.textContent = footerNotice.text;
+        refs.error.title = footerNotice.text;
+        refs.error.classList.toggle("is-warning", footerNotice.warning);
         refs.disclaimer.textContent = text(state.disclaimer, "行情可能延迟，不构成投资建议或交易指令");
-        updateMetrics(quote, history, state);
-        updateOrderBook(state, quote, palette);
-        updateHistoryTable(history, state, palette);
-        updateFavorites(state);
+        // 这四个更新函数只读状态里的行情、盘口、历史和收藏，而这几块只随 revision 变化。视图和
+        // 历史长度进 key 是因为切视图会隐藏/显示区块，历史长度决定补空行的数量。上面那些标题、
+        // 价格、会话行不进这个门，它们还要反映 pending 之类的纯本地状态。
+        const paintRevision = revisionOf(snapshot);
+        // 没有可用 revision 时（旧宿主、手工快照）宁可每帧重画，也不要把界面永久钉在第一帧。
+        const paintKey = paintRevision < 0 ? "" : paintRevision + "|" + activeView + "|" + history.length;
+        if (paintKey === "" || paintKey !== paintedKey) {
+            paintedKey = paintKey;
+            updateMetrics(quote, history, state);
+            updateOrderBook(state, quote, palette);
+            updateHistoryTable(history, state, palette);
+            updateFavorites(state);
+        }
         if (timerPlan.key !== activeTimerKey) setRefreshTimer(interval);
         drawChart();
     };
@@ -1149,7 +1397,7 @@
             if (!(button instanceof HTMLButtonElement)) return;
             const value = Number(button.dataset.intervalValue);
             if (!INTERVALS.includes(value)) return;
-            emitAction("interval", "change", "stock_interval_commit", "commit", { value: value });
+            emitAction("interval", "change", INTERVAL_COMMIT_ACTION, "commit", { value: value });
         });
         refs.periods.addEventListener("click", (event) => {
             const button = event.target instanceof Element ? event.target.closest("[data-period-value]") : null;
@@ -1165,17 +1413,27 @@
         refs.chartWrap.addEventListener("pointercancel", hideChartTip);
     };
 
+    // ResizeObserver 在拖动窗口时每帧都回调，而 drawChart 是整图重绘。和悬浮走同一套 rAF
+    // 合并：一帧内多次尺寸变化只重绘一次。
+    const scheduleChartRedraw = () => {
+        if (resizeFrame !== null) return;
+        resizeFrame = requestAnimationFrame(() => {
+            resizeFrame = null;
+            if (!disposed) drawChart();
+        });
+    };
+
     const clearScheduledWork = () => {
         if (refreshTimer !== null) clearInterval(refreshTimer);
-        if (fullRefreshTimer !== null) clearInterval(fullRefreshTimer);
         if (pendingTimer !== null) clearTimeout(pendingTimer);
         if (tickTimer !== null) clearTimeout(tickTimer);
         refreshTimer = null;
-        fullRefreshTimer = null;
         pendingTimer = null;
         tickTimer = null;
         tickPending = false;
         tickPendingRevision = -1;
+        tickRequestId = null;
+        ticksSinceFullRefresh = 0;
         activeTimerKey = "";
     };
 
@@ -1183,8 +1441,15 @@
         clearScheduledWork();
         if (hoverFrame !== null) cancelAnimationFrame(hoverFrame);
         hoverFrame = null;
+        if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+        resizeFrame = null;
         hideChartTip();
         chartGeometry = null;
+        seriesCache = null;
+        sampleCache = null;
+        // 下一次 mount 从空 DOM 开始，缓存的 paintKey 会让四个更新函数跳过第一帧。
+        paintedKey = "";
+        legendPaintedKey = "";
         resizeObserver && resizeObserver.disconnect();
         resizeObserver = null;
         if (adoptedStyleSheet) {
@@ -1207,11 +1472,21 @@
             beginTick(revision) {
                 snapshotValue = { revision: Number(revision) || 0, authoritativeState: { marketStatus: "open" } };
                 tickPending = true;
-                tickPendingRevision = Number(snapshotValue.revision) || 0;
+                tickPendingRevision = Number(revision) || 0;
+            },
+            disableTickChannel(durationMillis) {
+                tickDisabledUntil = Date.now() + (Number(durationMillis) || TICK_RETRY_COOLDOWN_MILLIS);
+            },
+            enableTickChannel() {
+                tickDisabledUntil = 0;
             },
             paletteFor,
             refreshPlan,
             viewOf,
+            movingAverages,
+            chartSampleOf,
+            staleLabel,
+            footerNoticeOf,
             tickState: () => ({ pending: tickPending, revision: tickPendingRevision })
         });
     }
@@ -1226,7 +1501,7 @@
             root.innerHTML = markup;
             refs = Object.fromEntries(Array.from(root.querySelectorAll("[data-ref]")).map((element) => [element.dataset.ref, element]));
             bindEvents();
-            resizeObserver = new ResizeObserver(drawChart);
+            resizeObserver = new ResizeObserver(scheduleChartRedraw);
             resizeObserver.observe(refs.chart);
             render(snapshot);
             if (!quoteOf(stateOf(snapshot)).price) {
@@ -1244,13 +1519,23 @@
             pending = false;
             pendingAction = null;
             pendingPeriod = null;
+            pendingRequestId = null;
             clearScheduledWork();
             hideChartTip();
+            // resume 要整帧重画（S8d3-3），所以这里作废两个 paintKey，否则 resume 的 render
+            // 会撞上同一个 revision 而跳过四个更新函数和图例。
+            paintedKey = "";
+            legendPaintedKey = "";
         },
         resume() {
             if (disposed) return;
             suspended = false;
-            setRefreshTimer(stateOf(snapshotValue).intervalSeconds);
+            // suspend 期间到达的快照不会触发 update，控件禁用态也在 suspend 里被清掉了，
+            // 所以恢复时必须整帧重画，而不是只重启定时器和画布。
+            render(snapshotValue);
+            // render 只在计划变化时重排定时器；上面 clearScheduledWork 清空了 activeTimerKey，
+            // 所以正常路径由 render 重启，这里只兜底 render 提前返回（无快照）的情况。
+            if (activeTimerKey === "") setRefreshTimer(stateOf(snapshotValue).intervalSeconds);
             drawChart();
         },
         dispose() {

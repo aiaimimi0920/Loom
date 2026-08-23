@@ -23,12 +23,12 @@
   "permissionPolicy": {
     "network": { "domains": [], "allowLocalhost": true, "allowPrivateNetworks": false },
     "filesystem": { "read": ["inputs", "packageResources"], "write": ["outputs", "cache"] },
-    "process": { "spawn": true, "maxProcesses": 4 }
+    "process": { "spawn": true, "maxProcesses": 8 }
   },
   "resources": {
     "timeoutSeconds": 120,
     "memoryMiB": 512,
-    "maxProcesses": 4,
+    "maxProcesses": 8,
     "stdoutMiB": 8,
     "stderrMiB": 8
   },

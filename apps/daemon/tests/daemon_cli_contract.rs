@@ -47,7 +47,7 @@ fn wait_for_manifest(manifest_path: &Path) -> serde_json::Value {
     }
 }
 
-fn http_json_get(base_url: &str, path: &str) -> serde_json::Value {
+fn http_json_get(base_url: &str, path: &str, bearer_token: &str) -> serde_json::Value {
     let authority = base_url
         .strip_prefix("http://")
         .expect("loopback HTTP base URL");
@@ -57,7 +57,7 @@ fn http_json_get(base_url: &str, path: &str) -> serde_json::Value {
         .expect("set daemon status timeout");
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {bearer_token}\r\nConnection: close\r\n\r\n"
     )
     .expect("write daemon status request");
 
@@ -146,7 +146,10 @@ fn daemon_binary_writes_local_capability_manifest_from_cli_arg() {
     assert_eq!(manifest["appId"], "loom");
     assert_eq!(manifest["displayName"], "Loom");
     assert_eq!(manifest["transport"]["type"], "http");
-    assert_eq!(manifest["transport"]["auth"], "none");
+    assert_eq!(manifest["transport"]["auth"], "bearer");
+    assert!(manifest["transport"]["authToken"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
     assert!(manifest["transport"]["baseUrl"]
         .as_str()
         .expect("base url")
@@ -179,7 +182,10 @@ fn daemon_binary_writes_local_capability_manifest_from_env_var() {
     child.stop();
 
     assert_eq!(manifest["appId"], "loom");
-    assert_eq!(manifest["transport"]["auth"], "none");
+    assert_eq!(manifest["transport"]["auth"], "bearer");
+    assert!(manifest["transport"]["authToken"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
     assert!(manifest["transport"]["baseUrl"]
         .as_str()
         .expect("base url")
@@ -212,7 +218,10 @@ fn daemon_binary_starts_with_gateway_planner_configuration() {
     child.stop();
 
     assert_eq!(manifest["appId"], "loom");
-    assert_eq!(manifest["transport"]["auth"], "none");
+    assert_eq!(manifest["transport"]["auth"], "bearer");
+    assert!(manifest["transport"]["authToken"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
     assert!(manifest["transport"]["baseUrl"]
         .as_str()
         .expect("base url")
@@ -298,9 +307,13 @@ fn daemon_binary_uses_bounded_request_executor_by_default() {
     );
 
     let manifest = wait_for_manifest(&manifest_dir.join("loom.json"));
+    let bearer_token = manifest["transport"]["authToken"]
+        .as_str()
+        .expect("manifest bearer token");
     let status = http_json_get(
         manifest["transport"]["baseUrl"].as_str().expect("base URL"),
         "/status",
+        bearer_token,
     );
     child.stop();
 

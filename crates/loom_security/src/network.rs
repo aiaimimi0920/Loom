@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use reqwest::blocking::{Client, ClientBuilder, Response};
 use reqwest::redirect;
-use reqwest::{Proxy, Url};
+use reqwest::{Client as AsyncClient, ClientBuilder as AsyncClientBuilder, Proxy, Url};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeProxy {
@@ -70,6 +70,18 @@ pub fn apply_runtime_proxy(builder: ClientBuilder) -> Result<ClientBuilder, Stri
     }
 }
 
+pub fn apply_runtime_proxy_async(
+    builder: AsyncClientBuilder,
+) -> Result<AsyncClientBuilder, String> {
+    match runtime_proxy() {
+        RuntimeProxy::System => Ok(builder),
+        RuntimeProxy::Disabled => Ok(builder.no_proxy()),
+        RuntimeProxy::Custom(url) => Proxy::all(&url)
+            .map(|proxy| builder.proxy(proxy))
+            .map_err(|error| format!("configure proxy `{url}`: {error}")),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OutboundPolicy {
     pub allow_http_loopback: bool,
@@ -108,6 +120,29 @@ pub fn secure_client(
             }
         }));
     apply_runtime_proxy(builder)?
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+pub fn secure_async_client(
+    user_agent: &str,
+    timeout: Duration,
+    policy: OutboundPolicy,
+) -> Result<AsyncClient, String> {
+    let redirect_policy = policy.clone();
+    let builder = AsyncClient::builder()
+        .user_agent(user_agent)
+        .timeout(timeout)
+        .redirect(redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= redirect_policy.max_redirects {
+                return attempt.error("redirect limit exceeded");
+            }
+            match validate_outbound_url(attempt.url(), &redirect_policy) {
+                Ok(()) => attempt.follow(),
+                Err(error) => attempt.error(error),
+            }
+        }));
+    apply_runtime_proxy_async(builder)?
         .build()
         .map_err(|error| error.to_string())
 }

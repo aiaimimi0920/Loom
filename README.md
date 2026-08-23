@@ -159,9 +159,13 @@ $env:LOOM_DAEMON_PORT = "48766"
 .\target\debug\loom-daemon.exe
 ```
 
-The daemon defaults to loopback binding. Non-loopback bind hosts such as
-`0.0.0.0` require `LOOM_DAEMON_TOKEN`; all routes except `/health` must include
-`Authorization: Bearer <token>`.
+The daemon defaults to loopback binding and always requires administrator authentication for
+non-public routes. Set `LOOM_DAEMON_TOKEN` explicitly, or let the daemon generate and persist a
+token in `<control-plane>/daemon-token`; the CLI and desktop client discover that file. API clients
+send `Authorization: Bearer <token>`. `/health` and the device pairing/session bootstrap routes stay
+public. Browser settings navigation uses `/settings?token=<token>` once, then exchanges the query
+token for an `HttpOnly; SameSite=Strict` cookie. Non-loopback binds additionally require an
+authenticated TLS terminator and `LOOM_TLS_TERMINATED=1`.
 
 In another shell:
 

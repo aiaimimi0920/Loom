@@ -559,6 +559,94 @@ async function executeStableMarketSeries(code, period, count, adjust, upstreamHa
   return rows.slice(-count);
 }
 
+class BoundedResponseBuffer {
+  constructor(limitBytes, declaredLength = Number.NaN) {
+    if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0) {
+      throw new Error("response buffer limit must be a positive safe integer");
+    }
+    this.limitBytes = limitBytes;
+    const knownLength = Number.isSafeInteger(declaredLength) && declaredLength >= 0
+      ? declaredLength
+      : null;
+    if (knownLength !== null && knownLength > limitBytes) {
+      throw new RangeError("response exceeds buffer limit");
+    }
+    const initialCapacity = knownLength !== null && knownLength > 0
+      ? knownLength
+      : Math.min(64 * 1024, limitBytes);
+    this.buffer = new Uint8Array(initialCapacity);
+    this.length = 0;
+    // During a growth copy both the old and replacement arrays are live. Recording that transient
+    // allocation makes the byte-buffer peak testable without relying on noisy process-wide RSS.
+    this.peakAllocatedBytes = initialCapacity;
+  }
+
+  append(value) {
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+    const required = this.length + chunk.byteLength;
+    if (!Number.isSafeInteger(required) || required > this.limitBytes) {
+      throw new RangeError("response exceeds buffer limit");
+    }
+    if (required > this.buffer.byteLength) {
+      const previousCapacity = this.buffer.byteLength;
+      const nextCapacity = Math.min(
+        this.limitBytes,
+        Math.max(required, Math.max(1, previousCapacity * 2)),
+      );
+      const replacement = new Uint8Array(nextCapacity);
+      replacement.set(this.buffer.subarray(0, this.length));
+      this.peakAllocatedBytes = Math.max(
+        this.peakAllocatedBytes,
+        previousCapacity + nextCapacity,
+      );
+      this.buffer = replacement;
+    }
+    this.buffer.set(chunk, this.length);
+    this.length = required;
+  }
+
+  bytes() {
+    // subarray is a view over the one retained allocation; it does not make the second contiguous
+    // copy that the old chunks-plus-final-array implementation made.
+    return this.buffer.subarray(0, this.length);
+  }
+}
+
+async function readBoundedResponseBody(response, providerLabel, maximumBytes = MAX_RESPONSE_BYTES) {
+  const rawDeclaredLength = response.headers.get("content-length");
+  const declaredLength = rawDeclaredLength === null ? Number.NaN : Number(rawDeclaredLength);
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    throw new Error(`${providerLabel} response exceeds ${maximumBytes} bytes`);
+  }
+  if (!response.body) throw new Error(`${providerLabel} returned an empty response body`);
+
+  const reader = response.body.getReader();
+  const accumulator = new BoundedResponseBuffer(maximumBytes, declaredLength);
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    try {
+      accumulator.append(value);
+    } catch (error) {
+      await reader.cancel();
+      if (error instanceof RangeError) {
+        throw new Error(`${providerLabel} response exceeds ${maximumBytes} bytes`);
+      }
+      throw error;
+    }
+  }
+  return accumulator;
+}
+
+async function parseBoundedJsonResponse(response, providerLabel, maximumBytes = MAX_RESPONSE_BYTES) {
+  const accumulator = await readBoundedResponseBody(response, providerLabel, maximumBytes);
+  try {
+    return JSON.parse(new TextDecoder("utf-8").decode(accumulator.bytes()));
+  } catch {
+    throw new Error(`${providerLabel} returned invalid JSON`);
+  }
+}
+
 async function fetchJson(url, timeoutMillis = REQUEST_TIMEOUT_MILLIS, extraHeaders = {}, providerLabel = "Eastmoney") {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMillis);
@@ -572,35 +660,7 @@ async function fetchJson(url, timeoutMillis = REQUEST_TIMEOUT_MILLIS, extraHeade
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`${providerLabel} HTTP ${response.status}`);
-    const declaredLength = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
-      throw new Error(`${providerLabel} response exceeds ${MAX_RESPONSE_BYTES} bytes`);
-    }
-    if (!response.body) throw new Error(`${providerLabel} returned an empty response body`);
-    const reader = response.body.getReader();
-    const chunks = [];
-    let length = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        throw new Error(`${providerLabel} response exceeds ${MAX_RESPONSE_BYTES} bytes`);
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    try {
-      return JSON.parse(new TextDecoder("utf-8").decode(bytes));
-    } catch {
-      throw new Error(`${providerLabel} returned invalid JSON`);
-    }
+    return await parseBoundedJsonResponse(response, providerLabel);
   } finally {
     clearTimeout(timeout);
   }
@@ -992,11 +1052,20 @@ async function runWrapperServer(input, output, upstreamHandle) {
   });
 }
 
-try {
-  configureLoopbackFixture();
-  const { handleMcpRequest } = require("./vendor/stock-api/dist/mcp/server.js");
-  void runWrapperServer(process.stdin, process.stdout, handleMcpRequest);
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+module.exports = Object.freeze({
+  BoundedResponseBuffer,
+  MAX_RESPONSE_BYTES,
+  parseBoundedJsonResponse,
+  readBoundedResponseBody,
+});
+
+if (require.main === module) {
+  try {
+    configureLoopbackFixture();
+    const { handleMcpRequest } = require("./vendor/stock-api/dist/mcp/server.js");
+    void runWrapperServer(process.stdin, process.stdout, handleMcpRequest);
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
 }

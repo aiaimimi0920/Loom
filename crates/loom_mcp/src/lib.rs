@@ -3,37 +3,53 @@
 pub mod package;
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use loom_protocol::PackageTrustStatus;
 use loom_security::network::{
-    apply_runtime_proxy, host_is_loopback_literal, validate_outbound_url, OutboundPolicy,
+    apply_runtime_proxy_async, host_is_loopback_literal, validate_outbound_url, OutboundPolicy,
 };
-use reqwest::blocking::{Client as HttpClient, Response as HttpResponse};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::redirect::Policy as RedirectPolicy;
+use reqwest::Client as HttpClient;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 const MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
-const MCP_STDIO_PROTOCOL_VERSION: &str = "2024-11-05";
-const MCP_HTTP_PROTOCOL_VERSION: &str = "2026-07-28";
+pub const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2026-07-28", "2025-06-18", "2024-11-05"];
+pub const MCP_PREFERRED_PROTOCOL_VERSION: &str = MCP_SUPPORTED_PROTOCOL_VERSIONS[0];
+
+pub const MAX_MCP_SERVER_NAME_BYTES: usize = 256;
+pub const MAX_MCP_SERVER_DESCRIPTION_BYTES: usize = 4 * 1024;
+pub const MAX_MCP_ARGUMENTS: usize = 128;
+pub const MAX_MCP_ARGUMENT_BYTES: usize = 8 * 1024;
+pub const MAX_MCP_TOOLS: usize = 256;
+pub const MAX_MCP_TOOL_ID_BYTES: usize = 128;
+pub const MAX_MCP_CREDENTIALS: usize = 64;
+pub const MAX_MCP_CREDENTIAL_LABEL_BYTES: usize = 256;
+pub const MAX_MCP_ENVIRONMENT_ENTRIES: usize = 128;
+pub const MAX_MCP_ENVIRONMENT_NAME_BYTES: usize = 128;
+pub const MAX_MCP_ENVIRONMENT_VALUE_BYTES: usize = 32 * 1024;
+pub const MAX_MCP_ENVIRONMENT_TOTAL_BYTES: usize = 24 * 1024;
+pub const MAX_MCP_HEADERS: usize = 64;
+pub const MAX_MCP_HEADER_NAME_BYTES: usize = 128;
+pub const MAX_MCP_HEADER_VALUE_BYTES: usize = 16 * 1024;
+pub const MAX_MCP_HEADER_TOTAL_BYTES: usize = 128 * 1024;
 
 /// Version of the MCP crate.
 pub const LOOM_MCP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Error)]
 pub enum McpError {
-    #[error("MCP registry cursor/search contained unsupported input")]
-    InvalidRegistryQuery,
     #[error("failed to start MCP process `{command}`: {source}")]
     ProcessStart {
         command: String,
@@ -70,6 +86,8 @@ pub enum McpError {
     Http(String),
     #[error("MCP HTTP endpoint returned status {status}: {body}")]
     HttpStatus { status: u16, body: String },
+    #[error("MCP request was cancelled")]
+    Cancelled,
 }
 
 pub type McpResult<T> = Result<T, McpError>;
@@ -238,14 +256,7 @@ impl McpServerConfig {
     }
 
     pub fn validate(&self) -> McpResult<()> {
-        if self.id.trim().is_empty() {
-            return Err(McpError::InvalidConfig("server id is required".to_owned()));
-        }
-        if self.name.trim().is_empty() {
-            return Err(McpError::InvalidConfig(
-                "server name is required".to_owned(),
-            ));
-        }
+        validate_server_metadata_and_limits(self)?;
         match self.transport {
             McpTransport::Stdio if self.command.trim().is_empty() => Err(McpError::InvalidConfig(
                 "stdio command is required".to_owned(),
@@ -260,6 +271,347 @@ impl McpServerConfig {
         self.enabled = false;
         self
     }
+}
+
+fn validate_server_metadata_and_limits(config: &McpServerConfig) -> McpResult<()> {
+    validate_config_identity("server id", &config.id)?;
+    validate_bounded_config_text("server name", &config.name, MAX_MCP_SERVER_NAME_BYTES, true)?;
+    validate_bounded_config_text(
+        "server description",
+        &config.description,
+        MAX_MCP_SERVER_DESCRIPTION_BYTES,
+        false,
+    )?;
+    validate_string_list(
+        "entry.args",
+        &config.args,
+        MAX_MCP_ARGUMENTS,
+        MAX_MCP_ARGUMENT_BYTES,
+        false,
+    )?;
+    if config.tools.len() > MAX_MCP_TOOLS {
+        return Err(McpError::InvalidConfig(format!(
+            "tools contains {} entries; limit is {MAX_MCP_TOOLS}",
+            config.tools.len()
+        )));
+    }
+    for (index, tool) in config.tools.iter().enumerate() {
+        validate_mcp_tool_identifier(&format!("tools[{index}]"), tool)?;
+    }
+    if config.credential_requirements.len() > MAX_MCP_CREDENTIALS {
+        return Err(McpError::InvalidConfig(format!(
+            "credentialRequirements contains {} entries; limit is {MAX_MCP_CREDENTIALS}",
+            config.credential_requirements.len()
+        )));
+    }
+    let mut credential_ids = std::collections::BTreeSet::new();
+    for (index, requirement) in config.credential_requirements.iter().enumerate() {
+        validate_config_identity(
+            &format!("credentialRequirements[{index}].id"),
+            &requirement.id,
+        )?;
+        validate_bounded_config_text(
+            &format!("credentialRequirements[{index}].label"),
+            &requirement.label,
+            MAX_MCP_CREDENTIAL_LABEL_BYTES,
+            true,
+        )?;
+        if !credential_ids.insert(requirement.id.as_str()) {
+            return Err(McpError::InvalidConfig(format!(
+                "duplicate credential requirement id `{}`",
+                requirement.id
+            )));
+        }
+    }
+    validate_mcp_environment(&config.env)?;
+    validate_mcp_headers(&config.headers)?;
+    validate_credential_target_names(config)?;
+    if let Some(package) = &config.package {
+        validate_installed_package_state(config, package)?;
+    }
+    Ok(())
+}
+
+fn validate_bounded_config_text(
+    field: &str,
+    value: &str,
+    max_bytes: usize,
+    required: bool,
+) -> McpResult<()> {
+    if required && value.trim().is_empty() {
+        return Err(McpError::InvalidConfig(format!("{field} is required")));
+    }
+    if value.len() > max_bytes {
+        return Err(McpError::InvalidConfig(format!(
+            "{field} is {} bytes; limit is {max_bytes}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_string_list(
+    field: &str,
+    values: &[String],
+    max_entries: usize,
+    max_value_bytes: usize,
+    require_nonempty: bool,
+) -> McpResult<()> {
+    if values.len() > max_entries {
+        return Err(McpError::InvalidConfig(format!(
+            "{field} contains {} entries; limit is {max_entries}",
+            values.len()
+        )));
+    }
+    for (index, value) in values.iter().enumerate() {
+        validate_bounded_config_text(
+            &format!("{field}[{index}]"),
+            value,
+            max_value_bytes,
+            require_nonempty,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_config_identity(field: &str, value: &str) -> McpResult<()> {
+    let valid = !value.is_empty()
+        && value.len() <= 128
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if valid {
+        Ok(())
+    } else {
+        Err(McpError::InvalidConfig(format!(
+            "{field} is not a safe identifier (limit 128 bytes)"
+        )))
+    }
+}
+
+pub fn validate_mcp_tool_identifier(field: &str, value: &str) -> McpResult<()> {
+    let valid = !value.is_empty()
+        && value.len() <= MAX_MCP_TOOL_ID_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(McpError::InvalidConfig(format!(
+            "{field} must be a non-empty MCP tool identifier using at most {MAX_MCP_TOOL_ID_BYTES} bytes"
+        )))
+    }
+}
+
+pub fn validate_mcp_environment(environment: &BTreeMap<String, String>) -> McpResult<()> {
+    if environment.len() > MAX_MCP_ENVIRONMENT_ENTRIES {
+        return Err(McpError::InvalidConfig(format!(
+            "env contains {} entries; limit is {MAX_MCP_ENVIRONMENT_ENTRIES}",
+            environment.len()
+        )));
+    }
+    let mut total_bytes = 0usize;
+    for (name, value) in environment {
+        validate_mcp_environment_name(name)?;
+        if value.len() > MAX_MCP_ENVIRONMENT_VALUE_BYTES {
+            return Err(McpError::InvalidConfig(format!(
+                "env.{name} is {} bytes; limit is {MAX_MCP_ENVIRONMENT_VALUE_BYTES}",
+                value.len()
+            )));
+        }
+        total_bytes = total_bytes.saturating_add(name.len() + value.len() + 2);
+    }
+    if total_bytes > MAX_MCP_ENVIRONMENT_TOTAL_BYTES {
+        return Err(McpError::InvalidConfig(format!(
+            "env is {total_bytes} aggregate bytes; limit is {MAX_MCP_ENVIRONMENT_TOTAL_BYTES}"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_mcp_environment_name(name: &str) -> McpResult<()> {
+    let mut bytes = name.bytes();
+    let valid = name.len() <= MAX_MCP_ENVIRONMENT_NAME_BYTES
+        && bytes
+            .next()
+            .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric());
+    if !valid {
+        return Err(McpError::InvalidConfig(format!(
+            "invalid MCP environment variable name `{name}` (limit {MAX_MCP_ENVIRONMENT_NAME_BYTES} bytes)"
+        )));
+    }
+    let normalized = name.to_ascii_uppercase();
+    if matches!(
+        normalized.as_str(),
+        "PATH"
+            | "PATHEXT"
+            | "COMSPEC"
+            | "SYSTEMROOT"
+            | "WINDIR"
+            | "TEMP"
+            | "TMP"
+            | "LD_PRELOAD"
+            | "LD_LIBRARY_PATH"
+            | "DYLD_INSERT_LIBRARIES"
+            | "DYLD_LIBRARY_PATH"
+            | "NODE_OPTIONS"
+            | "PYTHONHOME"
+            | "PYTHONPATH"
+            | "RUBYOPT"
+            | "PERL5OPT"
+            | "BASH_ENV"
+            | "ENV"
+            | "SHELLOPTS"
+            | "PS4"
+            | "PROMPT_COMMAND"
+    ) {
+        return Err(McpError::InvalidConfig(format!(
+            "MCP environment variable `{name}` is managed or process-influencing and may not be overridden"
+        )));
+    }
+    Ok(())
+}
+
+pub fn is_managed_mcp_header_name(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "accept"
+            | "connection"
+            | "content-length"
+            | "content-type"
+            | "host"
+            | "mcp-protocol-version"
+            | "mcp-session-id"
+            | "origin"
+            | "transfer-encoding"
+    )
+}
+
+pub fn validate_mcp_header_name(name: &str) -> McpResult<()> {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.is_empty() || name.len() > MAX_MCP_HEADER_NAME_BYTES {
+        return Err(McpError::InvalidConfig(format!(
+            "remote MCP header name `{name}` is empty or exceeds {MAX_MCP_HEADER_NAME_BYTES} bytes"
+        )));
+    }
+    if is_managed_mcp_header_name(&normalized) {
+        return Err(McpError::InvalidConfig(format!(
+            "remote MCP header `{name}` is managed by Loom"
+        )));
+    }
+    HeaderName::from_bytes(normalized.as_bytes()).map_err(|error| {
+        McpError::InvalidConfig(format!("invalid remote MCP header `{name}`: {error}"))
+    })?;
+    Ok(())
+}
+
+pub fn validate_mcp_headers(headers: &BTreeMap<String, String>) -> McpResult<()> {
+    if headers.len() > MAX_MCP_HEADERS {
+        return Err(McpError::InvalidConfig(format!(
+            "headers contains {} entries; limit is {MAX_MCP_HEADERS}",
+            headers.len()
+        )));
+    }
+    let mut total_bytes = 0usize;
+    for (name, value) in headers {
+        validate_mcp_header_name(name)?;
+        if value.len() > MAX_MCP_HEADER_VALUE_BYTES {
+            return Err(McpError::InvalidConfig(format!(
+                "header `{name}` value is {} bytes; limit is {MAX_MCP_HEADER_VALUE_BYTES}",
+                value.len()
+            )));
+        }
+        HeaderValue::from_str(value).map_err(|error| {
+            McpError::InvalidConfig(format!(
+                "invalid value for remote MCP header `{name}`: {error}"
+            ))
+        })?;
+        total_bytes = total_bytes.saturating_add(name.len() + value.len() + 4);
+    }
+    if total_bytes > MAX_MCP_HEADER_TOTAL_BYTES {
+        return Err(McpError::InvalidConfig(format!(
+            "headers are {total_bytes} aggregate bytes; limit is {MAX_MCP_HEADER_TOTAL_BYTES}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_credential_target_names(config: &McpServerConfig) -> McpResult<()> {
+    if config.credential_env.len() > MAX_MCP_ENVIRONMENT_ENTRIES {
+        return Err(McpError::InvalidConfig(format!(
+            "credentialEnv contains {} entries; limit is {MAX_MCP_ENVIRONMENT_ENTRIES}",
+            config.credential_env.len()
+        )));
+    }
+    for (name, credential_id) in &config.credential_env {
+        validate_mcp_environment_name(name)?;
+        validate_config_identity("credentialEnv credential id", credential_id)?;
+    }
+    if config.credential_headers.len() > MAX_MCP_HEADERS {
+        return Err(McpError::InvalidConfig(format!(
+            "credentialHeaders contains {} entries; limit is {MAX_MCP_HEADERS}",
+            config.credential_headers.len()
+        )));
+    }
+    for (name, credential_id) in &config.credential_headers {
+        validate_mcp_header_name(name)?;
+        validate_config_identity("credentialHeaders credential id", credential_id)?;
+    }
+    Ok(())
+}
+
+fn validate_installed_package_state(
+    config: &McpServerConfig,
+    package: &McpServerPackageState,
+) -> McpResult<()> {
+    validate_config_identity("package.publisherId", &package.publisher_id)?;
+    let expected_qualified = format!("{}/{}", package.publisher_id, config.id);
+    if package.qualified_id != expected_qualified {
+        return Err(McpError::InvalidConfig(format!(
+            "package.qualifiedId `{}` must equal `{expected_qualified}`",
+            package.qualified_id
+        )));
+    }
+    semver::Version::parse(&package.version).map_err(|error| {
+        McpError::InvalidConfig(format!("package.version must be SemVer: {error}"))
+    })?;
+    if package.digest.len() != 64 || !package.digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(McpError::InvalidConfig(
+            "package.digest must be a 64-character SHA-256 hex digest".to_owned(),
+        ));
+    }
+    if !package.package_dir.is_absolute() {
+        return Err(McpError::InvalidConfig(
+            "package.packageDir must be absolute".to_owned(),
+        ));
+    }
+    if package.files.len() > 4096 {
+        return Err(McpError::InvalidConfig(format!(
+            "package.files contains {} entries; limit is 4096",
+            package.files.len()
+        )));
+    }
+    for (path, digest) in &package.files {
+        if path.is_empty()
+            || Path::new(path).is_absolute()
+            || Path::new(path)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(McpError::InvalidConfig(format!(
+                "package.files path `{path}` is unsafe"
+            )));
+        }
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(McpError::InvalidConfig(format!(
+                "package.files digest for `{path}` must be SHA-256 hex"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Reject a stdio command whose meaning depends on where the daemon happens to have been started.
@@ -369,7 +721,13 @@ fn resolve_windows_command_candidates(command: &Path, extensions: &[String]) -> 
 
 #[cfg(windows)]
 fn windows_path_extensions() -> Vec<String> {
-    let mut extensions = std::env::var_os("PATHEXT")
+    let value = std::env::var_os("PATHEXT");
+    windows_path_extensions_from(value.as_deref())
+}
+
+#[cfg(windows)]
+fn windows_path_extensions_from(value: Option<&std::ffi::OsStr>) -> Vec<String> {
+    let extensions = value
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_default()
         .split(';')
@@ -379,20 +737,13 @@ fn windows_path_extensions() -> Vec<String> {
         .collect::<Vec<_>>();
 
     if extensions.is_empty() {
-        extensions = [".com", ".exe", ".bat", ".cmd"]
+        [".com", ".exe", ".bat", ".cmd"]
             .into_iter()
             .map(str::to_owned)
-            .collect();
+            .collect()
+    } else {
+        extensions
     }
-
-    if !extensions
-        .iter()
-        .any(|value| value.eq_ignore_ascii_case(".ps1"))
-    {
-        extensions.push(".ps1".to_owned());
-    }
-
-    extensions
 }
 
 #[cfg(windows)]
@@ -464,7 +815,7 @@ pub fn build_registry_url(
 
 #[must_use]
 pub fn initialize_request(id: u64) -> serde_json::Value {
-    initialize_request_for_version(id, MCP_STDIO_PROTOCOL_VERSION)
+    initialize_request_for_version(id, MCP_PREFERRED_PROTOCOL_VERSION)
 }
 
 #[must_use]
@@ -482,6 +833,78 @@ pub fn initialize_request_for_version(id: u64, protocol_version: &str) -> serde_
             }
         }
     })
+}
+
+fn validate_initialize_result(result: &JsonValue) -> McpResult<String> {
+    let object = result.as_object().ok_or_else(|| {
+        McpError::Protocol("MCP initialize result must be a JSON object".to_owned())
+    })?;
+    let protocol_version = object
+        .get("protocolVersion")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 64)
+        .ok_or_else(|| {
+            McpError::Protocol(
+                "MCP initialize result requires a protocolVersion of at most 64 bytes".to_owned(),
+            )
+        })?;
+    if !MCP_SUPPORTED_PROTOCOL_VERSIONS.contains(&protocol_version) {
+        return Err(McpError::Protocol(format!(
+            "MCP server selected unsupported protocolVersion `{protocol_version}`; Loom supports {}",
+            MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")
+        )));
+    }
+    if !object.get("capabilities").is_some_and(JsonValue::is_object) {
+        return Err(McpError::Protocol(
+            "MCP initialize result requires an object capabilities field".to_owned(),
+        ));
+    }
+    let server_info = object
+        .get("serverInfo")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| {
+            McpError::Protocol("MCP initialize result requires serverInfo".to_owned())
+        })?;
+    for field in ["name", "version"] {
+        let value = server_info
+            .get(field)
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .ok_or_else(|| {
+                McpError::Protocol(format!(
+                    "MCP initialize serverInfo.{field} must be non-empty and at most 256 bytes"
+                ))
+            })?;
+        if value.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err(McpError::Protocol(format!(
+                "MCP initialize serverInfo.{field} contains control characters"
+            )));
+        }
+    }
+    Ok(protocol_version.to_owned())
+}
+
+fn is_protocol_compatibility_rejection(error: &McpError) -> bool {
+    let text = match error {
+        McpError::JsonRpc(value) => value.to_string(),
+        McpError::HttpStatus { body, .. } => body.clone(),
+        _ => return false,
+    }
+    .to_ascii_lowercase();
+    let names_protocol = text.contains("protocol") || text.contains("version");
+    let rejects_version = text.contains("unsupported")
+        || text.contains("not supported")
+        || text.contains("incompatible");
+    names_protocol && rejects_version
+}
+
+fn no_common_protocol_error(last_error: &McpError) -> McpError {
+    McpError::Protocol(format!(
+        "MCP server rejected every supported protocol revision ({}); last rejection: {last_error}",
+        MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")
+    ))
 }
 
 /// Transport-neutral MCP client used by daemon and tool registry callers.
@@ -526,6 +949,13 @@ impl McpClient {
         }
     }
 
+    pub fn initialize_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<JsonValue> {
+        match self {
+            Self::Stdio(client) => client.initialize_cancellable(cancellation),
+            Self::StreamableHttp(client) => client.initialize_cancellable(cancellation),
+        }
+    }
+
     pub fn list_tools(&mut self) -> McpResult<JsonValue> {
         match self {
             Self::Stdio(client) => client.list_tools(),
@@ -533,10 +963,45 @@ impl McpClient {
         }
     }
 
+    pub fn list_tools_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<JsonValue> {
+        match self {
+            Self::Stdio(client) => client.list_tools_cancellable(cancellation),
+            Self::StreamableHttp(client) => client.list_tools_cancellable(cancellation),
+        }
+    }
+
     pub fn call_tool(&mut self, name: &str, arguments: JsonValue) -> McpResult<JsonValue> {
         match self {
             Self::Stdio(client) => client.call_tool(name, arguments),
             Self::StreamableHttp(client) => client.call_tool(name, arguments),
+        }
+    }
+
+    pub fn call_tool_cancellable(
+        &mut self,
+        name: &str,
+        arguments: JsonValue,
+        cancellation: &AtomicBool,
+    ) -> McpResult<JsonValue> {
+        match self {
+            Self::Stdio(client) => client.call_tool_cancellable(name, arguments, cancellation),
+            Self::StreamableHttp(client) => {
+                client.call_tool_cancellable(name, arguments, cancellation)
+            }
+        }
+    }
+
+    pub fn close(&mut self) -> McpResult<()> {
+        match self {
+            Self::Stdio(client) => client.close(),
+            Self::StreamableHttp(client) => client.close(),
+        }
+    }
+
+    pub fn close_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<()> {
+        match self {
+            Self::Stdio(client) => client.close(),
+            Self::StreamableHttp(client) => client.close_cancellable(cancellation),
         }
     }
 
@@ -786,23 +1251,79 @@ impl StdioMcpClient {
     }
 
     pub fn initialize(&mut self) -> McpResult<JsonValue> {
-        let id = self.next_request_id();
-        self.write_message(&initialize_request(id))?;
-        let result = self.read_result(id)?;
-        self.write_message(&initialized_notification())?;
-        Ok(result)
+        self.initialize_with_cancellation(None)
+    }
+
+    pub fn initialize_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<JsonValue> {
+        self.initialize_with_cancellation(Some(cancellation))
+    }
+
+    fn initialize_with_cancellation(
+        &mut self,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
+        for (version_index, protocol_version) in
+            MCP_SUPPORTED_PROTOCOL_VERSIONS.iter().copied().enumerate()
+        {
+            let id = self.next_request_id();
+            self.write_message(&initialize_request_for_version(id, protocol_version))?;
+            match self.read_result_with_cancellation(id, cancellation) {
+                Ok(result) => {
+                    validate_initialize_result(&result)?;
+                    self.write_message(&initialized_notification())?;
+                    return Ok(result);
+                }
+                Err(error)
+                    if is_protocol_compatibility_rejection(&error)
+                        && version_index + 1 < MCP_SUPPORTED_PROTOCOL_VERSIONS.len() => {}
+                Err(error) if is_protocol_compatibility_rejection(&error) => {
+                    return Err(no_common_protocol_error(&error));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("MCP supported protocol revision table is non-empty")
     }
 
     pub fn list_tools(&mut self) -> McpResult<JsonValue> {
+        self.list_tools_with_cancellation(None)
+    }
+
+    pub fn list_tools_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<JsonValue> {
+        self.list_tools_with_cancellation(Some(cancellation))
+    }
+
+    fn list_tools_with_cancellation(
+        &mut self,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
         let id = self.next_request_id();
         self.write_message(&tools_list_request(id))?;
-        self.read_result(id)
+        self.read_result_with_cancellation(id, cancellation)
     }
 
     pub fn call_tool(&mut self, name: &str, arguments: JsonValue) -> McpResult<JsonValue> {
+        self.call_tool_with_cancellation(name, arguments, None)
+    }
+
+    pub fn call_tool_cancellable(
+        &mut self,
+        name: &str,
+        arguments: JsonValue,
+        cancellation: &AtomicBool,
+    ) -> McpResult<JsonValue> {
+        self.call_tool_with_cancellation(name, arguments, Some(cancellation))
+    }
+
+    fn call_tool_with_cancellation(
+        &mut self,
+        name: &str,
+        arguments: JsonValue,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
         let id = self.next_request_id();
         self.write_message(&tools_call_request(id, name, arguments))?;
-        self.read_result(id)
+        self.read_result_with_cancellation(id, cancellation)
     }
 
     fn next_request_id(&mut self) -> u64 {
@@ -818,9 +1339,29 @@ impl StdioMcpClient {
         Ok(())
     }
 
-    fn read_result(&mut self, expected_id: u64) -> McpResult<JsonValue> {
+    fn read_result_with_cancellation(
+        &mut self,
+        expected_id: u64,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
+        let deadline = Instant::now() + self.request_timeout;
         loop {
-            let line = match self.stdout.recv_timeout(self.request_timeout) {
+            if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                self.process.terminate();
+                return Err(McpError::Cancelled);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                self.process.terminate();
+                return Err(McpError::Timeout {
+                    timeout_ms: self.request_timeout.as_millis(),
+                    stderr: self.stderr_text(),
+                });
+            }
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(25));
+            let line = match self.stdout.recv_timeout(wait) {
                 Ok(StdoutEvent::Line(line)) => line,
                 Ok(StdoutEvent::Oversized) => {
                     self.process.terminate();
@@ -842,11 +1383,7 @@ impl StdioMcpClient {
                     });
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.process.terminate();
-                    return Err(McpError::Timeout {
-                        timeout_ms: self.request_timeout.as_millis(),
-                        stderr: self.stderr_text(),
-                    });
+                    continue;
                 }
             };
             let trimmed = String::from_utf8_lossy(&line).trim().to_owned();
@@ -874,6 +1411,11 @@ impl StdioMcpClient {
 
     pub fn cancel(&mut self) {
         self.process.terminate();
+    }
+
+    pub fn close(&mut self) -> McpResult<()> {
+        self.process.terminate();
+        Ok(())
     }
 
     fn stderr_text(&self) -> String {
@@ -938,7 +1480,7 @@ impl StreamableHttpMcpClient {
             .connect_timeout(request_timeout.min(Duration::from_secs(15)))
             .timeout(request_timeout)
             .redirect(RedirectPolicy::none());
-        let client = apply_runtime_proxy(builder)
+        let client = apply_runtime_proxy_async(builder)
             .and_then(|builder| builder.build().map_err(|error| error.to_string()))
             .map_err(McpError::Http)?;
         let headers = build_remote_headers(&config.headers)?;
@@ -948,41 +1490,138 @@ impl StreamableHttpMcpClient {
             url: config.url.trim().to_owned(),
             headers,
             session_id: None,
-            protocol_version: MCP_HTTP_PROTOCOL_VERSION.to_owned(),
+            protocol_version: MCP_PREFERRED_PROTOCOL_VERSION.to_owned(),
             next_id: 1,
         })
     }
 
     pub fn initialize(&mut self) -> McpResult<JsonValue> {
-        let id = self.next_request_id();
-        let request = initialize_request_for_version(id, MCP_HTTP_PROTOCOL_VERSION);
-        let result = self.send_message(&request, Some(id))?;
-        if let Some(version) = result
-            .get("protocolVersion")
-            .and_then(JsonValue::as_str)
-            .map(str::trim)
-            .filter(|version| !version.is_empty())
+        self.initialize_with_cancellation(None)
+    }
+
+    pub fn initialize_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<JsonValue> {
+        self.initialize_with_cancellation(Some(cancellation))
+    }
+
+    fn initialize_with_cancellation(
+        &mut self,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
+        for (version_index, protocol_version) in
+            MCP_SUPPORTED_PROTOCOL_VERSIONS.iter().copied().enumerate()
         {
-            self.protocol_version = version.to_owned();
+            self.protocol_version = protocol_version.to_owned();
+            let id = self.next_request_id();
+            let request = initialize_request_for_version(id, protocol_version);
+            match self.send_message_with_cancellation(&request, Some(id), cancellation) {
+                Ok(result) => {
+                    self.protocol_version = validate_initialize_result(&result)?;
+                    self.send_message_with_cancellation(
+                        &initialized_notification(),
+                        None,
+                        cancellation,
+                    )?;
+                    return Ok(result);
+                }
+                Err(error)
+                    if is_protocol_compatibility_rejection(&error)
+                        && version_index + 1 < MCP_SUPPORTED_PROTOCOL_VERSIONS.len() =>
+                {
+                    // A rejected initialize request must not create a session. Refuse to carry a
+                    // non-conforming response header into the next revision attempt regardless.
+                    self.session_id = None;
+                }
+                Err(error) if is_protocol_compatibility_rejection(&error) => {
+                    self.session_id = None;
+                    return Err(no_common_protocol_error(&error));
+                }
+                Err(error) => return Err(error),
+            }
         }
-        self.send_message(&initialized_notification(), None)?;
-        Ok(result)
+        unreachable!("MCP supported protocol revision table is non-empty")
     }
 
     pub fn list_tools(&mut self) -> McpResult<JsonValue> {
+        self.list_tools_with_cancellation(None)
+    }
+
+    pub fn list_tools_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<JsonValue> {
+        self.list_tools_with_cancellation(Some(cancellation))
+    }
+
+    fn list_tools_with_cancellation(
+        &mut self,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
         let id = self.next_request_id();
-        self.send_message(&tools_list_request(id), Some(id))
+        self.send_message_with_cancellation(&tools_list_request(id), Some(id), cancellation)
     }
 
     pub fn call_tool(&mut self, name: &str, arguments: JsonValue) -> McpResult<JsonValue> {
+        self.call_tool_with_cancellation(name, arguments, None)
+    }
+
+    pub fn call_tool_cancellable(
+        &mut self,
+        name: &str,
+        arguments: JsonValue,
+        cancellation: &AtomicBool,
+    ) -> McpResult<JsonValue> {
+        self.call_tool_with_cancellation(name, arguments, Some(cancellation))
+    }
+
+    fn call_tool_with_cancellation(
+        &mut self,
+        name: &str,
+        arguments: JsonValue,
+        cancellation: Option<&AtomicBool>,
+    ) -> McpResult<JsonValue> {
         let id = self.next_request_id();
-        self.send_message(&tools_call_request(id, name, arguments), Some(id))
+        self.send_message_with_cancellation(
+            &tools_call_request(id, name, arguments),
+            Some(id),
+            cancellation,
+        )
     }
 
     pub fn cancel(&mut self) {
-        // Streamable HTTP cancellation is request-scoped. Dropping the
-        // blocking response cancels an in-flight request; there is no child
-        // process to terminate after a completed one-shot call.
+        // Streamable HTTP cancellation is request-scoped; the cancellable methods drop the
+        // in-flight async request when their token fires. There is no child process to terminate.
+    }
+
+    pub fn close(&mut self) -> McpResult<()> {
+        self.close_with_cancellation(None)
+    }
+
+    pub fn close_cancellable(&mut self, cancellation: &AtomicBool) -> McpResult<()> {
+        self.close_with_cancellation(Some(cancellation))
+    }
+
+    fn close_with_cancellation(&mut self, cancellation: Option<&AtomicBool>) -> McpResult<()> {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return Ok(());
+        };
+        let request = self
+            .client
+            .delete(&self.url)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", &self.protocol_version)
+            .header("MCP-Session-Id", session_id)
+            .headers(self.headers.clone());
+        let response = run_http_future(execute_http_request(request, cancellation))
+            .map_err(|error| McpError::Http(format!("run MCP HTTP close request: {error}")))??;
+        let status = response.status;
+        if status.is_success()
+            || status == reqwest::StatusCode::NOT_FOUND
+            || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+        {
+            self.session_id = None;
+            return Ok(());
+        }
+        Err(McpError::HttpStatus {
+            status: status.as_u16(),
+            body: bounded_error_body(&response.body),
+        })
     }
 
     fn next_request_id(&mut self) -> u64 {
@@ -991,10 +1630,11 @@ impl StreamableHttpMcpClient {
         id
     }
 
-    fn send_message(
+    fn send_message_with_cancellation(
         &mut self,
         message: &JsonValue,
         expected_id: Option<u64>,
+        cancellation: Option<&AtomicBool>,
     ) -> McpResult<JsonValue> {
         let mut request = self
             .client
@@ -1008,27 +1648,14 @@ impl StreamableHttpMcpClient {
             request = request.header("MCP-Session-Id", session_id);
         }
 
-        let mut response = request
-            .send()
-            .map_err(|error| McpError::Http(error.to_string()))?;
-        if let Some(session_id) = response
-            .headers()
-            .get("MCP-Session-Id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            self.session_id = Some(session_id.to_owned());
+        let response = run_http_future(execute_http_request(request, cancellation))
+            .map_err(|error| McpError::Http(format!("run MCP HTTP request: {error}")))??;
+        if let Some(session_id) = response.session_id {
+            self.session_id = Some(session_id);
         }
-
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let body = read_bounded_http_body(&mut response)?;
+        let status = response.status;
+        let content_type = response.content_type;
+        let body = response.body;
         if !status.is_success() {
             return Err(McpError::HttpStatus {
                 status: status.as_u16(),
@@ -1056,6 +1683,25 @@ impl StreamableHttpMcpClient {
             None => Ok(JsonValue::Null),
         }
     }
+}
+
+fn run_http_future<F, T>(future: F) -> Result<T, String>
+where
+    F: Future<Output = T> + Send,
+    T: Send,
+{
+    thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("create runtime: {error}"))?;
+                Ok(runtime.block_on(future))
+            })
+            .join()
+            .map_err(|_| "HTTP runtime thread panicked".to_owned())?
+    })
 }
 
 fn validate_remote_config(config: &McpServerConfig) -> McpResult<()> {
@@ -1089,53 +1735,91 @@ fn validate_remote_config(config: &McpServerConfig) -> McpResult<()> {
 }
 
 fn build_remote_headers(headers: &BTreeMap<String, String>) -> McpResult<HeaderMap> {
+    validate_mcp_headers(headers)?;
     let mut result = HeaderMap::new();
     for (name, value) in headers {
         let normalized = name.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return Err(McpError::InvalidConfig(
-                "remote MCP header name is empty".to_owned(),
-            ));
-        }
-        if matches!(
-            normalized.as_str(),
-            "accept"
-                | "connection"
-                | "content-length"
-                | "content-type"
-                | "host"
-                | "mcp-protocol-version"
-                | "mcp-session-id"
-                | "origin"
-                | "transfer-encoding"
-        ) {
-            return Err(McpError::InvalidConfig(format!(
-                "remote MCP header `{name}` is managed by Loom"
-            )));
-        }
-        let header_name = HeaderName::from_bytes(normalized.as_bytes()).map_err(|error| {
-            McpError::InvalidConfig(format!("invalid remote MCP header `{name}`: {error}"))
-        })?;
-        let header_value = HeaderValue::from_str(value).map_err(|error| {
-            McpError::InvalidConfig(format!(
-                "invalid value for remote MCP header `{name}`: {error}"
-            ))
-        })?;
+        let header_name = HeaderName::from_bytes(normalized.as_bytes())
+            .expect("validated remote MCP header name");
+        let header_value = HeaderValue::from_str(value).expect("validated remote MCP header value");
         result.insert(header_name, header_value);
     }
     Ok(result)
 }
 
-fn read_bounded_http_body(response: &mut HttpResponse) -> McpResult<Vec<u8>> {
+struct HttpWireResponse {
+    status: reqwest::StatusCode,
+    content_type: String,
+    session_id: Option<String>,
+    body: Vec<u8>,
+}
+
+async fn wait_for_cancellation(cancellation: &AtomicBool) {
+    while !cancellation.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn execute_http_request(
+    request: reqwest::RequestBuilder,
+    cancellation: Option<&AtomicBool>,
+) -> McpResult<HttpWireResponse> {
+    let mut response = if let Some(cancellation) = cancellation {
+        tokio::select! {
+            response = request.send() => response,
+            () = wait_for_cancellation(cancellation) => return Err(McpError::Cancelled),
+        }
+    } else {
+        request.send().await
+    }
+    .map_err(|error| McpError::Http(error.to_string()))?;
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let session_id = response
+        .headers()
+        .get("MCP-Session-Id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let body = read_bounded_http_body(&mut response, cancellation).await?;
+    Ok(HttpWireResponse {
+        status,
+        content_type,
+        session_id,
+        body,
+    })
+}
+
+async fn read_bounded_http_body(
+    response: &mut reqwest::Response,
+    cancellation: Option<&AtomicBool>,
+) -> McpResult<Vec<u8>> {
     let mut body = Vec::new();
-    response
-        .take((MCP_MAX_MESSAGE_BYTES + 1) as u64)
-        .read_to_end(&mut body)
+    loop {
+        let chunk = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                chunk = response.chunk() => chunk,
+                () = wait_for_cancellation(cancellation) => return Err(McpError::Cancelled),
+            }
+        } else {
+            response.chunk().await
+        }
         .map_err(|error| McpError::Http(error.to_string()))?;
-    if body.len() > MCP_MAX_MESSAGE_BYTES {
-        return Err(McpError::OutputLimit {
-            limit: MCP_MAX_MESSAGE_BYTES,
-        });
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if body.len().saturating_add(chunk.len()) > MCP_MAX_MESSAGE_BYTES {
+            return Err(McpError::OutputLimit {
+                limit: MCP_MAX_MESSAGE_BYTES,
+            });
+        }
+        body.extend_from_slice(&chunk);
     }
     Ok(body)
 }
@@ -1283,6 +1967,37 @@ mod tests {
     use std::io::{BufRead, Write};
     use std::net::{TcpListener, TcpStream};
 
+    static PROCESS_CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ProcessConfigTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        request_timeout_seconds: u64,
+        memory_limit_bytes: u64,
+        allow_local_servers: bool,
+    }
+
+    impl ProcessConfigTestGuard {
+        fn capture() -> Self {
+            let lock = PROCESS_CONFIG_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self {
+                _lock: lock,
+                request_timeout_seconds: MCP_REQUEST_TIMEOUT_SECONDS.load(Ordering::Relaxed),
+                memory_limit_bytes: MCP_MEMORY_LIMIT_BYTES.load(Ordering::Relaxed),
+                allow_local_servers: MCP_ALLOW_LOCAL_SERVERS.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    impl Drop for ProcessConfigTestGuard {
+        fn drop(&mut self) {
+            MCP_REQUEST_TIMEOUT_SECONDS.store(self.request_timeout_seconds, Ordering::Relaxed);
+            MCP_MEMORY_LIMIT_BYTES.store(self.memory_limit_bytes, Ordering::Relaxed);
+            MCP_ALLOW_LOCAL_SERVERS.store(self.allow_local_servers, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn registry_url_encodes_search_limit_and_cursor() {
         let url = build_registry_url(
@@ -1404,6 +2119,90 @@ mod tests {
     }
 
     #[test]
+    fn server_config_enforces_manifest_sized_fields_and_tool_identifiers() {
+        let mut config = McpServerConfig::new("local", "Local", "npx");
+        config.args = vec!["argument".to_owned(); MAX_MCP_ARGUMENTS + 1];
+        assert!(matches!(
+            config.validate(),
+            Err(McpError::InvalidConfig(message)) if message.contains("entry.args") && message.contains("limit")
+        ));
+
+        let mut config = McpServerConfig::new("local", "Local", "npx");
+        config.tools = vec!["invalid tool name".to_owned()];
+        assert!(matches!(
+            config.validate(),
+            Err(McpError::InvalidConfig(message)) if message.contains("tools[0]")
+        ));
+    }
+
+    #[test]
+    fn process_environment_and_remote_headers_share_security_bounds() {
+        let mut config = McpServerConfig::new("local", "Local", "npx");
+        config.env.insert("PATH".to_owned(), "attacker".to_owned());
+        assert!(matches!(
+            config.validate(),
+            Err(McpError::InvalidConfig(message)) if message.contains("process-influencing")
+        ));
+
+        let mut config = McpServerConfig::remote("remote", "Remote", "https://example.test/mcp");
+        config
+            .headers
+            .insert("Host".to_owned(), "attacker".to_owned());
+        assert!(matches!(
+            config.validate(),
+            Err(McpError::InvalidConfig(message)) if message.contains("managed by Loom")
+        ));
+
+        let oversized_environment = BTreeMap::from([(
+            "SAFE_VALUE".to_owned(),
+            "x".repeat(MAX_MCP_ENVIRONMENT_TOTAL_BYTES),
+        )]);
+        assert!(validate_mcp_environment(&oversized_environment)
+            .unwrap_err()
+            .to_string()
+            .contains("aggregate bytes"));
+
+        let oversized_credential_header = BTreeMap::from([(
+            "X-Api-Key".to_owned(),
+            "x".repeat(MAX_MCP_HEADER_VALUE_BYTES + 1),
+        )]);
+        assert!(validate_mcp_headers(&oversized_credential_header)
+            .unwrap_err()
+            .to_string()
+            .contains("value"));
+    }
+
+    #[test]
+    fn installed_package_state_is_revalidated_with_user_server_config() {
+        let mut config = McpServerConfig::new("fixture", "Fixture", "npx");
+        config.package = Some(McpServerPackageState {
+            qualified_id: "publisher.test/other".to_owned(),
+            publisher_id: "publisher.test".to_owned(),
+            version: "1.0.0".to_owned(),
+            digest: "a".repeat(64),
+            package_dir: std::env::temp_dir().join("loom-mcp-fixture-package"),
+            files: BTreeMap::new(),
+            trust_status: PackageTrustStatus::Unsigned,
+        });
+
+        assert!(matches!(
+            config.validate(),
+            Err(McpError::InvalidConfig(message)) if message.contains("package.qualifiedId")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_extensions_do_not_implicitly_enable_powershell() {
+        let extensions = windows_path_extensions_from(Some(std::ffi::OsStr::new(".EXE;.CMD")));
+        assert_eq!(extensions, vec![".exe", ".cmd"]);
+        assert!(!extensions.iter().any(|extension| extension == ".ps1"));
+
+        let explicit = windows_path_extensions_from(Some(std::ffi::OsStr::new(".EXE;.PS1")));
+        assert_eq!(explicit, vec![".exe", ".ps1"]);
+    }
+
+    #[test]
     fn remote_config_requires_https_unless_the_operator_allows_a_loopback_endpoint() {
         let public = Url::parse("http://mcp.example.test/mcp").expect("public URL");
         let error = ensure_remote_scheme_allowed(&public, true, false)
@@ -1458,10 +2257,9 @@ mod tests {
 
     #[test]
     fn runtime_limits_can_be_updated_for_new_clients() {
-        let previous = runtime_limits();
+        let _guard = ProcessConfigTestGuard::capture();
         configure_runtime_limits(30, 1024 * 1024 * 1024);
         assert_eq!(runtime_limits(), (30, 1024 * 1024 * 1024));
-        configure_runtime_limits(previous.0, previous.1);
     }
 
     #[test]
@@ -1500,12 +2298,57 @@ mod tests {
         assert_eq!(request["jsonrpc"], "2.0");
         assert_eq!(request["id"], 1);
         assert_eq!(request["method"], "initialize");
-        assert_eq!(request["params"]["protocolVersion"], "2024-11-05");
+        assert_eq!(
+            request["params"]["protocolVersion"],
+            MCP_PREFERRED_PROTOCOL_VERSION
+        );
         assert_eq!(request["params"]["clientInfo"]["name"], "Loom");
     }
 
     #[test]
+    fn initialize_response_conformance_table_is_shared_by_both_transports() {
+        for version in MCP_SUPPORTED_PROTOCOL_VERSIONS {
+            let result = serde_json::json!({
+                "protocolVersion": version,
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "fixture", "version": "1.0.0" }
+            });
+            assert_eq!(
+                validate_initialize_result(&result).unwrap(),
+                *version,
+                "supported revision {version}"
+            );
+        }
+
+        let incompatible = serde_json::json!({
+            "protocolVersion": "2099-01-01",
+            "capabilities": {},
+            "serverInfo": { "name": "fixture", "version": "1.0.0" }
+        });
+        let error = validate_initialize_result(&incompatible).unwrap_err();
+        assert!(error.to_string().contains("unsupported protocolVersion"));
+        assert!(error
+            .to_string()
+            .contains(MCP_SUPPORTED_PROTOCOL_VERSIONS[0]));
+
+        for malformed in [
+            serde_json::json!({
+                "protocolVersion": MCP_PREFERRED_PROTOCOL_VERSION,
+                "serverInfo": { "name": "fixture", "version": "1.0.0" }
+            }),
+            serde_json::json!({
+                "protocolVersion": MCP_PREFERRED_PROTOCOL_VERSION,
+                "capabilities": {},
+                "serverInfo": { "name": "", "version": "1.0.0" }
+            }),
+        ] {
+            assert!(validate_initialize_result(&malformed).is_err());
+        }
+    }
+
+    #[test]
     fn stdio_client_initializes_and_lists_tools_against_fixture_server() {
+        let _guard = ProcessConfigTestGuard::capture();
         let config = current_test_binary_fixture_config();
         let mut client = StdioMcpClient::spawn(&config).expect("spawn fixture MCP server");
 
@@ -1519,7 +2362,44 @@ mod tests {
     }
 
     #[test]
+    fn stdio_initialize_falls_back_to_the_next_shared_protocol_revision() {
+        let _guard = ProcessConfigTestGuard::capture();
+        let config =
+            current_test_binary_fixture_config().env("LOOM_MCP_FIXTURE_MODE", "reject-preferred");
+        let mut client = StdioMcpClient::spawn(&config).expect("spawn fallback MCP fixture");
+
+        let initialized = client
+            .initialize()
+            .expect("fall back to legacy MCP revision");
+
+        assert_eq!(
+            initialized["protocolVersion"],
+            MCP_SUPPORTED_PROTOCOL_VERSIONS[1]
+        );
+    }
+
+    #[test]
+    fn stdio_initialize_reports_bounded_no_common_revision_error() {
+        let _guard = ProcessConfigTestGuard::capture();
+        let config = current_test_binary_fixture_config()
+            .env("LOOM_MCP_FIXTURE_MODE", "reject-all-protocols");
+        let mut client = StdioMcpClient::spawn(&config).expect("spawn incompatible MCP fixture");
+
+        let error = client
+            .initialize()
+            .expect_err("all rejected revisions must fail");
+
+        let message = error.to_string();
+        assert!(message.contains("rejected every supported protocol revision"));
+        for version in MCP_SUPPORTED_PROTOCOL_VERSIONS {
+            assert!(message.contains(version));
+        }
+        assert!(message.len() < 1024);
+    }
+
+    #[test]
     fn stdio_client_calls_fixture_tool_and_returns_structured_content() {
+        let _guard = ProcessConfigTestGuard::capture();
         let config = current_test_binary_fixture_config();
         let mut client = StdioMcpClient::spawn(&config).expect("spawn fixture MCP server");
 
@@ -1534,6 +2414,7 @@ mod tests {
 
     #[test]
     fn streamable_http_client_initializes_lists_and_calls_tools() {
+        let _guard = ProcessConfigTestGuard::capture();
         // The fixture listens on loopback over plain http and the config carries a bearer token,
         // which is exactly the combination the outbound policy refuses by default; a developer
         // running a local MCP server opts in the same way.
@@ -1556,7 +2437,79 @@ mod tests {
     }
 
     #[test]
+    fn streamable_http_initialize_uses_the_same_protocol_fallback_table() {
+        let _guard = ProcessConfigTestGuard::capture();
+        configure_local_servers(true);
+        let fixture = ProtocolFallbackHttpFixture::start();
+        let config = McpServerConfig::remote("remote-fallback", "Remote Fallback", fixture.url());
+        let mut client =
+            StreamableHttpMcpClient::connect(&config).expect("connect fallback HTTP fixture");
+
+        let initialized = client
+            .initialize()
+            .expect("fall back to legacy HTTP MCP revision");
+        assert_eq!(
+            initialized["protocolVersion"],
+            MCP_SUPPORTED_PROTOCOL_VERSIONS[1]
+        );
+        assert_eq!(client.protocol_version, MCP_SUPPORTED_PROTOCOL_VERSIONS[1]);
+        client.close().expect("close fallback HTTP session");
+        fixture.finish();
+    }
+
+    #[test]
+    fn streamable_http_close_terminates_or_accepts_an_unsupported_session_close() {
+        for mode in [SessionCloseMode::Success, SessionCloseMode::Unsupported] {
+            let _guard = ProcessConfigTestGuard::capture();
+            configure_local_servers(true);
+            let fixture = SessionCloseHttpFixture::start(mode);
+            let config = McpServerConfig::remote("remote-close", "Remote Close", fixture.url());
+            let mut client =
+                StreamableHttpMcpClient::connect(&config).expect("connect close fixture");
+
+            client.initialize().expect("initialize close fixture");
+            assert!(client.session_id.is_some());
+            client.close().expect("close or accept unsupported close");
+            assert!(client.session_id.is_none());
+            fixture.finish();
+        }
+    }
+
+    #[test]
+    fn streamable_http_session_close_is_cancellable() {
+        let _guard = ProcessConfigTestGuard::capture();
+        configure_local_servers(true);
+        let fixture = SessionCloseHttpFixture::start(SessionCloseMode::Delayed);
+        let config = McpServerConfig::remote("remote-close", "Remote Close", fixture.url());
+        let mut client = StreamableHttpMcpClient::connect(&config).expect("connect close fixture");
+        client.initialize().expect("initialize close fixture");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancellation);
+        let trigger_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let error = client
+            .close_cancellable(cancellation.as_ref())
+            .expect_err("delayed close must be cancellable");
+        let elapsed = started.elapsed();
+
+        trigger_thread
+            .join()
+            .expect("join close cancellation trigger");
+        assert!(matches!(error, McpError::Cancelled));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "close cancel took {elapsed:?}"
+        );
+        fixture.finish();
+    }
+
+    #[test]
     fn live_streamable_http_server_from_official_registry() {
+        let _guard = ProcessConfigTestGuard::capture();
         let Some(url) = std::env::var("LOOM_MCP_LIVE_TEST_URL")
             .ok()
             .map(|value| value.trim().to_owned())
@@ -1574,6 +2527,7 @@ mod tests {
 
     #[test]
     fn stdio_client_times_out_and_terminates_hung_server() {
+        let _guard = ProcessConfigTestGuard::capture();
         let config = current_test_binary_fixture_config().env("LOOM_MCP_FIXTURE_MODE", "hang");
         let mut client = StdioMcpClient::spawn_with_timeout(&config, Duration::from_millis(150))
             .expect("spawn hung fixture");
@@ -1582,7 +2536,69 @@ mod tests {
     }
 
     #[test]
+    fn stdio_client_cancels_a_hung_request_before_its_timeout() {
+        let _guard = ProcessConfigTestGuard::capture();
+        let config = current_test_binary_fixture_config().env("LOOM_MCP_FIXTURE_MODE", "hang");
+        let mut client = StdioMcpClient::spawn_with_timeout(&config, Duration::from_secs(5))
+            .expect("spawn hung fixture");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancellation);
+        let trigger_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let error = client
+            .initialize_cancellable(cancellation.as_ref())
+            .expect_err("hung fixture must be cancellable");
+        let elapsed = started.elapsed();
+
+        trigger_thread.join().expect("join cancellation trigger");
+        assert!(matches!(error, McpError::Cancelled));
+        assert!(elapsed < Duration::from_secs(1), "cancel took {elapsed:?}");
+    }
+
+    #[test]
+    fn streamable_http_cancels_while_waiting_for_response_headers() {
+        assert_delayed_http_request_is_cancellable(DelayedHttpMode::Headers);
+    }
+
+    #[test]
+    fn streamable_http_cancels_while_waiting_for_response_body() {
+        assert_delayed_http_request_is_cancellable(DelayedHttpMode::Body);
+    }
+
+    fn assert_delayed_http_request_is_cancellable(mode: DelayedHttpMode) {
+        let _guard = ProcessConfigTestGuard::capture();
+        configure_local_servers(true);
+        let fixture = DelayedHttpFixture::start(mode);
+        let config = McpServerConfig::remote("delayed", "Delayed MCP", fixture.url());
+        let mut client =
+            StreamableHttpMcpClient::connect_with_timeout(&config, Duration::from_secs(5))
+                .expect("connect delayed fixture");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancellation);
+        let trigger_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let error = client
+            .initialize_cancellable(cancellation.as_ref())
+            .expect_err("delayed request must be cancellable");
+        let elapsed = started.elapsed();
+
+        trigger_thread.join().expect("join cancellation trigger");
+        assert!(matches!(error, McpError::Cancelled));
+        assert!(elapsed < Duration::from_secs(1), "cancel took {elapsed:?}");
+        fixture.finish();
+    }
+
+    #[test]
     fn stdio_client_drains_bounded_stderr_without_deadlocking() {
+        let _guard = ProcessConfigTestGuard::capture();
         let config =
             current_test_binary_fixture_config().env("LOOM_MCP_FIXTURE_MODE", "stderr-flood");
         let mut client = StdioMcpClient::spawn_with_timeout(&config, Duration::from_secs(5))
@@ -1596,6 +2612,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn stdio_client_spawns_extensionless_windows_cmd_fixture() {
+        let _guard = ProcessConfigTestGuard::capture();
         let fixture = windows_cmd_fixture_config();
         let mut client =
             StdioMcpClient::spawn(&fixture).expect("spawn extensionless cmd MCP fixture");
@@ -1672,7 +2689,8 @@ mod tests {
     }
 
     fn run_mcp_fixture_server() {
-        match std::env::var("LOOM_MCP_FIXTURE_MODE").ok().as_deref() {
+        let fixture_mode = std::env::var("LOOM_MCP_FIXTURE_MODE").ok();
+        match fixture_mode.as_deref() {
             Some("hang") => {
                 std::thread::sleep(Duration::from_secs(30));
                 return;
@@ -1698,21 +2716,42 @@ mod tests {
             };
             let method = request["method"].as_str().unwrap_or_default();
             match method {
-                "initialize" => write_fixture_response(
-                    &mut stdout,
-                    serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": request["id"].clone(),
-                        "result": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": { "tools": {} },
-                            "serverInfo": {
-                                "name": "loom-fixture",
-                                "version": "0.1.0"
+                "initialize" => {
+                    let requested_version = request["params"]["protocolVersion"]
+                        .as_str()
+                        .unwrap_or_default();
+                    let reject = fixture_mode.as_deref() == Some("reject-all-protocols")
+                        || (fixture_mode.as_deref() == Some("reject-preferred")
+                            && requested_version == MCP_PREFERRED_PROTOCOL_VERSION);
+                    let response = if reject {
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"].clone(),
+                            "error": {
+                                "code": -32602,
+                                "message": format!("unsupported protocol version {requested_version}")
                             }
-                        }
-                    }),
-                ),
+                        })
+                    } else {
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"].clone(),
+                            "result": {
+                                "protocolVersion": if fixture_mode.as_deref() == Some("reject-preferred") {
+                                    requested_version
+                                } else {
+                                    "2024-11-05"
+                                },
+                                "capabilities": { "tools": {} },
+                                "serverInfo": {
+                                    "name": "loom-fixture",
+                                    "version": "0.1.0"
+                                }
+                            }
+                        })
+                    };
+                    write_fixture_response(&mut stdout, response);
+                }
                 "notifications/initialized" => {}
                 "tools/list" => write_fixture_response(
                     &mut stdout,
@@ -1780,6 +2819,295 @@ mod tests {
         stdout.flush().expect("flush fixture response");
     }
 
+    #[derive(Clone, Copy)]
+    enum DelayedHttpMode {
+        Headers,
+        Body,
+    }
+
+    struct DelayedHttpFixture {
+        url: String,
+        worker: thread::JoinHandle<()>,
+    }
+
+    struct ProtocolFallbackHttpFixture {
+        url: String,
+        worker: thread::JoinHandle<()>,
+    }
+
+    impl ProtocolFallbackHttpFixture {
+        fn start() -> Self {
+            let listener =
+                TcpListener::bind(("127.0.0.1", 0)).expect("bind protocol fallback fixture");
+            let address = listener
+                .local_addr()
+                .expect("protocol fallback fixture address");
+            let worker = thread::spawn(move || {
+                for request_index in 0..4 {
+                    let (mut stream, _) =
+                        listener.accept().expect("accept protocol fallback request");
+                    let request = read_http_fixture_request(&mut stream);
+                    match request_index {
+                        0 | 1 => {
+                            let message: JsonValue = request
+                                .split_once("\r\n\r\n")
+                                .and_then(|(_, body)| serde_json::from_str(body).ok())
+                                .expect("protocol fallback initialize JSON");
+                            let requested = message["params"]["protocolVersion"]
+                                .as_str()
+                                .expect("requested protocol version");
+                            assert_eq!(requested, MCP_SUPPORTED_PROTOCOL_VERSIONS[request_index]);
+                            let lower_request = request.to_ascii_lowercase();
+                            assert!(lower_request.contains(&format!(
+                                "mcp-protocol-version: {}",
+                                MCP_SUPPORTED_PROTOCOL_VERSIONS[request_index]
+                            )));
+                            if request_index == 0 {
+                                write_http_fixture_response(
+                                    &mut stream,
+                                    "200 OK",
+                                    "application/json",
+                                    None,
+                                    &serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": message["id"],
+                                        "error": {
+                                            "code": -32602,
+                                            "message": "unsupported protocol version"
+                                        }
+                                    })
+                                    .to_string(),
+                                );
+                            } else {
+                                write_http_fixture_response(
+                                    &mut stream,
+                                    "200 OK",
+                                    "application/json",
+                                    Some("fallback-session"),
+                                    &serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": message["id"],
+                                        "result": {
+                                            "protocolVersion": MCP_SUPPORTED_PROTOCOL_VERSIONS[1],
+                                            "capabilities": {},
+                                            "serverInfo": {
+                                                "name": "fallback-fixture",
+                                                "version": "0.1.0"
+                                            }
+                                        }
+                                    })
+                                    .to_string(),
+                                );
+                            }
+                        }
+                        2 => {
+                            assert!(request
+                                .to_ascii_lowercase()
+                                .contains("mcp-session-id: fallback-session"));
+                            write_http_fixture_response(
+                                &mut stream,
+                                "202 Accepted",
+                                "application/json",
+                                None,
+                                "",
+                            );
+                        }
+                        _ => {
+                            assert!(request.starts_with("DELETE "));
+                            assert!(request
+                                .to_ascii_lowercase()
+                                .contains("mcp-session-id: fallback-session"));
+                            write_http_fixture_response(
+                                &mut stream,
+                                "204 No Content",
+                                "application/json",
+                                None,
+                                "",
+                            );
+                        }
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{address}/mcp"),
+                worker,
+            }
+        }
+
+        fn url(&self) -> String {
+            self.url.clone()
+        }
+
+        fn finish(self) {
+            self.worker
+                .join()
+                .expect("protocol fallback fixture worker");
+        }
+    }
+
+    impl DelayedHttpFixture {
+        fn start(mode: DelayedHttpMode) -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind delayed HTTP fixture");
+            let address = listener.local_addr().expect("delayed HTTP fixture address");
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept delayed HTTP request");
+                let request = read_http_fixture_request(&mut stream);
+                let message: JsonValue = request
+                    .split_once("\r\n\r\n")
+                    .and_then(|(_, body)| serde_json::from_str(body).ok())
+                    .expect("delayed HTTP fixture JSON");
+                let body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": {
+                        "protocolVersion": MCP_PREFERRED_PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "serverInfo": { "name": "delayed", "version": "0.1.0" }
+                    }
+                })
+                .to_string();
+                match mode {
+                    DelayedHttpMode::Headers => {
+                        thread::sleep(Duration::from_millis(500));
+                        let _ = write_http_fixture_response_unchecked(&mut stream, &body);
+                    }
+                    DelayedHttpMode::Body => {
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let split = body.len() / 2;
+                        let _ = stream.write_all(&body.as_bytes()[..split]);
+                        let _ = stream.flush();
+                        thread::sleep(Duration::from_millis(500));
+                        let _ = stream.write_all(&body.as_bytes()[split..]);
+                        let _ = stream.flush();
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{address}/mcp"),
+                worker,
+            }
+        }
+
+        fn url(&self) -> String {
+            self.url.clone()
+        }
+
+        fn finish(self) {
+            self.worker.join().expect("delayed HTTP fixture worker");
+        }
+    }
+
+    fn write_http_fixture_response_unchecked(
+        stream: &mut TcpStream,
+        body: &str,
+    ) -> std::io::Result<()> {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )?;
+        stream.flush()
+    }
+
+    #[derive(Clone, Copy)]
+    enum SessionCloseMode {
+        Success,
+        Unsupported,
+        Delayed,
+    }
+
+    struct SessionCloseHttpFixture {
+        url: String,
+        worker: thread::JoinHandle<()>,
+    }
+
+    impl SessionCloseHttpFixture {
+        fn start(mode: SessionCloseMode) -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind close HTTP fixture");
+            let address = listener.local_addr().expect("close HTTP fixture address");
+            let worker = thread::spawn(move || {
+                for request_index in 0..3 {
+                    let (mut stream, _) = listener.accept().expect("accept close HTTP request");
+                    let request = read_http_fixture_request(&mut stream);
+                    match request_index {
+                        0 => {
+                            assert!(request.starts_with("POST "));
+                            let message: JsonValue = request
+                                .split_once("\r\n\r\n")
+                                .and_then(|(_, body)| serde_json::from_str(body).ok())
+                                .expect("close fixture initialize JSON");
+                            write_http_fixture_response(
+                                &mut stream,
+                                "200 OK",
+                                "application/json",
+                                Some("close-session"),
+                                &serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": message["id"],
+                                    "result": {
+                                        "protocolVersion": MCP_PREFERRED_PROTOCOL_VERSION,
+                                        "capabilities": {},
+                                        "serverInfo": { "name": "close-fixture", "version": "0.1.0" }
+                                    }
+                                })
+                                .to_string(),
+                            );
+                        }
+                        1 => write_http_fixture_response(
+                            &mut stream,
+                            "202 Accepted",
+                            "application/json",
+                            None,
+                            "",
+                        ),
+                        _ => {
+                            assert!(request.starts_with("DELETE "));
+                            assert!(request
+                                .to_ascii_lowercase()
+                                .contains("mcp-session-id: close-session"));
+                            match mode {
+                                SessionCloseMode::Success => write_http_fixture_response(
+                                    &mut stream,
+                                    "204 No Content",
+                                    "application/json",
+                                    None,
+                                    "",
+                                ),
+                                SessionCloseMode::Unsupported => write_http_fixture_response(
+                                    &mut stream,
+                                    "405 Method Not Allowed",
+                                    "text/plain",
+                                    None,
+                                    "unsupported",
+                                ),
+                                SessionCloseMode::Delayed => {
+                                    thread::sleep(Duration::from_millis(500));
+                                    let _ = write_http_fixture_response_unchecked(&mut stream, "");
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{address}/mcp"),
+                worker,
+            }
+        }
+
+        fn url(&self) -> String {
+            self.url.clone()
+        }
+
+        fn finish(self) {
+            self.worker.join().expect("close HTTP fixture worker");
+        }
+    }
+
     struct StreamableHttpFixture {
         url: String,
         worker: thread::JoinHandle<()>,
@@ -1820,7 +3148,7 @@ mod tests {
                                 "jsonrpc": "2.0",
                                 "id": message["id"],
                                 "result": {
-                                    "protocolVersion": MCP_HTTP_PROTOCOL_VERSION,
+                                    "protocolVersion": MCP_PREFERRED_PROTOCOL_VERSION,
                                     "capabilities": { "tools": {} },
                                     "serverInfo": { "name": "loom-http-fixture", "version": "0.1.0" }
                                 }

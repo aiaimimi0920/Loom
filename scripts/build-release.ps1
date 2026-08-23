@@ -203,6 +203,7 @@ function Get-LoomCatalog {
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-manifest.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-manifest.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-message.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-message.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-scene.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-scene.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-stream.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-stream.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\device-session.v1.schema.json") -DestinationRelativePath "protocol\schemas\device-session.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\hook-message.v1.schema.json") -DestinationRelativePath "protocol\schemas\hook-message.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\README.md") -DestinationRelativePath "sdk\surface\README.md"
@@ -1077,7 +1078,9 @@ if (-not $NoZip) {
         bytes = $pluginSdkZipRecord.bytes
         sha256 = $pluginSdkZipRecord.sha256
         protocolVersion = "loom.framework.v1"
-        schemaCount = 10
+        schemaCount = @($catalog.pluginSdkArtifact.files | Where-Object {
+            ([string]$_.destinationRelativePath).Replace("\", "/") -like "protocol/schemas/*.schema.json"
+        }).Count
     }
 }
 

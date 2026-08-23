@@ -8,6 +8,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:DaemonRequestHeaders = @{}
+$script:DaemonToken = ""
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 . (Join-Path $repoRoot "scripts\LoomSmokePorts.ps1")
@@ -115,19 +117,20 @@ function Start-SurfaceDaemon {
     )
     return Start-InheritedEnvProcess -FilePath $FilePath -WorkingDirectory $WorkingDirectory -Environment @{
         LOOM_DAEMON_HOST = "127.0.0.1"; LOOM_DAEMON_PORT = "$Port"; LOOM_CONTROL_PLANE_ROOT = $ControlPlaneRoot
+        LOOM_DAEMON_TOKEN = $script:DaemonToken
         LOOM_ART_STORE_URL = $ArtStoreUrl; APPDATA = $AppDataRoot; LOCALAPPDATA = $LocalAppDataRoot
     } -StdoutPath (Join-Path $LogsRoot "$LogStem.stdout.log") -StderrPath (Join-Path $LogsRoot "$LogStem.stderr.log")
 }
 
 function Invoke-JsonGet {
     param([string]$Uri)
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 20
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonRequestHeaders -TimeoutSec 20
 }
 
 function Invoke-JsonPost {
     param([string]$Uri, [object]$Body)
     $json = $Body | ConvertTo-Json -Depth 80 -Compress
-    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec 30
+    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonRequestHeaders -ContentType "application/json" -Body $json -TimeoutSec 30
 }
 
 function Invoke-SurfaceResourceGet {
@@ -140,7 +143,7 @@ function Invoke-SurfaceResourceGet {
     Assert-True ($resourceId.StartsWith("sha256:", [StringComparison]::Ordinal)) "Surface resource id is not a SHA-256 digest"
     $digest = $resourceId.Substring("sha256:".Length)
     $response = Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/v1/surfaces/resources/$digest" -Method Get `
-        -Headers @{ "X-Loom-Surface-Lease" = [string]$Lease.leaseId } -OutFile $OutputPath -PassThru -TimeoutSec 20
+        -Headers @{ Authorization = [string]$script:DaemonRequestHeaders.Authorization; "X-Loom-Surface-Lease" = [string]$Lease.leaseId } -OutFile $OutputPath -PassThru -TimeoutSec 20
     $bytes = [IO.File]::ReadAllBytes($OutputPath)
     Assert-Equal 200 ([int]$response.StatusCode) "Surface resource GET status mismatch"
     Assert-Equal ([int64]$Lease.resource.size) ([int64]$bytes.Length) "Surface resource byte length mismatch"
@@ -156,7 +159,7 @@ function Assert-SurfaceResourceRejectsWrongLease {
     $rejected = $false
     try {
         [void](Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/v1/surfaces/resources/$digest" -Method Get `
-            -Headers @{ "X-Loom-Surface-Lease" = "lease:wrong" } -TimeoutSec 20)
+            -Headers @{ Authorization = [string]$script:DaemonRequestHeaders.Authorization; "X-Loom-Surface-Lease" = "lease:wrong" } -TimeoutSec 20)
     } catch {
         if ($null -ne $_.Exception.Response) {
             $rejected = ([int]$_.Exception.Response.StatusCode) -eq 403
@@ -297,6 +300,8 @@ $frameworkBuildRoot = Join-Path $runRoot "framework-artifacts"
 $artBuildRoot = Join-Path $runRoot "art-artifacts"
 $summaryPath = Join-Path $runRoot "summary.json"
 New-Item -ItemType Directory -Force -Path $storeRoot, $controlPlaneRoot, $appDataRoot, $localAppDataRoot, $logsRoot, $frameworkBuildRoot, $artBuildRoot, (Join-Path $storeRoot "frameworks"), (Join-Path $storeRoot "arts") | Out-Null
+$script:DaemonToken = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+$script:DaemonRequestHeaders = @{ Authorization = "Bearer $script:DaemonToken" }
 
 try {
     if (-not $SkipBuild) {

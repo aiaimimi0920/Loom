@@ -1097,7 +1097,7 @@ impl FrameworkRegistry {
                 fs::remove_dir_all(&staging)?;
                 false
             } else {
-                fs::rename(&staging, &target)?;
+                move_framework_tree_with_retry(&staging, &target)?;
                 true
             };
             set_framework_tree_readonly(&target, true)?;
@@ -1520,6 +1520,26 @@ fn set_framework_tree_readonly(path: &Path, readonly: bool) -> Result<(), Framew
     permissions.set_readonly(readonly);
     fs::set_permissions(path, permissions)?;
     Ok(())
+}
+
+fn move_framework_tree_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: usize = 40;
+    for attempt in 0..ATTEMPTS {
+        match fs::rename(source, target) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if cfg!(windows)
+                    && error.kind() == std::io::ErrorKind::PermissionDenied
+                    && attempt + 1 < ATTEMPTS =>
+            {
+                // A scanner can briefly hold a freshly extracted executable open. Retrying the
+                // same directory rename preserves the atomic install boundary.
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the final rename attempt always returns")
 }
 
 fn remove_framework_tree(path: &Path) -> Result<(), FrameworkError> {

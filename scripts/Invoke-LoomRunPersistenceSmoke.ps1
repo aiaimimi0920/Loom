@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:DaemonAuthHeaders = @{}
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 
 function Assert-True {
@@ -243,8 +244,8 @@ function Wait-ForDaemonStatus {
             }
         }
         try {
-            $health = Invoke-RestMethod -Uri "$BaseUrl/health" -Method Get -TimeoutSec 2
-            $status = Invoke-RestMethod -Uri "$BaseUrl/status" -Method Get -TimeoutSec 2
+            $health = Invoke-RestMethod -Uri "$BaseUrl/health" -Method Get -Headers $script:DaemonAuthHeaders -TimeoutSec 2
+            $status = Invoke-RestMethod -Uri "$BaseUrl/status" -Method Get -Headers $script:DaemonAuthHeaders -TimeoutSec 2
             if ([string]$health.status -eq "ok" -and [string]$status.status -eq "ready") {
                 return $status
             }
@@ -282,7 +283,7 @@ function Wait-ForSiblingDaemon {
 function Invoke-JsonGet {
     param([string]$Uri)
 
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 15
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonAuthHeaders -TimeoutSec 15
 }
 
 function Invoke-JsonPost {
@@ -292,17 +293,22 @@ function Invoke-JsonPost {
     )
 
     $json = $Body | ConvertTo-Json -Depth 30 -Compress
-    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec 30
+    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonAuthHeaders -ContentType "application/json" -Body $json -TimeoutSec 30
 }
 
 function Invoke-Executable {
     param(
         [string]$FilePath,
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [string]$ControlPlaneRoot = ""
     )
 
     $oldToken = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_TOKEN", "Process")
+    $oldControlPlaneRoot = [Environment]::GetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", "Process")
     [Environment]::SetEnvironmentVariable("LOOM_DAEMON_TOKEN", $null, "Process")
+    if (-not [string]::IsNullOrWhiteSpace($ControlPlaneRoot)) {
+        [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $ControlPlaneRoot, "Process")
+    }
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -312,6 +318,7 @@ function Invoke-Executable {
     finally {
         $ErrorActionPreference = $previousPreference
         [Environment]::SetEnvironmentVariable("LOOM_DAEMON_TOKEN", $oldToken, "Process")
+        [Environment]::SetEnvironmentVariable("LOOM_CONTROL_PLANE_ROOT", $oldControlPlaneRoot, "Process")
     }
     return [pscustomobject][ordered]@{
         exitCode = [int]$exitCode
@@ -489,6 +496,22 @@ try {
         -StderrPath $firstStderr `
         -EnvironmentValues $daemonEnvironment
     $firstDaemonPid = [int]$firstProcess.Id
+    $daemonTokenPath = Join-Path $controlPlaneRoot "daemon-token"
+    $tokenDeadline = (Get-Date).AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf)) {
+        if (-not (Test-ExactProcessAlive -ProcessId $firstDaemonPid -ExpectedExecutablePath $daemonExe)) {
+            throw "Daemon A exited before writing its administrator token."
+        }
+        if ((Get-Date) -ge $tokenDeadline) {
+            throw "Timed out waiting for Loom daemon administrator token."
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $daemonToken = [System.IO.File]::ReadAllText($daemonTokenPath, [System.Text.Encoding]::UTF8).Trim()
+    if ([string]::IsNullOrWhiteSpace($daemonToken)) {
+        throw "Loom daemon administrator token file was empty."
+    }
+    $script:DaemonAuthHeaders = @{ Authorization = "Bearer $daemonToken" }
     $firstStatus = Wait-ForDaemonStatus `
         -BaseUrl $firstBaseUrl `
         -ProcessId $firstDaemonPid `
@@ -551,7 +574,10 @@ try {
     Write-JsonEvidence -Path (Join-Path $evidenceRunDir "persisted-run.json") -Value $persistedRun
     Write-JsonEvidence -Path (Join-Path $evidenceRunDir "persisted-events.json") -Value $persistedEvents
 
-    $cliResult = Invoke-Executable -FilePath $loomExe -Arguments @("status", "--daemon-url", $secondBaseUrl)
+    $cliResult = Invoke-Executable `
+        -FilePath $loomExe `
+        -Arguments @("status", "--daemon-url", $secondBaseUrl) `
+        -ControlPlaneRoot $controlPlaneRoot
     Assert-Equal 0 $cliResult.exitCode "loom.exe status failed against daemon B."
     Assert-True ([string]$cliResult.output -match '"status"\s*:\s*"ready"') "loom.exe status output did not report ready."
     Write-Utf8NoBom -Path (Join-Path $evidenceRunDir "loom-status.txt") -Content ([string]$cliResult.output)

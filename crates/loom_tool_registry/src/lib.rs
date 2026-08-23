@@ -17,9 +17,11 @@ pub use loom_security::network as network_policy;
 /// Hardened archive extraction, shared through the same leaf crate as [`network_policy`].
 pub(crate) use loom_security::archive as secure_zip;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -32,9 +34,9 @@ use loom_protocol::{
     is_safe_publisher_id, is_safe_surface_identifier, PublisherIdentity, SurfaceActionRisk,
     SurfacePackageManifest, SurfaceRuntimeKind, SURFACE_API_VERSION, SURFACE_PROTOCOL_VERSION,
 };
-use reqwest::blocking::multipart;
-use reqwest::Method;
+use reqwest::{multipart, Method};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const TOOLS_FILE: &str = "tools.json";
@@ -51,6 +53,7 @@ const MCP_IMAGE_FETCH_ACCEPT: &str =
     "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
 const MCP_IMAGE_FETCH_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 const MAX_MCP_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CLOUD_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// How much borrowed text an error message from this crate may carry.
 ///
 /// Errors travel further than the code that raises them: into the log, into the Surface error payload,
@@ -899,6 +902,153 @@ fn sort_tools(tools: &mut [ToolDefinition]) {
     tools.sort_by_key(ToolDefinition::qualified_id);
 }
 
+const MAX_CACHED_MCP_SESSIONS: usize = 8;
+const MCP_SESSION_IDLE_LIFETIME: Duration = Duration::from_secs(60);
+
+struct CachedMcpSession {
+    key: String,
+    client: loom_mcp::McpClient,
+    tools: Option<serde_json::Value>,
+    listing_failure: Option<String>,
+    reusable: bool,
+    last_used: Instant,
+}
+
+#[derive(Default)]
+struct McpSessionPool {
+    sessions: Vec<CachedMcpSession>,
+}
+
+thread_local! {
+    static MCP_SESSION_POOL: RefCell<McpSessionPool> = RefCell::new(McpSessionPool::default());
+}
+
+fn mcp_session_key(
+    server: &loom_mcp::McpServerConfig,
+    timeout: Option<Duration>,
+) -> ToolRegistryResult<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(server)?);
+    hasher.update(format!("{:?}", crate::network_policy::runtime_proxy()));
+    hasher.update(
+        timeout
+            .map(|value| value.as_millis())
+            .unwrap_or_default()
+            .to_le_bytes(),
+    );
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn take_cached_mcp_session(key: &str) -> Option<CachedMcpSession> {
+    let now = Instant::now();
+    let (session, expired) = MCP_SESSION_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let mut expired = Vec::new();
+        let mut index = 0;
+        while index < pool.sessions.len() {
+            if now.saturating_duration_since(pool.sessions[index].last_used)
+                >= MCP_SESSION_IDLE_LIFETIME
+            {
+                expired.push(pool.sessions.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        let session = pool
+            .sessions
+            .iter()
+            .position(|session| session.key == key)
+            .map(|index| pool.sessions.remove(index));
+        (session, expired)
+    });
+    for mut session in expired {
+        let _ = session.client.close();
+    }
+    session
+}
+
+fn return_cached_mcp_session(mut session: CachedMcpSession) {
+    session.last_used = Instant::now();
+    let evicted = MCP_SESSION_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let duplicate = pool.sessions.iter().any(|cached| cached.key == session.key);
+        if duplicate {
+            Some(session)
+        } else {
+            pool.sessions.push(session);
+            if pool.sessions.len() > MAX_CACHED_MCP_SESSIONS {
+                let oldest = pool
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, session)| session.last_used)
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                Some(pool.sessions.remove(oldest))
+            } else {
+                None
+            }
+        }
+    });
+    if let Some(mut evicted) = evicted {
+        let _ = evicted.client.close();
+    }
+}
+
+#[cfg(test)]
+fn clear_cached_mcp_sessions_for_current_thread() {
+    let sessions = MCP_SESSION_POOL.with(|pool| std::mem::take(&mut pool.borrow_mut().sessions));
+    for mut session in sessions {
+        let _ = session.client.close();
+    }
+}
+
+fn acquire_mcp_session(
+    tool: &ToolDefinition,
+    server: &loom_mcp::McpServerConfig,
+    timeout: Option<Duration>,
+    cancellation: Option<&AtomicBool>,
+) -> ToolRegistryResult<CachedMcpSession> {
+    let key = mcp_session_key(server, timeout)?;
+    if let Some(session) = take_cached_mcp_session(&key) {
+        return Ok(session);
+    }
+    let mut client = match timeout {
+        Some(timeout) => loom_mcp::McpClient::connect_with_timeout(server, timeout)?,
+        None => loom_mcp::McpClient::connect(server)?,
+    };
+    let initialize = match cancellation {
+        Some(cancellation) => client.initialize_cancellable(cancellation),
+        None => client.initialize(),
+    };
+    if let Err(error) = initialize {
+        client.cancel();
+        return Err(mcp_execution_error(tool, error));
+    }
+    let listing = match cancellation {
+        Some(cancellation) => client.list_tools_cancellable(cancellation),
+        None => client.list_tools(),
+    };
+    let (tools, listing_failure, reusable) = match listing {
+        Ok(tools) => (Some(tools), None, true),
+        Err(loom_mcp::McpError::Cancelled) => {
+            client.cancel();
+            return Err(ToolRegistryError::ExecutionCancelled {
+                id: tool.id.clone(),
+            });
+        }
+        Err(error) => (None, Some(error.to_string()), false),
+    };
+    Ok(CachedMcpSession {
+        key,
+        client,
+        tools,
+        listing_failure,
+        reusable,
+        last_used: Instant::now(),
+    })
+}
+
 pub fn execute_tool(
     tool: &ToolDefinition,
     mcp_servers: &[loom_mcp::McpServerConfig],
@@ -975,47 +1125,53 @@ fn execute_tool_with_optional_timeout(
                 Ok(())
             };
 
-            // Cancellation is observed between the steps of the conversation, which is where this arm can
-            // act on it. A step already in flight cannot be interrupted from here: the transports are
-            // synchronous, and reaching into one from another thread would need a kill handle that neither
-            // of them hands out. What the seams do cover is every wait long enough to be worth cancelling
-            // — spawning the server, its two setup round trips, and the gap before the call — and each
-            // early return drops the client, whose managed child terminates on the way out, so a stdio
-            // server is not left running after the caller has given up.
             stop_if_cancelled()?;
-            let mut client = match timeout {
-                Some(timeout) => loom_mcp::McpClient::connect_with_timeout(server, timeout)?,
-                None => loom_mcp::McpClient::connect(server)?,
-            };
-            stop_if_cancelled()?;
-            client.initialize()?;
-            // A server that cannot list its tools may still be able to run them, so a failed listing
-            // does not stop the call: the arguments are normalized without a schema to shape them. The
-            // failure is remembered rather than discarded, because a call that then fails is very often
-            // failing *because* of the missing schema, and without this the listing failure would never
-            // be visible anywhere — leaving a rejection from the server with no explanation for it.
-            let (tool_list, listing_failure) = match client.list_tools() {
-                Ok(tools) => (Some(tools), None),
-                Err(error) => (None, Some(error.to_string())),
-            };
-            let normalized_arguments = normalize_mcp_call_arguments(
-                &arguments,
-                tool_list
-                    .as_ref()
-                    .and_then(|tools| find_mcp_tool_input_schema(tools, tool_name)),
-            );
-            stop_if_cancelled()?;
-            let result = client
-                .call_tool(tool_name, normalized_arguments.clone())
-                .map(|value| normalize_mcp_result(tool, &normalized_arguments, value))
-                .map_err(|error| mcp_call_error(error, listing_failure.as_deref()))?;
-            // A cancellation that arrives while the call is in flight can only be seen once the call
-            // returns. Handing the result over then would give the caller work it has already abandoned,
-            // and the caller may not look at the flag itself — the surface action runner does not — so the
-            // run reports the cancellation instead. This matches what `loom_workflow_runtime` does after
-            // each of its own steps.
-            stop_if_cancelled()?;
-            Ok(result)
+            let mut session = acquire_mcp_session(tool, server, timeout, cancellation)?;
+            let operation = (|| -> ToolRegistryResult<serde_json::Value> {
+                stop_if_cancelled()?;
+                let normalized_arguments = normalize_mcp_call_arguments(
+                    &arguments,
+                    session
+                        .tools
+                        .as_ref()
+                        .and_then(|tools| find_mcp_tool_input_schema(tools, tool_name)),
+                );
+                stop_if_cancelled()?;
+                let call = match cancellation {
+                    Some(cancellation) => session.client.call_tool_cancellable(
+                        tool_name,
+                        normalized_arguments.clone(),
+                        cancellation,
+                    ),
+                    None => session
+                        .client
+                        .call_tool(tool_name, normalized_arguments.clone()),
+                };
+                let result = match call {
+                    Ok(value) => normalize_mcp_result(tool, &normalized_arguments, value),
+                    Err(loom_mcp::McpError::Cancelled) => {
+                        session.reusable = false;
+                        return Err(ToolRegistryError::ExecutionCancelled {
+                            id: tool.id.clone(),
+                        });
+                    }
+                    Err(error) => {
+                        session.reusable = matches!(error, loom_mcp::McpError::JsonRpc(_));
+                        return Err(mcp_call_error(error, session.listing_failure.as_deref()));
+                    }
+                };
+                stop_if_cancelled()?;
+                Ok(result)
+            })();
+            let cancelled = cancellation.is_some_and(|token| token.load(Ordering::Acquire));
+            if operation.is_ok() && session.reusable && !cancelled {
+                return_cached_mcp_session(session);
+            } else if cancelled {
+                session.client.cancel();
+            } else {
+                let _ = session.client.close();
+            }
+            operation
         }
         ToolExecution::CloudApi {
             endpoint,
@@ -1067,6 +1223,15 @@ pub fn prepare_tool_arguments(
             reason: error.to_string(),
         }
     })
+}
+
+fn mcp_execution_error(tool: &ToolDefinition, error: loom_mcp::McpError) -> ToolRegistryError {
+    match error {
+        loom_mcp::McpError::Cancelled => ToolRegistryError::ExecutionCancelled {
+            id: tool.id.clone(),
+        },
+        error => ToolRegistryError::Mcp(error),
+    }
 }
 
 /// Turn a failed MCP call into the error that leaves this crate, folding in an earlier listing failure.
@@ -1243,11 +1408,7 @@ fn execute_cloud_api_tool(
             reason,
         }
     })?;
-    // Bypass the system proxy: on Windows reqwest picks up the OS proxy setting
-    // (e.g. a stale 127.0.0.1:7890 from a stopped Clash/V2Ray), which makes every
-    // cloud API call fail with "error sending request". Cloud arts talk directly
-    // to their endpoint, matching Hook's own no_proxy client.
-    let client = crate::network_policy::secure_client("Loom/0.1 Cloud API", timeout, policy)
+    let client = crate::network_policy::secure_async_client("Loom/0.1 Cloud API", timeout, policy)
         .map_err(|reason| ToolRegistryError::CloudSecurity {
             id: tool.id.clone(),
             endpoint: endpoint.clone(),
@@ -1287,7 +1448,13 @@ fn execute_cloud_api_tool(
 
     if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
         if content_type_lower == "multipart/form-data" {
-            request = request.multipart(build_cloud_multipart_form(tool, body, &arguments)?);
+            let form = run_cloud_future(build_cloud_multipart_form(tool, body, &arguments))
+                .map_err(|reason| ToolRegistryError::CloudSecurity {
+                    id: tool.id.clone(),
+                    endpoint: endpoint.clone(),
+                    reason,
+                })??;
+            request = request.multipart(form);
         } else if let Some(body) = body {
             if content_type_lower.contains("json") {
                 let json_body = render_cloud_json_template(tool, "body", body, &arguments)?;
@@ -1316,72 +1483,237 @@ fn execute_cloud_api_tool(
             ),
         });
     }
-    // Rendering the templates is quick, but it sits between the first check and the request, so the
-    // flag is read once more before anything is sent. The request itself cannot be aborted: the
-    // blocking `reqwest` client offers no handle another thread could use to break off a call in
-    // flight, so a hung connection stays bounded only by the timeout — the same limitation the
-    // streamable-HTTP MCP transport has. What follows the response can be cancelled, and is.
     stop_if_cancelled()?;
-    let mut response = request
-        .send()
-        .map_err(|source| ToolRegistryError::CloudRequest {
+    let response = run_cloud_future(execute_cloud_http_request(request, cancellation))
+        .map_err(|reason| ToolRegistryError::CloudSecurity {
             id: tool.id.clone(),
             endpoint: endpoint.clone(),
-            source,
+            reason,
+        })?
+        .map_err(|error| match error {
+            CloudTransportError::Cancelled => ToolRegistryError::ExecutionCancelled {
+                id: tool.id.clone(),
+            },
+            CloudTransportError::Request(source) => ToolRegistryError::CloudRequest {
+                id: tool.id.clone(),
+                endpoint: endpoint.clone(),
+                source,
+            },
+            CloudTransportError::ResponseTooLarge => ToolRegistryError::CloudSecurity {
+                id: tool.id.clone(),
+                endpoint: endpoint.clone(),
+                reason: format!("response exceeds {MAX_CLOUD_RESPONSE_BYTES} bytes"),
+            },
+            CloudTransportError::InvalidUtf8 => ToolRegistryError::CloudSecurity {
+                id: tool.id.clone(),
+                endpoint: endpoint.clone(),
+                reason: "non-image response body is not valid UTF-8".to_owned(),
+            },
         })?;
+    stop_if_cancelled()?;
+
+    if !response.status.is_success() {
+        return Err(ToolRegistryError::CloudHttpStatus {
+            id: tool.id.clone(),
+            endpoint,
+            status: response.status.as_u16(),
+            body: bounded_error_text(response.body.as_text()),
+        });
+    }
+
+    normalize_cloud_response(tool, &endpoint, &response.content_type, response.body)
+}
+
+fn run_cloud_future<F, T>(future: F) -> Result<T, String>
+where
+    F: Future<Output = T> + Send,
+    T: Send,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("create cloud HTTP runtime: {error}"))?;
+                Ok(runtime.block_on(future))
+            })
+            .join()
+            .map_err(|_| "cloud HTTP runtime thread panicked".to_owned())?
+    })
+}
+
+#[derive(Debug)]
+enum CloudTransportError {
+    Cancelled,
+    Request(reqwest::Error),
+    ResponseTooLarge,
+    InvalidUtf8,
+}
+
+struct CloudWireResponse {
+    status: reqwest::StatusCode,
+    content_type: String,
+    body: CloudResponseBody,
+}
+
+enum CloudResponseBody {
+    ImageDataUrl(String),
+    Text(String),
+}
+
+impl CloudResponseBody {
+    fn as_text(&self) -> &str {
+        match self {
+            Self::ImageDataUrl(value) | Self::Text(value) => value,
+        }
+    }
+}
+
+enum CloudBodyAccumulator {
+    Image { data_url: String, pending: Vec<u8> },
+    Text(Vec<u8>),
+}
+
+impl CloudBodyAccumulator {
+    fn new(image_mime_type: Option<&str>, content_length: Option<u64>) -> Self {
+        let raw_capacity = content_length
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or_default()
+            .min(MAX_CLOUD_RESPONSE_BYTES);
+        if let Some(mime_type) = image_mime_type {
+            let encoded_capacity = raw_capacity
+                .saturating_add(2)
+                .saturating_div(3)
+                .saturating_mul(4)
+                .saturating_add(mime_type.len() + 13);
+            let mut data_url = String::with_capacity(encoded_capacity);
+            data_url.push_str("data:");
+            data_url.push_str(mime_type);
+            data_url.push_str(";base64,");
+            Self::Image {
+                data_url,
+                pending: Vec::with_capacity(2),
+            }
+        } else {
+            Self::Text(Vec::with_capacity(raw_capacity))
+        }
+    }
+
+    fn push(&mut self, mut chunk: &[u8]) {
+        match self {
+            Self::Text(bytes) => bytes.extend_from_slice(chunk),
+            Self::Image { data_url, pending } => {
+                if !pending.is_empty() {
+                    let needed = 3 - pending.len();
+                    let taken = needed.min(chunk.len());
+                    pending.extend_from_slice(&chunk[..taken]);
+                    chunk = &chunk[taken..];
+                    if pending.len() == 3 {
+                        BASE64.encode_string(pending.as_slice(), data_url);
+                        pending.clear();
+                    }
+                }
+                let aligned = chunk.len() - (chunk.len() % 3);
+                if aligned > 0 {
+                    BASE64.encode_string(&chunk[..aligned], data_url);
+                }
+                pending.extend_from_slice(&chunk[aligned..]);
+            }
+        }
+    }
+
+    fn finish(mut self) -> Result<CloudResponseBody, CloudTransportError> {
+        match &mut self {
+            Self::Image { data_url, pending } => {
+                if !pending.is_empty() {
+                    BASE64.encode_string(pending.as_slice(), data_url);
+                    pending.clear();
+                }
+            }
+            Self::Text(_) => {}
+        }
+        match self {
+            Self::Image { data_url, .. } => Ok(CloudResponseBody::ImageDataUrl(data_url)),
+            Self::Text(bytes) => String::from_utf8(bytes)
+                .map(CloudResponseBody::Text)
+                .map_err(|_| CloudTransportError::InvalidUtf8),
+        }
+    }
+}
+
+async fn wait_for_cloud_cancellation(cancellation: &AtomicBool) {
+    while !cancellation.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn execute_cloud_http_request(
+    request: reqwest::RequestBuilder,
+    cancellation: Option<&AtomicBool>,
+) -> Result<CloudWireResponse, CloudTransportError> {
+    let mut response = if let Some(cancellation) = cancellation {
+        tokio::select! {
+            response = request.send() => response,
+            () = wait_for_cloud_cancellation(cancellation) => {
+                return Err(CloudTransportError::Cancelled);
+            }
+        }
+    } else {
+        request.send().await
+    }
+    .map_err(CloudTransportError::Request)?;
     let status = response.status();
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
+        .unwrap_or_default()
         .to_owned();
-    const MAX_CLOUD_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_CLOUD_RESPONSE_BYTES as u64)
-    {
-        return Err(ToolRegistryError::CloudSecurity {
-            id: tool.id.clone(),
-            endpoint: endpoint.clone(),
-            reason: format!("response exceeds {MAX_CLOUD_RESPONSE_BYTES} bytes"),
-        });
+    let content_length = response.content_length();
+    if content_length.is_some_and(|length| length > MAX_CLOUD_RESPONSE_BYTES as u64) {
+        return Err(CloudTransportError::ResponseTooLarge);
     }
-    // The body is read in chunks rather than in one `read_to_end`, so that a download large enough to
-    // be worth cancelling — the cap below allows 64 MiB — can be stopped part way instead of running
-    // to completion for a caller that has already given up on it.
-    let mut bytes = Vec::new();
-    let mut reader = response.by_ref().take(MAX_CLOUD_RESPONSE_BYTES as u64 + 1);
-    let mut chunk = vec![0_u8; 64 * 1024];
+    let image_mime_type = status
+        .is_success()
+        .then(|| cloud_image_mime_type(&content_type))
+        .flatten();
+    let mut accumulator = CloudBodyAccumulator::new(image_mime_type, content_length);
+    let mut raw_bytes = 0_usize;
     loop {
-        stop_if_cancelled()?;
-        match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => bytes.extend_from_slice(&chunk[..read]),
-            // A read cut short by a signal is not a failure; `read_to_end` retried these too.
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(ToolRegistryError::Io(error)),
+        let chunk = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                chunk = response.chunk() => chunk,
+                () = wait_for_cloud_cancellation(cancellation) => {
+                    return Err(CloudTransportError::Cancelled);
+                }
+            }
+        } else {
+            response.chunk().await
         }
+        .map_err(CloudTransportError::Request)?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        raw_bytes = raw_bytes.saturating_add(chunk.len());
+        if raw_bytes > MAX_CLOUD_RESPONSE_BYTES {
+            return Err(CloudTransportError::ResponseTooLarge);
+        }
+        accumulator.push(&chunk);
     }
-    stop_if_cancelled()?;
-    if bytes.len() > MAX_CLOUD_RESPONSE_BYTES {
-        return Err(ToolRegistryError::CloudSecurity {
-            id: tool.id.clone(),
-            endpoint: endpoint.clone(),
-            reason: format!("response exceeds {MAX_CLOUD_RESPONSE_BYTES} bytes"),
-        });
-    }
+    Ok(CloudWireResponse {
+        status,
+        content_type,
+        body: accumulator.finish()?,
+    })
+}
 
-    if !status.is_success() {
-        return Err(ToolRegistryError::CloudHttpStatus {
-            id: tool.id.clone(),
-            endpoint,
-            status: status.as_u16(),
-            body: bounded_error_text(&String::from_utf8_lossy(&bytes)),
-        });
-    }
-
-    normalize_cloud_response(tool, &endpoint, &content_type, &bytes)
+fn cloud_image_mime_type(content_type: &str) -> Option<&str> {
+    content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .filter(|mime_type| mime_type.to_ascii_lowercase().starts_with("image/"))
 }
 
 /// Resolve the deadline for a cloud API call.
@@ -1461,7 +1793,7 @@ fn mcp_image_download_policy(tool: &ToolDefinition) -> crate::network_policy::Ou
     }
 }
 
-fn build_cloud_multipart_form(
+async fn build_cloud_multipart_form(
     tool: &ToolDefinition,
     body: Option<&str>,
     arguments: &serde_json::Value,
@@ -1534,7 +1866,10 @@ fn build_cloud_multipart_form(
                 form = form.text(key, rendered_value);
             } else {
                 let path = cloud_multipart_upload_path(tool, &key, &rendered_value)?;
-                form = form.file(key, path).map_err(ToolRegistryError::Io)?;
+                let part = multipart::Part::file(path)
+                    .await
+                    .map_err(ToolRegistryError::Io)?;
+                form = form.part(key, part);
             }
         } else {
             form = form.text(key, rendered_value);
@@ -1662,22 +1997,15 @@ fn normalize_cloud_response(
     tool: &ToolDefinition,
     endpoint: &str,
     content_type: &str,
-    bytes: &[u8],
+    body: CloudResponseBody,
 ) -> ToolRegistryResult<serde_json::Value> {
-    if content_type.to_ascii_lowercase().contains("image/") {
-        let mime_type = content_type
-            .split(';')
-            .next()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("image/png")
-            .trim();
-        return Ok(image_content_response(
-            &format!("data:{mime_type};base64,{}", BASE64.encode(bytes)),
-            mime_type,
-        ));
-    }
-
-    let body = String::from_utf8_lossy(bytes).trim().to_owned();
+    let body = match body {
+        CloudResponseBody::ImageDataUrl(data_url) => {
+            let mime_type = cloud_image_mime_type(content_type).unwrap_or("image/png");
+            return Ok(image_content_response(&data_url, mime_type));
+        }
+        CloudResponseBody::Text(body) => body.trim().to_owned(),
+    };
     if body.is_empty() {
         return Ok(text_content_response(""));
     }
@@ -3784,6 +4112,29 @@ mod tests {
     }
 
     #[test]
+    fn repeated_mcp_calls_reuse_the_initialized_session() {
+        let tool = ToolDefinition::new(
+            "fixture-counter",
+            "Fixture Counter",
+            "Count calls in one MCP server process",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "counter".to_owned(),
+            },
+        );
+        let server = current_test_binary_fixture_config();
+
+        let first = execute_tool(&tool, std::slice::from_ref(&server), serde_json::json!({}))
+            .expect("first pooled MCP call");
+        let second =
+            execute_tool(&tool, &[server], serde_json::json!({})).expect("second pooled MCP call");
+
+        assert_eq!(first["content"][0]["text"], "1");
+        assert_eq!(second["content"][0]["text"], "2");
+        clear_cached_mcp_sessions_for_current_thread();
+    }
+
+    #[test]
     fn a_cancelled_mcp_run_stops_before_the_server_is_started() {
         let tool = ToolDefinition::new(
             "fixture-echo",
@@ -3816,6 +4167,47 @@ mod tests {
             matches!(error, ToolRegistryError::ExecutionCancelled { ref id } if id == "fixture-echo"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn an_in_flight_mcp_round_trip_is_cancelled() {
+        let tool = ToolDefinition::new(
+            "fixture-echo-cancel",
+            "Fixture Echo Cancel",
+            "Cancel a hung MCP round trip",
+            ToolExecution::Mcp {
+                server_id: "fixture".to_owned(),
+                tool_name: "echo".to_owned(),
+            },
+        );
+        let server =
+            current_test_binary_fixture_config().env("LOOM_TOOL_REGISTRY_MCP_FIXTURE_MODE", "hang");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancellation);
+        let trigger_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let error = execute_tool_with_timeout_and_cancellation(
+            &tool,
+            &[server],
+            serde_json::json!({ "text": "never returned" }),
+            Duration::from_secs(5),
+            cancellation.as_ref(),
+        )
+        .expect_err("the hung MCP round trip must be cancelled");
+        let elapsed = started.elapsed();
+
+        trigger_thread
+            .join()
+            .expect("join MCP cancellation trigger");
+        assert!(matches!(
+            error,
+            ToolRegistryError::ExecutionCancelled { ref id } if id == "fixture-echo-cancel"
+        ));
+        assert!(elapsed < Duration::from_secs(1), "cancel took {elapsed:?}");
     }
 
     #[test]
@@ -5021,6 +5413,120 @@ mod tests {
     }
 
     #[test]
+    fn a_cloud_run_cancels_while_waiting_for_response_headers() {
+        assert_delayed_cloud_run_is_cancellable(CloudFixtureMode::DelayedHeaders);
+    }
+
+    #[test]
+    fn a_cloud_run_cancels_while_waiting_for_response_body() {
+        assert_delayed_cloud_run_is_cancellable(CloudFixtureMode::DelayedBody);
+    }
+
+    fn assert_delayed_cloud_run_is_cancellable(mode: CloudFixtureMode) {
+        let fixture = CloudFixture::start(mode);
+        let mut tool = ToolDefinition::new(
+            "fixture-cloud-cancel",
+            "Fixture Cloud Cancel",
+            "Cancel a delayed cloud API request",
+            ToolExecution::CloudApi {
+                endpoint: fixture.url("/delayed"),
+                method: "POST".to_owned(),
+                content_type: None,
+                headers: None,
+                body: None,
+            },
+        );
+        tool.metadata = Some(loopback_cloud_metadata());
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancellation);
+        let trigger_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let error = execute_tool_with_timeout_and_cancellation(
+            &tool,
+            &[],
+            serde_json::json!({ "prompt": "cancel me" }),
+            Duration::from_secs(5),
+            cancellation.as_ref(),
+        )
+        .expect_err("the delayed cloud request must be cancelled");
+        let elapsed = started.elapsed();
+
+        trigger_thread
+            .join()
+            .expect("join cloud cancellation trigger");
+        assert!(matches!(
+            error,
+            ToolRegistryError::ExecutionCancelled { ref id } if id == "fixture-cloud-cancel"
+        ));
+        assert!(elapsed < Duration::from_secs(1), "cancel took {elapsed:?}");
+    }
+
+    #[test]
+    fn image_response_accumulator_streams_base64_across_chunk_boundaries() {
+        let raw = (0_u8..=250)
+            .cycle()
+            .take(4 * 1024 * 1024)
+            .collect::<Vec<_>>();
+        let mut accumulator = CloudBodyAccumulator::new(Some("image/png"), Some(raw.len() as u64));
+        for chunk in raw.chunks(65_537) {
+            accumulator.push(chunk);
+        }
+
+        let CloudResponseBody::ImageDataUrl(data_url) = accumulator
+            .finish()
+            .expect("finish streamed image response")
+        else {
+            panic!("image accumulator returned text");
+        };
+        assert_eq!(
+            data_url,
+            format!("data:image/png;base64,{}", BASE64.encode(&raw))
+        );
+    }
+
+    #[test]
+    fn maximum_text_response_reuses_its_single_byte_allocation() {
+        let mut accumulator =
+            CloudBodyAccumulator::new(None, Some(MAX_CLOUD_RESPONSE_BYTES as u64));
+        let chunk = [b'x'; 64 * 1024];
+        for _ in 0..(MAX_CLOUD_RESPONSE_BYTES / chunk.len()) {
+            accumulator.push(&chunk);
+        }
+        let allocation = match &accumulator {
+            CloudBodyAccumulator::Text(bytes) => bytes.as_ptr(),
+            CloudBodyAccumulator::Image { .. } => panic!("text accumulator returned image"),
+        };
+
+        let CloudResponseBody::Text(text) = accumulator
+            .finish()
+            .expect("finish maximum valid UTF-8 response")
+        else {
+            panic!("text accumulator returned image");
+        };
+        assert_eq!(text.len(), MAX_CLOUD_RESPONSE_BYTES);
+        assert_eq!(
+            text.as_ptr(),
+            allocation,
+            "UTF-8 conversion allocated a copy"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_text_is_rejected_without_a_lossy_full_size_copy() {
+        let mut accumulator = CloudBodyAccumulator::new(None, Some(3));
+        accumulator.push(&[b'a', 0xff, b'b']);
+
+        assert!(matches!(
+            accumulator.finish(),
+            Err(CloudTransportError::InvalidUtf8)
+        ));
+    }
+
+    #[test]
     fn execute_cloud_api_tool_normalizes_image_json_response() {
         let fixture = CloudFixture::start(CloudFixtureMode::Image);
         let mut tool = ToolDefinition::new(
@@ -5243,11 +5749,13 @@ mod tests {
             },
         );
 
-        let error = build_cloud_multipart_form(
+        let arguments = serde_json::json!({ "unrelated": "value" });
+        let error = run_cloud_future(build_cloud_multipart_form(
             &tool,
             Some("{\"prompt\":\"{{inputs.prompt.value}}\"}"),
-            &serde_json::json!({ "unrelated": "value" }),
-        )
+            &arguments,
+        ))
+        .expect("run multipart builder")
         .expect_err("an unresolved multipart binding is an error");
 
         let message = error.to_string();
@@ -5623,10 +6131,19 @@ mod tests {
     }
 
     fn run_mcp_fixture_server() {
+        if std::env::var("LOOM_TOOL_REGISTRY_MCP_FIXTURE_MODE")
+            .ok()
+            .as_deref()
+            == Some("hang")
+        {
+            thread::sleep(Duration::from_secs(30));
+            return;
+        }
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
         let fixture_image_url = std::env::var("LOOM_MCP_FIXTURE_IMAGE_URL").ok();
         let fixture_image_url_alt = std::env::var("LOOM_MCP_FIXTURE_IMAGE_URL_ALT").ok();
+        let mut counter = 0_u64;
 
         for line in stdin.lock().lines() {
             let line = line.expect("fixture stdin line");
@@ -5669,6 +6186,15 @@ mod tests {
                                     }
                                 },
                                 {
+                                    "name": "counter",
+                                    "description": "Count calls in this fixture process",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {},
+                                        "additionalProperties": false
+                                    }
+                                },
+                                {
                                     "name": "brave_image_search",
                                     "description": "Return structured image-search results",
                                     "inputSchema": {
@@ -5706,6 +6232,19 @@ mod tests {
                 "tools/call" => {
                     let tool_name = request["params"]["name"].as_str().unwrap_or_default();
                     match tool_name {
+                        "counter" => {
+                            counter += 1;
+                            write_fixture_response(
+                                &mut stdout,
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"].clone(),
+                                    "result": {
+                                        "content": [{ "type": "text", "text": counter.to_string() }]
+                                    }
+                                }),
+                            );
+                        }
                         "echo" => {
                             let text = request["params"]["arguments"]["text"]
                                 .as_str()
@@ -5893,11 +6432,14 @@ mod tests {
             .expect("decode alternate fixture image data url")
     }
 
+    #[derive(Clone, Copy)]
     enum CloudFixtureMode {
         Text,
         Image,
         Error,
         MultipartText,
+        DelayedHeaders,
+        DelayedBody,
     }
 
     struct CloudFixture {
@@ -5930,6 +6472,41 @@ mod tests {
                             .map(str::to_owned)
                     })
                     .unwrap_or_default();
+                if matches!(
+                    mode,
+                    CloudFixtureMode::DelayedHeaders | CloudFixtureMode::DelayedBody
+                ) {
+                    let response = serde_json::json!({
+                        "content": [{ "type": "text", "text": "too late" }]
+                    })
+                    .to_string();
+                    match mode {
+                        CloudFixtureMode::DelayedHeaders => {
+                            thread::sleep(Duration::from_millis(500));
+                            write_http_response(
+                                &mut stream,
+                                "200 OK",
+                                "application/json",
+                                &response,
+                            );
+                        }
+                        CloudFixtureMode::DelayedBody => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                response.len()
+                            );
+                            let split = response.len() / 2;
+                            let _ = stream.write_all(&response.as_bytes()[..split]);
+                            let _ = stream.flush();
+                            thread::sleep(Duration::from_millis(500));
+                            let _ = stream.write_all(&response.as_bytes()[split..]);
+                            let _ = stream.flush();
+                        }
+                        _ => unreachable!(),
+                    }
+                    return;
+                }
                 let response = match mode {
                     CloudFixtureMode::Text => serde_json::json!({
                         "content": [
@@ -5964,6 +6541,9 @@ mod tests {
                             "fixture cloud error",
                         );
                         return;
+                    }
+                    CloudFixtureMode::DelayedHeaders | CloudFixtureMode::DelayedBody => {
+                        unreachable!()
                     }
                 };
                 write_http_response(

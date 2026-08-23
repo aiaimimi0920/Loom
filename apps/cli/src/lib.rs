@@ -9,6 +9,8 @@ use loom_core::{ActorId, RunStatus, SessionId};
 use loom_durable::InMemoryEventStore;
 use loom_workflow::{StepOutcome, WorkflowAction, WorkflowExecutor, WorkflowGraph};
 
+const DAEMON_AUTH_TOKEN_FILE: &str = "daemon-token";
+
 pub fn run_cli_with_writer<I, S, W>(args: I, writer: &mut W) -> Result<()>
 where
     I: IntoIterator<Item = S>,
@@ -93,7 +95,7 @@ fn cli_help_text() -> &'static str {
         "\n",
         "Options:\n",
         "  --daemon-url <URL>     Daemon URL for status [default: http://127.0.0.1:8765]\n",
-        "  --daemon-token <TOKEN> Bearer token for status [default: LOOM_DAEMON_TOKEN]\n",
+        "  --daemon-token <TOKEN> Bearer token [default: LOOM_DAEMON_TOKEN or control-plane token file]\n",
         "  --examples-dir <DIR>   Examples directory [default: examples]\n",
         "  -h, --help             Print help\n",
         "  -V, --version          Print version\n",
@@ -108,14 +110,53 @@ struct CliOptions {
     examples_dir: PathBuf,
 }
 
+fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<String> {
+    let token = value.trim();
+    if token.is_empty() {
+        bail!("Loom daemon auth token from {source} is empty");
+    }
+    if token.len() > 4096 || token.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+        bail!("Loom daemon auth token from {source} has an invalid format");
+    }
+    Ok(token.to_owned())
+}
+
+fn default_control_plane_root() -> PathBuf {
+    std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.join("Loom").join("control-plane"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".runtime").join("loom").join("control-plane"))
+}
+
+fn default_daemon_auth_token() -> Result<Option<String>> {
+    if let Some(token) = std::env::var_os("LOOM_DAEMON_TOKEN").filter(|token| !token.is_empty()) {
+        return normalize_daemon_auth_token(&token.to_string_lossy(), "LOOM_DAEMON_TOKEN")
+            .map(Some);
+    }
+    let path = default_control_plane_root().join(DAEMON_AUTH_TOKEN_FILE);
+    match fs::read_to_string(&path) {
+        Ok(token) => normalize_daemon_auth_token(
+            &token,
+            &format!("persisted token file `{}`", path.display()),
+        )
+        .map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("read Loom daemon auth token file `{}`", path.display())),
+    }
+}
+
 impl CliOptions {
     fn parse(args: &[String]) -> Result<Self> {
         let mut command = Vec::new();
         let mut daemon_url = "http://127.0.0.1:8765".to_owned();
-        let mut daemon_token = std::env::var("LOOM_DAEMON_TOKEN")
-            .ok()
-            .map(|token| token.trim().to_owned())
-            .filter(|token| !token.is_empty());
+        let mut daemon_token = default_daemon_auth_token()?;
         let mut examples_dir = PathBuf::from("examples");
         let mut index = 1;
 

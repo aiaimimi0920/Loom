@@ -82,7 +82,14 @@
       "serverId": "neuro-image-search",
       "packageId": "neuro.official/neuro-image-search",
       "version": "^0.1",
-      "toolName": "brave_image_search"
+      "toolName": "brave_image_search",
+      "argumentAliases": {
+        "search_lang": {
+          "zh": "zh-hans",
+          "zh-cn": "zh-hans",
+          "zh-tw": "zh-hant"
+        }
+      }
     }
   }
 }

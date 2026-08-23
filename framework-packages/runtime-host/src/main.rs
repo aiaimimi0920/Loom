@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use loom_process::ProcessSpec;
@@ -21,13 +21,7 @@ const MAX_ART_RUNTIME_STDERR_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() {
     if let Err(error) = run() {
-        write_response(json!({
-            "status": "error",
-            "error": {
-                "code": "framework_runtime_host_error",
-                "message": error
-            }
-        }));
+        write_framework_error(error);
     }
 }
 
@@ -45,7 +39,14 @@ fn run() -> Result<(), String> {
         }));
         return Ok(());
     }
+    if parse_serve_mode() {
+        return serve_requests(expected_framework.as_deref());
+    }
     let request_text = read_request()?;
+    run_request(&request_text, expected_framework.as_deref())
+}
+
+fn run_request(request_text: &str, expected_framework: Option<&str>) -> Result<(), String> {
     let request: FrameworkExecuteRequest = serde_json::from_str(request_text.trim())
         .map_err(|error| format!("invalid framework request JSON: {error}"))?;
     if request.protocol_version != FRAMEWORK_PROTOCOL_VERSION {
@@ -55,7 +56,7 @@ fn run() -> Result<(), String> {
         ));
     }
     let framework_id = request.framework_id.as_str();
-    if let Some(expected) = expected_framework.as_deref() {
+    if let Some(expected) = expected_framework {
         if expected != framework_id {
             return Err(format!(
                 "framework runtime was built for `{expected}` but request targets `{framework_id}`"
@@ -159,6 +160,39 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn serve_requests(expected_framework: Option<&str>) -> Result<(), String> {
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| format!("failed to read framework request: {error}"))?;
+        if read == 0 {
+            return Ok(());
+        }
+        if line.len() as u64 > MAX_REQUEST_BYTES {
+            write_framework_error(format!(
+                "framework request exceeds {} bytes",
+                MAX_REQUEST_BYTES
+            ));
+            continue;
+        }
+        let request = match std::str::from_utf8(&line) {
+            Ok(request) if !request.trim().is_empty() => request,
+            Ok(_) => continue,
+            Err(error) => {
+                write_framework_error(format!("framework request is not UTF-8: {error}"));
+                continue;
+            }
+        };
+        if let Err(error) = run_request(request, expected_framework) {
+            write_framework_error(error);
+        }
+    }
+}
+
 fn configure_packaged_runtimes(process: &mut ProcessSpec) {
     let Some(package_root) = env::current_exe()
         .ok()
@@ -211,6 +245,10 @@ fn parse_health_check_command() -> Option<String> {
     None
 }
 
+fn parse_serve_mode() -> bool {
+    env::args().skip(1).any(|arg| arg == "--serve")
+}
+
 fn read_request() -> Result<String, String> {
     let mut bytes = Vec::new();
     std::io::stdin()
@@ -257,5 +295,17 @@ fn resolve_command(art_dir: &Path, command: &str) -> Result<PathBuf, String> {
 }
 
 fn write_response(value: Value) {
-    let _ = writeln!(std::io::stdout(), "{}", value);
+    let mut stdout = std::io::stdout();
+    let _ = writeln!(stdout, "{}", value);
+    let _ = stdout.flush();
+}
+
+fn write_framework_error(error: String) {
+    write_response(json!({
+        "status": "error",
+        "error": {
+            "code": "framework_runtime_host_error",
+            "message": error
+        }
+    }));
 }

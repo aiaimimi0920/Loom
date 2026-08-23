@@ -8,6 +8,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
+$script:DaemonAuthHeaders = @{}
 
 function Assert-True {
     param(
@@ -232,7 +233,7 @@ function Invoke-JsonGet {
         [int]$TimeoutSeconds = 15
     )
 
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec $TimeoutSeconds
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonAuthHeaders -TimeoutSec $TimeoutSeconds
 }
 
 function Invoke-JsonPost {
@@ -243,7 +244,7 @@ function Invoke-JsonPost {
     )
 
     $json = $Body | ConvertTo-Json -Depth 40 -Compress
-    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec $TimeoutSeconds
+    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonAuthHeaders -ContentType "application/json" -Body $json -TimeoutSec $TimeoutSeconds
 }
 
 function Receive-JsonJob {
@@ -681,6 +682,24 @@ try {
     $daemonPid = [int]$daemonProcess.Id
     $summary.daemonPid = $daemonPid
 
+    $daemonTokenPath = Join-Path $controlPlaneRoot "daemon-token"
+    $tokenDeadline = (Get-Date).AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf)) {
+        $daemonProcess.Refresh()
+        if ($daemonProcess.HasExited) {
+            throw "loom-daemon exited before writing its administrator token with code $($daemonProcess.ExitCode)."
+        }
+        if ((Get-Date) -ge $tokenDeadline) {
+            throw "Timed out waiting for Loom daemon administrator token."
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $daemonToken = [System.IO.File]::ReadAllText($daemonTokenPath, [System.Text.Encoding]::UTF8).Trim()
+    if ([string]::IsNullOrWhiteSpace($daemonToken)) {
+        throw "Loom daemon administrator token file was empty."
+    }
+    $script:DaemonAuthHeaders = @{ Authorization = "Bearer $daemonToken" }
+
     $status = Wait-ForDaemonStatus `
         -BaseUrl $daemonBaseUrl `
         -Process $daemonProcess `
@@ -702,10 +721,11 @@ try {
         }
     }
     $firstRequestJson = $firstRequest | ConvertTo-Json -Depth 30 -Compress
-    $invokeJob = Start-Job -ArgumentList @($daemonBaseUrl, $firstRequestJson) -ScriptBlock {
+    $invokeJob = Start-Job -ArgumentList @($daemonBaseUrl, $firstRequestJson, $daemonToken) -ScriptBlock {
         param(
             [string]$BaseUrl,
-            [string]$RequestJson
+            [string]$RequestJson,
+            [string]$DaemonToken
         )
 
         Set-StrictMode -Version Latest
@@ -713,6 +733,7 @@ try {
         $response = Invoke-RestMethod `
             -Uri "$BaseUrl/v1/invoke" `
             -Method Post `
+            -Headers @{ Authorization = "Bearer $DaemonToken" } `
             -ContentType "application/json" `
             -Body $RequestJson `
             -TimeoutSec 45

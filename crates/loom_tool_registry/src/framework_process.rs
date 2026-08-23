@@ -1,14 +1,21 @@
 //! Generic stdin/stdout bridge for externally packaged Art frameworks.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::AtomicBool;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::ChildStdin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use loom_process::{ProcessError, ProcessSpec};
+use loom_process::{ManagedChild, ProcessError, ProcessSpec};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::framework::{
     enforce_framework_permission_policy, resolve_framework_package_dir, FrameworkPackageManifest,
@@ -17,7 +24,7 @@ use crate::framework::{
 use crate::{ToolDefinition, ToolRegistryError, ToolRegistryResult};
 
 pub use loom_protocol::{
-    FrameworkExecuteError, FrameworkExecuteRequest, FrameworkExecuteResponse,
+    ExecutionDiagnostics, FrameworkExecuteError, FrameworkExecuteRequest, FrameworkExecuteResponse,
     FrameworkExecutionContext, FrameworkMcpServer,
 };
 
@@ -33,6 +40,98 @@ pub const DEFAULT_FRAMEWORK_PROCESS_TIMEOUT: Duration = Duration::from_secs(120)
 /// 600 MiB of peak once the base64 and the JSON copy of it are counted. Lowering it would reject outputs
 /// that work today, so it is left as a size limit to revisit rather than quietly tightened here.
 const MAX_FRAMEWORK_IMAGE_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PERSISTENT_MCP_HOSTS: usize = 4;
+const PERSISTENT_MCP_HOST_IDLE_LIFETIME: Duration = Duration::from_secs(60);
+const PERSISTENT_HOST_ERROR_BYTES: usize = 8 * 1024;
+
+enum PersistentHostStdoutEvent {
+    Line(Vec<u8>),
+    Oversized,
+    Error(String),
+    Eof,
+}
+
+#[derive(Default)]
+struct PersistentHostStderr {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl PersistentHostStderr {
+    fn push(&mut self, chunk: &[u8]) {
+        if chunk.len() >= PERSISTENT_HOST_ERROR_BYTES {
+            self.bytes.clear();
+            self.bytes
+                .extend_from_slice(&chunk[chunk.len() - PERSISTENT_HOST_ERROR_BYTES..]);
+            self.truncated = true;
+            return;
+        }
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(chunk.len())
+            .saturating_sub(PERSISTENT_HOST_ERROR_BYTES);
+        if overflow > 0 {
+            self.bytes.drain(..overflow);
+            self.truncated = true;
+        }
+        self.bytes.extend_from_slice(chunk);
+    }
+
+    fn text(&self) -> String {
+        let mut text = String::from_utf8_lossy(&self.bytes).trim().to_owned();
+        if self.truncated {
+            text.insert_str(0, "[truncated] ");
+        }
+        text
+    }
+}
+
+struct PersistentFrameworkHost {
+    key: String,
+    process: ManagedChild,
+    stdin: Option<ChildStdin>,
+    stdout: Receiver<PersistentHostStdoutEvent>,
+    stderr: Arc<Mutex<PersistentHostStderr>>,
+    last_used: Instant,
+}
+
+impl Drop for PersistentFrameworkHost {
+    fn drop(&mut self) {
+        // EOF gives runtime-host a short grace window to drop its bounded MCP session cache, which
+        // invokes the transport close lifecycle (HTTP DELETE or stdio child termination). A wedged
+        // host is still killed as one managed process tree after the grace window.
+        drop(self.stdin.take());
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            match self.process.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+        self.process.terminate();
+    }
+}
+
+enum PersistentHostError {
+    Process(ProcessError),
+    Exited { code: Option<i32>, stderr: String },
+    Reader(String),
+    Timeout { stderr: String },
+    Cancelled { stderr: String },
+    OutputLimit { stderr: String },
+}
+
+#[derive(Default)]
+struct PersistentFrameworkHostPool {
+    hosts: Vec<PersistentFrameworkHost>,
+}
+
+thread_local! {
+    static PERSISTENT_FRAMEWORK_HOST_POOL: RefCell<PersistentFrameworkHostPool> =
+        RefCell::new(PersistentFrameworkHostPool::default());
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +158,327 @@ impl TempDirectoryGuard {
 impl Drop for TempDirectoryGuard {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+impl PersistentFrameworkHost {
+    fn spawn(key: String, spec: &ProcessSpec) -> Result<Self, PersistentHostError> {
+        let (process, pipes) = ManagedChild::spawn(spec).map_err(PersistentHostError::Process)?;
+        let (stdout_tx, stdout_rx) = mpsc::channel();
+        let stdout_limit = spec.limits.stdout_bytes;
+        thread::spawn(move || read_persistent_host_stdout(pipes.stdout, stdout_limit, stdout_tx));
+        let stderr = Arc::new(Mutex::new(PersistentHostStderr::default()));
+        let stderr_capture = Arc::clone(&stderr);
+        thread::spawn(move || drain_persistent_host_stderr(pipes.stderr, stderr_capture));
+        Ok(Self {
+            key,
+            process,
+            stdin: Some(pipes.stdin),
+            stdout: stdout_rx,
+            stderr,
+            last_used: Instant::now(),
+        })
+    }
+
+    fn request(
+        &mut self,
+        payload: &[u8],
+        timeout: Duration,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, PersistentHostError> {
+        if let Some(status) = self
+            .process
+            .try_wait()
+            .map_err(|error| PersistentHostError::Reader(error.to_string()))?
+        {
+            return Err(PersistentHostError::Exited {
+                code: status.code(),
+                stderr: self.stderr_text(),
+            });
+        }
+        let stdin = self.stdin.as_mut().ok_or_else(|| {
+            PersistentHostError::Reader("persistent framework stdin is closed".to_owned())
+        })?;
+        stdin
+            .write_all(payload)
+            .and_then(|()| stdin.flush())
+            .map_err(|error| PersistentHostError::Process(ProcessError::Stdin(error)))?;
+
+        let deadline = Instant::now() + timeout.max(Duration::from_millis(1));
+        loop {
+            if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
+                self.process.terminate();
+                return Err(PersistentHostError::Cancelled {
+                    stderr: self.stderr_text(),
+                });
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                self.process.terminate();
+                return Err(PersistentHostError::Timeout {
+                    stderr: self.stderr_text(),
+                });
+            }
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(25));
+            match self.stdout.recv_timeout(wait) {
+                Ok(PersistentHostStdoutEvent::Line(line)) => return Ok(line),
+                Ok(PersistentHostStdoutEvent::Oversized) => {
+                    self.process.terminate();
+                    return Err(PersistentHostError::OutputLimit {
+                        stderr: self.stderr_text(),
+                    });
+                }
+                Ok(PersistentHostStdoutEvent::Error(error)) => {
+                    self.process.terminate();
+                    return Err(PersistentHostError::Reader(error));
+                }
+                Ok(PersistentHostStdoutEvent::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let code = self
+                        .process
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .and_then(|status| status.code());
+                    return Err(PersistentHostError::Exited {
+                        code,
+                        stderr: self.stderr_text(),
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    fn stderr_text(&self) -> String {
+        self.stderr
+            .lock()
+            .map(|stderr| stderr.text())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().text())
+    }
+}
+
+fn read_persistent_host_stdout(
+    mut stdout: std::process::ChildStdout,
+    limit: usize,
+    sender: mpsc::Sender<PersistentHostStdoutEvent>,
+) {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut line = Vec::new();
+    let mut oversized = false;
+    loop {
+        let read = match stdout.read(&mut buffer) {
+            Ok(0) => {
+                if oversized {
+                    let _ = sender.send(PersistentHostStdoutEvent::Oversized);
+                } else if !line.is_empty() {
+                    let _ = sender.send(PersistentHostStdoutEvent::Line(line));
+                }
+                let _ = sender.send(PersistentHostStdoutEvent::Eof);
+                return;
+            }
+            Ok(read) => read,
+            Err(error) => {
+                let _ = sender.send(PersistentHostStdoutEvent::Error(error.to_string()));
+                return;
+            }
+        };
+        for byte in &buffer[..read] {
+            if *byte == b'\n' {
+                let event = if oversized {
+                    PersistentHostStdoutEvent::Oversized
+                } else {
+                    PersistentHostStdoutEvent::Line(std::mem::take(&mut line))
+                };
+                if sender.send(event).is_err() {
+                    return;
+                }
+                line.clear();
+                oversized = false;
+            } else if line.len() < limit {
+                line.push(*byte);
+            } else {
+                oversized = true;
+            }
+        }
+    }
+}
+
+fn drain_persistent_host_stderr(
+    mut stderr: std::process::ChildStderr,
+    capture: Arc<Mutex<PersistentHostStderr>>,
+) {
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match stderr.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => match capture.lock() {
+                Ok(mut capture) => capture.push(&buffer[..read]),
+                Err(poisoned) => poisoned.into_inner().push(&buffer[..read]),
+            },
+        }
+    }
+}
+
+fn persistent_host_key(command_path: &Path, manifest_text: &str, args: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(command_path.to_string_lossy().as_bytes());
+    if let Ok(metadata) = fs::metadata(command_path) {
+        hasher.update(metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified().and_then(|value| {
+            value
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        }) {
+            hasher.update(modified.as_nanos().to_le_bytes());
+        }
+    }
+    hasher.update(manifest_text.as_bytes());
+    hasher.update(format!("{:?}", crate::network_policy::runtime_proxy()).as_bytes());
+    for arg in args {
+        hasher.update([0]);
+        hasher.update(arg.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn take_persistent_host(key: &str) -> Option<PersistentFrameworkHost> {
+    let now = Instant::now();
+    let (host, expired) = PERSISTENT_FRAMEWORK_HOST_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let mut expired = Vec::new();
+        let mut index = 0;
+        while index < pool.hosts.len() {
+            if now.saturating_duration_since(pool.hosts[index].last_used)
+                >= PERSISTENT_MCP_HOST_IDLE_LIFETIME
+            {
+                expired.push(pool.hosts.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        let host = pool
+            .hosts
+            .iter()
+            .position(|host| host.key == key)
+            .map(|index| pool.hosts.remove(index));
+        (host, expired)
+    });
+    drop(expired);
+    host
+}
+
+fn return_persistent_host(mut host: PersistentFrameworkHost) {
+    host.last_used = Instant::now();
+    let evicted = PERSISTENT_FRAMEWORK_HOST_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let duplicate = pool.hosts.iter().any(|existing| existing.key == host.key);
+        if duplicate {
+            Some(host)
+        } else {
+            pool.hosts.push(host);
+            if pool.hosts.len() > MAX_PERSISTENT_MCP_HOSTS {
+                let oldest = pool
+                    .hosts
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, host)| host.last_used)
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                Some(pool.hosts.remove(oldest))
+            } else {
+                None
+            }
+        }
+    });
+    drop(evicted);
+}
+
+#[cfg(test)]
+fn clear_persistent_host_pool() {
+    PERSISTENT_FRAMEWORK_HOST_POOL.with(|pool| pool.borrow_mut().hosts.clear());
+}
+
+fn request_persistent_mcp_host(
+    key: String,
+    spec: &ProcessSpec,
+    payload: &[u8],
+    cancellation: Option<&AtomicBool>,
+    tool: &ToolDefinition,
+    framework: &str,
+) -> ToolRegistryResult<(Vec<u8>, PersistentFrameworkHost)> {
+    let mut host = match take_persistent_host(&key) {
+        Some(host) => host,
+        None => PersistentFrameworkHost::spawn(key, spec).map_err(|error| {
+            map_persistent_host_error(tool, framework, spec.limits.timeout, error)
+        })?,
+    };
+    let stdout = host
+        .request(payload, spec.limits.timeout, cancellation)
+        .map_err(|error| map_persistent_host_error(tool, framework, spec.limits.timeout, error))?;
+    Ok((stdout, host))
+}
+
+fn map_persistent_host_error(
+    tool: &ToolDefinition,
+    framework: &str,
+    timeout: Duration,
+    error: PersistentHostError,
+) -> ToolRegistryError {
+    match error {
+        PersistentHostError::Process(error) => map_process_error(tool, framework, timeout, error),
+        PersistentHostError::Exited { code, stderr } => ToolRegistryError::FrameworkProcessFailed {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            code: code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            message: "persistent framework process exited unexpectedly".to_owned(),
+            detail: crate::bounded_error_text(&stderr),
+        },
+        PersistentHostError::Reader(reason) => ToolRegistryError::FrameworkProcessIo {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            reason,
+        },
+        PersistentHostError::Timeout { stderr } => map_process_error(
+            tool,
+            framework,
+            timeout,
+            ProcessError::Timeout {
+                stdout: Vec::new(),
+                stderr: stderr.into_bytes(),
+                diagnostics: ExecutionDiagnostics {
+                    timed_out: true,
+                    ..ExecutionDiagnostics::default()
+                },
+            },
+        ),
+        PersistentHostError::Cancelled { stderr } => map_process_error(
+            tool,
+            framework,
+            timeout,
+            ProcessError::Cancelled {
+                stdout: Vec::new(),
+                stderr: stderr.into_bytes(),
+                diagnostics: ExecutionDiagnostics::default(),
+            },
+        ),
+        PersistentHostError::OutputLimit { stderr } => map_process_error(
+            tool,
+            framework,
+            timeout,
+            ProcessError::OutputLimit {
+                stdout: Vec::new(),
+                stderr: stderr.into_bytes(),
+                diagnostics: ExecutionDiagnostics {
+                    stdout_truncated: true,
+                    resource_limited: true,
+                    ..ExecutionDiagnostics::default()
+                },
+            },
+        ),
     }
 }
 
@@ -362,6 +782,10 @@ fn execute_framework_art_in_root_with_timeout(
 
     let mut process = ProcessSpec::new(&command_path);
     process.args = manifest.entry.args.clone();
+    let persistent_mcp_host = manifest.id == "mcp";
+    if persistent_mcp_host {
+        process.args.push("--serve".to_owned());
+    }
     process.current_dir = Some(package_dir.clone());
     process.limits.timeout = manifest
         .resources
@@ -390,23 +814,42 @@ fn execute_framework_art_in_root_with_timeout(
         .or(process.limits.max_processes);
     let mut stdin_payload = payload;
     stdin_payload.push(b'\n');
-    let process_output = match cancellation {
-        Some(cancellation) => {
-            loom_process::run_with_input_cancellable(&process, &stdin_payload, cancellation)
+    let mut persistent_host = None;
+    let (exit_status, stdout, stderr, process_diagnostics) = if persistent_mcp_host {
+        let key = persistent_host_key(&command_path, &manifest_text, &process.args);
+        let (stdout, host) = request_persistent_mcp_host(
+            key,
+            &process,
+            &stdin_payload,
+            cancellation,
+            tool,
+            framework,
+        )?;
+        persistent_host = Some(host);
+        (None, stdout, String::new(), None)
+    } else {
+        let process_output = match cancellation {
+            Some(cancellation) => {
+                loom_process::run_with_input_cancellable(&process, &stdin_payload, cancellation)
+            }
+            None => loom_process::run_with_input(&process, &stdin_payload),
         }
-        None => loom_process::run_with_input(&process, &stdin_payload),
-    }
-    .map_err(|error| map_process_error(tool, framework, process.limits.timeout, error))?;
-    let exit_status = process_output.status;
-    let stdout = process_output.stdout;
-    let stderr = String::from_utf8_lossy(&process_output.stderr).into_owned();
+        .map_err(|error| map_process_error(tool, framework, process.limits.timeout, error))?;
+        (
+            Some(process_output.status),
+            process_output.stdout,
+            String::from_utf8_lossy(&process_output.stderr).into_owned(),
+            Some(process_output.diagnostics),
+        )
+    };
     let stdout_text = String::from_utf8_lossy(&stdout).trim().to_owned();
-    if !exit_status.success() {
+    if exit_status.as_ref().is_some_and(|status| !status.success()) {
         return Err(ToolRegistryError::FrameworkProcessFailed {
             id: tool.id.clone(),
             framework: framework.to_owned(),
             code: exit_status
-                .code()
+                .as_ref()
+                .and_then(|status| status.code())
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "unknown".to_owned()),
             message: "framework process exited unsuccessfully".to_owned(),
@@ -424,9 +867,12 @@ fn execute_framework_art_in_root_with_timeout(
                 ),
             }
         })?;
-    response
-        .diagnostics
-        .get_or_insert(process_output.diagnostics);
+    if let Some(host) = persistent_host.take() {
+        return_persistent_host(host);
+    }
+    if let Some(process_diagnostics) = process_diagnostics {
+        response.diagnostics.get_or_insert(process_diagnostics);
+    }
     let status = response.status.trim().to_ascii_lowercase();
     if !loom_protocol::response_status_is_success(&status) {
         let error = response.error.unwrap_or(FrameworkExecuteError {
@@ -1193,6 +1639,96 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(windows)]
+    #[test]
+    fn persistent_mcp_framework_host_is_reused_between_requests() {
+        clear_persistent_host_pool();
+        let root = temp_root("persistent-host");
+        let script_path = root.join("persistent-host.ps1");
+        fs::write(
+            &script_path,
+            concat!(
+                "$count = 0\n",
+                "while ($null -ne ($line = [Console]::In.ReadLine())) {\n",
+                "  $count += 1\n",
+                "  [Console]::Out.WriteLine(('{{\"count\":{0}}}' -f $count))\n",
+                "  [Console]::Out.Flush()\n",
+                "}\n"
+            ),
+        )
+        .expect("write persistent host fixture");
+        let mut spec = ProcessSpec::new("powershell.exe");
+        spec.args = vec![
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-ExecutionPolicy".to_owned(),
+            "Bypass".to_owned(),
+            "-File".to_owned(),
+            script_path.display().to_string(),
+        ];
+        spec.limits.timeout = Duration::from_secs(5);
+        let tool = ToolDefinition::new(
+            "persistent-host-fixture",
+            "Persistent Host Fixture",
+            "Exercise the bounded framework host pool",
+            crate::ToolExecution::FrameworkArt {
+                framework: "mcp".to_owned(),
+            },
+        );
+
+        let (first, first_host) = request_persistent_mcp_host(
+            "fixture-key".to_owned(),
+            &spec,
+            b"{}\n",
+            None,
+            &tool,
+            "mcp",
+        )
+        .expect("first persistent framework request");
+        return_persistent_host(first_host);
+        let (second, second_host) = request_persistent_mcp_host(
+            "fixture-key".to_owned(),
+            &spec,
+            b"{}\n",
+            None,
+            &tool,
+            "mcp",
+        )
+        .expect("second persistent framework request");
+        return_persistent_host(second_host);
+
+        assert_eq!(serde_json::from_slice::<Value>(&first).unwrap()["count"], 1);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&second).unwrap()["count"],
+            2
+        );
+        clear_persistent_host_pool();
+        fs::remove_dir_all(root).expect("remove persistent host fixture root");
+    }
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(name: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
     fn temp_root(name: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("loom-framework-process-{name}-{}", request_id()));
@@ -1696,13 +2232,15 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
                 label: "Brave API Key".to_owned(),
                 required: true,
             });
+        let package_digest = "ab".repeat(32);
         server.package = Some(loom_mcp::McpServerPackageState {
             qualified_id: "neuro.official/neuro-image-search".to_owned(),
             publisher_id: "neuro.official".to_owned(),
             version: "0.1.0".to_owned(),
-            digest: "fixture".to_owned(),
+            digest: package_digest.clone(),
             package_dir: root
-                .join("mcp/packages/neuro.official/neuro-image-search/versions/0.1.0-fixture"),
+                .join("mcp/packages/neuro.official/neuro-image-search/versions")
+                .join(format!("0.1.0-{package_digest}")),
             files: std::collections::BTreeMap::new(),
             trust_status: loom_protocol::PackageTrustStatus::Unsigned,
         });
@@ -1782,11 +2320,12 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
 
     #[test]
     fn execute_tool_routes_framework_art_to_the_external_process() {
-        let _guard = ENV_LOCK.lock().expect("framework process env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("execute-tool");
         let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
-        let previous = std::env::var("LOOM_FRAMEWORK_PACKAGES_DIR").ok();
-        std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", &root);
+        let _environment = EnvVarGuard::set("LOOM_FRAMEWORK_PACKAGES_DIR", &root);
         let result = crate::execute_tool(
             &fixture_tool_with_schema(&art_dir),
             &[],
@@ -1800,10 +2339,6 @@ $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $
         assert_eq!(result["request"]["inputs"]["input"], "source.png");
         assert_eq!(result["request"]["inputs"]["reference"], "reference.png");
         assert_eq!(result["request"]["params"]["strength"], 40);
-        match previous {
-            Some(value) => std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", value),
-            None => std::env::remove_var("LOOM_FRAMEWORK_PACKAGES_DIR"),
-        }
         fs::remove_dir_all(root).ok();
     }
 

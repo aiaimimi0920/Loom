@@ -22,6 +22,7 @@ const FRAMEWORK_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const ART_PACKAGE_CATALOG_ENV: &str = "LOOM_ART_PACKAGE_CATALOG_DIR";
 const MCP_SERVER_PACKAGE_CATALOG_ENV: &str = "LOOM_MCP_SERVER_PACKAGE_CATALOG_DIR";
 const BUNDLED_ART_SHA256_ALLOWLIST_ENV: &str = "LOOM_BUNDLED_ART_SHA256_ALLOWLIST";
+const DAEMON_AUTH_TOKEN_FILE: &str = "daemon-token";
 const ART_PACKAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MCP_SERVER_PACKAGE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const LOOM_DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -922,7 +923,10 @@ struct DaemonSnapshot {
 #[tauri::command]
 fn resolve_loom_daemon_url() -> DesktopRuntimeConfig {
     let loom_daemon_url = configured_loom_daemon_url();
-    let settings_url = format!("{}/settings", loom_daemon_url.trim_end_matches('/'));
+    let settings_url = settings_url_with_daemon_token(&format!(
+        "{}/settings",
+        loom_daemon_url.trim_end_matches('/')
+    ));
 
     DesktopRuntimeConfig {
         loom_daemon_url,
@@ -949,7 +953,7 @@ fn read_loom_snapshot_blocking(base_url: Option<String>) -> LoomSnapshot {
     match read_daemon_snapshot(&resolved_base_url) {
         Ok(snapshot) => {
             let daemon_mismatch = std::env::current_exe().ok().and_then(|current_exe| {
-                daemon_path_mismatch_warning(&current_exe, &snapshot.health)
+                daemon_path_mismatch_warning(&current_exe, &snapshot.status)
             });
             LoomSnapshot {
                 base_url: resolved_base_url,
@@ -1001,8 +1005,9 @@ fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, String> {
     let mut isolated_hook_bridge_url = None;
     let current_exe =
         std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
-    if let Ok(health) = http_get_json(&base_url, "/health") {
-        if daemon_path_mismatch_warning(&current_exe, &health).is_none() {
+    if http_get_json(&base_url, "/health").is_ok() {
+        let status = http_get_json(&base_url, "/status")?;
+        if daemon_path_mismatch_warning(&current_exe, &status).is_none() {
             return Ok(LoomDaemonStartResult {
                 started: false,
                 base_url,
@@ -1331,12 +1336,12 @@ fn normalize_base_url(base_url: String) -> String {
 }
 
 fn settings_links(base_url: &str) -> SettingsLinks {
-    let root = format!("{base_url}/settings");
+    let root_path = format!("{base_url}/settings");
     SettingsLinks {
-        root: root.clone(),
-        tea: format!("{root}/tea"),
-        hook: format!("{root}/hook"),
-        talk: format!("{root}/talk"),
+        root: settings_url_with_daemon_token(&root_path),
+        tea: settings_url_with_daemon_token(&format!("{root_path}/tea")),
+        hook: settings_url_with_daemon_token(&format!("{root_path}/hook")),
+        talk: settings_url_with_daemon_token(&format!("{root_path}/talk")),
     }
 }
 
@@ -1370,11 +1375,11 @@ fn preferred_daemon_candidate(current_exe: &Path) -> PathBuf {
         })
 }
 
-fn daemon_executable_path_from_health(health: &Value) -> Option<PathBuf> {
-    health
+fn daemon_executable_path_from_status(status: &Value) -> Option<PathBuf> {
+    status
         .get("executablePath")
-        .or_else(|| health.get("executable_path"))
-        .or_else(|| health.get("path"))
+        .or_else(|| status.get("executable_path"))
+        .or_else(|| status.get("path"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1394,8 +1399,8 @@ fn paths_match(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn daemon_path_mismatch_warning(current_exe: &Path, health: &Value) -> Option<String> {
-    let actual = daemon_executable_path_from_health(health)?;
+fn daemon_path_mismatch_warning(current_exe: &Path, status: &Value) -> Option<String> {
+    let actual = daemon_executable_path_from_status(status)?;
     let expected = preferred_daemon_candidate(current_exe);
     if paths_match(&expected, &actual) {
         return None;
@@ -1618,6 +1623,9 @@ fn http_request_json_with_timeout(
     timeout: Duration,
 ) -> Result<Value, String> {
     let (host, port) = parse_loopback_http_url(base_url)?;
+    let authorization = daemon_auth_token()?
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
     let mut stream = TcpStream::connect_timeout(
         &loopback_socket_addr(&host, port)?,
         LOOM_DAEMON_CONNECT_TIMEOUT,
@@ -1634,12 +1642,12 @@ fn http_request_json_with_timeout(
         let body = serde_json::to_string(body)
             .map_err(|error| format!("无法序列化 Loom 本地服务请求 {path}：{error}"))?;
         format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{authorization}Connection: close\r\n\r\n{body}",
             body.len()
         )
     } else {
         format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\n{authorization}Connection: close\r\n\r\n"
         )
     };
     stream
@@ -2086,6 +2094,40 @@ fn desktop_control_plane_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".runtime").join("loom").join("control-plane"))
 }
 
+fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<String, String> {
+    let token = value.trim();
+    if token.is_empty() {
+        return Err(format!("Loom 本地服务认证令牌为空：{source}"));
+    }
+    if token.len() > 4096 || token.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+        return Err(format!("Loom 本地服务认证令牌格式无效：{source}"));
+    }
+    Ok(token.to_owned())
+}
+
+fn daemon_auth_token() -> Result<Option<String>, String> {
+    if let Some(value) = std::env::var_os("LOOM_DAEMON_TOKEN").filter(|value| !value.is_empty()) {
+        return normalize_daemon_auth_token(&value.to_string_lossy(), "LOOM_DAEMON_TOKEN")
+            .map(Some);
+    }
+    let path = desktop_control_plane_root().join(DAEMON_AUTH_TOKEN_FILE);
+    match fs::read_to_string(&path) {
+        Ok(value) => normalize_daemon_auth_token(&value, &format!("{}", path.display())).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "无法读取 Loom 本地服务认证令牌 {}：{error}",
+            path.display()
+        )),
+    }
+}
+
+fn settings_url_with_daemon_token(url: &str) -> String {
+    let Ok(Some(token)) = daemon_auth_token() else {
+        return url.to_owned();
+    };
+    format!("{url}?token={}", percent_encode_path_segment(&token))
+}
+
 fn validate_packaged_art_entry(entry: &PackagedArtCatalogEntry) -> Result<(), String> {
     for (kind, value) in [
         ("Art", entry.id.as_str()),
@@ -2313,6 +2355,9 @@ fn percent_encode_path_segment(value: &str) -> String {
 // can build a correct `data:` URL.
 fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), String> {
     let (host, port) = parse_loopback_http_url(base_url)?;
+    let authorization = daemon_auth_token()?
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
     let mut stream = TcpStream::connect_timeout(
         &loopback_socket_addr(&host, port)?,
         LOOM_DAEMON_CONNECT_TIMEOUT,
@@ -2326,7 +2371,7 @@ fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), Stri
         .map_err(|error| format!("无法设置 Loom 本地服务写入超时：{error}"))?;
 
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: image/*\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: image/*\r\n{authorization}Connection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -2697,9 +2742,14 @@ mod tests {
         let previous_daemon_url = std::env::var("LOOM_DAEMON_URL").ok();
         let previous_bridge_url = std::env::var("LOOM_HOOK_BRIDGE_URL").ok();
         let previous_bridge_port = std::env::var("LOOM_HOOK_BRIDGE_PORT").ok();
+        let previous_control_plane_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let previous_token = std::env::var("LOOM_DAEMON_TOKEN").ok();
+        let control_plane_root = unique_temp_dir("default-runtime-config");
         std::env::remove_var("LOOM_DAEMON_URL");
         std::env::remove_var("LOOM_HOOK_BRIDGE_URL");
         std::env::remove_var("LOOM_HOOK_BRIDGE_PORT");
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
+        std::env::remove_var("LOOM_DAEMON_TOKEN");
 
         let config = resolve_loom_daemon_url();
 
@@ -2709,6 +2759,43 @@ mod tests {
         restore_env("LOOM_DAEMON_URL", previous_daemon_url);
         restore_env("LOOM_HOOK_BRIDGE_URL", previous_bridge_url);
         restore_env("LOOM_HOOK_BRIDGE_PORT", previous_bridge_port);
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_control_plane_root);
+        restore_env("LOOM_DAEMON_TOKEN", previous_token);
+        let _ = fs::remove_dir_all(control_plane_root);
+    }
+
+    #[test]
+    fn native_daemon_client_discovers_persisted_bearer_token_and_settings_exchange_url() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("daemon-auth-token");
+        fs::write(root.join(DAEMON_AUTH_TOKEN_FILE), "desktop-secret")
+            .expect("write desktop daemon token");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let previous_token = std::env::var("LOOM_DAEMON_TOKEN").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        std::env::remove_var("LOOM_DAEMON_TOKEN");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind daemon auth fixture");
+        let address = listener.local_addr().expect("daemon auth fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept daemon auth request");
+            let request = read_test_http_request(&mut stream);
+            assert!(request.contains("Authorization: Bearer desktop-secret\r\n"));
+            write_test_json_response(&mut stream, "200 OK", r#"{"status":"ready"}"#);
+        });
+
+        let response = http_get_json(&format!("http://127.0.0.1:{}", address.port()), "/status")
+            .expect("authenticated daemon request");
+        assert_eq!(response["status"], "ready");
+        server.join().expect("join daemon auth fixture");
+        assert_eq!(
+            settings_links("http://127.0.0.1:8765").tea,
+            "http://127.0.0.1:8765/settings/tea?token=desktop-secret"
+        );
+
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        restore_env("LOOM_DAEMON_TOKEN", previous_token);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2973,6 +3060,12 @@ mod tests {
 
     #[test]
     fn offline_snapshot_preserves_settings_links() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_temp_dir("offline-settings-links");
+        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
+        let previous_token = std::env::var("LOOM_DAEMON_TOKEN").ok();
+        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
+        std::env::remove_var("LOOM_DAEMON_TOKEN");
         let snapshot = read_loom_snapshot_blocking(Some("http://127.0.0.1:9".to_string()));
 
         assert_eq!(snapshot.base_url, "http://127.0.0.1:9");
@@ -2984,6 +3077,9 @@ mod tests {
         assert!(snapshot.workflows.is_empty());
         assert!(snapshot.hook_bridge.is_none());
         assert!(snapshot.error.is_some());
+        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
+        restore_env("LOOM_DAEMON_TOKEN", previous_token);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -4002,7 +4098,7 @@ mod tests {
         let warning = daemon_path_mismatch_warning(
             &desktop_exe,
             &serde_json::json!({
-                "status": "ok",
+                "status": "ready",
                 "executablePath": r"C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\older\runtime\loom-daemon.exe"
             }),
         )

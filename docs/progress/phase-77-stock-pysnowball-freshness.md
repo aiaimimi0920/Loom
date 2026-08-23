@@ -6,7 +6,7 @@ Date: 2026-08-19
 
 This phase keeps the existing aggregate market path and adds a bounded
 pysnowball-compatible live provider inside the existing `stock-api` MCP
-wrapper. A separate Python MCP server was intentionally not introduced:
+wrapper at `mcp-server-packages/stock-api`. A separate Python MCP server was intentionally not introduced:
 Loom's framework execution context has one MCP server per Art request, and the
 release builder does not ship a Python runtime. The adapter therefore mirrors
 the upstream REST contract in Node and never executes Python code.
@@ -84,3 +84,14 @@ The release verifier was updated to require the new `auto` order-book routing
 contract instead of the previous hard-coded `xueqiu` value. Phase 77 introduced
 no additional Hook source edits; the paired Hook artifact was built from its
 existing dirty worktree.
+
+## 2026-08-23 audit note
+
+The repository was rechecked instead of treating the phase record as proof. The Node adapter,
+provider selection, 5 MiB response cap, bounded TTL cache, timestamp rejection, token redaction,
+and Stock Monitor freshness behavior are present. The focused Stock API and Stock Monitor tests pass,
+and the current Phase 78 Loom release verifier exercises the same packaged `stock-api` server.
+
+The earlier document wording could be read as placing the package under `framework-packages`; that is
+not the repository layout. The authoritative package path is
+`mcp-server-packages/stock-api`. No unfinished Phase 77 implementation was found.

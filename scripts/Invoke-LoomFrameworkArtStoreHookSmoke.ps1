@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:DaemonRequestHeaders = @{}
 
 function ConvertFrom-UnicodeCodePoints {
     param([int[]]$CodePoints)
@@ -226,7 +227,7 @@ function Start-InheritedEnvProcess {
 
 function Invoke-JsonGet {
     param([string]$Uri)
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 15
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonRequestHeaders -TimeoutSec 15
 }
 
 function Invoke-JsonPost {
@@ -236,7 +237,7 @@ function Invoke-JsonPost {
     )
 
     $json = $Body | ConvertTo-Json -Depth 20
-    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec 20
+    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonRequestHeaders -ContentType "application/json" -Body $json -TimeoutSec 20
 }
 
 function Invoke-JsonPut {
@@ -246,12 +247,12 @@ function Invoke-JsonPut {
     )
 
     $json = $Body | ConvertTo-Json -Depth 20
-    return Invoke-RestMethod -Uri $Uri -Method Put -ContentType "application/json" -Body $json -TimeoutSec 20
+    return Invoke-RestMethod -Uri $Uri -Method Put -Headers $script:DaemonRequestHeaders -ContentType "application/json" -Body $json -TimeoutSec 20
 }
 
 function Invoke-JsonDelete {
     param([string]$Uri)
-    return Invoke-RestMethod -Uri $Uri -Method Delete -TimeoutSec 20
+    return Invoke-RestMethod -Uri $Uri -Method Delete -Headers $script:DaemonRequestHeaders -TimeoutSec 20
 }
 
 function Invoke-BinaryGetBytes {
@@ -924,6 +925,8 @@ $cloudManifest = @{
         packageSecurity = @{ version = "1.0.0"; publisher = @{ id = "neuro.official"; name = "Neuro"; icon = "N" } }
         art = @{ qualifiedId = "neuro.official/store-cloud-art" }
         dependencies = @{ framework = "neuro.official/cloud_api" }
+        # The endpoint is a loopback fixture, which a cloud Art only reaches when it declares it.
+        permissionPolicy = @{ network = @{ allowLocalhost = $true } }
     }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-cloud-art\1.0.0.zip") -TextFiles @{
@@ -1022,6 +1025,7 @@ $mcpManifest = @{
             version = "^1.0"
             toolName = "brave_image_search"
         }
+        permissionPolicy = @{ network = @{ allowLocalhost = $true } }
     }
 }
 New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art\1.0.0.zip") -TextFiles @{
@@ -1072,6 +1076,8 @@ $catalogExpectedIds = @(
 $cloudProcess = $null
 $artStoreProcess = $null
 $daemonProcess = $null
+$daemonToken = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+$script:DaemonRequestHeaders = @{ Authorization = "Bearer $daemonToken" }
 $summary = [ordered]@{
     runId = $runId
     configuration = $Configuration
@@ -1110,8 +1116,10 @@ try {
         -Environment @{
             LOOM_DAEMON_HOST = "127.0.0.1"
             LOOM_DAEMON_PORT = "$daemonPort"
+            LOOM_DAEMON_TOKEN = $daemonToken
             LOOM_CONTROL_PLANE_ROOT = $controlPlaneRoot
             LOOM_ART_STORE_URL = "http://127.0.0.1:$storePort"
+            LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES = "1"
             APPDATA = $appDataRoot
             LOCALAPPDATA = $localAppDataRoot
         } `

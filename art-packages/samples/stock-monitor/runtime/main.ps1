@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $script:SurfaceAction = $null
+$script:SurfaceActionBudgets = $null
 $script:AllowedIntervals = @(1, 3, 5, 15, 30, 60, 120, 300)
 $script:AllowedPeriods = @("minute", "five-day", "day", "week", "month", "quarter", "year", "minute-120", "minute-60", "minute-30", "minute-15", "minute-5", "minute-1")
 $script:MaxHistoryRows = 2000
@@ -29,34 +30,38 @@ function Get-ObjectPropertyValue {
     return $DefaultValue
 }
 
-function Find-SurfaceAction {
+function Resolve-SurfaceAction {
+    # 只在三个固定位置找 surfaceAction：请求根、params、inputs。宿主
+    # (framework-packages/runtime-host/src/mcp.rs 的 find_surface_action) 只认 params 与
+    # inputs，本地测试夹具把它放在请求根，所以这里接受三者的并集，但绝不递归。
+    # 递归搜索会把 frameworkData.mcp.results 里的上游数据也当成调用来源：任何能让 MCP 服务
+    # 回一个含 surfaceAction 键的对象的人，就能凭空造出一次动作调用。位置固定后这条路被封死，
+    # 也不再需要深度上限。
     param([AllowNull()][object]$Value)
 
     if ($null -eq $Value) { return $null }
-    if ($Value -is [System.Collections.IDictionary]) {
-        if ($Value.Contains("surfaceAction")) { return $Value["surfaceAction"] }
-        foreach ($item in $Value.Values) {
-            $found = Find-SurfaceAction -Value $item
-            if ($null -ne $found) { return $found }
+    $found = $null
+    $foundText = $null
+    foreach ($container in @($Value, (Get-ObjectPropertyValue -Value $Value -Name "params"), (Get-ObjectPropertyValue -Value $Value -Name "inputs"))) {
+        if ($null -eq $container) { continue }
+        $candidate = Get-ObjectPropertyValue -Value $container -Name "surfaceAction"
+        if ($null -eq $candidate) { continue }
+        if (-not (($candidate -is [System.Collections.IDictionary]) -or ($candidate -is [pscustomobject]))) {
+            throw "surfaceAction must be a JSON object"
         }
-        return $null
-    }
-    if ($Value -is [pscustomobject]) {
-        $surfaceActionProperty = $Value.PSObject.Properties["surfaceAction"]
-        if ($null -ne $surfaceActionProperty) { return $surfaceActionProperty.Value }
-        foreach ($property in $Value.PSObject.Properties) {
-            $found = Find-SurfaceAction -Value $property.Value
-            if ($null -ne $found) { return $found }
+        # PSCustomObject 的 -ne 是引用比较，同一份 JSON 反序列化两次也会"不等"，所以按序列化
+        # 后的文本判断是否真的冲突。
+        $candidateText = $candidate | ConvertTo-Json -Depth 20 -Compress
+        if ($null -eq $found) {
+            $found = $candidate
+            $foundText = $candidateText
+            continue
         }
-        return $null
-    }
-    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
-        foreach ($item in $Value) {
-            $found = Find-SurfaceAction -Value $item
-            if ($null -ne $found) { return $found }
+        if ($candidateText -ne $foundText) {
+            throw "conflicting surfaceAction invocations were provided"
         }
     }
-    return $null
+    return $found
 }
 
 function Get-ActionPayloadValue {
@@ -79,6 +84,77 @@ function Get-ActionStateValue {
 
     $state = Get-ObjectPropertyValue -Value $Action -Name "authoritativeState"
     return Get-ObjectPropertyValue -Value $state -Name $Name -DefaultValue $DefaultValue
+}
+
+function Get-ActionRequestId {
+    param([AllowNull()][object]$Action)
+
+    $value = Get-ActionPayloadValue -Action $Action -Name "requestId"
+    if ($null -eq $value) { return $null }
+    $textValue = [string]$value
+    $textValue = $textValue.Trim()
+    if ($textValue.Length -eq 0) { return $null }
+    if ($textValue.Length -gt 64) { return $textValue.Substring(0, 64) }
+    return $textValue
+}
+
+function Get-SurfaceActionBudgets {
+    # Surface 没有可读的动作预算通道，宿主超时也不会回补丁，所以运行时把 manifest 声明的
+    # 每动作 timeoutMs（按 art.runtime.json 的 limits.timeoutMs 上限收敛）回写进状态，
+    # 客户端才能把兜底计时器排在宿主放弃之后。读取失败时返回空表，客户端用镜像常量。
+    if ($null -ne $script:SurfaceActionBudgets) { return $script:SurfaceActionBudgets }
+    $budgets = [ordered]@{}
+    try {
+        $packageRoot = Split-Path -Parent $PSScriptRoot
+        $manifestPath = Join-Path $packageRoot "manifest.json"
+        $runtimePath = Join-Path $packageRoot "art.runtime.json"
+        $ceiling = 0
+        if (Test-Path -LiteralPath $runtimePath) {
+            $runtimeConfig = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $limits = Get-ObjectPropertyValue -Value $runtimeConfig -Name "limits"
+            $limitValue = Get-ObjectPropertyValue -Value $limits -Name "timeoutMs"
+            if ($null -ne $limitValue) { $ceiling = [int]$limitValue }
+        }
+        if (Test-Path -LiteralPath $manifestPath) {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $metadata = Get-ObjectPropertyValue -Value $manifest -Name "metadata"
+            $capabilities = Get-ObjectPropertyValue -Value $metadata -Name "capabilities"
+            $surface = Get-ObjectPropertyValue -Value $capabilities -Name "surface"
+            $actions = Get-ObjectPropertyValue -Value $surface -Name "actions"
+            if ($null -ne $actions) {
+                foreach ($action in @($actions)) {
+                    $actionId = Get-ObjectPropertyValue -Value $action -Name "id"
+                    $timeoutValue = Get-ObjectPropertyValue -Value $action -Name "timeoutMs"
+                    if ([string]::IsNullOrWhiteSpace([string]$actionId)) { continue }
+                    if ($null -eq $timeoutValue) { continue }
+                    $timeout = [int]$timeoutValue
+                    if ($timeout -le 0) { continue }
+                    if ($ceiling -gt 0 -and $timeout -gt $ceiling) { $timeout = $ceiling }
+                    $budgets[[string]$actionId] = $timeout
+                }
+            }
+        }
+    }
+    catch {
+        $budgets = [ordered]@{}
+    }
+    $script:SurfaceActionBudgets = $budgets
+    return $script:SurfaceActionBudgets
+}
+
+function Add-ActionEcho {
+    # 每个状态补丁都必须带上回声字段。statePatch 是合并语义，留下上一次动作的
+    # lastRequestId 会让客户端的关联检查永远匹配不上，pending 只能等兜底计时器解锁。
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$StatePatch,
+        [AllowNull()][object]$Action
+    )
+
+    $actionId = Get-ObjectPropertyValue -Value $Action -Name "actionId"
+    $StatePatch["lastActionId"] = if ($null -eq $actionId) { $null } else { [string]$actionId }
+    $StatePatch["lastRequestId"] = Get-ActionRequestId -Action $Action
+    $StatePatch["actionBudgetsMillis"] = Get-SurfaceActionBudgets
+    return $StatePatch
 }
 
 function Get-RequestValue {
@@ -173,6 +249,10 @@ function Get-ProviderName {
 }
 
 function Resolve-UtcTimestamp {
+    # 上游时间戳必须自带时区偏移（Z 或 ±HH[:]MM）。之前用 AssumeUniversal 解析，等于把无偏移
+    # 的本地时间当成 UTC：东八区的 "2026-08-21 15:00:00" 会被当作 UTC 15:00，凭空多出 8 小时
+    # 的"新鲜度"，一个已经过期的报价因此显示为最新。没有偏移就当作不可判定，返回 $null，让
+    # 调用方按过期处理。
     param(
         [AllowNull()][object]$Value,
         [AllowNull()][object]$FallbackValue = $null
@@ -181,11 +261,12 @@ function Resolve-UtcTimestamp {
     foreach ($candidate in @($Value, $FallbackValue)) {
         $text = ([string]$candidate).Trim()
         if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        if ($text -notmatch '(?:[Zz]|[+-]\d{2}:?\d{2})$') { continue }
         try {
             return [DateTimeOffset]::Parse(
                 $text,
                 [System.Globalization.CultureInfo]::InvariantCulture,
-                [System.Globalization.DateTimeStyles]::AssumeUniversal
+                [System.Globalization.DateTimeStyles]::None
             ).ToUniversalTime().ToString("o")
         }
         catch {}
@@ -194,10 +275,13 @@ function Resolve-UtcTimestamp {
 }
 
 function Get-ObservationAgeSeconds {
+    # 时间戳不可判定时返回 $null，不返回 [double]::PositiveInfinity：ConvertTo-Json 会把它写成
+    # 裸 Infinity，那不是合法 JSON，宿主解析整份响应都会失败。调用方必须显式处理 $null，
+    # 因为 PowerShell 里 $null -gt 90 是 $false，直接比较会把未知年龄判成"新鲜"。
     param([AllowNull()][object]$Value)
 
     $timestamp = Resolve-UtcTimestamp -Value $Value
-    if ($null -eq $timestamp) { return [double]::PositiveInfinity }
+    if ($null -eq $timestamp) { return $null }
     $age = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($timestamp)).TotalSeconds
     return [Math]::Round([Math]::Max(0, $age), 3)
 }
@@ -460,7 +544,8 @@ function ConvertTo-OrderBook {
     $asks = @(ConvertTo-OrderBookLevels (Get-ObjectPropertyValue -Value $Value -Name "asks" -DefaultValue @()))
     if ($bids.Count -eq 0 -and $asks.Count -eq 0) { return $null }
     $normalizedFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "fetchedAt") -FallbackValue $FetchedAt
-    if ($null -eq $normalizedFetchedAt) { $normalizedFetchedAt = [DateTimeOffset]::UtcNow.ToString("o") }
+    # 不再用 [DateTimeOffset]::UtcNow 顶替缺失的上游时间戳：那等于宣布"刚刚取到"，年龄算出来
+    # 是 0，任何过期检查都会通过。上游没给可判定的时间戳，就让年龄为 $null 并直接判过期。
     $observedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "observedAt") -FallbackValue $normalizedFetchedAt
     $ageSeconds = Get-ObservationAgeSeconds -Value $observedAt
     return [ordered]@{
@@ -476,7 +561,7 @@ function ConvertTo-OrderBook {
         fetchedAt = $normalizedFetchedAt
         ageSeconds = $ageSeconds
         maxAgeSeconds = $script:MaxOrderBookAgeSeconds
-        stale = $ageSeconds -gt $script:MaxOrderBookAgeSeconds
+        stale = ($null -eq $ageSeconds) -or ($ageSeconds -gt $script:MaxOrderBookAgeSeconds)
         source = ([string](Get-ObjectPropertyValue -Value $Value -Name "source" -DefaultValue "xueqiu")).Trim().ToLowerInvariant()
     }
 }
@@ -492,7 +577,8 @@ function ConvertTo-LiveTape {
     $current = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "now" -DefaultValue (Get-ObjectPropertyValue -Value $Value -Name "price"))
     if ($null -eq $current -or $current -le 0) { return $null }
     $normalizedFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "fetchedAt") -FallbackValue $FetchedAt
-    if ($null -eq $normalizedFetchedAt) { $normalizedFetchedAt = [DateTimeOffset]::UtcNow.ToString("o") }
+    # 与盘口一致：缺失的时间戳不合成，未知年龄直接判过期。实时逐笔比盘口更敏感，一条被当成
+    # 新鲜的旧 tick 会直接写进主报价的显示价格。
     $observedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "observedAt") -FallbackValue $normalizedFetchedAt
     $ageSeconds = Get-ObservationAgeSeconds -Value $observedAt
     return [ordered]@{
@@ -514,7 +600,7 @@ function ConvertTo-LiveTape {
         fetchedAt = $normalizedFetchedAt
         ageSeconds = $ageSeconds
         maxAgeSeconds = $script:MaxLiveAgeSeconds
-        stale = $ageSeconds -gt $script:MaxLiveAgeSeconds
+        stale = ($null -eq $ageSeconds) -or ($ageSeconds -gt $script:MaxLiveAgeSeconds)
         source = ([string](Get-ObjectPropertyValue -Value $Value -Name "source" -DefaultValue "xueqiu")).Trim().ToLowerInvariant()
     }
 }
@@ -667,7 +753,10 @@ function Get-StockSnapshot {
     else { $quoteObservedAt }
     $effectiveFetchedAt = if ($usesLivePrice) { [string]$liveTape.fetchedAt } else { $quoteFetchedAt }
     $effectiveAgeSeconds = Get-ObservationAgeSeconds -Value $effectiveObservedAt
-    $quoteStale = $quoteProviderStale -or ($marketStatus -eq "open" -and $effectiveAgeSeconds -gt $script:MaxLiveAgeSeconds)
+    # 年龄未知（上游时间戳缺失或没有时区偏移）时按过期处理。PowerShell 里 $null -gt 90 是
+    # $false，少了这个判断，一份连观察时间都给不出的报价反而会被判成新鲜。休市时不强制判过期：
+    # 收盘价本来就旧。
+    $quoteStale = $quoteProviderStale -or ($marketStatus -eq "open" -and ($null -eq $effectiveAgeSeconds -or $effectiveAgeSeconds -gt $script:MaxLiveAgeSeconds))
     $effectivePreviousClose = if ($usesLivePrice -and $null -ne $liveTape.previousClose) { $liveTape.previousClose } else { $previousClose }
     $quote = [ordered]@{
         provider = "stock-api"
@@ -771,22 +860,49 @@ function Write-RuntimeSuccess {
     } | ConvertTo-Json -Depth 100 -Compress))
 }
 
+function Limit-MessageLength {
+    # 按 Unicode 文本元素截断，不按 UTF-16 码元。Substring(0, 400) 可能正好切在代理对中间，
+    # 留下一个孤立高位代理；那不是合法 Unicode，ConvertTo-Json 会把它写成 \ud83d 这类无配对
+    # 转义，宿主再解析就得到损坏字符串。上游错误消息是原样回显的（含 emoji），所以这条路径
+    # 真的会被走到。
+    param(
+        [AllowNull()][string]$Message,
+        [int]$MaxLength = 400
+    )
+
+    if ([string]::IsNullOrEmpty($Message)) { return $Message }
+    if ($Message.Length -le $MaxLength) { return $Message }
+    $builder = [System.Text.StringBuilder]::new()
+    $enumerator = [System.Globalization.StringInfo]::GetTextElementEnumerator($Message)
+    while ($enumerator.MoveNext()) {
+        $element = [string]$enumerator.Current
+        if (($builder.Length + $element.Length) -gt $MaxLength) { break }
+        [void]$builder.Append($element)
+    }
+    return $builder.ToString()
+}
+
 function Write-RuntimeError {
     param([string]$Message)
     [Console]::Out.Write(([ordered]@{
         status = "error"
-        error = [ordered]@{ code = "stock_monitor_failed"; message = $Message }
+        # 非 Surface 路径此前完全不截断，一条上游长消息能把整份错误响应撑到任意大小。
+        error = [ordered]@{ code = "stock_monitor_failed"; message = (Limit-MessageLength -Message $Message) }
     } | ConvertTo-Json -Depth 20 -Compress))
 }
 
 function Write-SurfaceErrorState {
+    # -RejectAction：动作 id 不在声明列表里。此时这个动作的任何字段都不可信，既不读它的
+    # payload，也不把它的 actionId/requestId 回显进状态；错误文案用固定常量，避免调用方
+    # 控制的文本进入渲染节点与持久状态。
     param(
         [object]$Action,
-        [string]$Message
+        [string]$Message,
+        [switch]$RejectAction
     )
 
-    if ($Message.Length -gt 400) { $Message = $Message.Substring(0, 400) }
-    $rawCode = if ([string](Get-ObjectPropertyValue -Value $Action -Name "actionId") -eq "stock_symbol_commit") {
+    $Message = Limit-MessageLength -Message $Message
+    $rawCode = if ((-not $RejectAction) -and [string](Get-ObjectPropertyValue -Value $Action -Name "actionId") -eq "stock_symbol_commit") {
         Get-ActionPayloadValue -Action $Action -Name "value" -DefaultValue "SZ000034"
     }
     else {
@@ -813,6 +929,9 @@ function Write-SurfaceErrorState {
         error = $Message
         disclaimer = $script:Disclaimer
     }
+    # 被拒动作不参与关联回显：客户端等不到自己的 requestId，会退回只看 revision 的解锁分支。
+    $echoAction = if ($RejectAction) { $null } else { $Action }
+    [void](Add-ActionEcho -StatePatch $statePatch -Action $echoAction)
     Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
         operations = [object[]]@(
             (New-SetOperation -NodeId "status" -Path "/props/text" -Value "行情获取失败"),
@@ -826,9 +945,28 @@ function Write-SurfaceErrorState {
 }
 
 function New-FormalQuote {
-    param([object]$Snapshot)
+    # -ReferenceState：Surface 路径用。此时 history/orderBook/liveTape/favoriteQuotes 已经在
+    # 同一份响应的 statePatch 里，Surface 也只从 authoritativeState 读它们，再在 result.outputs
+    # 里重复一遍就是把 2000 行 K 线第二次写上 stdout、第二次经过宿主存储、第二次推给客户端。
+    # 这里只留计数与指向状态的引用标记。非 Surface 路径（Write-RuntimeSuccess）没有状态可引用，
+    # 仍然带完整数组，那是这个 art 的 quote 输出端口契约。
+    param(
+        [object]$Snapshot,
+        [switch]$ReferenceState
+    )
     $quote = $Snapshot.quote
-    return [ordered]@{
+    $history = [ordered]@{
+        period = [string]$Snapshot.period
+        adjust = "none"
+    }
+    if ($ReferenceState) {
+        $history.rowCount = @($Snapshot.history).Count
+        $history.rowsIn = "authoritativeState.history"
+    }
+    else {
+        $history.rows = @($Snapshot.history)
+    }
+    $formal = [ordered]@{
         provider = "stock-api"
         providerVersion = $script:ProviderVersion
         upstreamVersion = $script:UpstreamVersion
@@ -854,28 +992,37 @@ function New-FormalQuote {
         }
         marketStatus = [string]$Snapshot.marketStatus
         lastTradingDate = [string]$Snapshot.lastTradingDate
-        history = [ordered]@{
-            period = [string]$Snapshot.period
-            adjust = "none"
-            rows = @($Snapshot.history)
-        }
-        orderBook = $Snapshot.orderBook
-        liveTape = $Snapshot.liveTape
-        favoriteQuotes = @($Snapshot.favoriteQuotes)
-        disclaimer = $script:Disclaimer
+        history = $history
     }
+    if ($ReferenceState) {
+        $formal.collectionsIn = "authoritativeState"
+        $formal.orderBookLevels = [int](Get-ObjectPropertyValue -Value $Snapshot.orderBook -Name "levels" -DefaultValue 0)
+        $formal.liveTapeObservedAt = [string](Get-ObjectPropertyValue -Value $Snapshot.liveTape -Name "observedAt")
+        $formal.favoriteQuoteCount = @($Snapshot.favoriteQuotes).Count
+    }
+    else {
+        $formal.orderBook = $Snapshot.orderBook
+        $formal.liveTape = $Snapshot.liveTape
+        $formal.favoriteQuotes = @($Snapshot.favoriteQuotes)
+    }
+    $formal.disclaimer = $script:Disclaimer
+    return $formal
 }
 
 try {
     $requestText = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($requestText)) { throw "Stock Monitor request is required" }
     $request = $requestText | ConvertFrom-Json
-    $script:SurfaceAction = Find-SurfaceAction -Value $request
+    $script:SurfaceAction = Resolve-SurfaceAction -Value $request
 
     if ($null -ne $script:SurfaceAction) {
         $actionId = [string](Get-ObjectPropertyValue -Value $script:SurfaceAction -Name "actionId")
         if ($actionId -notin @("stock_refresh", "stock_symbol_commit", "stock_interval_commit", "stock_period_commit", "stock_tick_refresh")) {
-            throw "action is not declared by the stock monitor: $actionId"
+            # 不能 throw：throw 的消息会插值调用方给的 $actionId，catch 再把它写进 error 状态与
+            # quote_change 显示节点，等于让未声明的动作把任意文本送上界面。这里改成固定文案，
+            # 并用 -RejectAction 让符号/关联字段都不取自这个动作。
+            Write-SurfaceErrorState -Action $script:SurfaceAction -Message "行情动作未被声明，已拒绝执行" -RejectAction
+            exit 0
         }
         if ($actionId -eq "stock_interval_commit") {
             $interval = Resolve-RefreshInterval (Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue 5)
@@ -884,6 +1031,7 @@ try {
                 statusText = "每 $interval 秒刷新"
                 error = $null
             }
+            [void](Add-ActionEcho -StatePatch $statePatch -Action $script:SurfaceAction)
             Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
                 operations = [object[]]@(
                     (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval)),
@@ -900,11 +1048,11 @@ try {
     $history = @($snapshot.history)
     $period = [string]$snapshot.period
     $periodLabel = Get-MarketPeriodLabel -Period $period
-    $formalQuote = New-FormalQuote -Snapshot $snapshot
     if ($null -eq $script:SurfaceAction) {
-        Write-RuntimeSuccess -FormalQuote $formalQuote
+        Write-RuntimeSuccess -FormalQuote (New-FormalQuote -Snapshot $snapshot)
         exit 0
     }
+    $formalQuote = New-FormalQuote -Snapshot $snapshot -ReferenceState
 
     $requestedCode = if ([string](Get-ObjectPropertyValue -Value $script:SurfaceAction -Name "actionId") -eq "stock_symbol_commit") {
         Get-ActionPayloadValue -Action $script:SurfaceAction -Name "value" -DefaultValue $quote.code
@@ -967,8 +1115,12 @@ try {
         favoriteQuotes = @($snapshot.favoriteQuotes)
         lastUpdatedAt = [string]$quote.fetchedAt
         error = $null
+        # K 线抓取失败但报价成功时，此前这条上游错误只留在快照里就被丢掉：面板画不出曲线，
+        # 也说不出为什么。作为非致命告警送到 Surface，状态本身仍是 ready。
+        historyWarning = if ([string]::IsNullOrWhiteSpace([string]$snapshot.historyError)) { $null } else { Limit-MessageLength -Message ([string]$snapshot.historyError) }
         disclaimer = $script:Disclaimer
     }
+    [void](Add-ActionEcho -StatePatch $statePatch -Action $script:SurfaceAction)
     $metricsText = "开 $(Format-Price $quote.open)  高 $(Format-Price $quote.high)  低 $(Format-Price $quote.low)  昨收 $(Format-Price $quote.previousClose)"
     $operations = [object[]]@(
         (New-SetOperation -NodeId "status" -Path "/props/text" -Value $statusText),
@@ -984,10 +1136,15 @@ try {
         operations = $operations
         statePatch = $statePatch
     })) -Result ([ordered]@{
+        # 状态补丁只在 patches 里带一次。宿主两侧都会 merge（surface_store.rs 的 apply_patch 与
+        # commit_result 都走 merge_json），第二份纯属重复传输：2000 行 K 线会第二次写上 stdout、
+        # 第二次进存储、第二次推给客户端。
+        # 这里给空对象而不是省略字段：state_patch 是 #[serde(default)]，省略后是 Value::Null，
+        # 而 merge_json 对非对象补丁执行整体替换（surface_store.rs:1415），会把整份权威状态置空。
         outputs = [ordered]@{
             quote = [ordered]@{ kind = "value"; value = $formalQuote }
         }
-        statePatch = $statePatch
+        statePatch = [ordered]@{}
     })
 }
 catch {

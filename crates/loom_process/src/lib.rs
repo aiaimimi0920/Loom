@@ -817,6 +817,22 @@ mod tests {
         assert!(output.diagnostics.duration_ms.is_some());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn default_windows_job_allows_a_framework_host_to_spawn_its_runtime() {
+        let mut spec = ProcessSpec::new("powershell.exe");
+        spec.args = vec![
+            "-NoProfile".to_owned(),
+            "-Command".to_owned(),
+            "& powershell.exe -NoProfile -Command 'Write-Output nested-ok'".to_owned(),
+        ];
+        spec.limits.timeout = Duration::from_secs(15);
+
+        let output = run_with_input(&spec, b"").expect("nested framework runtime");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "nested-ok");
+    }
+
     #[test]
     fn timeout_terminates_a_child_that_never_reads_large_stdin() {
         let mut spec = if cfg!(windows) {

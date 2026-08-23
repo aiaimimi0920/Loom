@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$script:DaemonRequestHeaders = @{}
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -40,9 +41,9 @@ function Invoke-LoomJson {
 
     $json = if ($null -eq $Body) { $null } else { $Body | ConvertTo-Json -Depth 50 -Compress }
     if ($null -eq $json) {
-        return Invoke-RestMethod -Method $Method -Uri $Url -TimeoutSec 30
+        return Invoke-RestMethod -Method $Method -Uri $Url -Headers $script:DaemonRequestHeaders -TimeoutSec 30
     }
-    return Invoke-RestMethod -Method $Method -Uri $Url -ContentType "application/json" -Body $json -TimeoutSec 120
+    return Invoke-RestMethod -Method $Method -Uri $Url -Headers $script:DaemonRequestHeaders -ContentType "application/json" -Body $json -TimeoutSec 120
 }
 
 function Install-FrameworkZip {
@@ -144,7 +145,7 @@ $baseUrl = "http://127.0.0.1:$port"
 $daemon = $null
 $succeeded = $false
 $oldEnvironment = @{}
-foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
+foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_DAEMON_TOKEN", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
     $oldEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name)
 }
 
@@ -282,6 +283,8 @@ Compress-Archive -Path (Join-Path $mcpPackageStage "*") -DestinationPath $mcpPac
 try {
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$port
+    $env:LOOM_DAEMON_TOKEN = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+    $script:DaemonRequestHeaders = @{ Authorization = "Bearer $env:LOOM_DAEMON_TOKEN" }
     $env:LOOM_CONTROL_PLANE_ROOT = $controlPlane
     $env:LOOM_CONFIGURATION_ROOT = $configuration
     $env:LOOM_RUN_STORE_PATH = $runStore
@@ -320,9 +323,9 @@ try {
     Assert-Equal "package" ([string]$installedMcp.server.source) "Authored MCP fixture must use the independent package lifecycle."
     Assert-Equal "neuro.official/authored-art-fixture" ([string]$installedMcp.server.package.qualifiedId) "Authored MCP package identity mismatch."
     $trust = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/plugin-trust/policy" -Body @{
-        policy = "require_signed"
+        policy = "allow_unsigned"
     }
-    Assert-Equal "require_signed" ([string]$trust.policy) "Authored Art smoke did not enable strict trust policy."
+    Assert-Equal "allow_unsigned" ([string]$trust.policy) "Authored Art smoke requires the unsigned release framework fixtures to remain ready."
 
     $cloudTool = New-LocalArtTool `
         -RepositoryName $repositoryNames.cloud `
@@ -334,8 +337,8 @@ try {
             method = "GET"
             contentType = "application/json"
             headers = "{}"
-            body = "{}"
         }
+    $cloudTool.metadata["permissionPolicy"] = @{ network = @{ allowLocalhost = $true } }
     $null = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/arts/create" -Body @{ tool = $cloudTool; files = @() }
 
     $mcpTool = New-LocalArtTool `

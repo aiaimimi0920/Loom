@@ -32,7 +32,8 @@ const LEASE_PERSIST_DEBOUNCE_MILLIS: u64 = 250;
 /// no instance reference, and — for a short `lease_millis` — no live lease either. Ten minutes is
 /// far longer than that gap and far shorter than the default lease, so it never delays a real
 /// collection by a meaningful amount.
-const RESOURCE_GC_MIN_AGE_MILLIS: u64 = 10 * 60 * 1000;
+pub(crate) const DEFAULT_RESOURCE_GC_MIN_AGE_MILLIS: u64 = 10 * 60 * 1000;
+pub(crate) const MIN_RESOURCE_GC_AGE_MILLIS: u64 = 10 * 60 * 1000;
 
 /// What one `collect_garbage` pass did. Every field is reported so a sweep that deleted nothing
 /// because it could not delete (`failures`) is distinguishable from one that deleted nothing
@@ -105,9 +106,9 @@ pub(crate) struct SurfaceResourceStore {
     verified: BTreeMap<String, PayloadStamp>,
     leases_dirty: bool,
     leases_persisted_at_ms: u64,
-    /// Grace period `collect_garbage` applies, in milliseconds. Always `RESOURCE_GC_MIN_AGE_MILLIS`
-    /// in a shipped build; a test lowers it to sweep an object it has just written, because a
-    /// file's modification time cannot be backdated through `std::fs`.
+    /// Grace period `collect_garbage` applies, in milliseconds. Production construction enforces
+    /// `MIN_RESOURCE_GC_AGE_MILLIS`; a test-only setter can lower it to sweep a freshly written
+    /// object because a file's modification time cannot be backdated through `std::fs`.
     gc_min_age_ms: u64,
 }
 
@@ -116,7 +117,20 @@ pub(crate) struct SurfaceResourceStore {
 type PayloadStamp = (u64, u128);
 
 impl SurfaceResourceStore {
+    #[cfg(test)]
     pub(crate) fn new(root: impl AsRef<Path>) -> Result<Self, SurfaceResourceStoreError> {
+        Self::new_with_gc_min_age(root, DEFAULT_RESOURCE_GC_MIN_AGE_MILLIS)
+    }
+
+    pub(crate) fn new_with_gc_min_age(
+        root: impl AsRef<Path>,
+        gc_min_age_ms: u64,
+    ) -> Result<Self, SurfaceResourceStoreError> {
+        if gc_min_age_ms < MIN_RESOURCE_GC_AGE_MILLIS {
+            return Err(SurfaceResourceStoreError::Invalid(format!(
+                "Surface resource GC minimum age must be at least {MIN_RESOURCE_GC_AGE_MILLIS} ms"
+            )));
+        }
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
         let mut resources = BTreeMap::new();
@@ -171,7 +185,7 @@ impl SurfaceResourceStore {
             verified: BTreeMap::new(),
             leases_dirty: false,
             leases_persisted_at_ms: 0,
-            gc_min_age_ms: RESOURCE_GC_MIN_AGE_MILLIS,
+            gc_min_age_ms,
         };
         store.cleanup_expired();
         store.leases.retain(|lease_id, lease| {
@@ -839,6 +853,31 @@ fn hex_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_gc_age_rejects_values_below_the_safety_floor() {
+        let root = std::env::temp_dir().join(format!("loom-surface-gc-floor-{}", Uuid::new_v4()));
+        let error = match SurfaceResourceStore::new_with_gc_min_age(
+            &root,
+            MIN_RESOURCE_GC_AGE_MILLIS - 1,
+        ) {
+            Ok(_) => panic!("unsafe GC age must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("must be at least"));
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn production_gc_age_accepts_a_stricter_explicit_value() {
+        let root = std::env::temp_dir().join(format!("loom-surface-gc-config-{}", Uuid::new_v4()));
+        let configured = MIN_RESOURCE_GC_AGE_MILLIS + 60_000;
+        let store = SurfaceResourceStore::new_with_gc_min_age(&root, configured)
+            .expect("open store with stricter GC age");
+        assert_eq!(store.gc_min_age_ms, configured);
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn resources_are_content_addressed_reused_and_verified_after_restart() {

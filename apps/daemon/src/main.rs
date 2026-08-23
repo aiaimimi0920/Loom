@@ -80,9 +80,6 @@ fn main() -> Result<()> {
     if let Ok(value) = std::env::var("LOOM_BUNDLED_ART_SHA256_ALLOWLIST") {
         config = config.with_bundled_art_sha256_allowlist(value.split(','))?;
     }
-    if let Ok(token) = std::env::var("LOOM_DAEMON_TOKEN") {
-        config = config.with_bearer_token(token);
-    }
     if let Some(manifest_dir) = manifest_dir_from_args(&args)? {
         config = config.with_manifest_dir(manifest_dir);
     } else if let Ok(manifest_dir) = std::env::var("LOOM_CAPABILITY_MANIFEST_DIR") {

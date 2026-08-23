@@ -202,6 +202,7 @@ function New-IntegrityFixture {
         @{ path = "protocol/schemas/surface-manifest.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-message.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-scene.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/surface-stream.v1.schema.json"; content = "{}" },
         @{ path = "sdk/surface/README.md"; content = "surface sdk" },
         @{ path = "sdk/surface/neuro-surface.d.ts"; content = "export {};" },
         @{ path = "docs/plugin-development.md"; content = "development" },
@@ -240,8 +241,10 @@ function New-IntegrityFixture {
     Write-Ascii -Path "$cliZipPath.sha256" -Value ($cliSidecarLine + $sidecarSuffix)
     Write-Ascii -Path "$pluginSdkZipPath.sha256" -Value ("$pluginSdkZipHash  $pluginSdkZipName" + [Environment]::NewLine)
 
-    Write-FixtureFile -PackageDir $packageDir -RelativePath "sbom/Loom-integrity-fixture.cdx.json" -Content '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}'
-    Write-FixtureFile -PackageDir $packageDir -RelativePath "sbom/Loom-integrity-fixture.spdx.json" -Content '{"spdxVersion":"SPDX-2.3","packages":[]}'
+    $cycloneDxFixture = '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"name":"stock-api","version":"2.7.3"},{"name":"pysnowball","version":"0.1.8","licenses":[{"license":{"id":"Apache-2.0"}}]},{"name":"nodejs","version":"22.22.2"}]}'
+    $spdxFixture = '{"spdxVersion":"SPDX-2.3","packages":[{"name":"stock-api","versionInfo":"2.7.3"},{"name":"pysnowball","versionInfo":"0.1.8","licenseDeclared":"Apache-2.0"},{"name":"nodejs","versionInfo":"22.22.2"}]}'
+    Write-FixtureFile -PackageDir $packageDir -RelativePath "sbom/Loom-integrity-fixture.cdx.json" -Content $cycloneDxFixture
+    Write-FixtureFile -PackageDir $packageDir -RelativePath "sbom/Loom-integrity-fixture.spdx.json" -Content $spdxFixture
     Write-FixtureFile -PackageDir $packageDir -RelativePath "provenance/build-provenance.json" -Content '{"schemaVersion":1,"gitHead":"integrity-fixture","gitDirty":false,"subjects":[]}'
 
     $desktopRecord = Get-Record -PackageDir $packageDir -Kind "desktop-zip" -RelativePath $desktopZipRelative
@@ -274,7 +277,7 @@ function New-IntegrityFixture {
         bytes = $pluginSdkRecord.bytes
         sha256 = $pluginSdkRecord.sha256
         protocolVersion = "loom.framework.v1"
-        schemaCount = 10
+        schemaCount = 11
     }
 
     $manifest = [ordered]@{

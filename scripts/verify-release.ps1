@@ -237,6 +237,7 @@ function Assert-PluginSdkZipPayload {
         "protocol/schemas/surface-manifest.v1.schema.json",
         "protocol/schemas/surface-message.v1.schema.json",
         "protocol/schemas/surface-scene.v1.schema.json",
+        "protocol/schemas/surface-stream.v1.schema.json",
         "sdk/surface/README.md",
         "sdk/surface/neuro-surface.d.ts"
     ) | Sort-Object
@@ -279,7 +280,7 @@ function Assert-PluginSdkZipPayload {
     Assert-True -Condition ($null -ne $sdkProperty -and $null -ne $sdkProperty.Value) -Message "Manifest is missing pluginSdkArtifact."
     Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$sdkProperty.Value.entryName) -Message "Plugin SDK entry name mismatch."
     Assert-Equal -Expected "loom.framework.v1" -Actual ([string]$sdkProperty.Value.protocolVersion) -Message "Plugin SDK protocol version mismatch."
-    Assert-Equal -Expected 10 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
+    Assert-Equal -Expected 11 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
 }
 
 function Assert-FrameworkPackages {

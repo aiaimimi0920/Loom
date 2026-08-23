@@ -82,6 +82,56 @@ function Get-McpPropertyValue {
     return $null
 }
 
+function Find-McpStringProperty {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [Parameter(Mandatory = $true)][string]$PathPrefix
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    foreach ($name in $Names) {
+        $property = $Value.PSObject.Properties[$name]
+        if ($null -ne $property -and $property.Value -is [string] -and
+            -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+            return [pscustomobject]@{
+                Value = ([string]$property.Value).Trim()
+                Source = "$PathPrefix.$name"
+            }
+        }
+    }
+    return $null
+}
+
+function Find-McpThumbnailLocation {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$PathPrefix
+    )
+
+    $direct = Find-McpStringProperty `
+        -Value $Value `
+        -Names @("thumbnail_url", "thumbnailUrl", "thumbnail", "placeholder") `
+        -PathPrefix $PathPrefix
+    if ($null -ne $direct) {
+        return $direct
+    }
+
+    foreach ($containerName in @("thumbnail", "placeholder")) {
+        $container = Get-McpPropertyValue -Value $Value -Names @($containerName)
+        $nested = Find-McpStringProperty `
+            -Value $container `
+            -Names @("image_url", "imageUrl", "src", "url") `
+            -PathPrefix "$PathPrefix.$containerName"
+        if ($null -ne $nested) {
+            return $nested
+        }
+    }
+    return $null
+}
+
 function Get-DataUrlMediaType {
     param([AllowNull()][string]$Location)
 
@@ -143,7 +193,13 @@ function Test-ImageLocation {
 }
 
 function Convert-ToMcpImageCandidate {
-    param([AllowNull()][object]$Value)
+    param(
+        [AllowNull()][object]$Value,
+        [string]$PathPrefix = "result",
+        [ValidateSet("page", "image")][string]$GenericUrlRole = "page",
+        [AllowNull()][string]$InheritedSourcePageUrl,
+        [AllowNull()][string]$InheritedSourcePageSource
+    )
 
     if ($null -eq $Value) {
         return $null
@@ -168,6 +224,9 @@ function Convert-ToMcpImageCandidate {
         return [ordered]@{
             imageUrl = $imageData
             thumbnailUrl = $imageData
+            imageUrlSource = "$PathPrefix.data"
+            thumbnailUrlSource = "$PathPrefix.data"
+            sourcePageUrlSource = $null
             title = "MCP image"
             sourcePageUrl = $null
             width = $null
@@ -175,15 +234,57 @@ function Convert-ToMcpImageCandidate {
         }
     }
 
+    # Normalization is deliberately ordered by meaning, not by whichever `url`-shaped field happens
+    # to be visited first. At the top level, a generic `url` is a result/page URL. Within a search
+    # result's `properties`, a generic `url` is the downloadable asset URL used by Brave-style MCP
+    # servers. Thumbnail fields are a separate fallback channel and never silently become page URLs.
     $properties = Get-McpPropertyValue -Value $Value -Names @("properties")
-    $imageUrl = Get-McpPropertyValue -Value $Value -Names @(
-        "image_url", "imageUrl", "thumbnail_url", "thumbnailUrl", "src"
-    )
-    if ($imageUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($imageUrl)) {
-        $imageUrl = Get-McpPropertyValue -Value $properties -Names @(
-            "image_url", "imageUrl", "thumbnail_url", "thumbnailUrl", "src", "url"
-        )
+    $imageLocation = Find-McpStringProperty `
+        -Value $Value `
+        -Names @("image_url", "imageUrl", "src") `
+        -PathPrefix $PathPrefix
+    if ($null -eq $imageLocation) {
+        $imageLocation = Find-McpStringProperty `
+            -Value $properties `
+            -Names @("image_url", "imageUrl", "src", "url") `
+            -PathPrefix "$PathPrefix.properties"
     }
+    if ($null -eq $imageLocation -and ($GenericUrlRole -eq "image" -or $type -eq "image")) {
+        $imageLocation = Find-McpStringProperty `
+            -Value $Value `
+            -Names @("url") `
+            -PathPrefix $PathPrefix
+    }
+
+    $thumbnailLocation = Find-McpThumbnailLocation -Value $Value -PathPrefix $PathPrefix
+    if ($null -eq $thumbnailLocation) {
+        $thumbnailLocation = Find-McpThumbnailLocation -Value $properties -PathPrefix "$PathPrefix.properties"
+    }
+    if ($null -eq $imageLocation -and $null -ne $thumbnailLocation) {
+        $imageLocation = $thumbnailLocation
+    }
+
+    $sourcePageNames = @("source_page_url", "sourcePageUrl", "source", "page_url", "pageUrl")
+    if ($GenericUrlRole -ne "image" -and $type -ne "image") {
+        $sourcePageNames += "url"
+    }
+    $sourcePageLocation = Find-McpStringProperty `
+        -Value $Value `
+        -Names $sourcePageNames `
+        -PathPrefix $PathPrefix
+    if ($null -eq $sourcePageLocation) {
+        $sourcePageLocation = Find-McpStringProperty `
+            -Value $properties `
+            -Names @("source_page_url", "sourcePageUrl", "source", "page_url", "pageUrl") `
+            -PathPrefix "$PathPrefix.properties"
+    }
+    if ($null -eq $sourcePageLocation -and -not [string]::IsNullOrWhiteSpace($InheritedSourcePageUrl)) {
+        $sourcePageLocation = [pscustomobject]@{
+            Value = $InheritedSourcePageUrl
+            Source = $InheritedSourcePageSource
+        }
+    }
+
     $width = Get-McpPropertyValue -Value $Value -Names @("width")
     if ($null -eq $width) {
         $width = Get-McpPropertyValue -Value $properties -Names @("width")
@@ -192,28 +293,19 @@ function Convert-ToMcpImageCandidate {
     if ($null -eq $height) {
         $height = Get-McpPropertyValue -Value $properties -Names @("height")
     }
-    if (($imageUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($imageUrl)) -and
-        ($null -ne $width -or $null -ne $height)) {
-        $imageUrl = Get-McpPropertyValue -Value $Value -Names @("url")
-    }
-    if ($imageUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($imageUrl)) {
+    if ($null -eq $imageLocation) {
         return $null
     }
+    $imageUrl = [string]$imageLocation.Value
     if (Test-RefusedImageLocation -Location $imageUrl) {
         return $null
     }
 
-    $thumbnailUrl = Get-McpPropertyValue -Value $Value -Names @(
-        "thumbnail_url", "thumbnailUrl", "thumbnail", "placeholder"
-    )
-    if ($thumbnailUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($thumbnailUrl)) {
-        $thumbnailUrl = Get-McpPropertyValue -Value $properties -Names @(
-            "thumbnail_url", "thumbnailUrl", "thumbnail", "placeholder"
-        )
-    }
-    $sourcePageUrl = Get-McpPropertyValue -Value $Value -Names @("source_page_url", "sourcePageUrl", "url")
+    $thumbnailUrl = if ($null -ne $thumbnailLocation) { [string]$thumbnailLocation.Value } else { $null }
+    $sourcePageUrl = if ($null -ne $sourcePageLocation) { [string]$sourcePageLocation.Value } else { $null }
     if ($sourcePageUrl -eq $imageUrl) {
         $sourcePageUrl = $null
+        $sourcePageLocation = $null
     }
     # The thumbnail is the download fallback for this candidate, so a refused one is dropped rather
     # than carried: the fallback would only fail later, and a refused thumbnail is not worth showing.
@@ -221,8 +313,11 @@ function Convert-ToMcpImageCandidate {
         $thumbnailUrl = $null
     }
     return [ordered]@{
-        imageUrl = $imageUrl.Trim()
-        thumbnailUrl = if ($thumbnailUrl -is [string]) { $thumbnailUrl.Trim() } else { $null }
+        imageUrl = $imageUrl
+        thumbnailUrl = $thumbnailUrl
+        imageUrlSource = [string]$imageLocation.Source
+        thumbnailUrlSource = if ($null -ne $thumbnailLocation) { [string]$thumbnailLocation.Source } else { $null }
+        sourcePageUrlSource = if ($null -ne $sourcePageLocation) { [string]$sourcePageLocation.Source } else { $null }
         title = [string](Get-McpPropertyValue -Value $Value -Names @("title", "label", "name"))
         sourcePageUrl = $sourcePageUrl
         width = $width
@@ -235,7 +330,11 @@ function Add-McpImageCandidates {
         [AllowNull()][object]$Value,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.ArrayList]$Candidates,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.HashSet[string]]$Seen,
-        [int]$Depth = 0
+        [int]$Depth = 0,
+        [string]$PathPrefix = "result",
+        [ValidateSet("page", "image")][string]$GenericUrlRole = "page",
+        [AllowNull()][string]$InheritedSourcePageUrl,
+        [AllowNull()][string]$InheritedSourcePageSource
     )
 
     if ($null -eq $Value -or
@@ -250,6 +349,9 @@ function Add-McpImageCandidates {
                 [void]$Candidates.Add([ordered]@{
                     imageUrl = $text
                     thumbnailUrl = $text
+                    imageUrlSource = $PathPrefix
+                    thumbnailUrlSource = $PathPrefix
+                    sourcePageUrlSource = $null
                     title = ""
                     sourcePageUrl = $null
                     width = $null
@@ -264,7 +366,11 @@ function Add-McpImageCandidates {
                     -Value ($text | ConvertFrom-Json) `
                     -Candidates $Candidates `
                     -Seen $Seen `
-                    -Depth ($Depth + 1)
+                    -Depth ($Depth + 1) `
+                    -PathPrefix "$PathPrefix.decodedJson" `
+                    -GenericUrlRole $GenericUrlRole `
+                    -InheritedSourcePageUrl $InheritedSourcePageUrl `
+                    -InheritedSourcePageSource $InheritedSourcePageSource
             }
             catch {
             }
@@ -274,18 +380,49 @@ function Add-McpImageCandidates {
     if ($Value -is [System.Collections.IEnumerable] -and
         $Value -isnot [System.Collections.IDictionary] -and
         $Value -isnot [pscustomobject]) {
+        $itemIndex = 0
         foreach ($item in $Value) {
             if ($Candidates.Count -ge $script:McpImageCandidateLimit) {
                 return
             }
-            Add-McpImageCandidates -Value $item -Candidates $Candidates -Seen $Seen -Depth ($Depth + 1)
+            Add-McpImageCandidates `
+                -Value $item `
+                -Candidates $Candidates `
+                -Seen $Seen `
+                -Depth ($Depth + 1) `
+                -PathPrefix "$PathPrefix[$itemIndex]" `
+                -GenericUrlRole $GenericUrlRole `
+                -InheritedSourcePageUrl $InheritedSourcePageUrl `
+                -InheritedSourcePageSource $InheritedSourcePageSource
+            $itemIndex += 1
         }
         return
     }
 
-    $candidate = Convert-ToMcpImageCandidate -Value $Value
+    $candidate = Convert-ToMcpImageCandidate `
+        -Value $Value `
+        -PathPrefix $PathPrefix `
+        -GenericUrlRole $GenericUrlRole `
+        -InheritedSourcePageUrl $InheritedSourcePageUrl `
+        -InheritedSourcePageSource $InheritedSourcePageSource
     if ($null -ne $candidate -and $Seen.Add([string]$candidate.imageUrl)) {
         [void]$Candidates.Add($candidate)
+    }
+    $childSourcePageLocation = Find-McpStringProperty `
+        -Value $Value `
+        -Names @("source_page_url", "sourcePageUrl", "source", "page_url", "pageUrl", "url") `
+        -PathPrefix $PathPrefix
+    $childSourcePageUrl = if ($null -ne $childSourcePageLocation) {
+        [string]$childSourcePageLocation.Value
+    }
+    else {
+        $InheritedSourcePageUrl
+    }
+    $childSourcePageSource = if ($null -ne $childSourcePageLocation) {
+        [string]$childSourcePageLocation.Source
+    }
+    else {
+        $InheritedSourcePageSource
     }
     foreach ($property in $Value.PSObject.Properties) {
         if ($property.Name -in @("image_url", "imageUrl", "thumbnail_url", "thumbnailUrl", "src", "data", "url")) {
@@ -298,7 +435,13 @@ function Add-McpImageCandidates {
             -Value $property.Value `
             -Candidates $Candidates `
             -Seen $Seen `
-            -Depth ($Depth + 1)
+            -Depth ($Depth + 1) `
+            -PathPrefix "$PathPrefix.$($property.Name)" `
+            -GenericUrlRole $(if ($property.Name.ToLowerInvariant() -in @(
+                "image", "images", "asset", "assets", "photo", "photos", "media"
+            )) { "image" } else { $GenericUrlRole }) `
+            -InheritedSourcePageUrl $childSourcePageUrl `
+            -InheritedSourcePageSource $childSourcePageSource
     }
 }
 
@@ -554,9 +697,11 @@ try {
 
     $candidates = @()
     foreach ($candidate in @($rawCandidates | Select-Object -First $requestedCount)) {
+        $downloadLocation = [string]$candidate.imageUrl
+        $downloadLocationSource = [string]$candidate.imageUrlSource
         try {
             $dataUrl = Convert-ImageLocationToDataUrl `
-                -Location ([string]$candidate.imageUrl) `
+                -Location $downloadLocation `
                 -Referer ([string]$candidate.sourcePageUrl)
         }
         catch {
@@ -565,8 +710,10 @@ try {
                 continue
             }
             try {
+                $downloadLocation = [string]$candidate.thumbnailUrl
+                $downloadLocationSource = [string]$candidate.thumbnailUrlSource
                 $dataUrl = Convert-ImageLocationToDataUrl `
-                    -Location ([string]$candidate.thumbnailUrl) `
+                    -Location $downloadLocation `
                     -Referer ([string]$candidate.sourcePageUrl)
             }
             catch {
@@ -589,9 +736,15 @@ try {
             }
             imageUrl = $dataUrl
             sourceUrl = $candidate.sourcePageUrl
+            imageUrlSource = $downloadLocationSource
+            thumbnailUrlSource = $candidate.thumbnailUrlSource
+            sourceUrlSource = $candidate.sourcePageUrlSource
             width = $candidate.width
             height = $candidate.height
             index = $index
+        }
+        if (-not $downloadLocation.StartsWith("data:", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $item.sourceImageUrl = $downloadLocation
         }
         # The thumbnail helper returns its input unchanged when the image is already small enough, or
         # cannot be decoded. Emitting that as `thumbnail` would be a third copy of the same bytes, so the
@@ -607,17 +760,19 @@ try {
         throw "MCP image search returned candidates, but none could be downloaded"
     }
 
-    $selectedIndex = 0
     $selectedIndexValue = Get-RequestParamValue `
         -Request $request `
         -Names @("result_index") `
         -DefaultValue 0
-    $parsedSelectedIndex = 0
-    if ([int]::TryParse([string]$selectedIndexValue, [ref]$parsedSelectedIndex)) {
-        $selectedIndex = [Math]::Max(
-            0,
-            [Math]::Min($candidates.Count - 1, $parsedSelectedIndex)
-        )
+    $selectedIndex = 0
+    if (-not [int]::TryParse([string]$selectedIndexValue, [ref]$selectedIndex)) {
+        throw "result_index must be an integer"
+    }
+    if ($selectedIndex -lt 0) {
+        throw "result_index must be non-negative"
+    }
+    if ($selectedIndex -ge $candidates.Count) {
+        throw "result_index $selectedIndex is out of range for $($candidates.Count) downloadable candidates"
     }
     $selected = $candidates[$selectedIndex]
     # The selected image already travels twice in this response: once as the chosen candidate's

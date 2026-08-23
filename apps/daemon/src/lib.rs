@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64_URL};
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use fs2::FileExt;
 use loom_configuration::{
     built_in_registry, default_configuration_root, render_app_settings_page, render_settings_index,
     ConfigRegistry, FileDocumentStore, ManagedAppId, ManagedAppSet, ManagedConfigError,
@@ -95,7 +96,8 @@ use request_executor::{
 use surface_actions::{SharedSurfaceActionExecutor, SurfaceActionExecutor};
 use surface_resources::{
     SharedSurfaceResourceStore, SurfaceResourceGcOutcome, SurfaceResourceStore,
-    SurfaceResourceStoreError, MAX_SURFACE_RESOURCE_BYTES,
+    SurfaceResourceStoreError, DEFAULT_RESOURCE_GC_MIN_AGE_MILLIS, MAX_SURFACE_RESOURCE_BYTES,
+    MIN_RESOURCE_GC_AGE_MILLIS,
 };
 use surface_store::{
     SharedSurfaceInstanceStore, SurfaceInstanceRecord, SurfaceInstanceStore, SurfaceStoreError,
@@ -133,6 +135,10 @@ const MAX_BUNDLED_ART_SHA256_ALLOWLIST_ENTRIES: usize = 4096;
 const PUBLISHER_IDENTITY_FILE: &str = "publisher-identity.json";
 const PUBLISHER_PRIVATE_KEY_CREDENTIAL: &str = "loom-publisher-signing-key";
 const DEFAULT_TEST_PUBLISHER_ID: &str = "L0000000000";
+pub const DAEMON_AUTH_TOKEN_FILE: &str = "daemon-token";
+const ADMIN_AUTH_COOKIE_NAME: &str = "loom_admin";
+#[cfg(test)]
+const TEST_DAEMON_AUTH_TOKEN: &str = "loom-daemon-test-admin";
 
 fn invokable_capability_ids() -> [&'static str; 4] {
     [
@@ -157,7 +163,7 @@ pub fn daemon_help_text() -> &'static str {
         "  LOOM_DAEMON_PORT     Bind port [default: 8765]\n",
         "  LOOM_DAEMON_WORKERS  Request worker threads [default: 4]\n",
         "  LOOM_DAEMON_QUEUE_CAPACITY  Queued requests [default: 32]\n",
-        "  LOOM_DAEMON_TOKEN    Bearer token; required for non-loopback binds\n",
+        "  LOOM_DAEMON_TOKEN    Administrator bearer token; generated and persisted when omitted\n",
         "  LOOM_TLS_TERMINATED  Set to 1 only behind an authenticated TLS terminator for non-loopback binds\n",
         "  LOOM_BUNDLED_ART_SHA256_ALLOWLIST  Comma-separated packaged Art digests supplied by Loom desktop\n",
         "  LOOM_CAPABILITY_MANIFEST_DIR  Directory for loom.json discovery manifest\n",
@@ -270,6 +276,9 @@ pub struct DaemonConfig {
     run_store: RunStoreConfig,
     request_executor: RequestExecutorConfig,
     bundled_art_sha256_allowlist: BTreeSet<String>,
+    surface_resource_gc_min_age_ms: u64,
+    control_plane_root: Option<PathBuf>,
+    configuration_root: Option<PathBuf>,
 }
 
 impl DaemonConfig {
@@ -279,7 +288,16 @@ impl DaemonConfig {
             host: host.into(),
             port,
             hook_settings: HookSettings::default(),
-            auth_token: None,
+            auth_token: {
+                #[cfg(test)]
+                {
+                    Some(TEST_DAEMON_AUTH_TOKEN.to_owned())
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            },
             tls_terminated: false,
             manifest_dir: None,
             mcp_registry_endpoint: std::env::var("LOOM_MCP_REGISTRY_ENDPOINT")
@@ -291,6 +309,9 @@ impl DaemonConfig {
             run_store: RunStoreConfig::Memory,
             request_executor: RequestExecutorConfig::Inline,
             bundled_art_sha256_allowlist: BTreeSet::new(),
+            surface_resource_gc_min_age_ms: DEFAULT_RESOURCE_GC_MIN_AGE_MILLIS,
+            control_plane_root: None,
+            configuration_root: None,
         }
     }
 
@@ -374,6 +395,24 @@ impl DaemonConfig {
         self
     }
 
+    #[must_use]
+    pub fn with_surface_resource_gc_min_age_ms(mut self, min_age_ms: u64) -> Self {
+        self.surface_resource_gc_min_age_ms = min_age_ms;
+        self
+    }
+
+    #[must_use]
+    pub fn with_control_plane_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.control_plane_root = Some(root.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_configuration_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.configuration_root = Some(root.into());
+        self
+    }
+
     pub fn with_bundled_art_sha256_allowlist<I, S>(mut self, values: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -415,7 +454,7 @@ pub fn default_run_store_path() -> PathBuf {
 struct DaemonRuntime {
     hook_settings: HookSettings,
     run_store: SharedRunStore,
-    auth_token: Option<String>,
+    auth_token: String,
     config_registry: Arc<ConfigRegistry>,
     config_store: FileDocumentStore,
     mcp_servers: SharedMcpServerStore,
@@ -459,12 +498,33 @@ pub struct LoomDaemon {
     request_executor: RequestExecutorConfig,
 }
 
+#[cfg(test)]
+static TEST_BOUND_DAEMON_TOKENS: OnceLock<Mutex<HashMap<u16, String>>> = OnceLock::new();
+
+#[cfg(test)]
+fn record_test_bound_daemon_token(port: u16, token: &str) {
+    TEST_BOUND_DAEMON_TOKENS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("record test daemon token")
+        .insert(port, token.to_owned());
+}
+
+#[cfg(test)]
+fn test_bound_daemon_token(port: u16) -> Option<String> {
+    TEST_BOUND_DAEMON_TOKENS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("read test daemon token")
+        .get(&port)
+        .cloned()
+}
+
 impl LoomDaemon {
-    pub fn bind(config: DaemonConfig) -> Result<Self> {
-        if config.auth_token.is_none() && !is_loopback_bind_host(&config.host) {
+    pub fn bind(mut config: DaemonConfig) -> Result<Self> {
+        if config.surface_resource_gc_min_age_ms < MIN_RESOURCE_GC_AGE_MILLIS {
             anyhow::bail!(
-                "loom daemon auth token is required when binding non-loopback host {}",
-                config.host
+                "Surface resource GC minimum age must be at least {MIN_RESOURCE_GC_AGE_MILLIS} ms"
             );
         }
         if !config.tls_terminated && !is_loopback_bind_host(&config.host) {
@@ -488,23 +548,50 @@ impl LoomDaemon {
         let local_addr = listener
             .local_addr()
             .context("read daemon local addr for manifest")?;
-        let settings_base_url = std::env::var("LOOM_SETTINGS_BASE_URL")
-            .unwrap_or_else(|_| format!("http://{local_addr}/settings"));
-        let config_root = std::env::var_os("LOOM_CONFIGURATION_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(default_configuration_root);
-        let control_plane_root = std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(default_control_plane_root);
-        let framework_runtime_root = control_plane_root.join("frameworks");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
-        std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", &framework_runtime_root);
+        let control_plane_root = config.control_plane_root.take().unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                std::env::temp_dir().join(format!("loom-daemon-test-{}", Uuid::new_v4()))
+            }
+            #[cfg(not(test))]
+            {
+                std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(default_control_plane_root)
+            }
+        });
+        let config_root = config.configuration_root.take().unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                control_plane_root.join("configuration")
+            }
+            #[cfg(not(test))]
+            {
+                std::env::var_os("LOOM_CONFIGURATION_ROOT")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(default_configuration_root)
+            }
+        });
+        #[cfg(not(test))]
+        {
+            let framework_runtime_root = control_plane_root.join("frameworks");
+            std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
+            std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", &framework_runtime_root);
+        }
         repair_legacy_control_plane_permissions(&control_plane_root).with_context(|| {
             format!(
                 "repair Loom control-plane permissions in {}",
                 control_plane_root.display()
             )
         })?;
+        let auth_token = resolve_daemon_auth_token(config.auth_token.take(), &control_plane_root)?;
+        #[cfg(test)]
+        record_test_bound_daemon_token(local_addr.port(), &auth_token);
+        let settings_base_url = settings_url_with_token(
+            &std::env::var("LOOM_SETTINGS_BASE_URL")
+                .unwrap_or_else(|_| format!("http://{local_addr}/settings")),
+            &auth_token,
+        );
         let mut run_store: Box<dyn RunEvidenceStore> = match &config.run_store {
             RunStoreConfig::Memory => Box::new(InMemoryRunEvidenceStore::default()),
             RunStoreConfig::Sqlite(path) => {
@@ -518,11 +605,9 @@ impl LoomDaemon {
             .map_err(|error| anyhow::anyhow!("recover Loom run store: {error}"))?;
         let run_store_status = run_store.status();
         if let Some(manifest_dir) = config.manifest_dir.as_deref() {
-            if let Err(error) = write_local_capability_manifest(
-                manifest_dir,
-                local_addr,
-                config.auth_token.as_deref(),
-            ) {
+            if let Err(error) =
+                write_local_capability_manifest(manifest_dir, local_addr, Some(auth_token.as_str()))
+            {
                 handle_capability_manifest_error(local_addr, error)?;
             }
         }
@@ -545,8 +630,11 @@ impl LoomDaemon {
             .context("open Surface instance store")?,
         ));
         let surface_resources = Arc::new(Mutex::new(
-            SurfaceResourceStore::new(control_plane_root.join("surface-resources"))
-                .context("open Surface resource store")?,
+            SurfaceResourceStore::new_with_gc_min_age(
+                control_plane_root.join("surface-resources"),
+                config.surface_resource_gc_min_age_ms,
+            )
+            .context("open Surface resource store")?,
         ));
         // Startup is the one moment the whole reference set is knowable and nothing is mid-flight:
         // every lease minted by the previous process is either persisted or gone, and no request has
@@ -570,7 +658,7 @@ impl LoomDaemon {
         let runtime = DaemonRuntime {
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
-            auth_token: config.auth_token,
+            auth_token,
             config_registry: Arc::new(built_in_registry()),
             config_store: FileDocumentStore::new(config_root),
             mcp_servers,
@@ -653,6 +741,7 @@ impl LoomDaemon {
             CONNECTION_READ_QUEUE_CAPACITY,
             move |job: ConnectionReadJob| read_connection(job, &reader_draining),
         )?;
+        let peer_read_admission = PeerReadAdmission::new(CONNECTION_READ_PER_PEER_LIMIT);
 
         let mut read_stage_result: std::io::Result<()> = Ok(());
         let serve_result: Result<()> = 'serve: loop {
@@ -692,23 +781,29 @@ impl LoomDaemon {
 
             let mut accepted = false;
             match self.listener.accept() {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
                     accepted = true;
                     if let Some(stream) = prepare_connection(stream) {
-                        let job = ConnectionReadJob {
-                            stream,
-                            ready: ready_tx.clone(),
-                        };
-                        match read_stage.try_submit(job) {
-                            Ok(()) => record_connection_accepted(&self.runtime),
-                            Err(SubmitError::Full(job)) => {
-                                let (status, body) = daemon_busy_response();
-                                write_response_safely(job.stream, status, &body);
+                        if let Some(peer_permit) = peer_read_admission.try_acquire(peer.ip()) {
+                            let job = ConnectionReadJob {
+                                stream,
+                                ready: ready_tx.clone(),
+                                _peer_permit: peer_permit,
+                            };
+                            match read_stage.try_submit(job) {
+                                Ok(()) => record_connection_accepted(&self.runtime),
+                                Err(SubmitError::Full(job)) => {
+                                    let (status, body) = daemon_busy_response();
+                                    drain_and_write_refusal(job.stream, status, &body);
+                                }
+                                Err(SubmitError::Closed(job)) => {
+                                    let (status, body) = daemon_shutting_down_response();
+                                    drain_and_write_refusal(job.stream, status, &body);
+                                }
                             }
-                            Err(SubmitError::Closed(job)) => {
-                                let (status, body) = daemon_shutting_down_response();
-                                write_response_safely(job.stream, status, &body);
-                            }
+                        } else {
+                            let (status, body) = daemon_busy_response();
+                            drain_and_write_refusal(stream, status, &body);
                         }
                     }
                 }
@@ -793,6 +888,8 @@ impl LoomDaemon {
 /// and hands the socket over.
 const CONNECTION_READ_WORKERS: usize = 4;
 const CONNECTION_READ_QUEUE_CAPACITY: usize = 64;
+/// Keep one reader available for a different network peer even when one address trickles requests.
+const CONNECTION_READ_PER_PEER_LIMIT: usize = CONNECTION_READ_WORKERS - 1;
 
 /// Per-`read` timeout. Bounds how long a single syscall can block, not the whole request.
 const CONNECTION_READ_TIMEOUT_MILLIS: u64 = 2_000;
@@ -812,6 +909,61 @@ const ACCEPT_IDLE_WAIT_MILLIS: u64 = 10;
 /// that was already on the wire, so both are worth a short wait — but only a short one, since
 /// shutdown must not wait on a client that may never finish sending.
 const SHUTDOWN_READ_GRACE_MILLIS: u64 = 500;
+/// Refused clients may already be uploading. Consume a bounded prefix before the 503 so Windows
+/// delivers the response instead of resetting the connection on unread request bytes.
+const REFUSAL_READ_GRACE_MILLIS: u64 = 50;
+
+#[derive(Clone)]
+struct PeerReadAdmission {
+    counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    limit: usize,
+}
+
+impl PeerReadAdmission {
+    fn new(limit: usize) -> Self {
+        assert!(limit > 0, "per-peer read limit must be positive");
+        Self {
+            counts: Arc::new(Mutex::new(HashMap::new())),
+            limit,
+        }
+    }
+
+    fn try_acquire(&self, peer: IpAddr) -> Option<PeerReadPermit> {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = counts.entry(peer).or_default();
+        if *count >= self.limit {
+            return None;
+        }
+        *count += 1;
+        Some(PeerReadPermit {
+            peer,
+            counts: Arc::clone(&self.counts),
+        })
+    }
+}
+
+struct PeerReadPermit {
+    peer: IpAddr,
+    counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
+}
+
+impl Drop for PeerReadPermit {
+    fn drop(&mut self) {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&self.peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.peer);
+            }
+        }
+    }
+}
 
 /// A socket handed from the accept thread to a read worker.
 ///
@@ -820,6 +972,7 @@ const SHUTDOWN_READ_GRACE_MILLIS: u64 = 500;
 struct ConnectionReadJob {
     stream: TcpStream,
     ready: Sender<ReadyConnection>,
+    _peer_permit: PeerReadPermit,
 }
 
 /// A socket whose request has been read and is ready to dispatch.
@@ -888,13 +1041,25 @@ fn drain_accept_backlog(listener: &TcpListener) -> Vec<ReadyConnection> {
 
 /// Reads one request on a read worker and returns the socket to the accept loop.
 ///
-/// Once `draining` is set the daemon is shutting down, so a socket that has not sent anything yet is
-/// answered with 503 instead of being read: shutdown must not wait on a client that may never finish
-/// sending. A read already holding bytes is finished under the grace window instead — see
+/// Once `draining` is set the daemon is shutting down. A queued socket gets one bounded drain window
+/// before the 503 is written; this consumes bytes that may already be in the kernel without allowing
+/// an idle client to delay shutdown indefinitely. A read already in progress uses the same grace in
 /// `read_http_request_until`.
 fn read_connection(job: ConnectionReadJob, draining: &AtomicBool) {
-    let ConnectionReadJob { mut stream, ready } = job;
+    let ConnectionReadJob {
+        mut stream,
+        ready,
+        _peer_permit,
+    } = job;
     if draining.load(Ordering::SeqCst) {
+        // This job was accepted before shutdown but did not get a reader until after shutdown had
+        // started. Its bytes may already be waiting in the socket. Writing a response without first
+        // consuming them makes Windows reset the connection and destroys the 503 on the wire. Bound
+        // this late drain independently so an idle peer still cannot delay shutdown indefinitely.
+        let grace = Duration::from_millis(SHUTDOWN_READ_GRACE_MILLIS);
+        let _ = stream.set_read_timeout(Some(grace));
+        let _ =
+            read_http_request_until(&mut stream, Instant::now() + grace, &AtomicBool::new(false));
         let (status, body) = daemon_shutting_down_response();
         write_response_safely(stream, status, &body);
         return;
@@ -908,6 +1073,16 @@ fn read_connection(job: ConnectionReadJob, draining: &AtomicBool) {
         }
         Err(error) => eprintln!("loom request read failed: {error:#}"),
     }
+}
+
+fn drain_and_write_refusal(mut stream: TcpStream, status: u16, body: &str) {
+    let grace = Duration::from_millis(REFUSAL_READ_GRACE_MILLIS);
+    let _ = stream.set_read_timeout(Some(grace));
+    let _ = read_http_request_until(&mut stream, Instant::now() + grace, &AtomicBool::new(false));
+    if let Err(error) = write_response(&mut stream, status, body) {
+        eprintln!("loom refusal response write failed: {error:#}");
+    }
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
 /// Hands a parsed request to a bounded executor, answering the caller when it cannot be queued.
@@ -1001,7 +1176,7 @@ fn route_with_runtime(
         &runtime.run_store,
         runtime.run_store_status,
         &runtime.brain_planner,
-        runtime.auth_token.as_deref(),
+        &runtime.auth_token,
         runtime.config_registry.as_ref(),
         &runtime.config_store,
         &runtime.mcp_servers,
@@ -1327,6 +1502,11 @@ enum RouteResponse {
         status: u16,
         body: String,
     },
+    TextWithHeaders {
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: String,
+    },
     Binary {
         status: u16,
         content_type: String,
@@ -1334,27 +1514,209 @@ enum RouteResponse {
     },
 }
 
+fn loopback_host_from_authority(authority: &str) -> Option<&str> {
+    let authority = authority.trim();
+    if authority.is_empty()
+        || authority
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return None;
+    }
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let end = bracketed.find(']')?;
+        let host = &bracketed[..end];
+        let remainder = &bracketed[end + 1..];
+        if !remainder.is_empty()
+            && (!remainder.starts_with(':')
+                || remainder[1..].is_empty()
+                || !remainder[1..].bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return None;
+        }
+        return host
+            .parse::<IpAddr>()
+            .ok()
+            .filter(IpAddr::is_loopback)
+            .map(|_| host);
+    }
+    if authority.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
+        return Some(authority);
+    }
+    let host = match authority.rsplit_once(':') {
+        Some((host, port))
+            if !host.is_empty()
+                && !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            host
+        }
+        Some(_) => return None,
+        None => authority,
+    };
+    (host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()))
+    .then_some(host)
+}
+
+fn origin_matches_host(origin: &str, host: &str) -> bool {
+    let Some(authority) = origin
+        .trim()
+        .strip_prefix("http://")
+        .or_else(|| origin.trim().strip_prefix("https://"))
+    else {
+        return false;
+    };
+    if authority.contains('/') || authority.contains('?') || authority.contains('#') {
+        return false;
+    }
+    loopback_host_from_authority(authority).is_some() && authority.eq_ignore_ascii_case(host.trim())
+}
+
+fn request_requires_json_content_type(method: &str) -> bool {
+    matches!(method, "POST" | "PUT" | "PATCH")
+}
+
+fn content_type_is_json(value: &str) -> bool {
+    let media_type = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    media_type == "application/json" || media_type.ends_with("+json")
+}
+
+fn request_security_error(status: u16, code: &str, message: &str) -> (u16, String) {
+    structured_error(status, json!({ "code": code, "message": message }))
+        .expect("serialize request security error")
+}
+
+fn enforce_request_security(request: &ParsedHttpRequest) -> std::result::Result<(), (u16, String)> {
+    if request.header_count("host") != 1 {
+        return Err(request_security_error(
+            400,
+            "invalid_host",
+            "exactly one loopback Host header is required",
+        ));
+    }
+    let host = request.header("host").unwrap_or_default();
+    if loopback_host_from_authority(host).is_none() {
+        return Err(request_security_error(
+            400,
+            "invalid_host",
+            "Loom daemon requests require a loopback or localhost Host header",
+        ));
+    }
+    if request.header_count("origin") > 1 {
+        return Err(request_security_error(
+            403,
+            "origin_denied",
+            "multiple Origin headers are not allowed",
+        ));
+    }
+    if let Some(origin) = request.header("origin") {
+        if !origin_matches_host(origin, host) {
+            return Err(request_security_error(
+                403,
+                "origin_denied",
+                "request Origin must match the Loom daemon loopback origin",
+            ));
+        }
+    }
+    if request.header_count("sec-fetch-site") > 1 {
+        return Err(request_security_error(
+            403,
+            "browser_context_denied",
+            "multiple Sec-Fetch-Site headers are not allowed",
+        ));
+    }
+    if request.header("sec-fetch-site").is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "same-origin" | "none"
+        )
+    }) {
+        return Err(request_security_error(
+            403,
+            "browser_context_denied",
+            "cross-origin browser requests are not allowed",
+        ));
+    }
+    if request_requires_json_content_type(&request.method) {
+        if request.header_count("content-type") != 1
+            || !request
+                .header("content-type")
+                .is_some_and(content_type_is_json)
+        {
+            return Err(request_security_error(
+                415,
+                "json_content_type_required",
+                "state-changing Loom requests require Content-Type: application/json",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn settings_token_exchange(request: &ParsedHttpRequest, auth_token: &str) -> Option<RouteResponse> {
+    let route_path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
+    if request.method != "GET"
+        || !(route_path == "/settings"
+            || route_path
+                .strip_prefix("/settings/")
+                .is_some_and(|app| !app.is_empty() && !app.contains('/')))
+        || request.query_parameter("token").as_deref() != Some(auth_token)
+    {
+        return None;
+    }
+    Some(RouteResponse::TextWithHeaders {
+        status: 303,
+        headers: vec![
+            ("Location".to_owned(), route_path.to_owned()),
+            (
+                "Set-Cookie".to_owned(),
+                format!(
+                    "{ADMIN_AUTH_COOKIE_NAME}={}; HttpOnly; SameSite=Strict; Path=/",
+                    percent_encode_query_value(auth_token)
+                ),
+            ),
+            ("Cache-Control".to_owned(), "no-store".to_owned()),
+            ("Referrer-Policy".to_owned(), "no-referrer".to_owned()),
+        ],
+        body: String::new(),
+    })
+}
+
 fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteResponse {
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Err((status, body)) = enforce_request_security(request) {
+            return Ok(RouteResponse::Text { status, body });
+        }
+        if let Some(response) = settings_token_exchange(request, &runtime.auth_token) {
+            return Ok(response);
+        }
         if let Some(digest) = surface_resource_request_digest(&request.method, &request.path) {
-            if let Some(token) = runtime.auth_token.as_deref() {
-                if !request.has_bearer(token) {
-                    match authenticate_http_device_session(request, &runtime.device_registry) {
-                        Ok(Some(_)) => {}
-                        Ok(None) => {
-                            return structured_error(
-                                401,
-                                json!({
-                                    "code": "unauthorized",
-                                    "message": "missing or invalid Loom administrator or device session credential",
-                                }),
-                            )
+            if !request.has_admin_credential(&runtime.auth_token) {
+                match authenticate_http_device_session(request, &runtime.device_registry) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        return structured_error(
+                            401,
+                            json!({
+                                "code": "unauthorized",
+                                "message": "missing or invalid Loom administrator or device session credential",
+                            }),
+                        )
+                        .map(|(status, body)| RouteResponse::Text { status, body });
+                    }
+                    Err(error) => {
+                        return device_auth_error_response(error)
                             .map(|(status, body)| RouteResponse::Text { status, body });
-                        }
-                        Err(error) => {
-                            return device_auth_error_response(error)
-                                .map(|(status, body)| RouteResponse::Text { status, body });
-                        }
                     }
                 }
             }
@@ -1364,17 +1726,15 @@ fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteR
         if let Some((workflow_id, node_id)) =
             canvas_workflow_preview_ids(&request.method, &request.path)
         {
-            if let Some(token) = runtime.auth_token.as_deref() {
-                if !request.has_bearer(token) {
-                    return structured_error(
-                        401,
-                        json!({
-                            "code": "unauthorized",
-                            "message": "missing or invalid Loom bearer token",
-                        }),
-                    )
-                    .map(|(status, body)| RouteResponse::Text { status, body });
-                }
+            if !request.has_admin_credential(&runtime.auth_token) {
+                return structured_error(
+                    401,
+                    json!({
+                        "code": "unauthorized",
+                        "message": "missing or invalid Loom bearer token",
+                    }),
+                )
+                .map(|(status, body)| RouteResponse::Text { status, body });
             }
             return canvas_workflow_preview_response(
                 &workflow_id,
@@ -1383,17 +1743,15 @@ fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteR
             );
         }
         if let Some(node_id) = hook_canvas_preview_node_id(&request.method, &request.path) {
-            if let Some(token) = runtime.auth_token.as_deref() {
-                if !request.has_bearer(token) {
-                    return structured_error(
-                        401,
-                        json!({
-                            "code": "unauthorized",
-                            "message": "missing or invalid Loom bearer token",
-                        }),
-                    )
-                    .map(|(status, body)| RouteResponse::Text { status, body });
-                }
+            if !request.has_admin_credential(&runtime.auth_token) {
+                return structured_error(
+                    401,
+                    json!({
+                        "code": "unauthorized",
+                        "message": "missing or invalid Loom bearer token",
+                    }),
+                )
+                .map(|(status, body)| RouteResponse::Text { status, body });
             }
             return hook_canvas_preview_response(&node_id);
         }
@@ -1424,6 +1782,11 @@ fn write_response_safely(mut stream: TcpStream, status: u16, body: &str) {
 fn write_route_response_safely(mut stream: TcpStream, response: RouteResponse) {
     let result = match response {
         RouteResponse::Text { status, body } => write_response(&mut stream, status, &body),
+        RouteResponse::TextWithHeaders {
+            status,
+            headers,
+            body,
+        } => write_response_with_headers(&mut stream, status, &body, &headers),
         RouteResponse::Binary {
             status,
             content_type,
@@ -1871,6 +2234,85 @@ fn is_loopback_bind_host(host: &str) -> bool {
             .unwrap_or(false)
 }
 
+fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<String> {
+    let token = value.trim();
+    if token.is_empty() {
+        anyhow::bail!("Loom daemon auth token from {source} is empty");
+    }
+    if token.len() > 4096 || token.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+        anyhow::bail!(
+            "Loom daemon auth token from {source} contains whitespace, control bytes, or is too long"
+        );
+    }
+    Ok(token.to_owned())
+}
+
+fn daemon_auth_token_path(control_plane_root: &Path) -> PathBuf {
+    control_plane_root.join(DAEMON_AUTH_TOKEN_FILE)
+}
+
+fn resolve_daemon_auth_token(
+    configured_token: Option<String>,
+    control_plane_root: &Path,
+) -> Result<String> {
+    if let Some(token) = configured_token {
+        return normalize_daemon_auth_token(&token, "DaemonConfig");
+    }
+    if let Some(token) = std::env::var_os("LOOM_DAEMON_TOKEN").filter(|token| !token.is_empty()) {
+        return normalize_daemon_auth_token(&token.to_string_lossy(), "LOOM_DAEMON_TOKEN");
+    }
+
+    let path = daemon_auth_token_path(control_plane_root);
+    match fs::read_to_string(&path) {
+        Ok(token) => {
+            let token = normalize_daemon_auth_token(
+                &token,
+                &format!("persisted token file `{}`", path.display()),
+            )?;
+            restrict_sensitive_path_permissions(&path, false).with_context(|| {
+                format!("restrict Loom daemon auth token file `{}`", path.display())
+            })?;
+            Ok(token)
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let mut bytes = [0_u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            let token = BASE64_URL.encode(bytes);
+            write_bytes_atomically(&path, token.as_bytes(), AtomicWritePermissions::Restrict)
+                .with_context(|| {
+                    format!(
+                        "generate and persist Loom daemon auth token `{}`",
+                        path.display()
+                    )
+                })?;
+            Ok(token)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("read Loom daemon auth token file `{}`", path.display())),
+    }
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn settings_url_with_token(url: &str, token: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!(
+        "{}{separator}token={}",
+        url.trim(),
+        percent_encode_query_value(token)
+    )
+}
+
 fn default_control_plane_root() -> PathBuf {
     if let Some(path) = std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
         .map(PathBuf::from)
@@ -1887,51 +2329,87 @@ fn default_control_plane_root() -> PathBuf {
 
 #[cfg(windows)]
 fn repair_legacy_control_plane_permissions(root: &Path) -> std::io::Result<()> {
-    const ACL_MIGRATION_MARKER: &str = "windows-private-acl-v2";
     static REPAIR_LOCK: Mutex<()> = Mutex::new(());
 
     let _repair_guard = REPAIR_LOCK.lock().map_err(|_| {
         std::io::Error::other("Loom control-plane permission repair lock was poisoned")
     })?;
+    repair_legacy_control_plane_permissions_with(
+        root,
+        loom_plugin_security::restrict_private_path_permissions,
+        loom_plugin_security::repair_private_tree_permissions,
+    )
+}
 
-    match loom_plugin_security::restrict_private_path_permissions(root, true) {
+#[cfg(windows)]
+const ACL_MIGRATION_MARKER: &str = "windows-private-acl-v2";
+
+#[cfg(windows)]
+fn acl_migration_marker_is_complete(body: &str) -> bool {
+    let mut lines = body.lines();
+    lines.next() == Some("2 skipped=0") && lines.all(|line| line.trim().is_empty())
+}
+
+#[cfg(windows)]
+fn repair_legacy_control_plane_permissions_with<Restrict, RepairTree>(
+    root: &Path,
+    mut restrict: Restrict,
+    mut repair_tree: RepairTree,
+) -> std::io::Result<()>
+where
+    Restrict: FnMut(&Path, bool) -> std::io::Result<()>,
+    RepairTree: FnMut(&Path) -> std::io::Result<Vec<PathBuf>>,
+{
+    match restrict(root, true) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     }
 
-    // These stores were the only writers that applied the legacy private ACL
-    // to the control-plane root. Repair their files before testing existence,
-    // because ordinary metadata calls can themselves fail under that ACL.
-    let mut legacy_private_store_found = false;
-    for file_name in ["plugin-trust.json", "plugin-credentials.json"] {
-        match loom_plugin_security::restrict_private_path_permissions(&root.join(file_name), false)
-        {
-            Ok(()) => legacy_private_store_found = true,
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-    }
-    if !legacy_private_store_found {
-        return Ok(());
-    }
-
     let migration_dir = root.join("migrations");
-    match loom_plugin_security::restrict_private_path_permissions(&migration_dir, true) {
+    match restrict(&migration_dir, true) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
     let marker = migration_dir.join(ACL_MIGRATION_MARKER);
-    if marker.is_file() {
+    let marker_requires_retry = match fs::read_to_string(&marker) {
+        Ok(body) if acl_migration_marker_is_complete(&body) => return Ok(()),
+        Ok(_) => true,
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+
+    // These stores were the only writers that applied the legacy private ACL
+    // to the control-plane root. Repair their files before testing existence,
+    // because ordinary metadata calls can themselves fail under that ACL.
+    let mut legacy_private_store_found = false;
+    let mut skipped = BTreeSet::new();
+    for file_name in ["plugin-trust.json", "plugin-credentials.json"] {
+        let path = root.join(file_name);
+        match restrict(&path, false) {
+            Ok(()) => legacy_private_store_found = true,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+                legacy_private_store_found = true;
+                runtime_log_warn(format!(
+                    "legacy control-plane ACL repair deferred unreadable entry `{}`: {error}",
+                    path.display()
+                ));
+                skipped.insert(path);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if !legacy_private_store_found && !marker_requires_retry {
         return Ok(());
     }
 
-    let quarantined = loom_plugin_security::repair_private_tree_permissions(root)?;
-    if !quarantined.is_empty() {
+    skipped.extend(repair_tree(root)?);
+    if !skipped.is_empty() {
         runtime_log_info(format!(
             "repaired legacy control-plane ACL and left {} unreadable legacy entries untouched",
-            quarantined.len()
+            skipped.len()
         ));
     }
     fs::create_dir_all(&migration_dir)?;
@@ -1939,8 +2417,8 @@ fn repair_legacy_control_plane_permissions(root: &Path) -> std::io::Result<()> {
     // skipped and not just how many — a count alone leaves a future version nothing to re-attempt.
     // The write itself is atomic for the same reason every other persist site here is: a truncated
     // marker would either be read as "migration done" or leave the migration wedged.
-    let mut body = format!("2 skipped={}\n", quarantined.len());
-    for entry in &quarantined {
+    let mut body = format!("2 skipped={}\n", skipped.len());
+    for entry in &skipped {
         body.push_str(&format!("skipped-path={}\n", entry.display()));
     }
     write_bytes_atomically(&marker, body.as_bytes(), AtomicWritePermissions::Restrict)
@@ -2401,6 +2879,29 @@ impl ParsedHttpRequest {
         })
     }
 
+    fn has_admin_credential(&self, token: &str) -> bool {
+        self.has_bearer(token)
+            || self.header("cookie").is_some_and(|cookies| {
+                cookies.split(';').any(|cookie| {
+                    let Some((name, value)) = cookie.trim().split_once('=') else {
+                        return false;
+                    };
+                    name == ADMIN_AUTH_COOKIE_NAME
+                        && percent_decode_component(value).as_deref() == Some(token)
+                })
+            })
+    }
+
+    fn query_parameter(&self, expected_name: &str) -> Option<String> {
+        let (_, query) = self.path.split_once('?')?;
+        query.split('&').find_map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode_component(name).as_deref() == Some(expected_name))
+                .then(|| percent_decode_component(value))
+                .flatten()
+        })
+    }
+
     fn authorization_credential(&self, expected_scheme: &str) -> Option<&str> {
         self.headers.iter().find_map(|(name, value)| {
             if !name.eq_ignore_ascii_case("authorization") {
@@ -2420,6 +2921,36 @@ impl ParsedHttpRequest {
             .find(|(name, _)| name.eq_ignore_ascii_case(expected_name))
             .map(|(_, value)| value.as_str())
     }
+
+    fn header_count(&self, expected_name: &str) -> usize {
+        self.headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(expected_name))
+            .count()
+    }
+}
+
+fn percent_decode_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                let high = *bytes.get(index + 1)?;
+                let low = *bytes.get(index + 2)?;
+                let high = (high as char).to_digit(16)? as u8;
+                let low = (low as char).to_digit(16)? as u8;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 #[derive(Serialize)]
@@ -2427,13 +2958,14 @@ impl ParsedHttpRequest {
 struct HealthResponse {
     status: &'static str,
     version: &'static str,
-    pid: u32,
-    executable_path: String,
 }
 
 #[derive(Serialize)]
 struct StatusResponse {
     status: &'static str,
+    pid: u32,
+    #[serde(rename = "executablePath")]
+    executable_path: String,
     modules: Vec<ModuleStatus>,
     hooks: HookSettingsSummary,
     brain_planner: BrainPlannerStatus,
@@ -3270,6 +3802,9 @@ struct HookBridgeHistoryEntry {
 
 const HOOK_BRIDGE_HISTORY_CAPACITY: usize = 2_048;
 const HOOK_BRIDGE_POLL_MAX_MESSAGES: usize = 128;
+// Cursor zero requests recovery. Reserve one non-message cursor so an initial recovery can advance
+// even when no broadcast exists, without skipping the first future broadcast.
+const HOOK_BRIDGE_RECOVERY_CURSOR: usize = 1;
 const SURFACE_STREAM_WORKERS: usize = 8;
 const SURFACE_STREAM_QUEUE_CAPACITY: usize = 128;
 
@@ -3288,7 +3823,7 @@ impl HookBridgeBroadcastHub {
             subscribers: Arc::new(Mutex::new(Vec::new())),
             next_subscriber_id: Arc::new(AtomicUsize::new(1)),
             history: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
-            next_sequence: Arc::new(AtomicUsize::new(1)),
+            next_sequence: Arc::new(AtomicUsize::new(HOOK_BRIDGE_RECOVERY_CURSOR + 1)),
         }
     }
 
@@ -3334,6 +3869,7 @@ impl HookBridgeBroadcastHub {
         after: usize,
         timeout: Duration,
     ) -> (usize, bool, Vec<HookBridgeHistoryEntry>) {
+        let after = after.max(HOOK_BRIDGE_RECOVERY_CURSOR);
         let deadline = Instant::now() + timeout;
         let (history_lock, changed) = &*self.history;
         let Ok(mut history) = history_lock.lock() else {
@@ -3943,7 +4479,7 @@ fn route(
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
     brain_planner: &SharedBrainPlanner,
-    auth_token: Option<&str>,
+    auth_token: &str,
     config_registry: &ConfigRegistry,
     config_store: &FileDocumentStore,
     mcp_servers: &SharedMcpServerStore,
@@ -3971,9 +4507,7 @@ fn route(
         .next()
         .unwrap_or(request.path.as_str());
     let public_device_auth_route = is_public_device_auth_route(request.method.as_str(), route_path);
-    let admin_authenticated = auth_token
-        .map(|token| request.has_bearer(token))
-        .unwrap_or(false);
+    let admin_authenticated = request.has_admin_credential(auth_token);
     // The administrator bearer is decided first on purpose. A desktop client that has just been
     // re-paired still sends its previous `Authorization: Device …` credential, and surfacing that
     // credential's error ahead of a valid administrator bearer would reject a request the caller
@@ -3984,11 +4518,7 @@ fn route(
         Err(_) if admin_authenticated => None,
         Err(error) => return device_auth_error_response(error),
     };
-    if auth_token.is_some()
-        && !public_device_auth_route
-        && !admin_authenticated
-        && authenticated_device_id.is_none()
-    {
+    if !public_device_auth_route && !admin_authenticated && authenticated_device_id.is_none() {
         return structured_error(
             401,
             json!({
@@ -4026,16 +4556,16 @@ fn route(
             serde_json::to_string(&HealthResponse {
                 status: "ok",
                 version: env!("CARGO_PKG_VERSION"),
-                pid: std::process::id(),
-                executable_path: std::env::current_exe()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_default(),
             })?,
         )),
         ("GET", "/status") => Ok((
             200,
             serde_json::to_string(&StatusResponse {
                 status: "ready",
+                pid: std::process::id(),
+                executable_path: std::env::current_exe()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
                 modules: module_statuses(),
                 hooks: hook_settings.summary(),
                 brain_planner: brain_planner.status(),
@@ -4656,7 +5186,7 @@ fn route(
             settings,
             hook_bridge,
         ),
-        ("GET", "/v1/runtime/app-paths") => get_app_paths(),
+        ("GET", "/v1/runtime/app-paths") => get_app_paths(control_plane_root),
         ("GET", "/v1/runtime/autostart") => get_autostart(settings),
         ("POST", "/v1/runtime/autostart") => set_autostart(&request.body, settings),
         ("POST", "/v1/runtime/minimize-to-tray") => set_minimize_to_tray(&request.body, settings),
@@ -4847,7 +5377,7 @@ fn poll_surface_stream(
         .broadcast_hub
         .clone();
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut cursor = after;
+    let mut cursor = after.max(HOOK_BRIDGE_RECOVERY_CURSOR);
     let mut reset = false;
     let mut messages = if after == 0 {
         surface_snapshot_recovery_messages_for_device(surface_instances, authenticated_device_id)
@@ -5183,8 +5713,15 @@ fn configuration_claim(
         );
     };
     let managed = managed_app_set().contains(app_id);
-    let panel_url =
-        managed.then(|| format!("{}/{}", settings_base_url.trim_end_matches('/'), app_id));
+    let panel_url = managed.then(|| {
+        let (base, query) = settings_base_url
+            .split_once('?')
+            .map_or((settings_base_url, None), |(base, query)| {
+                (base, Some(query))
+            });
+        let panel = format!("{}/{}", base.trim_end_matches('/'), app_id);
+        query.map_or(panel.clone(), |query| format!("{panel}?{query}"))
+    });
 
     Ok((
         200,
@@ -13507,10 +14044,7 @@ fn broadcast_settings_updated(hook_bridge: &SharedHookBridgeRuntime, settings: &
     );
 }
 
-fn get_app_paths() -> Result<(u16, String)> {
-    let data_dir = std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_control_plane_root);
+fn get_app_paths(data_dir: &Path) -> Result<(u16, String)> {
     let config_dir = data_dir.join("settings");
     let log_dir = std::env::var_os("LOOM_LOG_DIR")
         .map(PathBuf::from)
@@ -14194,6 +14728,31 @@ fn update_hook_workflow_node(
             .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
         (runtime.workflow_root.clone(), runtime.broadcast_hub.clone())
     };
+    if is_hook_live_workflow_id(workflow_id) {
+        let mut patch = HookCanvasPersistPatch::default();
+        patch
+            .param_updates
+            .push((param.to_owned(), request.value.clone()));
+        if let Err(error) = persist_hook_canvas_live_node_patch(node_id, &patch) {
+            let status = match &error {
+                HookCanvasPersistError::RevisionConflict { .. }
+                | HookCanvasPersistError::SnapshotUnavailable
+                | HookCanvasPersistError::UnsupportedDocument(_) => 409,
+                HookCanvasPersistError::NodeUnavailable(_) => 422,
+                HookCanvasPersistError::SessionUnavailable(_)
+                | HookCanvasPersistError::WriteFailed(_) => 500,
+            };
+            return structured_error(
+                status,
+                json!({
+                    "code": error.code(),
+                    "message": error.message(),
+                    "refreshPath": "/v1/hook-bridge/session",
+                    "retryable": true,
+                }),
+            );
+        }
+    }
     let event = match update_workflow_node(
         &workflow_root,
         workflow_id,
@@ -14213,13 +14772,6 @@ fn update_hook_workflow_node(
         }
     };
 
-    if is_hook_live_workflow_id(workflow_id) {
-        let mut patch = HookCanvasPersistPatch::default();
-        patch
-            .param_updates
-            .push((param.to_owned(), request.value.clone()));
-        let _ = persist_hook_canvas_live_node_patch(node_id, &patch);
-    }
     broadcast_hook_bridge_messages(&broadcast_hub, &[serde_json::to_string(&event)?]);
     Ok((
         200,
@@ -14476,7 +15028,15 @@ fn read_hook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
     }
     match fs::read_to_string(&session_path) {
         Ok(content) => match serde_json::from_str::<Value>(&content) {
-            Ok(session) => (session_path, true, session, None),
+            Ok(session) => match hook_session_document_revision(&session) {
+                Ok(_) => (session_path, true, session, None),
+                Err(error) => (
+                    session_path,
+                    false,
+                    json!({ "stickers": [], "links": [] }),
+                    Some(format!("Unsupported Hook session document: {error}")),
+                ),
+            },
             Err(error) => (
                 session_path,
                 false,
@@ -14494,6 +15054,8 @@ fn read_hook_session_snapshot() -> (PathBuf, bool, Value, Option<String>) {
 }
 
 const HOOK_LIVE_WORKFLOW_ID: &str = "hook-live";
+const HOOK_SESSION_DOCUMENT_SCHEMA_VERSION: u64 = 1;
+const HOOK_SESSION_FILE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_HOOK_ART_TERMINAL_REQUESTS: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -14501,7 +15063,138 @@ struct HookLiveWorkflowSnapshot {
     source_path: PathBuf,
     bytes: Vec<u8>,
     root: Value,
+    document_revision: u64,
     updated_at: Option<String>,
+}
+
+struct HookSessionFileLease {
+    file: fs::File,
+}
+
+impl HookSessionFileLease {
+    fn acquire(session_path: &Path) -> Result<Self> {
+        let parent = session_path.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Hook session path `{}` has no parent",
+                session_path.display()
+            )
+        })?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create Hook session directory `{}`", parent.display()))?;
+        let file_name = session_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Hook session path has no UTF-8 file name"))?;
+        let lock_path = parent.join(format!("{file_name}.lock"));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .with_context(|| format!("open Hook session lock `{}`", lock_path.display()))?;
+        let started_at = Instant::now();
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { file }),
+                Err(error)
+                    if hook_session_lock_is_busy(&error)
+                        && started_at.elapsed() < HOOK_SESSION_FILE_LOCK_TIMEOUT =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) if hook_session_lock_is_busy(&error) => {
+                    anyhow::bail!(
+                        "HOOK_SESSION_LOCK_TIMEOUT failed to acquire `{}` within {} ms",
+                        lock_path.display(),
+                        HOOK_SESSION_FILE_LOCK_TIMEOUT.as_millis()
+                    );
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("lock Hook session `{}`", lock_path.display()));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for HookSessionFileLease {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn hook_session_lock_is_busy(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::WouldBlock || matches!(error.raw_os_error(), Some(32 | 33))
+}
+
+fn hook_session_document_revision(root: &Value) -> std::result::Result<u64, String> {
+    let schema = root.get("documentSchemaVersion");
+    let revision = root.get("documentRevision");
+    if schema.is_none() && revision.is_none() {
+        return Ok(0);
+    }
+    let schema = schema
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "documentSchemaVersion must be an unsigned integer".to_owned())?;
+    if schema != HOOK_SESSION_DOCUMENT_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported Hook documentSchemaVersion {schema}; expected {HOOK_SESSION_DOCUMENT_SCHEMA_VERSION}"
+        ));
+    }
+    revision
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "documentRevision must be an unsigned integer".to_owned())
+}
+
+fn set_hook_session_document_revision(root: &mut Value, revision: u64) -> Result<()> {
+    let object = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Hook session root must be a JSON object"))?;
+    object.insert(
+        "documentSchemaVersion".to_owned(),
+        Value::from(HOOK_SESSION_DOCUMENT_SCHEMA_VERSION),
+    );
+    object.insert("documentRevision".to_owned(), Value::from(revision));
+    Ok(())
+}
+
+#[derive(Debug)]
+enum HookCanvasPersistError {
+    SnapshotUnavailable,
+    SessionUnavailable(String),
+    UnsupportedDocument(String),
+    RevisionConflict { expected: u64, current: u64 },
+    NodeUnavailable(String),
+    WriteFailed(String),
+}
+
+impl HookCanvasPersistError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::SnapshotUnavailable => "hook_live_snapshot_unavailable",
+            Self::SessionUnavailable(_) => "hook_session_unavailable",
+            Self::UnsupportedDocument(_) => "hook_session_schema_unsupported",
+            Self::RevisionConflict { .. } => "hook_session_revision_conflict",
+            Self::NodeUnavailable(_) => "hook_session_node_unavailable",
+            Self::WriteFailed(_) => "hook_session_write_failed",
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            Self::SnapshotUnavailable => {
+                "Hook live snapshot is unavailable; refresh Hook before retrying".to_owned()
+            }
+            Self::SessionUnavailable(message)
+            | Self::UnsupportedDocument(message)
+            | Self::NodeUnavailable(message)
+            | Self::WriteFailed(message) => message.clone(),
+            Self::RevisionConflict { expected, current } => format!(
+                "Hook session changed after Loom read it (expected revision {expected}, current {current}); refresh the canvas and retry"
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -15085,10 +15778,14 @@ fn release_hook_art_resources(
     )
 }
 
-fn store_hook_live_workflow_snapshot(source_path: &Path, workflow_id: &str, snapshot: &Value) {
+fn store_hook_live_workflow_snapshot(
+    source_path: &Path,
+    workflow_id: &str,
+    snapshot: &Value,
+) -> std::result::Result<(), String> {
     let mut root = snapshot.clone();
     let Some(object) = root.as_object_mut() else {
-        return;
+        return Err("Hook live workflow snapshot must be a JSON object".to_owned());
     };
     if !object.contains_key("workflowId") {
         object.insert(
@@ -15096,21 +15793,23 @@ fn store_hook_live_workflow_snapshot(source_path: &Path, workflow_id: &str, snap
             Value::String(workflow_id.to_owned()),
         );
     }
-    let Ok(bytes) = serde_json::to_vec(&root) else {
-        return;
-    };
-    let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() else {
-        return;
-    };
+    let document_revision = hook_session_document_revision(&root)?;
+    let bytes = serde_json::to_vec(&root)
+        .map_err(|error| format!("serialize Hook live workflow snapshot: {error}"))?;
+    let mut snapshots = hook_live_workflow_snapshots()
+        .lock()
+        .map_err(|_| "lock Hook live workflow snapshots".to_owned())?;
     snapshots.insert(
         workflow_id.to_owned(),
         HookLiveWorkflowSnapshot {
             source_path: source_path.to_path_buf(),
             bytes,
             root,
+            document_revision,
             updated_at: Some(workflow_timestamp()),
         },
     );
+    Ok(())
 }
 
 fn hook_canvas_root_nodes_mut(root: &mut Value) -> Option<&mut Vec<Value>> {
@@ -15182,64 +15881,91 @@ fn write_hook_canvas_root(path: &Path, root: &Value) -> Result<Vec<u8>> {
     // Atomic because a truncate-then-fill here is observable by Hook: Hook owns this file and may
     // be reading it concurrently, and a bare `fs::write` lets it parse a zero-length or half-written
     // document. Permissions are preserved rather than restricted — see `AtomicWritePermissions`.
-    // This does not make the write safe against concurrent *edits*: there is still no lock, lease
-    // or generation shared with Hook, so a Loom write can overwrite an edit Hook made between
-    // Loom's read and this write. That boundary question is recorded in the F16 batch notes.
+    // Callers that mutate Hook-owned session data must hold HookSessionFileLease and compare the
+    // Hook-owned documentRevision before reaching this atomic replacement.
     write_bytes_atomically(path, &bytes, AtomicWritePermissions::Preserve)
         .with_context(|| format!("write Hook canvas root `{}`", path.display()))?;
     Ok(bytes)
 }
 
-fn persist_hook_canvas_live_node_patch(node_id: &str, patch: &HookCanvasPersistPatch) -> bool {
-    let mut updated = false;
-    if let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() {
-        for workflow_id in [HOOK_LIVE_WORKFLOW_ID] {
-            let Some(snapshot) = snapshots.get_mut(workflow_id) else {
-                continue;
-            };
-            if !apply_hook_canvas_persist_patch(&mut snapshot.root, node_id, patch) {
-                continue;
-            }
-            match write_hook_canvas_root(&snapshot.source_path, &snapshot.root) {
-                Ok(bytes) => {
-                    snapshot.bytes = bytes;
-                    snapshot.updated_at = Some(workflow_timestamp());
-                    updated = true;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "loom Hook canvas live-node persist failed for `{node_id}` at `{}`: {error:#}",
-                        snapshot.source_path.display(),
-                    );
-                    updated = true;
-                }
-            }
-        }
-    }
-    if updated {
-        return true;
-    }
+fn persist_hook_canvas_live_node_patch(
+    node_id: &str,
+    patch: &HookCanvasPersistPatch,
+) -> std::result::Result<u64, HookCanvasPersistError> {
+    let (session_path, expected_revision) = {
+        let snapshots = hook_live_workflow_snapshots().lock().map_err(|_| {
+            HookCanvasPersistError::WriteFailed(
+                "Unable to lock Hook live workflow snapshots".to_owned(),
+            )
+        })?;
+        let snapshot = snapshots
+            .get(HOOK_LIVE_WORKFLOW_ID)
+            .ok_or(HookCanvasPersistError::SnapshotUnavailable)?;
+        (snapshot.source_path.clone(), snapshot.document_revision)
+    };
 
-    let session_path = hook_session_path();
-    let Ok(content) = fs::read_to_string(&session_path) else {
-        return false;
-    };
-    let Ok(mut root) = serde_json::from_str::<Value>(&content) else {
-        return false;
-    };
-    if !apply_hook_canvas_persist_patch(&mut root, node_id, patch) {
-        return false;
+    let _lease = HookSessionFileLease::acquire(&session_path).map_err(|error| {
+        HookCanvasPersistError::WriteFailed(format!(
+            "Unable to lock Hook session `{}`: {error:#}",
+            session_path.display()
+        ))
+    })?;
+    let content = fs::read_to_string(&session_path).map_err(|error| {
+        HookCanvasPersistError::SessionUnavailable(format!(
+            "Unable to read Hook session `{}`: {error}",
+            session_path.display()
+        ))
+    })?;
+    let mut session_root = serde_json::from_str::<Value>(&content).map_err(|error| {
+        HookCanvasPersistError::UnsupportedDocument(format!(
+            "Invalid Hook session JSON at `{}`: {error}",
+            session_path.display()
+        ))
+    })?;
+    let current_revision = hook_session_document_revision(&session_root)
+        .map_err(HookCanvasPersistError::UnsupportedDocument)?;
+    if current_revision != expected_revision {
+        return Err(HookCanvasPersistError::RevisionConflict {
+            expected: expected_revision,
+            current: current_revision,
+        });
     }
-    match write_hook_canvas_root(&session_path, &root) {
-        Ok(_) => true,
-        Err(error) => {
-            eprintln!(
-                "loom Hook canvas session persist failed for `{node_id}` at `{}`: {error:#}",
-                session_path.display(),
-            );
-            true
+    if !apply_hook_canvas_persist_patch(&mut session_root, node_id, patch) {
+        return Err(HookCanvasPersistError::NodeUnavailable(format!(
+            "Hook session node `{node_id}` is unavailable; refresh the canvas before retrying"
+        )));
+    }
+    let next_revision = current_revision.checked_add(1).ok_or_else(|| {
+        HookCanvasPersistError::UnsupportedDocument(
+            "Hook session documentRevision is exhausted".to_owned(),
+        )
+    })?;
+    set_hook_session_document_revision(&mut session_root, next_revision).map_err(|error| {
+        HookCanvasPersistError::UnsupportedDocument(format!(
+            "Unable to update Hook session revision: {error:#}"
+        ))
+    })?;
+    write_hook_canvas_root(&session_path, &session_root).map_err(|error| {
+        HookCanvasPersistError::WriteFailed(format!(
+            "Unable to persist Hook session `{}`: {error:#}",
+            session_path.display()
+        ))
+    })?;
+
+    if let Ok(mut snapshots) = hook_live_workflow_snapshots().lock() {
+        if let Some(snapshot) = snapshots.get_mut(HOOK_LIVE_WORKFLOW_ID) {
+            if snapshot.document_revision == expected_revision {
+                let _ = apply_hook_canvas_persist_patch(&mut snapshot.root, node_id, patch);
+                let _ = set_hook_session_document_revision(&mut snapshot.root, next_revision);
+                if let Ok(bytes) = serde_json::to_vec(&snapshot.root) {
+                    snapshot.bytes = bytes;
+                }
+                snapshot.document_revision = next_revision;
+                snapshot.updated_at = Some(workflow_timestamp());
+            }
         }
     }
+    Ok(next_revision)
 }
 
 fn load_hook_live_workflow_document() -> Option<hook_canvas::HookCanvasDocument> {
@@ -15885,14 +16611,29 @@ fn handle_hook_protocol_request(
             result
         }
         HookRequest::WorkflowSync(request) => {
+            if is_hook_live_workflow_id(&request.workflow_id) {
+                if let Err(error) = hook_session_document_revision(&request.snapshot) {
+                    return hook_protocol_failure(
+                        &request.request_id,
+                        "hook_session_schema_unsupported",
+                        format!("invalid Hook live workflow revision metadata: {error}"),
+                    );
+                }
+            }
             match sync_workflow(workflow_root, &request.workflow_id, &request.snapshot) {
                 Ok(event) => {
                     if is_hook_live_workflow_id(&request.workflow_id) {
-                        store_hook_live_workflow_snapshot(
+                        if let Err(error) = store_hook_live_workflow_snapshot(
                             &hook_session_path(),
                             &request.workflow_id,
                             &request.snapshot,
-                        );
+                        ) {
+                            return hook_protocol_failure(
+                                &request.request_id,
+                                "hook_live_snapshot_store_failed",
+                                error,
+                            );
+                        }
                     }
                     HookBridgeWebSocketTextResult {
                         response: hook_protocol_response_json(
@@ -15911,6 +16652,19 @@ fn handle_hook_protocol_request(
             }
         }
         HookRequest::WorkflowNodeUpdate(request) => {
+            if is_hook_live_workflow_id(&request.workflow_id) {
+                let mut patch = HookCanvasPersistPatch::default();
+                patch
+                    .param_updates
+                    .push((request.parameter_id.clone(), request.value.clone()));
+                if let Err(error) = persist_hook_canvas_live_node_patch(&request.node_id, &patch) {
+                    return hook_protocol_failure(
+                        &request.request_id,
+                        error.code(),
+                        error.message(),
+                    );
+                }
+            }
             match update_workflow_node(
                 workflow_root,
                 &request.workflow_id,
@@ -15918,29 +16672,20 @@ fn handle_hook_protocol_request(
                 &request.parameter_id,
                 request.value.clone(),
             ) {
-                Ok(event) => {
-                    if is_hook_live_workflow_id(&request.workflow_id) {
-                        let mut patch = HookCanvasPersistPatch::default();
-                        patch
-                            .param_updates
-                            .push((request.parameter_id.clone(), request.value.clone()));
-                        let _ = persist_hook_canvas_live_node_patch(&request.node_id, &patch);
-                    }
-                    HookBridgeWebSocketTextResult {
-                        response: hook_protocol_response_json(
-                            &request.request_id,
-                            HookRequestStatus::Succeeded,
-                            json!({
-                                "workflowId": request.workflow_id,
-                                "nodeId": request.node_id,
-                                "parameterId": request.parameter_id,
-                            }),
-                            None,
-                        ),
-                        broadcasts: serde_json::to_string(&event).into_iter().collect(),
-                        subscription_channels: None,
-                    }
-                }
+                Ok(event) => HookBridgeWebSocketTextResult {
+                    response: hook_protocol_response_json(
+                        &request.request_id,
+                        HookRequestStatus::Succeeded,
+                        json!({
+                            "workflowId": request.workflow_id,
+                            "nodeId": request.node_id,
+                            "parameterId": request.parameter_id,
+                        }),
+                        None,
+                    ),
+                    broadcasts: serde_json::to_string(&event).into_iter().collect(),
+                    subscription_channels: None,
+                },
                 Err(error) => {
                     hook_protocol_failure(&request.request_id, "workflow_update_failed", error)
                 }
@@ -18214,6 +18959,15 @@ fn module_statuses() -> Vec<ModuleStatus> {
 }
 
 fn write_response(stream: &mut impl Write, status: u16, body: &str) -> Result<()> {
+    write_response_with_headers(stream, status, body, &[])
+}
+
+fn write_response_with_headers(
+    stream: &mut impl Write,
+    status: u16,
+    body: &str,
+    headers: &[(String, String)],
+) -> Result<()> {
     let reason = response_reason(status);
     let content_type = if body.trim_start().starts_with("<!doctype html") {
         "text/html; charset=utf-8"
@@ -18222,10 +18976,25 @@ fn write_response(stream: &mut impl Write, status: u16, body: &str) -> Result<()
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"
+    )
+    .context("write daemon response head")?;
+    for (name, value) in headers {
+        if name
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b':')
+            || value.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            anyhow::bail!("refuse invalid daemon response header");
+        }
+        write!(stream, "{name}: {value}\r\n").context("write daemon response header")?;
+    }
+    write!(
+        stream,
+        "Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
-    .context("write daemon response")
+    .context("write daemon response body")
 }
 
 fn write_binary_response(
@@ -18250,8 +19019,10 @@ fn write_binary_response(
 fn response_reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        303 => "See Other",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         408 => "Request Timeout",
         409 => "Conflict",
@@ -18301,6 +19072,152 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn acl_repair_retries_a_transiently_unreadable_legacy_child() {
+        let root = unique_temp_dir("acl-repair-retry");
+        fs::create_dir_all(&root).expect("create ACL repair fixture");
+        let trust_path = root.join("plugin-trust.json");
+        let trust_attempts = std::cell::Cell::new(0_u32);
+        let repair_attempts = std::cell::Cell::new(0_u32);
+
+        let run_repair = || {
+            repair_legacy_control_plane_permissions_with(
+                &root,
+                |path, _directory| {
+                    if path == trust_path {
+                        let attempt = trust_attempts.get();
+                        trust_attempts.set(attempt + 1);
+                        if attempt == 0 {
+                            return Err(std::io::Error::new(
+                                ErrorKind::PermissionDenied,
+                                "transient fixture denial",
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    if path == root.join("plugin-credentials.json") {
+                        return Err(std::io::Error::from(ErrorKind::NotFound));
+                    }
+                    Ok(())
+                },
+                |_path| {
+                    let attempt = repair_attempts.get();
+                    repair_attempts.set(attempt + 1);
+                    Ok(if attempt == 0 {
+                        vec![trust_path.clone()]
+                    } else {
+                        Vec::new()
+                    })
+                },
+            )
+        };
+
+        run_repair().expect("first repair records the skipped child");
+        let marker = root.join("migrations").join(ACL_MIGRATION_MARKER);
+        let first_marker = fs::read_to_string(&marker).expect("read retry marker");
+        assert!(first_marker.starts_with("2 skipped=1\n"));
+        assert!(!acl_migration_marker_is_complete(&first_marker));
+
+        run_repair().expect("second repair retries and completes");
+        let second_marker = fs::read_to_string(&marker).expect("read completed marker");
+        assert!(acl_migration_marker_is_complete(&second_marker));
+        assert_eq!(trust_attempts.get(), 2);
+        assert_eq!(repair_attempts.get(), 2);
+        fs::remove_dir_all(root).expect("cleanup ACL repair fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acl_repair_keeps_a_root_permission_failure_fatal() {
+        let root = unique_temp_dir("acl-root-fatal");
+        let error = repair_legacy_control_plane_permissions_with(
+            &root,
+            |_path, _directory| {
+                Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "fatal root denial",
+                ))
+            },
+            |_path| Ok(Vec::new()),
+        )
+        .expect_err("root ACL failure must remain fatal");
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(!root.join("migrations").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acl_repair_marker_requires_an_exact_completed_record() {
+        assert!(acl_migration_marker_is_complete("2 skipped=0\n"));
+        assert!(!acl_migration_marker_is_complete(
+            "2 skipped=1\nskipped-path=x\n"
+        ));
+        assert!(!acl_migration_marker_is_complete(""));
+        assert!(!acl_migration_marker_is_complete("garbage\n"));
+    }
+
+    #[test]
+    fn peer_read_admission_preserves_capacity_for_an_unrelated_peer() {
+        let admission = PeerReadAdmission::new(3);
+        let first_peer = "192.0.2.10".parse().expect("first fixture IP");
+        let other_peer = "198.51.100.20".parse().expect("other fixture IP");
+        let mut first_permits = (0..3)
+            .map(|_| {
+                admission
+                    .try_acquire(first_peer)
+                    .expect("first peer remains under its limit")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(admission.try_acquire(first_peer).is_none());
+        let other_permit = admission
+            .try_acquire(other_peer)
+            .expect("unrelated peer retains independent capacity");
+        drop(other_permit);
+        drop(first_permits.pop());
+        assert!(admission.try_acquire(first_peer).is_some());
+    }
+
+    #[test]
+    fn partial_request_can_read_a_bounded_refusal_without_a_reset() {
+        let listener =
+            TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind refusal fixture");
+        let address = listener.local_addr().expect("refusal fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept refused client");
+            let (status, body) = daemon_busy_response();
+            let started = Instant::now();
+            drain_and_write_refusal(stream, status, &body);
+            started.elapsed()
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect refused client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set refused client timeout");
+        client
+            .write_all(
+                b"POST /v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 64\r\n\r\npartial",
+            )
+            .expect("write partial refused request");
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("read refusal without connection reset");
+        let elapsed = server.join().expect("join refusal fixture");
+
+        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert_eq!(
+            response_json_body(&response)["error"]["code"],
+            "daemon_busy"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "refusal drain exceeded its bounded grace: {elapsed:?}"
+        );
+    }
+
     fn hook_art_request(request_id: &str, node_id: &str, generation: u64) -> HookArtExecuteRequest {
         HookArtExecuteRequest {
             protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
@@ -18315,6 +19232,42 @@ mod tests {
             disabled_parameters: Vec::new(),
             deadline_at_ms: None,
         }
+    }
+
+    #[test]
+    fn daemon_rejects_surface_resource_gc_age_below_the_safety_floor() {
+        let error = match LoomDaemon::bind(
+            DaemonConfig::localhost(0)
+                .with_surface_resource_gc_min_age_ms(MIN_RESOURCE_GC_AGE_MILLIS - 1),
+        ) {
+            Ok(_) => panic!("unsafe GC age must fail before daemon startup"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("must be at least"));
+    }
+
+    #[test]
+    fn unit_test_daemon_bind_owns_an_isolated_control_plane_root() {
+        let control_plane_before = std::env::var_os("LOOM_CONTROL_PLANE_ROOT");
+        let framework_root_before = std::env::var_os("LOOM_FRAMEWORK_PACKAGES_DIR");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind isolated daemon");
+        let root = daemon.runtime.control_plane_root.clone();
+
+        assert!(root.starts_with(std::env::temp_dir()));
+        assert!(root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("loom-daemon-test-")));
+        assert_eq!(
+            std::env::var_os("LOOM_CONTROL_PLANE_ROOT"),
+            control_plane_before
+        );
+        assert_eq!(
+            std::env::var_os("LOOM_FRAMEWORK_PACKAGES_DIR"),
+            framework_root_before
+        );
+        drop(daemon);
+        fs::remove_dir_all(root).expect("cleanup isolated daemon root");
     }
 
     #[test]
@@ -19012,7 +19965,8 @@ mod tests {
                 assert_eq!(content_type, "application/octet-stream");
                 assert_eq!(body, resource_payload);
             }
-            RouteResponse::Text { status, body } => {
+            RouteResponse::Text { status, body }
+            | RouteResponse::TextWithHeaders { status, body, .. } => {
                 panic!("expected device-authenticated Surface resource, got {status}: {body}")
             }
         }
@@ -19130,6 +20084,50 @@ mod tests {
     }
 
     #[test]
+    fn initial_surface_recovery_advances_without_skipping_the_first_broadcast() {
+        let root = unique_temp_dir("surface-stream-recovery-cursor");
+        let surface_instances = Arc::new(Mutex::new(
+            SurfaceInstanceStore::new(root.join("instances.json")).expect("Surface store"),
+        ));
+        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+
+        let (_, initial_body) = poll_surface_stream(
+            "/v1/surfaces/stream?after=0&timeoutMs=0",
+            &hook_bridge,
+            &surface_instances,
+            None,
+        )
+        .expect("initial recovery poll");
+        let initial: Value = serde_json::from_str(&initial_body).expect("initial stream JSON");
+        assert_eq!(initial["next"], HOOK_BRIDGE_RECOVERY_CURSOR);
+        assert!(initial["messages"].as_array().is_some_and(Vec::is_empty));
+
+        let hub = hook_bridge
+            .lock()
+            .expect("Hook bridge")
+            .broadcast_hub
+            .clone();
+        broadcast_hook_bridge_messages(
+            &hub,
+            &[json!({"method": SURFACE_EVENT_PATCH, "params": {"revision": 1}}).to_string()],
+        );
+        let (_, next_body) = poll_surface_stream(
+            &format!("/v1/surfaces/stream?after={HOOK_BRIDGE_RECOVERY_CURSOR}&timeoutMs=0"),
+            &hook_bridge,
+            &surface_instances,
+            None,
+        )
+        .expect("post-recovery poll");
+        let next: Value = serde_json::from_str(&next_body).expect("next stream JSON");
+        assert_eq!(next["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            next["messages"][0]["params"]["revision"], 1,
+            "the reserved recovery cursor must not skip the first real broadcast"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn surface_stream_isolated_by_authenticated_attachment_device() {
         let root = unique_temp_dir("surface-stream-device-isolation");
         let surface_instances = Arc::new(Mutex::new(
@@ -19216,7 +20214,7 @@ mod tests {
         // value is spelled out here rather than read from the constant: changing it has to break a
         // test in this repository, not only in Hook's.
         assert_eq!(response["protocolVersion"], "loom.surface-stream.v1");
-        assert_eq!(response["next"], 2);
+        assert_eq!(response["next"], 3);
         assert_eq!(response["messages"].as_array().map(Vec::len), Some(1));
         assert_eq!(
             response["messages"][0]["params"]["patch"]["attachmentId"],
@@ -21177,8 +22175,12 @@ nodes:
 
     fn test_daemon_runtime_from_config(
         control_plane_root: &Path,
-        config: DaemonConfig,
+        mut config: DaemonConfig,
     ) -> DaemonRuntime {
+        let config_root = config
+            .configuration_root
+            .take()
+            .unwrap_or_else(|| control_plane_root.join("config"));
         let run_store: Box<dyn RunEvidenceStore> = match config.run_store {
             RunStoreConfig::Memory => Box::new(InMemoryRunEvidenceStore::default()),
             RunStoreConfig::Sqlite(path) => {
@@ -21187,9 +22189,6 @@ nodes:
         };
         let run_store_status = run_store.status();
         let brain_planner = build_brain_planner(config.brain_planner).expect("build test planner");
-        let config_root = std::env::var_os("LOOM_CONFIGURATION_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| control_plane_root.join("config"));
         let settings_base_url = std::env::var("LOOM_SETTINGS_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:0/settings".to_owned());
         let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root)));
@@ -21226,7 +22225,9 @@ nodes:
         DaemonRuntime {
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
-            auth_token: config.auth_token,
+            auth_token: config
+                .auth_token
+                .unwrap_or_else(|| TEST_DAEMON_AUTH_TOKEN.to_owned()),
             config_registry: Arc::new(built_in_registry()),
             config_store: FileDocumentStore::new(config_root),
             mcp_servers,
@@ -21283,20 +22284,43 @@ nodes:
         headers: &[(&str, &str)],
         body: Option<&str>,
     ) -> ParsedHttpRequest {
+        let mut headers = headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect::<Vec<_>>();
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            headers.push(("Host".to_owned(), "127.0.0.1:8765".to_owned()));
+        }
+        if body.is_some()
+            && !headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        {
+            headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+        }
+        if !headers.iter().any(|(name, _)| {
+            name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
+        }) {
+            headers.push((
+                "Authorization".to_owned(),
+                format!("Bearer {TEST_DAEMON_AUTH_TOKEN}"),
+            ));
+        }
         ParsedHttpRequest {
             method: method.to_owned(),
             path: path.to_owned(),
-            headers: headers
-                .iter()
-                .map(|(name, value)| (name.to_string(), value.to_string()))
-                .collect(),
+            headers,
             body: body.unwrap_or_default().to_owned(),
         }
     }
 
     fn expect_text_route_response(response: RouteResponse, expected_status: u16) -> String {
         match response {
-            RouteResponse::Text { status, body } => {
+            RouteResponse::Text { status, body }
+            | RouteResponse::TextWithHeaders { status, body, .. } => {
                 assert_eq!(status, expected_status, "route response body: {body}");
                 body
             }
@@ -21651,7 +22675,7 @@ nodes:
                 assert_eq!(content_type, expected_content_type);
                 body
             }
-            RouteResponse::Text { .. } => {
+            RouteResponse::Text { .. } | RouteResponse::TextWithHeaders { .. } => {
                 panic!("expected binary response with status {expected_status}")
             }
         }
@@ -21885,8 +22909,16 @@ nodes:
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
 
-        assert_eq!(http_json_get(port, "/health")["status"], "ok");
-        assert_eq!(http_json_get(port, "/status")["status"], "ready");
+        let health = http_json_get(port, "/health");
+        assert_eq!(health["status"], "ok");
+        assert!(health.get("pid").is_none());
+        assert!(health.get("executablePath").is_none());
+        let status = http_json_get(port, "/status");
+        assert_eq!(status["status"], "ready");
+        assert_eq!(status["pid"], std::process::id());
+        assert!(status["executablePath"]
+            .as_str()
+            .is_some_and(|path| !path.is_empty()));
         assert!(http_json_get(port, "/v1/capabilities")["capabilities"].is_array());
 
         shutdown_tx.send(()).expect("shutdown");
@@ -22210,7 +23242,7 @@ nodes:
         let body = r#"{"requestId":"shutdown-race","caller":"test","capability":"brain.plan","input":{"goal":"shutdown race"}}"#;
         write!(
             client,
-            "POST /v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TEST_DAEMON_AUTH_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
         .expect("write partial request");
@@ -22271,13 +23303,14 @@ nodes:
     fn serialized_routes_do_not_overlap_while_probes_remain_available() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("serialized-routes");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
 
         let observer = SerializedRouteObserver::new();
-        let mut daemon =
-            LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(3, 4))
-                .expect("bind daemon");
+        let mut daemon = LoomDaemon::bind(
+            DaemonConfig::localhost(0)
+                .with_bounded_request_executor(3, 4)
+                .with_control_plane_root(&root),
+        )
+        .expect("bind daemon");
         Arc::get_mut(&mut daemon.runtime)
             .expect("exclusive daemon runtime")
             .serialized_route_observer = Some(Arc::clone(&observer));
@@ -22309,7 +23342,6 @@ nodes:
         assert!(first_response.starts_with("HTTP/1.1 200 OK"));
         assert!(second_response.starts_with("HTTP/1.1 200 OK"));
         assert_eq!(observer.max_active(), 1);
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup serialized routes root");
     }
 
@@ -22327,12 +23359,13 @@ nodes:
     fn a_serialized_route_completes_while_a_surface_stream_long_poll_is_parked() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("surface-stream-does-not-serialize");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
 
-        let daemon =
-            LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(3, 4))
-                .expect("bind daemon");
+        let daemon = LoomDaemon::bind(
+            DaemonConfig::localhost(0)
+                .with_bounded_request_executor(3, 4)
+                .with_control_plane_root(&root),
+        )
+        .expect("bind daemon");
         let port = daemon.local_addr().expect("address").port();
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
@@ -22354,7 +23387,6 @@ nodes:
             waited < Duration::from_millis(1_500),
             "a serialized route waited {waited:?} behind an idle Surface stream long-poll"
         );
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup Surface stream concurrency root");
     }
 
@@ -22365,12 +23397,13 @@ nodes:
     fn a_trickling_request_does_not_block_the_accept_loop() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
         let root = unique_temp_dir("trickling-request-accept-loop");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
 
-        let daemon =
-            LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(3, 4))
-                .expect("bind daemon");
+        let daemon = LoomDaemon::bind(
+            DaemonConfig::localhost(0)
+                .with_bounded_request_executor(3, 4)
+                .with_control_plane_root(&root),
+        )
+        .expect("bind daemon");
         let port = daemon.local_addr().expect("address").port();
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
@@ -22398,7 +23431,6 @@ nodes:
             waited < Duration::from_millis(1_500),
             "/health waited {waited:?} behind a client that had sent only a partial head"
         );
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup trickling request root");
     }
 
@@ -23392,10 +24424,9 @@ def run(args):
     #[test]
     fn daemon_executes_mcp_backed_tool_contract() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("mcp-backed-tool");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
+            .expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -23438,18 +24469,16 @@ def run(args):
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup mcp-backed tool root");
     }
 
     #[test]
     fn daemon_executes_cloud_api_backed_tool_contract() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("cloud-tool");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
         let fixture = CloudApiFixture::start(CloudApiFixtureMode::Text);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
+            .expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -23493,7 +24522,6 @@ def run(args):
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup cloud tool root");
     }
 
@@ -23672,10 +24700,157 @@ def run(args):
     }
 
     #[test]
+    fn hook_canvas_patch_migrates_legacy_session_and_persists_revision_across_reload() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        clear_hook_canvas_runtime_state(None);
+        let root = unique_temp_dir("hook-session-revision-migration");
+        let session_path = root.join("session.json");
+        fs::write(
+            &session_path,
+            r#"{"stickers":[{"id":"node-1","params":{"strength":1}}],"links":[]}"#,
+        )
+        .expect("write legacy Hook session");
+        store_hook_live_workflow_snapshot(
+            &session_path,
+            HOOK_LIVE_WORKFLOW_ID,
+            &json!({
+                "nodes": [{"id":"node-1","data":{"params":{"strength":1}}}],
+                "edges": []
+            }),
+        )
+        .expect("store legacy live snapshot");
+        let patch = HookCanvasPersistPatch {
+            param_updates: vec![("strength".to_owned(), json!(9))],
+        };
+
+        let revision = persist_hook_canvas_live_node_patch("node-1", &patch)
+            .expect("persist Loom patch against legacy revision");
+        clear_hook_canvas_runtime_state(None);
+        let reloaded: Value = serde_json::from_slice(
+            &fs::read(&session_path).expect("reload persisted Hook session"),
+        )
+        .expect("parse persisted Hook session");
+
+        assert_eq!(revision, 1);
+        assert_eq!(reloaded["documentSchemaVersion"], 1);
+        assert_eq!(reloaded["documentRevision"], 1);
+        assert_eq!(reloaded["stickers"][0]["params"]["strength"], 9);
+        fs::remove_dir_all(root).expect("cleanup Hook session migration test");
+    }
+
+    #[test]
+    fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        clear_hook_canvas_runtime_state(None);
+        let root = unique_temp_dir("hook-session-concurrent-edit");
+        let session_path = root.join("session.json");
+        fs::write(
+            &session_path,
+            serde_json::to_vec(&json!({
+                "documentSchemaVersion": 1,
+                "documentRevision": 1,
+                "stickers": [{"id":"node-1","params":{"strength":1}}],
+                "links": []
+            }))
+            .unwrap(),
+        )
+        .expect("write initial Hook session");
+        store_hook_live_workflow_snapshot(
+            &session_path,
+            HOOK_LIVE_WORKFLOW_ID,
+            &json!({
+                "documentSchemaVersion": 1,
+                "documentRevision": 1,
+                "nodes": [{"id":"node-1","data":{"params":{"strength":1}}}],
+                "edges": []
+            }),
+        )
+        .expect("store revision-one live snapshot");
+        let hook_lease = HookSessionFileLease::acquire(&session_path).expect("Hook writer lease");
+        let loom_patch = thread::spawn(|| {
+            persist_hook_canvas_live_node_patch(
+                "node-1",
+                &HookCanvasPersistPatch {
+                    param_updates: vec![("strength".to_owned(), json!(9))],
+                },
+            )
+        });
+        thread::sleep(Duration::from_millis(75));
+        let hook_edit = json!({
+            "documentSchemaVersion": 1,
+            "documentRevision": 2,
+            "stickers": [{"id":"node-1","params":{"strength":4}}],
+            "links": []
+        });
+        write_hook_canvas_root(&session_path, &hook_edit).expect("commit concurrent Hook edit");
+        drop(hook_lease);
+
+        let error = loom_patch
+            .join()
+            .expect("join Loom patch writer")
+            .expect_err("stale Loom patch must fail");
+        let preserved: Value = serde_json::from_slice(&fs::read(&session_path).unwrap()).unwrap();
+
+        assert!(matches!(
+            error,
+            HookCanvasPersistError::RevisionConflict {
+                expected: 1,
+                current: 2
+            }
+        ));
+        assert_eq!(preserved["documentRevision"], 2);
+        assert_eq!(preserved["stickers"][0]["params"]["strength"], 4);
+        clear_hook_canvas_runtime_state(None);
+        fs::remove_dir_all(root).expect("cleanup concurrent Hook edit test");
+    }
+
+    #[test]
+    fn hook_canvas_patch_rejects_future_session_schema_without_overwrite() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        clear_hook_canvas_runtime_state(None);
+        let root = unique_temp_dir("hook-session-future-schema");
+        let session_path = root.join("session.json");
+        let future = serde_json::to_vec(&json!({
+            "documentSchemaVersion": 2,
+            "documentRevision": 5,
+            "stickers": [{"id":"node-1","params":{"strength":4}}],
+            "links": []
+        }))
+        .unwrap();
+        fs::write(&session_path, &future).expect("write future Hook session");
+        store_hook_live_workflow_snapshot(
+            &session_path,
+            HOOK_LIVE_WORKFLOW_ID,
+            &json!({
+                "documentSchemaVersion": 1,
+                "documentRevision": 5,
+                "nodes": [{"id":"node-1","data":{"params":{"strength":4}}}],
+                "edges": []
+            }),
+        )
+        .expect("store supported live snapshot");
+
+        let error = persist_hook_canvas_live_node_patch(
+            "node-1",
+            &HookCanvasPersistPatch {
+                param_updates: vec![("strength".to_owned(), json!(9))],
+            },
+        )
+        .expect_err("future Hook schema must fail closed");
+
+        assert!(matches!(
+            error,
+            HookCanvasPersistError::UnsupportedDocument(_)
+        ));
+        assert_eq!(fs::read(&session_path).unwrap(), future);
+        clear_hook_canvas_runtime_state(None);
+        fs::remove_dir_all(root).expect("cleanup future Hook schema test");
+    }
+
+    #[test]
     fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
         clear_hook_canvas_runtime_state(None);
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let previous_appdata = std::env::var("APPDATA").ok();
         let root = unique_temp_dir("hook-canvas-save-workflow");
         let appdata = unique_temp_dir("hook-canvas-save-workflow-appdata");
@@ -23701,7 +24876,6 @@ def run(args):
         for name in ["a.png", "b.png", "c.png", "lonely.png"] {
             fs::write(images.join(name), test_png_bytes()).expect("write preview");
         }
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
         std::env::set_var("APPDATA", &appdata);
 
         let workflow_store = WorkflowStore::new(root.join("workflows"));
@@ -23760,7 +24934,6 @@ def run(args):
             .iter()
             .all(|w| w["id"] != "hook-export"));
 
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         restore_env("APPDATA", previous_appdata);
         clear_hook_canvas_runtime_state(None);
         fs::remove_dir_all(root).expect("cleanup root");
@@ -24966,9 +26139,8 @@ def run(args):
         std::env::remove_var("LOOM_OCR_FIXTURE_TEXT");
         std::env::set_var("LOOM_OCR_MODEL_DIR", workspace_ocr_resources());
         let root = unique_temp_dir("ocr-real");
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
+            .expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -25029,7 +26201,6 @@ def run(args):
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         restore_env("LOOM_OCR_MODEL_DIR", previous_model_dir);
         restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
         remove_test_dir(&root);
@@ -25588,12 +26759,11 @@ def run(args):
     #[test]
     fn daemon_hook_bridge_executes_cloud_api_art_node_image_output() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("cloud-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
         let image_data = test_png_base64();
         let fixture = CloudApiFixture::start(CloudApiFixtureMode::Image(image_data.clone()));
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
+            .expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -25645,20 +26815,18 @@ def run(args):
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup cloud art node root");
     }
 
     #[test]
     fn daemon_hook_bridge_executes_cloud_api_multipart_art_node_with_input_file() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
-        let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
         let root = unique_temp_dir("cloud-multipart-art-node");
-        std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &root);
         let image_data = test_png_base64();
         let fixture =
             CloudApiFixture::start(CloudApiFixtureMode::MultipartImage(image_data.clone()));
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
+        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
+            .expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -25728,7 +26896,6 @@ def run(args):
 
         shutdown_tx.send(()).expect("shutdown");
         server.join().expect("server thread");
-        restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
         fs::remove_dir_all(root).expect("cleanup cloud multipart art node root");
     }
 
@@ -26275,11 +27442,50 @@ def run(args):
     }
 
     #[test]
+    fn daemon_auth_token_is_generated_persisted_reused_and_corruption_fails_closed() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        let root = unique_temp_dir("daemon-token");
+        let previous_token = std::env::var("LOOM_DAEMON_TOKEN").ok();
+        std::env::remove_var("LOOM_DAEMON_TOKEN");
+
+        let generated = resolve_daemon_auth_token(None, &root).expect("generate daemon token");
+        assert_eq!(generated.len(), 43);
+        assert_eq!(
+            fs::read_to_string(root.join(DAEMON_AUTH_TOKEN_FILE)).expect("read daemon token file"),
+            generated
+        );
+        assert_eq!(
+            resolve_daemon_auth_token(None, &root).expect("reuse daemon token"),
+            generated
+        );
+        assert_eq!(
+            resolve_daemon_auth_token(Some("configured-token".to_owned()), &root)
+                .expect("configured daemon token"),
+            "configured-token"
+        );
+
+        fs::write(root.join(DAEMON_AUTH_TOKEN_FILE), "\n").expect("corrupt daemon token");
+        let error = resolve_daemon_auth_token(None, &root)
+            .expect_err("an empty persisted token must fail closed");
+        assert!(error.to_string().contains("is empty"));
+
+        restore_env("LOOM_DAEMON_TOKEN", previous_token);
+        fs::remove_dir_all(root).expect("cleanup daemon token root");
+    }
+
+    #[test]
     fn daemon_writes_local_capability_manifest_when_configured() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
         let temp_dir = unique_temp_dir("manifest");
         let manifest_dir = temp_dir.join("capabilities");
-        let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_manifest_dir(&manifest_dir))
-            .expect("bind daemon");
+        let control_plane_root = temp_dir.join("control-plane");
+        let previous_token = std::env::var("LOOM_DAEMON_TOKEN").ok();
+        std::env::remove_var("LOOM_DAEMON_TOKEN");
+        let mut config = DaemonConfig::localhost(0)
+            .with_manifest_dir(&manifest_dir)
+            .with_control_plane_root(&control_plane_root);
+        config.auth_token = None;
+        let daemon = LoomDaemon::bind(config).expect("bind daemon");
         let address = daemon.local_addr().expect("local address");
 
         let manifest_path = manifest_dir.join("loom.json");
@@ -26297,8 +27503,16 @@ def run(args):
             manifest["transport"]["baseUrl"],
             format!("http://127.0.0.1:{}", address.port())
         );
-        assert_eq!(manifest["transport"]["auth"], "none");
-        assert!(manifest["transport"].get("authToken").is_none());
+        assert_eq!(manifest["transport"]["auth"], "bearer");
+        let generated_token = manifest["transport"]["authToken"]
+            .as_str()
+            .expect("generated manifest auth token");
+        assert_eq!(generated_token.len(), 43);
+        assert_eq!(
+            fs::read_to_string(control_plane_root.join(DAEMON_AUTH_TOKEN_FILE))
+                .expect("read generated daemon token"),
+            generated_token
+        );
         assert!(manifest["capabilities"]
             .as_array()
             .expect("capabilities")
@@ -26350,6 +27564,7 @@ def run(args):
                 0o600
             );
         }
+        restore_env("LOOM_DAEMON_TOKEN", previous_token);
     }
 
     #[test]
@@ -26435,8 +27650,28 @@ def run(args):
             public_health.starts_with("HTTP/1.1 200 OK"),
             "public_health={public_health}"
         );
+        let public_health_body = response_json_body(&public_health);
+        assert!(public_health_body.get("pid").is_none());
+        assert!(public_health_body.get("executablePath").is_none());
 
-        let unauthorized_capabilities = http_get(address.port(), "/v1/capabilities");
+        let unauthorized_status = http_get_without_auth(address.port(), "/status");
+        assert!(
+            unauthorized_status.starts_with("HTTP/1.1 401 Unauthorized"),
+            "unauthorized_status={unauthorized_status}"
+        );
+        let authorized_status =
+            http_request_with_bearer(address.port(), "GET", "/status", None, "local-token");
+        assert!(
+            authorized_status.starts_with("HTTP/1.1 200 OK"),
+            "authorized_status={authorized_status}"
+        );
+        let authorized_status_body = response_json_body(&authorized_status);
+        assert_eq!(authorized_status_body["pid"], std::process::id());
+        assert!(authorized_status_body["executablePath"]
+            .as_str()
+            .is_some_and(|path| !path.is_empty()));
+
+        let unauthorized_capabilities = http_get_without_auth(address.port(), "/v1/capabilities");
         assert!(
             unauthorized_capabilities.starts_with("HTTP/1.1 401 Unauthorized"),
             "unauthorized_capabilities={unauthorized_capabilities}"
@@ -26449,7 +27684,7 @@ def run(args):
             "input":{"goal":"token protected manifest"}
         }"#;
         let unauthorized_invoke =
-            http_request(address.port(), "POST", "/v1/invoke", Some(invoke_body));
+            http_request_without_auth(address.port(), "POST", "/v1/invoke", Some(invoke_body));
         assert!(
             unauthorized_invoke.starts_with("HTTP/1.1 401 Unauthorized"),
             "unauthorized_invoke={unauthorized_invoke}"
@@ -26589,15 +27824,15 @@ def run(args):
     fn daemon_configuration_api_reads_writes_and_rejects_stale_revisions() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
-        let previous_root = std::env::var("LOOM_CONFIGURATION_ROOT").ok();
         let root =
             std::env::temp_dir().join(format!("loom-daemon-config-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "tea");
-        std::env::set_var("LOOM_CONFIGURATION_ROOT", &root);
         let control_plane_root = unique_temp_dir("configuration-api-control-plane");
-        let runtime =
-            test_daemon_runtime_from_config(&control_plane_root, DaemonConfig::localhost(0));
+        let runtime = test_daemon_runtime_from_config(
+            &control_plane_root,
+            DaemonConfig::localhost(0).with_configuration_root(&root),
+        );
 
         let first = expect_json_text_route_response(
             route_request(
@@ -26652,22 +27887,21 @@ def run(args):
         fs::remove_dir_all(control_plane_root).expect("cleanup control plane");
         let _ = std::fs::remove_dir_all(&root);
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
-        restore_env("LOOM_CONFIGURATION_ROOT", previous_root);
     }
 
     #[test]
     fn daemon_settings_pages_render_real_html() {
         let _guard = lock_ignoring_poison(&ENV_LOCK);
         let previous_apps = std::env::var("LOOM_MANAGED_CONFIG_APPS").ok();
-        let previous_root = std::env::var("LOOM_CONFIGURATION_ROOT").ok();
         let root =
             std::env::temp_dir().join(format!("loom-daemon-settings-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("LOOM_MANAGED_CONFIG_APPS", "tea,hook");
-        std::env::set_var("LOOM_CONFIGURATION_ROOT", &root);
         let control_plane_root = unique_temp_dir("settings-pages-control-plane");
-        let runtime =
-            test_daemon_runtime_from_config(&control_plane_root, DaemonConfig::localhost(0));
+        let runtime = test_daemon_runtime_from_config(
+            &control_plane_root,
+            DaemonConfig::localhost(0).with_configuration_root(&root),
+        );
 
         let index_body = expect_text_route_response(
             route_request(&runtime, &parsed_request("GET", "/settings", &[], None)),
@@ -26701,7 +27935,6 @@ def run(args):
         let _ = std::fs::remove_dir_all(&control_plane_root);
         let _ = std::fs::remove_dir_all(&root);
         restore_env("LOOM_MANAGED_CONFIG_APPS", previous_apps);
-        restore_env("LOOM_CONFIGURATION_ROOT", previous_root);
     }
 
     #[test]
@@ -27316,6 +28549,126 @@ def run(args):
     }
 
     #[test]
+    fn daemon_request_gateway_rejects_rebinding_cross_origin_and_simple_posts() {
+        let root = unique_temp_dir("request-gateway");
+        let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+        let invalid_host = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/status", &[("Host", "attacker.example")], None),
+            ),
+            400,
+        );
+        assert_eq!(invalid_host["error"]["code"], "invalid_host");
+
+        let invalid_origin = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/status",
+                    &[("Origin", "https://attacker.example")],
+                    None,
+                ),
+            ),
+            403,
+        );
+        assert_eq!(invalid_origin["error"]["code"], "origin_denied");
+
+        let cross_site = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request("GET", "/status", &[("Sec-Fetch-Site", "cross-site")], None),
+            ),
+            403,
+        );
+        assert_eq!(cross_site["error"]["code"], "browser_context_denied");
+
+        let simple_post = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "POST",
+                    "/v1/invoke",
+                    &[("Content-Type", "text/plain")],
+                    Some("{}"),
+                ),
+            ),
+            415,
+        );
+        assert_eq!(simple_post["error"]["code"], "json_content_type_required");
+        fs::remove_dir_all(root).expect("cleanup request gateway root");
+    }
+
+    #[test]
+    fn settings_navigation_exchanges_query_token_for_strict_http_only_cookie() {
+        let root = unique_temp_dir("settings-cookie");
+        let runtime = test_daemon_runtime(&root, Some("settings-secret"));
+
+        let exchange = route_request(
+            &runtime,
+            &parsed_request("GET", "/settings?token=settings-secret", &[], None),
+        );
+        let headers = match exchange {
+            RouteResponse::TextWithHeaders {
+                status,
+                headers,
+                body,
+            } => {
+                assert_eq!(status, 303);
+                assert!(body.is_empty());
+                headers
+            }
+            _ => panic!("expected settings token exchange response"),
+        };
+        assert!(headers
+            .iter()
+            .any(|(name, value)| name == "Location" && value == "/settings"));
+        let cookie = headers
+            .iter()
+            .find(|(name, _)| name == "Set-Cookie")
+            .map(|(_, value)| value.as_str())
+            .expect("settings auth cookie");
+        assert!(cookie.contains("loom_admin=settings-secret"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Path=/"));
+
+        let page = expect_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/settings",
+                    &[("Cookie", "loom_admin=settings-secret")],
+                    None,
+                ),
+            ),
+            200,
+        );
+        assert!(page.trim_start().starts_with("<!doctype html"));
+
+        let denied = expect_json_text_route_response(
+            route_request(
+                &runtime,
+                &parsed_request(
+                    "GET",
+                    "/settings",
+                    &[
+                        ("Cookie", "loom_admin=settings-secret"),
+                        ("Origin", "http://127.0.0.1:9999"),
+                    ],
+                    None,
+                ),
+            ),
+            403,
+        );
+        assert_eq!(denied["error"]["code"], "origin_denied");
+        fs::remove_dir_all(root).expect("cleanup settings cookie root");
+    }
+
+    #[test]
     fn daemon_rejects_discovery_manifest_for_non_loopback_bind_host() {
         let temp_dir = unique_temp_dir("non-loopback-manifest");
         let manifest_dir = temp_dir.join("capabilities");
@@ -27340,17 +28693,10 @@ def run(args):
     }
 
     #[test]
-    fn daemon_requires_bearer_token_for_non_loopback_mutating_routes() {
-        let bind_error = LoomDaemon::bind(DaemonConfig::bind_host("0.0.0.0", 0))
+    fn daemon_requires_tls_and_bearer_auth_for_non_loopback_routes() {
+        let plaintext_error = LoomDaemon::bind(DaemonConfig::bind_host("0.0.0.0", 0))
             .err()
-            .expect("non-loopback daemon binds require an auth token");
-        assert!(bind_error.to_string().contains("auth token"));
-
-        let plaintext_error = LoomDaemon::bind(
-            DaemonConfig::bind_host("0.0.0.0", 0).with_bearer_token("local-token"),
-        )
-        .err()
-        .expect("non-loopback daemon binds require an authenticated TLS terminator");
+            .expect("non-loopback daemon binds require an authenticated TLS terminator");
         assert!(plaintext_error
             .to_string()
             .contains("plaintext non-loopback"));
@@ -27365,7 +28711,7 @@ def run(args):
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
 
-        let unauthorized = http_request(
+        let unauthorized = http_request_without_auth(
             address.port(),
             "POST",
             "/v1/invoke",
@@ -27392,22 +28738,23 @@ def run(args):
         assert_eq!(authorized_body["status"], "succeeded");
         let run_id = authorized_body["output"]["runId"].as_str().expect("run id");
 
-        let unauthorized_status = http_get(address.port(), "/status");
+        let unauthorized_status = http_get_without_auth(address.port(), "/status");
         assert!(
             unauthorized_status.starts_with("HTTP/1.1 401 Unauthorized"),
             "unauthorized_status={unauthorized_status}"
         );
-        let unauthorized_capabilities = http_get(address.port(), "/v1/capabilities");
+        let unauthorized_capabilities = http_get_without_auth(address.port(), "/v1/capabilities");
         assert!(
             unauthorized_capabilities.starts_with("HTTP/1.1 401 Unauthorized"),
             "unauthorized_capabilities={unauthorized_capabilities}"
         );
-        let unauthorized_run = http_get(address.port(), &format!("/v1/runs/{run_id}"));
+        let unauthorized_run = http_get_without_auth(address.port(), &format!("/v1/runs/{run_id}"));
         assert!(
             unauthorized_run.starts_with("HTTP/1.1 401 Unauthorized"),
             "unauthorized_run={unauthorized_run}"
         );
-        let unauthorized_events = http_get(address.port(), &format!("/v1/runs/{run_id}/events"));
+        let unauthorized_events =
+            http_get_without_auth(address.port(), &format!("/v1/runs/{run_id}/events"));
         assert!(
             unauthorized_events.starts_with("HTTP/1.1 401 Unauthorized"),
             "unauthorized_events={unauthorized_events}"
@@ -27665,6 +29012,10 @@ def run(args):
         http_request(port, "GET", path, None)
     }
 
+    fn http_get_without_auth(port: u16, path: &str) -> String {
+        http_request_without_auth(port, "GET", path, None)
+    }
+
     fn http_post(port: u16, path: &str, body: &str) -> String {
         let response = http_request(port, "POST", path, Some(body));
         assert!(
@@ -27728,6 +29079,17 @@ def run(args):
     }
 
     fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> String {
+        let token =
+            test_bound_daemon_token(port).unwrap_or_else(|| TEST_DAEMON_AUTH_TOKEN.to_owned());
+        http_request_with_bearer(port, method, path, body, &token)
+    }
+
+    fn http_request_without_auth(
+        port: u16,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> String {
         http_request_with_extra_headers(port, method, path, body, "")
     }
 
@@ -28392,7 +29754,8 @@ def run(args):
                 assert_eq!(content_type, "application/octet-stream");
                 assert_eq!(body, bytes);
             }
-            RouteResponse::Text { status, body } => {
+            RouteResponse::Text { status, body }
+            | RouteResponse::TextWithHeaders { status, body, .. } => {
                 panic!("expected resource bytes, got {status}: {body}")
             }
         }
@@ -29247,7 +30610,8 @@ def run(args):
                 assert_eq!(content_type, "application/javascript");
                 assert_eq!(body, source);
             }
-            RouteResponse::Text { status, body } => {
+            RouteResponse::Text { status, body }
+            | RouteResponse::TextWithHeaders { status, body, .. } => {
                 panic!("expected JavaScript entry bytes, got {status}: {body}")
             }
         }
@@ -29290,7 +30654,8 @@ def run(args):
                 assert_eq!(content_type, "application/javascript");
                 assert_eq!(body, source);
             }
-            RouteResponse::Text { status, body } => {
+            RouteResponse::Text { status, body }
+            | RouteResponse::TextWithHeaders { status, body, .. } => {
                 panic!("expected remounted JavaScript entry bytes, got {status}: {body}")
             }
         }
@@ -29324,7 +30689,8 @@ def run(args):
                 None,
             ),
         ) {
-            RouteResponse::Text { status, body } => {
+            RouteResponse::Text { status, body }
+            | RouteResponse::TextWithHeaders { status, body, .. } => {
                 assert_eq!(status, 403, "{body}");
                 let body: Value = serde_json::from_str(&body).expect("lease rejection JSON");
                 assert_eq!(body["error"]["code"], "surface_resource_lease_rejected");

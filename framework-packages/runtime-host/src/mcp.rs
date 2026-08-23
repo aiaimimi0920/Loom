@@ -1,11 +1,20 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
-use loom_mcp::{McpClient, McpServerConfig, McpTransport};
+use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64_URL_SAFE};
+use base64::Engine as _;
+use loom_mcp::{
+    validate_mcp_environment, validate_mcp_environment_name, validate_mcp_header_name,
+    validate_mcp_headers, McpClient, McpServerConfig, McpTransport, MAX_MCP_ENVIRONMENT_ENTRIES,
+    MAX_MCP_HEADERS,
+};
 use loom_protocol::{CredentialGrant, FrameworkExecuteRequest, FrameworkMcpServer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 /// The caller-supplied key that carries a Surface invocation. Reserved by this framework, so it is
 /// never forwarded to an MCP server as a tool argument.
@@ -56,6 +65,8 @@ struct McpArtConfig {
     calls: Vec<McpCallConfig>,
     #[serde(default)]
     surface_actions: BTreeMap<String, McpSurfaceActionConfig>,
+    #[serde(default)]
+    argument_aliases: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -93,7 +104,11 @@ struct ResolvedCall {
 #[serde(rename_all = "camelCase")]
 pub struct McpCallExecution {
     tool_name: String,
-    result: Value,
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +123,17 @@ pub struct McpExecution {
     results: BTreeMap<String, McpCallExecution>,
     #[serde(skip_serializing_if = "is_false")]
     skipped: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<McpExecutionWarning>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpExecutionWarning {
+    code: String,
+    message: String,
+    dropped_argument_count: usize,
+    dropped_argument_names: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -117,6 +143,8 @@ fn is_false(value: &bool) -> bool {
 pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpExecution, String> {
     let config = load_config(art_dir)?;
     let calls = resolve_calls(request, &config)?;
+    let mut warnings = dropped_argument_warnings(request, &config)?;
+    let redactor = CredentialRedactor::new(&request.context.credentials);
     let resolved = request
         .context
         .mcp_server
@@ -130,6 +158,7 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
             result: None,
             results: BTreeMap::new(),
             skipped: true,
+            warnings,
         });
     }
     let transport = match resolved.transport.as_str() {
@@ -147,51 +176,94 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
             McpServerConfig::new(
                 resolved.id.clone(),
                 format!("{} MCP server", resolved.id),
-                resolved.command.clone(),
+                expand_stdio_command(&resolved.command, request, art_dir)?,
             )
         }
         McpTransport::StreamableHttp => McpServerConfig::remote(
             resolved.id.clone(),
             format!("{} MCP server", resolved.id),
-            expand_runtime_paths(&resolved.url, request, art_dir),
+            resolved.url.clone(),
         ),
     };
-    server.args = resolved
-        .args
-        .iter()
-        .map(|argument| expand_runtime_paths(argument, request, art_dir))
-        .collect();
+    server.args = match transport {
+        McpTransport::Stdio => resolved
+            .args
+            .iter()
+            .map(|argument| expand_runtime_paths(argument, request, art_dir))
+            .collect(),
+        McpTransport::StreamableHttp if resolved.args.is_empty() => Vec::new(),
+        McpTransport::StreamableHttp => {
+            return Err(
+                "resolved streamable-http MCP server must not declare process arguments or local path placeholders"
+                    .to_owned(),
+            )
+        }
+    };
+    if transport == McpTransport::Stdio && !headers.is_empty() {
+        return Err("resolved stdio MCP server must not declare HTTP headers".to_owned());
+    }
+    if transport == McpTransport::StreamableHttp && !environment.is_empty() {
+        return Err(
+            "resolved streamable-http MCP server must not declare process environment".to_owned(),
+        );
+    }
     server.env = environment;
     server.headers = headers;
 
-    let call_results = execute_tools(&server, &calls)
-        .map_err(|error| redact_credentials(error, &request.context.credentials))?;
+    let mut batch = execute_tools(&server, &calls, &config.argument_aliases)
+        .map_err(|error| redactor.redact_text(&error))?;
+    if let Some(error) = batch.close_error.take() {
+        warnings.push(McpExecutionWarning {
+            code: "mcp_session_close_failed".to_owned(),
+            message: redactor.redact_text(&error),
+            dropped_argument_count: 0,
+            dropped_argument_names: Vec::new(),
+        });
+    }
+    for outcome in &mut batch.outcomes {
+        match outcome {
+            McpCallOutcome::Success(value) => redactor.redact_value(value),
+            McpCallOutcome::Failure(error) => *error = redactor.redact_text(error),
+        }
+    }
     if config.calls.is_empty() {
         let call = calls
             .first()
             .ok_or_else(|| "legacy MCP Art did not resolve a tool call".to_owned())?;
-        let result = call_results
+        let outcome = batch
+            .outcomes
             .into_iter()
             .next()
             .ok_or_else(|| "legacy MCP Art did not return a tool result".to_owned())?;
+        let result = match outcome {
+            McpCallOutcome::Success(result) => result,
+            McpCallOutcome::Failure(error) => return Err(error),
+        };
         return Ok(McpExecution {
             server_id: resolved.id.clone(),
             tool_name: Some(call.tool_name.clone()),
             result: Some(result),
             results: BTreeMap::new(),
             skipped: false,
+            warnings,
         });
     }
 
     let results = calls
         .into_iter()
-        .zip(call_results)
-        .map(|(call, result)| {
+        .zip(batch.outcomes)
+        .map(|(call, outcome)| {
+            let (success, result, error) = match outcome {
+                McpCallOutcome::Success(result) => (true, Some(result), None),
+                McpCallOutcome::Failure(error) => (false, None, Some(error)),
+            };
             (
                 call.id,
                 McpCallExecution {
                     tool_name: call.tool_name,
+                    success,
                     result,
+                    error,
                 },
             )
         })
@@ -202,6 +274,7 @@ pub fn execute(request: &FrameworkExecuteRequest, art_dir: &Path) -> Result<McpE
         result: None,
         results,
         skipped: false,
+        warnings,
     })
 }
 
@@ -271,6 +344,7 @@ fn load_config(art_dir: &Path) -> Result<McpArtConfig, String> {
     validate_argument_object(&config.arguments, "metadata.mcp.arguments")?;
     validate_call_config(&config)?;
     validate_surface_actions(&config)?;
+    validate_argument_aliases(&config.argument_aliases)?;
     Ok(config)
 }
 
@@ -485,6 +559,29 @@ fn normalize_config(config: &mut McpArtConfig) -> Result<(), String> {
         }
     }
     config.surface_actions = actions;
+    let mut aliases = BTreeMap::new();
+    for (argument_name, values) in std::mem::take(&mut config.argument_aliases) {
+        let argument_name = argument_name.trim().to_owned();
+        let mut normalized_values = BTreeMap::new();
+        for (alias, canonical) in values {
+            let alias = alias.trim().to_owned();
+            let canonical = canonical.trim().to_owned();
+            if normalized_values.insert(alias.clone(), canonical).is_some() {
+                return Err(format!(
+                    "duplicate MCP argument alias `{alias}` for `{argument_name}` after trimming"
+                ));
+            }
+        }
+        if aliases
+            .insert(argument_name.clone(), normalized_values)
+            .is_some()
+        {
+            return Err(format!(
+                "duplicate MCP argument alias table `{argument_name}` after trimming"
+            ));
+        }
+    }
+    config.argument_aliases = aliases;
     Ok(())
 }
 
@@ -559,6 +656,51 @@ fn validate_surface_actions(config: &McpArtConfig) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_argument_aliases(
+    aliases: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<(), String> {
+    const MAX_ALIAS_TABLES: usize = 32;
+    const MAX_ALIASES_PER_ARGUMENT: usize = 32;
+    const MAX_ALIAS_BYTES: usize = 128;
+    const MAX_ALIAS_TOTAL_BYTES: usize = 16 * 1024;
+    if aliases.len() > MAX_ALIAS_TABLES {
+        return Err(format!(
+            "metadata.mcp.argumentAliases cannot contain more than {MAX_ALIAS_TABLES} argument tables"
+        ));
+    }
+    let mut total_bytes = 0_usize;
+    for (argument_name, values) in aliases {
+        validate_argument_name(argument_name)?;
+        if values.is_empty() || values.len() > MAX_ALIASES_PER_ARGUMENT {
+            return Err(format!(
+                "MCP argument alias table `{argument_name}` must contain 1 to {MAX_ALIASES_PER_ARGUMENT} aliases"
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(argument_name.len());
+        for (alias, canonical) in values {
+            for (label, value) in [("alias", alias), ("canonical value", canonical)] {
+                if value.is_empty()
+                    || value.len() > MAX_ALIAS_BYTES
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(format!(
+                        "MCP argument {label} for `{argument_name}` must be non-empty, at most {MAX_ALIAS_BYTES} bytes, and contain no control characters"
+                    ));
+                }
+            }
+            total_bytes = total_bytes
+                .saturating_add(alias.len())
+                .saturating_add(canonical.len());
+        }
+    }
+    if total_bytes > MAX_ALIAS_TOTAL_BYTES {
+        return Err(format!(
+            "metadata.mcp.argumentAliases exceeds the {MAX_ALIAS_TOTAL_BYTES} byte aggregate limit"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_argument_object(value: &Value, label: &str) -> Result<(), String> {
     if value.is_null() || value.is_object() {
         Ok(())
@@ -619,6 +761,16 @@ fn build_environment(
     request: &FrameworkExecuteRequest,
     config: &FrameworkMcpServer,
 ) -> Result<BTreeMap<String, String>, String> {
+    let declared_entries = config
+        .env
+        .len()
+        .saturating_add(config.credential_env.len())
+        .saturating_add(config.optional_credential_env.len());
+    if declared_entries > MAX_MCP_ENVIRONMENT_ENTRIES {
+        return Err(format!(
+            "MCP environment declares {declared_entries} entries; limit is {MAX_MCP_ENVIRONMENT_ENTRIES}"
+        ));
+    }
     let mut environment = config
         .env
         .iter()
@@ -676,6 +828,7 @@ fn build_environment(
             environment.insert(environment_name.clone(), credential.value.clone());
         }
     }
+    validate_mcp_environment(&environment).map_err(|error| error.to_string())?;
     Ok(environment)
 }
 
@@ -683,15 +836,22 @@ fn build_headers(
     request: &FrameworkExecuteRequest,
     config: &FrameworkMcpServer,
 ) -> Result<BTreeMap<String, String>, String> {
+    let declared_entries = config
+        .headers
+        .len()
+        .saturating_add(config.credential_headers.len())
+        .saturating_add(config.optional_credential_headers.len());
+    if declared_entries > MAX_MCP_HEADERS {
+        return Err(format!(
+            "MCP headers declare {declared_entries} entries; limit is {MAX_MCP_HEADERS}"
+        ));
+    }
     let mut headers = config
         .headers
         .iter()
         .map(|(name, value)| {
             validate_header_name(name)?;
-            Ok((
-                name.clone(),
-                expand_runtime_paths(value, request, &request.art_dir),
-            ))
+            Ok((name.clone(), value.clone()))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     for (header_name, credential_name) in &config.credential_headers {
@@ -739,6 +899,7 @@ fn build_headers(
             headers.insert(header_name.clone(), credential.value.clone());
         }
     }
+    validate_mcp_headers(&headers).map_err(|error| error.to_string())?;
     Ok(headers)
 }
 
@@ -757,43 +918,56 @@ fn available_credential_aliases(request: &FrameworkExecuteRequest) -> String {
 }
 
 fn validate_header_name(name: &str) -> Result<(), String> {
-    let valid = !name.trim().is_empty()
-        && name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        });
-    valid
-        .then_some(())
-        .ok_or_else(|| format!("invalid MCP HTTP header name `{name}`"))
+    validate_mcp_header_name(name).map_err(|error| error.to_string())
 }
 
 fn validate_environment_name(name: &str) -> Result<(), String> {
-    let mut characters = name.chars();
-    let valid = characters
-        .next()
-        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
-        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric());
-    if valid {
-        Ok(())
-    } else {
-        Err(format!("invalid MCP environment variable name `{name}`"))
+    validate_mcp_environment_name(name).map_err(|error| error.to_string())
+}
+
+fn expand_stdio_command(
+    command: &str,
+    request: &FrameworkExecuteRequest,
+    art_dir: &Path,
+) -> Result<String, String> {
+    let trimmed = command.trim();
+    if trimmed.contains("{cacheDir}") || trimmed.contains("{tempDir}") {
+        return Err(
+            "resolved stdio MCP command may only use the anchored {artDir} path placeholder"
+                .to_owned(),
+        );
     }
+    let uses_art_dir = trimmed.contains("{artDir}");
+    if uses_art_dir
+        && !(trimmed == "{artDir}"
+            || trimmed.starts_with("{artDir}/")
+            || trimmed.starts_with("{artDir}\\"))
+    {
+        return Err(
+            "{artDir} in an MCP command must be the complete leading path segment".to_owned(),
+        );
+    }
+    let expanded = expand_runtime_paths(trimmed, request, art_dir);
+    if expanded.contains('{') || expanded.contains('}') {
+        return Err("resolved stdio MCP command contains an unsupported placeholder".to_owned());
+    }
+    if uses_art_dir {
+        if !art_dir.is_absolute() {
+            return Err(
+                "{artDir} MCP command expansion requires an absolute Art directory".to_owned(),
+            );
+        }
+        let expanded_path = Path::new(&expanded);
+        if !expanded_path.is_absolute()
+            || !expanded_path.starts_with(art_dir)
+            || expanded_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("expanded {artDir} MCP command escapes the Art directory".to_owned());
+        }
+    }
+    Ok(expanded)
 }
 
 fn expand_runtime_paths(value: &str, request: &FrameworkExecuteRequest, art_dir: &Path) -> String {
@@ -821,7 +995,7 @@ fn resolve_calls(
     };
 
     let surface_action = find_surface_action(request)?;
-    if let Some(surface_action) = surface_action.filter(|_| !config.surface_actions.is_empty()) {
+    if let Some(surface_action) = surface_action {
         let action_id = surface_action
             .get("actionId")
             .and_then(Value::as_str)
@@ -832,6 +1006,15 @@ fn resolve_calls(
             format!("MCP Surface action `{action_id}` is not declared by this Art")
         })?;
         let mapped_arguments = resolve_surface_argument_bindings(action, surface_action)?;
+        if let Some(disabled) = request
+            .disabled_params
+            .iter()
+            .find(|name| mapped_arguments.contains_key(name.as_str()))
+        {
+            return Err(format!(
+                "MCP Surface argument `{disabled}` is both bound by action `{action_id}` and disabled; remove the binding or enable the parameter"
+            ));
+        }
         let selected_ids = action.calls.clone().unwrap_or_else(|| {
             configured_calls
                 .iter()
@@ -893,6 +1076,42 @@ fn resolve_calls(
             })
         })
         .collect()
+}
+
+fn dropped_argument_warnings(
+    request: &FrameworkExecuteRequest,
+    config: &McpArtConfig,
+) -> Result<Vec<McpExecutionWarning>, String> {
+    if find_surface_action(request)?.is_some() {
+        return Ok(Vec::new());
+    }
+    let Some(allowlist) = declared_argument_allowlist(config) else {
+        return Ok(Vec::new());
+    };
+    let mut dropped = BTreeSet::new();
+    for source in [&request.inputs, &request.params] {
+        let Some(source) = source.as_object() else {
+            continue;
+        };
+        for name in source.keys() {
+            if name != SURFACE_ACTION_KEY && !allowlist.contains(name) {
+                dropped.insert(name.clone());
+            }
+        }
+    }
+    if dropped.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dropped_argument_count = dropped.len();
+    let dropped_argument_names = dropped.into_iter().take(32).collect::<Vec<_>>();
+    Ok(vec![McpExecutionWarning {
+        code: "undeclared_arguments_dropped".to_owned(),
+        message: format!(
+            "dropped {dropped_argument_count} caller argument(s) not declared by the Art; values were not recorded"
+        ),
+        dropped_argument_count,
+        dropped_argument_names,
+    }])
 }
 
 /// The argument names an Art that declares Surface bindings is allowed to receive from the caller.
@@ -978,7 +1197,7 @@ fn value_at_binding_path<'a>(invocation: &'a Value, path: &str) -> Option<&'a Va
     for segment in path.split('.') {
         current = current.get(segment)?;
     }
-    (!current.is_null()).then_some(current)
+    Some(current)
 }
 
 fn validate_bound_value(argument_name: &str, value: &Value) -> Result<(), String> {
@@ -1100,31 +1319,189 @@ fn merge_argument_object(
     Ok(())
 }
 
-fn execute_tools(server: &McpServerConfig, calls: &[ResolvedCall]) -> Result<Vec<Value>, String> {
+enum McpCallOutcome {
+    Success(Value),
+    Failure(String),
+}
+
+struct McpBatchExecution {
+    outcomes: Vec<McpCallOutcome>,
+    close_error: Option<String>,
+}
+
+// The MCP framework host itself and every stdio server descendant share the
+// framework manifest's four-process Windows Job. A server commonly needs an
+// interpreter plus its runtime, so caching more than one server can exhaust
+// the Job before the replacement process starts. Repeated calls still reuse
+// the matching session; a different immutable config replaces it first.
+const MAX_CACHED_MCP_SESSIONS: usize = 1;
+const MCP_SESSION_IDLE_LIFETIME: Duration = Duration::from_secs(60);
+
+struct CachedMcpSession {
+    key: String,
+    client: McpClient,
+    tools: Value,
+    last_used: Instant,
+}
+
+impl Drop for CachedMcpSession {
+    fn drop(&mut self) {
+        let _ = self.client.close();
+    }
+}
+
+thread_local! {
+    static MCP_SESSION_POOL: RefCell<Vec<CachedMcpSession>> = const { RefCell::new(Vec::new()) };
+}
+
+fn mcp_session_key(server: &McpServerConfig) -> Result<String, String> {
+    let encoded = serde_json::to_vec(server)
+        .map_err(|error| format!("cannot serialize MCP session identity: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn take_cached_mcp_session(key: &str) -> Option<CachedMcpSession> {
+    let now = Instant::now();
+    MCP_SESSION_POOL.with(|pool| {
+        let mut sessions = pool.borrow_mut();
+        sessions.retain(|session| {
+            now.saturating_duration_since(session.last_used) < MCP_SESSION_IDLE_LIFETIME
+        });
+        sessions
+            .iter()
+            .position(|session| session.key == key)
+            .map(|index| sessions.remove(index))
+    })
+}
+
+fn return_cached_mcp_session(mut session: CachedMcpSession) {
+    session.last_used = Instant::now();
+    MCP_SESSION_POOL.with(|pool| {
+        let mut sessions = pool.borrow_mut();
+        if let Some(index) = sessions
+            .iter()
+            .position(|existing| existing.key == session.key)
+        {
+            sessions.remove(index);
+        }
+        sessions.push(session);
+        if sessions.len() > MAX_CACHED_MCP_SESSIONS {
+            let oldest = sessions
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, session)| session.last_used)
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            sessions.remove(oldest);
+        }
+    });
+}
+
+fn evict_cached_mcp_sessions_before_connect() {
+    MCP_SESSION_POOL.with(|pool| {
+        let mut sessions = pool.borrow_mut();
+        while sessions.len() >= MAX_CACHED_MCP_SESSIONS {
+            let oldest = sessions
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, session)| session.last_used)
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            sessions.remove(oldest);
+        }
+    });
+}
+
+fn acquire_mcp_session(server: &McpServerConfig) -> Result<CachedMcpSession, String> {
+    let key = mcp_session_key(server)?;
+    if let Some(session) = take_cached_mcp_session(&key) {
+        return Ok(session);
+    }
+    // Close an idle session before spawning its replacement. Evicting only
+    // after the new connection succeeds creates a transient process spike and
+    // can make CreateProcess fail with ERROR_NOT_ENOUGH_QUOTA inside the Job.
+    evict_cached_mcp_sessions_before_connect();
     let mut client = McpClient::connect(server)
         .map_err(|error| format!("failed to connect MCP server: {error}"))?;
-    let result = (|| {
-        client
-            .initialize()
-            .map_err(|error| format!("MCP initialize failed: {error}"))?;
-        let tools = client
-            .list_tools()
-            .map_err(|error| format!("MCP tools/list failed: {error}"))?;
-        calls
-            .iter()
-            .map(|call| {
-                let schema = find_tool_input_schema(&tools, &call.tool_name).ok_or_else(|| {
-                    format!("MCP server does not expose tool `{}`", call.tool_name)
-                })?;
-                let normalized_arguments = normalize_arguments(&call.arguments, schema);
-                client
-                    .call_tool(&call.tool_name, normalized_arguments)
-                    .map_err(|error| format!("MCP tools/call `{}` failed: {error}", call.tool_name))
-            })
-            .collect()
-    })();
-    client.cancel();
-    result
+    if let Err(error) = client.initialize() {
+        let _ = client.close();
+        return Err(format!("MCP initialize failed: {error}"));
+    }
+    let tools = match client.list_tools() {
+        Ok(tools) => tools,
+        Err(error) => {
+            let _ = client.close();
+            return Err(format!("MCP tools/list failed: {error}"));
+        }
+    };
+    Ok(CachedMcpSession {
+        key,
+        client,
+        tools,
+        last_used: Instant::now(),
+    })
+}
+
+#[cfg(test)]
+fn clear_mcp_session_pool() {
+    MCP_SESSION_POOL.with(|pool| pool.borrow_mut().clear());
+}
+
+fn execute_tools(
+    server: &McpServerConfig,
+    calls: &[ResolvedCall],
+    argument_aliases: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<McpBatchExecution, String> {
+    let mut session = acquire_mcp_session(server)?;
+    let mut reusable = true;
+    // Calls remain sequential (concurrency = 1). That is an explicit bounded policy: many MCP
+    // servers are stateful, while the manifest already caps a batch at eight calls. Failures are
+    // captured per call so one rejection never discards earlier successes or prevents later calls.
+    let outcomes = collect_call_outcomes(calls, |call| {
+        let schema = find_tool_input_schema(&session.tools, &call.tool_name)
+            .ok_or_else(|| format!("MCP server does not expose tool `{}`", call.tool_name))?;
+        let normalized_arguments = normalize_arguments(&call.arguments, schema, argument_aliases)?;
+        match session
+            .client
+            .call_tool(&call.tool_name, normalized_arguments)
+        {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                reusable = false;
+                Err(format!(
+                    "MCP tools/call `{}` failed: {error}",
+                    call.tool_name
+                ))
+            }
+        }
+    });
+    let close_error = if reusable {
+        return_cached_mcp_session(session);
+        None
+    } else {
+        session
+            .client
+            .close()
+            .err()
+            .map(|error| format!("MCP session close failed: {error}"))
+    };
+    Ok(McpBatchExecution {
+        outcomes,
+        close_error,
+    })
+}
+
+fn collect_call_outcomes(
+    calls: &[ResolvedCall],
+    mut execute: impl FnMut(&ResolvedCall) -> Result<Value, String>,
+) -> Vec<McpCallOutcome> {
+    calls
+        .iter()
+        .map(|call| match execute(call) {
+            Ok(value) => McpCallOutcome::Success(value),
+            Err(error) => McpCallOutcome::Failure(error),
+        })
+        .collect()
 }
 
 fn find_tool_input_schema<'a>(tools: &'a Value, tool_name: &str) -> Option<&'a Value> {
@@ -1136,100 +1513,173 @@ fn find_tool_input_schema<'a>(tools: &'a Value, tool_name: &str) -> Option<&'a V
         .and_then(|tool| tool.get("inputSchema"))
 }
 
-fn normalize_arguments(arguments: &Value, schema: &Value) -> Value {
-    let Some(arguments) = arguments.as_object() else {
-        return arguments.clone();
-    };
+fn normalize_arguments(
+    arguments: &Value,
+    schema: &Value,
+    argument_aliases: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<Value, String> {
+    let arguments = arguments
+        .as_object()
+        .ok_or_else(|| "MCP tool arguments must be a JSON object".to_owned())?;
+    validate_supported_tool_schema(schema)?;
     let properties = schema.get("properties").and_then(Value::as_object);
-    let has_pattern_or_composed_properties =
-        ["patternProperties", "allOf", "anyOf", "oneOf", "$ref"]
-            .iter()
-            .any(|name| schema.get(*name).is_some());
-    let rejects_undeclared = schema.get("additionalProperties") == Some(&Value::Bool(false))
-        && !has_pattern_or_composed_properties;
-    Value::Object(
-        arguments
-            .iter()
-            .filter(|(name, _)| {
-                !rejects_undeclared
-                    || properties.is_some_and(|properties| properties.contains_key(*name))
-            })
-            .map(|(name, value)| {
-                let schema = properties.and_then(|properties| properties.get(name));
-                (name.clone(), normalize_argument(name, value, schema))
-            })
-            .collect(),
-    )
+    let rejects_undeclared = schema.get("additionalProperties") == Some(&Value::Bool(false));
+    let mut normalized = Map::new();
+    for (name, value) in arguments {
+        let property_schema = properties.and_then(|properties| properties.get(name));
+        if rejects_undeclared && property_schema.is_none() {
+            continue;
+        }
+        let aliases = argument_aliases.get(name);
+        normalized.insert(
+            name.clone(),
+            normalize_argument(name, value, property_schema, aliases)?,
+        );
+    }
+    if let Some(required) = schema.get("required") {
+        let required = required.as_array().ok_or_else(|| {
+            "MCP tool input schema required must be an array of strings".to_owned()
+        })?;
+        for name in required {
+            let name = name.as_str().ok_or_else(|| {
+                "MCP tool input schema required must contain only strings".to_owned()
+            })?;
+            if !normalized.contains_key(name) {
+                return Err(format!("MCP tool argument `{name}` is required"));
+            }
+        }
+    }
+    Ok(Value::Object(normalized))
 }
 
-fn normalize_argument(name: &str, value: &Value, schema: Option<&Value>) -> Value {
-    if name.eq_ignore_ascii_case("search_lang") {
-        if let Some(raw) = value
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+fn validate_supported_tool_schema(schema: &Value) -> Result<(), String> {
+    let schema = schema
+        .as_object()
+        .ok_or_else(|| "MCP tool input schema must be a JSON object".to_owned())?;
+    for unsupported in [
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "patternProperties",
+        "dependentSchemas",
+        "unevaluatedProperties",
+    ] {
+        if schema.contains_key(unsupported) {
+            return Err(format!(
+                "MCP tool input schema feature `{unsupported}` is not supported"
+            ));
+        }
+    }
+    if let Some(schema_type) = schema.get("type") {
+        let object_type = schema_type == "object"
+            || schema_type
+                .as_array()
+                .is_some_and(|types| types.iter().any(|value| value == "object"));
+        if !object_type {
+            return Err("MCP tool input schema root type must be object".to_owned());
+        }
+    }
+    if let Some(properties) = schema.get("properties") {
+        let properties = properties
+            .as_object()
+            .ok_or_else(|| "MCP tool input schema properties must be an object".to_owned())?;
+        for (name, property) in properties {
+            let property = property.as_object().ok_or_else(|| {
+                format!("MCP tool input schema property `{name}` must be an object")
+            })?;
+            if ["$ref", "allOf", "anyOf", "oneOf", "not"]
+                .iter()
+                .any(|keyword| property.contains_key(*keyword))
+            {
+                return Err(format!(
+                    "MCP tool input schema property `{name}` uses an unsupported composed schema"
+                ));
+            }
+            if ["object", "array"].iter().any(|schema_type| {
+                schema_type_matches(&Value::Object(property.clone()), schema_type)
+            }) {
+                return Err(format!(
+                    "MCP tool input schema property `{name}` uses unsupported nested type"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_argument(
+    name: &str,
+    value: &Value,
+    schema: Option<&Value>,
+    aliases: Option<&BTreeMap<String, String>>,
+) -> Result<Value, String> {
+    let mut value = value.clone();
+    if let (Some(raw), Some(aliases)) = (value.as_str().map(str::trim), aliases) {
+        if let Some((_, canonical)) = aliases
+            .iter()
+            .find(|(alias, _)| alias.eq_ignore_ascii_case(raw))
         {
-            let mapped = match raw.to_ascii_lowercase().as_str() {
-                "zh" | "zh-cn" => "zh-hans",
-                "zh-tw" => "zh-hant",
-                _ => raw,
-            };
-            if let Some(canonical) = canonical_enum_value(schema, mapped) {
-                return Value::String(canonical);
-            }
-            if mapped != raw {
-                return Value::String(mapped.to_owned());
-            }
+            value = Value::String(canonical.clone());
         }
     }
     let Some(schema) = schema else {
-        return value.clone();
+        return Ok(value);
     };
+    if value.is_null() {
+        return schema_type_matches(schema, "null")
+            .then_some(Value::Null)
+            .ok_or_else(|| format!("MCP tool argument `{name}` must not be null"));
+    }
     if schema_type_matches(schema, "integer") {
-        if let Some(parsed) = value
+        value = value
             .as_i64()
             .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
-        {
-            return Value::from(parsed);
-        }
-    }
-    if schema_type_matches(schema, "number") {
-        if let Some(parsed) = value
+            .map(Value::from)
+            .ok_or_else(|| format!("MCP tool argument `{name}` must be an integer"))?;
+    } else if schema_type_matches(schema, "number") {
+        value = value
             .as_f64()
             .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
-        {
-            return Value::from(parsed);
+            .map(Value::from)
+            .ok_or_else(|| format!("MCP tool argument `{name}` must be a number"))?;
+    } else if schema_type_matches(schema, "boolean") {
+        value = value
+            .as_bool()
+            .or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                        "1" | "true" | "yes" | "on" => Some(true),
+                        "0" | "false" | "no" | "off" => Some(false),
+                        _ => None,
+                    })
+            })
+            .map(Value::from)
+            .ok_or_else(|| format!("MCP tool argument `{name}` must be a boolean"))?;
+    } else if schema_type_matches(schema, "string") && !value.is_string() {
+        return Err(format!("MCP tool argument `{name}` must be a string"));
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        let canonical = value.as_str().and_then(|raw| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|candidate| candidate.eq_ignore_ascii_case(raw))
+        });
+        if let Some(canonical) = canonical {
+            value = Value::String(canonical.to_owned());
+        } else if !values.contains(&value) {
+            return Err(format!(
+                "MCP tool argument `{name}` is not one of the declared enum values"
+            ));
         }
     }
-    if schema_type_matches(schema, "boolean") {
-        if let Some(parsed) = value.as_bool().or_else(|| {
-            value
-                .as_str()
-                .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
-                    "1" | "true" | "yes" | "on" => Some(true),
-                    "0" | "false" | "no" | "off" => Some(false),
-                    _ => None,
-                })
-        }) {
-            return Value::from(parsed);
-        }
-    }
-    if let Some(raw) = value.as_str() {
-        if let Some(canonical) = canonical_enum_value(Some(schema), raw) {
-            return Value::String(canonical);
-        }
-    }
-    value.clone()
-}
-
-fn canonical_enum_value(schema: Option<&Value>, expected: &str) -> Option<String> {
-    schema?
-        .get("enum")?
-        .as_array()?
-        .iter()
-        .filter_map(Value::as_str)
-        .find(|candidate| candidate.eq_ignore_ascii_case(expected))
-        .map(str::to_owned)
+    Ok(value)
 }
 
 fn schema_type_matches(schema: &Value, expected: &str) -> bool {
@@ -1240,19 +1690,77 @@ fn schema_type_matches(schema: &Value, expected: &str) -> bool {
     }
 }
 
-fn redact_credentials(mut message: String, credentials: &[CredentialGrant]) -> String {
-    let mut values = credentials
-        .iter()
-        .map(|credential| credential.value.as_str())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    values.sort_unstable();
-    values.dedup();
-    values.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
-    for value in values {
-        message = message.replace(value, "[REDACTED]");
+struct CredentialRedactor {
+    encoded_values: Vec<String>,
+}
+
+impl CredentialRedactor {
+    fn new(credentials: &[CredentialGrant]) -> Self {
+        let mut encoded_values = Vec::new();
+        for credential in credentials {
+            if credential.value.is_empty() {
+                continue;
+            }
+            let bytes = credential.value.as_bytes();
+            let percent_encoded = percent_encode_secret(bytes);
+            encoded_values.extend([
+                credential.value.clone(),
+                percent_encoded.clone(),
+                percent_encoded.replace("%20", "+"),
+                BASE64.encode(bytes),
+                BASE64_URL_SAFE.encode(bytes),
+            ]);
+        }
+        encoded_values.retain(|value| !value.is_empty());
+        encoded_values.sort_unstable();
+        encoded_values.dedup();
+        encoded_values.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+        Self { encoded_values }
     }
-    message
+
+    fn redact_text(&self, text: &str) -> String {
+        self.encoded_values
+            .iter()
+            .fold(text.to_owned(), |text, value| {
+                text.replace(value, "[REDACTED]")
+            })
+    }
+
+    fn redact_value(&self, value: &mut Value) {
+        match value {
+            Value::String(text) => *text = self.redact_text(text),
+            Value::Array(values) => {
+                for value in values {
+                    self.redact_value(value);
+                }
+            }
+            Value::Object(values) => {
+                let original = std::mem::take(values);
+                for (name, mut value) in original {
+                    self.redact_value(&mut value);
+                    values.insert(self.redact_text(&name), value);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn percent_encode_secret(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len());
+    for byte in bytes {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(*byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+fn redact_credentials(message: String, credentials: &[CredentialGrant]) -> String {
+    CredentialRedactor::new(credentials).redact_text(&message)
 }
 
 #[cfg(test)]
@@ -1260,13 +1768,16 @@ mod tests {
     use super::*;
     use loom_protocol::FrameworkExecutionContext;
     use serde_json::json;
-    use std::path::PathBuf;
     #[cfg(windows)]
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::BufReader,
         net::TcpListener,
         thread,
         time::{SystemTime, UNIX_EPOCH},
+    };
+    use std::{
+        io::{BufRead, Write},
+        path::PathBuf,
     };
 
     fn request() -> FrameworkExecuteRequest {
@@ -1301,6 +1812,134 @@ mod tests {
             credential_env: BTreeMap::from([("BRAVE_API_KEY".to_owned(), "api_key".to_owned())]),
             ..FrameworkMcpServer::default()
         }
+    }
+
+    #[test]
+    fn runtime_mcp_session_pool_fixture_server() {
+        if std::env::var("LOOM_RUNTIME_MCP_POOL_FIXTURE")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            return;
+        }
+        let stdin = std::io::stdin();
+        let mut stdout = std::io::stdout();
+        let mut call_count = 0_u64;
+        for line in stdin.lock().lines() {
+            let request: Value = serde_json::from_str(&line.expect("fixture request line"))
+                .expect("fixture request JSON");
+            let method = request["method"].as_str().unwrap_or_default();
+            if method == "notifications/initialized" {
+                continue;
+            }
+            let result = match method {
+                "initialize" => json!({
+                    "protocolVersion": request["params"]["protocolVersion"],
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "runtime-pool-fixture", "version": "0.1.0" }
+                }),
+                "tools/list" => json!({
+                    "tools": [{
+                        "name": "count",
+                        "inputSchema": { "type": "object", "properties": {} }
+                    }]
+                }),
+                "tools/call" => {
+                    call_count += 1;
+                    json!({ "content": [{ "type": "text", "text": call_count.to_string() }] })
+                }
+                _ => panic!("unexpected fixture method {method}"),
+            };
+            writeln!(
+                stdout,
+                "{}",
+                json!({ "jsonrpc": "2.0", "id": request["id"], "result": result })
+            )
+            .expect("write fixture response");
+            stdout.flush().expect("flush fixture response");
+        }
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn repeated_runtime_executions_reuse_initialized_mcp_session() {
+        clear_mcp_session_pool();
+        let executable = std::env::current_exe().expect("current runtime-host test executable");
+        let server = McpServerConfig::new(
+            "runtime-pool-fixture",
+            "Runtime Pool Fixture",
+            executable.display().to_string(),
+        )
+        .arg("mcp::tests::runtime_mcp_session_pool_fixture_server")
+        .arg("--exact")
+        .arg("--nocapture")
+        .env("LOOM_RUNTIME_MCP_POOL_FIXTURE", "1");
+        let calls = vec![ResolvedCall {
+            id: "count".to_owned(),
+            tool_name: "count".to_owned(),
+            arguments: json!({}),
+        }];
+
+        let first =
+            execute_tools(&server, &calls, &BTreeMap::new()).expect("first pooled MCP execution");
+        let second =
+            execute_tools(&server, &calls, &BTreeMap::new()).expect("second pooled MCP execution");
+
+        let count = |batch: &McpBatchExecution| match &batch.outcomes[0] {
+            McpCallOutcome::Success(value) => value["content"][0]["text"]
+                .as_str()
+                .expect("fixture count text")
+                .to_owned(),
+            McpCallOutcome::Failure(error) => panic!("fixture call failed: {error}"),
+        };
+        assert_eq!(count(&first), "1");
+        assert_eq!(count(&second), "2");
+        clear_mcp_session_pool();
+    }
+
+    #[test]
+    fn changing_server_config_evicts_the_old_session_before_connecting() {
+        clear_mcp_session_pool();
+        let executable = std::env::current_exe().expect("current runtime-host test executable");
+        let server = |instance: &str| {
+            McpServerConfig::new(
+                format!("runtime-pool-fixture-{instance}"),
+                "Runtime Pool Fixture",
+                executable.display().to_string(),
+            )
+            .arg("mcp::tests::runtime_mcp_session_pool_fixture_server")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("LOOM_RUNTIME_MCP_POOL_FIXTURE", "1")
+            .env("LOOM_RUNTIME_MCP_POOL_INSTANCE", instance)
+        };
+        let server_a = server("a");
+        let server_b = server("b");
+        let calls = vec![ResolvedCall {
+            id: "count".to_owned(),
+            tool_name: "count".to_owned(),
+            arguments: json!({}),
+        }];
+        let count = |batch: &McpBatchExecution| match &batch.outcomes[0] {
+            McpCallOutcome::Success(value) => value["content"][0]["text"]
+                .as_str()
+                .expect("fixture count text")
+                .to_owned(),
+            McpCallOutcome::Failure(error) => panic!("fixture call failed: {error}"),
+        };
+
+        let first_a = execute_tools(&server_a, &calls, &BTreeMap::new())
+            .expect("first server A execution");
+        let first_b = execute_tools(&server_b, &calls, &BTreeMap::new())
+            .expect("first server B execution");
+        let second_a = execute_tools(&server_a, &calls, &BTreeMap::new())
+            .expect("replacement server A execution");
+
+        assert_eq!(count(&first_a), "1");
+        assert_eq!(count(&first_b), "1");
+        assert_eq!(count(&second_a), "1");
+        clear_mcp_session_pool();
     }
 
     #[test]
@@ -1376,6 +2015,7 @@ mod tests {
                     },
                 ),
             ]),
+            argument_aliases: BTreeMap::new(),
         }
     }
 
@@ -1428,6 +2068,51 @@ mod tests {
     }
 
     #[test]
+    fn surface_action_binding_cannot_target_a_disabled_parameter() {
+        let mut request = request();
+        request.inputs = json!({
+            "surfaceAction": {
+                "actionId": "stock_symbol_commit",
+                "payload": { "value": "SZ000034" }
+            }
+        });
+        request.params = json!({});
+        request.disabled_params = vec!["code".to_owned()];
+
+        let error = resolve_calls(&request, &multi_call_config()).unwrap_err();
+        assert!(error.contains("both bound"), "{error}");
+    }
+
+    #[test]
+    fn surface_binding_distinguishes_null_from_a_missing_path() {
+        let invocation = json!({
+            "payload": {
+                "nullValue": null,
+                "falseValue": false,
+                "zeroValue": 0,
+                "emptyValue": ""
+            }
+        });
+        assert_eq!(
+            value_at_binding_path(&invocation, "payload.nullValue"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            value_at_binding_path(&invocation, "payload.falseValue"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            value_at_binding_path(&invocation, "payload.zeroValue"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            value_at_binding_path(&invocation, "payload.emptyValue"),
+            Some(&json!(""))
+        );
+        assert_eq!(value_at_binding_path(&invocation, "payload.missing"), None);
+    }
+
+    #[test]
     fn surface_bindings_reject_context_and_credential_paths() {
         let mut config = multi_call_config();
         config.surface_actions.insert(
@@ -1477,6 +2162,86 @@ mod tests {
         assert!(build_headers(&request(), &config)
             .unwrap_err()
             .contains("both required and optional"));
+    }
+
+    #[test]
+    fn runtime_host_uses_shared_environment_and_header_security_policy() {
+        let mut config = resolved_server();
+        config.env.insert("PATH".to_owned(), "attacker".to_owned());
+        assert!(build_environment(&request(), &config)
+            .unwrap_err()
+            .contains("process-influencing"));
+
+        let mut config = resolved_server();
+        config.credential_env.clear();
+        config
+            .headers
+            .insert("Host".to_owned(), "attacker".to_owned());
+        assert!(build_headers(&request(), &config)
+            .unwrap_err()
+            .contains("managed by Loom"));
+
+        let mut oversized_request = request();
+        oversized_request.context.credentials[0].value =
+            "x".repeat(loom_mcp::MAX_MCP_HEADER_VALUE_BYTES + 1);
+        let mut config = resolved_server();
+        config.credential_env.clear();
+        config
+            .credential_headers
+            .insert("X-Api-Key".to_owned(), "api_key".to_owned());
+        assert!(build_headers(&oversized_request, &config)
+            .unwrap_err()
+            .contains("value"));
+    }
+
+    #[test]
+    fn stdio_command_art_dir_expansion_is_absolute_and_anchored() {
+        let mut request = request();
+        let art_dir = std::env::temp_dir().join("loom-runtime-host-art");
+        request.art_dir = art_dir.clone();
+        let expanded = expand_stdio_command("{artDir}/runtime/server", &request, &art_dir)
+            .expect("expand anchored Art command");
+        assert!(Path::new(&expanded).is_absolute());
+        assert!(Path::new(&expanded).starts_with(&art_dir));
+
+        assert!(
+            expand_stdio_command("{artDir}/../server", &request, &art_dir)
+                .unwrap_err()
+                .contains("escapes")
+        );
+        assert!(expand_stdio_command("{tempDir}/server", &request, &art_dir)
+            .unwrap_err()
+            .contains("only use"));
+    }
+
+    #[test]
+    fn remote_destinations_do_not_expand_local_path_placeholders() {
+        let mut request = request();
+        request.art_dir = if cfg!(windows) {
+            PathBuf::from(r"C:\private\art")
+        } else {
+            PathBuf::from("/private/art")
+        };
+        let mut config = resolved_server();
+        config.transport = "streamable-http".to_owned();
+        config.command.clear();
+        config.url = "https://example.test/{artDir}/mcp".to_owned();
+        config.args = vec!["{tempDir}/secret".to_owned()];
+        request.context.mcp_server = Some(config);
+
+        let resolved = request.context.mcp_server.as_ref().unwrap();
+        assert_eq!(resolved.url, "https://example.test/{artDir}/mcp");
+        assert!(
+            McpServerConfig::remote("remote", "Remote", resolved.url.clone())
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("template")
+        );
+        assert!(!resolved
+            .url
+            .contains(request.art_dir.to_string_lossy().as_ref()));
+        assert_eq!(resolved.args, vec!["{tempDir}/secret"]);
     }
 
     fn declared_dependency(id: &str, version: &str) -> ArtDependencies {
@@ -1659,9 +2424,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_invocation_object_is_never_forwarded_as_a_tool_argument() {
-        // An Art with no declared actions gets no allowlist, but the control key is still not an
-        // argument: the whole invocation object used to reach the MCP server as `surfaceAction`.
+    fn surface_invocation_is_rejected_when_the_art_declares_no_actions() {
         let mut config = multi_call_config();
         config.surface_actions.clear();
         let mut request = request();
@@ -1674,19 +2437,41 @@ mod tests {
         request.params = json!({ "code": "SZ000034", "interval_seconds": 120 });
         request.disabled_params = Vec::new();
 
-        let calls = resolve_calls(&request, &config).unwrap();
-        assert_eq!(calls.len(), 2);
-        for call in &calls {
-            assert!(call.arguments.get(SURFACE_ACTION_KEY).is_none());
-        }
+        let error = resolve_calls(&request, &config).unwrap_err();
+        assert!(error.contains("not declared by this Art"), "{error}");
+    }
+
+    #[test]
+    fn dropped_undeclared_arguments_are_reported_by_name_without_values() {
+        let mut request = request();
+        request.inputs = json!({ "code": "SZ000034", "privatePayload": "do-not-record" });
+        request.params = json!({ "interval_seconds": 120, "alsoUnknown": true });
+
+        let warnings = dropped_argument_warnings(&request, &multi_call_config()).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].dropped_argument_count, 3);
         assert_eq!(
-            calls[0].arguments,
-            json!({ "source": "auto", "code": "SZ000034", "interval_seconds": 120 })
+            warnings[0].dropped_argument_names,
+            vec![
+                "alsoUnknown".to_owned(),
+                "interval_seconds".to_owned(),
+                "privatePayload".to_owned()
+            ]
         );
+        let encoded = serde_json::to_string(&warnings).unwrap();
+        assert!(!encoded.contains("do-not-record"));
+        assert!(!encoded.contains("SZ000034"));
     }
 
     #[test]
     fn schema_normalizes_mcp_argument_types() {
+        let aliases = BTreeMap::from([(
+            "search_lang".to_owned(),
+            BTreeMap::from([
+                ("zh".to_owned(), "zh-hans".to_owned()),
+                ("zh-cn".to_owned(), "zh-hans".to_owned()),
+            ]),
+        )]);
         let normalized = normalize_arguments(
             &json!({ "count": "2", "spellcheck": "true", "search_lang": "zh-cn" }),
             &json!({
@@ -1696,7 +2481,9 @@ mod tests {
                     "search_lang": { "type": "string", "enum": ["en", "zh-hans"] }
                 }
             }),
-        );
+            &aliases,
+        )
+        .unwrap();
         assert_eq!(
             normalized,
             json!({ "count": 2, "spellcheck": true, "search_lang": "zh-hans" })
@@ -1721,13 +2508,15 @@ mod tests {
                 },
                 "additionalProperties": false
             }),
-        );
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(normalized, json!({ "query": "red panda", "count": 2 }));
     }
 
     #[test]
-    fn schema_preserves_arguments_when_pattern_properties_define_dynamic_keys() {
-        let normalized = normalize_arguments(
+    fn schema_rejects_pattern_properties_instead_of_claiming_partial_support() {
+        let error = normalize_arguments(
             &json!({ "header_x": "visible" }),
             &json!({
                 "type": "object",
@@ -1735,8 +2524,62 @@ mod tests {
                 "patternProperties": { "^header_": { "type": "string" } },
                 "additionalProperties": false
             }),
-        );
-        assert_eq!(normalized, json!({ "header_x": "visible" }));
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("patternProperties"));
+    }
+
+    #[test]
+    fn schema_enforces_required_and_rejects_nested_or_composed_features() {
+        let error = normalize_arguments(
+            &json!({ "optional": "present" }),
+            &json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("`query` is required"));
+
+        for schema in [
+            json!({ "type": "object", "allOf": [] }),
+            json!({
+                "type": "object",
+                "properties": { "nested": { "type": "object" } }
+            }),
+        ] {
+            assert!(normalize_arguments(&json!({}), &schema, &BTreeMap::new()).is_err());
+        }
+    }
+
+    #[test]
+    fn argument_aliases_are_manifest_directed_and_bounded() {
+        let aliases = BTreeMap::from([(
+            "locale".to_owned(),
+            BTreeMap::from([("zh-cn".to_owned(), "zh-Hans".to_owned())]),
+        )]);
+        validate_argument_aliases(&aliases).unwrap();
+        let normalized = normalize_arguments(
+            &json!({ "locale": "ZH-CN" }),
+            &json!({
+                "type": "object",
+                "properties": { "locale": { "type": "string", "enum": ["en", "zh-Hans"] } }
+            }),
+            &aliases,
+        )
+        .unwrap();
+        assert_eq!(normalized, json!({ "locale": "zh-Hans" }));
+
+        let oversized = BTreeMap::from([(
+            "locale".to_owned(),
+            (0..33)
+                .map(|index| (format!("alias-{index}"), "en".to_owned()))
+                .collect(),
+        )]);
+        assert!(validate_argument_aliases(&oversized).is_err());
     }
 
     #[test]
@@ -1763,6 +2606,71 @@ mod tests {
             ),
             "server printed key=[REDACTED]"
         );
+    }
+
+    #[test]
+    fn successful_nested_results_redact_raw_url_and_base64_credentials() {
+        let credentials = vec![CredentialGrant {
+            name: "api_key".to_owned(),
+            value: "secret value/+".to_owned(),
+            expires_at: None,
+        }];
+        let redactor = CredentialRedactor::new(&credentials);
+        let mut value = json!({
+            "raw": "echo secret value/+",
+            "nested": [
+                "secret%20value%2F%2B",
+                "secret+value%2F%2B",
+                BASE64.encode(b"secret value/+")
+            ],
+            "ordinary": "secret value differs"
+        });
+
+        redactor.redact_value(&mut value);
+
+        let encoded = value.to_string();
+        assert!(!encoded.contains("secret value/+"));
+        assert!(!encoded.contains("secret%20value%2F%2B"));
+        assert!(!encoded.contains(&BASE64.encode(b"secret value/+")));
+        assert_eq!(value["ordinary"], "secret value differs");
+    }
+
+    #[test]
+    fn multi_call_outcomes_keep_successes_and_continue_after_a_failure() {
+        let calls = vec![
+            ResolvedCall {
+                id: "first".to_owned(),
+                tool_name: "first".to_owned(),
+                arguments: json!({}),
+            },
+            ResolvedCall {
+                id: "second".to_owned(),
+                tool_name: "second".to_owned(),
+                arguments: json!({}),
+            },
+            ResolvedCall {
+                id: "third".to_owned(),
+                tool_name: "third".to_owned(),
+                arguments: json!({}),
+            },
+        ];
+        let mut visited = Vec::new();
+
+        let outcomes = collect_call_outcomes(&calls, |call| {
+            visited.push(call.id.clone());
+            if call.id == "second" {
+                Err("second failed".to_owned())
+            } else {
+                Ok(json!({ "id": call.id }))
+            }
+        });
+
+        assert_eq!(visited, vec!["first", "second", "third"]);
+        assert!(matches!(outcomes[0], McpCallOutcome::Success(_)));
+        assert!(
+            matches!(outcomes[1], McpCallOutcome::Failure(ref error) if error == "second failed")
+        );
+        assert!(matches!(outcomes[2], McpCallOutcome::Success(_)));
     }
 
     #[cfg(windows)]

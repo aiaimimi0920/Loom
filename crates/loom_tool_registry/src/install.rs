@@ -1903,7 +1903,11 @@ fn verify_active_mcp_package(
             package.qualified_id
         ))
     })?;
-    let expected_name = format!("{}-{}", package.version, &package.digest[..12]);
+    let expected_name = format!(
+        "{}-{}",
+        package.version,
+        &package.digest[..loom_mcp::package::PACKAGE_DIRECTORY_DIGEST_CHARS]
+    );
     if package_dir.parent() != Some(versions_root.as_path())
         || package_dir.file_name() != Some(OsStr::new(&expected_name))
         || active_dir != package_dir
@@ -2855,6 +2859,39 @@ mod tests {
         buf
     }
 
+    fn install_test_mcp_package(root: &Path) -> loom_mcp::McpServerConfig {
+        let manifest = r#"{
+            "schemaVersion":1,
+            "id":"fixture-server",
+            "name":"Fixture Server",
+            "version":"1.2.3",
+            "publisher":{"id":"publisher.test","name":"Publisher Test"},
+            "transport":"stdio",
+            "entry":{"command":"runtime/server.ps1","args":[]}
+        }"#;
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options = SimpleFileOptions::default();
+            writer
+                .start_file(loom_mcp::package::MCP_SERVER_PACKAGE_MANIFEST, options)
+                .unwrap();
+            writer.write_all(manifest.as_bytes()).unwrap();
+            writer.start_file("runtime/server.ps1", options).unwrap();
+            writer.write_all(b"Write-Output ready").unwrap();
+            writer.finish().unwrap();
+        }
+        let config = loom_mcp::package::install_server_package(root, &bytes)
+            .expect("install test MCP package");
+        std::fs::create_dir_all(root.join("mcp")).expect("MCP registry directory");
+        std::fs::write(
+            root.join("mcp/servers.json"),
+            serde_json::to_vec_pretty(std::slice::from_ref(&config)).unwrap(),
+        )
+        .expect("MCP server registry");
+        config
+    }
+
     fn signed_art_zip(
         id: &str,
         version: &str,
@@ -3033,6 +3070,42 @@ mod tests {
         let zip = build_zip(manifest, &[]);
         let tool = read_manifest_from_zip(&zip).expect("read manifest");
         assert_eq!(tool.id, "art-x");
+    }
+
+    #[test]
+    fn resolves_mcp_dependency_from_the_installer_immutable_directory() {
+        let root = temp_root();
+        let config = install_test_mcp_package(&root);
+        let package = config.package.as_ref().expect("MCP package state");
+        assert_eq!(
+            package
+                .package_dir
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(
+                format!(
+                    "{}-{}",
+                    package.version,
+                    &package.digest[..loom_mcp::package::PACKAGE_DIRECTORY_DIGEST_CHARS]
+                )
+                .as_str()
+            )
+        );
+
+        let resolved = resolve_mcp_dependency_locks(
+            &root,
+            &[ArtMcpServerDependency {
+                id: package.qualified_id.clone(),
+                version: "^1.2".to_owned(),
+            }],
+        )
+        .expect("resolve installed MCP package");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].kind, "mcp");
+        assert_eq!(resolved[0].id, package.qualified_id);
+        assert_eq!(resolved[0].version, package.version);
+        assert!(is_sha256_hex(&resolved[0].sha256));
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

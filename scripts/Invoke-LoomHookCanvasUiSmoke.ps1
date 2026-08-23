@@ -22,6 +22,7 @@ $quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints @(
 )
 $SmokePortMinimum = 30000
 $SmokePortMaximum = 45000
+$script:DaemonRequestHeaders = @{}
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 . (Join-Path $PSScriptRoot "LoomReleaseLayout.ps1")
@@ -265,17 +266,17 @@ function Start-IsolatedProcess {
 
 function Invoke-JsonGet {
     param([string]$Uri)
-    return Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 10
+    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonRequestHeaders -TimeoutSec 10
 }
 
 function Invoke-JsonPost {
     param([string]$Uri, [object]$Body)
     $json = $Body | ConvertTo-Json -Depth 40 -Compress
-    return Invoke-RestMethod -Uri $Uri -Method Post -ContentType "application/json" -Body $json -TimeoutSec 20
+    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonRequestHeaders -ContentType "application/json" -Body $json -TimeoutSec 20
 }
 
 function Wait-ForDaemon {
-    param([string]$BaseUrl, [int]$ProcessId, [string]$ExpectedExecutablePath)
+    param([string]$BaseUrl, [int]$ProcessId, [string]$ExpectedExecutablePath, [string]$TokenPath)
     $deadline = (Get-Date).AddSeconds(45)
     while ((Get-Date) -lt $deadline) {
         if (-not (Test-ExactProcessAlive -ProcessId $ProcessId -ExpectedExecutablePath $ExpectedExecutablePath)) {
@@ -283,6 +284,16 @@ function Wait-ForDaemon {
         }
         try {
             $health = Invoke-JsonGet -Uri "$BaseUrl/health"
+            if (-not (Test-Path -LiteralPath $TokenPath -PathType Leaf)) {
+                Start-Sleep -Milliseconds 200
+                continue
+            }
+            $token = [System.IO.File]::ReadAllText($TokenPath).Trim()
+            if ([string]::IsNullOrWhiteSpace($token)) {
+                Start-Sleep -Milliseconds 200
+                continue
+            }
+            $script:DaemonRequestHeaders = @{ Authorization = "Bearer $token" }
             $status = Invoke-JsonGet -Uri "$BaseUrl/status"
             if ([string]$health.status -eq "ok" -and [string]$status.status -eq "ready") {
                 return $status
@@ -529,7 +540,11 @@ try {
 
     $sibling = Wait-ForDesktopDaemon -DesktopPid $desktopPid -DaemonExecutablePath $daemonExe -BaselinePids $baselinePids
     $daemonPid = [int]$sibling.processId
-    Wait-ForDaemon -BaseUrl $daemonUrl -ProcessId $daemonPid -ExpectedExecutablePath $daemonExe | Out-Null
+    Wait-ForDaemon `
+        -BaseUrl $daemonUrl `
+        -ProcessId $daemonPid `
+        -ExpectedExecutablePath $daemonExe `
+        -TokenPath (Join-Path $controlPlaneRoot "daemon-token") | Out-Null
 
     $bridgeStatus = Invoke-JsonGet -Uri "$daemonUrl/v1/hook-bridge/status"
     if ([bool]$bridgeStatus.running -and [int]$bridgeStatus.port -ne $bridgePort) {

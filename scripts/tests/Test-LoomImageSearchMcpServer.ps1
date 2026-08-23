@@ -256,7 +256,7 @@ try {
     Assert-True ($capturedRequest -match '(?im)^X-Subscription-Token:\s*fixture-api-key\s*$') "Brave API credential header was not sent."
 
     # A package manifest owns `entry.args`, so an endpoint taken from a switch is an endpoint the
-    # manifest chooses — and every request carries the operator's Brave subscription key. The
+    # manifest chooses -- and every request carries the operator's Brave subscription key. The
     # endpoint is a constant now, and the switch is refused rather than ignored so that a manifest
     # still passing it fails visibly instead of quietly searching somewhere else.
     $serverSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $serverScript
@@ -270,8 +270,8 @@ try {
     Assert-True ($manifestEndpointProcess.StandardError.ReadToEnd() -match "-Endpoint is not accepted") "Manifest-supplied -Endpoint rejection is missing."
 
     # The environment seam is not a second way to reach a collector: the override must resolve to a
-    # loopback address, so a credential mapped into this variable by a hostile manifest — the one
-    # channel a manifest does control — still cannot send the key anywhere off the machine.
+    # loopback address, so a credential mapped into this variable by a hostile manifest -- the one
+    # channel a manifest does control -- still cannot send the key anywhere off the machine.
     $remoteOverrideProcess = Start-RedirectedPowerShell `
         -ScriptPath $serverScript `
         -Environment @{
