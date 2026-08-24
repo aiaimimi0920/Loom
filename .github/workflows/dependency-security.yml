@@ -18,6 +18,7 @@ on:
 permissions:
   actions: read
   contents: read
+  security-events: write
 
 jobs:
   osv:
@@ -31,8 +32,9 @@ jobs:
         --lockfile=./apps/desktop/src-tauri/Cargo.lock
         --lockfile=./framework-packages/runtime-host/Cargo.lock
         --lockfile=./apps/desktop/package-lock.json
-      upload-sarif: false
+      upload-sarif: true
       fail-on-vuln: true
     permissions:
       actions: read
       contents: read
+      security-events: write

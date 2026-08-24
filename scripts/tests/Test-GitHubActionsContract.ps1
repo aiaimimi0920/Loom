@@ -112,6 +112,7 @@ Assert-Workflow -Name "dependency-security.yml" -RequiredText @(
     'workflow_call:',
     'actions: read',
     'contents: read',
+    'security-events: write',
     'google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@0c58c542420dfd23fcac08dd9c8ca3cca9c36f1a',
     'ref: ${{ inputs.checkout-ref || github.ref }}',
     '--config=./security/osv-scanner.toml',
@@ -119,7 +120,7 @@ Assert-Workflow -Name "dependency-security.yml" -RequiredText @(
     '--lockfile=./apps/desktop/src-tauri/Cargo.lock',
     '--lockfile=./framework-packages/runtime-host/Cargo.lock',
     '--lockfile=./apps/desktop/package-lock.json',
-    'upload-sarif: false',
+    'upload-sarif: true',
     'fail-on-vuln: true'
 )
 
@@ -153,6 +154,7 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     'uses: ./.github/workflows/dependency-security.yml',
     'checkout-ref: ${{ github.event_name == ''workflow_dispatch'' && inputs.tag || github.ref }}',
     'needs: dependency-security',
+    'security-events: write',
     'actions/checkout@v5',
     'actions/setup-node@v6',
     'dtolnay/rust-toolchain@1.95.0',

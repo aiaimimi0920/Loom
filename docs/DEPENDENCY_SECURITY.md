@@ -14,6 +14,8 @@ Loom combines controls that cover different boundaries:
   requests from `.github/dependabot.yml`.
 - OSV-Scanner 2.5.0 scans the exact committed lockfiles on pull requests,
   pushes to `main`, a weekly schedule, manual dispatch, and tag publication.
+- GitHub receives a SARIF artifact and publishes the results to the repository
+  Code Scanning dashboard with the required `security-events: write` permission.
 - `security/dependency-security-policy.json` pins both the reusable workflow and
   underlying scanner Action commits, local Windows binary URL and SHA-256, scan
   inventory, and exception lifetime.

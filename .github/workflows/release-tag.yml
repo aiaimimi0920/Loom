@@ -25,6 +25,7 @@ jobs:
     permissions:
       actions: read
       contents: read
+      security-events: write
 
   release:
     name: Build and publish Loom release
