@@ -48,6 +48,29 @@ fn sqlite_error(error: rusqlite::Error) -> RunStoreError {
     }
 }
 
+#[cfg(test)]
+mod sqlite_error_tests {
+    use super::*;
+
+    #[test]
+    fn only_locking_protocol_failures_are_retryable_during_open() {
+        let protocol = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_PROTOCOL),
+            None,
+        );
+        assert!(matches!(
+            sqlite_error(protocol),
+            RunStoreError::SqliteLockProtocol(_)
+        ));
+
+        let corrupt = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+        assert!(matches!(sqlite_error(corrupt), RunStoreError::Sqlite(_)));
+    }
+}
+
 fn stored_integrity(context: impl Into<String>, error: impl std::fmt::Display) -> RunStoreError {
     RunStoreError::Integrity(format!("{}: {error}", context.into()))
 }
