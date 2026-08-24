@@ -188,18 +188,15 @@ fn completed_leader_does_not_leave_inherited_pipes_open() {
 #[cfg(windows)]
 #[test]
 fn default_windows_job_allows_a_framework_host_to_spawn_its_runtime() {
-    let _fixture_guard = lock_windows_powershell_fixture();
-    let mut spec = ProcessSpec::new("powershell.exe");
+    // Use two cmd.exe processes so this job-object contract test does not depend on a second cold
+    // PowerShell startup on a shared Windows runner.
+    let mut spec = ProcessSpec::new("cmd.exe");
     spec.args = vec![
-        "-NoLogo".to_owned(),
-        "-NoProfile".to_owned(),
-        "-NonInteractive".to_owned(),
-        "-Command".to_owned(),
-        "& powershell.exe -NoLogo -NoProfile -NonInteractive -Command 'Write-Output nested-ok'"
-            .to_owned(),
+        "/D".to_owned(),
+        "/C".to_owned(),
+        "cmd.exe /D /C echo nested-ok".to_owned(),
     ];
-    // This is a fixture allowance for two cold PowerShell starts, not Loom's product default.
-    spec.limits.timeout = Duration::from_secs(45);
+    spec.limits.timeout = Duration::from_secs(15);
 
     let output = run_with_input(&spec, b"").expect("nested framework runtime");
     assert!(output.status.success());
