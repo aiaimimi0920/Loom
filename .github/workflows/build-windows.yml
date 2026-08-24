@@ -49,19 +49,25 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-            -VersionId $env:LOOM_VERSION `
-            -OutputRoot .\release\Loom `
-            -RequireCleanSource
+          & .\scripts\Invoke-CiCommand.ps1 `
+            -Title "Standalone Loom build failed" `
+            -Executable "powershell" `
+            -CommandArguments @(
+              "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\scripts\build-release.ps1",
+              "-VersionId", $env:LOOM_VERSION, "-OutputRoot", ".\release\Loom", "-RequireCleanSource"
+            )
 
       - name: Verify standalone Loom release
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release.ps1 `
-            -PackageDir ".\release\Loom\$env:LOOM_VERSION" `
-            -RunSmoke `
-            -RequireCleanSource
+          & .\scripts\Invoke-CiCommand.ps1 `
+            -Title "Standalone Loom verification failed" `
+            -Executable "powershell" `
+            -CommandArguments @(
+              "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\scripts\verify-release.ps1",
+              "-PackageDir", ".\release\Loom\$env:LOOM_VERSION", "-RunSmoke", "-RequireCleanSource"
+            )
 
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v6

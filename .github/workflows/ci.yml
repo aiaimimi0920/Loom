@@ -72,6 +72,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-HookCanvasUiContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DevelopmentManualContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DependencySecurityContract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-CiCommandDiagnostics.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-GitHubActionsContract.ps1
 
       - name: Install desktop dependencies
@@ -85,7 +86,13 @@ jobs:
         run: cargo check --locked --workspace --all-targets
 
       - name: Test Rust workspace
-        run: cargo test --locked --workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .\scripts\Invoke-CiCommand.ps1 `
+            -Title "Rust workspace tests failed" `
+            -Executable "cargo" `
+            -CommandArguments @("test", "--locked", "--workspace")
 
       - name: Typecheck desktop frontend
         working-directory: apps/desktop
