@@ -159,9 +159,11 @@ fn completed_leader_does_not_leave_inherited_pipes_open() {
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("powershell.exe");
         spec.args = vec![
+            "-NoLogo".to_owned(),
             "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
             "-Command".to_owned(),
-            "$null = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -NoNewWindow -PassThru; Write-Output ok".to_owned(),
+            "$null = Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60' -NoNewWindow -PassThru; Write-Output ok".to_owned(),
         ];
         spec
     } else {
@@ -169,13 +171,16 @@ fn completed_leader_does_not_leave_inherited_pipes_open() {
         spec.args = vec!["-c".to_owned(), "(sleep 30) & printf ok".to_owned()];
         spec
     };
-    spec.limits.timeout = Duration::from_secs(10);
+    // A clean GitHub runner can spend more than ten seconds loading two Windows PowerShell
+    // processes under endpoint protection. The Windows child sleeps for 60 seconds, so the
+    // enlarged fixture allowance still proves that inherited pipes close when the leader exits.
+    spec.limits.timeout = Duration::from_secs(if cfg!(windows) { 45 } else { 10 });
 
     let started = Instant::now();
     let output = run_with_input(&spec, b"").expect("leader with detached descendant");
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(if cfg!(windows) { 45 } else { 5 }));
 }
 
 #[cfg(windows)]
@@ -184,11 +189,15 @@ fn default_windows_job_allows_a_framework_host_to_spawn_its_runtime() {
     let _fixture_guard = lock_windows_powershell_fixture();
     let mut spec = ProcessSpec::new("powershell.exe");
     spec.args = vec![
+        "-NoLogo".to_owned(),
         "-NoProfile".to_owned(),
+        "-NonInteractive".to_owned(),
         "-Command".to_owned(),
-        "& powershell.exe -NoProfile -Command 'Write-Output nested-ok'".to_owned(),
+        "& powershell.exe -NoLogo -NoProfile -NonInteractive -Command 'Write-Output nested-ok'"
+            .to_owned(),
     ];
-    spec.limits.timeout = Duration::from_secs(15);
+    // This is a fixture allowance for two cold PowerShell starts, not Loom's product default.
+    spec.limits.timeout = Duration::from_secs(45);
 
     let output = run_with_input(&spec, b"").expect("nested framework runtime");
     assert!(output.status.success());
@@ -356,15 +365,17 @@ fn supervised_process_inherits_the_image_search_loopback_seam() {
 fn one_framework_process_stays_within_its_peak_memory_budget() {
     #[cfg(windows)]
     let _fixture_guard = lock_windows_powershell_fixture();
-    // Measured at 65,544,192 bytes (about 63 MiB) on 2026-08-22. The ceiling is well above that
-    // but still below the 512 MiB the default limits enforce, since a job that hits the enforced
-    // limit is killed and would never reach this assertion.
-    const BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+    // Local Windows measured about 63 MiB, while a clean hosted runner with endpoint-protection
+    // instrumentation measured 274,657,280 bytes (about 262 MiB) on 2026-08-24. Keep bounded
+    // headroom for host instrumentation while staying well below the enforced 512 MiB limit.
+    const BUDGET_BYTES: u64 = 320 * 1024 * 1024;
 
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("powershell.exe");
         spec.args = vec![
+            "-NoLogo".to_owned(),
             "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
             "-Command".to_owned(),
             "Write-Output ok".to_owned(),
         ];
