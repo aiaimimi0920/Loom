@@ -10,8 +10,10 @@ software has no unknown vulnerability.
 
 Loom combines controls that cover different boundaries:
 
-- Dependabot opens weekly Cargo, npm, GitHub Actions, and Docker update pull
-  requests from `.github/dependabot.yml`.
+- Dependabot checks Cargo, npm, GitHub Actions, and Docker weekly. Version-update
+  pull requests are cooled down, grouped where the review boundary is coherent,
+  and capped per ecosystem by `.github/dependabot.yml`; security updates remain
+  prompt and are not hidden by those version-update limits.
 - OSV-Scanner 2.5.0 scans the exact committed lockfiles on pull requests,
   pushes to `main`, a weekly schedule, manual dispatch, and tag publication.
 - GitHub receives a SARIF artifact and publishes the results to the repository
@@ -167,7 +169,35 @@ OSV and Dependabot are disclosure controls, not malware detectors. Provenance,
 review, least-privilege CI, immutable artifacts, and incident response remain
 necessary even when no advisory exists.
 
-## 8. Current baseline and limitations
+## 8. Dependency pull-request control
+
+The version-update budget is four open Cargo pull requests, three npm pull
+requests, and two each for GitHub Actions and Docker. Cargo patch/minor updates
+for the same dependency are grouped across the root workspace, detached Tauri
+wrapper, and detached runtime host. npm patch/minor updates are grouped
+separately for production and development dependencies. Major updates remain
+separate so migration risk is visible.
+
+Routine version updates use a seven-day default cooldown. Cargo and npm further
+use a 21-day major, seven-day minor, and three-day patch cooldown. GitHub
+security updates bypass both cooldown and the configured version-update pull
+request limits, so these controls reduce noise without delaying a disclosed
+vulnerability fix.
+
+`.github/workflows/dependabot-triage.yml` classifies open Dependabot pull
+requests after CI or through a manual all-open run. It executes only the
+classifier checked out from the trusted default branch and applies orthogonal
+scope, update-type, and disposition labels. It does not approve or merge code.
+Only an isolated, non-sensitive npm development patch/minor can become a
+`dependencies:review-candidate`; runtime, major, grouped, unknown,
+supply-chain, native build-tool, workflow, Docker, scanner, and release changes
+remain `dependencies:needs-human`.
+
+Existing pull requests are not closed merely because a newer grouping policy
+was deployed. Review or supersede them with an evidence-backed grouped update;
+never bulk-close a security update or a pull request with human discussion.
+
+## 9. Current baseline and limitations
 
 The deployment baseline was established on 2026-08-24. Directly fixable
 findings were removed by updating the locked versions of `anyhow`,

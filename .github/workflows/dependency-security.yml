@@ -15,6 +15,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: dependency-security-${{ github.event.pull_request.number || inputs.checkout-ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   actions: read
   contents: read

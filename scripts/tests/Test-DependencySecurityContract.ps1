@@ -65,8 +65,24 @@ foreach ($required in @($policy.scanner.reusableWorkflow, "fail-on-vuln: true", 
     Assert-True $workflow.Contains($required) "Dependency security workflow lost required contract: $required"
 }
 $dependabot = Read-RepoText ".github\dependabot.yml"
-foreach ($required in @("version: 2", "package-ecosystem: cargo", "package-ecosystem: npm", "package-ecosystem: github-actions", "package-ecosystem: docker")) {
+foreach ($required in @(
+    "version: 2",
+    "package-ecosystem: cargo",
+    "package-ecosystem: npm",
+    "package-ecosystem: github-actions",
+    "package-ecosystem: docker",
+    "cargo-cross-directory:",
+    "group-by: dependency-name",
+    "frontend-runtime-routine:",
+    "frontend-tooling-routine:",
+    "applies-to: version-updates",
+    "cooldown:",
+    "default-days: 7"
+)) {
     Assert-True $dependabot.Contains($required) "Dependabot configuration lost required contract: $required"
+}
+foreach ($limit in @(4, 3, 2)) {
+    Assert-True $dependabot.Contains("open-pull-requests-limit: $limit") "Dependabot version-update limit is missing: $limit"
 }
 $release = Read-RepoText ".github\workflows\release-tag.yml"
 Assert-True $release.Contains("uses: ./.github/workflows/dependency-security.yml") "Tag release does not call the dependency security gate."
