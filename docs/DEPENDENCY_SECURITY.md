@@ -26,9 +26,10 @@ Loom combines controls that cover different boundaries:
 - `security/osv-scanner.toml` contains only advisory-specific, expiring
   exceptions. Broad package overrides are forbidden.
 - Release packaging continues to generate CycloneDX and SPDX SBOMs, checksums,
-  and provenance. Container CI uses the SHA-pinned Trivy v0.36.0 Action as a
-  separate image/runtime-layer gate, uploads SARIF before enforcing the result,
-  and fails for fixed critical or high-severity findings.
+  and provenance. Container CI loads an ephemeral, non-published scan image
+  without incompatible manifest attestations, then uses the SHA-pinned Trivy
+  v0.36.0 Action as a separate image/runtime-layer gate. It uploads SARIF before
+  enforcing the result and fails for fixed critical or high-severity findings.
 
 The tag workflow scans the exact tag or manually requested ref before any
 release job can run. A successful scan of another branch or an earlier commit

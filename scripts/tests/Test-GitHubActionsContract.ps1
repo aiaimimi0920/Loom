@@ -210,13 +210,14 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
     'docker/build-push-action@v6',
     '.github/workflows/docker.yml',
     'examples/**',
-    'provenance: mode=max',
-    'sbom: true',
+    'provenance: false',
+    'sbom: false',
     'aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25',
     'format: sarif',
     'output: trivy-results.sarif',
     'limit-severities-for-sarif: true',
     'github/codeql-action/upload-sarif@v4',
+    "if: always() && steps.trivy.outcome != 'skipped'",
     "if: always() && steps.trivy.outcome == 'failure'"
 )
 
