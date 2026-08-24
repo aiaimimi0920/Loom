@@ -44,6 +44,9 @@ fn main() {
     println!("cargo:rustc-env=HOOK_BUILD_COMMIT={hook_commit}");
     println!("cargo:rerun-if-changed=../../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../../.git/refs/heads");
+    // Rust caches build-script output; invalidate it when CI checks out a new commit
+    // even if the detached .git/HEAD path keeps the same timestamp.
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     println!("cargo:rerun-if-changed=../../../../Hook/.git/HEAD");
     println!("cargo:rerun-if-changed=../../../../Hook/.git/refs/heads");
     println!("cargo:rerun-if-changed=icons/loom-icon.svg");
