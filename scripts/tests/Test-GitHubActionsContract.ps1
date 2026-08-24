@@ -124,6 +124,28 @@ Assert-Workflow -Name "dependency-security.yml" -RequiredText @(
     'fail-on-vuln: true'
 )
 
+Assert-Workflow -Name "codeql.yml" -RequiredText @(
+    'name: CodeQL',
+    'pull_request:',
+    'push:',
+    'schedule:',
+    'workflow_dispatch:',
+    'actions: read',
+    'contents: read',
+    'packages: read',
+    'security-events: write',
+    'runs-on: ubuntu-latest',
+    'actions/checkout@v5',
+    'persist-credentials: false',
+    'language: javascript-typescript',
+    'language: rust',
+    'language: actions',
+    'build-mode: none',
+    'github/codeql-action/init@v4',
+    'queries: security-extended',
+    'github/codeql-action/analyze@v4'
+)
+
 Assert-Workflow -Name "build-windows.yml" -RequiredText @(
     'name: Build Windows',
     'branches:',

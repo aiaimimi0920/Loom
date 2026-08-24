@@ -16,14 +16,19 @@ Loom combines controls that cover different boundaries:
   pushes to `main`, a weekly schedule, manual dispatch, and tag publication.
 - GitHub receives a SARIF artifact and publishes the results to the repository
   Code Scanning dashboard with the required `security-events: write` permission.
+- CodeQL runs extended security queries against Rust, JavaScript/TypeScript, and
+  GitHub Actions sources on pull requests, `main`, a weekly schedule, and manual
+  dispatch. It uses supported no-build extraction so the scan is independent of
+  packaging and still publishes language-specific Code Scanning results.
 - `security/dependency-security-policy.json` pins both the reusable workflow and
   underlying scanner Action commits, local Windows binary URL and SHA-256, scan
   inventory, and exception lifetime.
 - `security/osv-scanner.toml` contains only advisory-specific, expiring
   exceptions. Broad package overrides are forbidden.
 - Release packaging continues to generate CycloneDX and SPDX SBOMs, checksums,
-  and provenance. Container publication continues to use Trivy as a separate
-  image/runtime-layer gate.
+  and provenance. Container CI uses the SHA-pinned Trivy v0.36.0 Action as a
+  separate image/runtime-layer gate, uploads SARIF before enforcing the result,
+  and fails for fixed critical or high-severity findings.
 
 The tag workflow scans the exact tag or manually requested ref before any
 release job can run. A successful scan of another branch or an earlier commit
