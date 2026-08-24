@@ -89,10 +89,12 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          # Windows hosted runners show large PowerShell/Defender variance when unit-test
+          # processes start concurrently; keep the product code parallel and serialize only CI tests.
           & .\scripts\Invoke-CiCommand.ps1 `
             -Title "Rust workspace tests failed" `
             -Executable "cargo" `
-            -CommandArguments @("test", "--locked", "--workspace")
+            -CommandArguments @("test", "--locked", "--workspace", "--", "--test-threads=1")
 
       - name: Typecheck desktop frontend
         working-directory: apps/desktop

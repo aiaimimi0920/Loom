@@ -61,7 +61,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'cargo fmt --all -- --check',
     'cargo check --locked --workspace --all-targets',
     '.\scripts\Invoke-CiCommand.ps1',
-    '-CommandArguments @("test", "--locked", "--workspace")',
+    '-CommandArguments @("test", "--locked", "--workspace", "--", "--test-threads=1")',
     'npm ci --no-audit --no-fund',
     'npm run typecheck',
     'npm run build',
