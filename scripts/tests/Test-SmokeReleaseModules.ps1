@@ -106,6 +106,39 @@ try {
     Remove-SmokeTempRoot -Path $captureFixtureRoot
 }
 
+$PackageDir = $repoRoot
+$originalInvokeProcessCapture = ${function:Invoke-ProcessCapture}
+try {
+    $script:FocusedCapture = $null
+    function Invoke-ProcessCapture {
+        param(
+            [string]$FilePath,
+            [string[]]$ArgumentList,
+            [int]$TimeoutSeconds
+        )
+        $script:FocusedCapture = [ordered]@{
+            filePath = $FilePath
+            argumentList = @($ArgumentList)
+            timeoutSeconds = $TimeoutSeconds
+        }
+        return [pscustomobject]@{ exitCode = 0; output = ""; stdout = ""; stderr = "" }
+    }
+
+    foreach ($focusedName in @(
+        "Invoke-LoomGatewayBrainPlanSmoke.ps1",
+        "Invoke-LoomRunPersistenceSmoke.ps1",
+        "Invoke-LoomDaemonConcurrencySmoke.ps1"
+    )) {
+        $expectedFocusedPath = Join-Path (Join-Path $repoRoot "scripts") $focusedName
+        $null = Invoke-FocusedLoomSmoke -ScriptName $focusedName -EvidenceSubdirectory "contract"
+        Assert-Equal $expectedFocusedPath ([string]$script:FocusedCapture.argumentList[4]) "Focused smoke resolved outside the repository scripts root."
+        Assert-Equal 300 ([int]$script:FocusedCapture.timeoutSeconds) "Focused smoke timeout contract changed."
+    }
+}
+finally {
+    Set-Item -Path Function:\Invoke-ProcessCapture -Value $originalInvokeProcessCapture
+}
+
 $processSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $moduleRoot "Process.ps1")
 foreach ($forbidden in @("Get-SmokeCmdExePath", "Start-SmokeCapturedProcess", "run.cmd", "cmd.exe")) {
     Assert-True (-not $processSource.Contains($forbidden)) "Smoke process capture retained a command wrapper: $forbidden"

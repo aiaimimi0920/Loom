@@ -40,7 +40,8 @@ function Invoke-FocusedLoomSmoke {
         throw "Focused smoke evidence subdirectory must be a safe path segment: $EvidenceSubdirectory"
     }
 
-    $scriptPath = Join-Path $PSScriptRoot $ScriptName
+    $smokeScriptRoot = Join-Path $repoRoot "scripts"
+    $scriptPath = Join-Path $smokeScriptRoot $ScriptName
     Assert-PathExists $scriptPath
     $focusedEvidenceRoot = Join-Path $EvidenceRoot $EvidenceSubdirectory
     $powerShellExe = Join-Path $PSHOME "powershell.exe"

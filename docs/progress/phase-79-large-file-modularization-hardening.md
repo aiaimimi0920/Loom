@@ -2474,3 +2474,13 @@ Phase 79 is complete only when all of the following are true:
   `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom`. This entry does not claim that artifact exists or passes yet;
   the release remains pending until the complete Phase 79 source set is committed, `build-release.ps1 -RequireCleanSource`
   creates that unused directory, and `verify-release.ps1 -RunSmoke -RequireCleanSource` verifies the exact package.
+- Commit `4b1c38f` supplied the first clean-source candidate. `build-release.ps1 -RequireCleanSource` successfully created
+  `C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\20260824-phase79-rc1` with 58 checksum entries, the desktop and
+  daemon executables, CLI, Plugin SDK, four frameworks, two MCP servers, seven Sample Arts, two SBOM formats and provenance.
+  Its exact-package verifier then correctly stopped before completion: the split `smoke-release/Focused.ps1` resolved all
+  three top-level focused scripts relative to its own module directory instead of the repository `scripts` directory.
+- The focused-smoke resolver now uses the explicit repository scripts root. `Test-SmokeReleaseModules.ps1` mocks process
+  execution and dynamically verifies the exact `-File` path and 300-second budget for Gateway planning, run persistence and
+  daemon concurrency; the focused module and standalone release contracts pass. RC1 is preserved as a failed-verifier
+  diagnostic candidate and is not the final release. The next unused clean-source target is `20260824-phase79-rc2`; it must
+  be rebuilt from the resolver-fix commit and pass the complete exact-package smoke verifier before Loom closure is claimed.
