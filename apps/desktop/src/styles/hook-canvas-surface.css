@@ -1,0 +1,439 @@
+/* Owns Hook canvas surface, nodes, edges, previews, metrics, inspector, result picker, and technical details. */
+
+.hook-canvas-minimap__arrow {
+  fill: rgba(156, 163, 175, 0.9);
+}
+
+.hook-canvas-grid,
+.hook-canvas-edges,
+.hook-canvas-node-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.hook-canvas-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.075) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.075) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.5;
+}
+
+.hook-canvas-edges {
+  /* Above the node layer (like Hook's z-[60] link SVG) so the connecting lines
+     and arrowheads are visible over the node images instead of hidden under
+     them. */
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.hook-canvas-edges path {
+  stroke: rgba(156, 163, 175, 0.9);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke 0.15s ease, stroke-width 0.15s ease;
+}
+
+.hook-canvas-edges path.hook-canvas-edge--active {
+  stroke: var(--loom-theme-accent);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--loom-theme-accent) 60%, transparent));
+}
+
+.hook-canvas-arrow {
+  fill: rgba(156, 163, 175, 0.9);
+}
+
+.hook-canvas-arrow--active {
+  fill: var(--loom-theme-accent);
+}
+
+.hook-canvas-node-layer {
+  z-index: 2;
+}
+
+.hook-canvas-node {
+  position: absolute;
+  display: grid;
+  min-width: 24px;
+  min-height: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 10px;
+  padding: 0;
+  background: #1b252d;
+  color: #f7f8ef;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.hook-canvas-node:disabled {
+  cursor: default;
+}
+
+.hook-canvas-node:not(:disabled):hover {
+  border-color: var(--loom-theme-accent);
+  transform: translateY(-1px);
+}
+
+.hook-canvas-node:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--loom-theme-secondary) 90%, transparent);
+  outline-offset: 2px;
+}
+
+.hook-canvas-node--selected {
+  border-color: var(--loom-theme-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--loom-theme-accent) 24%, transparent), 0 14px 28px rgba(0, 0, 0, 0.34);
+}
+
+.hook-canvas-node--art {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary) 68%, transparent);
+}
+
+.hook-canvas-node--status-error {
+  border-color: rgba(255, 107, 107, 0.9);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.18), 0 12px 24px rgba(0, 0, 0, 0.3);
+}
+
+.hook-canvas-node--unknown {
+  border-style: dashed;
+}
+
+/* Non-cropped preview: match Hook's normal view exactly
+   (`width:100%; height:100%; object-fit:contain`). The whole image is fit into
+   the node box preserving aspect ratio (letterboxed), so a node that receives an
+   upstream image of a different size/aspect shows the complete image undistorted
+   — not cropped (object-fit:cover) and not stretched (height:auto overflow). */
+.hook-canvas-node > img:not(.hook-canvas-node__crop) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Cropped (minified) preview is positioned and scaled by inline styles that
+   reproduce Hook's minified crop transform; opacity is applied per-node inline
+   (Hook renders opacityNormal/opacityMini live rather than baking it in). */
+
+.hook-canvas-node__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 100%;
+  padding: 6px;
+  color: rgba(247, 248, 239, 0.66);
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.hook-canvas-node__placeholder-title {
+  display: block;
+  line-height: 1.25;
+}
+
+.hook-canvas-node__placeholder-detail {
+  display: -webkit-box;
+  margin-top: 4px;
+  overflow: hidden;
+  color: rgba(247, 248, 239, 0.78);
+  font-size: 0.52rem;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.hook-canvas-node__placeholder--error {
+  color: #ffd6d6;
+}
+
+.hook-canvas-node__placeholder--error .hook-canvas-node__placeholder-detail {
+  color: rgba(255, 214, 214, 0.9);
+}
+
+.hook-canvas-empty {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  max-width: min(82%, 360px);
+  gap: 6px;
+  transform: translate(-50%, -50%);
+  color: #f7f8ef;
+  text-align: center;
+}
+
+.hook-canvas-empty span {
+  color: rgba(247, 248, 239, 0.68);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.hook-canvas-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hook-canvas-metrics span {
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: rgba(17, 22, 20, 0.08);
+  color: rgba(17, 22, 20, 0.68);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.hook-canvas-metrics strong {
+  color: #111614;
+}
+
+.hook-canvas-thumbnail__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.hook-canvas-thumbnail__save {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hook-canvas-zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hook-canvas-zoom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: rgba(31, 41, 29, 0.72);
+}
+
+/* Compact toggle so it hugs its label instead of stretching across the row. */
+.hook-canvas-minimap-toggle {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.hook-canvas-zoom input[type="range"] {
+  width: 160px;
+  accent-color: var(--loom-theme-accent-text);
+  cursor: pointer;
+}
+
+.hook-canvas-zoom__value {
+  min-width: 3.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hook-canvas-warning {
+  margin: 0;
+  color: rgba(122, 78, 0, 0.86);
+  font-size: 0.78rem;
+}
+
+.hook-canvas-workspace__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 270px);
+  gap: 14px;
+  align-items: start;
+}
+
+.hook-canvas-inspector {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+  border: 1px solid rgba(17, 22, 20, 0.12);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(17, 22, 20, 0.055);
+}
+
+.hook-canvas-inspector p {
+  margin: 0;
+  color: rgba(17, 22, 20, 0.64);
+  line-height: 1.5;
+}
+
+.hook-canvas-inspector__error {
+  display: grid;
+  gap: 6px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(127, 29, 29, 0.08);
+  color: #991b1b;
+}
+
+.hook-canvas-inspector__error strong {
+  font-size: 0.78rem;
+}
+
+.hook-canvas-inspector__error span {
+  color: rgba(127, 29, 29, 0.88);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.hook-canvas-inspector dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.hook-canvas-inspector dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid rgba(17, 22, 20, 0.08);
+  padding-bottom: 7px;
+}
+
+.hook-canvas-inspector dt {
+  color: rgba(17, 22, 20, 0.58);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.hook-canvas-inspector dd {
+  margin: 0;
+  color: #111614;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.hook-canvas-result-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.hook-canvas-result-picker > strong {
+  font-size: 0.8rem;
+  color: rgba(17, 22, 20, 0.72);
+}
+
+.hook-canvas-result-picker__grid {
+  display: grid;
+  gap: 8px;
+}
+
+.hook-canvas-result-picker__item {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(17, 22, 20, 0.1);
+  background: rgba(255, 255, 255, 0.7);
+  text-align: left;
+  cursor: pointer;
+}
+
+.hook-canvas-result-picker__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.hook-canvas-result-picker__item--selected {
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.18);
+}
+
+.hook-canvas-result-picker__thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(17, 22, 20, 0.08);
+}
+
+.hook-canvas-result-picker__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hook-canvas-result-picker__meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hook-canvas-result-picker__meta strong {
+  font-size: 0.78rem;
+  color: #111614;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hook-canvas-result-picker__meta small {
+  color: rgba(17, 22, 20, 0.58);
+}
+
+.advanced-technical-information {
+  min-width: 0;
+  border-top: 1px solid rgba(17, 22, 20, 0.12);
+  padding-top: 12px;
+}
+
+.advanced-technical-information--studio {
+  grid-column: 1 / -1;
+}
+
+.advanced-technical-information > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: rgba(17, 22, 20, 0.68);
+  font-size: 0.82rem;
+  font-weight: 900;
+  list-style-position: inside;
+}
+
+.advanced-technical-information > summary:hover,
+.advanced-technical-information > summary:focus-visible {
+  color: #111614;
+}
+
+.advanced-technical-information__body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.advanced-technical-information__body > .hook-sync-card,
+.advanced-technical-information__body > .stat-row,
+.advanced-technical-information__body > .method-grid {
+  grid-column: 1 / -1;
+}
+
+.workspace-panel--settings,

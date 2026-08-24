@@ -87,6 +87,13 @@ foreach ($entry in $expected.GetEnumerator()) {
             Assert-True ((Get-Item -LiteralPath $zipPath).Length -le 64MB) "stock-api MCP ZIP exceeds the installer package limit."
             foreach ($requiredPath in @(
                 "runtime/stock-api-entry.js",
+                "runtime/stock-api/constants.js",
+                "runtime/stock-api/executors.js",
+                "runtime/stock-api/helpers.js",
+                "runtime/stock-api/parsers.js",
+                "runtime/stock-api/providers.js",
+                "runtime/stock-api/server.js",
+                "runtime/stock-api/transport.js",
                 "runtime/node/node.exe",
                 "runtime/node/LICENSE",
                 "runtime/node-runtime.json",

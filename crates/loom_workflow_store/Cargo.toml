@@ -8,7 +8,12 @@ repository.workspace = true
 description = "Loom workflow persistence and graph codec contracts"
 
 [dependencies]
+fs2.workspace = true
+libc.workspace = true
+loom_plugin_security.workspace = true
+loom_security.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
+windows-sys.workspace = true

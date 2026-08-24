@@ -7,7 +7,48 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $buildPath = Join-Path $repoRoot "scripts\build-release.ps1"
 $verifyPath = Join-Path $repoRoot "scripts\verify-release.ps1"
+$buildModuleRoot = Join-Path $repoRoot "scripts\build-release"
+$buildModuleNames = @(
+    "Common.ps1",
+    "Catalog.ps1",
+    "Plan.ps1",
+    "Execution.ps1",
+    "FrameworkPackages.ps1",
+    "McpPackages.ps1",
+    "ArtPackages.ps1",
+    "Metadata.ps1",
+    "Archives.ps1"
+)
+$buildModulePaths = @($buildModuleNames | ForEach-Object { Join-Path $buildModuleRoot $_ })
+$buildContractPaths = @($buildPath) + $buildModulePaths
+$verifyModuleRoot = Join-Path $repoRoot "scripts\verify-release"
+$verifyModuleNames = @(
+    "Common.ps1",
+    "DesktopPayload.ps1",
+    "CliSdkPayload.ps1",
+    "FrameworkPackages.ps1",
+    "McpPackages.ps1",
+    "ArtPackages.ps1",
+    "SupplyChain.ps1"
+)
+$verifyModulePaths = @($verifyModuleNames | ForEach-Object { Join-Path $verifyModuleRoot $_ })
+$verifyContractPaths = @($verifyPath) + $verifyModulePaths
 $smokePath = Join-Path $repoRoot "scripts\smoke-release.ps1"
+$smokeModuleRoot = Join-Path $repoRoot "scripts\smoke-release"
+$smokeModuleNames = @(
+    "Assertions.ps1",
+    "Image.ps1",
+    "HttpStatus.ps1",
+    "ProcessTree.ps1",
+    "Evidence.ps1",
+    "Process.ps1",
+    "CloudFixture.ps1",
+    "McpRegistryFixture.ps1",
+    "ReleasePhases.ps1",
+    "Release.ps1",
+    "Focused.ps1"
+)
+$smokeModulePaths = @($smokeModuleNames | ForEach-Object { Join-Path $smokeModuleRoot $_ })
 $smokePortHelperPath = Join-Path $repoRoot "scripts\LoomSmokePorts.ps1"
 $focusedSmokePaths = @(
     (Join-Path $repoRoot "scripts\Invoke-LoomGatewayBrainPlanSmoke.ps1"),
@@ -18,10 +59,23 @@ $focusedSmokePaths = @(
     (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1")
 )
+$concurrencySmokeModuleRoot = Join-Path $repoRoot "scripts\daemon-concurrency-smoke"
+$concurrencySmokeModuleNames = @("Common.ps1", "Process.ps1", "Http.ps1", "GatewayFixture.ps1")
+$concurrencySmokeModulePaths = @($concurrencySmokeModuleNames | ForEach-Object {
+    Join-Path $concurrencySmokeModuleRoot $_
+})
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
+$pathSafetyPath = Join-Path $repoRoot "scripts\tests\Test-ReleasePathSafety.ps1"
+$releaseContractHelperPath = Join-Path $repoRoot "scripts\tests\standalone-release\ReleaseContracts.ps1"
 $hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
 $frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
+$frameworkArtStoreHookSmokeModuleRoot = Join-Path $repoRoot "scripts\framework-art-store-hook-smoke"
+$frameworkArtStoreHookSmokeContractPaths = @($frameworkArtStoreHookSmokePath)
+$frameworkArtStoreHookSmokeContractPaths += @(@(
+    "Assertions.ps1", "Paths.ps1", "Process.ps1", "Http.ps1", "HookBridge.ps1", "FixtureArchive.ps1",
+    "ServiceFixtures.ps1", "ArtFixtures.ps1"
+) | ForEach-Object { Join-Path $frameworkArtStoreHookSmokeModuleRoot $_ })
 $surfacePrototypeSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1"
 $surfacePrototypeManifestPaths = @(
     (Join-Path $repoRoot "art-packages\surface-prototypes\stock-card\manifest.json"),
@@ -54,28 +108,30 @@ function Assert-Equal {
 
 function Assert-ScriptContract {
     param(
-        [string]$Path,
+        [string[]]$Path,
         [string[]]$RequiredText,
         [string[]]$ForbiddenText
     )
 
-    Assert-True -Condition (Test-Path -LiteralPath $Path -PathType Leaf) -Message "Missing standalone release script: $Path"
-
-    $tokens = $null
-    $parseErrors = $null
-    [void][System.Management.Automation.Language.Parser]::ParseFile(
-        $Path,
-        [ref]$tokens,
-        [ref]$parseErrors
-    )
-    Assert-Equal -Expected 0 -Actual @($parseErrors).Count -Message "PowerShell parse errors in $Path."
-
-    $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+    $rawParts = foreach ($scriptPath in @($Path)) {
+        Assert-True -Condition (Test-Path -LiteralPath $scriptPath -PathType Leaf) -Message "Missing standalone release script: $scriptPath"
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        Assert-Equal -Expected 0 -Actual @($parseErrors).Count -Message "PowerShell parse errors in $scriptPath."
+        Get-Content -Raw -Encoding UTF8 -LiteralPath $scriptPath
+    }
+    $raw = @($rawParts) -join [Environment]::NewLine
+    $pathLabel = @($Path) -join ", "
     foreach ($needle in $RequiredText) {
-        Assert-True -Condition $raw.Contains($needle) -Message "Missing required release contract text in ${Path}: $needle"
+        Assert-True -Condition $raw.Contains($needle) -Message "Missing required release contract text in ${pathLabel}: $needle"
     }
     foreach ($needle in $ForbiddenText) {
-        Assert-True -Condition (-not $raw.Contains($needle)) -Message "Forbidden release contract text in ${Path}: $needle"
+        Assert-True -Condition (-not $raw.Contains($needle)) -Message "Forbidden release contract text in ${pathLabel}: $needle"
     }
 }
 
@@ -92,6 +148,8 @@ function Get-ScriptFunctionDefinition {
     Assert-True -Condition ($null -ne $definition) -Message "Missing script function for runtime contract: $Name"
     return [scriptblock]::Create($definition.Extent.Text)
 }
+
+. $releaseContractHelperPath
 
 $powerShellScripts = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "scripts") -Recurse -File -Filter "*.ps1")
 foreach ($powerShellScript in $powerShellScripts) {
@@ -115,7 +173,7 @@ $commonForbidden = @(
 )
 
 Assert-ScriptContract `
-    -Path $buildPath `
+    -Path $buildContractPaths `
     -RequiredText @(
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
         '[string]$OutputRoot = ".\release\Loom"',
@@ -156,7 +214,7 @@ Assert-ScriptContract `
     )
 
 Assert-ScriptContract `
-    -Path $verifyPath `
+    -Path $verifyContractPaths `
     -RequiredText @(
         '[Parameter(Mandatory = $true)][string]$PackageDir',
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
@@ -211,80 +269,18 @@ Assert-ScriptContract `
     ) `
     -ForbiddenText $commonForbidden
 
-$verifyTokens = $null
-$verifyParseErrors = $null
-$verifyAst = [System.Management.Automation.Language.Parser]::ParseFile($verifyPath, [ref]$verifyTokens, [ref]$verifyParseErrors)
-Assert-Equal -Expected 0 -Actual @($verifyParseErrors).Count -Message "Verifier must parse before captured-process tests."
-. (Get-ScriptFunctionDefinition -Ast $verifyAst -Name "Invoke-CapturedPowerShell")
+Assert-ReleaseModuleContracts -ReleaseModules @(
+    [pscustomobject]@{ root = $buildModuleRoot; names = $buildModuleNames; entry = $buildPath },
+    [pscustomobject]@{ root = $verifyModuleRoot; names = $verifyModuleNames; entry = $verifyPath }
+) -CommonForbidden $commonForbidden
 
-$captureFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-verify-capture-" + [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $captureFixtureRoot | Out-Null
-try {
-    $captureFixturePath = Join-Path $captureFixtureRoot "capture-fixture.ps1"
-    [System.IO.File]::WriteAllText(
-        $captureFixturePath,
-        '[Console]::Out.WriteLine("fixture stdout"); [Console]::Error.WriteLine("fixture stderr"); exit 7',
-        [System.Text.ASCIIEncoding]::new()
-    )
-    $captureResult = Invoke-CapturedPowerShell -Arguments @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $captureFixturePath
-    )
-    $captureText = @($captureResult.output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
-    Assert-Equal -Expected 7 -Actual ([int]$captureResult.exitCode) -Message "Captured PowerShell helper lost the child exit code."
-    Assert-True -Condition $captureText.Contains("fixture stdout") -Message "Captured PowerShell helper lost child stdout."
-    Assert-True -Condition $captureText.Contains("fixture stderr") -Message "Captured PowerShell helper lost child stderr."
-}
-finally {
-    Remove-Item -LiteralPath $captureFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-Assert-ScriptContract `
-    -Path $layoutPath `
-    -RequiredText @(
-        'function Get-LoomReleaseLayout',
-        'function Get-LoomArchiveFileEntries',
-        'function Assert-LoomDesktopRootExecutableBoundary',
-        'function Test-LoomArtifactKind',
-        'Loom.exe',
-        '$runtimeRoot = Join-Path $packageFullPath "runtime"',
-        '$daemonExe = Join-Path $runtimeRoot "loom-daemon.exe"',
-        'Loom-CLI-',
-        'Loom CLI artifact metadata mismatch.',
-        'Loom CLI ZIP must contain exactly one loom.exe entry.',
-        'Loom CLI extraction destination must be empty:',
-        'Invalid Loom archive entry:',
-        '$entry.Name.Length -eq 0',
-        '[System.StringComparison]::Ordinal',
-        'manifest.json',
-        'Expand-Archive'
-    ) `
-    -ForbiddenText $commonForbidden
-
-Assert-ScriptContract `
-    -Path $tamperPath `
-    -RequiredText @(
-        'function New-IntegrityFixture',
-        'function New-TraversalZip',
-        'function New-WhitespaceEntryZip',
-        'ExtraRootExecutable',
-        'ExtraCliEntry',
-        'CliMetadataMismatch',
-        'CliEntryCaseMismatch',
-        'CliKindCaseMismatch',
-        'ForwardSlashPaths',
-        'no-newline',
-        'extra-line',
-        'Traversal archive unexpectedly passed shared entry validation.',
-        'Non-empty CLI extraction destination unexpectedly passed validation.',
-        'ArtifactNamingMismatch',
-        'PluginSdkPathMismatch',
-        'desktop-wrong',
-        'cli-wrong',
-        'Loom release integrity tamper contract passed.'
-    ) `
-    -ForbiddenText $commonForbidden
+$verifyCommonPath = Join-Path $verifyModuleRoot "Common.ps1"
+Assert-CapturedPowerShellContract -VerifyCommonPath $verifyCommonPath
+Assert-ReleaseSecurityScriptContracts `
+    -LayoutPath $layoutPath `
+    -TamperPath $tamperPath `
+    -PathSafetyPath $pathSafetyPath `
+    -CommonForbidden $commonForbidden
 
 Assert-ScriptContract `
     -Path $hookErrorPreviewSmokePath `
@@ -304,7 +300,7 @@ Assert-ScriptContract `
     -ForbiddenText $commonForbidden
 
 Assert-ScriptContract `
-    -Path $frameworkArtStoreHookSmokePath `
+    -Path $frameworkArtStoreHookSmokeContractPaths `
     -RequiredText @(
         'raw-image-alt.png',
         '"image.candidates"',
@@ -312,8 +308,13 @@ Assert-ScriptContract `
         '$mcpCandidates.selectedIndex',
         'mcpCandidateCount',
         'result_index',
-        'Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256',
-        'Write-Utf8NoBomFile -Path "$ZipPath.sha256"',
+        'Get-FileHash -LiteralPath $temporaryZipPath -Algorithm SHA256',
+        'Write-Utf8NoBomFile -Path $temporarySidecarPath',
+        '[System.IO.Compression.ZipArchive]::new',
+        'ConvertTo-SmokeZipRelativePath',
+        'Get-SmokeDescendantProcessIds',
+        'Assert-SmokeLoopbackHttpUri',
+        '[int]$MaxMessageBytes = 1MB',
         'method = "loom.hook.art.execute"',
         'protocolVersion = "loom.hook.v1"',
         'outputTransports = @("shared_memory", "websocket")'
@@ -341,20 +342,64 @@ Assert-ScriptContract `
         '[Parameter(Mandatory = $true)][string]$PackageDir',
         '$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
         'LoomReleaseLayout.ps1',
-        'Get-LoomReleaseLayout',
+        '$smokeModuleRoot = Join-Path $PSScriptRoot "smoke-release"',
+        'Assertions.ps1',
+        'Image.ps1',
+        'HttpStatus.ps1',
+        'ProcessTree.ps1',
+        'Evidence.ps1',
+        'Process.ps1',
+        'CloudFixture.ps1',
+        'McpRegistryFixture.ps1',
+        'ReleasePhases.ps1',
+        'Release.ps1',
+        'Focused.ps1',
         'Invoke-LoomGatewayBrainPlanSmoke.ps1',
         'Invoke-LoomRunPersistenceSmoke.ps1',
         'Invoke-LoomDaemonConcurrencySmoke.ps1',
         'LoomSmokePorts.ps1',
-        'Get-LoomSmokePort',
-        '/v1/mcp/servers',
-        '/v1/workflows',
-        '/v1/hook-bridge/status',
-        'function Initialize-SmokeEvidenceRun',
-        'function Write-SmokeJsonEvidence',
         '$EvidenceRoot'
     ) `
     -ForbiddenText $commonForbidden
+
+$actualSmokeModuleNames = @(Get-ChildItem -LiteralPath $smokeModuleRoot -File -Filter "*.ps1" | Sort-Object Name | ForEach-Object Name)
+Assert-Equal `
+    -Expected (@($smokeModuleNames | Sort-Object) -join ",") `
+    -Actual ($actualSmokeModuleNames -join ",") `
+    -Message "Smoke helper module set drifted."
+
+$smokeContractRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $smokePath
+$previousSmokeModuleIndex = -1
+foreach ($smokeModuleName in $smokeModuleNames) {
+    $smokeModuleIndex = $smokeContractRaw.IndexOf($smokeModuleName, [System.StringComparison]::Ordinal)
+    Assert-True `
+        -Condition ($smokeModuleIndex -gt $previousSmokeModuleIndex) `
+        -Message "Smoke helper module load order drifted at $smokeModuleName."
+    $previousSmokeModuleIndex = $smokeModuleIndex
+}
+foreach ($smokeModulePath in $smokeModulePaths) {
+    Assert-ScriptContract `
+        -Path $smokeModulePath `
+        -RequiredText @('<# Owns') `
+        -ForbiddenText $commonForbidden
+    $smokeModuleRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $smokeModulePath
+    Assert-True `
+        -Condition (-not $smokeModuleRaw.Contains('$smokeModuleRoot')) `
+        -Message "Smoke helper modules must not recursively import the module directory: $smokeModulePath"
+    $smokeContractRaw += [Environment]::NewLine + $smokeModuleRaw
+}
+
+foreach ($needle in @(
+    'Get-LoomReleaseLayout',
+    'Get-LoomSmokePort',
+    '/v1/mcp/servers',
+    '/v1/workflows',
+    '/v1/hook-bridge/status',
+    'function Initialize-SmokeEvidenceRun',
+    'function Write-SmokeJsonEvidence'
+)) {
+    Assert-True -Condition $smokeContractRaw.Contains($needle) -Message "Missing aggregate smoke contract text: $needle"
+}
 
 Assert-True -Condition (Test-Path -LiteralPath $smokePortHelperPath -PathType Leaf) -Message "Missing shared smoke port allocator: $smokePortHelperPath"
 $smokePortHelperRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $smokePortHelperPath
@@ -378,12 +423,31 @@ $allocatedSmokePorts = @(for ($index = 0; $index -lt 64; $index++) { Get-LoomSmo
 Assert-Equal -Expected 64 -Actual @($allocatedSmokePorts | Select-Object -Unique).Count -Message "Shared smoke port allocator returned a duplicate port."
 Assert-True -Condition (@($allocatedSmokePorts | Where-Object { $_ -lt 30000 -or $_ -gt 45000 }).Count -eq 0) -Message "Shared smoke port allocator returned a port outside 30000-45000."
 
-foreach ($focusedSmokePath in @($smokePath) + $focusedSmokePaths) {
+Assert-True -Condition $smokeContractRaw.Contains('Get-LoomSmokePort') -Message "Modular release smoke must use the shared port allocator."
+Assert-True -Condition (-not $smokeContractRaw.Contains('function Get-FreePort')) -Message "Modular release smoke must not retain a local release port allocator."
+Assert-True -Condition (-not $smokeContractRaw.Contains('function Get-FreeTcpPort')) -Message "Modular release smoke must not retain a local TCP port allocator."
+foreach ($focusedSmokePath in $focusedSmokePaths) {
     $focusedSmokeRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $focusedSmokePath
     Assert-True -Condition $focusedSmokeRaw.Contains('LoomSmokePorts.ps1') -Message "Smoke must import the shared port allocator: $focusedSmokePath"
     Assert-True -Condition $focusedSmokeRaw.Contains('Get-LoomSmokePort') -Message "Smoke must use the shared port allocator: $focusedSmokePath"
     Assert-True -Condition (-not $focusedSmokeRaw.Contains('function Get-FreePort')) -Message "Smoke must not retain a local release port allocator: $focusedSmokePath"
     Assert-True -Condition (-not $focusedSmokeRaw.Contains('function Get-FreeTcpPort')) -Message "Smoke must not retain a local TCP port allocator: $focusedSmokePath"
+}
+
+$actualConcurrencySmokeModuleNames = @(
+    Get-ChildItem -LiteralPath $concurrencySmokeModuleRoot -File -Filter "*.ps1" |
+        Sort-Object Name |
+        ForEach-Object Name
+)
+Assert-Equal `
+    -Expected (@($concurrencySmokeModuleNames | Sort-Object) -join ",") `
+    -Actual ($actualConcurrencySmokeModuleNames -join ",") `
+    -Message "Daemon concurrency smoke helper module set drifted."
+foreach ($concurrencySmokeModulePath in $concurrencySmokeModulePaths) {
+    Assert-ScriptContract `
+        -Path $concurrencySmokeModulePath `
+        -RequiredText @('<# Owns') `
+        -ForbiddenText $commonForbidden
 }
 
 foreach ($surfacePrototypeManifestPath in $surfacePrototypeManifestPaths) {
@@ -398,6 +462,8 @@ foreach ($surfacePrototypeManifestPath in $surfacePrototypeManifestPaths) {
 }
 
 $versionId = "standalone-contract"
+$pathSafetyOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pathSafetyPath 2>&1
+Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Message "Release path safety contract failed: $($pathSafetyOutput -join [Environment]::NewLine)"
 $defaultOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $buildPath -VersionId $versionId -NoZip -DryRun 2>&1
 Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Message "Default standalone build dry-run failed: $($defaultOutput -join [Environment]::NewLine)"
 $defaultPlan = ($defaultOutput -join [Environment]::NewLine) | ConvertFrom-Json

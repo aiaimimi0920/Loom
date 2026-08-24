@@ -32,6 +32,7 @@ loom_ocr.workspace = true
 loom_plugin_security.workspace = true
 loom_protocol.workspace = true
 loom_sandbox.workspace = true
+loom_security.workspace = true
 loom_shared_image.workspace = true
 loom_tool_registry.workspace = true
 loom_workflow.workspace = true

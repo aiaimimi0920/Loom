@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "checkerVersion": 1,
+  "checkerSha256": "db2381257ae56028c33e653f2b7b5d41256fd6eae631d14babee251b415ebbcc",
+  "lexerSha256": "2a722a339f88e854e70240b1b52564c86b65f172f39d978de7dc075ed50a91fe",
+  "policySha256": "fee6bce27f005c20676409cce814de62d536bf3b43735ac66ede26f4baa10a5d",
+  "exceptions": [
+    {
+      "path": "apps/desktop/src/components/art/ArtEditDialog.tsx",
+      "effectiveLines": 610,
+      "sourceSha256": "524abb08af9f127833f371fd45becffd558921512bb9131e13938853b6c76ab7",
+      "responsibility": "Art runtime settings validation, credential binding, version selection, and accessible dialog focus lifecycle",
+      "reason": "The dialog remains a single atomic form because its validation and secret-binding state must be submitted together; it is below the 700-line soft cap after the App extraction.",
+      "owner": "Loom desktop maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
+    },
+    {
+      "path": "apps/desktop/src/components/art/RegistryPanel.tsx",
+      "effectiveLines": 652,
+      "sourceSha256": "579c8dc0258b837afc18445522028dd530c470462853ca6db36970514fcfd80f",
+      "responsibility": "Installed Art lifecycle, authoring submission, MCP dependency credentials, and registry refresh coordination",
+      "reason": "The coordinator keeps mutation and refresh ordering in one ownership boundary; dialogs and wizard UI are already separate and the remaining file is below the 700-line soft cap.",
+      "owner": "Loom desktop maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
+    },
+    {
+      "path": "apps/desktop/src/components/art/useAddArtWizardController.ts",
+      "effectiveLines": 569,
+      "sourceSha256": "c2b5ff7bdc33897f08982f2a70ef720ebdbd745cf7e162532f1fcb7c3fb33750",
+      "responsibility": "Art wizard state transitions, source discovery, workflow inference, MCP discovery, and submission assembly",
+      "reason": "The presentation layer is separate; the remaining controller preserves cross-mode reset and inference ordering as one hook and only narrowly exceeds the 500-line preferred size.",
+      "owner": "Loom desktop maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
+    },
+    {
+      "path": "apps/desktop/src/components/settings/SettingsPanel.tsx",
+      "effectiveLines": 539,
+      "sourceSha256": "ff3ab0f7aa9e78cdd582b25f6b0fadb7792c5c3c1a70d8eb2e56b2ddfc6caacd",
+      "responsibility": "Accessible Loom and Hook settings page composition, shortcut editors, and quick-binding dialogs",
+      "reason": "State and side effects are already isolated in a controller hook; the attached tab and portal markup remains together to preserve its ARIA and focus contracts.",
+      "owner": "Loom desktop maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
+    },
+    {
+      "path": "apps/desktop/src/components/settings/useSettingsPanelController.ts",
+      "effectiveLines": 676,
+      "sourceSha256": "c721deaa3e5b70924089a44a916d55421682b2094d0f434fcc9253419b0a40dc",
+      "responsibility": "Settings hydration, ordered autosave, runtime application, cache operations, diagnostics, and shortcut conflict state",
+      "reason": "The view and application-link actions are separate, but autosave rollback and runtime/cache application share ordering-sensitive refs; the cohesive controller remains below the 700-line soft cap pending focused state-machine tests.",
+      "owner": "Loom desktop maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
+    },
+    {
+      "path": "art-packages/samples/image-search/runtime/main.ps1",
+      "effectiveLines": 662,
+      "sourceSha256": "26a56d23ee42d04b038ee2e740a169442b446dd183bff51c716b8f674b0f6a6a",
+      "responsibility": "Untrusted image-search MCP candidate normalization, provenance tracking, SSRF-safe bounded downloads, thumbnail fallback, and canonical runtime output",
+      "reason": "The recursive candidate walk and redirect-aware downloader share script-scoped depth, candidate, redirect, MIME, address-policy, and size limits; extracting either side without a new tested module API would split one security boundary and risk inconsistent provenance or SSRF decisions.",
+      "owner": "Loom Art runtime maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["scripts/tests/Test-LoomSampleArtRuntime.ps1", "scripts/tests/Test-LoomSampleArtPackageContract.ps1", "scripts/tests/Test-LoomSampleArtInstallExecution.ps1"]
+    },
+    {
+      "path": "art-packages/shared/image-runtime-common.ps1",
+      "effectiveLines": 638,
+      "sourceSha256": "7f94412038307b43c4f7224a0c6979dd13cc000100ba4ecf23c06f76a3bd1efa",
+      "responsibility": "Shared image runtime path confinement, bounded data decoding, GDI+ lifetime, bitmap transforms, thumbnail generation, and protocol response assembly",
+      "reason": "These helpers form one copied runtime kernel whose allowed-root, size, file-identity, disposal, and output-shape invariants are reused together; a further split would add fragile import ordering or duplicate the security policy across packaged Arts.",
+      "owner": "Loom Art runtime maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["scripts/tests/Test-LoomSampleArtRuntime.ps1", "scripts/tests/Test-LoomSampleArtPackageContract.ps1", "scripts/tests/Test-LoomSampleArtInstallExecution.ps1"]
+    },
+    {
+      "path": "crates/loom_protocol/src/hook.rs",
+      "effectiveLines": 666,
+      "sourceSha256": "00beb324b031ca1043b1a5e27722852830aabd982bf5280ed645709b465179a2",
+      "responsibility": "The complete loom.hook.v1 wire contract: method namespace, negotiation, transports, typed requests, responses, events, and validation",
+      "reason": "Method constants, serde tags, payload types, transport capabilities, and handshake validation are one versioned protocol surface; splitting by request or response direction would scatter wire-shape invariants and create cross-module public coupling for a file still below the soft cap.",
+      "owner": "Loom protocol maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["cargo test --locked -p loom_protocol", "scripts/verify-release.ps1 -RunSmoke"]
+    },
+    {
+      "path": "crates/loom_workflow/src/lib.rs",
+      "effectiveLines": 558,
+      "sourceSha256": "6c8e5b910cfc9c3bc1d7184d94216053d38581303bc5ecf24b7c14b7c52c542b",
+      "responsibility": "Workflow graph validation and ordering, durable executor event sequencing, Hook dispatch, run summaries, and SystemOne/SystemTwo public facades",
+      "reason": "The executor consumes graph validation and ordering as one transaction, from run_started through per-node Hook events to run_finished; keeping that invariant local avoids exposing private ordering details across modules, and the thin public facades leave the cohesive implementation only narrowly above 500 lines.",
+      "owner": "Loom workflow maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["cargo test --locked -p loom_workflow", "cargo test --workspace --locked"]
+    },
+    {
+      "path": "scripts/Invoke-LoomGatewayBrainPlanSmoke.ps1",
+      "effectiveLines": 636,
+      "sourceSha256": "ff99c48090519af34a2ced6b1ac36d1e7b39ff04604d072994cdefe2733a0df7",
+      "responsibility": "One isolated Gateway planner transaction from fixture and daemon startup through HTTP capture, run persistence, secret checks, and cleanup",
+      "reason": "The temporary ports, Gateway job, daemon token, planner configuration, captured request, and persisted run ID must remain in one lifecycle to prove causality and token non-disclosure; splitting would turn the semantic end-to-end assertion into disconnected process checks.",
+      "owner": "Loom release smoke maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["scripts/Invoke-LoomGatewayBrainPlanSmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
+    },
+    {
+      "path": "scripts/Invoke-LoomHookCanvasUiSmoke.ps1",
+      "effectiveLines": 613,
+      "sourceSha256": "b475e188be519913e45f999f38f7150970ddb857ec165e883e4645b8cdad8684",
+      "responsibility": "Packaged Loom desktop, daemon, Hook Bridge, CDP, fixture revision, UI refresh, and process-lifetime end-to-end verification",
+      "reason": "Initial and updated Hook revisions must be correlated across one live desktop-daemon-bridge-CDP session, and the same process ownership is required for leak detection; splitting would sever the 3-node to 4-node fixture mutation from its API and UI evidence.",
+      "owner": "Loom release smoke maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["scripts/Invoke-LoomHookCanvasUiSmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
+    },
+    {
+      "path": "scripts/Invoke-LoomPluginBoundarySmoke.ps1",
+      "effectiveLines": 675,
+      "sourceSha256": "9547351ecd02dc82a30cece3cf3e64e0a0adf60885d1805df09716c0904dc678",
+      "responsibility": "Third-party framework and Art compilation, install, Hook execution, upgrade, enablement, restart, removal, source-integrity evidence, and cleanup",
+      "reason": "Every transition reuses the same package identities, control-plane state, upgraded runtime, Hook request, and source fingerprints; keeping the ordered lifecycle together is necessary to prove boundary behavior across restart and reinstall rather than as unrelated fixture tests.",
+      "owner": "Loom release smoke maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["scripts/Invoke-LoomPluginBoundarySmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
+    },
+    {
+      "path": "scripts/Invoke-LoomRunPersistenceSmoke.ps1",
+      "effectiveLines": 655,
+      "sourceSha256": "20f0daf0bc55b8ca96a5f265192d533f64ed58494de38fb107f263d643551d3a",
+      "responsibility": "One SQLite run/event persistence scenario across daemon restart, packaged CLI, optional desktop sibling reuse, PID lineage, and cleanup",
+      "reason": "Daemon A, daemon B, and the desktop sibling must share the same database and run ID so exact event equality and process lineage remain attributable to one restart lifecycle; splitting would destroy that cross-process persistence proof.",
+      "owner": "Loom release smoke maintainers",
+      "approvedBy": "Neuro project owner",
+      "reviewBy": "2026-09-30",
+      "tests": ["scripts/Invoke-LoomRunPersistenceSmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
+    }
+  ]
+}

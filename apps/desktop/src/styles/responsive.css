@@ -1,0 +1,235 @@
+/* Owns the final narrow-window adaptations shared across shell, Art, workflow, Hook canvas, settings, and devices. */
+
+@media (max-width: 820px) {
+  .desktop-shell {
+    --shell-rail-width: 52px;
+  }
+
+  .app-titlebar__brand {
+    gap: 0;
+    padding: 0 8px;
+  }
+
+  .shell-rail-toggle__icon {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+
+  .shell-rail-toggle__mark {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .app-titlebar__product-mark,
+  .app-titlebar__product-name {
+    max-width: 0;
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+
+  .rail-item {
+    height: 36px;
+    min-height: 36px;
+    gap: 0;
+    padding: 3px;
+  }
+
+  .rail-item__label {
+    max-width: 0;
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+
+  .window-control {
+    width: 42px;
+  }
+
+  .window-control--refresh {
+    width: 46px;
+  }
+
+  .hero-panel,
+  .stat-row,
+  .studio-grid,
+  .art-creator-identity,
+  .art-creator-fields,
+  .manual-mcp-grid,
+  .settings-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-page {
+    padding: 16px 16px 30px;
+  }
+
+  .settings-section__body {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .hook-shortcut-group__trigger,
+  .hook-shortcut-list {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .hook-shortcut-row {
+    min-height: 72px;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 10px 0;
+  }
+
+  .hook-shortcut-row__keys {
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+
+  .hook-shortcut-key-sequences,
+  .hook-quick-binding-actions {
+    justify-content: flex-start;
+  }
+
+  .shortcut-edit-dialog__footer {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .shortcut-edit-dialog__footer > span {
+    display: none;
+  }
+
+  .shortcut-gesture-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcut-gesture-picker__action {
+    justify-self: start;
+  }
+
+  .settings-network-panel,
+  .settings-general-panel,
+  .settings-mcp-panel,
+  .settings-art-store-panel,
+  .hook-cache-group,
+  .about-panel__group {
+    padding: 0;
+  }
+
+  .settings-network-row {
+    grid-template-columns: 1fr;
+    gap: 9px;
+    padding: 12px 0;
+  }
+
+  .settings-network-row__control,
+  .settings-network-address {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .hook-cache-row {
+    grid-template-columns: 1fr;
+    gap: 9px;
+    padding: 12px 0;
+  }
+
+  .hook-cache-row--action {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .hook-cache-row--action > span {
+    grid-column: 1 / -1;
+  }
+
+  .hook-cache-row .ghost-button,
+  .hook-cache-row .danger-button {
+    width: 100%;
+  }
+
+  .hook-cache-row__control {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .about-panel__rows > div {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 12px 0;
+  }
+
+  .about-panel__rows dd {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .about-panel__path-row dd {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .about-panel__log-level {
+    width: 100%;
+  }
+
+  .art-creator-identity__description,
+  .art-creator-field--wide,
+  .art-creator-field--full,
+  .art-creator-inline-action {
+    grid-column: auto;
+  }
+
+  .art-create-dialog {
+    height: calc(100vh - 16px);
+  }
+
+  .art-mode-card {
+    min-height: 44px;
+    padding: 0 6px;
+  }
+
+  .art-creator-panel {
+    padding: 12px;
+  }
+
+  .art-creator-path-row {
+    grid-template-columns: 1fr;
+  }
+
+  .art-hub__surface {
+    padding: 8px;
+  }
+
+  .hook-canvas-workspace__body {
+    grid-template-columns: 1fr;
+  }
+
+  .advanced-technical-information__body {
+    grid-template-columns: 1fr;
+  }
+
+  .hook-canvas-surface--large {
+    min-height: 240px;
+  }
+
+  .device-management__toolbar,
+  .device-management__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .device-request-row,
+  .device-add-dialog__body,
+  .device-edit-dialog__body {
+    grid-template-columns: 1fr;
+  }
+
+  .device-add-dialog__wide {
+    grid-column: auto;
+  }
+
+  .device-edit-dialog__wide,
+  .device-edit-toggle,
+  .device-edit-dialog__protected {
+    grid-column: auto;
+  }
+}

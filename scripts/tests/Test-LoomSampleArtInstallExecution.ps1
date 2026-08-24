@@ -10,302 +10,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $script:DaemonRequestHeaders = @{}
 
-function Assert-True {
-    param([bool]$Condition, [string]$Message)
-    if (-not $Condition) {
-        throw $Message
-    }
-}
-
-function Get-FreePort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    try {
-        $listener.Start()
-        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
-    }
-    finally {
-        $listener.Stop()
-    }
-}
-
-function Invoke-LoomJson {
-    param(
-        [Parameter(Mandatory = $true)][string]$Method,
-        [Parameter(Mandatory = $true)][string]$Url,
-        [AllowNull()][object]$Body
-    )
-
-    $json = if ($null -eq $Body) { $null } else { $Body | ConvertTo-Json -Depth 40 -Compress }
-    if ($null -eq $json) {
-        return Invoke-RestMethod -Method $Method -Uri $Url -Headers $script:DaemonRequestHeaders -TimeoutSec 30
-    }
-    return Invoke-RestMethod -Method $Method -Uri $Url -Headers $script:DaemonRequestHeaders -ContentType "application/json" -Body $json -TimeoutSec 120
-}
-
-function Get-PropertyValue {
-    param([AllowNull()][object]$Value, [string]$Name)
-    if ($null -eq $Value) { return $null }
-    $property = $Value.PSObject.Properties[$Name]
-    if ($null -eq $property) { return $null }
-    return $property.Value
-}
-
-function Wait-StockSurfaceAction {
-    param(
-        [string]$BaseUrl,
-        [string]$InstanceId,
-        [string]$EventId,
-        [int]$TimeoutSeconds = 20
-    )
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        $record = Invoke-LoomJson -Method Get -Url "$BaseUrl/v1/surfaces/instances/$InstanceId" -Body $null
-        $ack = Get-PropertyValue (Get-PropertyValue $record "eventAcks") $EventId
-        if ($null -ne $ack -and [string]$ack.status -in @("succeeded", "failed", "cancelled")) {
-            return [pscustomobject]@{ record = $record; ack = $ack }
-        }
-        Start-Sleep -Milliseconds 50
-    } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Timed out waiting for Stock Monitor Surface action: $EventId"
-}
-
-function Install-Zip {
-    param(
-        [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][string]$ZipPath,
-        [Parameter(Mandatory = $true)][string]$Prefix
-    )
-
-    $bytes = [System.IO.File]::ReadAllBytes($ZipPath)
-    $encoded = "data:application/zip;base64,$([Convert]::ToBase64String($bytes))"
-    return Invoke-LoomJson -Method Post -Url ($Url.TrimEnd('/') + $Prefix + "/install") -Body @{ zipBase64 = $encoded }
-}
-
-function Install-McpZip {
-    param(
-        [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][string]$ZipPath
-    )
-
-    $bytes = [System.IO.File]::ReadAllBytes($ZipPath)
-    return Invoke-LoomJson -Method Post -Url ($Url.TrimEnd('/') + "/v1/mcp/servers/install") -Body @{
-        zipBase64 = [Convert]::ToBase64String($bytes)
-    }
-}
-
-function Write-Utf8NoBomFile {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Content
-    )
-
-    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
-}
-
-function New-ImageSearchFixtureMcpPackage {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceZip,
-        [Parameter(Mandatory = $true)][string]$DestinationZip,
-        [Parameter(Mandatory = $true)][string]$WorkRoot,
-        [Parameter(Mandatory = $true)][string]$Endpoint
-    )
-
-    $stage = Join-Path $WorkRoot "image-search-mcp-fixture"
-    Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
-    $serverPath = Join-Path $stage "runtime\image-search-mcp.ps1"
-    Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Independent image-search MCP server is missing: $serverPath"
-
-    # The server no longer takes its endpoint from the manifest -- a manifest that could choose the
-    # endpoint could redirect the Brave subscription key off the machine. The offline seam is an
-    # environment variable that must resolve to loopback, and a package manifest cannot set
-    # environment variables, so the fixture goes through a wrapper entry the same way stock-api does.
-    $fixtureEntryPath = Join-Path $stage "runtime\image-search-fixture.ps1"
-    $fixtureEntry = @'
-[CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$EndpointOverride)
-
-$ErrorActionPreference = "Stop"
-$uri = [Uri]$EndpointOverride
-if ($uri.Scheme -ne "http" -or $uri.Host -notin @("127.0.0.1", "::1") -or -not [string]::IsNullOrEmpty($uri.UserInfo)) {
-    throw "EndpointOverride must be an unauthenticated loopback HTTP URL"
-}
-$env:LOOM_IMAGE_SEARCH_ENDPOINT_OVERRIDE = $EndpointOverride
-& (Join-Path $PSScriptRoot "image-search-mcp.ps1")
-exit $LASTEXITCODE
-'@
-    Write-Utf8NoBomFile -Path $fixtureEntryPath -Content ($fixtureEntry + "`n")
-
-    $manifestPath = Join-Path $stage "mcp.server.json"
-    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-    Assert-True ([string]$manifest.entry.command -eq "runtime/image-search-mcp.ps1") "Image-search fixture must preserve the independent MCP entry."
-    $manifest.entry.command = "runtime/image-search-fixture.ps1"
-    $manifest.entry.args = @("-EndpointOverride", $Endpoint)
-    Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
-    if (Test-Path -LiteralPath $DestinationZip) {
-        Remove-Item -LiteralPath $DestinationZip -Force
-    }
-    Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
-}
-
-function New-LoopbackImageSearchArtFixturePackage {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceZip,
-        [Parameter(Mandatory = $true)][string]$DestinationZip,
-        [Parameter(Mandatory = $true)][string]$WorkRoot
-    )
-
-    $stage = Join-Path $WorkRoot "image-search-art-fixture"
-    Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
-    $manifestPath = Join-Path $stage "manifest.json"
-    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-    $permissionPolicy = [pscustomobject]@{
-        network = [pscustomobject]@{ allowLocalhost = $true }
-    }
-    $manifest.metadata | Add-Member -MemberType NoteProperty -Name permissionPolicy -Value $permissionPolicy -Force
-    Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
-    $runtimePath = Join-Path $stage "runtime\main.ps1"
-    $runtimeImplementationPath = Join-Path $stage "runtime\main.fixture.ps1"
-    Move-Item -LiteralPath $runtimePath -Destination $runtimeImplementationPath
-    $runtimeWrapper = @'
-if ($env:LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES -ne "1") {
-    throw "image-search loopback fixture seam was not inherited"
-}
-& (Join-Path $PSScriptRoot "main.fixture.ps1")
-exit $LASTEXITCODE
-'@
-    Write-Utf8NoBomFile -Path $runtimePath -Content ($runtimeWrapper + "`n")
-    Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
-}
-
-function New-StockApiFixtureMcpPackage {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceZip,
-        [Parameter(Mandatory = $true)][string]$DestinationZip,
-        [Parameter(Mandatory = $true)][string]$WorkRoot,
-        [Parameter(Mandatory = $true)][string]$TestBaseUrl
-    )
-
-    $stage = Join-Path $WorkRoot "stock-api-mcp-fixture"
-    Expand-Archive -LiteralPath $SourceZip -DestinationPath $stage -Force
-    $serverPath = Join-Path $stage "runtime\stock-api-mcp.ps1"
-    Assert-True (Test-Path -LiteralPath $serverPath -PathType Leaf) "Independent stock-api MCP server is missing: $serverPath"
-
-    $fixtureEntryPath = Join-Path $stage "runtime\stock-api-fixture.ps1"
-    $fixtureEntry = @'
-[CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$TestBaseUrl)
-
-$ErrorActionPreference = "Stop"
-$uri = [Uri]$TestBaseUrl
-if ($uri.Scheme -ne "http" -or $uri.Host -notin @("127.0.0.1", "::1") -or -not [string]::IsNullOrEmpty($uri.UserInfo) -or -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)) {
-    throw "TestBaseUrl must be an unauthenticated loopback HTTP URL"
-}
-$env:LOOM_STOCK_API_TEST_BASE_URL = $TestBaseUrl
-& (Join-Path $PSScriptRoot "stock-api-mcp.ps1")
-exit $LASTEXITCODE
-'@
-    Write-Utf8NoBomFile -Path $fixtureEntryPath -Content ($fixtureEntry + "`n")
-
-    $manifestPath = Join-Path $stage "mcp.server.json"
-    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-    Assert-True ([string]$manifest.entry.command -eq "runtime/stock-api-mcp.ps1") "Stock API fixture must preserve the independent MCP entry."
-    $manifest.entry.command = "runtime/stock-api-fixture.ps1"
-    $manifest.entry.args = @("-TestBaseUrl", $TestBaseUrl)
-    Write-Utf8NoBomFile -Path $manifestPath -Content (($manifest | ConvertTo-Json -Depth 40) + "`n")
-    if (Test-Path -LiteralPath $DestinationZip) {
-        Remove-Item -LiteralPath $DestinationZip -Force
-    }
-    Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $DestinationZip -CompressionLevel Optimal -Force
-}
-
-function Start-ImageSearchApiFixture {
-    param(
-        [Parameter(Mandatory = $true)][int]$Port,
-        [Parameter(Mandatory = $true)][string]$WorkRoot,
-        [Parameter(Mandatory = $true)][string]$ReadyPath,
-        [Parameter(Mandatory = $true)][string]$RequestPath,
-        [Parameter(Mandatory = $true)][string]$ImageUrl
-    )
-
-    $fixturePath = Join-Path $WorkRoot "image-search-api-fixture.ps1"
-    $fixtureSource = @'
-param(
-    [int]$Port,
-    [string]$ReadyPath,
-    [string]$RequestPath,
-    [string]$ImageUrl
-)
-$ErrorActionPreference = "Stop"
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-$listener.Start()
-try {
-    [System.IO.File]::WriteAllText($ReadyPath, "ready", [System.Text.UTF8Encoding]::new($false))
-    $captured = @()
-    for ($requestIndex = 0; $requestIndex -lt 1; $requestIndex++) {
-        $client = $listener.AcceptTcpClient()
-        try {
-            $stream = $client.GetStream()
-            $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::ASCII, $false, 1024, $true)
-            $lines = @()
-            try {
-                while ($null -ne ($line = $reader.ReadLine())) {
-                    if ($line.Length -eq 0) { break }
-                    $lines += $line
-                }
-            }
-            finally {
-                $reader.Dispose()
-            }
-            $captured += $lines
-            $captured += ""
-            $requestLine = [string]$lines[0]
-            if ($requestLine -like "GET /res/v1/images/search?*") {
-                $body = @{
-                    results = @(@{
-                        title = "Installed package fixture"
-                        url = $ImageUrl
-                        source = "https://example.test/source"
-                        thumbnail = @{ src = $ImageUrl }
-                        properties = @{ url = $ImageUrl; width = 1; height = 1 }
-                    })
-                } | ConvertTo-Json -Depth 10 -Compress
-                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-                $contentType = "application/json; charset=utf-8"
-                $status = "200 OK"
-            }
-            else {
-                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes("not found")
-                $contentType = "text/plain"
-                $status = "404 Not Found"
-            }
-            $header = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
-            $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
-            $stream.Write($headerBytes, 0, $headerBytes.Length)
-            $stream.Write($bodyBytes, 0, $bodyBytes.Length)
-            $stream.Flush()
-        }
-        finally {
-            $client.Dispose()
-        }
-    }
-    [System.IO.File]::WriteAllLines($RequestPath, $captured, [System.Text.UTF8Encoding]::new($false))
-}
-finally {
-    $listener.Stop()
-}
-'@
-    Write-Utf8NoBomFile -Path $fixturePath -Content $fixtureSource
-    $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $processInfo.FileName = "powershell.exe"
-    $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$fixturePath`" -Port $Port -ReadyPath `"$ReadyPath`" -RequestPath `"$RequestPath`" -ImageUrl `"$ImageUrl`""
-    $processInfo.UseShellExecute = $false
-    $processInfo.CreateNoWindow = $true
-    $processInfo.RedirectStandardOutput = $true
-    $processInfo.RedirectStandardError = $true
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $processInfo
-    Assert-True $process.Start() "Failed to start image-search API fixture."
-    return $process
+$sampleArtInstallModuleRoot = Join-Path $PSScriptRoot "sample-art-install"
+@("Common.ps1", "Http.ps1", "Packages.ps1", "ImageSearchApiFixture.ps1") | ForEach-Object {
+    . (Join-Path $sampleArtInstallModuleRoot $_)
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -370,6 +77,8 @@ $imageFixture = $null
 $stockApiFixture = $null
 $imageSearchApiReadyPath = Join-Path $controlPlane "image-search-api-ready"
 $imageSearchApiRequestPath = Join-Path $controlPlane "image-search-api-requests.txt"
+$imageSearchApiStdoutPath = Join-Path $controlPlane "image-search-api.stdout.log"
+$imageSearchApiStderrPath = Join-Path $controlPlane "image-search-api.stderr.log"
 $imageFixtureReadyPath = Join-Path $controlPlane "image-fixture-ready"
 $imageFixtureRequestPath = Join-Path $controlPlane "image-fixture-requests.txt"
 $imageFixtureStdoutPath = Join-Path $controlPlane "image-fixture.stdout.log"
@@ -434,13 +143,15 @@ try {
         -WorkRoot $controlPlane
     $loopbackImageFixture = Join-Path $scriptRoot "fixtures\LoopbackImageFixture.ps1"
     Assert-True (Test-Path -LiteralPath $loopbackImageFixture -PathType Leaf) "Loopback image fixture is missing: $loopbackImageFixture"
-    $imageFixture = Start-Process -FilePath "powershell.exe" -ArgumentList (
-        "-NoProfile -ExecutionPolicy Bypass -File `"$loopbackImageFixture`" -Port $imageFixturePort -ReadyPath `"$imageFixtureReadyPath`" -RequestPath `"$imageFixtureRequestPath`" -ImageBase64 `"$($image.Split(',', 2)[1])`""
-    ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $imageFixtureStdoutPath -RedirectStandardError $imageFixtureStderrPath
+    $imageFixture = Start-PowerShellFixtureProcess `
+        -ScriptPath $loopbackImageFixture `
+        -Parameters @{ Port = $imageFixturePort; ReadyPath = $imageFixtureReadyPath; RequestPath = $imageFixtureRequestPath; ImageBase64 = $image.Split(',', 2)[1] } `
+        -StdoutPath $imageFixtureStdoutPath `
+        -StderrPath $imageFixtureStderrPath
     $imageFixtureDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while (-not (Test-Path -LiteralPath $imageFixtureReadyPath -PathType Leaf)) {
         if ($imageFixture.HasExited) {
-            throw "Loopback image fixture exited early: $([IO.File]::ReadAllText($imageFixtureStderrPath))"
+            throw "Loopback image fixture exited early: $(Read-BoundedRedactedText -Path $imageFixtureStderrPath)"
         }
         if ([DateTime]::UtcNow -ge $imageFixtureDeadline) { throw "Timed out waiting for loopback image fixture." }
         Start-Sleep -Milliseconds 50
@@ -450,11 +161,13 @@ try {
         -WorkRoot $controlPlane `
         -ReadyPath $imageSearchApiReadyPath `
         -RequestPath $imageSearchApiRequestPath `
-        -ImageUrl "http://127.0.0.1:$imageFixturePort/fixture.png"
+        -ImageUrl "http://127.0.0.1:$imageFixturePort/fixture.png" `
+        -StdoutPath $imageSearchApiStdoutPath `
+        -StderrPath $imageSearchApiStderrPath
     $fixtureDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while (-not (Test-Path -LiteralPath $imageSearchApiReadyPath -PathType Leaf)) {
         if ($imageSearchApiFixture.HasExited) {
-            throw "Image-search API fixture exited early: $($imageSearchApiFixture.StandardError.ReadToEnd())"
+            throw "Image-search API fixture exited early: $(Read-BoundedRedactedText -Path $imageSearchApiStderrPath)"
         }
         if ([DateTime]::UtcNow -ge $fixtureDeadline) {
             throw "Timed out waiting for image-search API fixture."
@@ -469,13 +182,15 @@ try {
 
     $stockFixtureScript = Join-Path $scriptRoot "fixtures\StockMonitorApiFixture.ps1"
     Assert-True (Test-Path -LiteralPath $stockFixtureScript -PathType Leaf) "Stock Monitor API fixture is missing: $stockFixtureScript"
-    $stockApiFixture = Start-Process -FilePath "powershell.exe" -ArgumentList (
-        "-NoProfile -ExecutionPolicy Bypass -File `"$stockFixtureScript`" -Port $stockApiPort -ReadyPath `"$stockApiReadyPath`" -RequestPath `"$stockApiRequestPath`""
-    ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stockApiStdoutPath -RedirectStandardError $stockApiStderrPath
+    $stockApiFixture = Start-PowerShellFixtureProcess `
+        -ScriptPath $stockFixtureScript `
+        -Parameters @{ Port = $stockApiPort; ReadyPath = $stockApiReadyPath; RequestPath = $stockApiRequestPath } `
+        -StdoutPath $stockApiStdoutPath `
+        -StderrPath $stockApiStderrPath
     $stockFixtureDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while (-not (Test-Path -LiteralPath $stockApiReadyPath -PathType Leaf)) {
         if ($stockApiFixture.HasExited) {
-            throw "Stock Monitor API fixture exited early: $([IO.File]::ReadAllText($stockApiStderrPath))"
+            throw "Stock Monitor API fixture exited early: $(Read-BoundedRedactedText -Path $stockApiStderrPath)"
         }
         if ([DateTime]::UtcNow -ge $stockFixtureDeadline) { throw "Timed out waiting for Stock Monitor API fixture." }
         Start-Sleep -Milliseconds 50
@@ -507,11 +222,11 @@ try {
         }
         catch {
             if ($daemon.HasExited) {
-                throw "Loom daemon exited before readiness. See captured daemon logs."
+                throw "Loom daemon exited before readiness. stderr=$(Read-BoundedRedactedText -Path $stderrPath)"
             }
         }
     }
-    Assert-True $ready "Loom daemon did not become ready. See captured daemon logs."
+    Assert-True $ready "Loom daemon did not become ready. stderr=$(Read-BoundedRedactedText -Path $stderrPath)"
 
     foreach ($frameworkId in $frameworkIds) {
         $zipPath = Join-Path $frameworkRootPath "$frameworkId.zip"
@@ -663,19 +378,19 @@ try {
     Assert-True ($installedStockHistoryRows.Count -eq 3) "Installed Stock Monitor K-line count mismatch: count=$($installedStockHistoryRows.Count) history=$($stockFormalQuote.history | ConvertTo-Json -Depth 10 -Compress)"
     Assert-True ([string]$stockCurrentAttachment.snapshot.authoritativeState.status -eq "ready") "Installed Stock Monitor authoritative state is not ready."
     Assert-True $stockApiFixture.WaitForExit(10000) "Stock Monitor API fixture did not observe stock-api quote and K-line requests."
-    $stockFixtureError = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiStderrPath
+    $stockFixtureError = Read-BoundedRedactedText -Path $stockApiStderrPath
     Assert-True ([string]::IsNullOrWhiteSpace($stockFixtureError)) "Stock Monitor API fixture failed: $stockFixtureError"
-    $capturedStockRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $stockApiRequestPath
+    $capturedStockRequests = Read-BoundedUtf8Text -Path $stockApiRequestPath
     Assert-True ($capturedStockRequests -match 'GET https://push2delay\.eastmoney\.com/api/qt/stock/get\?') "Installed stock-api MCP did not inspect the Eastmoney quote source."
     Assert-True ($capturedStockRequests -match 'GET https://7\.push2his\.eastmoney\.com/api/qt/stock/kline/get\?') "Installed stock-api MCP did not request daily K-line data from the preferred history host."
     Write-Host "PASS installed/executed Surface custom-stock-monitor"
 
     Assert-True $imageSearchApiFixture.WaitForExit(10000) "Image-search API fixture did not observe the search request."
-    Assert-True ($imageSearchApiFixture.ExitCode -eq 0) "Image-search API fixture failed: $($imageSearchApiFixture.StandardError.ReadToEnd())"
-    $capturedImageSearchRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $imageSearchApiRequestPath
+    Assert-True ($imageSearchApiFixture.ExitCode -eq 0) "Image-search API fixture failed: $(Read-BoundedRedactedText -Path $imageSearchApiStderrPath)"
+    $capturedImageSearchRequests = Read-BoundedUtf8Text -Path $imageSearchApiRequestPath
     Assert-True ($capturedImageSearchRequests -match 'GET /res/v1/images/search\?q=loom%20package%20smoke&count=3&safesearch=strict HTTP/1\.1') "Installed image-search MCP request URI is invalid."
     Assert-True ($capturedImageSearchRequests -match '(?im)^X-Subscription-Token:\s*loom-package-smoke-key\s*$') "Installed image-search MCP did not receive the MCP-scoped credential."
-    $capturedImageRequests = Get-Content -Raw -Encoding UTF8 -LiteralPath $imageFixtureRequestPath
+    $capturedImageRequests = Read-BoundedUtf8Text -Path $imageFixtureRequestPath
     Assert-True ($capturedImageRequests -match '(?m)^GET /fixture\.png$') "Installed image-search Art did not download the selected image."
     $uninstallImageSearch = Invoke-LoomJson `
         -Method Post `
@@ -714,40 +429,31 @@ try {
     $succeeded = $true
 }
 finally {
-    if ($null -ne $daemon -and -not $daemon.HasExited) {
-        Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue
-        $null = $daemon.WaitForExit(5000)
-    }
-    if ($null -ne $imageSearchApiFixture -and -not $imageSearchApiFixture.HasExited) {
-        Stop-Process -Id $imageSearchApiFixture.Id -Force -ErrorAction SilentlyContinue
-        $null = $imageSearchApiFixture.WaitForExit(5000)
-    }
-    if ($null -ne $imageFixture -and -not $imageFixture.HasExited) {
-        Stop-Process -Id $imageFixture.Id -Force -ErrorAction SilentlyContinue
-        $null = $imageFixture.WaitForExit(5000)
-    }
-    if ($null -ne $stockApiFixture -and -not $stockApiFixture.HasExited) {
-        Stop-Process -Id $stockApiFixture.Id -Force -ErrorAction SilentlyContinue
-        $null = $stockApiFixture.WaitForExit(5000)
-    }
+    Stop-ProcessTree -Process $daemon
+    Stop-ProcessTree -Process $imageSearchApiFixture
+    Stop-ProcessTree -Process $imageFixture
+    Stop-ProcessTree -Process $stockApiFixture
     if (-not $succeeded) {
-        Write-Host "--- daemon stdout ---"
-        Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
-        Write-Host "--- daemon stderr ---"
-        Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue
-        Write-Host "--- image fixture requests ---"
-        Get-Content -LiteralPath $imageFixtureRequestPath -ErrorAction SilentlyContinue
-        Write-Host "--- image fixture stderr ---"
-        Get-Content -LiteralPath $imageFixtureStderrPath -ErrorAction SilentlyContinue
+        foreach ($diagnostic in @(
+            @{ label = "daemon stdout"; path = $stdoutPath },
+            @{ label = "daemon stderr"; path = $stderrPath },
+            @{ label = "image-search API stderr"; path = $imageSearchApiStderrPath },
+            @{ label = "image fixture requests"; path = $imageFixtureRequestPath },
+            @{ label = "image fixture stderr"; path = $imageFixtureStderrPath },
+            @{ label = "stock fixture stderr"; path = $stockApiStderrPath }
+        )) {
+            Write-Host "--- $($diagnostic.label) ---"
+            Write-Host (Read-BoundedRedactedText -Path $diagnostic.path)
+        }
     }
     foreach ($name in $oldEnvironment.Keys) {
         [System.Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name])
     }
-    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
-    $resolvedControlPlane = [System.IO.Path]::GetFullPath($controlPlane)
-    if ($resolvedControlPlane.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
-        (Split-Path -Leaf $resolvedControlPlane).StartsWith("loom-sample-art-install-")) {
-        Remove-Item -LiteralPath $resolvedControlPlane -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+        Remove-VerifiedTemporaryTree -Path $controlPlane
+    }
+    catch {
+        Write-Warning "Sample Art smoke temporary cleanup was refused or failed: $($_.Exception.Message)"
     }
 }
 

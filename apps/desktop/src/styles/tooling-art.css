@@ -1,0 +1,299 @@
+/* Owns ordered graphite tooling overrides for Art hub, registry/store cards, and shared tooling controls. */
+
+/* Art and Hook Sync share the compact, graphite configuration language used
+   by Settings. These overrides are visual only; their established layout and
+   interaction contracts remain owned by the feature components above. */
+.workspace-panel--tooling,
+.workspace-scroll--tooling {
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--loom-theme-accent) 2.5%, transparent), transparent 32%),
+    var(--loom-theme-surface);
+  color: var(--loom-theme-text);
+}
+
+.workspace-header--tooling {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-surface);
+  color: var(--loom-theme-text);
+}
+
+.workspace-header--tooling .section-kicker {
+  color: var(--loom-theme-muted);
+}
+
+.workspace-panel--tooling .ghost-button {
+  border-color: var(--loom-theme-line);
+  border-radius: 7px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.workspace-panel--tooling .ghost-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 42%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 10%, var(--loom-theme-control));
+}
+
+.art-hub__tabs {
+  border-color: var(--loom-theme-line);
+  background: transparent;
+}
+
+.art-hub__tab {
+  position: relative;
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+}
+
+.art-hub__tab:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 34%, transparent);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-text);
+}
+
+.art-hub__tab--active,
+.art-hub__tab--active:hover {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-surface);
+  color: var(--loom-theme-accent-text);
+  box-shadow: none;
+}
+
+.art-hub__tab--active::before {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  left: -1px;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--loom-theme-accent-text),
+    var(--loom-brand-primary)
+  );
+  content: "";
+}
+
+.art-hub__surface {
+  border-color: transparent;
+  background: transparent;
+  color: var(--loom-theme-text);
+}
+
+.art-hub .glass-card,
+.art-hub .main-board {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  backdrop-filter: none;
+}
+
+.art-hub .muted-line,
+.art-hub .section-kicker,
+.art-hub .card-kicker {
+  color: var(--loom-theme-muted);
+}
+
+.art-hub :is(.studio-input, .studio-textarea, .studio-json) {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  -webkit-text-fill-color: var(--loom-theme-text);
+  caret-color: var(--loom-theme-text);
+  color-scheme: inherit;
+  opacity: 1;
+}
+
+.art-hub :is(.studio-input, .studio-textarea, .studio-json)::placeholder {
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.art-hub :is(.studio-input, .studio-textarea, .studio-json):read-only {
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-text);
+  -webkit-text-fill-color: var(--loom-theme-text);
+}
+
+.device-add-dialog .studio-input::placeholder,
+.device-edit-dialog .studio-input::placeholder {
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.art-hub :is(.studio-input, .studio-textarea, .studio-json):disabled {
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.publisher-identity__secret .studio-input[type="password"] {
+  color: var(--loom-theme-text);
+  -webkit-text-fill-color: var(--loom-theme-text);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  opacity: 1;
+}
+
+.art-hub .publisher-identity label,
+.art-hub .trusted-user-library__row span {
+  color: var(--loom-theme-muted);
+}
+
+.art-hub .publisher-identity__id,
+.art-hub .publisher-identity__id code {
+  color: var(--loom-theme-text);
+}
+
+.art-hub .security-section--policy,
+.art-hub .publisher-identity {
+  border-color: var(--loom-theme-line);
+}
+
+.art-hub__notice {
+  border-color: color-mix(in srgb, var(--loom-theme-danger) 32%, var(--loom-theme-line));
+  border-left-color: var(--loom-theme-danger);
+  background: color-mix(in srgb, var(--loom-theme-danger) 11%, var(--loom-theme-panel));
+  color: var(--loom-theme-danger);
+}
+
+.art-hub__notice--warning {
+  border-color: color-mix(in srgb, var(--loom-theme-warning) 30%, var(--loom-theme-line));
+  border-left-color: var(--loom-theme-warning);
+  background: color-mix(in srgb, var(--loom-theme-warning) 9%, var(--loom-theme-panel));
+  color: var(--loom-theme-warning);
+}
+
+.framework-filter {
+  border-color: var(--loom-theme-line);
+  background: transparent;
+}
+
+.framework-filter__option,
+.framework-filter__official {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+}
+
+.framework-filter__option:hover,
+.framework-filter__official:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 34%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-secondary) 9%, var(--loom-theme-control));
+  color: var(--loom-theme-text);
+}
+
+.framework-filter__option--checked {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 55%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 14%, var(--loom-theme-control));
+  color: var(--loom-theme-text);
+}
+
+.framework-filter__official--checked {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 45%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-success) 9%, var(--loom-theme-control));
+  color: var(--loom-theme-success);
+}
+
+.framework-filter__search {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  color-scheme: inherit;
+}
+
+.framework-filter__search::placeholder {
+  color: var(--loom-theme-muted);
+}
+
+.framework-filter__search:focus {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 60%, transparent);
+  outline-color: color-mix(in srgb, var(--loom-theme-accent-text) 18%, transparent);
+}
+
+.art-registry-card,
+.art-store-card {
+  color: var(--loom-theme-text);
+}
+
+.art-registry-card--enabled {
+  background: color-mix(in srgb, var(--loom-theme-success) 10%, var(--loom-theme-panel));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--loom-theme-success) 11%, transparent),
+    0 12px 28px color-mix(in srgb, var(--neuro-shadow) 52%, transparent);
+}
+
+.art-registry-card--disabled {
+  background: var(--loom-theme-panel);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--loom-theme-muted) 7%, transparent);
+}
+
+.art-store-card--official {
+  background: color-mix(in srgb, var(--loom-theme-success) 9%, var(--loom-theme-panel));
+}
+
+.art-store-card--unverified {
+  background: color-mix(in srgb, var(--loom-theme-warning) 9%, var(--loom-theme-panel));
+}
+
+.art-registry-card__framework-icon,
+.art-card-action,
+.art-hub .icon-button,
+.framework-dialog .icon-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.art-card-action:hover:not(:disabled),
+.art-hub .icon-button:hover:not(:disabled),
+.framework-dialog .icon-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 32%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-secondary) 7%, var(--loom-theme-control));
+}
+
+.art-card-action--active {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 44%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-success) 10%, var(--loom-theme-control));
+  color: var(--loom-theme-success);
+}
+
+.art-card-action--danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-danger) 38%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-danger) 12%, var(--loom-theme-control));
+  color: var(--loom-theme-danger);
+}
+
+.art-registry-card__description,
+.art-store-card__description {
+  color: color-mix(in srgb, var(--loom-theme-text) 72%, transparent);
+}
+
+.art-store-card__identity,
+.art-publish-dialog__identity p,
+.art-publish-dialog__version {
+  color: var(--loom-theme-muted);
+}
+
+.art-store-card__trust--official {
+  color: var(--loom-theme-success);
+}
+
+.art-store-card__trust--unverified {
+  color: var(--loom-theme-warning);
+}
+
+.framework-dialog {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 38%, transparent);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.framework-dialog :is(.studio-input, .studio-textarea, input, select, textarea) {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  color-scheme: inherit;
+}

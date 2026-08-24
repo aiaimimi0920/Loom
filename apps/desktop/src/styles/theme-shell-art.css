@@ -1,0 +1,316 @@
+/* Owns late cross-theme visibility overrides for shell, workspace, shared controls, Art surfaces, and canvas zoom. */
+
+/* Cross-theme visibility contract. The application shell and all peripheral
+   controls follow the active palette. The Hook canvas below remains an
+   intentionally fixed dark rendering surface. */
+.workspace-panel,
+.workspace-scroll {
+  background: var(--loom-theme-surface);
+  color: var(--loom-theme-text);
+}
+
+.workspace-header {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-surface);
+  color: var(--loom-theme-text);
+}
+
+.workspace-header .section-kicker,
+.main-board .section-kicker,
+.workspace-panel .card-kicker,
+.muted-line,
+.field-label,
+.studio-list-item small,
+.workflow-node:not(.art-node-card) .workflow-node__body :is(small, em),
+.mono-line {
+  color: var(--loom-theme-muted);
+}
+
+.daemon-chip {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+}
+
+.glass-card,
+.main-board,
+.stat-card {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  backdrop-filter: none;
+}
+
+.stat-card span {
+  color: var(--loom-theme-muted);
+}
+
+.ghost-button,
+.workspace-panel .ghost-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.ghost-button:hover:not(:disabled),
+.workspace-panel .ghost-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 42%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 10%, var(--loom-theme-control));
+  color: var(--loom-theme-text);
+}
+
+.studio-input,
+.studio-textarea,
+.studio-json {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  -webkit-text-fill-color: var(--loom-theme-text);
+  caret-color: var(--loom-theme-text);
+  color-scheme: inherit;
+}
+
+:is(.studio-input, .studio-textarea, .studio-json)::placeholder {
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.studio-input option {
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+:is(.studio-input, .studio-textarea, .studio-json):focus {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 60%, transparent);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--loom-theme-accent-text) 16%, transparent);
+}
+
+:is(.studio-input, .studio-textarea, .studio-json):read-only {
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-text);
+  -webkit-text-fill-color: var(--loom-theme-text);
+}
+
+:is(.studio-input, .studio-textarea, .studio-json):disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.studio-list-item,
+.workflow-node:not(.art-node-card),
+.node-properties-panel,
+.flow-step,
+.settings-link,
+.terminal-list span,
+.method-chip {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+code {
+  background: var(--loom-theme-control-hover);
+  color: inherit;
+}
+
+.error-text {
+  color: var(--loom-theme-danger);
+}
+
+.success-text {
+  color: var(--loom-theme-success);
+}
+
+:where(button, input, select, textarea):focus-visible {
+  outline-color: var(--loom-theme-accent-text);
+}
+
+input:is([type="checkbox"], [type="radio"], [type="range"]) {
+  accent-color: var(--loom-theme-accent-text);
+}
+
+:is(
+  .ghost-button,
+  .icon-button,
+  .art-card-action,
+  .signal-button,
+  .hook-shortcut-add-art,
+  .shortcut-capture-clear
+):disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  opacity: 1;
+  box-shadow: none;
+}
+
+.app-toast {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.app-toast--info {
+  border-left-color: var(--loom-theme-success);
+  background: color-mix(in srgb, var(--loom-theme-success) 8%, var(--loom-theme-panel));
+}
+
+.app-toast--error {
+  border-left-color: var(--loom-theme-danger);
+  background: color-mix(in srgb, var(--loom-theme-danger) 8%, var(--loom-theme-panel));
+}
+
+.app-toast--warning {
+  border-left-color: var(--loom-theme-warning);
+  background: color-mix(in srgb, var(--loom-theme-warning) 8%, var(--loom-theme-panel));
+}
+
+.app-toast:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 42%, var(--loom-theme-line));
+}
+
+.app-toast:focus-visible {
+  outline-color: var(--loom-theme-accent-text);
+}
+
+.app-confirm-dialog {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.app-confirm-dialog--danger {
+  border-left-color: var(--loom-theme-danger);
+}
+
+.app-confirm-dialog--warning {
+  border-left-color: var(--loom-theme-warning);
+}
+
+.app-confirm-dialog p {
+  color: var(--loom-theme-muted);
+}
+
+.app-confirm-dialog .ghost-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.app-confirm-dialog--danger .danger-button {
+  border-color: var(--loom-theme-danger);
+  background: var(--loom-theme-danger);
+  color: var(--loom-theme-bg);
+}
+
+.art-registry-card--enabled {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 62%, transparent);
+}
+
+.art-registry-card--disabled {
+  border-color: var(--loom-theme-line);
+}
+
+.art-store-card--official {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 52%, transparent);
+}
+
+.art-store-card--unverified {
+  border-color: color-mix(in srgb, var(--loom-theme-warning) 46%, transparent);
+}
+
+.art-store-card__trust--official {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 38%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-success) 10%, var(--loom-theme-control));
+}
+
+.art-store-card__trust--unverified {
+  border-color: color-mix(in srgb, var(--loom-theme-warning) 38%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-warning) 10%, var(--loom-theme-control));
+}
+
+.art-card-action:focus-visible {
+  outline-color: var(--loom-theme-accent-text);
+}
+
+.framework-filter__option input,
+.framework-filter__official input,
+.art-edit-dialog__binding-toggle input,
+.art-edit-dialog__boolean input,
+.art-edit-dialog__toggle input,
+.framework-dialog .art-workflow-preview-policy__toggle input {
+  accent-color: var(--loom-theme-accent-text);
+}
+
+.framework-dialog .palette-art {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  box-shadow: none;
+}
+
+.framework-dialog .palette-art:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 55%, transparent);
+  background: var(--loom-theme-control-hover);
+}
+
+.framework-dialog .art-edit-dialog__optional > summary::after,
+.framework-dialog .art-edit-dialog__secret-label code,
+.framework-dialog .art-edit-dialog__secret-empty {
+  color: var(--loom-theme-muted);
+}
+
+.framework-dialog .art-edit-dialog__secret-empty {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+}
+
+.framework-dialog :is(input, select, textarea):disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.hook-canvas-zoom {
+  color: var(--loom-theme-muted);
+}
+
+.hook-canvas-zoom__label {
+  color: var(--loom-theme-muted);
+}
+
+.hook-canvas-zoom__value {
+  color: var(--loom-theme-text);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+}
+
+.hook-canvas-zoom__slider {
+  width: 160px;
+  height: 4px;
+  appearance: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--loom-theme-text) 28%, transparent);
+  accent-color: var(--loom-theme-accent-text);
+}
+
+.hook-canvas-zoom__slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  appearance: none;
+  border: 2px solid var(--loom-theme-surface);
+  border-radius: 50%;
+  background: var(--loom-theme-accent-text);
+  box-shadow: 0 0 0 1px var(--loom-theme-line);
+}
+
+.hook-canvas-zoom__slider:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 4px;
+}

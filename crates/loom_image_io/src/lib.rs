@@ -115,15 +115,8 @@ pub fn read_image_path_as_web_data_url(path: impl AsRef<Path>) -> ImageIoResult<
         path: path.display().to_string(),
         source,
     })?;
-    if let Some(mime_type) = image::guess_format(&bytes)
-        .ok()
-        .and_then(web_renderable_mime_type)
-    {
-        return Ok(ImageDataUrl {
-            data_url: format!("data:{mime_type};base64,{}", BASE64.encode(&bytes)),
-            mime_type,
-            re_encoded: false,
-        });
+    if let Some(image) = web_renderable_image_bytes_as_data_url(&bytes) {
+        return Ok(image);
     }
     let image =
         image::load_from_memory(&bytes).map_err(|error| ImageIoError::Image(error.to_string()))?;
@@ -131,6 +124,22 @@ pub fn read_image_path_as_web_data_url(path: impl AsRef<Path>) -> ImageIoResult<
         data_url: dynamic_image_to_png_data_url(image)?,
         mime_type: "image/png",
         re_encoded: true,
+    })
+}
+
+/// Encode already-bounded browser-renderable image bytes without decoding their pixel surface.
+///
+/// Callers that enforce their own file-handle and byte limits can use this to avoid reopening a path
+/// after validation. Unsupported or unrecognized containers return `None` rather than taking the
+/// potentially unbounded decode-and-re-encode fallback used by [`read_image_path_as_web_data_url`].
+pub fn web_renderable_image_bytes_as_data_url(bytes: &[u8]) -> Option<ImageDataUrl> {
+    let mime_type = image::guess_format(bytes)
+        .ok()
+        .and_then(web_renderable_mime_type)?;
+    Some(ImageDataUrl {
+        data_url: format!("data:{mime_type};base64,{}", BASE64.encode(bytes)),
+        mime_type,
+        re_encoded: false,
     })
 }
 

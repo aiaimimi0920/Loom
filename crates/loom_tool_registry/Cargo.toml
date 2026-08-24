@@ -10,6 +10,8 @@ description = "Loom user tool and Art registry contracts"
 [dependencies]
 base64.workspace = true
 chrono.workspace = true
+fs2.workspace = true
+libc.workspace = true
 loom_image_io.workspace = true
 loom_mcp.workspace = true
 loom_plugin_security.workspace = true

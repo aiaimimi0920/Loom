@@ -21,13 +21,20 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{Context, Result};
 use loom_art_store::{
     build_catalog, read_art_zip_version, read_art_zip_version_sha256, read_binary,
     read_framework_package, read_publisher, register_publisher_with_id, rotate_publisher_key,
-    store_verified_published_zip, PublisherRotationRequest, StoreError,
+    store_verified_published_zip, PublisherRotationRequest, StoreError, MAX_PUBLISHED_ZIP_BYTES,
 };
+
+const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = MAX_PUBLISHED_ZIP_BYTES as usize;
+const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const CONNECTION_WORKERS: usize = 4;
+const CONNECTION_QUEUE_CAPACITY: usize = 32;
 
 fn main() -> Result<()> {
     let port = std::env::var("LOOM_ART_STORE_PORT")
@@ -48,13 +55,45 @@ fn main() -> Result<()> {
     println!("  store root: {}", root.display());
     println!("  set LOOM_ART_STORE_URL=http://{address} for the Loom daemon");
 
+    serve(listener, root)
+}
+
+fn serve(listener: TcpListener, root: PathBuf) -> Result<()> {
+    let (sender, receiver) = mpsc::sync_channel::<TcpStream>(CONNECTION_QUEUE_CAPACITY);
+    let receiver = Arc::new(Mutex::new(receiver));
+    let root = Arc::new(root);
+    for _ in 0..CONNECTION_WORKERS {
+        let receiver = Arc::clone(&receiver);
+        let root = Arc::clone(&root);
+        std::thread::spawn(move || loop {
+            let stream = {
+                let receiver = receiver
+                    .lock()
+                    .expect("Art Store connection queue poisoned");
+                receiver.recv()
+            };
+            let Ok(stream) = stream else {
+                break;
+            };
+            if let Err(error) = handle_connection(stream, &root) {
+                eprintln!("art store: connection error: {error}");
+            }
+        });
+    }
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
-                if let Err(error) = handle_connection(stream, &root) {
-                    eprintln!("art store: connection error: {error}");
+            Ok(stream) => match sender.try_send(stream) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(mut stream)) => {
+                    let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
+                    let response =
+                        Response::json(503, serde_json::json!({ "error": "Art Store is busy" }));
+                    let _ = write_response(&mut stream, response);
                 }
-            }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    anyhow::bail!("Art Store connection workers stopped")
+                }
+            },
             Err(error) => eprintln!("art store: accept error: {error}"),
         }
     }
@@ -83,6 +122,7 @@ struct Request {
     path: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    peer_is_loopback: bool,
 }
 
 impl Request {
@@ -95,6 +135,8 @@ impl Request {
 }
 
 fn handle_connection(mut stream: TcpStream, root: &std::path::Path) -> Result<()> {
+    stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
+    stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
     let request = match read_request(&mut stream)? {
         Some(request) => request,
         None => return Ok(()),
@@ -106,6 +148,10 @@ fn handle_connection(mut stream: TcpStream, root: &std::path::Path) -> Result<()
 /// Read a full HTTP request off the socket: headers until CRLFCRLF, then the
 /// body per Content-Length.
 fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
+    let peer_is_loopback = stream
+        .peer_addr()
+        .map(|address| address.ip().is_loopback())
+        .unwrap_or(false);
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     // Read until we have the header terminator.
@@ -122,17 +168,26 @@ fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
             return Ok(None);
         }
         buf.extend_from_slice(&chunk[..read]);
-        if buf.len() > 64 * 1024 * 1024 {
+        if buf.len() > MAX_REQUEST_HEADER_BYTES {
             anyhow::bail!("request headers too large");
         }
     };
 
-    let header_text = String::from_utf8_lossy(&buf[..header_end]).to_string();
+    let header_text =
+        std::str::from_utf8(&buf[..header_end]).context("request headers are not valid UTF-8")?;
     let mut lines = header_text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_owned();
-    let raw_target = parts.next().unwrap_or_default().to_owned();
+    let (Some(method), Some(raw_target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        anyhow::bail!("malformed request line");
+    };
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") || !raw_target.starts_with('/') {
+        anyhow::bail!("unsupported HTTP request line");
+    }
+    let method = method.to_owned();
+    let raw_target = raw_target.to_owned();
     let path = raw_target
         .split('?')
         .next()
@@ -144,19 +199,47 @@ fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
         if line.is_empty() {
             continue;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            headers.push((key.trim().to_owned(), value.trim().to_owned()));
+        let Some((key, value)) = line.split_once(':') else {
+            anyhow::bail!("malformed request header");
+        };
+        if key != key.trim()
+            || key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+            || value
+                .bytes()
+                .any(|byte| (byte < b' ' && byte != b'\t') || byte == 0x7f)
+        {
+            anyhow::bail!("invalid request header");
         }
+        headers.push((key.to_owned(), value.trim().to_owned()));
     }
 
-    let content_length = headers
+    if headers
         .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
+        .any(|(key, _)| key.eq_ignore_ascii_case("transfer-encoding"))
+    {
+        anyhow::bail!("transfer-encoding is not supported");
+    }
+    let content_lengths = headers
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>())
+        .collect::<Result<Vec<_>, _>>()?;
+    if content_lengths
+        .windows(2)
+        .any(|values| values[0] != values[1])
+    {
+        anyhow::bail!("conflicting content-length headers");
+    }
+    let content_length = content_lengths.first().copied().unwrap_or(0);
+    if content_length > MAX_REQUEST_BODY_BYTES {
+        anyhow::bail!("request body too large");
+    }
 
     let mut body = buf[header_end + 4..].to_vec();
-    if body.len() > 256 * 1024 * 1024 {
+    if body.len() > MAX_REQUEST_BODY_BYTES {
         anyhow::bail!("request body too large");
     }
     while body.len() < content_length {
@@ -165,17 +248,20 @@ fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
             break;
         }
         body.extend_from_slice(&chunk[..read]);
-        if body.len() > 256 * 1024 * 1024 {
+        if body.len() > MAX_REQUEST_BODY_BYTES {
             anyhow::bail!("request body too large");
         }
     }
-    body.truncate(content_length);
+    if body.len() != content_length {
+        anyhow::bail!("request body length does not match content-length");
+    }
 
     Ok(Some(Request {
         method,
         path,
         headers,
         body,
+        peer_is_loopback,
     }))
 }
 
@@ -220,7 +306,13 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
             Ok(arts) => Response::json(200, serde_json::json!({ "arts": arts })),
             Err(error) => store_error_response(error),
         },
-        ("POST", "/publishers/register") => handle_publisher_register(request, root),
+        ("POST", "/publishers/register") if request.peer_is_loopback => {
+            handle_publisher_register(request, root)
+        }
+        ("POST", "/publishers/register") => Response::json(
+            403,
+            serde_json::json!({ "error": "publisher registration requires a local connection" }),
+        ),
         ("POST", path) if path.starts_with("/publishers/") && path.ends_with("/rotate") => {
             let user_id = path
                 .trim_start_matches("/publishers/")
@@ -321,7 +413,11 @@ fn handle_publisher_register(request: &Request, root: &std::path::Path) -> Respo
     let input = match serde_json::from_slice::<RegisterPublisherRequest>(&request.body) {
         Ok(input) => input,
         Err(error) => {
-            return Response::json(400, serde_json::json!({ "error": error.to_string() }))
+            eprintln!("art store: invalid publisher registration JSON: {error}");
+            return Response::json(
+                400,
+                serde_json::json!({ "error": "invalid publisher registration request" }),
+            );
         }
     };
     match register_publisher_with_id(
@@ -339,7 +435,11 @@ fn handle_publisher_rotate(request: &Request, root: &std::path::Path, user_id: &
     let input = match serde_json::from_slice::<PublisherRotationRequest>(&request.body) {
         Ok(input) => input,
         Err(error) => {
-            return Response::json(400, serde_json::json!({ "error": error.to_string() }))
+            eprintln!("art store: invalid publisher rotation JSON: {error}");
+            return Response::json(
+                400,
+                serde_json::json!({ "error": "invalid publisher rotation request" }),
+            );
         }
     };
     match rotate_publisher_key(root, user_id, &input) {
@@ -367,7 +467,7 @@ fn handle_publish(request: &Request, root: &std::path::Path) -> Response {
 }
 
 fn store_error_response(error: StoreError) -> Response {
-    let status = match error {
+    let (status, message) = match &error {
         StoreError::InvalidArtId(_)
         | StoreError::InvalidResourceName(_)
         | StoreError::MissingManifest
@@ -386,24 +486,50 @@ fn store_error_response(error: StoreError) -> Response {
         | StoreError::MissingPublisherSignature
         | StoreError::InvalidPublisherSignatureMetadata
         | StoreError::PublisherSignatureVerification
-        | StoreError::Zip(_)
-        | StoreError::Json(_) => 400,
-        StoreError::PublisherNotFound(_) => 404,
+        | StoreError::ArchiveCompressionRatio(_)
+        | StoreError::ArchiveSymbolicLink(_) => (400, error.to_string()),
+        StoreError::Zip(_) | StoreError::Json(_) => {
+            (400, "invalid package or JSON document".to_owned())
+        }
+        StoreError::PackageTooLarge(_)
+        | StoreError::ArchiveEntryCount
+        | StoreError::ArchiveEntryTooLarge { .. }
+        | StoreError::ArchiveExpandedTooLarge(_)
+        | StoreError::StoredResourceTooLarge(_) => {
+            (413, "request or stored resource is too large".to_owned())
+        }
+        StoreError::PublisherNotFound(_) | StoreError::UnsafeStoredPath => {
+            (404, "requested resource was not found".to_owned())
+        }
         StoreError::GlobalIdExhausted
         | StoreError::PublisherIdExhausted
         | StoreError::UnsupportedOfficialCertificationSchema(_)
         | StoreError::UnsupportedPublisherDirectorySchema(_)
-        | StoreError::Io(_) => 500,
+        | StoreError::PersistenceLockTimeout
+        | StoreError::Io(_) => (500, "Art Store internal error".to_owned()),
     };
-    Response::json(status, serde_json::json!({ "error": error.to_string() }))
+    if matches!(
+        error,
+        StoreError::Zip(_)
+            | StoreError::Json(_)
+            | StoreError::UnsafeStoredPath
+            | StoreError::PersistenceLockTimeout
+            | StoreError::Io(_)
+    ) {
+        eprintln!("art store: request failed: {error}");
+    }
+    Response::json(status, serde_json::json!({ "error": message }))
 }
 
 fn write_response(stream: &mut TcpStream, response: Response) -> Result<()> {
     let reason = match response.status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        503 => "Service Unavailable",
         500 => "Internal Server Error",
         _ => "OK",
     };
@@ -419,3 +545,7 @@ fn write_response(stream: &mut TcpStream, response: Response) -> Result<()> {
     stream.flush()?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

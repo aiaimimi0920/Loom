@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { desktopStyleSource as styleSource } from "./desktopStyleSource.ts";
+
 const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
-const hookCanvasSource = readFileSync(
+const hookCanvasThumbnailSource = readFileSync(
   new URL("../components/hook/HookCanvasThumbnail.tsx", import.meta.url),
   "utf8",
 );
-const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const hookCanvasToolbarSource = readFileSync(
+  new URL("../components/hook/HookCanvasToolbar.tsx", import.meta.url),
+  "utf8",
+);
+const hookCanvasSource = `${hookCanvasThumbnailSource}\n${hookCanvasToolbarSource}`;
 
 test("removes the standalone workflow workbench and its navigation entry points", () => {
   assert.doesNotMatch(appSource, /id: "workflows"/);
@@ -32,7 +38,10 @@ test("keeps Hook zoom controls readable while preserving the fixed dark canvas",
     hookCanvasSource,
     /className="hook-canvas-zoom__slider"[\s\S]*?type="range"[\s\S]*?min=\{0\}[\s\S]*?max=\{1000\}[\s\S]*?step=\{1\}[\s\S]*?aria-label="画布缩放"/,
   );
-  assert.match(hookCanvasSource, /className="hook-canvas-zoom__value">\{Math\.round\(effectiveViewport\.scale \* 100\)\}%/);
+  assert.match(
+    hookCanvasSource,
+    /className="hook-canvas-zoom__value">\{Math\.round\(scale \* 100\)\}%/,
+  );
   assert.match(hookCanvasSource, /aria-pressed=\{showMinimap\}/);
   assert.match(styleSource, /\.hook-canvas-zoom \{[\s\S]*?color: var\(--loom-theme-muted\);/);
   assert.match(styleSource, /\.hook-canvas-zoom__label \{[\s\S]*?color: var\(--loom-theme-muted\);/);
@@ -50,4 +59,6 @@ test("serializes desktop snapshot refreshes and does not subscribe an offline in
     appSource,
     /snapshot\.connectionState !== "online"[\s\S]*?startHookBridgeWorkflowSync\(\{[\s\S]*?snapshot\.connectionState\]\);/,
   );
+  assert.doesNotMatch(appSource, /void refresh\(\);\s*void startLocalService\(\);/);
+  assert.match(appSource, /hookCanvasRefreshTrigger === null \|\| activeSection !== "hook-bridge"/);
 });

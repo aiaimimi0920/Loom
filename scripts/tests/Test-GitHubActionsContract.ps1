@@ -48,7 +48,10 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'runs-on: ubuntu-latest',
     'actions/checkout@v5',
     'actions/setup-node@v6',
+    'actions/upload-artifact@v6',
     'node-version: "22"',
+    'node --test .\scripts\tests\effective-code-lines.test.mjs',
+    'node .\scripts\effective-code-lines.mjs --mode ratchet --json artifacts/effective-code-lines.json',
     'dtolnay/rust-toolchain@1.95.0',
     'Swatinem/rust-cache@v2',
     'cargo fmt --all -- --check',
@@ -65,6 +68,8 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'cargo test --locked --manifest-path .\framework-packages\runtime-host\Cargo.toml',
     '.\scripts\tests\Test-StandaloneLayout.ps1',
     '.\scripts\tests\Test-StandaloneReleaseContract.ps1',
+    '.\scripts\tests\Test-FrameworkArtStoreHookSmokeModules.ps1',
+    '.\scripts\tests\Test-SmokeReleaseModules.ps1',
     '.\scripts\tests\Test-ReleaseIntegrityTamper.ps1',
     '.\scripts\tests\Test-HookCanvasUiContract.ps1',
     '.\scripts\tests\Test-GitHubActionsContract.ps1',
@@ -78,10 +83,13 @@ $ciRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $ciPath
 $validationStep = '      - name: Validate standalone layout before generated output'
 $tamperCommand = '          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1'
 $dependencyStep = '      - name: Install desktop dependencies'
+$effectiveLineStep = '      - name: Enforce effective-code-line migration ratchet'
 $validationIndex = $ciRaw.IndexOf($validationStep, [System.StringComparison]::Ordinal)
 $tamperIndex = $ciRaw.IndexOf($tamperCommand, [System.StringComparison]::Ordinal)
 $dependencyIndex = $ciRaw.IndexOf($dependencyStep, [System.StringComparison]::Ordinal)
+$effectiveLineIndex = $ciRaw.IndexOf($effectiveLineStep, [System.StringComparison]::Ordinal)
 Assert-True -Condition ($validationIndex -ge 0 -and $tamperIndex -gt $validationIndex -and $dependencyIndex -gt $tamperIndex) -Message "Integrity tamper contract must run in the pre-generated-output validation step."
+Assert-True -Condition ($effectiveLineIndex -ge 0 -and $effectiveLineIndex -lt $dependencyIndex) -Message "Effective-line ratchet must run before dependency installation and generated output."
 $validationBlock = $ciRaw.Substring($validationIndex, $dependencyIndex - $validationIndex)
 Assert-True -Condition $validationBlock.Contains('        shell: powershell') -Message "Integrity tamper contract validation step must use PowerShell."
 

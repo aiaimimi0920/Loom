@@ -33,18 +33,26 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $appPath = Join-Path $repoRoot "apps\desktop\src\App.tsx"
 $thumbnailPath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasThumbnail.tsx"
 $nodePath = Join-Path $repoRoot "apps\desktop\src\components\hook\HookCanvasNode.tsx"
-$desktopRustPath = Join-Path $repoRoot "apps\desktop\src-tauri\src\lib.rs"
+$desktopRustPaths = @(
+    (Join-Path $repoRoot "apps\desktop\src-tauri\src\lib.rs"),
+    (Join-Path $repoRoot "apps\desktop\src-tauri\src\runtime\app.rs"),
+    (Join-Path $repoRoot "apps\desktop\src-tauri\src\runtime\types.rs")
+)
 $smokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
 $inspectorPath = Join-Path $repoRoot "scripts\Inspect-LoomWebView.mjs"
 
 Assert-PathExists $thumbnailPath
 Assert-PathExists $nodePath
-Assert-PathExists $desktopRustPath
+foreach ($desktopRustPath in $desktopRustPaths) {
+    Assert-PathExists $desktopRustPath
+}
 
 $app = Get-Content -Raw -Encoding UTF8 $appPath
 $thumbnail = Get-Content -Raw -Encoding UTF8 $thumbnailPath
 $node = Get-Content -Raw -Encoding UTF8 $nodePath
-$desktopRust = Get-Content -Raw -Encoding UTF8 $desktopRustPath
+$desktopRust = ($desktopRustPaths | ForEach-Object {
+    Get-Content -Raw -Encoding UTF8 $_
+}) -join "`n"
 $visualWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x53EF, 0x89C6, 0x5316, 0x5DE5, 0x4F5C, 0x6D41)
 $saveWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x4FDD, 0x5B58, 0x5DE5, 0x4F5C, 0x6D41)
 $executionFailureLabel = ConvertFrom-UnicodeCodePoints @(0x6267, 0x884C, 0x5931, 0x8D25)

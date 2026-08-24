@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { desktopStyleSource as styleSource } from "./desktopStyleSource.ts";
 import {
   MCP_MARKET_SERVERS,
   buildMcpPaginationItems,
@@ -15,8 +16,18 @@ import {
   type McpRegistryResponse,
 } from "./mcpMarketplace.ts";
 
-const hubSource = readFileSync(new URL("../components/mcp/McpHub.tsx", import.meta.url), "utf8");
-const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const hubSource = [
+  "../components/mcp/McpHub.tsx",
+  "../components/mcp/McpHubToolbar.tsx",
+  "../components/mcp/McpServicesPanel.tsx",
+  "../components/mcp/McpStorePanel.tsx",
+  "../components/mcp/McpServerDialog.tsx",
+  "../components/mcp/McpCredentialDialog.tsx",
+].map((sourcePath) => readFileSync(new URL(sourcePath, import.meta.url), "utf8")).join("\n");
+const credentialDialogSource = readFileSync(
+  new URL("../components/mcp/McpCredentialDialog.tsx", import.meta.url),
+  "utf8",
+);
 
 test("maps official Registry packages and remotes into selectable install options", () => {
   const response: McpRegistryResponse = {
@@ -212,6 +223,52 @@ test("accepts only credential-free HTTP MCP URLs", () => {
   assert.equal(isValidMcpRemoteUrl("not-a-url"), false);
 });
 
+test("rejects unsafe Registry remotes before they reach install configuration", () => {
+  const [server] = mapRegistryResponseToMarketplace({
+    servers: [{
+      server: {
+        name: "io.example/remote-safety",
+        remotes: [
+          { type: "streamable-http", url: "javascript:alert(1)" },
+          { type: "streamable-http", url: "file:///tmp/mcp" },
+          { type: "streamable-http", url: "https://user:secret@example.test/mcp" },
+          {
+            type: "streamable-http",
+            url: "https://safe.example.test/{tenant}/mcp",
+            variables: { tenant: { isRequired: true } },
+            headers: [{ name: "Authorization", isRequired: true, isSecret: true }],
+          },
+        ],
+      },
+    }],
+  });
+
+  assert.ok(server);
+  assert.equal(server.installOptions.length, 1);
+  assert.equal(server.installOptions[0].url, "https://safe.example.test/{tenant}/mcp");
+  assert.equal(server.installOptions[0].requiresManualConfiguration, true);
+  assert.deepEqual(server.installOptions[0].requiredHeaderKeys, ["Authorization"]);
+});
+
+test("does not embed Registry secret variable values in remote URLs", () => {
+  const [server] = mapRegistryResponseToMarketplace({
+    servers: [{
+      server: {
+        name: "io.example/remote-secret",
+        remotes: [{
+          type: "streamable-http",
+          url: "https://safe.example.test/{token}/mcp",
+          variables: { token: { value: "registry-secret", isSecret: true } },
+        }],
+      },
+    }],
+  });
+
+  assert.equal(server.installOptions[0].url, "https://safe.example.test/{token}/mcp");
+  assert.equal(server.installOptions[0].requiresManualConfiguration, true);
+  assert.doesNotMatch(server.installOptions[0].url, /registry-secret/);
+});
+
 test("matches installed Registry services by stable id instead of display name", () => {
   const sameName = {
     id: "local/custom",
@@ -247,7 +304,7 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(hubSource, /aria-busy=\{busyMarketplaceId === marketItem\.id\}/);
   assert.doesNotMatch(hubSource, /图片搜索手工测试流|MCP 包兼容|安装命令预览/);
   assert.match(hubSource, /远程 · Streamable HTTP/);
-  assert.match(hubSource, /findInstalledMcpServer\(servers, marketItem\)/);
+  assert.match(hubSource, /findInstalledMcpServer\(installedServers, marketItem\)/);
   assert.match(hubSource, /已安装，但连接测试失败/);
   assert.match(hubSource, /Loom 精选/);
   assert.match(hubSource, /connectionLabel\.startsWith\(`\$\{categoryLabel\} ·`\)/);
@@ -258,9 +315,11 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(hubSource, /title=\{marketItem\.description\}/);
   assert.match(hubSource, /安装前需配置/);
   assert.match(hubSource, /if \(isTauri\(\)\)/);
-  assert.match(hubSource, /invoke\("open_mcp_source_url", \{ url: marketItem\.sourceUrl \}\)/);
+  assert.match(hubSource, /const sourceUrl = normalizeHttpsExternalUrl\(marketItem\.sourceUrl\)/);
+  assert.match(hubSource, /invoke\("open_mcp_source_url", \{ url: sourceUrl \}\)/);
+  assert.doesNotMatch(hubSource, /window\.open\(marketItem\.sourceUrl/);
   assert.match(hubSource, /openMarketplaceSource\(marketItem\)/);
-  assert.match(hubSource, /onClick=\{\(\) => void testServer\(configured\)\}/);
+  assert.match(hubSource, /onClick=\{\(\) => onTest\(configured\)\}/);
   assert.match(hubSource, /configuredSnapshot\?\.status === "success"/);
   assert.match(hubSource, /"已连接"/);
   assert.doesNotMatch(hubSource, /加载更多|mcp-hub__load-more/);
@@ -280,10 +339,12 @@ test("presents MCP as service and store workspaces with real install actions", (
 test("renders MCP packages as independently managed services", () => {
   assert.doesNotMatch(hubSource, /isArtManagedServer|由 Art 管理|只读 · 请在 Art 管理中配置/);
   assert.match(hubSource, /server\.source === "package"/);
-  assert.match(hubSource, /await installMcpServerPackage\(baseUrl, btoa\(binary\)\)/);
+  assert.match(hubSource, /assertMcpPackageFileSize\(file\.size\)/);
+  assert.match(hubSource, /await installMcpServerPackage\(baseUrl, encodeMcpPackageBytes\(bytes\)\)/);
   assert.match(hubSource, /await setMcpServerEnabled\(baseUrl, server\.id, enabled\)/);
   assert.match(hubSource, /await updateMcpServerCredentials\(baseUrl, server\.id, values, clear\)/);
   assert.match(hubSource, /await deleteMcpServer\(baseUrl, server\.id\)/);
   assert.match(hubSource, /被 \{server\.usageCount\} 个 Art 使用/);
   assert.match(hubSource, /凭据由 Loom CredentialStore 加密保存/);
+  assert.match(credentialDialogSource, /if \(!focusInsideDialog\)[\s\S]*?\(event\.shiftKey \? last : first\)\.focus\(\)/);
 });

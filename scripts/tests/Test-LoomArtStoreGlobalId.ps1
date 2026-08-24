@@ -1,11 +1,13 @@
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
     [string]$ArtStoreExecutable = ".\target\debug\loom-art-store.exe",
-    [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks"
+    [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks",
+    [switch]$BuildFrameworkArtifacts
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$script:DaemonAuthToken = $null
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -40,10 +42,11 @@ function Invoke-LoomJson {
     )
 
     $json = if ($null -eq $Body) { $null } else { $Body | ConvertTo-Json -Depth 50 -Compress }
+    $headers = @{ Authorization = "Bearer $script:DaemonAuthToken" }
     if ($null -eq $json) {
-        return Invoke-RestMethod -Method $Method -Uri $Url -TimeoutSec 30
+        return Invoke-RestMethod -Method $Method -Uri $Url -Headers $headers -TimeoutSec 30
     }
-    return Invoke-RestMethod -Method $Method -Uri $Url -ContentType "application/json" -Body $json -TimeoutSec 120
+    return Invoke-RestMethod -Method $Method -Uri $Url -Headers $headers -ContentType "application/json" -Body $json -TimeoutSec 120
 }
 
 function Wait-HttpReady {
@@ -132,6 +135,14 @@ else {
 Assert-True (Test-Path -LiteralPath $daemonPath -PathType Leaf) "Loom daemon executable not found: $daemonPath"
 Assert-True (Test-Path -LiteralPath $artStorePath -PathType Leaf) "Loom Art Store executable not found: $artStorePath"
 $cloudFrameworkZip = Join-Path $frameworkRootPath "cloud_api.zip"
+if ($BuildFrameworkArtifacts) {
+    $frameworkBuilder = Join-Path $repoRoot "scripts\Build-LoomArtFrameworkPackages.ps1"
+    Assert-True (Test-Path -LiteralPath $frameworkBuilder -PathType Leaf) "Framework package builder not found: $frameworkBuilder"
+    & $frameworkBuilder -Configuration Debug -OutputRoot $frameworkRootPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Framework package builder failed with exit code $LASTEXITCODE."
+    }
+}
 Assert-True (Test-Path -LiteralPath $cloudFrameworkZip -PathType Leaf) "Cloud framework ZIP not found: $cloudFrameworkZip"
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-global-art-id-" + [guid]::NewGuid().ToString("N"))
@@ -163,6 +174,7 @@ $environmentNames = @(
     "LOOM_ART_STORE_URL",
     "LOOM_DAEMON_HOST",
     "LOOM_DAEMON_PORT",
+    "LOOM_DAEMON_TOKEN",
     "LOOM_CONTROL_PLANE_ROOT",
     "LOOM_CONFIGURATION_ROOT",
     "LOOM_RUN_STORE_PATH"
@@ -173,6 +185,15 @@ foreach ($name in $environmentNames) {
 }
 
 New-Item -ItemType Directory -Force -Path $root, $storeRoot, $daemonRoot, $configurationRoot, $installDaemonRoot, $installConfigurationRoot | Out-Null
+$tokenBytes = New-Object byte[] 32
+$tokenGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $tokenGenerator.GetBytes($tokenBytes)
+}
+finally {
+    $tokenGenerator.Dispose()
+}
+$script:DaemonAuthToken = [Convert]::ToBase64String($tokenBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 
 try {
     $env:LOOM_ART_STORE_HOST = "127.0.0.1"
@@ -184,6 +205,7 @@ try {
     $env:LOOM_ART_STORE_URL = $storeUrl
     $env:LOOM_DAEMON_HOST = "127.0.0.1"
     $env:LOOM_DAEMON_PORT = [string]$daemonPort
+    $env:LOOM_DAEMON_TOKEN = $script:DaemonAuthToken
     $env:LOOM_CONTROL_PLANE_ROOT = $daemonRoot
     $env:LOOM_CONFIGURATION_ROOT = $configurationRoot
     $env:LOOM_RUN_STORE_PATH = Join-Path $daemonRoot "runs.sqlite3"
@@ -194,7 +216,9 @@ try {
     Assert-Equal "L0000000000" ([string]$publisherIdentity.identity.userId) "Publisher identity did not receive the default test user ID."
     Assert-True ([bool]$publisherIdentity.hasPrivateKey) "Publisher identity did not persist its private key."
 
-    $null = Install-FrameworkZip -BaseUrl $daemonUrl -ZipPath $cloudFrameworkZip
+    $installedFramework = Install-FrameworkZip -BaseUrl $daemonUrl -ZipPath $cloudFrameworkZip
+    Assert-Equal "cloud_api" ([string]$installedFramework.framework.id) "Cloud framework install returned the wrong ID."
+    Assert-True ([bool]$installedFramework.framework.ready) "Cloud framework was not ready after installation."
     $repositoryName = "authored-global-id-repository"
     $firstTool = New-PublishFixtureTool -Version "0.1.0" -Endpoint "$daemonUrl/health"
     $null = Invoke-LoomJson -Method Post -Url "$daemonUrl/v1/arts/create" -Body @{ tool = $firstTool; files = @() }
@@ -233,14 +257,19 @@ try {
     Assert-True ($versions -contains "0.1.0" -and $versions -contains "0.2.0") "Art Store did not retain both published versions."
 
     $env:LOOM_DAEMON_PORT = [string]$installDaemonPort
+    $env:LOOM_DAEMON_TOKEN = $script:DaemonAuthToken
     $env:LOOM_CONTROL_PLANE_ROOT = $installDaemonRoot
     $env:LOOM_CONFIGURATION_ROOT = $installConfigurationRoot
     $env:LOOM_RUN_STORE_PATH = Join-Path $installDaemonRoot "runs.sqlite3"
     $installDaemonProcess = Start-Process -FilePath $daemonPath -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $installDaemonStdout -RedirectStandardError $installDaemonStderr
     Wait-HttpReady -Process $installDaemonProcess -Url "$installDaemonUrl/health" -Label "Loom install daemon"
-    $null = Install-FrameworkZip -BaseUrl $installDaemonUrl -ZipPath $cloudFrameworkZip
+    $installedFramework = Install-FrameworkZip -BaseUrl $installDaemonUrl -ZipPath $cloudFrameworkZip
+    Assert-Equal "cloud_api" ([string]$installedFramework.framework.id) "Install daemon cloud framework returned the wrong ID."
+    Assert-True ([bool]$installedFramework.framework.ready) "Install daemon cloud framework was not ready."
     $null = Invoke-LoomJson -Method Post -Url "$installDaemonUrl/v1/plugin-trust/users" -Body @{ userId = [string]$publisherIdentity.identity.userId }
-    $null = Invoke-LoomJson -Method Post -Url "$installDaemonUrl/v1/plugin-trust/policy" -Body @{ policy = "require_trusted" }
+    $frameworkStatus = Invoke-LoomJson -Method Get -Url "$installDaemonUrl/v1/frameworks" -Body $null
+    $cloudFrameworkStatus = @($frameworkStatus.frameworks | Where-Object { [string]$_.id -eq "cloud_api" }) | Select-Object -First 1
+    Assert-True ($null -ne $cloudFrameworkStatus -and [bool]$cloudFrameworkStatus.ready) "Cloud framework became unready before store installation."
     $null = Invoke-LoomJson -Method Post -Url "$installDaemonUrl/v1/arts/store/install" -Body @{ artId = $repositoryName; version = "0.1.0" }
     $null = Invoke-LoomJson -Method Post -Url "$installDaemonUrl/v1/arts/store/install" -Body @{ artId = $repositoryName; version = "0.2.0" }
     $installedTools = Invoke-LoomJson -Method Get -Url "$installDaemonUrl/v1/tools" -Body $null

@@ -11,7 +11,46 @@ const defaultSurfacePath = path.resolve(
   "../../art-packages/samples/stock-monitor/surface/main.js",
 );
 const surfacePath = path.resolve(process.argv[2] || defaultSurfacePath);
-const source = fs.readFileSync(surfacePath, "utf8");
+const packageRoot = path.dirname(path.dirname(surfacePath));
+const manifestPath = path.join(packageRoot, "manifest.json");
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const javascriptVariant = manifest.metadata.capabilities.surface.variants.find(
+  (variant) => variant.runtime === "javascript" && path.resolve(packageRoot, variant.entry) === surfacePath,
+);
+assert.ok(javascriptVariant, "Stock Monitor JavaScript Surface variant is missing");
+const descriptorPath = surfacePath + ".sources.json";
+const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+assert.equal(descriptor.schemaVersion, 1, "Surface source descriptor schema mismatch");
+const sourceFiles = descriptor.sourceFiles || [];
+assert.ok(sourceFiles.length > 0 && sourceFiles.length <= 32, "Surface source descriptor size is invalid");
+assert.equal(new Set(sourceFiles).size, sourceFiles.length, "Surface source files must be unique");
+assert.ok(
+  sourceFiles.every((sourceFile) => sourceFile.endsWith(".js") && sourceFile !== javascriptVariant.entry),
+  "Surface source files must be JavaScript modules and must not repeat entry",
+);
+assert.deepEqual(sourceFiles, [
+  "surface/modules/constants.js",
+  "surface/modules/data.js",
+  "surface/modules/template.js",
+  "surface/modules/actions.js",
+  "surface/modules/dom-summary.js",
+  "surface/modules/dom-market.js",
+  "surface/modules/chart.js",
+  "surface/modules/chart-interaction.js",
+  "surface/modules/render.js",
+  "surface/modules/lifecycle.js",
+]);
+const packagePrefix = packageRoot.endsWith(path.sep) ? packageRoot : packageRoot + path.sep;
+const readPackageSource = (relativePath) => {
+  const resolved = path.resolve(packageRoot, relativePath);
+  assert.ok(resolved.startsWith(packagePrefix), "Surface source escaped its package: " + relativePath);
+  return fs.readFileSync(resolved, "utf8");
+};
+const source = sourceFiles.length
+  ? '(() => {\n"use strict";\n'
+    + [...sourceFiles.map(readPackageSource), fs.readFileSync(surfacePath, "utf8")].join("\n;\n")
+    + "\n;\n\n})();\n"
+  : fs.readFileSync(surfacePath, "utf8");
 const hooks = {};
 let definition = null;
 const context = {
@@ -153,6 +192,22 @@ assert.notEqual(
   firstSample,
   "a new revision must invalidate the cached sample",
 );
+
+assert.equal(typeof hooks.historyOf, "function", "bounded history hook is missing");
+assert.equal(typeof hooks.favoriteQuotesOf, "function", "bounded favorites hook is missing");
+assert.equal(typeof hooks.orderBookOf, "function", "bounded order-book hook is missing");
+const oversizedHistory = Array.from({ length: 2200 }, (_value, index) => ({ index }));
+assert.equal(hooks.historyOf({ history: oversizedHistory }).length, 2000);
+assert.equal(hooks.historyOf({ history: oversizedHistory })[0].index, 200);
+assert.equal(hooks.favoriteQuotesOf({ favoriteQuotes: Array.from({ length: 20 }) }).length, 8);
+const boundedBook = hooks.orderBookOf({
+  orderBook: {
+    bids: Array.from({ length: 30 }, (_value, index) => ({ price: index + 1 })),
+    asks: Array.from({ length: 30 }, (_value, index) => ({ price: index + 1 })),
+  },
+});
+assert.equal(boundedBook.bids.length, 10);
+assert.equal(boundedBook.asks.length, 10);
 assert.notEqual(
   hooks.chartSampleOf(sampleState, 5, 120, false),
   hooks.chartSampleOf(sampleState, 5, 240, false),
@@ -212,8 +267,29 @@ assert.ok(
   "resize redraws must go through the animation-frame coalescer, not straight into drawChart",
 );
 assert.ok(
+  sourceText.includes("if (disposed || suspended || resizeFrame !== null) return;")
+    && sourceText.includes("if (!disposed && !suspended) drawChart();"),
+  "a suspended Surface must not allocate or execute a full chart redraw",
+);
+assert.ok(
   !/replaceChildren\(\);\s*\n\s*levels\.forEach/.test(sourceText),
   "the order book must reuse its rows instead of rebuilding them every frame",
+);
+assert.ok(
+  sourceText.includes("MAX_HISTORY_ROWS = 2000")
+    && sourceText.includes("MAX_BOOK_LEVELS = 10")
+    && sourceText.includes("MAX_FAVORITE_QUOTES = 8"),
+  "the Surface must independently bound host-supplied collections",
+);
+assert.ok(
+  sourceText.includes("chartKey !== chartPaintedKey")
+    && sourceText.includes("initialRefreshTimer")
+    && sourceText.includes("clearTimeout(initialRefreshTimer)"),
+  "chart paints and delayed initial refreshes must be lifecycle-gated",
+);
+assert.ok(
+  !/Math\.(min|max)\(\.\.\.points\.map/.test(sourceText),
+  "chart extrema must be derived in one bounded pass without intermediate arrays",
 );
 
 console.log("Stock Monitor Surface VM contract passed: revision-lock=verified cadence=open/closed/no-tick palette=CN/US ma5=rolling sample-cache=verified stale-badge=verified history-warning=verified");

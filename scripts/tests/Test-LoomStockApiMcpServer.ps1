@@ -94,6 +94,16 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $runtimeRoot = Join-Path $repoRoot "mcp-server-packages\stock-api\runtime"
 $entryPath = Join-Path $runtimeRoot "stock-api-entry.js"
+$moduleRoot = Join-Path $runtimeRoot "stock-api"
+$moduleNames = @(
+    "constants.js",
+    "executors.js",
+    "helpers.js",
+    "parsers.js",
+    "providers.js",
+    "server.js",
+    "transport.js"
+)
 $nodePath = [string](Get-Command node.exe -ErrorAction Stop).Source
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
 $workRoot = Join-Path $tempBase ("loom-stock-api-mcp-test-" + [Guid]::NewGuid().ToString("N"))
@@ -105,6 +115,8 @@ $mcpProcess = $null
 $unsafeProcess = $null
 
 Assert-True (Test-Path -LiteralPath $entryPath -PathType Leaf) "stock-api MCP entry is missing: $entryPath"
+$actualModuleNames = @(Get-ChildItem -LiteralPath $moduleRoot -File -Filter "*.js" | Sort-Object Name | ForEach-Object Name)
+Assert-True (($moduleNames -join ",") -eq ($actualModuleNames -join ",")) "stock-api runtime module set drifted."
 Assert-True (Test-Path -LiteralPath (Join-Path $runtimeRoot "vendor\stock-api\LICENSE") -PathType Leaf) "Vendored stock-api license is missing."
 Assert-True (Test-Path -LiteralPath (Join-Path $runtimeRoot "vendor\pysnowball\LICENSE") -PathType Leaf) "pysnowball license is missing."
 New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
@@ -413,7 +425,10 @@ try {
     Assert-True (($capturedRequests[20..21] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "stock-api legacy order book did not query the Xueqiu realtime endpoint."
     Assert-True (($capturedRequests[22..25] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/pankou\.json') "pysnowball-compatible depth endpoint was not called."
     Assert-True (($capturedRequests[22..25] -join "`n") -match 'stock\.xueqiu\.com/v5/stock/realtime/quotec\.json') "pysnowball-compatible quotec endpoint was not called."
-    $entrySource = Get-Content -Raw -Encoding UTF8 -LiteralPath $entryPath
+    $entrySource = @(
+        (Get-Content -Raw -Encoding UTF8 -LiteralPath $entryPath)
+        $moduleNames | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $moduleRoot $_) }
+    ) -join [Environment]::NewLine
     Assert-True ($entrySource.Contains("MAX_RESPONSE_BYTES") -and $entrySource.Contains("response.body.getReader")) "stock-api provider responses must be byte-bounded before JSON parsing."
     Assert-True ($entrySource.Contains("MAX_REQUEST_BYTES") -and $entrySource.Contains("Buffer.byteLength")) "stock-api JSON-RPC requests must be byte-bounded before parsing."
 

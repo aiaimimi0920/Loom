@@ -1,0 +1,501 @@
+/* Owns shared workspace surfaces, hero/status primitives, notifications, confirmation dialogs, cards, and main boards. */
+
+.workspace-panel {
+  position: relative;
+  display: flex;
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--loom-theme-surface);
+  color: var(--loom-theme-text);
+  overflow: hidden;
+}
+
+.workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--loom-theme-line);
+  min-height: 86px;
+  padding: 17px 28px 15px;
+}
+
+.workspace-header h1,
+.hero-panel h1,
+.main-board h2 {
+  margin: 0;
+  line-height: 1.02;
+  letter-spacing: -0.045em;
+}
+
+.workspace-header h1 {
+  font-size: clamp(1.75rem, 2.6vw, 2.35rem);
+}
+
+.section-kicker,
+.card-kicker {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+}
+
+.workspace-header .section-kicker,
+.main-board .section-kicker,
+.hero-panel .section-kicker {
+  color: var(--loom-theme-muted);
+}
+
+.workspace-panel .card-kicker {
+  color: var(--loom-theme-muted);
+}
+
+.hero-panel .card-kicker,
+.studio-hero .card-kicker,
+.art-node-card .card-kicker {
+  color: var(--loom-theme-muted);
+}
+
+.daemon-chip {
+  max-width: 380px;
+  overflow: hidden;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 22px 26px 26px;
+}
+
+.content-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.hero-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 20px;
+  border-radius: 8px;
+  padding: 24px;
+  background:
+    linear-gradient(132deg, transparent 0 64%, color-mix(in srgb, var(--loom-theme-text) 4%, transparent) 64% 67%, transparent 67%),
+    var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  box-shadow: 0 20px 54px color-mix(in srgb, var(--neuro-shadow) 72%, transparent);
+}
+
+.hero-panel .section-kicker {
+  color: var(--loom-theme-accent-text);
+}
+
+.hero-panel h1 {
+  max-width: 720px;
+  font-size: clamp(2.3rem, 5vw, 5rem);
+}
+
+.hero-panel p,
+.main-board p,
+.glass-card p {
+  line-height: 1.6;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.bridge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 22px 0;
+}
+
+.hook-sync-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hook-sync-state {
+  flex-shrink: 0;
+  align-self: center;
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: var(--loom-theme-control);
+  border: 1px solid var(--loom-theme-line);
+  color: var(--loom-theme-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.hook-sync-state--on {
+  background: color-mix(in srgb, var(--loom-theme-success) 14%, var(--loom-theme-control));
+  border-color: color-mix(in srgb, var(--loom-theme-success) 42%, var(--loom-theme-line));
+  color: var(--loom-theme-success);
+}
+
+.studio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.field-stack {
+  display: grid;
+  gap: 6px;
+  color: var(--loom-theme-text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.field-stack input {
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 7px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  padding: 10px 12px;
+}
+
+.tiny-text {
+  color: var(--loom-theme-muted);
+  font-size: 0.82rem;
+}
+
+.signal-button {
+  border: 1px solid var(--loom-theme-accent);
+  border-radius: 7px;
+  padding: 12px 18px;
+  background: var(--loom-theme-accent);
+  color: var(--neuro-on-signal);
+  font-weight: 900;
+  box-shadow: none;
+}
+
+.hero-status-card,
+.glass-card,
+.stat-card,
+.main-board {
+  border: 1px solid var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  backdrop-filter: none;
+}
+
+.hero-status-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.status-pill {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.status-pill--online {
+  background: color-mix(in srgb, var(--loom-theme-success) 16%, var(--loom-theme-panel));
+  color: var(--loom-theme-success);
+}
+
+.status-pill--offline {
+  background: color-mix(in srgb, var(--loom-theme-danger) 16%, var(--loom-theme-panel));
+  color: var(--loom-theme-danger);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: none;
+}
+
+.error-text {
+  color: var(--loom-theme-danger);
+}
+
+.success-text {
+  color: var(--loom-theme-success);
+  font-weight: 800;
+}
+
+.app-toast-stack {
+  position: fixed;
+  z-index: 300;
+  top: 64px;
+  right: 18px;
+  width: min(420px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.app-toast {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 100%;
+  height: 64px;
+  border: 1px solid var(--loom-theme-line);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  padding: 11px 14px;
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--neuro-shadow) 84%, transparent);
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.4;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(var(--toast-offset));
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease;
+  animation: app-toast-enter 180ms ease-out;
+}
+
+.app-toast--info {
+  border-left-color: var(--loom-theme-success);
+  background: color-mix(in srgb, var(--loom-theme-success) 8%, var(--loom-theme-panel));
+}
+
+.app-toast--error {
+  border-left-color: var(--loom-theme-danger);
+  background: color-mix(in srgb, var(--loom-theme-danger) 8%, var(--loom-theme-panel));
+}
+
+.app-toast--warning {
+  border-left-color: var(--loom-theme-warning);
+  background: color-mix(in srgb, var(--loom-theme-warning) 8%, var(--loom-theme-panel));
+}
+
+.app-toast:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 42%, var(--loom-theme-line));
+}
+
+.app-toast:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 2px;
+}
+
+.app-toast--leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes app-toast-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+.app-confirm-backdrop {
+  position: fixed;
+  z-index: 260;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--neuro-overlay);
+}
+
+.app-confirm-dialog {
+  display: grid;
+  width: min(440px, 100%);
+  max-height: calc(100dvh - 32px);
+  gap: 14px;
+  border: 1px solid var(--loom-theme-line);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  box-shadow: 0 28px 80px color-mix(in srgb, var(--neuro-shadow) 90%, transparent);
+  animation: app-confirm-enter 160ms ease-out;
+  overflow-y: auto;
+}
+
+.app-confirm-dialog--danger {
+  border-left-color: var(--loom-theme-danger);
+}
+
+.app-confirm-dialog--warning {
+  border-left-color: var(--loom-theme-warning);
+}
+
+.app-confirm-dialog h2,
+.app-confirm-dialog p {
+  margin: 0;
+}
+
+.app-confirm-dialog__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-warning) 32%, var(--loom-theme-line));
+  padding: 10px;
+  background: color-mix(in srgb, var(--loom-theme-warning) 8%, transparent);
+  color: var(--loom-theme-text);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.app-confirm-dialog__option input {
+  width: 17px;
+  height: 17px;
+  margin: 1px 0 0;
+  accent-color: var(--loom-theme-accent);
+}
+
+.app-confirm-dialog h2 {
+  font-size: 1.08rem;
+}
+
+.app-confirm-dialog p {
+  color: var(--loom-theme-muted);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.app-confirm-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.app-confirm-dialog .ghost-button,
+.app-confirm-dialog .danger-button,
+.app-confirm-dialog .signal-button {
+  min-width: 82px;
+  min-height: 36px;
+  border-radius: 7px;
+  padding: 7px 13px;
+}
+
+.app-confirm-dialog .ghost-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.app-confirm-dialog--danger .danger-button {
+  border-color: var(--loom-theme-danger);
+  background: var(--loom-theme-danger);
+  color: var(--loom-theme-bg);
+}
+
+@keyframes app-confirm-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.stat-card {
+  border-color: var(--loom-theme-line);
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.stat-card span {
+  display: block;
+  color: var(--loom-theme-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.stat-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 2rem;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.glass-card,
+.main-board {
+  border-color: var(--loom-theme-line);
+  border-radius: 8px;
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  padding: 18px;
+}
+
+.glass-card h3 {
+  margin: 0;
+}
+
+.mini-chip {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-accent-text);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.mini-chip--ok {
+  background: color-mix(in srgb, var(--loom-theme-success) 14%, var(--loom-theme-control));
+  color: var(--loom-theme-success);
+}
+
+.muted-line {
+  color: var(--loom-theme-muted);
+  font-size: 0.85rem;
+}
+
+.main-board {
+  display: grid;
+  gap: 16px;
+  min-height: 320px;
+  align-content: start;
+}
+
+.main-board h2 {
+  font-size: clamp(2rem, 4vw, 4.2rem);
+}

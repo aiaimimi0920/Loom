@@ -445,6 +445,39 @@ try {
     }
     Assert-True ($staleExtractionError.Contains("Loom CLI extraction destination must be empty:")) "Non-empty CLI extraction destination was not rejected: $staleExtractionError"
 
+    $reparsePackage = New-IntegrityFixture -Name "runtime-reparse"
+    $reparseRuntime = Join-Path $reparsePackage "runtime"
+    $externalRuntime = Join-Path $tempRoot "external-runtime"
+    New-Item -ItemType Directory -Path $externalRuntime -Force | Out-Null
+    Write-FixtureFile -PackageDir $externalRuntime -RelativePath "loom-daemon.exe" -Content "external-daemon"
+    Remove-Item -LiteralPath $reparseRuntime -Recurse -Force
+    $reparseCreated = $false
+    try {
+        New-Item -ItemType Junction -Path $reparseRuntime -Target $externalRuntime -ErrorAction Stop | Out-Null
+        $reparseCreated = $true
+    }
+    catch {
+        Write-Warning "Skipping runtime reparse regression because junction creation is unavailable: $($_.Exception.Message)"
+    }
+    if ($reparseCreated) {
+        try {
+            $reparseError = $null
+            try {
+                [void](Get-LoomReleaseLayout -PackageDir $reparsePackage)
+                throw "Runtime reparse point unexpectedly passed shared layout validation."
+            }
+            catch {
+                $reparseError = $_.Exception.Message
+            }
+            Assert-True ($reparseError.Contains("Loom release paths must not contain reparse points:")) "Runtime reparse point was not rejected: $reparseError"
+        }
+        finally {
+            if (Test-Path -LiteralPath $reparseRuntime) {
+                [System.IO.Directory]::Delete($reparseRuntime)
+            }
+        }
+    }
+
     $metadata = New-IntegrityFixture -Name "metadata-mismatch" -CliMetadataMismatch
     Invoke-VerifierFailure -PackageDir $metadata -ExpectedMessage "Loom CLI artifact metadata mismatch."
 

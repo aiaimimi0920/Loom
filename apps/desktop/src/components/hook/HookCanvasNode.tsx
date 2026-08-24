@@ -134,6 +134,7 @@ export function HookCanvasNode({
       type="button"
       disabled={!interactive}
       aria-label={node.label}
+      aria-pressed={selected}
       onClick={() => onSelect?.(node.id)}
       style={{
         left: `${(node.x / viewportWidth) * 100}%`,

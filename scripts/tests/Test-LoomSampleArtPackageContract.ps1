@@ -18,6 +18,28 @@ function Assert-True {
     }
 }
 
+function Read-JavaScriptSurfaceSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][object]$Variant
+    )
+
+    $root = [System.IO.Path]::GetFullPath($PackageRoot).TrimEnd('\') + '\'
+    $descriptorPath = Join-Path $PackageRoot (([string]$Variant.entry) + ".sources.json")
+    $descriptor = Get-Content -Raw -Encoding UTF8 -LiteralPath $descriptorPath | ConvertFrom-Json
+    if ([int]$descriptor.schemaVersion -ne 1) { throw "JavaScript Surface source descriptor schema mismatch." }
+    $sourceFiles = @($descriptor.sourceFiles)
+    $entries = @($sourceFiles | ForEach-Object { [string]$_ }) + @([string]$Variant.entry)
+    $sources = foreach ($entry in $entries) {
+        $path = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot $entry))
+        if (-not ($path + '\').StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "JavaScript Surface source escaped its package: $entry"
+        }
+        Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    }
+    return "(() => {`n`"use strict`";`n" + ($sources -join "`n;`n") + "`n;`n`n})();`n"
+}
+
 function Assert-ArtIdentityMetadata {
     param(
         [object]$Manifest,
@@ -186,16 +208,30 @@ foreach ($entry in $expected.GetEnumerator()) {
         $surfaceSourcePath = Join-Path $sourceDirectory "surface\main.js"
         Assert-True (Test-Path -LiteralPath $surfaceSourcePath -PathType Leaf) "Stock Monitor JavaScript Surface entry is missing."
         Assert-True (Test-Path -LiteralPath (Join-Path $sourceDirectory "surface\fallback.json") -PathType Leaf) "Stock Monitor declarative fallback is missing."
-        $surfaceSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $surfaceSourcePath
+        $javascriptVariant = @($surface.variants | Where-Object { [string]$_.runtime -eq "javascript" })[0]
+        $surfaceDescriptor = Get-Content -Raw -Encoding UTF8 -LiteralPath ($surfaceSourcePath + ".sources.json") | ConvertFrom-Json
+        Assert-True ([int]$surfaceDescriptor.schemaVersion -eq 1) "Stock Monitor JavaScript Surface source descriptor schema is invalid."
+        Assert-True (@($surfaceDescriptor.sourceFiles).Count -eq 10) "Stock Monitor JavaScript Surface module set is invalid."
+        $surfaceSource = Read-JavaScriptSurfaceSource -PackageRoot $sourceDirectory -Variant $javascriptVariant
         Assert-True ($surfaceSource.Contains("PERIODS") -and $surfaceSource.Contains("stock_period_commit") -and $surfaceSource.Contains("isIntradayPeriod")) "Stock Monitor JavaScript Surface must implement all period controls and intraday rendering."
         Assert-True ($surfaceSource.Contains("downsampleRows") -and $surfaceSource.Contains("maxPoints")) "Stock Monitor JavaScript Surface must downsample long market series."
         Assert-True ($surfaceSource.Contains("averageValues") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains($automaticRefreshLabel)) "Stock Monitor JavaScript Surface must keep its price curve and automatic refresh recency visible."
         $secretParameters = @($manifest.params | Where-Object { [string]$_.id -match '(?i)key|secret|token|credential' })
         Assert-True ($secretParameters.Count -eq 0) "Stock Monitor must not own provider credentials."
         Assert-True (-not (@($surface.actions | Where-Object { [string]$_.id -match '(?i)buy|sell|trade|order|purchase' }).Count)) "Stock Monitor must not declare trading actions."
-        $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceDirectory "runtime\main.ps1")
+        $runtimeEntryPath = Join-Path $sourceDirectory "runtime\main.ps1"
+        $runtimeModuleRoot = Join-Path $sourceDirectory "runtime\lib"
+        $runtimeModuleNames = @("Constants.ps1", "Domain.ps1", "Mcp.ps1", "Output.ps1", "Protocol.ps1", "Snapshot.ps1", "Transforms.ps1")
+        $actualRuntimeModuleNames = @(Get-ChildItem -LiteralPath $runtimeModuleRoot -Filter *.ps1 -File | ForEach-Object { $_.Name } | Sort-Object)
+        Assert-True (($actualRuntimeModuleNames -join ",") -eq ($runtimeModuleNames -join ",")) "Stock Monitor PowerShell runtime module set is invalid."
+        $runtimeSource = @(
+            Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimeEntryPath
+            $runtimeModuleNames | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $runtimeModuleRoot $_) }
+        ) -join [Environment]::NewLine
+        Assert-True ($runtimeSource.Contains('$script:StockMonitorRuntimeRoot = $PSScriptRoot') -and $runtimeSource.Contains('"Snapshot.ps1"')) "Stock Monitor runtime entry must load its package-local module graph."
         Assert-True ($runtimeSource -match 'frameworkData' -and $runtimeSource -match 'Get-McpToolContent') "Stock Monitor runtime must consume MCP framework results."
-        Assert-True ($runtimeSource.Contains('$script:MaxHistoryRows = 2000') -and $runtimeSource.Contains('Select-Object -Last $script:MaxHistoryRows')) "Stock Monitor runtime must bound provider history to 2000 rows."
+        Assert-True ($runtimeSource.Contains('$script:MaxHistoryRows = 2000') -and $runtimeSource.Contains('Select-LastBoundedValue -Values $Values -Limit $script:MaxHistoryRows')) "Stock Monitor runtime must select at most the last 2000 provider rows with bounded memory."
+        Assert-True ($runtimeSource.Contains("Read-BoundedStandardInput") -and $runtimeSource.Contains("Assert-RequestObjectGraph")) "Stock Monitor runtime input bytes and decoded object graph must both be bounded."
         Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass stock-api."
         Assert-True ([string]$manifest.metadata.mcp.serverId -eq "stock-api") "Stock Monitor MCP server id is invalid."
         Assert-True ([string]$manifest.metadata.mcp.packageId -eq "neuro.official/stock-api") "Stock Monitor MCP package id is invalid."
@@ -247,9 +283,10 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
     }
     Assert-True (Test-Path -LiteralPath $artifactRootPath -PathType Container) "Sample Art artifact root is required: $artifactRootPath"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $expectedZipNames = @($expected.Values | ForEach-Object { "$($_.id).zip" })
-    $zipFiles = @(Get-ChildItem -LiteralPath $artifactRootPath -Filter *.zip -File | Where-Object { $expectedZipNames -contains $_.Name })
-    Assert-True ($zipFiles.Count -eq $expected.Count) "Expected all $($expected.Count) sample Art ZIPs, found $($zipFiles.Count)."
+    $expectedZipNames = @($expected.Values | ForEach-Object { "$($_.id).zip" } | Sort-Object)
+    $zipFiles = @(Get-ChildItem -LiteralPath $artifactRootPath -Filter *.zip -File | Sort-Object Name)
+    $actualZipNames = @($zipFiles | ForEach-Object { $_.Name })
+    Assert-True (($actualZipNames -join ",") -eq ($expectedZipNames -join ",")) "Sample Art ZIP set is not exact. Expected=$($expectedZipNames -join ',') Actual=$($actualZipNames -join ',')"
     $seenZipGlobalIds = @{}
     $certificationPath = Join-Path (Split-Path -Parent $artifactRootPath) "official-art-certifications.json"
     Assert-True (Test-Path -LiteralPath $certificationPath -PathType Leaf) "Official Art certification index is required: $certificationPath"
@@ -322,17 +359,49 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
                 }
             }
             if ($entry.Key -eq "stock-monitor") {
-                $surfaceEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq "surface/main.js" } | Select-Object -First 1
+                $expectedRuntimeEntries = @(
+                    "runtime/common.ps1",
+                    "runtime/lib/Constants.ps1",
+                    "runtime/lib/Domain.ps1",
+                    "runtime/lib/Mcp.ps1",
+                    "runtime/lib/Output.ps1",
+                    "runtime/lib/Protocol.ps1",
+                    "runtime/lib/Snapshot.ps1",
+                    "runtime/lib/Transforms.ps1",
+                    "runtime/main.ps1"
+                )
+                $actualRuntimeEntries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') } | Where-Object { $_ -match '^runtime/(?:lib/)?[^/]+\.ps1$' } | Sort-Object)
+                Assert-True (($actualRuntimeEntries -join ",") -eq ($expectedRuntimeEntries -join ",")) "Packaged Stock Monitor PowerShell runtime module set is invalid: $zipPath"
+                $packagedVariant = @($zipManifest.metadata.capabilities.surface.variants | Where-Object { [string]$_.runtime -eq "javascript" })[0]
+                $descriptorEntryPath = ([string]$packagedVariant.entry) + ".sources.json"
+                $descriptorEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $descriptorEntryPath } | Select-Object -First 1
+                Assert-True ($null -ne $descriptorEntry) "Packaged Stock Monitor JavaScript Surface source descriptor is missing: $zipPath"
+                $descriptorReader = [System.IO.StreamReader]::new($descriptorEntry.Open())
+                try {
+                    $packagedDescriptor = $descriptorReader.ReadToEnd() | ConvertFrom-Json
+                }
+                finally {
+                    $descriptorReader.Dispose()
+                }
+                Assert-True ([int]$packagedDescriptor.schemaVersion -eq 1) "Packaged Stock Monitor JavaScript Surface descriptor schema is invalid: $zipPath"
+                $packagedSourceFiles = @($packagedDescriptor.sourceFiles | ForEach-Object { [string]$_ })
+                Assert-True ($packagedSourceFiles.Count -eq 10) "Packaged Stock Monitor JavaScript Surface module set is invalid: $zipPath"
+                $surfaceEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq [string]$packagedVariant.entry } | Select-Object -First 1
                 $fallbackEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq "surface/fallback.json" } | Select-Object -First 1
                 Assert-True ($null -ne $surfaceEntry) "Packaged Stock Monitor JavaScript Surface entry is missing: $zipPath"
                 Assert-True ($null -ne $fallbackEntry) "Packaged Stock Monitor fallback scene is missing: $zipPath"
-                $surfaceReader = [System.IO.StreamReader]::new($surfaceEntry.Open())
-                try {
-                    $surfaceSource = $surfaceReader.ReadToEnd()
+                $surfaceSources = foreach ($surfaceSourcePath in ($packagedSourceFiles + @([string]$packagedVariant.entry))) {
+                    $surfaceModuleEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $surfaceSourcePath } | Select-Object -First 1
+                    Assert-True ($null -ne $surfaceModuleEntry) "Packaged Stock Monitor JavaScript Surface source is missing: $surfaceSourcePath"
+                    $surfaceReader = [System.IO.StreamReader]::new($surfaceModuleEntry.Open())
+                    try {
+                        $surfaceReader.ReadToEnd()
+                    }
+                    finally {
+                        $surfaceReader.Dispose()
+                    }
                 }
-                finally {
-                    $surfaceReader.Dispose()
-                }
+                $surfaceSource = "(() => {`n`"use strict`";`n" + ($surfaceSources -join "`n;`n") + "`n;`n`n})();`n"
                 Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS")) "Packaged Stock Monitor must cap Canvas allocation: $zipPath"
                 Assert-True ($surfaceSource.Contains("averageValues") -and $surfaceSource.Contains("formatClock") -and $surfaceSource.Contains($automaticRefreshLabel)) "Packaged Stock Monitor must retain its price curve and automatic refresh recency: $zipPath"
                 Assert-True ($surfaceSource.Contains("position:absolute;inset:0")) "Packaged Stock Monitor Canvas must not contribute intrinsic Grid size: $zipPath"

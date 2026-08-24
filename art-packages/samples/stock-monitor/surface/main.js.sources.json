@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "sourceFiles": [
+    "surface/modules/constants.js",
+    "surface/modules/data.js",
+    "surface/modules/template.js",
+    "surface/modules/actions.js",
+    "surface/modules/dom-summary.js",
+    "surface/modules/dom-market.js",
+    "surface/modules/chart.js",
+    "surface/modules/chart-interaction.js",
+    "surface/modules/render.js",
+    "surface/modules/lifecycle.js"
+  ]
+}

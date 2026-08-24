@@ -1,0 +1,278 @@
+/* Owns late cross-theme visibility overrides for Hook inspector, devices, settings, shortcuts, and technical details. */
+
+.hook-canvas-workflow-delete {
+  border-color: color-mix(in srgb, var(--loom-theme-danger) 38%, transparent);
+  color: var(--loom-theme-danger);
+}
+
+.hook-canvas-metrics span,
+.hook-canvas-inspector {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+}
+
+.hook-canvas-metrics strong,
+.hook-canvas-inspector h4 {
+  color: var(--loom-theme-text);
+}
+
+.hook-canvas-inspector p {
+  color: var(--loom-theme-muted);
+}
+
+.hook-canvas-inspector dl > div,
+.advanced-technical-information {
+  border-color: var(--loom-theme-line);
+}
+
+.hook-canvas-inspector dt,
+.hook-canvas-result-picker > strong,
+.hook-canvas-result-picker__meta small,
+.advanced-technical-information > summary {
+  color: var(--loom-theme-muted);
+}
+
+.hook-canvas-inspector dd,
+.hook-canvas-result-picker__meta strong,
+.advanced-technical-information > summary:hover,
+.advanced-technical-information > summary:focus-visible {
+  color: var(--loom-theme-text);
+}
+
+.hook-canvas-result-picker__item {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.hook-canvas-result-picker__item:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 40%, transparent);
+  background: var(--loom-theme-control-hover);
+}
+
+.hook-canvas-result-picker__item--selected {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 55%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 8%, var(--loom-theme-control));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--loom-theme-accent-text) 18%, transparent);
+}
+
+.hook-canvas-result-picker__item:disabled {
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.hook-canvas-result-picker__thumb {
+  background: var(--loom-theme-control-hover);
+}
+
+.hook-canvas-warning {
+  color: var(--loom-theme-warning);
+}
+
+.hook-canvas-inspector__error {
+  background: color-mix(in srgb, var(--loom-theme-danger) 10%, var(--loom-theme-control));
+  color: var(--loom-theme-danger);
+}
+
+.hook-canvas-inspector__error span {
+  color: var(--loom-theme-danger);
+}
+
+.hook-canvas-surface {
+  color-scheme: dark;
+}
+
+.device-management,
+.workspace-scroll--devices {
+  background: var(--loom-theme-surface);
+  color: var(--loom-theme-text);
+}
+
+.device-management__toolbar,
+.device-approval {
+  border-color: var(--loom-theme-line);
+}
+
+.device-management__title-row > span,
+.device-management__toolbar p,
+.device-approval__heading p,
+.device-card__body > span,
+.device-request-row__identity span,
+.device-empty,
+.device-approval__empty {
+  color: var(--loom-theme-muted);
+}
+
+.device-management .ghost-button,
+.device-add-dialog .ghost-button,
+.device-edit-dialog .ghost-button,
+.device-approval-dialog .ghost-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.device-card,
+.device-card--local,
+.device-request-row {
+  border-color: var(--loom-theme-line);
+  border-left-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.device-card:hover,
+.device-card:focus-visible,
+.device-card--selected,
+.device-card--local:hover,
+.device-card--local:focus-visible,
+.device-card--local.device-card--selected,
+.device-request-row--selected {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 58%, transparent);
+  border-left-color: var(--loom-theme-accent-text);
+  background: color-mix(in srgb, var(--loom-theme-accent) 8%, var(--loom-theme-panel));
+}
+
+.device-card:focus-visible {
+  outline-color: var(--loom-theme-accent-text);
+}
+
+.device-card--disabled {
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.device-card__online {
+  background: var(--loom-theme-success);
+}
+
+.device-card__offline {
+  background: var(--loom-theme-muted);
+}
+
+.device-card__icon {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+}
+
+.device-card:hover .device-card__icon,
+.device-card:focus-visible .device-card__icon,
+.device-card--selected .device-card__icon {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 40%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 9%, var(--loom-theme-control));
+  color: var(--loom-theme-accent-text);
+}
+
+.device-card code,
+.device-status {
+  color: var(--loom-theme-secondary-text);
+}
+
+.device-status {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 36%, transparent);
+}
+
+.device-card__remove {
+  color: var(--loom-theme-muted);
+}
+
+.device-card__remove:hover {
+  background: color-mix(in srgb, var(--loom-theme-danger) 12%, transparent);
+  color: var(--loom-theme-danger);
+}
+
+.device-empty .shell-icon {
+  color: var(--loom-theme-accent-text);
+}
+
+.device-empty strong {
+  color: var(--loom-theme-text);
+}
+
+.device-approval__empty,
+.device-request-row {
+  border-color: var(--loom-theme-line);
+}
+
+.device-add-dialog,
+.device-edit-dialog,
+.device-approval-dialog {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 38%, transparent);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+  color-scheme: inherit;
+}
+
+.device-add-dialog .framework-dialog__header p,
+.device-edit-dialog .framework-dialog__header p,
+.device-approval-dialog .framework-dialog__header p,
+.device-add-dialog__body label,
+.device-edit-dialog__body label,
+.device-edit-dialog__protected {
+  color: var(--loom-theme-muted);
+}
+
+.device-add-dialog .studio-input,
+.device-edit-dialog .studio-input {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  -webkit-text-fill-color: var(--loom-theme-text);
+}
+
+.device-add-dialog .studio-input:disabled,
+.device-edit-dialog .studio-input:disabled {
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}
+
+.device-add-dialog option,
+.device-edit-dialog option {
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.device-add-dialog .art-card-action,
+.device-edit-dialog .art-card-action,
+.device-approval-dialog .art-card-action {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.device-add-dialog .art-card-action:hover,
+.device-edit-dialog .art-card-action:hover,
+.device-approval-dialog .art-card-action:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 42%, transparent);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-accent-text);
+}
+
+.device-edit-toggle,
+.device-add-dialog__footer,
+.device-edit-dialog__footer {
+  border-color: var(--loom-theme-line);
+}
+
+.hook-shortcut-row__keys kbd {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 28%, var(--loom-theme-line));
+  border-bottom-color: color-mix(in srgb, var(--loom-theme-secondary-text) 48%, var(--loom-theme-line));
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.settings-page .studio-input:disabled,
+.hook-shortcut-add-art:disabled,
+.shortcut-capture-clear:disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  opacity: 1;
+}

@@ -21,5 +21,11 @@ serde_json.workspace = true
 sha2.workspace = true
 zip.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [dev-dependencies]
 loom_tool_registry.workspace = true

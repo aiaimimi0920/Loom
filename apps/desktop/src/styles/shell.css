@@ -1,0 +1,390 @@
+/* Owns the desktop shell, title bar, rail navigation, window controls, and collapsed-shell transitions. */
+
+.desktop-shell {
+  --shell-rail-width: 186px;
+  --shell-titlebar-height: 50px;
+  display: grid;
+  grid-template-columns: var(--shell-rail-width) minmax(0, 1fr);
+  grid-template-rows: var(--shell-titlebar-height) minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(120deg, var(--loom-theme-hover), transparent 38%),
+    var(--loom-theme-bg);
+  transition: --shell-rail-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.desktop-shell--rail-collapsed {
+  --shell-rail-width: 52px;
+}
+
+.app-titlebar {
+  position: relative;
+  z-index: 20;
+  display: grid;
+  grid-column: 2;
+  grid-row: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  border-bottom: 1px solid var(--loom-theme-line);
+  background: var(--loom-theme-rail);
+  color: var(--loom-theme-text);
+  user-select: none;
+}
+
+.app-titlebar__brand {
+  display: flex;
+  height: var(--shell-titlebar-height);
+  flex: 0 0 var(--shell-titlebar-height);
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  overflow: hidden;
+  transition:
+    gap 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    padding 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.app-titlebar__product-name {
+  flex: 0 1 120px;
+  max-width: 120px;
+  overflow: hidden;
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+  opacity: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(0);
+  transition:
+    flex-basis 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.app-titlebar__drag-region {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  cursor: default;
+}
+
+.app-titlebar__back {
+  display: grid;
+  width: 44px;
+  height: 100%;
+  border: 0;
+  place-items: center;
+  background: transparent;
+  color: var(--loom-theme-muted);
+  cursor: pointer;
+}
+
+.app-titlebar__back:hover {
+  background: var(--loom-theme-hover);
+  color: var(--loom-theme-text);
+}
+
+.app-titlebar__back:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: -2px;
+}
+
+.app-titlebar__controls {
+  display: flex;
+  align-items: stretch;
+  height: var(--shell-titlebar-height);
+}
+
+.shell-icon,
+.loom-mark {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.loom-mark {
+  width: 28px;
+  height: 28px;
+}
+
+.app-titlebar__product-mark {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  max-width: 28px;
+  place-items: center;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    flex-basis 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.shell-icon-button,
+.window-control {
+  display: grid;
+  border: 0;
+  padding: 0;
+  place-items: center;
+  background: transparent;
+  color: var(--loom-theme-muted);
+  cursor: pointer;
+}
+
+.shell-icon-button {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+
+.shell-icon-button:hover,
+.window-control:hover {
+  background: var(--loom-theme-hover);
+  color: var(--loom-theme-text);
+}
+
+.shell-icon-button:focus-visible,
+.window-control:focus-visible,
+.rail-item:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: -2px;
+}
+
+.shell-rail-toggle {
+  position: relative;
+  overflow: hidden;
+}
+
+.shell-rail-toggle__icon,
+.shell-rail-toggle__mark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transition: opacity 130ms ease, transform 180ms ease;
+}
+
+.shell-rail-toggle__icon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.shell-rail-toggle__mark {
+  opacity: 0;
+  transform: scale(0.82);
+}
+
+.window-control {
+  width: 48px;
+  height: 100%;
+}
+
+.window-control .shell-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.window-control--refresh {
+  width: 54px;
+  margin-right: 4px;
+}
+
+.window-control--close:hover {
+  background: var(--loom-theme-danger);
+  color: var(--neuro-focus-surface);
+}
+
+.window-control:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.window-control--loading .shell-icon {
+  animation: shell-refresh-spin 900ms linear infinite;
+}
+
+@keyframes shell-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.left-rail {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1 / 3;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0;
+  border-right: 1px solid var(--loom-theme-line);
+  padding: 0;
+  background: var(--loom-theme-rail);
+  overflow: hidden;
+}
+
+.rail-footer,
+.card-kicker,
+.section-kicker {
+  color: var(--loom-theme-muted);
+}
+
+.rail-nav,
+.rail-utility-nav {
+  display: grid;
+  gap: 5px;
+}
+
+.rail-nav {
+  margin: 10px 8px 0;
+}
+
+.rail-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 7px;
+  width: 100%;
+  height: 36px;
+  min-height: 36px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 3px 8px 3px 5px;
+  background: transparent;
+  color: var(--loom-theme-muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    gap 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    padding 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rail-item:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 32%, transparent);
+  background: var(--loom-theme-hover);
+  color: var(--loom-theme-text);
+}
+
+.rail-item--active {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 42%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 14%, var(--loom-theme-control));
+  color: var(--loom-theme-text);
+}
+
+.rail-item__icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--loom-theme-muted);
+}
+
+.rail-item--active .rail-item__icon {
+  color: var(--loom-theme-accent-text);
+}
+
+.rail-item__label {
+  display: block;
+  max-width: 112px;
+  min-width: 0;
+  font-weight: 800;
+  overflow: hidden;
+  opacity: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(0);
+  transition:
+    max-width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 120ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rail-footer {
+  display: grid;
+  gap: 6px;
+  margin: auto 8px 9px;
+  border-top: 1px solid var(--loom-theme-line);
+  padding-top: 8px;
+}
+
+.ghost-button,
+.signal-button,
+.settings-link {
+  border: 0;
+  cursor: pointer;
+}
+
+.ghost-button {
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 7px;
+  padding: 10px 14px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.workspace-panel .ghost-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  font-weight: 800;
+}
+
+.hero-panel .ghost-button,
+.studio-hero .ghost-button,
+.art-node-card .ghost-button {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.ghost-button:disabled,
+.signal-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.desktop-shell--rail-collapsed .app-titlebar__brand {
+  gap: 0;
+  padding-inline: 8px;
+}
+
+.desktop-shell--rail-collapsed .shell-rail-toggle__icon {
+  opacity: 0;
+  transform: scale(0.82);
+}
+
+.desktop-shell--rail-collapsed .shell-rail-toggle__mark {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.desktop-shell--rail-collapsed .app-titlebar__product-mark,
+.desktop-shell--rail-collapsed .app-titlebar__product-name {
+  flex-basis: 0;
+  width: 0;
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(-6px);
+}
+
+.desktop-shell--rail-collapsed .rail-item {
+  height: 36px;
+  min-height: 36px;
+  gap: 0;
+  padding: 3px;
+}
+
+.desktop-shell--rail-collapsed .rail-item__label {
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(-6px);
+}

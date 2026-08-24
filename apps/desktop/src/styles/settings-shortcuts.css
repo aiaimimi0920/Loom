@@ -1,0 +1,356 @@
+/* Owns shortcut capture/edit dialogs and general, network, MCP, Art store, and cache settings controls. */
+
+.hook-quick-binding-remove {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0;
+  place-items: center;
+  background: transparent;
+  color: var(--loom-theme-muted);
+  cursor: pointer;
+}
+
+.hook-quick-binding-remove:hover {
+  border-color: rgba(255, 125, 134, 0.28);
+  background: rgba(217, 75, 85, 0.12);
+  color: var(--loom-theme-danger);
+}
+
+.hook-quick-binding-remove:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 2px;
+}
+
+.hook-quick-binding-remove svg {
+  width: 17px;
+  height: 17px;
+}
+
+.hook-shortcut-add-art {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed color-mix(in srgb, var(--loom-theme-secondary) 24%, transparent);
+  border-radius: 7px;
+  margin: 10px 0;
+  padding: 9px 14px;
+  background: color-mix(in srgb, var(--loom-theme-secondary) 2.5%, transparent);
+  color: var(--loom-theme-muted);
+  cursor: pointer;
+}
+
+.hook-shortcut-add-art:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 44%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 5.5%, transparent);
+  color: var(--loom-theme-text);
+}
+
+.hook-shortcut-add-art:focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 2px;
+}
+
+.hook-shortcut-add-art:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.hook-shortcut-add-art > span {
+  color: var(--loom-theme-accent-text);
+  font-size: 1.1rem;
+}
+
+.shortcut-edit-dialog {
+  width: min(520px, calc(100vw - 28px));
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 32%, transparent);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.shortcut-edit-dialog .framework-dialog__header p {
+  margin: 4px 0 0;
+  color: var(--loom-theme-muted);
+}
+
+.shortcut-edit-dialog__body {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.shortcut-capture-slot {
+  display: grid;
+  gap: 7px;
+}
+
+.shortcut-capture-slot > span,
+.quick-binding-dialog__art > span {
+  color: var(--loom-theme-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.shortcut-capture-slot__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.shortcut-capture-field {
+  display: grid;
+  width: 100%;
+  min-height: 82px;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-secondary) 26%, transparent);
+  border-radius: 8px;
+  padding: 18px;
+  background: color-mix(in srgb, var(--loom-theme-secondary) 4.5%, transparent);
+  color: var(--loom-theme-text);
+  cursor: text;
+}
+
+.shortcut-capture-field--active {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 56%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 4.5%, transparent);
+}
+
+.shortcut-capture-field:focus-visible {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 68%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--loom-theme-accent-text) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.shortcut-capture-field small {
+  color: var(--loom-theme-muted);
+  font-size: 0.74rem;
+}
+
+.shortcut-capture-field > strong {
+  color: var(--loom-theme-muted);
+  font-size: 0.8rem;
+}
+
+.shortcut-gesture-picker {
+  display: grid;
+  min-height: 82px;
+  grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-secondary) 26%, transparent);
+  border-radius: 8px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--loom-theme-secondary) 4.5%, transparent);
+}
+
+.shortcut-gesture-picker__action {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-secondary) 28%, transparent);
+  border-radius: 6px;
+  padding: 7px 11px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.shortcut-gesture-picker__modifiers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.shortcut-gesture-modifier {
+  min-height: 34px;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 6px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.7rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.shortcut-gesture-modifier:hover,
+.shortcut-gesture-modifier--active {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 48%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 08%, transparent);
+  color: var(--loom-theme-text);
+}
+
+.shortcut-gesture-modifier:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--loom-theme-accent) 24%, transparent);
+  outline-offset: 2px;
+}
+
+.shortcut-add-secondary {
+  min-height: 38px;
+  border: 1px dashed color-mix(in srgb, var(--loom-theme-secondary) 28%, transparent);
+  border-radius: 7px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--loom-theme-secondary) 2.5%, transparent);
+  color: var(--loom-theme-muted);
+  cursor: pointer;
+}
+
+.shortcut-add-secondary:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 42%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 5.5%, transparent);
+  color: var(--loom-theme-text);
+}
+
+.shortcut-add-secondary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--loom-theme-accent) 24%, transparent);
+  outline-offset: 2px;
+}
+
+.shortcut-capture-clear {
+  min-width: 56px;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+  cursor: pointer;
+}
+
+.shortcut-capture-clear:hover:not(:disabled) {
+  border-color: rgba(255, 125, 134, 0.28);
+  color: var(--loom-theme-danger);
+}
+
+.shortcut-capture-clear:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.shortcut-capture-field kbd {
+  display: inline-flex;
+  min-width: 42px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-accent) 32%, transparent);
+  border-radius: 6px;
+  padding: 7px 11px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.shortcut-edit-dialog__conflict {
+  margin: 0;
+  color: var(--loom-theme-warning);
+  font-size: 0.76rem;
+}
+
+.shortcut-edit-dialog__footer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  border-top: 1px solid var(--loom-theme-line);
+  padding: 12px 20px;
+}
+
+.shortcut-edit-dialog__footer .ghost-button,
+.shortcut-edit-dialog__footer .signal-button {
+  min-height: 36px;
+  border-radius: 7px;
+  padding: 7px 13px;
+}
+
+.quick-binding-dialog__art {
+  display: grid;
+  gap: 7px;
+}
+
+.quick-binding-dialog__art .studio-input {
+  width: 100%;
+  min-height: 42px;
+  border-color: var(--loom-theme-line);
+  border-radius: 7px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  color-scheme: inherit;
+}
+
+.quick-binding-dialog__art option {
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.settings-page .ghost-button {
+  min-height: 36px;
+  border-color: var(--loom-theme-line);
+  border-radius: 7px;
+  padding: 7px 12px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.settings-page .ghost-button:hover {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 34%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-accent) 6.5%, transparent);
+}
+
+.settings-network-panel,
+.settings-general-panel,
+.settings-mcp-panel,
+.settings-art-store-panel {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.settings-network-panel__header,
+.settings-general-panel__header,
+.settings-mcp-panel__header,
+.settings-art-store-panel__header {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--loom-theme-line);
+}
+
+.settings-network-panel__header .settings-section__icon,
+.settings-general-panel__header .settings-section__icon,
+.settings-mcp-panel__header .settings-section__icon,
+.settings-art-store-panel__header .settings-section__icon {
+  color: var(--loom-theme-secondary-text);
+}
+
+.settings-network-panel__header strong,
+.settings-general-panel__header strong,
+.settings-mcp-panel__header strong,
+.settings-art-store-panel__header strong {
+  color: var(--loom-theme-text);
+  font-size: 0.98rem;
+}
+
+.settings-network-row {
+  display: grid;
+  min-height: 70px;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 0.48fr);
+  align-items: center;
+  gap: 20px;
+  border-bottom: 1px solid var(--loom-theme-line);
+}

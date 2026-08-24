@@ -1,0 +1,291 @@
+/* Owns MCP store actions, server dialogs, busy state motion, responsive layout, and final color-scheme contract. */
+
+.mcp-store-card__configuration:disabled {
+  color: var(--loom-theme-muted);
+  cursor: default;
+}
+
+.mcp-store-card__actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mcp-store-card__actions .art-card-action {
+  width: 32px;
+  height: 32px;
+  margin-right: auto;
+}
+
+.mcp-store-card__actions .mcp-store-card__install {
+  min-width: 56px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.76rem;
+}
+
+.mcp-hub__pagination {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--loom-theme-line);
+  padding-top: 12px;
+}
+
+.mcp-hub__pagination-summary {
+  flex: 0 0 auto;
+  color: var(--loom-theme-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.mcp-hub__pagination-controls {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.mcp-hub__pagination-controls .ghost-button,
+.mcp-hub__page {
+  min-width: 32px;
+  min-height: 32px;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 8px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.mcp-hub__page:hover,
+.mcp-hub__page--active {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 52%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-accent) 14%, var(--loom-theme-control));
+  color: var(--loom-theme-accent-text);
+}
+
+.mcp-hub__page-ellipsis {
+  min-width: 20px;
+  color: var(--loom-theme-muted);
+  text-align: center;
+}
+
+.mcp-busy-indicator {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: mcp-busy-spin 720ms linear infinite;
+}
+
+@keyframes mcp-busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mcp-busy-indicator {
+    animation: none;
+  }
+}
+
+.mcp-hub__empty {
+  display: grid;
+  min-height: 180px;
+  grid-column: 1 / -1;
+  place-items: center;
+  border-block: 1px solid var(--loom-theme-line);
+  color: var(--loom-theme-muted);
+  font-weight: 800;
+}
+
+.mcp-server-dialog {
+  width: min(780px, 100%);
+  max-height: min(760px, calc(100vh - 32px));
+  grid-template-rows: auto minmax(0, 1fr);
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 38%, transparent);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+.mcp-server-dialog .framework-dialog__header p {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--loom-theme-muted);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-dialog__form {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.mcp-server-dialog__scroll {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 5px;
+  scrollbar-color: color-mix(in srgb, var(--loom-theme-text) 28%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.mcp-server-dialog__scroll > label,
+.mcp-server-dialog__grid > label {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--loom-theme-muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.mcp-server-dialog__grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mcp-server-dialog textarea {
+  min-height: 126px;
+  resize: vertical;
+}
+
+.mcp-server-dialog [aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--loom-theme-danger) 68%, var(--loom-theme-line));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--loom-theme-danger) 72%, transparent);
+}
+
+.mcp-server-dialog__warning {
+  margin: 0;
+  color: var(--loom-theme-warning);
+  font-weight: 800;
+}
+
+.mcp-server-dialog__credential-note {
+  margin: 0;
+  border-left: 2px solid var(--loom-theme-secondary);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--loom-theme-secondary) 10%, transparent);
+  color: var(--loom-theme-muted);
+  font-size: 0.76rem;
+}
+
+.mcp-server-dialog__credential {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--loom-theme-line);
+  padding: 0 0 12px;
+}
+
+.mcp-server-dialog__credential > label:first-child {
+  display: grid;
+  gap: 6px;
+  color: var(--loom-theme-muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.mcp-server-dialog__enabled {
+  display: flex !important;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--loom-theme-text) !important;
+  cursor: pointer;
+}
+
+.mcp-server-dialog__enabled input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--loom-theme-accent-text);
+}
+
+.mcp-server-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--loom-theme-line);
+  padding-top: 12px;
+}
+
+@media (max-width: 720px) {
+  .mcp-hub__toolbar {
+    align-items: stretch;
+  }
+
+  .mcp-hub__toolbar-primary {
+    align-self: center;
+  }
+
+  .mcp-hub__toolbar-actions {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+
+  .mcp-hub__toolbar-actions .framework-filter__search {
+    flex: 1 1 150px;
+  }
+
+  .mcp-hub__pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mcp-hub__pagination-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .mcp-server-dialog__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root[data-loom-theme="light"] :is(
+  .framework-filter__search,
+  .framework-dialog input,
+  .framework-dialog select,
+  .framework-dialog textarea,
+  .hook-canvas-workflow-select select,
+  .hook-canvas-param-expose__value,
+  .hook-canvas-rename-dialog__input
+) {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-loom-theme="system"] :is(
+    .framework-filter__search,
+    .framework-dialog input,
+    .framework-dialog select,
+    .framework-dialog textarea,
+    .hook-canvas-workflow-select select,
+    .hook-canvas-param-expose__value,
+    .hook-canvas-rename-dialog__input
+  ) {
+    color-scheme: light;
+  }
+}

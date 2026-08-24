@@ -1,0 +1,36 @@
+/* Owns cross-feature keyboard, reduced-motion, and forced-color accessibility fallbacks. */
+
+:where(button, a[href], input, select, textarea, summary, [role="button"]):focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .window-control--loading .shell-icon,
+  .app-toast,
+  .app-confirm-dialog,
+  .settings-section__body,
+  .hook-shortcut-list,
+  .mcp-busy-indicator {
+    animation: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :where(button, a[href], input, select, textarea, summary, [role="button"]):focus-visible {
+    outline-color: Highlight;
+  }
+
+  .hook-canvas-edges path.hook-canvas-edge--active {
+    filter: none;
+    stroke: Highlight;
+  }
+}

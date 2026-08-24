@@ -1,0 +1,436 @@
+/* Owns Hook canvas toolbar, workflow controls, rename and properties panels, parameter exposure, and minimap controls. */
+
+.hook-canvas-thumbnail {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Top toolbar: workflow selector on the left, zoom slider + minimap toggle
+   grouped and right-aligned. */
+.hook-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hook-canvas-toolbar__controls {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.hook-canvas-workflow-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: rgba(31, 41, 29, 0.72);
+}
+
+.hook-canvas-workflow-select__label {
+  white-space: nowrap;
+}
+
+.hook-canvas-workflow-select select {
+  border: 1px solid rgba(17, 22, 20, 0.18);
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  color: #10221b;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  width: 150px;
+}
+
+.hook-canvas-workflow-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hook-canvas-workflow-actions .ghost-button,
+.hook-canvas-toolbar__controls .signal-button {
+  padding: 6px 12px;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+/* Keep the save button stable beside zoom/minimap controls while its label changes. */
+.hook-canvas-save-workflow {
+  min-width: 96px;
+  text-align: center;
+}
+
+/* Float the save result out of flow so it never widens the toolbar row. */
+.hook-canvas-toolbar__controls .success-text,
+.hook-canvas-toolbar__controls .error-text {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  white-space: nowrap;
+  font-size: 0.72rem;
+}
+
+.hook-canvas-workflow-delete {
+  color: #b4231f;
+  border-color: rgba(180, 35, 31, 0.32);
+}
+
+.hook-canvas-rename-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 12, 16, 0.42);
+}
+
+.hook-canvas-rename-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(88vw, 360px);
+  padding: 20px;
+  border-radius: 16px;
+  background: #f7faf5;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+}
+
+.hook-canvas-rename-dialog__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #10221b;
+}
+
+.hook-canvas-rename-dialog__input {
+  border: 1px solid rgba(17, 22, 20, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  color: #10221b;
+  background: #ffffff;
+}
+
+.hook-canvas-rename-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Selected-node properties panel shown below the canvas. */
+.hook-canvas-node-props {
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.hook-canvas-node-props__title {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #10221b;
+}
+
+.hook-canvas-node-props__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+  margin: 0;
+}
+
+.hook-canvas-node-props__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.hook-canvas-node-props__row--wide {
+  grid-column: 1 / -1;
+}
+
+.hook-canvas-node-props__row dt {
+  flex: 0 0 auto;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: rgba(31, 41, 29, 0.6);
+}
+
+.hook-canvas-node-props__row dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #10221b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-canvas-node-props__mono {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.76rem !important;
+}
+
+/* Pipeline-level input/output panel for a saved workflow. */
+.hook-canvas-workflow-io {
+  border: 1px solid rgba(17, 22, 20, 0.14);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.hook-canvas-workflow-io__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hook-canvas-workflow-io__title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #10221b;
+}
+
+.hook-canvas-workflow-io__action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hook-canvas-workflow-io__groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.hook-canvas-workflow-io__label {
+  margin: 0 0 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: rgba(31, 41, 29, 0.6);
+}
+
+.hook-canvas-workflow-io__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.hook-canvas-workflow-io__port {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid rgba(17, 22, 20, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.hook-canvas-workflow-io__port-name {
+  min-width: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #10221b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-canvas-workflow-io__port-type {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #2f7d5b;
+}
+
+.hook-canvas-workflow-io__empty {
+  margin: 0;
+  font-size: 0.78rem;
+  color: rgba(31, 41, 29, 0.5);
+}
+
+/* Per-node parameter exposure controls inside the workflow interface panel. */
+.hook-canvas-param-expose {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(17, 22, 20, 0.16);
+  display: grid;
+  gap: 12px;
+}
+
+.hook-canvas-param-expose__hint {
+  margin: 0;
+  font-size: 0.74rem;
+  color: rgba(31, 41, 29, 0.6);
+}
+
+.hook-canvas-param-expose__group {
+  display: grid;
+  gap: 6px;
+}
+
+.hook-canvas-param-expose__node {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 800;
+  color: #10221b;
+}
+
+.hook-canvas-param-expose__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hook-canvas-param-expose__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: #10221b;
+  cursor: pointer;
+}
+
+.hook-canvas-param-expose__toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-canvas-param-expose__value {
+  flex: 0 0 40%;
+  border: 1px solid rgba(17, 22, 20, 0.16);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  color: #10221b;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.hook-canvas-param-expose__value:disabled {
+  background: rgba(17, 22, 20, 0.06);
+  color: rgba(31, 41, 29, 0.5);
+}
+
+.hook-canvas-workspace {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.hook-canvas-thumbnail__head,
+.hook-canvas-workspace__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hook-canvas-thumbnail__head h3,
+.hook-canvas-workspace__head h3,
+.hook-canvas-inspector h4 {
+  margin: 0;
+}
+
+.hook-canvas-status {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border: 1px solid rgba(17, 22, 20, 0.13);
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: color-mix(in srgb, var(--loom-theme-accent) 20%, transparent);
+  color: #111614;
+  font-size: 0.74rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.hook-canvas-surface {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(17, 22, 20, 0.2);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 12% 12%, color-mix(in srgb, var(--loom-theme-accent) 18%, transparent), transparent 22%),
+    linear-gradient(135deg, #101722, #18252b 58%, #11171d);
+  isolation: isolate;
+  /* The canvas is a browser surface, so a drag would otherwise text/image-select
+     nodes and flash them blue. Disable selection across the whole canvas. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+.hook-canvas-surface img {
+  -webkit-user-drag: none;
+  user-select: none;
+  pointer-events: none;
+}
+
+.hook-canvas-surface--large {
+  min-height: 320px;
+}
+
+.hook-canvas-surface--interactive {
+  cursor: grab;
+  touch-action: none;
+}
+
+.hook-canvas-surface--interactive:active,
+.hook-canvas-surface--panning {
+  cursor: grabbing;
+}
+
+.hook-canvas-minimap {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(8, 12, 16, 0.62);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.hook-canvas-minimap__node {
+  fill: color-mix(in srgb, var(--loom-theme-accent) 50%, transparent);
+  stroke: color-mix(in srgb, var(--loom-theme-accent) 70%, transparent);
+  stroke-width: 0.5;
+}
+
+.hook-canvas-minimap__view {
+  fill: color-mix(in srgb, var(--loom-theme-secondary) 16%, transparent);
+  stroke: color-mix(in srgb, var(--loom-theme-secondary) 90%, transparent);
+  stroke-width: 1.5;
+}
+
+.hook-canvas-minimap__edge {
+  stroke: rgba(156, 163, 175, 0.9);
+  stroke-width: 1;
+}

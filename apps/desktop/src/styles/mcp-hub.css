@@ -1,0 +1,336 @@
+/* Owns MCP hub navigation, toolbars, status rows, store cards, pagination, and registry actions. */
+
+/* MCP uses the same compact registry/store grammar as Art. */
+.mcp-hub__tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mcp-hub__toolbar {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.mcp-hub__toolbar-primary,
+.mcp-hub__toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-hub__toolbar-primary {
+  flex: 0 0 auto;
+}
+
+.mcp-hub__toolbar-actions {
+  flex: 1 1 360px;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mcp-hub__toolbar-actions .framework-filter__search {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 150px;
+}
+
+.mcp-hub :is(.ghost-button, .icon-button),
+.mcp-server-dialog :is(.ghost-button, .icon-button) {
+  border: 1px solid var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+  box-shadow: none;
+}
+
+.mcp-hub :is(.ghost-button, .icon-button):hover:not(:disabled),
+.mcp-server-dialog :is(.ghost-button, .icon-button):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 42%, var(--loom-theme-line));
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-secondary-text);
+}
+
+.mcp-hub .signal-button,
+.mcp-server-dialog .signal-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--loom-theme-accent);
+  background: var(--loom-theme-accent);
+  color: var(--neuro-on-signal);
+  box-shadow: none;
+}
+
+.mcp-hub .signal-button:hover:not(:disabled),
+.mcp-server-dialog .signal-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-accent) 72%, var(--loom-theme-text));
+  background: color-mix(in srgb, var(--loom-theme-accent) 86%, var(--loom-theme-panel));
+}
+
+.mcp-hub :is(button, input, select, textarea):focus-visible,
+.mcp-server-dialog :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--loom-theme-accent-text);
+  outline-offset: 2px;
+}
+
+.mcp-hub :is(.ghost-button, .signal-button, .icon-button, .art-card-action):disabled,
+.mcp-server-dialog :is(.ghost-button, .signal-button, .icon-button):disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-muted);
+  -webkit-text-fill-color: var(--loom-theme-muted);
+  box-shadow: none;
+  opacity: 1;
+}
+
+.mcp-hub__category {
+  width: 132px;
+  min-width: 132px;
+  height: 38px;
+  padding-block: 0;
+}
+
+.mcp-hub__surface {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 14px;
+  overflow-x: clip;
+}
+
+.mcp-card-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 14px;
+}
+
+.mcp-service-card,
+.mcp-store-card {
+  color: var(--loom-theme-text);
+}
+
+.mcp-service-card svg,
+.mcp-store-card svg,
+.mcp-server-dialog svg {
+  width: 20px;
+  height: 20px;
+}
+
+.mcp-service-card.art-registry-card--enabled {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 58%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-success) 8%, var(--loom-theme-panel));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--loom-theme-success) 10%, transparent);
+}
+
+.mcp-service-card.art-registry-card--disabled {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  box-shadow: none;
+}
+
+.mcp-service-card--busy {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 52%, var(--loom-theme-line)) !important;
+}
+
+.mcp-service-card .art-registry-card__description,
+.mcp-store-card .art-store-card__description {
+  min-height: 3em;
+  max-height: 3em;
+  -webkit-line-clamp: 2;
+  color: color-mix(in srgb, var(--loom-theme-text) 74%, transparent);
+  line-height: 1.5;
+}
+
+.mcp-service-card .art-registry-card__framework-icon,
+.mcp-service-card .art-card-action,
+.mcp-store-card .art-card-action,
+.mcp-store-card__icon {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.mcp-service-card__icon {
+  position: relative;
+}
+
+.mcp-service-card__test-dot {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--loom-theme-panel);
+  border-radius: 50%;
+}
+
+.mcp-service-card__test-dot--success {
+  background: var(--loom-theme-success);
+}
+
+.mcp-service-card__test-dot--error {
+  background: var(--loom-theme-danger);
+}
+
+.mcp-card__body {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 7px;
+}
+
+.mcp-card__identity {
+  margin: 0;
+  overflow: hidden;
+  color: var(--loom-theme-muted);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-card__state {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-card__state--loading {
+  color: var(--loom-theme-secondary-text);
+}
+
+.mcp-card__state--success {
+  color: var(--loom-theme-success);
+}
+
+.mcp-card__state--warning {
+  color: var(--loom-theme-warning);
+}
+
+.mcp-card__state--error {
+  color: var(--loom-theme-danger);
+}
+
+.mcp-card__usage {
+  margin: 0;
+  color: var(--loom-theme-secondary-text);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.mcp-card__action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.mcp-service-card .art-card-action {
+  width: 36px;
+  height: 36px;
+}
+
+.mcp-service-card .art-card-action:hover:not(:disabled),
+.mcp-store-card .art-card-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 44%, transparent);
+  background: var(--loom-theme-control-hover);
+  color: var(--loom-theme-secondary-text);
+}
+
+.mcp-service-card .art-card-action--active {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 48%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-success) 12%, var(--loom-theme-control));
+  color: var(--loom-theme-success);
+}
+
+.mcp-service-card .art-card-action--danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-danger) 46%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-danger) 11%, var(--loom-theme-control));
+  color: var(--loom-theme-danger);
+}
+
+.mcp-store-card--registry {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 42%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-secondary) 8%, var(--loom-theme-panel));
+}
+
+.mcp-store-card--curated {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 44%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-success) 8%, var(--loom-theme-panel));
+}
+
+.mcp-store-card--installed {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 48%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-success) 8%, var(--loom-theme-panel));
+}
+
+.mcp-store-card .art-store-card__identity {
+  color: var(--loom-theme-muted);
+}
+
+.mcp-store-card__source {
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 7px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-muted);
+  padding: 4px 6px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.mcp-store-card__source--installed {
+  border-color: color-mix(in srgb, var(--loom-theme-success) 42%, transparent);
+  background: color-mix(in srgb, var(--loom-theme-success) 10%, var(--loom-theme-control));
+  color: var(--loom-theme-success);
+}
+
+.mcp-store-card__source--registry {
+  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 38%, transparent);
+  color: var(--loom-theme-secondary-text);
+}
+
+.mcp-store-card__source--curated {
+  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 40%, transparent);
+  color: var(--loom-theme-accent-text);
+}
+
+.mcp-store-card__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 8px;
+}
+
+.mcp-store-card__configuration {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-warning) 42%, var(--loom-theme-line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--loom-theme-warning) 9%, var(--loom-theme-control));
+  margin: 0;
+  color: var(--loom-theme-warning);
+  padding: 0 7px;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 900;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mcp-store-card__configuration:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--loom-theme-warning) 70%, var(--loom-theme-line));
+  background: color-mix(in srgb, var(--loom-theme-warning) 14%, var(--loom-theme-control));
+}

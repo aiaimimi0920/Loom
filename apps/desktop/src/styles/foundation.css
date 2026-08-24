@@ -1,0 +1,231 @@
+/* Owns canonical Neuro theme tokens, document reset, root color-scheme behavior, and shell width registration. */
+
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Canonical Neuro tokens. Product selectors below consume only semantic aliases. */
+  --neuro-bg: #06080d;
+  --neuro-surface: #090c11;
+  --neuro-panel: #0e1218;
+  --neuro-rail: #070a0f;
+  --neuro-control: #111720;
+  --neuro-control-hover: #18222c;
+  --neuro-text: #f7f8ef;
+  --neuro-text-muted: #929a9f;
+  --neuro-line: rgba(255, 255, 255, 0.12);
+  --neuro-hover: rgba(255, 255, 255, 0.06);
+  --neuro-signal-yellow: #d9ff38;
+  --neuro-signal-green: #22c55e;
+  --neuro-info-blue: #06b6d4;
+  --neuro-danger-red: #f43f5e;
+  --neuro-signal-text: var(--neuro-signal-yellow);
+  --neuro-brand-text: var(--neuro-signal-green);
+  --neuro-info-text: color-mix(in srgb, var(--neuro-info-blue) 76%, white);
+  --neuro-danger-text: color-mix(in srgb, var(--neuro-danger-red) 78%, white);
+  --neuro-on-signal: color-mix(in srgb, var(--neuro-signal-yellow) 14%, black);
+  --neuro-overlay: rgba(4, 6, 10, 0.78);
+  --neuro-shadow: rgba(0, 0, 0, 0.38);
+  --neuro-focus-surface: #f3f5f1;
+  --neuro-focus-ink: #20252b;
+  --neuro-focus-muted: #656b72;
+
+  /* Loom semantic tokens mapped onto the canonical Neuro palette. */
+  --loom-theme-bg: var(--neuro-bg);
+  --loom-theme-surface: var(--neuro-surface);
+  --loom-theme-panel: var(--neuro-panel);
+  --loom-theme-rail: var(--neuro-rail);
+  --loom-theme-control: var(--neuro-control);
+  --loom-theme-control-hover: var(--neuro-control-hover);
+  --loom-theme-text: var(--neuro-text);
+  --loom-theme-muted: var(--neuro-text-muted);
+  --loom-theme-line: var(--neuro-line);
+  --loom-theme-hover: var(--neuro-hover);
+  --loom-theme-accent: var(--neuro-signal-yellow);
+  --loom-theme-accent-text: var(--neuro-signal-text);
+  --loom-theme-secondary: var(--neuro-info-blue);
+  --loom-theme-secondary-text: var(--neuro-info-text);
+  --loom-brand-primary: var(--neuro-brand-text);
+  --loom-brand-secondary: var(--neuro-signal-text);
+  --loom-theme-success: var(--neuro-brand-text);
+  --loom-theme-warning: var(--neuro-signal-text);
+  --loom-theme-danger: var(--neuro-danger-text);
+  background: var(--loom-theme-bg);
+  color: var(--loom-theme-text);
+}
+
+/* Runtime light theme. Keep the signal color unchanged while exchanging the
+   shell and configuration surfaces for their high-contrast light variants. */
+:root[data-loom-theme="light"] .desktop-shell,
+:root[data-loom-theme="light"] .workspace-panel,
+:root[data-loom-theme="light"] .workspace-scroll,
+:root[data-loom-theme="light"] .settings-page,
+:root[data-loom-theme="light"] .settings-app-panel {
+  background: var(--loom-theme-bg);
+  color: var(--loom-theme-text);
+}
+
+:root[data-loom-theme="light"] .app-titlebar,
+:root[data-loom-theme="light"] .left-rail,
+:root[data-loom-theme="light"] .workspace-header {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-rail);
+  color: var(--loom-theme-text);
+}
+
+:root[data-loom-theme="light"] :is(
+  .glass-card,
+  .main-board,
+  .device-row
+) {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-panel);
+  color: var(--loom-theme-text);
+}
+
+:root[data-loom-theme="light"] :is(
+  .section-kicker,
+  .settings-network-row__label span,
+  .hook-cache-row small,
+  .about-panel__rows dt,
+  .about-panel__rows code
+) {
+  color: var(--loom-theme-muted);
+}
+
+:root[data-loom-theme="light"] :is(.studio-input, input, select, textarea) {
+  border-color: var(--loom-theme-line);
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-loom-theme="system"] .desktop-shell,
+  :root[data-loom-theme="system"] .workspace-panel,
+  :root[data-loom-theme="system"] .workspace-scroll,
+  :root[data-loom-theme="system"] .settings-page,
+  :root[data-loom-theme="system"] .settings-app-panel {
+    background: var(--loom-theme-bg);
+    color: var(--loom-theme-text);
+  }
+
+  :root[data-loom-theme="system"] .app-titlebar,
+  :root[data-loom-theme="system"] .left-rail,
+  :root[data-loom-theme="system"] .workspace-header {
+    border-color: var(--loom-theme-line);
+    background: var(--loom-theme-rail);
+    color: var(--loom-theme-text);
+  }
+
+  :root[data-loom-theme="system"] :is(
+    .glass-card,
+    .main-board,
+    .device-row
+  ) {
+    border-color: var(--loom-theme-line);
+    background: var(--loom-theme-panel);
+    color: var(--loom-theme-text);
+  }
+
+  :root[data-loom-theme="system"] :is(.studio-input, input, select, textarea) {
+    border-color: var(--loom-theme-line);
+    background: var(--loom-theme-control);
+    color: var(--loom-theme-text);
+  }
+}
+
+:root[data-loom-theme="light"] {
+  color-scheme: light;
+  background: var(--loom-theme-bg);
+  color: var(--loom-theme-text);
+  --neuro-bg: #edf1e4;
+  --neuro-surface: #f8faf3;
+  --neuro-panel: #ffffff;
+  --neuro-rail: #e4e9dc;
+  --neuro-control: #f1f4ea;
+  --neuro-control-hover: #e7ecdf;
+  --neuro-text: #10150e;
+  --neuro-text-muted: #5d6659;
+  --neuro-line: rgba(16, 21, 14, 0.16);
+  --neuro-hover: rgba(16, 21, 14, 0.065);
+  --neuro-signal-text: color-mix(in srgb, var(--neuro-signal-yellow) 34%, var(--neuro-text));
+  --neuro-brand-text: color-mix(in srgb, var(--neuro-signal-green) 52%, var(--neuro-text));
+  --neuro-info-text: color-mix(in srgb, var(--neuro-info-blue) 52%, var(--neuro-text));
+  --neuro-danger-text: color-mix(in srgb, var(--neuro-danger-red) 68%, var(--neuro-text));
+  --neuro-overlay: rgba(16, 21, 14, 0.48);
+  --neuro-shadow: rgba(18, 28, 14, 0.16);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-loom-theme="system"] {
+    color-scheme: light;
+    background: var(--loom-theme-bg);
+    color: var(--loom-theme-text);
+    --neuro-bg: #edf1e4;
+    --neuro-surface: #f8faf3;
+    --neuro-panel: #ffffff;
+    --neuro-rail: #e4e9dc;
+    --neuro-control: #f1f4ea;
+    --neuro-control-hover: #e7ecdf;
+    --neuro-text: #10150e;
+    --neuro-text-muted: #5d6659;
+    --neuro-line: rgba(16, 21, 14, 0.16);
+    --neuro-hover: rgba(16, 21, 14, 0.065);
+    --neuro-signal-text: color-mix(in srgb, var(--neuro-signal-yellow) 34%, var(--neuro-text));
+    --neuro-brand-text: color-mix(in srgb, var(--neuro-signal-green) 52%, var(--neuro-text));
+    --neuro-info-text: color-mix(in srgb, var(--neuro-info-blue) 52%, var(--neuro-text));
+    --neuro-danger-text: color-mix(in srgb, var(--neuro-danger-red) 68%, var(--neuro-text));
+    --neuro-overlay: rgba(16, 21, 14, 0.48);
+    --neuro-shadow: rgba(18, 28, 14, 0.16);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background:
+    linear-gradient(
+      132deg,
+      transparent 0 62%,
+      color-mix(in srgb, var(--loom-theme-text) 3.5%, transparent) 62% 64%,
+      transparent 64%
+    ),
+    linear-gradient(120deg, color-mix(in srgb, var(--loom-theme-accent) 3%, transparent), transparent 38%),
+    var(--loom-theme-bg);
+}
+
+:root[data-loom-theme="light"] body,
+:root[data-loom-theme="system"] body {
+  color: var(--loom-theme-text, #f7f8ef);
+}
+
+:root[data-loom-theme="light"] body {
+  background: var(--loom-theme-bg);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-loom-theme="system"] body {
+    background: var(--loom-theme-bg);
+  }
+}
+
+button {
+  font: inherit;
+}
+
+@property --shell-rail-width {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 186px;
+}

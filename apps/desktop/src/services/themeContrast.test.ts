@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+import { desktopStyleSource as styleSource } from "./desktopStyleSource.ts";
+
+const appSource = [
+  "../components/app/appShell.tsx",
+  "../components/settings/AboutPanel.tsx",
+].map((relativePath) => readFileSync(new URL(relativePath, import.meta.url), "utf8")).join("\n");
 
 type Rgba = readonly [number, number, number, number];
 

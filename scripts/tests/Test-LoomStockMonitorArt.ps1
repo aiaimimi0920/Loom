@@ -14,268 +14,8 @@ $pendingCurveMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64Stri
 $fiveMinutePeriodLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("NSDliIbpkp8="))
 $periodMismatchMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6KGM5oOF5ZGo5pyf5LiO6K+35rGC5LiN5LiA6Ie0"))
 
-function Assert-True {
-    param([bool]$Condition, [string]$Message)
-    if (-not $Condition) { throw $Message }
-}
-
-function Assert-Equal {
-    param([object]$Expected, [object]$Actual, [string]$Message)
-    if (-not [object]::Equals($Expected, $Actual)) {
-        throw "$Message Expected=[$Expected] Actual=[$Actual]"
-    }
-}
-
-function ConvertTo-ProcessArgument {
-    param([AllowEmptyString()][string]$Argument)
-    if (($Argument.Length -gt 0) -and ($Argument -notmatch '[\s"]')) { return $Argument }
-    return '"' + $Argument.Replace('\', '\\').Replace('"', '\"') + '"'
-}
-
-function New-McpData {
-    param(
-        [switch]$QuoteError,
-        [switch]$HistoryError,
-        [switch]$Skipped,
-        [switch]$HistoryOnly,
-        [switch]$QuoteOnly,
-        [switch]$OrderBookOnly,
-        [switch]$OrderBookError,
-        [switch]$FavoritesOmitted,
-        [switch]$FavoritesError,
-        [switch]$FavoritesMalformed,
-        [string]$Period = "day",
-        [string]$Code = "SZ000034",
-        [double]$QuotePrice = 24.99,
-        [double]$LivePrice = 24.99,
-        [switch]$LiveTrading,
-        [string]$LiveObservedAt = "2026-08-14T07:00:00.000Z",
-        [string]$LiveSource = "pysnowball"
-    )
-
-    if ($Skipped) {
-        return [ordered]@{ mcp = [ordered]@{ serverId = "stock-api"; skipped = $true } }
-    }
-    $quoteResult = if ($QuoteError) {
-        [ordered]@{
-            isError = $true
-            structuredContent = [ordered]@{
-                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture quote failure" }
-            }
-        }
-    }
-    else {
-        [ordered]@{
-            structuredContent = [ordered]@{
-                input = [ordered]@{ code = $Code; source = "eastmoney" }
-                response = [ordered]@{
-                    fetchedAt = [DateTimeOffset]::UtcNow.ToString("o")
-                    stock = [ordered]@{
-                        code = $Code
-                        name = "Digital China"
-                        percent = 0.004
-                        now = $QuotePrice
-                        low = 24.60
-                        high = 25.20
-                        yesterday = 24.89
-                        source = "eastmoney"
-                    }
-                }
-            }
-        }
-    }
-    $historyResult = if ($HistoryError) {
-        [ordered]@{
-            isError = $true
-            structuredContent = [ordered]@{
-                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture history failure" }
-            }
-        }
-    }
-    else {
-        [ordered]@{
-            structuredContent = [ordered]@{
-                input = [ordered]@{ code = $Code; source = "eastmoney"; period = $Period; count = 2000; adjust = "none" }
-                response = [ordered]@{
-                    fetchedAt = [DateTimeOffset]::UtcNow.ToString("o")
-                    count = 3
-                    period = $Period
-                    lastTradingDate = "2026-08-14"
-                    klines = @(
-                        [ordered]@{ date = "2026-08-12"; open = 24.50; close = 24.60; high = 24.80; low = 24.30; volume = 100000; source = "tencent" },
-                        [ordered]@{ date = "2026-08-13"; open = 24.62; close = 24.75; high = 24.90; low = 24.55; volume = 120000; source = "tencent" },
-                        [ordered]@{ date = "2026-08-14"; open = 24.80; close = 24.99; high = 25.20; low = 24.60; volume = 150000; source = "tencent" }
-                    )
-                }
-            }
-        }
-    }
-    $orderBookResult = if ($OrderBookError) {
-        [ordered]@{
-            isError = $true
-            structuredContent = [ordered]@{
-                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture order book failure" }
-            }
-        }
-    }
-    else {
-        [ordered]@{
-            structuredContent = [ordered]@{
-                input = [ordered]@{ code = $Code; source = "auto"; symbol = $Code }
-                response = [ordered]@{
-                    fetchedAt = [DateTimeOffset]::UtcNow.ToString("o")
-                    orderBook = [ordered]@{
-                        code = $Code
-                        bids = @(
-                            [ordered]@{ level = 1; price = 24.98; volume = 152340; orders = 88 },
-                            [ordered]@{ level = 2; price = 24.97; volume = 61200; orders = 41 }
-                        )
-                        asks = @(
-                            [ordered]@{ level = 1; price = 24.99; volume = 98700; orders = 55 },
-                            [ordered]@{ level = 2; price = 25.00; volume = 44100; orders = 30 }
-                        )
-                        buyPercent = 49.24
-                        sellPercent = 50.76
-                        netVolume = -11455
-                        ratio = 1.08
-                        levels = 2
-                        observedAt = $LiveObservedAt
-                        source = $LiveSource
-                    }
-                    realtime = [ordered]@{
-                        code = $Code
-                        now = $LivePrice
-                        open = 25.25
-                        high = 25.60
-                        low = 24.44
-                        yesterday = 25.20
-                        avgPrice = 24.91
-                        volume = 18220000
-                        amount = 459000000
-                        turnoverRate = 7.31
-                        amplitude = 4.6
-                        marketCapital = 39800000000
-                        isTrade = [bool]$LiveTrading
-                        tradeSession = 0
-                        observedAt = $LiveObservedAt
-                        source = $LiveSource
-                    }
-                }
-            }
-        }
-    }
-    $favoritesResult = if ($FavoritesError) {
-        [ordered]@{
-            isError = $true
-            structuredContent = [ordered]@{
-                response = [ordered]@{ code = "STOCK_API_TOOL_ERROR"; message = "fixture favorites failure" }
-            }
-        }
-    }
-    else {
-        [ordered]@{
-            structuredContent = [ordered]@{
-                input = [ordered]@{ codes = @("SZ000034", "SH600519", "HK00700", "USAAPL"); source = "eastmoney" }
-                response = [ordered]@{
-                    count = if ($FavoritesMalformed) { 1 } else { 4 }
-                    stocks = if ($FavoritesMalformed) {
-                        "not-a-stock-array"
-                    }
-                    else {
-                        @(
-                            [ordered]@{ code = "SZ000034"; name = "Digital China"; now = 24.99; yesterday = 24.89; percent = 0.004018; source = "eastmoney" },
-                            [ordered]@{ code = "SH600519"; name = "Kweichow Moutai"; now = 1418.00; yesterday = 1400.00; percent = 0.012857; source = "eastmoney" },
-                            [ordered]@{ code = "HK00700"; name = "Tencent"; now = 612.50; yesterday = 606.00; percent = 0.010726; source = "eastmoney" },
-                            [ordered]@{ code = "USAAPL"; name = "Apple"; now = 231.10; yesterday = 229.40; percent = 0.007411; source = "eastmoney" }
-                        )
-                    }
-                }
-            }
-        }
-    }
-    $results = if ($HistoryOnly) {
-        [ordered]@{
-            history = [ordered]@{ toolName = "get_market_series"; result = $historyResult }
-        }
-    }
-    elseif ($QuoteOnly) {
-        [ordered]@{
-            quote = [ordered]@{ toolName = "get_stock"; result = $quoteResult }
-            orderbook = [ordered]@{ toolName = "get_order_book"; result = $orderBookResult }
-        }
-    }
-    elseif ($OrderBookOnly) {
-        [ordered]@{
-            orderbook = [ordered]@{ toolName = "get_order_book"; result = $orderBookResult }
-        }
-    }
-    else {
-        [ordered]@{
-            quote = [ordered]@{ toolName = "get_stock"; result = $quoteResult }
-            history = [ordered]@{ toolName = "get_market_series"; result = $historyResult }
-            orderbook = [ordered]@{ toolName = "get_order_book"; result = $orderBookResult }
-        }
-    }
-    if (-not $FavoritesOmitted -and -not $HistoryOnly -and -not $QuoteOnly -and -not $OrderBookOnly) {
-        $results["favorites"] = [ordered]@{ toolName = "get_stocks"; result = $favoritesResult }
-    }
-    return [ordered]@{
-        mcp = [ordered]@{
-            serverId = "stock-api"
-            results = $results
-        }
-    }
-}
-
-function Invoke-StockRuntime {
-    param(
-        [string]$ArtDirectory,
-        [AllowEmptyString()][string]$ActionId,
-        [AllowNull()][object]$Payload,
-        [AllowNull()][object]$AuthoritativeState,
-        [AllowNull()][object]$FrameworkData,
-        [AllowNull()][object]$Params = @{}
-    )
-
-    $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $ArtDirectory "art.runtime.json") | ConvertFrom-Json
-    $psi = [Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = [string]$runtime.entry.command
-    $psi.Arguments = @($runtime.entry.args | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join " "
-    $psi.WorkingDirectory = $ArtDirectory
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $psi
-    Assert-True $process.Start() "Failed to start Stock Monitor runtime."
-    $request = [ordered]@{
-        protocolVersion = "loom.framework.v1"
-        frameworkId = "mcp"
-        artId = "custom-stock-monitor"
-        inputs = @{}
-        params = $Params
-        frameworkData = $FrameworkData
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ActionId)) {
-        $request.surfaceAction = [ordered]@{
-            actionId = $ActionId
-            payload = if ($null -eq $Payload) { @{} } else { $Payload }
-            authoritativeState = if ($null -eq $AuthoritativeState) { @{} } else { $AuthoritativeState }
-        }
-    }
-    $process.StandardInput.WriteLine(($request | ConvertTo-Json -Depth 40 -Compress))
-    $process.StandardInput.Close()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    Assert-True $process.WaitForExit(20000) "Stock Monitor runtime timed out."
-    Assert-Equal 0 $process.ExitCode "Stock Monitor runtime exited with an error: $stderr"
-    Assert-True (-not [string]::IsNullOrWhiteSpace($stdout)) "Stock Monitor runtime returned no stdout: $stderr"
-    return $stdout.Trim() | ConvertFrom-Json
-}
-
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptRoot "stock-monitor-art\Helpers.ps1")
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("loom-stock-monitor-test-" + [Guid]::NewGuid().ToString("N"))
 $artDirectory = Join-Path $repoRoot "art-packages\samples\stock-monitor"
@@ -336,9 +76,21 @@ try {
 
     $surfacePath = Join-Path $artDirectory "surface\main.js"
     $runtimePath = Join-Path $artDirectory "runtime\main.ps1"
+    $runtimeModuleRoot = Join-Path $artDirectory "runtime\lib"
+    $runtimeModuleNames = @("Constants.ps1", "Domain.ps1", "Mcp.ps1", "Output.ps1", "Protocol.ps1", "Snapshot.ps1", "Transforms.ps1")
     Assert-True (Test-Path -LiteralPath $surfacePath -PathType Leaf) "Stock Monitor JavaScript Surface is missing."
-    $surfaceSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $surfacePath
-    $runtimeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath
+    $javascriptVariant = @($manifest.metadata.capabilities.surface.variants | Where-Object { [string]$_.runtime -eq "javascript" })[0]
+    $surfaceDescriptor = Get-Content -Raw -Encoding UTF8 -LiteralPath ($surfacePath + ".sources.json") | ConvertFrom-Json
+    Assert-Equal 1 ([int]$surfaceDescriptor.schemaVersion) "Stock Monitor JavaScript Surface source descriptor schema mismatch."
+    Assert-Equal 10 @($surfaceDescriptor.sourceFiles).Count "Stock Monitor JavaScript Surface module count mismatch."
+    $surfaceSource = Read-JavaScriptSurfaceSource -PackageRoot $artDirectory -Variant $javascriptVariant
+    $actualRuntimeModuleNames = @(Get-ChildItem -LiteralPath $runtimeModuleRoot -Filter *.ps1 -File | ForEach-Object { $_.Name } | Sort-Object)
+    Assert-Equal ($runtimeModuleNames -join ",") ($actualRuntimeModuleNames -join ",") "Stock Monitor PowerShell runtime module set mismatch."
+    $runtimeSource = @(
+        Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimePath
+        $runtimeModuleNames | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $runtimeModuleRoot $_) }
+    ) -join [Environment]::NewLine
+    Assert-True ($runtimeSource.Contains('$script:StockMonitorRuntimeRoot = $PSScriptRoot') -and $runtimeSource.Contains('"Snapshot.ps1"')) "Stock Monitor runtime entry must load its fixed module graph from the package-local runtime root."
     $runtimeManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $artDirectory "art.runtime.json") | ConvertFrom-Json
     Assert-Equal 50000 ([int]$runtimeManifest.limits.timeoutMs) "Stock Monitor runtime timeout must match Surface action budget."
     Assert-True ($surfaceSource.Contains("MAX_CANVAS_PIXELS") -and $surfaceSource.Contains("averageValues")) "Stock Monitor Surface must cap Canvas allocation and draw intraday average or MA5 data."
@@ -373,7 +125,7 @@ try {
     Assert-True (-not ($surfaceSource -match 'replaceChildren\(\);\s*\r?\n\s*(levels|metricDefinitions|tapeDefinitions)')) "No updater may rebuild its rows from scratch on every frame."
     Assert-True ($runtimeSource.Contains("ConvertTo-OrderBook") -and $runtimeSource.Contains("ConvertTo-LiveTape") -and $runtimeSource.Contains('CallId "orderbook"')) "Stock Monitor runtime must project the Xueqiu order book and realtime tape into state."
     Assert-True ($runtimeSource -match 'frameworkData' -and $runtimeSource -match 'results') "Stock Monitor runtime must consume MCP framework results."
-    Assert-True ($runtimeSource.Contains('$script:MaxHistoryRows = 2000') -and $runtimeSource.Contains('Select-Object -Last $script:MaxHistoryRows')) "Stock Monitor runtime must bound provider history to 2000 rows."
+    Assert-True ($runtimeSource.Contains('$script:MaxHistoryRows = 2000') -and $runtimeSource.Contains('Select-LastBoundedValue -Values $Values -Limit $script:MaxHistoryRows')) "Stock Monitor runtime must select at most the last 2000 provider rows without materializing an unbounded pipeline."
     Assert-True ($runtimeSource.Contains('[System.Collections.Generic.List[object]]::new()') -and $runtimeSource.Contains('Get-StockFromActionState')) "Stock Monitor period switching must avoid quadratic history copies and reuse the current quote."
     Assert-True ($runtimeSource -notmatch 'Invoke-RestMethod|push2\.eastmoney\.com|push2his\.eastmoney\.com') "Stock Monitor runtime must not bypass the stock-api MCP server."
     Assert-True ($runtimeSource.Contains("Get-SurfaceActionBudgets") -and $runtimeSource.Contains("lastRequestId") -and $runtimeSource.Contains("actionBudgetsMillis")) "Stock Monitor runtime must echo the action correlation and publish its effective action budgets."
@@ -388,6 +140,9 @@ try {
     Assert-True ($runtimeSource.Contains('New-FormalQuote -Snapshot $snapshot -ReferenceState') -and $runtimeSource.Contains("authoritativeState.history")) "The Surface-path formal quote must reference the authoritative state instead of serializing the same collections a second time."
     Assert-True ($runtimeSource.Contains('statePatch = [ordered]@{}')) "The Surface result must carry an empty no-op state patch; omitting the field deserializes to null and the daemon merge replaces the whole authoritative state."
     Assert-True ($runtimeSource.Contains($undeclaredActionMessage) -and $runtimeSource.Contains("-RejectAction")) "An undeclared action must be refused with a fixed message instead of a throw that interpolates the caller's action id."
+    Assert-True ($runtimeSource.Contains('$script:MaxRequestBytes = 4 * 1024 * 1024') -and $runtimeSource.Contains("Read-BoundedStandardInput")) "Stock Monitor stdin must be decoded through a fixed byte limit instead of ReadToEnd."
+    Assert-True ($runtimeSource.Contains("Assert-JsonTextDepth") -and $runtimeSource.Contains("Assert-RequestObjectGraph") -and $runtimeSource.Contains('$script:MaxJsonDepth = 32')) "Stock Monitor requests must reject hostile JSON nesting before parsing and bound the decoded graph on Windows PowerShell 5.1."
+    Assert-True ($runtimeSource.Contains("ConvertTo-StrictBoolean") -and $runtimeSource.Contains("Get-SafeMcpErrorMessage")) "Stock Monitor provider booleans and error projection must reject coercion and credential-bearing messages."
     Assert-True ($surfaceSource.Contains("staleLabel") -and $surfaceSource.Contains("is-stale")) "The Surface must badge stale order-book and tape records; the runtime already decides staleness but the clock string alone looks identical either way."
     Assert-True ($surfaceSource.Contains("state.historyWarning")) "The Surface must render the non-fatal history warning; otherwise a chart-less panel never says why."
     $surfaceTestPath = Join-Path $repoRoot "scripts\tests\Test-LoomStockMonitorSurface.mjs"

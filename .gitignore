@@ -21,6 +21,7 @@ __pycache__/
 /output/
 /.runtime/
 /evidence/
+/artifacts/effective-code-lines*.json
 *.log
 
 # Local daemon, Art Store, and one-off protocol fixtures
@@ -39,6 +40,7 @@ __pycache__/
 !.env.example
 
 # Temporary and editor files
+/.tmp/
 /_temp/
 /.tmp-framework-*/
 /.memsearch/

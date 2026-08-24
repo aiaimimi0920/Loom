@@ -15,16 +15,23 @@ function Assert-True {
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 
-$frameworkRs = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "crates\loom_tool_registry\src\framework.rs")
+$frameworkSourceRoot = Join-Path $repoRoot "crates\loom_tool_registry\src\framework"
+$frameworkRs = @(Get-ChildItem -LiteralPath $frameworkSourceRoot -Recurse -File -Filter "*.rs" | ForEach-Object {
+    Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName
+}) -join [Environment]::NewLine
 Assert-True (-not $frameworkRs.Contains("BUILT_IN_FRAMEWORKS")) "Optional Art frameworks must not be installed by default."
 Assert-True ($frameworkRs.Contains("framework.manifest.json")) "Framework package manifest support must be present."
 
 $readme = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "README.md")
 Assert-True (-not $readme.Contains("installed by default")) "README must describe explicit framework installation only."
 
-$releaseBuilder = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\build-release.ps1")
+$releaseBuilderPaths = @((Join-Path $repoRoot "scripts\build-release.ps1"))
+$releaseBuilderPaths += @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "scripts\build-release") -File -Filter "*.ps1" | ForEach-Object FullName)
+$releaseBuilder = @($releaseBuilderPaths | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath $_ }) -join [Environment]::NewLine
 Assert-True (-not $releaseBuilder.Contains("Arts\Art_")) "Default release must not package source-tree Python Arts."
-$releaseVerifier = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\verify-release.ps1")
+$releaseVerifierPaths = @((Join-Path $repoRoot "scripts\verify-release.ps1"))
+$releaseVerifierPaths += @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "scripts\verify-release") -File -Filter "*.ps1" | ForEach-Object FullName)
+$releaseVerifier = @($releaseVerifierPaths | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath $_ }) -join [Environment]::NewLine
 Assert-True ($releaseVerifier.Contains("runtime/python/Arts/")) "Release verification must reject packaged optional Python Arts."
 $pluginSmoke = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1")
 foreach ($requiredText in @(

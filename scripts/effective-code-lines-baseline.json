@@ -1,0 +1,329 @@
+{
+  "schemaVersion": 1,
+  "checkerVersion": 1,
+  "sourceCommit": "03fbe2149f234fbe4e945d53d22b2857562c0dd3",
+  "sourceTree": "4c202127c1ae93a8aa4d39c43c6bbda95d68eb11",
+  "checkerSha256": "db2381257ae56028c33e653f2b7b5d41256fd6eae631d14babee251b415ebbcc",
+  "lexerSha256": "2a722a339f88e854e70240b1b52564c86b65f172f39d978de7dc075ed50a91fe",
+  "policySha256": "fee6bce27f005c20676409cce814de62d536bf3b43735ac66ede26f4baa10a5d",
+  "files": [
+    {
+      "path": "apps/art-store/src/lib.rs",
+      "effectiveLines": 1377,
+      "physicalLines": 1497,
+      "sourceSha256": "be76ad68c03e814ff86b8c4afd18d47cdc00e26e6320698c12b0cb1c7b6423a1"
+    },
+    {
+      "path": "apps/daemon/src/hook_canvas.rs",
+      "effectiveLines": 2563,
+      "physicalLines": 2879,
+      "sourceSha256": "8f26e935d1e8685250fa686b2967076916e23bc9f57d53d91ab2a9ad099f1f2c"
+    },
+    {
+      "path": "apps/daemon/src/lib.rs",
+      "effectiveLines": 29072,
+      "physicalLines": 30993,
+      "sourceSha256": "eb379078e36a7f4dbd8c3983d0f9032462a1add6d3aadacfaf18d861f8660518"
+    },
+    {
+      "path": "apps/daemon/src/surface_actions.rs",
+      "effectiveLines": 2934,
+      "physicalLines": 3157,
+      "sourceSha256": "b62216c0f898bbc6a1c723ac3a25eef9c7c6c19a1b0342fbf221181d8df508b3"
+    },
+    {
+      "path": "apps/daemon/src/surface_resources.rs",
+      "effectiveLines": 1170,
+      "physicalLines": 1356,
+      "sourceSha256": "1bff66731cc51392ef9c9df8b958933e0c41bde76e5a4a0955baa5f57c5536a1"
+    },
+    {
+      "path": "apps/daemon/src/surface_store.rs",
+      "effectiveLines": 2344,
+      "physicalLines": 2484,
+      "sourceSha256": "dd11a8d3fd25e59bdaef5103ac2101e6327a3407a67ab19aca906b6176ec02a4"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "effectiveLines": 3779,
+      "physicalLines": 4117,
+      "sourceSha256": "ba5a7c87fb28eeff8bd07ca9fd58145a2d29a0d556913c7fb6e04b889453a91d"
+    },
+    {
+      "path": "apps/desktop/src/App.tsx",
+      "effectiveLines": 7426,
+      "physicalLines": 7794,
+      "sourceSha256": "1c19e97d2e71039db3f0091dfbc99a6904bc080d891fff16b256a22a76144f5f"
+    },
+    {
+      "path": "apps/desktop/src/components/hook/HookCanvasThumbnail.tsx",
+      "effectiveLines": 998,
+      "physicalLines": 1096,
+      "sourceSha256": "f82f0da3583f7c24d0024fbdfaa0f498951e2e416b4d1e0cd402be0e095f421a"
+    },
+    {
+      "path": "apps/desktop/src/components/mcp/McpHub.tsx",
+      "effectiveLines": 1041,
+      "physicalLines": 1086,
+      "sourceSha256": "923922a64fde645ab96b36a1893c65ae97200edbd81da29e78984cac4dd3ae58"
+    },
+    {
+      "path": "apps/desktop/src/services/artHubUi.test.ts",
+      "effectiveLines": 841,
+      "physicalLines": 888,
+      "sourceSha256": "253edf3499915c88e835291cab6b0d74179be64cf109708065c9a8e22ec66f85"
+    },
+    {
+      "path": "apps/desktop/src/services/hookCanvas.test.ts",
+      "effectiveLines": 790,
+      "physicalLines": 852,
+      "sourceSha256": "f014fdea16fc528aae35713aefc24b532bdcce2663f2c0cd3fe98ea2b9b333ec"
+    },
+    {
+      "path": "apps/desktop/src/services/hookCanvas.ts",
+      "effectiveLines": 834,
+      "physicalLines": 975,
+      "sourceSha256": "edfc08774b49dbc45398f55f34383d3c6582d44fa0d8998eff8373bb069ec556"
+    },
+    {
+      "path": "apps/desktop/src/services/loomApi.test.ts",
+      "effectiveLines": 939,
+      "physicalLines": 1024,
+      "sourceSha256": "51e52e3e2cb9a6329e14e5199f59e6d07ad0eb6839ae1f71a7e3df99d91333dd"
+    },
+    {
+      "path": "apps/desktop/src/services/loomApi.ts",
+      "effectiveLines": 1618,
+      "physicalLines": 1827,
+      "sourceSha256": "a51d22e34771238d8cc1743b61f06480bbc622402bcd4352777e897b8f2d758f"
+    },
+    {
+      "path": "apps/desktop/src/services/mcpMarketplace.ts",
+      "effectiveLines": 735,
+      "physicalLines": 808,
+      "sourceSha256": "e19fe82a4727a8ba6fa6c7eb16e17bcbbf1eb16ddd5ae6abb275adfe9e336b5f"
+    },
+    {
+      "path": "apps/desktop/src/services/workflowStudio.ts",
+      "effectiveLines": 860,
+      "physicalLines": 959,
+      "sourceSha256": "1e4739c112f05a530d345e5fa0b1acea25ba5c09d78d96bc7287e0e640099150"
+    },
+    {
+      "path": "apps/desktop/src/styles.css",
+      "effectiveLines": 6906,
+      "physicalLines": 8104,
+      "sourceSha256": "6052eb34696ae97edcb08c49e86189d9a0dabcd24d207633ae5bfcde9daecfe2"
+    },
+    {
+      "path": "apps/plugin-cli/src/lib.rs",
+      "effectiveLines": 1288,
+      "physicalLines": 1358,
+      "sourceSha256": "0d8c97be3c5825a7ea0d520a29eb26bcb06c047ae9117edb48b23ec0153af838"
+    },
+    {
+      "path": "art-packages/samples/image-search/runtime/main.ps1",
+      "effectiveLines": 662,
+      "physicalLines": 798,
+      "sourceSha256": "26a56d23ee42d04b038ee2e740a169442b446dd183bff51c716b8f674b0f6a6a"
+    },
+    {
+      "path": "art-packages/samples/stock-monitor/runtime/main.ps1",
+      "effectiveLines": 1031,
+      "physicalLines": 1157,
+      "sourceSha256": "0a2cebd5dfa1698b470887487fd3e3e87dccc63bd1f1ee16a0e84b8efb576e28"
+    },
+    {
+      "path": "art-packages/samples/stock-monitor/surface/main.js",
+      "effectiveLines": 1435,
+      "physicalLines": 1549,
+      "sourceSha256": "82b97af7aae662a5f14ea3ef680f5fe109ef8d99850dd0131e2fe8d327a265ea"
+    },
+    {
+      "path": "art-packages/shared/image-runtime-common.ps1",
+      "effectiveLines": 638,
+      "physicalLines": 813,
+      "sourceSha256": "7f94412038307b43c4f7224a0c6979dd13cc000100ba4ecf23c06f76a3bd1efa"
+    },
+    {
+      "path": "crates/loom_durable/src/run_store.rs",
+      "effectiveLines": 1068,
+      "physicalLines": 1161,
+      "sourceSha256": "d31c4f613b4006276ad9e2ed148c636064a2cfb901d98b89c274a0959d60a163"
+    },
+    {
+      "path": "crates/loom_mcp/src/lib.rs",
+      "effectiveLines": 2994,
+      "physicalLines": 3293,
+      "sourceSha256": "8275c01de3aad460f8012eecb3023fc00be8f1c956511296315ddd53847386f0"
+    },
+    {
+      "path": "crates/loom_mcp/src/package.rs",
+      "effectiveLines": 1572,
+      "physicalLines": 1728,
+      "sourceSha256": "be500b6242eee302f561b8de78d9050f91d96e7e73981a9f82dbf29e1408a8d1"
+    },
+    {
+      "path": "crates/loom_plugin_security/src/lib.rs",
+      "effectiveLines": 858,
+      "physicalLines": 921,
+      "sourceSha256": "1b6b2e5581ea66e93887edfce79145f3c7478ba8f19f1b5218024f91e064e151"
+    },
+    {
+      "path": "crates/loom_process/src/lib.rs",
+      "effectiveLines": 923,
+      "physicalLines": 1024,
+      "sourceSha256": "3a4c3df3393855b303a4d958153f8ebc5d8f95fe53ea6a64278cb3bbbc7e6366"
+    },
+    {
+      "path": "crates/loom_protocol/src/hook.rs",
+      "effectiveLines": 666,
+      "physicalLines": 732,
+      "sourceSha256": "00beb324b031ca1043b1a5e27722852830aabd982bf5280ed645709b465179a2"
+    },
+    {
+      "path": "crates/loom_protocol/src/lib.rs",
+      "effectiveLines": 746,
+      "physicalLines": 821,
+      "sourceSha256": "d333ce7cf001928880439cbafb07e8ad6d79d8e3a4f0f8d3d0fe3b6d7f1f4bcc"
+    },
+    {
+      "path": "crates/loom_protocol/src/surface.rs",
+      "effectiveLines": 1218,
+      "physicalLines": 1334,
+      "sourceSha256": "b5929e0df054a1514c033f028b3ffde8cef3885d1ab0e1630a2a05e612570f9e"
+    },
+    {
+      "path": "crates/loom_tool_registry/src/art_settings.rs",
+      "effectiveLines": 833,
+      "physicalLines": 901,
+      "sourceSha256": "a58b0dea75dfc30e7ddea014cf7d78f2c451a14bed1341e9d66490f01cdb830c"
+    },
+    {
+      "path": "crates/loom_tool_registry/src/credentials.rs",
+      "effectiveLines": 964,
+      "physicalLines": 1010,
+      "sourceSha256": "24a21317489b5bebf1c6c5d2e543010f65f63249f28b92f73afe5038c122678b"
+    },
+    {
+      "path": "crates/loom_tool_registry/src/framework_process.rs",
+      "effectiveLines": 2358,
+      "physicalLines": 2571,
+      "sourceSha256": "ee271c17d71c767093632b4f63b28a74ed65fc9a417409313d42443ada720ca3"
+    },
+    {
+      "path": "crates/loom_tool_registry/src/framework.rs",
+      "effectiveLines": 2927,
+      "physicalLines": 3258,
+      "sourceSha256": "793281d5f7abd198dc02a10ed0d3d02cbcb8eeca8e08230e6dd0d7098a8ea19b"
+    },
+    {
+      "path": "crates/loom_tool_registry/src/install.rs",
+      "effectiveLines": 4284,
+      "physicalLines": 4565,
+      "sourceSha256": "9217b7fdd54b5dd76c94645fb1422df3037884a9c90b4dfeef28f4e7b29ec625"
+    },
+    {
+      "path": "crates/loom_tool_registry/src/lib.rs",
+      "effectiveLines": 6138,
+      "physicalLines": 6861,
+      "sourceSha256": "2eaa22944834fd8f07f2755b269c4e6c82fcaef1281954b6894aa785441e55d0"
+    },
+    {
+      "path": "crates/loom_workflow_runtime/src/lib.rs",
+      "effectiveLines": 1678,
+      "physicalLines": 1816,
+      "sourceSha256": "ad0f19ddd0a5d892732e8a6acabf09bd0e44645d5af852e3c54d0b0976386a2d"
+    },
+    {
+      "path": "crates/loom_workflow_store/src/lib.rs",
+      "effectiveLines": 858,
+      "physicalLines": 975,
+      "sourceSha256": "c9afb95e55061f311dff001e5f195d479da33c91fbd8f0d0f7d93a789118044d"
+    },
+    {
+      "path": "crates/loom_workflow/src/lib.rs",
+      "effectiveLines": 558,
+      "physicalLines": 651,
+      "sourceSha256": "6c8e5b910cfc9c3bc1d7184d94216053d38581303bc5ecf24b7c14b7c52c542b"
+    },
+    {
+      "path": "framework-packages/runtime-host/src/mcp.rs",
+      "effectiveLines": 2567,
+      "physicalLines": 2819,
+      "sourceSha256": "48225c8da47535b08c2cd58d8553405525bd7c44495cdc1ec0ab3a5e7e700e27"
+    },
+    {
+      "path": "mcp-server-packages/stock-api/runtime/stock-api-entry.js",
+      "effectiveLines": 1004,
+      "physicalLines": 1071,
+      "sourceSha256": "27c2828b16daf024fa0de17c737604e79b57129ad2917e93a88acd990951111e"
+    },
+    {
+      "path": "scripts/build-release.ps1",
+      "effectiveLines": 1107,
+      "physicalLines": 1188,
+      "sourceSha256": "fa0edd630047e258d99a7aaf405da5ca5a5d2edcdde990ffacf6fbb144f06e8a"
+    },
+    {
+      "path": "scripts/Invoke-LoomDaemonConcurrencySmoke.ps1",
+      "effectiveLines": 867,
+      "physicalLines": 945,
+      "sourceSha256": "1e8de708e51d728092c5cbb197fdb24f657f295ad74cda92e59d075a021d26bb"
+    },
+    {
+      "path": "scripts/Invoke-LoomFrameworkArtStoreHookSmoke.ps1",
+      "effectiveLines": 1242,
+      "physicalLines": 1363,
+      "sourceSha256": "4ba83b8868e052c9cedecbcf2b4bc69ab53fb416edef45ccf5fb516b627ad0f2"
+    },
+    {
+      "path": "scripts/Invoke-LoomGatewayBrainPlanSmoke.ps1",
+      "effectiveLines": 636,
+      "physicalLines": 697,
+      "sourceSha256": "ff99c48090519af34a2ced6b1ac36d1e7b39ff04604d072994cdefe2733a0df7"
+    },
+    {
+      "path": "scripts/Invoke-LoomHookCanvasUiSmoke.ps1",
+      "effectiveLines": 613,
+      "physicalLines": 657,
+      "sourceSha256": "b475e188be519913e45f999f38f7150970ddb857ec165e883e4645b8cdad8684"
+    },
+    {
+      "path": "scripts/Invoke-LoomPluginBoundarySmoke.ps1",
+      "effectiveLines": 675,
+      "physicalLines": 730,
+      "sourceSha256": "9547351ecd02dc82a30cece3cf3e64e0a0adf60885d1805df09716c0904dc678"
+    },
+    {
+      "path": "scripts/Invoke-LoomRunPersistenceSmoke.ps1",
+      "effectiveLines": 655,
+      "physicalLines": 717,
+      "sourceSha256": "20f0daf0bc55b8ca96a5f265192d533f64ed58494de38fb107f263d643551d3a"
+    },
+    {
+      "path": "scripts/smoke-release.ps1",
+      "effectiveLines": 1458,
+      "physicalLines": 1704,
+      "sourceSha256": "862b7492341f85986c983a38562322b8f3b33a16d3f751d5e02a6b57aee7d0ca"
+    },
+    {
+      "path": "scripts/tests/Test-LoomSampleArtInstallExecution.ps1",
+      "effectiveLines": 707,
+      "physicalLines": 754,
+      "sourceSha256": "fe7fbfeea665d674032c86ce48f4da712faebdc5246de7dd46df23a226f11224"
+    },
+    {
+      "path": "scripts/tests/Test-LoomStockMonitorArt.ps1",
+      "effectiveLines": 555,
+      "physicalLines": 587,
+      "sourceSha256": "cfc25632926975585e04ed08edf49fb37e6adacf97ece94f6d7e27adb971582c"
+    },
+    {
+      "path": "scripts/verify-release.ps1",
+      "effectiveLines": 850,
+      "physicalLines": 928,
+      "sourceSha256": "496516ae8198df3e23c92f10ee9f04e78dce9ef33545a617f6439f0833a43b14"
+    }
+  ]
+}

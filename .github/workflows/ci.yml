@@ -23,6 +23,20 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Test effective-code-line checker
+        run: node --test .\scripts\tests\effective-code-lines.test.mjs
+
+      - name: Enforce effective-code-line migration ratchet
+        run: node .\scripts\effective-code-lines.mjs --mode ratchet --json artifacts/effective-code-lines.json
+
+      - name: Upload effective-code-line report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: loom-effective-code-lines
+          path: artifacts/effective-code-lines.json
+          if-no-files-found: warn
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.95.0
         with:
@@ -42,6 +56,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneLayout.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneReleaseContract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-FrameworkArtStoreHookSmokeModules.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-SmokeReleaseModules.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-HookCanvasUiContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-GitHubActionsContract.ps1
@@ -99,6 +115,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LoomRunPersistenceSmokeContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LoomDaemonConcurrencySmokeContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-LoomSampleArtPackageContract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-LoomSampleArtInstallExecutionContract.ps1
 
   linux:
     name: Linux Rust validation

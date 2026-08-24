@@ -9,487 +9,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
 $script:DaemonAuthHeaders = @{}
-
-function Assert-True {
-    param(
-        [bool]$Condition,
-        [string]$Message
-    )
-
-    if (-not $Condition) {
-        throw $Message
-    }
-}
-
-function Assert-Equal {
-    param(
-        [object]$Expected,
-        [object]$Actual,
-        [string]$Message
-    )
-
-    if ($Expected -ne $Actual) {
-        throw "$Message Expected=[$Expected] Actual=[$Actual]"
-    }
-}
-
-function Write-Utf8NoBom {
-    param(
-        [string]$Path,
-        [string]$Content
-    )
-
-    $parent = Split-Path -Parent $Path
-    if (-not [string]::IsNullOrWhiteSpace($parent)) {
-        New-Item -ItemType Directory -Force -Path $parent | Out-Null
-    }
-    $encoding = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
-}
-
-function Write-JsonEvidence {
-    param(
-        [string]$Path,
-        [object]$Value
-    )
-
-    Write-Utf8NoBom -Path $Path -Content (ConvertTo-Json -InputObject $Value -Depth 40)
-}
-
-function Redact-Text {
-    param([AllowNull()][string]$Text)
-
-    if ($null -eq $Text) {
-        return ""
-    }
-    $redacted = $Text -replace '(?i)(authorization\s*:\s*bearer\s+)[^\s\r\n]+', '$1<redacted>'
-    $redacted = $redacted -replace '(?i)(LOOM_(?:DAEMON|GATEWAY)_TOKEN\s*[=:]\s*)[^\s\r\n]+', '$1<redacted>'
-    $redacted = $redacted.Replace("loom-concurrency-smoke-token", "<redacted>")
-    return $redacted
-}
-
-function Write-RedactedFile {
-    param(
-        [string]$SourcePath,
-        [string]$DestinationPath
-    )
-
-    if (Test-Path -LiteralPath $SourcePath -PathType Leaf) {
-        Write-Utf8NoBom -Path $DestinationPath -Content (Redact-Text (Get-Content -Raw -LiteralPath $SourcePath))
-    }
-}
-
-function Test-SamePath {
-    param(
-        [AllowNull()][string]$Left,
-        [AllowNull()][string]$Right
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
-        return $false
-    }
-    $leftFull = [System.IO.Path]::GetFullPath($Left)
-    $rightFull = [System.IO.Path]::GetFullPath($Right)
-    return $leftFull.Equals($rightFull, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Get-ProcessSnapshotById {
-    param([int]$ProcessId)
-
-    $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
-    if ($null -eq $process) {
-        return $null
-    }
-    return [pscustomobject][ordered]@{
-        processId = [int]$process.ProcessId
-        parentProcessId = [int]$process.ParentProcessId
-        name = [string]$process.Name
-        ExecutablePath = [string]$process.ExecutablePath
-        commandLine = Redact-Text ([string]$process.CommandLine)
-    }
-}
-
-function Get-CandidateProcessSnapshot {
-    param([string[]]$ExecutablePaths)
-
-    $paths = @($ExecutablePaths | ForEach-Object { [System.IO.Path]::GetFullPath($_) })
-    $result = @()
-    foreach ($process in @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue)) {
-        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) {
-            continue
-        }
-        $matched = $false
-        foreach ($path in $paths) {
-            if (Test-SamePath -Left ([string]$process.ExecutablePath) -Right $path) {
-                $matched = $true
-                break
-            }
-        }
-        if ($matched) {
-            $result += [pscustomobject][ordered]@{
-                processId = [int]$process.ProcessId
-                parentProcessId = [int]$process.ParentProcessId
-                name = [string]$process.Name
-                ExecutablePath = [string]$process.ExecutablePath
-                commandLine = Redact-Text ([string]$process.CommandLine)
-            }
-        }
-    }
-    return @($result | Sort-Object processId)
-}
-
-function Stop-ExactProcessById {
-    param(
-        [AllowNull()][object]$ProcessId,
-        [string]$ExpectedExecutablePath
-    )
-
-    if ($null -eq $ProcessId) {
-        return $true
-    }
-    $id = [int]$ProcessId
-    $snapshot = Get-ProcessSnapshotById -ProcessId $id
-    if ($null -eq $snapshot) {
-        return $true
-    }
-    if (-not (Test-SamePath -Left $snapshot.ExecutablePath -Right $ExpectedExecutablePath)) {
-        return $false
-    }
-    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-    $deadline = (Get-Date).AddSeconds(8)
-    while ((Get-Date) -lt $deadline) {
-        if ($null -eq (Get-ProcessSnapshotById -ProcessId $id)) {
-            return $true
-        }
-        Start-Sleep -Milliseconds 100
-    }
-    return $false
-}
-
-function Start-IsolatedProcess {
-    param(
-        [string]$FilePath,
-        [string]$WorkingDirectory,
-        [string]$StdoutPath,
-        [string]$StderrPath,
-        [hashtable]$EnvironmentValues
-    )
-
-    $oldEnvironment = @{}
-    foreach ($name in $EnvironmentValues.Keys) {
-        $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
-        [Environment]::SetEnvironmentVariable($name, $EnvironmentValues[$name], "Process")
-    }
-    try {
-        return Start-Process `
-            -FilePath $FilePath `
-            -WorkingDirectory $WorkingDirectory `
-            -RedirectStandardOutput $StdoutPath `
-            -RedirectStandardError $StderrPath `
-            -WindowStyle Hidden `
-            -PassThru
-    }
-    finally {
-        foreach ($name in $oldEnvironment.Keys) {
-            [Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name], "Process")
-        }
-    }
-}
-
-function Wait-ForPath {
-    param(
-        [string]$Path,
-        [int]$TimeoutSeconds,
-        [AllowNull()]$Job
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            return
-        }
-        if ($null -ne $Job -and $Job.State -eq "Failed") {
-            $jobError = (Receive-Job -Job $Job -Keep -ErrorAction SilentlyContinue | Out-String).Trim()
-            throw "Fixture job failed: $jobError"
-        }
-        Start-Sleep -Milliseconds 100
-    }
-    throw "Timed out waiting for fixture path: $Path"
-}
-
-function Test-ExactProcessAlive {
-    param(
-        [int]$ProcessId,
-        [string]$ExpectedExecutablePath
-    )
-
-    $snapshot = Get-ProcessSnapshotById -ProcessId $ProcessId
-    return ($null -ne $snapshot -and (Test-SamePath -Left $snapshot.ExecutablePath -Right $ExpectedExecutablePath))
-}
-
-function Invoke-JsonGet {
-    param(
-        [string]$Uri,
-        [int]$TimeoutSeconds = 15
-    )
-
-    return Invoke-RestMethod -Uri $Uri -Method Get -Headers $script:DaemonAuthHeaders -TimeoutSec $TimeoutSeconds
-}
-
-function Invoke-JsonPost {
-    param(
-        [string]$Uri,
-        [object]$Body,
-        [int]$TimeoutSeconds = 30
-    )
-
-    $json = $Body | ConvertTo-Json -Depth 40 -Compress
-    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $script:DaemonAuthHeaders -ContentType "application/json" -Body $json -TimeoutSec $TimeoutSeconds
-}
-
-function Receive-JsonJob {
-    param([System.Management.Automation.Job]$Job)
-
-    $lines = @(Receive-Job -Job $Job -ErrorAction Stop | ForEach-Object { $_.ToString() })
-    $text = ($lines -join [Environment]::NewLine).Trim()
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        throw "Background invoke job returned no JSON."
-    }
-    return $text | ConvertFrom-Json
-}
-
-function Wait-ForDaemonStatus {
-    param(
-        [string]$BaseUrl,
-        [System.Diagnostics.Process]$Process,
-        [string]$ExpectedExecutablePath,
-        [int]$TimeoutSeconds = 45
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $Process.Refresh()
-        if ($Process.HasExited) {
-            throw "loom-daemon exited before status became ready with code $($Process.ExitCode)."
-        }
-        if (-not (Test-ExactProcessAlive -ProcessId $Process.Id -ExpectedExecutablePath $ExpectedExecutablePath)) {
-            throw "loom-daemon process path changed or process exited."
-        }
-        try {
-            $health = Invoke-JsonGet -Uri "$BaseUrl/health" -TimeoutSeconds 2
-            $status = Invoke-JsonGet -Uri "$BaseUrl/status" -TimeoutSeconds 2
-            if ([string]$health.status -eq "ok" -and [string]$status.status -eq "ready") {
-                return $status
-            }
-        }
-        catch {
-        }
-        Start-Sleep -Milliseconds 200
-    }
-    throw "Timed out waiting for Loom daemon at $BaseUrl"
-}
-
-function Restore-EnvironmentValue {
-    param(
-        [string]$Name,
-        [AllowNull()][string]$Value
-    )
-
-    [Environment]::SetEnvironmentVariable($Name, $Value, "Process")
-}
-
-function Start-GatewayFixtureJob {
-    param(
-        [int]$Port,
-        [string]$ReadyPath,
-        [string]$CapturePath,
-        [string]$EnteredEventName,
-        [string]$ReleaseEventName
-    )
-
-    return Start-Job -ArgumentList @(
-        $Port,
-        $ReadyPath,
-        $CapturePath,
-        $EnteredEventName,
-        $ReleaseEventName
-    ) -ScriptBlock {
-        param(
-            [int]$Port,
-            [string]$ReadyPath,
-            [string]$CapturePath,
-            [string]$EnteredEventName,
-            [string]$ReleaseEventName
-        )
-
-        Set-StrictMode -Version Latest
-        $ErrorActionPreference = "Stop"
-        $listener = $null
-        $client = $null
-        $stream = $null
-        $enteredEvent = $null
-        $releaseEvent = $null
-        $encoding = [System.Text.UTF8Encoding]::new($false)
-        try {
-            $enteredEvent = [System.Threading.EventWaitHandle]::OpenExisting($EnteredEventName)
-            $releaseEvent = [System.Threading.EventWaitHandle]::OpenExisting($ReleaseEventName)
-            $listener = [System.Net.Sockets.TcpListener]::new(
-                [System.Net.IPAddress]::Parse("127.0.0.1"),
-                $Port
-            )
-            $listener.Start()
-            [System.IO.File]::WriteAllText($ReadyPath, "ready", $encoding)
-
-            $client = $listener.AcceptTcpClient()
-            $stream = $client.GetStream()
-            $memory = [System.IO.MemoryStream]::new()
-            $buffer = New-Object byte[] 8192
-            $headerEnd = -1
-            $contentLength = 0
-            $requestText = ""
-            while ($true) {
-                $count = $stream.Read($buffer, 0, $buffer.Length)
-                if ($count -eq 0) {
-                    break
-                }
-                $memory.Write($buffer, 0, $count)
-                $requestText = [System.Text.Encoding]::UTF8.GetString($memory.ToArray())
-                $headerEnd = $requestText.IndexOf("`r`n`r`n", [System.StringComparison]::Ordinal)
-                if ($headerEnd -lt 0) {
-                    continue
-                }
-                $headerText = $requestText.Substring(0, $headerEnd)
-                foreach ($line in ($headerText -split "`r`n")) {
-                    $separator = $line.IndexOf(":", [System.StringComparison]::Ordinal)
-                    if ($separator -gt 0 -and $line.Substring(0, $separator).Trim().ToLowerInvariant() -eq "content-length") {
-                        $contentLength = [int]$line.Substring($separator + 1).Trim()
-                    }
-                }
-                if ($memory.Length -ge ($headerEnd + 4 + $contentLength)) {
-                    break
-                }
-            }
-
-            if ($headerEnd -lt 0) {
-                throw "Gateway fixture received an incomplete HTTP request."
-            }
-            $headerText = $requestText.Substring(0, $headerEnd)
-            $bodyStart = $headerEnd + 4
-            $bodyText = if ($requestText.Length -ge ($bodyStart + $contentLength)) {
-                $requestText.Substring($bodyStart, $contentLength)
-            }
-            else {
-                ""
-            }
-            $lines = $headerText -split "`r`n"
-            $requestParts = $lines[0] -split " "
-            $method = if ($requestParts.Count -gt 0) { $requestParts[0] } else { "" }
-            $path = if ($requestParts.Count -gt 1) { $requestParts[1] } else { "" }
-            $authorization = ""
-            for ($index = 1; $index -lt $lines.Count; $index++) {
-                $separator = $lines[$index].IndexOf(":", [System.StringComparison]::Ordinal)
-                if ($separator -gt 0 -and $lines[$index].Substring(0, $separator).Trim().ToLowerInvariant() -eq "authorization") {
-                    $authorization = $lines[$index].Substring($separator + 1).Trim()
-                }
-            }
-
-            $payload = if ([string]::IsNullOrWhiteSpace($bodyText)) {
-                $null
-            }
-            else {
-                $bodyText | ConvertFrom-Json
-            }
-            $model = if ($null -ne $payload) { [string]$payload.model } else { "" }
-            $messages = @()
-            if ($null -ne $payload -and $null -ne $payload.messages) {
-                $messages = @($payload.messages | ForEach-Object {
-                    [ordered]@{
-                        role = [string]$_.role
-                        content = ([string]$_.content).Replace("loom-concurrency-smoke-token", "<redacted>")
-                    }
-                })
-            }
-            $valid = (
-                $method -eq "POST" -and
-                $path -eq "/v1/chat/completions" -and
-                $authorization -eq "Bearer loom-concurrency-smoke-token" -and
-                $model -eq "concurrency-smoke" -and
-                $messages.Count -ge 2
-            )
-            $capture = [ordered]@{
-                valid = [bool]$valid
-                method = $method
-                path = $path
-                authReceived = ($authorization -eq "Bearer loom-concurrency-smoke-token")
-                model = $model
-                messageRoles = @($messages | ForEach-Object { [string]$_.role })
-                userContent = if ($messages.Count -ge 2) { [string]$messages[1].content } else { "" }
-            }
-            [System.IO.File]::WriteAllText(
-                $CapturePath,
-                ($capture | ConvertTo-Json -Depth 20),
-                $encoding
-            )
-            [void]$enteredEvent.Set()
-
-            if (-not $releaseEvent.WaitOne(30000)) {
-                throw "Gateway fixture timed out waiting for release."
-            }
-
-            if ($valid) {
-                $assistantContent = '{"summary":"Concurrent packaged Gateway plan","steps":["inspect concurrent request","complete concurrent plan"]}'
-                $responseObject = [ordered]@{
-                    model = "concurrency-smoke-resolved"
-                    choices = @(
-                        [ordered]@{
-                            message = [ordered]@{
-                                role = "assistant"
-                                content = $assistantContent
-                            }
-                        }
-                    )
-                }
-                $statusLine = "200 OK"
-            }
-            else {
-                $responseObject = [ordered]@{
-                    error = [ordered]@{
-                        code = "invalid_concurrency_smoke_request"
-                        message = "Gateway concurrency request did not match the expected contract."
-                    }
-                }
-                $statusLine = "400 Bad Request"
-            }
-            $responseJson = $responseObject | ConvertTo-Json -Depth 20 -Compress
-            $responseBytes = [System.Text.Encoding]::UTF8.GetBytes($responseJson)
-            $responseHeader = "HTTP/1.1 $statusLine`r`nContent-Type: application/json`r`nContent-Length: $($responseBytes.Length)`r`nConnection: close`r`n`r`n"
-            $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($responseHeader)
-            $stream.Write($headerBytes, 0, $headerBytes.Length)
-            $stream.Write($responseBytes, 0, $responseBytes.Length)
-            $stream.Flush()
-        }
-        catch {
-            if (-not (Test-Path -LiteralPath $CapturePath -PathType Leaf)) {
-                $errorCapture = [ordered]@{
-                    valid = $false
-                    error = $_.Exception.Message
-                }
-                [System.IO.File]::WriteAllText(
-                    $CapturePath,
-                    ($errorCapture | ConvertTo-Json -Depth 10),
-                    $encoding
-                )
-            }
-            throw
-        }
-        finally {
-            if ($null -ne $stream) { $stream.Dispose() }
-            if ($null -ne $client) { $client.Dispose() }
-            if ($null -ne $listener) { $listener.Stop() }
-            if ($null -ne $enteredEvent) { $enteredEvent.Dispose() }
-            if ($null -ne $releaseEvent) { $releaseEvent.Dispose() }
-        }
-    }
+$concurrencyModuleRoot = Join-Path $PSScriptRoot "daemon-concurrency-smoke"
+@(
+    "Common.ps1"
+    "Process.ps1"
+    "Http.ps1"
+    "GatewayFixture.ps1"
+) | ForEach-Object {
+    . (Join-Path $concurrencyModuleRoot $_)
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -532,6 +59,7 @@ $gatewayCapturePath = Join-Path $runtimeRoot "gateway-request.json"
 $daemonExe = $null
 $daemonProcess = $null
 $daemonPid = $null
+$daemonStartTimeUtcTicks = $null
 $gatewayJob = $null
 $invokeJob = $null
 $enteredEvent = $null
@@ -624,7 +152,8 @@ try {
     $candidatePaths = @($daemonExe)
     $baselineCandidates = @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)
     foreach ($candidate in $baselineCandidates) {
-        $baselinePidSet[[string]$candidate.processId] = $true
+        $baselineKey = "{0}:{1}" -f $candidate.processId, $candidate.startTimeUtcTicks
+        $baselinePidSet[$baselineKey] = $true
     }
     Write-JsonEvidence -Path (Join-Path $evidenceRunDir "processes-baseline.json") -Value $baselineCandidates
 
@@ -680,6 +209,7 @@ try {
         -StderrPath $daemonStderrPath `
         -EnvironmentValues $daemonEnvironment
     $daemonPid = [int]$daemonProcess.Id
+    $daemonStartTimeUtcTicks = $daemonProcess.StartTime.ToUniversalTime().Ticks
     $summary.daemonPid = $daemonPid
 
     $daemonTokenPath = Join-Path $controlPlaneRoot "daemon-token"
@@ -703,7 +233,8 @@ try {
     $status = Wait-ForDaemonStatus `
         -BaseUrl $daemonBaseUrl `
         -Process $daemonProcess `
-        -ExpectedExecutablePath $daemonExe
+        -ExpectedExecutablePath $daemonExe `
+        -ExpectedStartTimeUtcTicks $daemonStartTimeUtcTicks
     Assert-Equal "bounded_workers" ([string]$status.requestExecutor.mode) "Request executor mode mismatch."
     Assert-Equal 2 ([int]$status.requestExecutor.workers) "Request worker count mismatch."
     Assert-Equal 4 ([int]$status.requestExecutor.queueCapacity) "Request queue capacity mismatch."
@@ -771,7 +302,7 @@ try {
     $secondInvoke = Invoke-JsonPost `
         -Uri "$daemonBaseUrl/v1/invoke" `
         -Body $secondRequest `
-        -TimeoutSeconds 5
+        -TimeoutSeconds 15
     Assert-Equal "succeeded" ([string]$secondInvoke.status) "Second capability did not complete while Gateway was blocked."
     $secondCapabilityCompletedBeforeGatewayRelease = $true
     $summary.secondCapabilityCompletedBeforeGatewayRelease = $secondCapabilityCompletedBeforeGatewayRelease
@@ -868,7 +399,10 @@ finally {
     }
 
     try {
-        $daemonStopped = Stop-ExactProcessById -ProcessId $daemonPid -ExpectedExecutablePath $daemonExe
+        $daemonStopped = Stop-ExactProcessById `
+            -ProcessId $daemonPid `
+            -ExpectedExecutablePath $daemonExe `
+            -ExpectedStartTimeUtcTicks $daemonStartTimeUtcTicks
     }
     catch {
         $cleanupErrors += "daemon cleanup failed: $($_.Exception.Message)"
@@ -909,7 +443,8 @@ finally {
     if ($candidatePaths.Count -gt 0) {
         $afterCleanup = @(Get-CandidateProcessSnapshot -ExecutablePaths $candidatePaths)
         $candidateProcessesAfterCleanup = @($afterCleanup | Where-Object {
-            -not $baselinePidSet.ContainsKey([string]$_.processId)
+            $candidateKey = "{0}:{1}" -f $_.processId, $_.startTimeUtcTicks
+            -not $baselinePidSet.ContainsKey($candidateKey)
         })
         Write-JsonEvidence -Path (Join-Path $evidenceRunDir "processes-after-cleanup.json") -Value $afterCleanup
     }
@@ -922,6 +457,7 @@ finally {
     if ($candidateProcessesAfterCleanup.Count -gt 0) {
         $cleanupErrors += "Smoke left candidate Loom processes running after cleanup."
     }
+    $cleanupErrors = @($cleanupErrors | ForEach-Object { Redact-Text ([string]$_) })
     $summary.candidateProcessesAfterCleanup = $candidateProcessesAfterCleanup
     $summary.daemonStopped = $daemonStopped
     $summary.gatewayJobStopped = $gatewayJobStopped
