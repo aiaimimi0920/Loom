@@ -163,7 +163,7 @@ fn completed_leader_does_not_leave_inherited_pipes_open() {
             "-NoProfile".to_owned(),
             "-NonInteractive".to_owned(),
             "-Command".to_owned(),
-            "$null = Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60' -NoNewWindow -PassThru; Write-Output ok".to_owned(),
+            "$null = Start-Process cmd.exe -ArgumentList '/D','/C','ping -n 61 127.0.0.1' -NoNewWindow -PassThru; Write-Output ok".to_owned(),
         ];
         spec
     } else {
@@ -171,15 +171,16 @@ fn completed_leader_does_not_leave_inherited_pipes_open() {
         spec.args = vec!["-c".to_owned(), "(sleep 30) & printf ok".to_owned()];
         spec
     };
-    // A clean GitHub runner can spend more than ten seconds loading two Windows PowerShell
-    // processes under endpoint protection. The Windows child sleeps for 60 seconds, so the
-    // enlarged fixture allowance still proves that inherited pipes close when the leader exits.
+    // Starting a second PowerShell process can stall under endpoint protection. A cmd.exe
+    // descendant exercises the same inherited-pipe contract without another cold shell start.
     spec.limits.timeout = Duration::from_secs(if cfg!(windows) { 45 } else { 10 });
 
     let started = Instant::now();
     let output = run_with_input(&spec, b"").expect("leader with detached descendant");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == "ok"));
     assert!(started.elapsed() < Duration::from_secs(if cfg!(windows) { 45 } else { 5 }));
 }
 
