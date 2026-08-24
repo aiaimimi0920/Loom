@@ -90,7 +90,7 @@ jobs:
           subject-path: release/Loom/${{ env.LOOM_TAG }}/packages/*.zip
 
       - name: Attest release SBOM
-        uses: actions/attest-sbom@v2
+        uses: actions/attest-sbom@v4
         with:
           subject-path: release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip
           sbom-path: release/Loom/${{ env.LOOM_TAG }}/sbom/Loom-${{ env.LOOM_TAG }}.cdx.json
