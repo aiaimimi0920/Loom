@@ -30,13 +30,13 @@ fn main() {
         .unwrap_or_else(|| "https://github.com/aiaimimi0920/Loom".to_owned());
     let commit = git_value(&repo_root, &["rev-parse", "HEAD"])
         .map(|value| value.chars().take(6).collect())
-        .unwrap_or_else(|| "unknown".to_owned());
+        .unwrap_or_else(|| "000000".to_owned());
     let hook_repository = git_value(&hook_repo_root, &["config", "--get", "remote.origin.url"])
         .map(|value| value.trim_end_matches(".git").to_owned())
         .unwrap_or_else(|| "https://github.com/aiaimimi0920/Hook".to_owned());
     let hook_commit = git_value(&hook_repo_root, &["rev-parse", "HEAD"])
         .map(|value| value.chars().take(6).collect())
-        .unwrap_or_else(|| "unknown".to_owned());
+        .unwrap_or_else(|| "000000".to_owned());
 
     println!("cargo:rustc-env=LOOM_BUILD_REPOSITORY={repository}");
     println!("cargo:rustc-env=LOOM_BUILD_COMMIT={commit}");

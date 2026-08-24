@@ -221,7 +221,9 @@ function Test-LoomRelease {
             }
         }
         Assert-Equal "fixture-echo" $savedMcpTool.tool.id "Loom MCP-backed tool save id mismatch."
-        $executedMcpTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/fixture-echo/execute" -Body @{
+        # The fixture starts a fresh PowerShell-backed MCP process; allow cold hosted runners the
+        # same bounded startup headroom as the direct MCP connection test.
+        $executedMcpTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/fixture-echo/execute" -TimeoutSec 60 -Body @{
             arguments = @{
                 text = "release mcp runtime"
             }

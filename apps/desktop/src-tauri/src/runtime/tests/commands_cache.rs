@@ -19,6 +19,13 @@ fn application_diagnostics_expose_build_repositories_and_six_character_commits()
 }
 
 #[test]
+fn embedded_build_commits_are_normalized_to_six_hex_characters() {
+    assert_eq!(normalize_build_commit("abcdef1"), Some("abcdef".to_owned()));
+    assert_eq!(normalize_build_commit("abcdef"), Some("abcdef".to_owned()));
+    assert_eq!(normalize_build_commit("unknown"), None);
+}
+
+#[test]
 fn mcp_source_urls_allow_safe_https_and_reject_unsafe_targets() {
     assert!(is_safe_external_https_url(
         "https://github.com/modelcontextprotocol/servers"
