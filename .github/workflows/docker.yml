@@ -3,6 +3,7 @@ name: Docker
 on:
   push:
     paths:
+      - .github/workflows/docker.yml
       - Dockerfile
       - .dockerignore
       - Cargo.toml
@@ -12,6 +13,7 @@ on:
       - examples/**
   pull_request:
     paths:
+      - .github/workflows/docker.yml
       - Dockerfile
       - .dockerignore
       - Cargo.toml
@@ -23,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   docker:
@@ -45,11 +48,26 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # Pin the action commit because mutable Trivy tags were compromised in March 2026.
       - name: Scan Loom CI image
-        uses: aquasecurity/trivy-action@0.33.1
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: loom-ci:scan
-          format: table
+          format: sarif
+          output: trivy-results.sarif
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
+
+      - name: Upload Trivy results to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Enforce Trivy vulnerability gate
+        if: always() && steps.trivy.outcome == 'failure'
+        run: exit 1
