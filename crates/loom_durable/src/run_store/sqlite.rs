@@ -214,8 +214,20 @@ impl SqliteRunEvidenceStore {
         Self::validate_existing_records(&connection)?;
 
         let mut store = Self { connection };
-        store.recover_interrupted_runs()?;
+        if store.has_running_runs()? {
+            store.recover_interrupted_runs()?;
+        }
         Ok(store)
+    }
+
+    fn has_running_runs(&self) -> RunStoreResult<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE status = 'running')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)
     }
 
     fn quick_check(connection: &Connection) -> RunStoreResult<()> {
