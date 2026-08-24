@@ -12,6 +12,15 @@ use crate::path::process_path;
 use crate::{run_with_input, run_with_input_cancellable, ProcessError, ProcessSpec};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(windows)]
+static WINDOWS_POWERSHELL_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(windows)]
+fn lock_windows_powershell_fixture() -> std::sync::MutexGuard<'static, ()> {
+    WINDOWS_POWERSHELL_FIXTURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[cfg(windows)]
 fn remove_windows_test_tree(path: &Path) {
@@ -83,6 +92,8 @@ fn process_runs_from_a_deep_windows_working_directory() {
 
 #[test]
 fn bounded_output_is_reported_as_a_resource_limit() {
+    #[cfg(windows)]
+    let _fixture_guard = lock_windows_powershell_fixture();
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("powershell.exe");
         spec.args = vec![
@@ -143,6 +154,8 @@ fn extreme_timeout_does_not_overflow_the_deadline() {
 
 #[test]
 fn completed_leader_does_not_leave_inherited_pipes_open() {
+    #[cfg(windows)]
+    let _fixture_guard = lock_windows_powershell_fixture();
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("powershell.exe");
         spec.args = vec![
@@ -168,6 +181,7 @@ fn completed_leader_does_not_leave_inherited_pipes_open() {
 #[cfg(windows)]
 #[test]
 fn default_windows_job_allows_a_framework_host_to_spawn_its_runtime() {
+    let _fixture_guard = lock_windows_powershell_fixture();
     let mut spec = ProcessSpec::new("powershell.exe");
     spec.args = vec![
         "-NoProfile".to_owned(),
@@ -183,6 +197,8 @@ fn default_windows_job_allows_a_framework_host_to_spawn_its_runtime() {
 
 #[test]
 fn timeout_terminates_a_child_that_never_reads_large_stdin() {
+    #[cfg(windows)]
+    let _fixture_guard = lock_windows_powershell_fixture();
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("powershell.exe");
         spec.args = vec![
@@ -206,6 +222,8 @@ fn timeout_terminates_a_child_that_never_reads_large_stdin() {
 
 #[test]
 fn cancellation_terminates_the_managed_process_tree() {
+    #[cfg(windows)]
+    let _fixture_guard = lock_windows_powershell_fixture();
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("powershell.exe");
         spec.args = vec![
@@ -336,6 +354,8 @@ fn supervised_process_inherits_the_image_search_loopback_seam() {
 /// hundreds of megabytes more than it does today.
 #[test]
 fn one_framework_process_stays_within_its_peak_memory_budget() {
+    #[cfg(windows)]
+    let _fixture_guard = lock_windows_powershell_fixture();
     // Measured at 65,544,192 bytes (about 63 MiB) on 2026-08-22. The ceiling is well above that
     // but still below the 512 MiB the default limits enforce, since a job that hits the enforced
     // limit is killed and would never reach this assertion.
