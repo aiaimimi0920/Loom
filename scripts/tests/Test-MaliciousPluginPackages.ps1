@@ -8,9 +8,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 
+function ConvertTo-GitHubCommandValue {
+    param([string]$Value)
+    return $Value.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+}
+
 function Stop-CargoTest {
     param([string]$Message)
-    Write-Output "::error title=Malicious plugin case ${Case}::$Message"
+    $title = ConvertTo-GitHubCommandValue -Value "Malicious plugin case $Case"
+    $detail = ConvertTo-GitHubCommandValue -Value $Message
+    Write-Output "::error title=${title}::$detail"
     throw $Message
 }
 
@@ -36,9 +43,29 @@ function Invoke-CargoTest {
         if ($testCount -lt 1) {
             Stop-CargoTest "No cargo tests matched: $($Arguments -join ' ')"
         }
-        & cargo test --locked @Arguments
-        if ($LASTEXITCODE -ne 0) {
-            Stop-CargoTest "cargo test failed: $($Arguments -join ' ')"
+        $testTail = [System.Collections.Generic.Queue[string]]::new()
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & cargo test --locked @Arguments 2>&1 | ForEach-Object {
+                $line = $_.ToString()
+                Write-Output $line
+                if ($testTail.Count -ge 40) {
+                    [void]$testTail.Dequeue()
+                }
+                $testTail.Enqueue($line)
+            }
+            $testExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($testExitCode -ne 0) {
+            $diagnostic = @($testTail.ToArray() | Select-Object -Last 20) -join " | "
+            if ($diagnostic.Length -gt 2000) {
+                $diagnostic = $diagnostic.Substring($diagnostic.Length - 2000)
+            }
+            Stop-CargoTest "cargo test failed: $($Arguments -join ' '). Tail: $diagnostic"
         }
     }
     finally {
