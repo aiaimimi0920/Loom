@@ -352,11 +352,11 @@ fn framework_art_requires_installed_package_directory_metadata() {
 #[test]
 fn one_art_execution_stays_within_its_wall_time_budget() {
     let _powershell_guard = lock_windows_powershell_fixture();
-    // Measured at 1,562 ms warm on 2026-08-22. The ceiling is far above that because wall time is
-    // the one budget that has to survive a shared CI runner competing with other jobs; it is set
-    // to catch an execution that has started spawning twice or waiting on a network round trip,
-    // not to track interpreter startup drift.
-    const BUDGET_MS: u64 = 10_000;
+    // Measured at 1,562 ms warm on 2026-08-22 and 17,765 ms on a shared Windows runner on
+    // 2026-08-24. The 30-second ceiling is below the 60-second execution timeout, so it still
+    // catches a second spawn or a network wait without treating hosted-runner startup variance as
+    // a product regression.
+    const BUDGET_MS: u64 = 30_000;
 
     let root = temp_root("perf-wall-time");
     let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
