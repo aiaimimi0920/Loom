@@ -4,7 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::command::inherited_runtime_environment;
 #[cfg(windows)]
@@ -12,6 +12,27 @@ use crate::path::process_path;
 use crate::{run_with_input, run_with_input_cancellable, ProcessError, ProcessSpec};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(windows)]
+fn remove_windows_test_tree(path: &Path) {
+    for attempt in 0..20 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error)
+                if attempt < 19
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied
+                            | std::io::ErrorKind::DirectoryNotEmpty
+                    ) =>
+            {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => panic!("remove Windows test tree: {error}"),
+        }
+    }
+}
 
 #[cfg(windows)]
 #[test]
@@ -57,7 +78,7 @@ fn process_runs_from_a_deep_windows_working_directory() {
         "deep-path-ok"
     );
 
-    std::fs::remove_dir_all(&root).expect("remove deep working directory");
+    remove_windows_test_tree(&root);
 }
 
 #[test]
