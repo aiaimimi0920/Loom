@@ -2,6 +2,7 @@ use super::super::*;
 use super::execution_support::*;
 use std::fs;
 
+#[cfg(windows)]
 #[test]
 fn process_request_contains_art_inputs_params_and_context() {
     let root = temp_root("success");
@@ -35,6 +36,7 @@ fn process_request_contains_art_inputs_params_and_context() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn process_request_contains_art_scoped_credential_bindings() {
     let root = temp_root("credentials");
@@ -193,6 +195,7 @@ fn mcp_framework_resolves_independent_package_and_server_scoped_credentials() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn flat_art_arguments_are_partitioned_by_manifest_schema() {
     let root = temp_root("flat-schema");
@@ -218,6 +221,7 @@ fn flat_art_arguments_are_partitioned_by_manifest_schema() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn execute_tool_routes_framework_art_to_the_external_process() {
     let _guard = ENV_LOCK

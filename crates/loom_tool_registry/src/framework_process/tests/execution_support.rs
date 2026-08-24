@@ -1,16 +1,23 @@
 use super::super::*;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
+#[cfg(windows)]
 use std::sync::Mutex;
 
+// Execution fixtures intentionally model a windows-x64 framework package and copy PowerShell into
+// that package. Tests that launch the fixture are Windows-only; pure validation stays cross-platform.
+#[cfg(windows)]
 pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(windows)]
 pub(super) struct EnvVarGuard {
     name: &'static str,
     previous: Option<std::ffi::OsString>,
 }
 
+#[cfg(windows)]
 impl EnvVarGuard {
     pub(super) fn set(name: &'static str, value: &Path) -> Self {
         let previous = std::env::var_os(name);
@@ -19,6 +26,7 @@ impl EnvVarGuard {
     }
 }
 
+#[cfg(windows)]
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         match self.previous.take() {
@@ -34,6 +42,7 @@ pub(super) fn temp_root(name: &str) -> PathBuf {
     root
 }
 
+#[cfg(windows)]
 fn powershell_executable() -> PathBuf {
     for candidate in ["powershell.exe", "pwsh.exe"] {
         let output = Command::new(candidate)
@@ -55,6 +64,7 @@ fn powershell_executable() -> PathBuf {
     panic!("PowerShell is required for the framework process fixture");
 }
 
+#[cfg(windows)]
 pub(super) fn write_fixture_package(root: &Path, script: &str) -> PathBuf {
     let package_root = root.join("publisher.test").join("script");
     let package_dir = package_root.join("versions").join("0.1.0-fixture");
@@ -118,6 +128,7 @@ pub(super) fn fixture_tool(art_dir: &Path) -> ToolDefinition {
     }
 }
 
+#[cfg(windows)]
 pub(super) fn fixture_tool_with_schema(art_dir: &Path) -> ToolDefinition {
     let mut tool = fixture_tool(art_dir);
     tool.inputs = vec![
@@ -135,6 +146,7 @@ pub(super) fn fixture_tool_with_schema(art_dir: &Path) -> ToolDefinition {
     tool
 }
 
+#[cfg(windows)]
 pub(super) fn fixture_image_tool(art_dir: &Path) -> ToolDefinition {
     let mut tool = fixture_tool(art_dir);
     tool.outputs = vec![json!({
@@ -145,24 +157,30 @@ pub(super) fn fixture_image_tool(art_dir: &Path) -> ToolDefinition {
     tool
 }
 
+#[cfg(windows)]
 pub(super) const SUCCESS_SCRIPT: &str = r#"
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $response = [ordered]@{ status = "success"; output = [ordered]@{ request = $request } }
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 50 -Compress))
 "#;
+#[cfg(windows)]
 pub(super) const ERROR_SCRIPT: &str = r#"
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $response = [ordered]@{ status = "error"; error = [ordered]@{ code = "quota_exhausted"; message = "quota exhausted"; detail = [string]$request.context.tempDir } }
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
 "#;
+#[cfg(windows)]
 pub(super) const INVALID_SCRIPT: &str = "[Console]::Out.Write('not-json')";
+#[cfg(windows)]
 pub(super) const TIMEOUT_SCRIPT: &str =
     "Start-Sleep -Milliseconds 300; [Console]::Out.Write('{\"status\":\"success\"}')";
+#[cfg(windows)]
 pub(super) const LARGE_OUTPUT_SCRIPT: &str = r#"
 $large = "x" * (9 * 1024 * 1024)
 $response = [ordered]@{ status = "success"; output = [ordered]@{ large = $large } }
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
 "#;
+#[cfg(windows)]
 pub(super) const PATH_IMAGE_OUTPUT_SCRIPT: &str = r#"
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $path = Join-Path ([string]$request.context.tempDir) "result.png"
@@ -171,6 +189,7 @@ $bytes = [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFc
 $response = [ordered]@{ status = "success"; output = [ordered]@{ output_path = $path; width = 1; height = 1 } }
 [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
 "#;
+#[cfg(windows)]
 pub(super) const OUTSIDE_PATH_IMAGE_OUTPUT_SCRIPT: &str = r#"
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $path = Join-Path ([string]$request.artDir) "outside.png"

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{collections::HashSet, path::Path, sync::Mutex, thread, time::Duration};
 
 use chrono::Utc;
 use rusqlite::{
@@ -36,8 +36,16 @@ CREATE INDEX run_events_run_id_sequence
     ON run_events (run_id, sequence);
 "#;
 
+const OPEN_PROTOCOL_RETRY_DELAYS_MS: [u64; 3] = [10, 50, 100];
+static SQLITE_OPEN_LOCK: Mutex<()> = Mutex::new(());
+
 fn sqlite_error(error: rusqlite::Error) -> RunStoreError {
-    RunStoreError::Sqlite(error.to_string())
+    let message = error.to_string();
+    if error.sqlite_error_code() == Some(ErrorCode::FileLockingProtocolFailed) {
+        RunStoreError::SqliteLockProtocol(message)
+    } else {
+        RunStoreError::Sqlite(message)
+    }
 }
 
 fn stored_integrity(context: impl Into<String>, error: impl std::fmt::Display) -> RunStoreError {
@@ -154,9 +162,29 @@ pub struct SqliteRunEvidenceStore {
 impl SqliteRunEvidenceStore {
     pub fn open(path: impl AsRef<Path>) -> RunStoreResult<Self> {
         let path = prepare_database_path(path.as_ref())?;
+        // Opening validates the whole store. Serializing that uncommon path avoids
+        // same-process WAL initialization races without restricting normal I/O.
+        let _open_guard = SQLITE_OPEN_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut retry_delays = OPEN_PROTOCOL_RETRY_DELAYS_MS.into_iter();
+        loop {
+            match Self::open_once(&path) {
+                Err(error @ RunStoreError::SqliteLockProtocol(_)) => {
+                    let Some(delay_ms) = retry_delays.next() else {
+                        return Err(error);
+                    };
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn open_once(path: &Path) -> RunStoreResult<Self> {
         let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let mut connection = Connection::open_with_flags(&path, flags).map_err(sqlite_error)?;
-        restrict_database_file(&path)?;
+        let mut connection = Connection::open_with_flags(path, flags).map_err(sqlite_error)?;
+        restrict_database_file(path)?;
         connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(sqlite_error)?;

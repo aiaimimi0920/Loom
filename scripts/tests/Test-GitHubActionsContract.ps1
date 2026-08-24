@@ -49,6 +49,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'runs-on: windows-latest',
     'runs-on: ubuntu-latest',
     'actions/checkout@v5',
+    'fetch-depth: 0',
     'actions/setup-node@v6',
     'actions/upload-artifact@v6',
     'node-version: "22"',

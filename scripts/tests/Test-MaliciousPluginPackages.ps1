@@ -8,6 +8,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 
+function Stop-CargoTest {
+    param([string]$Message)
+    Write-Output "::error title=Malicious plugin case ${Case}::$Message"
+    throw $Message
+}
+
 function Invoke-CargoTest {
     param([string[]]$Arguments)
     Push-Location -LiteralPath $repoRoot
@@ -24,15 +30,15 @@ function Invoke-CargoTest {
             $ErrorActionPreference = $previousErrorActionPreference
         }
         if ($listExitCode -ne 0) {
-            throw "cargo test discovery failed for malicious plugin case '$Case': $($Arguments -join ' ')"
+            Stop-CargoTest "cargo test discovery failed: $($Arguments -join ' ')"
         }
         $testCount = @($listedTests | Where-Object { $_ -match ': test$' }).Count
         if ($testCount -lt 1) {
-            throw "No cargo tests matched malicious plugin case '$Case': $($Arguments -join ' ')"
+            Stop-CargoTest "No cargo tests matched: $($Arguments -join ' ')"
         }
         & cargo test --locked @Arguments
         if ($LASTEXITCODE -ne 0) {
-            throw "cargo test failed for malicious plugin case '$Case': $($Arguments -join ' ')"
+            Stop-CargoTest "cargo test failed: $($Arguments -join ' ')"
         }
     }
     finally {
