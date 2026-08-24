@@ -123,8 +123,8 @@ function Test-LoomRelease {
         $mcpRegistryRequest = Get-Content -Raw -LiteralPath $mcpRegistryRequestPath
         Assert-Contains "GET /v0/servers?limit=100&search=fixture&cursor=cursor-1" $mcpRegistryRequest "Loom MCP Registry request URL mismatch."
 
-        # POST /v1/mcp/test
-        $mcpConnectionTest = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/test" -Body @{
+        # POST /v1/mcp/test; its PowerShell fixture may cold-start under endpoint protection.
+        $mcpConnectionTest = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/test" -TimeoutSec 60 -Body @{
             id = "fixture-test"
             name = "Fixture Test MCP"
             transport = "stdio"
