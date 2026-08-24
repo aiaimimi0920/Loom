@@ -467,6 +467,7 @@ Further references:
 - [Signing, trust, and revocation](docs/plugin-signing-and-trust.md)
 - [Historical plugin migration guide](docs/plugin-migration.md)
 - [Release SBOM and provenance](docs/release-provenance.md)
+- [Dependency vulnerability response](docs/DEPENDENCY_SECURITY.md)
 
 ## Local capability API
 
@@ -815,6 +816,8 @@ cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 
 ## Docs
 
+- `docs/DEVELOPMENT.md`
+- `docs/DEPENDENCY_SECURITY.md`
 - `docs/ARCHITECTURE.md`
 - `docs/MIGRATION_MAP.md`
 - `docs/WORKFLOW_CONTRACT.md`

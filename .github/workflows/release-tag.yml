@@ -17,8 +17,18 @@ permissions:
   attestations: write
 
 jobs:
+  dependency-security:
+    name: Verify release dependency security
+    uses: ./.github/workflows/dependency-security.yml
+    with:
+      checkout-ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+    permissions:
+      actions: read
+      contents: read
+
   release:
     name: Build and publish Loom release
+    needs: dependency-security
     runs-on: windows-latest
     steps:
       - name: Checkout release ref

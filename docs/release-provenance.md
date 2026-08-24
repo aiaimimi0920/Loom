@@ -2,6 +2,14 @@
 
 A publishable Loom release must come from a clean Git worktree.
 
+Before building, the exact release tag or manually requested ref must pass the
+lockfile inventory contract and the configured OSV vulnerability gate:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DependencySecurityContract.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-DependencySecurityScan.ps1
+```
+
 ```powershell
 .\scripts\build-release.ps1 `
   -VersionId Vx.y.z `
@@ -16,6 +24,13 @@ A publishable Loom release must come from a clean Git worktree.
 
 The clean-source gate runs before build output is created. Formal manifests
 must record `gitDirty=false` and `sourceGitDirty=false`.
+
+`.github/workflows/release-tag.yml` calls the reusable dependency security
+workflow first and makes publication depend on that job. For manual dispatch it
+passes the requested tag, not the workflow's default branch. The scan produces
+an OSV SARIF artifact for the checked ref; a prior scan of another commit is not
+release evidence. See `docs/DEPENDENCY_SECURITY.md` for inventory, triage, and
+temporary exception rules.
 
 ## Release subjects
 

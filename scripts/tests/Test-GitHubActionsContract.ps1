@@ -72,6 +72,8 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     '.\scripts\tests\Test-SmokeReleaseModules.ps1',
     '.\scripts\tests\Test-ReleaseIntegrityTamper.ps1',
     '.\scripts\tests\Test-HookCanvasUiContract.ps1',
+    '.\scripts\tests\Test-DevelopmentManualContract.ps1',
+    '.\scripts\tests\Test-DependencySecurityContract.ps1',
     '.\scripts\tests\Test-GitHubActionsContract.ps1',
     '.\scripts\tests\Test-MaliciousPluginPackages.ps1',
     'Clean-host plugin SDK and schema validation',
@@ -92,6 +94,34 @@ Assert-True -Condition ($validationIndex -ge 0 -and $tamperIndex -gt $validation
 Assert-True -Condition ($effectiveLineIndex -ge 0 -and $effectiveLineIndex -lt $dependencyIndex) -Message "Effective-line ratchet must run before dependency installation and generated output."
 $validationBlock = $ciRaw.Substring($validationIndex, $dependencyIndex - $validationIndex)
 Assert-True -Condition $validationBlock.Contains('        shell: powershell') -Message "Integrity tamper contract validation step must use PowerShell."
+Assert-True -Condition ([regex]::IsMatch(
+    $validationBlock,
+    '(?m)^          powershell -NoProfile -ExecutionPolicy Bypass -File \.\\scripts\\tests\\Test-DevelopmentManualContract\.ps1\r?$'
+)) -Message "Development manual contract must execute in the pre-generated-output PowerShell step."
+Assert-True -Condition ([regex]::IsMatch(
+    $validationBlock,
+    '(?m)^          powershell -NoProfile -ExecutionPolicy Bypass -File \.\\scripts\\tests\\Test-DependencySecurityContract\.ps1\r?$'
+)) -Message "Dependency security contract must execute in the pre-generated-output PowerShell step."
+
+Assert-Workflow -Name "dependency-security.yml" -RequiredText @(
+    'name: Dependency Security',
+    'pull_request:',
+    'push:',
+    'schedule:',
+    'workflow_dispatch:',
+    'workflow_call:',
+    'actions: read',
+    'contents: read',
+    'google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@0c58c542420dfd23fcac08dd9c8ca3cca9c36f1a',
+    'ref: ${{ inputs.checkout-ref || github.ref }}',
+    '--config=./security/osv-scanner.toml',
+    '--lockfile=./Cargo.lock',
+    '--lockfile=./apps/desktop/src-tauri/Cargo.lock',
+    '--lockfile=./framework-packages/runtime-host/Cargo.lock',
+    '--lockfile=./apps/desktop/package-lock.json',
+    'upload-sarif: false',
+    'fail-on-vuln: true'
+)
 
 Assert-Workflow -Name "build-windows.yml" -RequiredText @(
     'name: Build Windows',
@@ -120,6 +150,9 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     'contents: write',
     'id-token: write',
     'attestations: write',
+    'uses: ./.github/workflows/dependency-security.yml',
+    'checkout-ref: ${{ github.event_name == ''workflow_dispatch'' && inputs.tag || github.ref }}',
+    'needs: dependency-security',
     'actions/checkout@v5',
     'actions/setup-node@v6',
     'dtolnay/rust-toolchain@1.95.0',

@@ -23,6 +23,30 @@ npm ci
 Pop-Location
 ```
 
+## Code Size and Modularity
+
+All feature, refactor, test, script, and style changes must follow the effective
+code-line and post-split hardening rules in `docs/DEVELOPMENT.md`.
+
+The preferred module size is about 150 effective lines. A cohesive file may be
+up to 500 lines without an exception. Files from 501 through 700 lines require
+an exact, unexpired cohesion exception; files above 700 must be split, and files
+above 1500 never receive a waiver. Effective lines exclude blank and
+comment-only lines and are measured only by the repository checker.
+
+Run the checker tests and strict gate before submitting a change:
+
+```powershell
+node --test .\scripts\tests\effective-code-lines.test.mjs
+node .\scripts\effective-code-lines.mjs --mode strict --json .\.tmp\effective-code-lines.json
+```
+
+Changing a 501-700 file invalidates its recorded source hash. Split it to 500 or
+fewer lines, or update `scripts/effective-code-lines-exceptions.json` with exact
+current evidence and a real independent approval. Do not invent approvals or
+use comments, generated files, minification, or generic helper modules to evade
+the metric.
+
 ## Validation
 
 Run the checks that cover the files you changed. Before opening a pull request,
@@ -44,12 +68,34 @@ cargo check --locked --manifest-path .\apps\desktop\src-tauri\Cargo.toml
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneLayout.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneReleaseContract.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DevelopmentManualContract.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DependencySecurityContract.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-GitHubActionsContract.ps1
 docker build -t loom:local .
 ```
 
 PowerShell release and workflow contracts live under `scripts/tests`. Run all
 of them after changing packaging or GitHub Actions.
+
+## Dependency Security
+
+Follow `docs/DEPENDENCY_SECURITY.md` whenever a manifest, lockfile, build image,
+GitHub Action, vendored package, or release dependency changes. Loom scans the
+root Rust workspace, detached Tauri wrapper, detached framework runtime host,
+and desktop npm lockfiles. Do not assume that a detached manifest is covered by
+the root workspace scan.
+
+Before submitting a dependency change, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DependencySecurityContract.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-DependencySecurityScan.ps1
+```
+
+OSV exceptions are advisory-specific, evidence-based, independently reviewed,
+and limited to 90 days. Never add a broad package override or invent an
+approval. A bot-generated update still requires source, build-script, license,
+behavior, compilation, and regression review.
 
 ## Release Validation
 
