@@ -96,7 +96,10 @@ function Receive-LoomHookResponse {
         [string]$RequestId
     )
 
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    # The daemon gives Hook Art requests a 120-second execution budget. Keep a little transport
+    # headroom so a slow hosted runner reports the daemon's terminal response instead of cancelling
+    # the WebSocket first.
+    $deadline = [DateTime]::UtcNow.AddSeconds(150)
     for ($attempt = 0; $attempt -lt 64 -and [DateTime]::UtcNow -lt $deadline; $attempt++) {
         $remainingSeconds = [Math]::Max(1, [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
         $message = Receive-LoomHookBridgeWebSocketJson `
