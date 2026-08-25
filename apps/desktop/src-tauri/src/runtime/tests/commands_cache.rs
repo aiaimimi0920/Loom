@@ -33,6 +33,11 @@ fn mcp_source_urls_allow_safe_https_and_reject_unsafe_targets() {
     assert!(is_safe_external_https_url(
         "https://registry.modelcontextprotocol.io/v0.1/servers"
     ));
+    assert!(is_safe_external_https_url(
+        "https://github.com/microsoft/playwright-mcp"
+    ));
+    assert!(!is_safe_external_https_url("https://example.com/mcp"));
+    assert!(!is_safe_external_https_url("https://127.0.0.1/mcp"));
     assert!(!is_safe_external_https_url("http://example.com/mcp"));
     assert!(!is_safe_external_https_url(
         "https://user:secret@example.com/mcp"

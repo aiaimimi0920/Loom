@@ -17,6 +17,16 @@ function parseArgs(argv) {
   return values;
 }
 
+function resolveWorkspaceOutputPath(value, label) {
+  const workspaceRoot = path.resolve(process.cwd());
+  const candidate = path.resolve(value);
+  const relative = path.relative(workspaceRoot, candidate);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${label} must stay inside the inspector workspace`);
+  }
+  return candidate;
+}
+
 async function readJson(url, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -172,6 +182,8 @@ async function main() {
   if (!Number.isInteger(debugPort) || debugPort <= 0) throw new Error("Invalid CDP debug port");
   const minimumNodes = Number.parseInt(args["min-nodes"] ?? "1", 10);
   if (!Number.isInteger(minimumNodes) || minimumNodes < 0) throw new Error("Invalid minimum node count");
+  const outputPath = resolveWorkspaceOutputPath(args.output, "Output path");
+  const screenshotPath = resolveWorkspaceOutputPath(args.screenshot, "Screenshot path");
 
   let client = null;
   let diagnostic = {};
@@ -231,9 +243,9 @@ async function main() {
     diagnostic = { uiState, tauriProbe };
     const screenshot = await client.command("Page.captureScreenshot", { format: "png", fromSurface: true });
     const result = uiState;
-    await fs.mkdir(path.dirname(args.screenshot), { recursive: true });
-    await fs.writeFile(args.output, `${JSON.stringify(result, null, 2)}\n`, "utf8");
-    await fs.writeFile(args.screenshot, Buffer.from(screenshot.data, "base64"));
+    await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+    await fs.writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
     await new Promise((resolve, reject) => {
       process.stdout.write(`${JSON.stringify(result)}\n`, (error) => {
         if (error) reject(error);
@@ -243,8 +255,8 @@ async function main() {
   } catch (error) {
     const failure = { ...diagnostic, error: String(error) };
     try {
-      await fs.mkdir(path.dirname(args.output), { recursive: true });
-      await fs.writeFile(args.output, `${JSON.stringify(failure, null, 2)}\n`, "utf8");
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
+      await fs.writeFile(outputPath, `${JSON.stringify({ error: "WebView inspection failed" }, null, 2)}\n`, "utf8");
     } catch {
       // Preserve the original CDP failure when the output path is unavailable.
     }
@@ -255,7 +267,7 @@ async function main() {
         activeSection: document.querySelector('.workspace-header h1')?.textContent?.trim() ?? null,
         workflowRequestText: document.querySelector('.workflow-studio')?.innerText?.slice(0, 500) ?? null,
       }))()`);
-      await fs.writeFile(args.output, `${JSON.stringify(failure, null, 2)}\n`, "utf8");
+      await fs.writeFile(outputPath, `${JSON.stringify({ error: "WebView inspection failed" }, null, 2)}\n`, "utf8");
     } catch {
       // Preserve the original CDP failure when the target has already closed.
     }

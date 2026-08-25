@@ -149,8 +149,12 @@ pub(super) fn is_allowed_repository_url(url: &str) -> bool {
 
 pub(super) fn is_safe_external_https_url(url: &str) -> bool {
     tauri::Url::parse(url).is_ok_and(|parsed| {
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
         parsed.scheme() == "https"
-            && parsed.host_str().is_some()
+            && matches!(
+                host.as_str(),
+                "github.com" | "registry.modelcontextprotocol.io"
+            )
             && parsed.username().is_empty()
             && parsed.password().is_none()
     })

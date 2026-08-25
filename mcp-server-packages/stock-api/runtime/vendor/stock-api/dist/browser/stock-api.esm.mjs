@@ -376,7 +376,7 @@ function getAssignedValue(row) {
   return value;
 }
 function getDelimitedParams(row, delimiter) {
-  return getAssignedValue(row).replace('"', "").split(delimiter);
+  return getAssignedValue(row).replaceAll('"', "").split(delimiter);
 }
 function createStockProvider(config) {
   async function getStocks2(codes) {
@@ -1036,7 +1036,7 @@ var Tencent = createStockProvider({
       return getSearchUrl2(key);
     },
     parseCodes(body) {
-      const rows = body.replace('v_hint="', "").replace('"', "").split("^");
+      const rows = body.replace('v_hint="', "").replaceAll('"', "").split("^");
       const codes = rows.map((row) => {
         const [type, code] = row.split("~");
         switch (type) {
