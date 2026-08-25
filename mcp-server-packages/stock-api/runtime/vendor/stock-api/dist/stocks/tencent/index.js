@@ -77,7 +77,7 @@ const Tencent = (0, provider_1.createStockProvider)({
             return getSearchUrl(key);
         },
         parseCodes(body) {
-            const rows = body.replace('v_hint="', "").replace('"', "").split("^");
+            const rows = body.replace('v_hint="', "").replaceAll('"', "").split("^");
             const codes = rows.map((row) => {
                 const [type, code] = row.split("~");
                 switch (type) {

@@ -38,8 +38,10 @@ fn write_manifest_only_fixture(root: &Path, manifest: &[u8]) -> PathBuf {
     art_dir
 }
 
+#[cfg(windows)]
 #[test]
 fn process_error_preserves_code_message_and_detail() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("error");
     let art_dir = write_fixture_package(&root, ERROR_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
@@ -47,7 +49,7 @@ fn process_error_preserves_code_message_and_detail() {
         "publisher.test/script",
         json!({}),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect_err("framework error response");
@@ -138,28 +140,39 @@ fn invalid_utf8_framework_manifest_is_a_protocol_error() {
 #[test]
 fn framework_command_link_cannot_escape_the_package_directory() {
     let root = temp_root("command-link-escape");
-    let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
+    let manifest = serde_json::to_vec_pretty(&json!({
+        "id": "script",
+        "name": "Link Escape Fixture",
+        "description": "test",
+        "version": "0.1.0",
+        "publisher": { "id": "publisher.test", "name": "Publisher Test" },
+        "protocolVersion": FRAMEWORK_PROTOCOL_VERSION,
+        "platforms": ["windows-x64"],
+        "entry": {
+            "kind": "process",
+            "command": "runtime/escape/escape-command",
+            "args": [],
+            "processModel": "per_execution"
+        },
+        "permissions": ["process.spawn"],
+        "artExecution": {
+            "requestSchema": "loom.art.execute.v1",
+            "responseSchema": "loom.art.result.v1"
+        }
+    }))
+    .expect("serialize fixture framework manifest");
+    let art_dir = write_manifest_only_fixture(&root, &manifest);
     let package_dir = root
         .join("publisher.test")
         .join("script")
         .join("versions")
         .join("0.1.0-fixture");
+    fs::create_dir_all(package_dir.join("runtime")).expect("create fixture runtime directory");
     let outside_dir = root.join("outside-runtime");
     fs::create_dir_all(&outside_dir).expect("create outside runtime directory");
     fs::write(outside_dir.join("escape-command"), b"outside package")
         .expect("write outside command fixture");
     create_directory_link(&outside_dir, &package_dir.join("runtime").join("escape"));
-
-    let manifest_path = package_dir.join("framework.manifest.json");
-    let mut manifest: Value =
-        serde_json::from_slice(&fs::read(&manifest_path).expect("read fixture framework manifest"))
-            .expect("parse fixture framework manifest");
-    manifest["entry"]["command"] = Value::String("runtime/escape/escape-command".to_owned());
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("serialize fixture framework manifest"),
-    )
-    .expect("write fixture framework manifest");
 
     let error = execute_framework_art_in_root_with_timeout(
         &fixture_tool(&art_dir),
@@ -178,8 +191,10 @@ fn framework_command_link_cannot_escape_the_package_directory() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn invalid_process_response_is_a_structured_protocol_error() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("invalid");
     let art_dir = write_fixture_package(&root, INVALID_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
@@ -187,7 +202,7 @@ fn invalid_process_response_is_a_structured_protocol_error() {
         "publisher.test/script",
         json!({}),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect_err("invalid framework response");
@@ -199,8 +214,10 @@ fn invalid_process_response_is_a_structured_protocol_error() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn process_timeout_kills_the_framework_process() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("timeout");
     let art_dir = write_fixture_package(&root, TIMEOUT_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
@@ -219,8 +236,10 @@ fn process_timeout_kills_the_framework_process() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn process_drains_large_stdout_without_deadlocking() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("large-stdout");
     let art_dir = write_fixture_package(&root, LARGE_OUTPUT_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
@@ -228,7 +247,7 @@ fn process_drains_large_stdout_without_deadlocking() {
         "publisher.test/script",
         json!({}),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect("large framework response");
@@ -239,8 +258,10 @@ fn process_drains_large_stdout_without_deadlocking() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn process_normalizes_image_paths_before_the_temp_directory_is_removed() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("path-image-output");
     let art_dir = write_fixture_package(&root, PATH_IMAGE_OUTPUT_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
@@ -248,7 +269,7 @@ fn process_normalizes_image_paths_before_the_temp_directory_is_removed() {
         "publisher.test/script",
         json!({}),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect("path image output");
@@ -262,8 +283,10 @@ fn process_normalizes_image_paths_before_the_temp_directory_is_removed() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn process_rejects_image_paths_outside_execution_output_roots() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("outside-path-image-output");
     let art_dir = write_fixture_package(&root, OUTSIDE_PATH_IMAGE_OUTPUT_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
@@ -271,7 +294,7 @@ fn process_rejects_image_paths_outside_execution_output_roots() {
         "publisher.test/script",
         json!({}),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect_err("outside path rejected");
@@ -284,8 +307,10 @@ fn process_rejects_image_paths_outside_execution_output_roots() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn framework_art_requires_installed_package_directory_metadata() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("missing-art-directory");
     let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
     let mut tool = fixture_tool(&art_dir);
@@ -323,13 +348,15 @@ fn framework_art_requires_installed_package_directory_metadata() {
 /// many times, so the warm case is the representative one; the first execution also pays for the
 /// operating system caching the interpreter this test copied a moment earlier, which is an
 /// artefact of the fixture rather than a cost a deployment pays per execution.
+#[cfg(windows)]
 #[test]
 fn one_art_execution_stays_within_its_wall_time_budget() {
-    // Measured at 1,562 ms warm on 2026-08-22. The ceiling is far above that because wall time is
-    // the one budget that has to survive a shared CI runner competing with other jobs; it is set
-    // to catch an execution that has started spawning twice or waiting on a network round trip,
-    // not to track interpreter startup drift.
-    const BUDGET_MS: u64 = 10_000;
+    let _powershell_guard = lock_windows_powershell_fixture();
+    // Measured at 1,562 ms warm on 2026-08-22 and 17,765 ms on a shared Windows runner on
+    // 2026-08-24. The 30-second ceiling is below the 60-second execution timeout, so it still
+    // catches a second spawn or a network wait without treating hosted-runner startup variance as
+    // a product regression.
+    const BUDGET_MS: u64 = 30_000;
 
     let root = temp_root("perf-wall-time");
     let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
