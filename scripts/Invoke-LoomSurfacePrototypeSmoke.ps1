@@ -404,7 +404,9 @@ try {
         Assert-Equal "succeeded" ([string]$stockSymbolResult.ack.status) `
             "stock symbol input failed: $($stockSymbolResult.ack | ConvertTo-Json -Depth 20 -Compress)"
         $stockCommit = Invoke-SurfaceAction $baseUrl $attach.stock.instanceId $attach.stock.attachmentId $localDevice "symbol" "change" "stock_symbol_commit" "commit" @{ value = "NVDA" }
-        [void](Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockCommit.eventId)
+        $stockCommitResult = Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockCommit.eventId
+        Assert-Equal "succeeded" ([string]$stockCommitResult.ack.status) `
+            "stock symbol commit failed: $($stockCommitResult.ack | ConvertTo-Json -Depth 20 -Compress)"
         $stockRefresh = Invoke-SurfaceAction $baseUrl $attach.stock.instanceId $attach.stock.attachmentId $localDevice "refresh" "click" "stock_refresh"
         $stockFinal = Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockRefresh.eventId
         Assert-Equal "succeeded" ([string]$stockFinal.ack.status) "stock refresh failed"
