@@ -206,13 +206,16 @@ fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() 
         .expect_err("stale Loom patch must fail");
     let preserved: Value = serde_json::from_slice(&fs::read(&session_path).unwrap()).unwrap();
 
-    assert!(matches!(
-        error,
-        HookCanvasPersistError::RevisionConflict {
-            expected: 1,
-            current: 2
-        }
-    ));
+    assert!(
+        matches!(
+            &error,
+            HookCanvasPersistError::RevisionConflict {
+                expected: 1,
+                current: 2
+            }
+        ),
+        "unexpected concurrent patch result: {error:?}"
+    );
     assert_eq!(preserved["documentRevision"], 2);
     assert_eq!(preserved["stickers"][0]["params"]["strength"], 4);
     clear_hook_canvas_runtime_state(None);
