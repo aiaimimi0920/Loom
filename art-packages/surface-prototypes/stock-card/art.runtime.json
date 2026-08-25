@@ -5,7 +5,7 @@
     "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "runtime/main.ps1"]
   },
   "limits": {
-    "timeoutMs": 10000,
+    "timeoutMs": 30000,
     "maxStdoutBytes": 10485760,
     "maxStderrBytes": 262144,
     "maxProcesses": 1

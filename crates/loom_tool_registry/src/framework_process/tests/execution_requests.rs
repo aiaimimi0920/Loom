@@ -2,8 +2,10 @@ use super::super::*;
 use super::execution_support::*;
 use std::fs;
 
+#[cfg(windows)]
 #[test]
 fn process_request_contains_art_inputs_params_and_context() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("success");
     let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
@@ -15,7 +17,7 @@ fn process_request_contains_art_inputs_params_and_context() {
             "disabledParams": ["unused"]
         }),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect("framework process success");
@@ -35,8 +37,10 @@ fn process_request_contains_art_inputs_params_and_context() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn process_request_contains_art_scoped_credential_bindings() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("credentials");
     let packages_root = root.join("frameworks");
     fs::create_dir_all(&packages_root).expect("create framework packages root");
@@ -95,7 +99,7 @@ fn process_request_contains_art_scoped_credential_bindings() {
         "publisher.test/script",
         json!({}),
         &packages_root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect("framework process credential binding");
@@ -193,8 +197,10 @@ fn mcp_framework_resolves_independent_package_and_server_scoped_credentials() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn flat_art_arguments_are_partitioned_by_manifest_schema() {
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("flat-schema");
     let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
@@ -206,7 +212,7 @@ fn flat_art_arguments_are_partitioned_by_manifest_schema() {
             "strength": 25
         }),
         &root,
-        Duration::from_secs(10),
+        FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
     .expect("framework process success");
@@ -218,11 +224,10 @@ fn flat_art_arguments_are_partitioned_by_manifest_schema() {
     fs::remove_dir_all(root).ok();
 }
 
+#[cfg(windows)]
 #[test]
 fn execute_tool_routes_framework_art_to_the_external_process() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("execute-tool");
     let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
     let _environment = EnvVarGuard::set("LOOM_FRAMEWORK_PACKAGES_DIR", &root);
