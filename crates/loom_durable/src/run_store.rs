@@ -32,6 +32,8 @@ pub enum RunStoreError {
     Integrity(String),
     #[error("SQLite run store error: {0}")]
     Sqlite(String),
+    #[error("SQLite run store locking protocol error: {0}")]
+    SqliteLockProtocol(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

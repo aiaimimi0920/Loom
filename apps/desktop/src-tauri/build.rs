@@ -30,13 +30,13 @@ fn main() {
         .unwrap_or_else(|| "https://github.com/aiaimimi0920/Loom".to_owned());
     let commit = git_value(&repo_root, &["rev-parse", "HEAD"])
         .map(|value| value.chars().take(6).collect())
-        .unwrap_or_else(|| "unknown".to_owned());
+        .unwrap_or_else(|| "000000".to_owned());
     let hook_repository = git_value(&hook_repo_root, &["config", "--get", "remote.origin.url"])
         .map(|value| value.trim_end_matches(".git").to_owned())
         .unwrap_or_else(|| "https://github.com/aiaimimi0920/Hook".to_owned());
     let hook_commit = git_value(&hook_repo_root, &["rev-parse", "HEAD"])
         .map(|value| value.chars().take(6).collect())
-        .unwrap_or_else(|| "unknown".to_owned());
+        .unwrap_or_else(|| "000000".to_owned());
 
     println!("cargo:rustc-env=LOOM_BUILD_REPOSITORY={repository}");
     println!("cargo:rustc-env=LOOM_BUILD_COMMIT={commit}");
@@ -44,6 +44,9 @@ fn main() {
     println!("cargo:rustc-env=HOOK_BUILD_COMMIT={hook_commit}");
     println!("cargo:rerun-if-changed=../../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../../.git/refs/heads");
+    // Rust caches build-script output; invalidate it when CI checks out a new commit
+    // even if the detached .git/HEAD path keeps the same timestamp.
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     println!("cargo:rerun-if-changed=../../../../Hook/.git/HEAD");
     println!("cargo:rerun-if-changed=../../../../Hook/.git/refs/heads");
     println!("cargo:rerun-if-changed=icons/loom-icon.svg");

@@ -152,6 +152,9 @@ pub fn build_authored_art_package_zip(
             if normalized.is_empty()
                 || normalized == MANIFEST_NAME
                 || normalized == "art.runtime.json"
+                // Host-native Path parsing does not recognize Windows drive syntax on Unix.
+                || has_windows_drive_prefix(&normalized)
+                || normalized.starts_with("//")
                 || candidate.is_absolute()
                 || candidate.components().any(|component| {
                     matches!(
@@ -173,6 +176,11 @@ pub fn build_authored_art_package_zip(
         writer.finish()?;
     }
     Ok(bytes)
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 pub(super) fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(

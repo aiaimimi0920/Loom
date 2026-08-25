@@ -52,7 +52,7 @@ test("shows compact About and diagnostic log content for Loom and Hook", () => {
   assert.match(appSource, /<dt>仓库<\/dt>/);
   assert.match(appSource, /diagnostics\.commitShort\?\.slice\(0, 6\)/);
   assert.match(appSource, /open_external_url/);
-  assert.match(appSource, /https:\/\/github\.com\/aiaimimi0920\/Hook/);
+  assert.match(appSource, /(?:^|["'`])https:\/\/github\.com\/aiaimimi0920\/Hook(?:["'`]|$)/);
   assert.match(appSource, /M250 394V250h144/);
   assert.match(appSource, /M774 630v144H630/);
   assert.match(appSource, /<h3>诊断日志<\/h3>/);
