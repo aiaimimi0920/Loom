@@ -401,7 +401,8 @@ try {
 
         $stockSymbol = Invoke-SurfaceAction $baseUrl $attach.stock.instanceId $attach.stock.attachmentId $localDevice "symbol" "input" "stock_symbol_input" "continuous" @{ value = "NVDA" }
         $stockSymbolResult = Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockSymbol.eventId
-        Assert-Equal "succeeded" ([string]$stockSymbolResult.ack.status) "stock symbol input failed"
+        Assert-Equal "succeeded" ([string]$stockSymbolResult.ack.status) `
+            "stock symbol input failed: $($stockSymbolResult.ack | ConvertTo-Json -Depth 20 -Compress)"
         $stockCommit = Invoke-SurfaceAction $baseUrl $attach.stock.instanceId $attach.stock.attachmentId $localDevice "symbol" "change" "stock_symbol_commit" "commit" @{ value = "NVDA" }
         [void](Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockCommit.eventId)
         $stockRefresh = Invoke-SurfaceAction $baseUrl $attach.stock.instanceId $attach.stock.attachmentId $localDevice "refresh" "click" "stock_refresh"
