@@ -1,5 +1,19 @@
 $ErrorActionPreference = "Stop"
 
+function New-UnicodeText {
+    param([int[]]$CodePoints)
+    return -join ($CodePoints | ForEach-Object { [char]$_ })
+}
+
+$script:TypingLabel = New-UnicodeText @(0x6B63, 0x5728, 0x8F93, 0x5165)
+$script:SelectedLabel = New-UnicodeText @(0x5DF2, 0x9009, 0x62E9)
+$script:PreviewLabel = New-UnicodeText @(0x9884, 0x89C8, 0xFF1A)
+$script:EveryLabel = New-UnicodeText @(0x6BCF)
+$script:SecondsLabel = New-UnicodeText @(0x79D2)
+$script:RefreshLabel = New-UnicodeText @(0x5237, 0x65B0)
+$script:CurrencySymbol = [char]0xA5
+$script:QuoteUpdatedLabel = New-UnicodeText @(0x884C, 0x60C5, 0x5DF2, 0x66F4, 0x65B0)
+
 function Find-SurfaceAction {
     param([object]$Value)
     if ($null -eq $Value) { return $null }
@@ -95,7 +109,7 @@ try {
                 patches = [object[]]@([ordered]@{
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value $symbol),
-                        (New-SetOperation -NodeId "symbol_hint" -Path "/props/text" -Value "正在输入 $symbol")
+                        (New-SetOperation -NodeId "symbol_hint" -Path "/props/text" -Value "$script:TypingLabel $symbol")
                     )
                     statePatch = [ordered]@{ draftSymbol = $symbol }
                 })
@@ -110,7 +124,7 @@ try {
                 patches = [object[]]@([ordered]@{
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value $symbol),
-                        (New-SetOperation -NodeId "symbol_hint" -Path "/props/text" -Value "已选择 $symbol")
+                        (New-SetOperation -NodeId "symbol_hint" -Path "/props/text" -Value "$script:SelectedLabel $symbol")
                     )
                     statePatch = [ordered]@{ symbol = $symbol; draftSymbol = $symbol }
                 })
@@ -123,7 +137,7 @@ try {
                 patches = [object[]]@([ordered]@{
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "interval" -Path "/props/value" -Value $interval),
-                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value "预览：$interval 秒")
+                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value ("{0}{1} {2}" -f $script:PreviewLabel, $interval, $script:SecondsLabel))
                     )
                     statePatch = [ordered]@{ draftInterval = $interval }
                 })
@@ -136,7 +150,7 @@ try {
                 patches = [object[]]@([ordered]@{
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "interval" -Path "/props/value" -Value $interval),
-                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value "每 $interval 秒刷新")
+                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value ("{0} {1} {2}{3}" -f $script:EveryLabel, $interval, $script:SecondsLabel, $script:RefreshLabel))
                     )
                     statePatch = [ordered]@{ interval = $interval; draftInterval = $interval }
                 })
@@ -152,17 +166,17 @@ try {
                 protocolVersion = "loom.surface.v1"
                 patches = [object[]]@(
                     [ordered]@{
-                        operations = [object[]]@((New-SetOperation -NodeId "price" -Path "/props/text" -Value ("¥{0:N2}" -f $first)))
+                        operations = [object[]]@((New-SetOperation -NodeId "price" -Path "/props/text" -Value ("{0}{1:N2}" -f $script:CurrencySymbol, $first)))
                         statePatch = [ordered]@{}
                     },
                     [ordered]@{
-                        operations = [object[]]@((New-SetOperation -NodeId "price" -Path "/props/text" -Value ("¥{0:N2}" -f $second)))
+                        operations = [object[]]@((New-SetOperation -NodeId "price" -Path "/props/text" -Value ("{0}{1:N2}" -f $script:CurrencySymbol, $second)))
                         statePatch = [ordered]@{}
                     },
                     [ordered]@{
                         operations = [object[]]@(
-                            (New-SetOperation -NodeId "price" -Path "/props/text" -Value ("¥{0:N2}" -f $final)),
-                            (New-SetOperation -NodeId "status" -Path "/props/text" -Value "行情已更新")
+                            (New-SetOperation -NodeId "price" -Path "/props/text" -Value ("{0}{1:N2}" -f $script:CurrencySymbol, $final)),
+                            (New-SetOperation -NodeId "status" -Path "/props/text" -Value $script:QuoteUpdatedLabel)
                         )
                         statePatch = [ordered]@{ price = $final }
                     }
