@@ -42,6 +42,11 @@ pub(super) fn newest_log_file(log_dir: &Path) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
+pub(super) fn normalize_build_commit(value: &str) -> Option<String> {
+    let short: String = value.trim().chars().take(6).collect();
+    (short.len() == 6 && short.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(short)
+}
+
 pub(super) fn application_diagnostics(app: &str) -> Result<ApplicationDiagnostics, String> {
     let log_dir = application_log_dir(app)?;
     let (app_name, version, repository_url, commit_short, log_file) = match app {
@@ -49,7 +54,7 @@ pub(super) fn application_diagnostics(app: &str) -> Result<ApplicationDiagnostic
             "Loom",
             env!("CARGO_PKG_VERSION").to_owned(),
             Some(env!("LOOM_BUILD_REPOSITORY").to_owned()),
-            Some(env!("LOOM_BUILD_COMMIT").to_owned()),
+            normalize_build_commit(env!("LOOM_BUILD_COMMIT")),
             newest_log_file(&log_dir),
         ),
         "hook" => {
@@ -61,7 +66,7 @@ pub(super) fn application_diagnostics(app: &str) -> Result<ApplicationDiagnostic
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| HOOK_COMPANION_VERSION.to_owned()),
                 Some(env!("HOOK_BUILD_REPOSITORY").to_owned()),
-                Some(env!("HOOK_BUILD_COMMIT").to_owned()),
+                normalize_build_commit(env!("HOOK_BUILD_COMMIT")),
                 log_file.is_file().then_some(log_file),
             )
         }
@@ -144,8 +149,12 @@ pub(super) fn is_allowed_repository_url(url: &str) -> bool {
 
 pub(super) fn is_safe_external_https_url(url: &str) -> bool {
     tauri::Url::parse(url).is_ok_and(|parsed| {
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
         parsed.scheme() == "https"
-            && parsed.host_str().is_some()
+            && matches!(
+                host.as_str(),
+                "github.com" | "registry.modelcontextprotocol.io"
+            )
             && parsed.username().is_empty()
             && parsed.password().is_none()
     })
