@@ -18,6 +18,8 @@ pub use loom_security::network as network_policy;
 pub(crate) use loom_security::archive as secure_zip;
 
 mod private_store;
+#[cfg(all(test, windows))]
+mod test_support;
 mod tool_registry;
 
 pub use tool_registry::{
