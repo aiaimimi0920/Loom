@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { PassThrough } = require("node:stream");
 const test = require("node:test");
 const {
@@ -14,6 +16,7 @@ const {
   MAX_IN_FLIGHT_REQUESTS,
 } = require("./stock-api/constants.js");
 const { runWrapperServer } = require("./stock-api/server.js");
+const { getDelimitedParams } = require("./vendor/stock-api/dist/stocks/shared/provider.js");
 
 function responseFromChunks(chunks, declaredLength = null) {
   let index = 0;
@@ -60,6 +63,18 @@ async function waitFor(predicate, message) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+test("vendored stock parsers remove every upstream quote delimiter", () => {
+  assert.deepEqual(getDelimitedParams('v_quote="A"B~12"', "~"), ["AB", "12"]);
+  for (const relative of [
+    "vendor/stock-api/dist/stocks/tencent/index.js",
+    "vendor/stock-api/dist/browser/stock-api.esm.mjs",
+    "vendor/stock-api/dist/browser/stock-api.iife.js",
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, relative), "utf8");
+    assert.doesNotMatch(source, /\.replace\('\"', ""\)/);
+  }
+});
 
 test("known 5 MiB Unicode body uses one exact byte buffer and parses at the boundary", async () => {
   const unicodeTail = "汉";

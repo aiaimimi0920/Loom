@@ -31,7 +31,7 @@ function getAssignedValue(row) {
     return value;
 }
 function getDelimitedParams(row, delimiter) {
-    return getAssignedValue(row).replace('"', "").split(delimiter);
+    return getAssignedValue(row).replaceAll('"', "").split(delimiter);
 }
 function createStockProvider(config) {
     async function getStocks(codes) {

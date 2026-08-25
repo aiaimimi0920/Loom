@@ -1,0 +1,52 @@
+name: Dependabot Triage
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number, or all open Dependabot pull requests
+        required: true
+        default: all
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-triage-${{ github.event.workflow_run.id || inputs.pr || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    name: Classify without merging
+    runs-on: ubuntu-latest
+    steps:
+      # Never execute a Dependabot branch with this workflow's label-writing token.
+      - name: Checkout trusted classifier
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Apply conservative risk labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_SELECTOR: ${{ inputs.pr }}
+        with:
+          script: |
+            const triage = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/dependabot-triage.cjs`);
+            await triage.run({
+              github,
+              context,
+              core,
+              workspace: process.env.GITHUB_WORKSPACE,
+              selector: process.env.PR_SELECTOR,
+            });
