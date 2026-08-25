@@ -18,7 +18,7 @@ permissions:
   actions: read
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: dependabot-triage-${{ github.event.workflow_run.id || inputs.pr || github.run_id }}
