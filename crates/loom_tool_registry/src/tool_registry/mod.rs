@@ -6,12 +6,14 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+#[cfg(windows)]
 use loom_process::ProcessSpec;
 use loom_protocol::{
     is_safe_publisher_id, is_safe_surface_identifier, PublisherIdentity, SurfaceActionRisk,

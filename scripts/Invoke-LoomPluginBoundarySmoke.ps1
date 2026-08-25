@@ -62,7 +62,13 @@ function Resolve-HookRepository {
         }
     }
 
-    throw "Hook repository could not be resolved. Checked: $($candidates -join ', ')"
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        throw "Explicit Hook repository could not be resolved. Checked: $($candidates -join ', ')"
+    }
+    # Loom is also released as a standalone repository. The boundary smoke can validate Loom's
+    # third-party lifecycle without a sibling checkout; when Hook is present, retain the stronger
+    # source-integrity assertion below.
+    return $null
 }
 
 function Write-Utf8NoBomFile {
@@ -438,7 +444,11 @@ $qualifiedFrameworkId = "$publisherId/$frameworkId"
 $artId = "third-party-image-echo"
 $qualifiedArtId = "$publisherId/$artId"
 $loomBefore = Get-GitStateFingerprint -Repository $repoRoot
-$hookBefore = Get-GitStateFingerprint -Repository $hookRoot
+$hookBefore = if ($null -ne $hookRoot) {
+    Get-GitStateFingerprint -Repository $hookRoot
+} else {
+    $null
+}
 $daemon = $null
 $hookBridgeClient = $null
 $hookBridgeRunning = $false
@@ -673,9 +683,11 @@ $response = [ordered]@{
     Assert-True ([string]$reinstalledFrameworkRun.result.value -eq "plugin:hello:2.0.0") "Art did not execute after framework reinstall."
 
     $loomAfter = Get-GitStateFingerprint -Repository $repoRoot
-    $hookAfter = Get-GitStateFingerprint -Repository $hookRoot
     Assert-True ($loomBefore -eq $loomAfter) "Third-party smoke changed Loom source state."
-    Assert-True ($hookBefore -eq $hookAfter) "Third-party smoke changed Hook source state."
+    if ($null -ne $hookRoot) {
+        $hookAfter = Get-GitStateFingerprint -Repository $hookRoot
+        Assert-True ($hookBefore -eq $hookAfter) "Third-party smoke changed Hook source state."
+    }
 
     $succeeded = $true
     $evidence = [ordered]@{
@@ -693,6 +705,7 @@ $response = [ordered]@{
         artLifecycle = "install-disable-enable-uninstall-reinstall"
         loomSourceChanged = $false
         hookSourceChanged = $false
+        hookRepositoryChecked = ($null -ne $hookRoot)
         frameworkId = $qualifiedFrameworkId
         artId = $qualifiedArtId
     }

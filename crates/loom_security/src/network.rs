@@ -222,18 +222,32 @@ pub fn validate_outbound_url(url: &Url, policy: &OutboundPolicy) -> Result<(), S
 /// looking like a URL, which is the gap this covers.
 pub fn validate_local_path(path: &Path) -> Result<(), String> {
     let display = path.display().to_string();
-    if display.starts_with("//") {
+    if display.starts_with("//")
+        || (display.starts_with(r"\\") && !is_windows_verbatim_drive_path(&display))
+    {
         return Err(format!("remote or device path `{display}` is not allowed"));
     }
     match path.components().next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..) => {
+            Prefix::UNC(..)
+            | Prefix::VerbatimUNC(..)
+            | Prefix::DeviceNS(..)
+            | Prefix::Verbatim(..) => {
                 Err(format!("remote or device path `{display}` is not allowed"))
             }
             _ => Ok(()),
         },
         _ => Ok(()),
     }
+}
+
+fn is_windows_verbatim_drive_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 7
+        && bytes[..4] == *br"\\?\"
+        && bytes[4].is_ascii_alphabetic()
+        && bytes[5] == b':'
+        && matches!(bytes[6], b'\\' | b'/')
 }
 
 fn validate_url_without_dns(url: &Url, policy: &OutboundPolicy) -> Result<(), String> {
@@ -393,6 +407,7 @@ mod tests {
             r"\\fileserver\share\payload.zip",
             r"\\?\UNC\fileserver\share\payload.zip",
             r"\\.\PhysicalDrive0",
+            r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1",
             "//fileserver/share/payload.zip",
         ] {
             assert!(

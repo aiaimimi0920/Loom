@@ -24,6 +24,11 @@ function Copy-LoomLockedFile {
     }
 }
 
+function ConvertTo-LoomGitHubCommandValue {
+    param([string]$Value)
+    return $Value.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+}
+
 function Invoke-CommandToLog {
     param(
         [System.Collections.Specialized.OrderedDictionary]$Command,
@@ -106,6 +111,15 @@ function Invoke-CommandToLog {
     }
 
     if ($exitCode -ne 0) {
+        if ([string]::Equals($env:GITHUB_ACTIONS, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $logTail = @(Get-Content -LiteralPath $LogPath -Encoding UTF8 -Tail 40)
+            $diagnostic = @($logTail | Select-Object -Last 20) -join " | "
+            if ($diagnostic.Length -gt 2000) {
+                $diagnostic = $diagnostic.Substring($diagnostic.Length - 2000)
+            }
+            $detail = ConvertTo-LoomGitHubCommandValue -Value $diagnostic
+            Write-Output "::error title=Loom release build command failed::$detail"
+        }
         throw "Build command failed with exit code ${exitCode}: $($Command.display). See $LogPath"
     }
 }

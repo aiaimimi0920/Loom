@@ -142,7 +142,8 @@ mod security_tests {
         assert!(create_file_link(&external, &source.join("runtime/main.exe")));
         let error = validate_path_with_payload(&source, true, &TrustStore::default())
             .expect_err("linked payload must fail");
-        assert!(error.to_string().contains("links are not allowed"), "{error:#}");
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("links are not allowed"), "{error_chain}");
         fs::remove_dir_all(root).ok();
     }
 

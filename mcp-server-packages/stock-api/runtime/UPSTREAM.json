@@ -11,5 +11,9 @@
   "license": "MIT",
   "vendoredPath": "vendor/stock-api",
   "vendoredFileCount": 104,
-  "vendoredTreeSha256": "ca02a1c1c5f36199eab96de7e1b22a3226e84e534dd3d72397b1f73f26d024de"
+  "upstreamVendoredTreeSha256": "ca02a1c1c5f36199eab96de7e1b22a3226e84e534dd3d72397b1f73f26d024de",
+  "vendoredTreeSha256": "071ddf84e840bf0fc95bab6d05e700d5cd874877ac48d0ddb8009896dee52da4",
+  "securityPatches": [
+    "Normalize all quote delimiters in the Tencent and shared provider parsers before splitting upstream responses."
+  ]
 }
