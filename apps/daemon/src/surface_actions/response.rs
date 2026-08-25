@@ -2,6 +2,9 @@
 fn parse_surface_action_response(
     mut value: Value,
 ) -> Result<SurfaceActionResponse, SurfaceExecutionError> {
+    if value.get("status").and_then(Value::as_str) == Some("error") {
+        return Err(parse_surface_runtime_error(&value));
+    }
     let payload = value
         .as_object_mut()
         .and_then(|output| output.remove("surfaceAction"))
@@ -32,6 +35,26 @@ fn parse_surface_action_response(
     validate_surface_protocol(&response.protocol_version)
         .map_err(|error| execution_error("surface_action_protocol_invalid", error.to_string()))?;
     Ok(response)
+}
+
+/// Preserve the Art runtime's structured failure instead of reporting it as a
+/// malformed success payload with a missing `surfaceAction` field.
+fn parse_surface_runtime_error(value: &Value) -> SurfaceExecutionError {
+    let runtime_error = value.get("error").and_then(Value::as_object);
+    let code = runtime_error
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        .filter(|code| !code.is_empty())
+        .unwrap_or("unknown");
+    let message = runtime_error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+        .unwrap_or("Art runtime returned an error");
+    execution_error(
+        "surface_art_runtime_error",
+        format!("Art runtime error `{code}`: {message}"),
+    )
 }
 
 fn apply_action_response(
