@@ -407,6 +407,10 @@ try {
         $stockCommitResult = Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockCommit.eventId
         Assert-Equal "succeeded" ([string]$stockCommitResult.ack.status) `
             "stock symbol commit failed: $($stockCommitResult.ack | ConvertTo-Json -Depth 20 -Compress)"
+        $stockCommitRecord = Get-CurrentSurfaceRecord $baseUrl $attach.stock.instanceId
+        $stockCommitAttachment = Get-SurfaceAttachment $stockCommitRecord $attach.stock.attachmentId
+        Assert-Equal "NVDA" ([string]$stockCommitAttachment.snapshot.authoritativeState.symbol) `
+            "stock symbol commit state mismatch: $($stockCommitAttachment.snapshot.authoritativeState | ConvertTo-Json -Depth 20 -Compress)"
         $stockRefresh = Invoke-SurfaceAction $baseUrl $attach.stock.instanceId $attach.stock.attachmentId $localDevice "refresh" "click" "stock_refresh"
         $stockFinal = Wait-SurfaceAction $baseUrl $attach.stock.instanceId $stockRefresh.eventId
         Assert-Equal "succeeded" ([string]$stockFinal.ack.status) "stock refresh failed"
