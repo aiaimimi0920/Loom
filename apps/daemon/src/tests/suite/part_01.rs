@@ -11,12 +11,11 @@ use std::thread;
 use std::time::Duration;
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-static HOOK_ART_REQUEST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Take one of the test serialization locks above, treating an earlier panic as no obstacle.
+/// Take the process-wide test serialization lock, treating an earlier panic as no obstacle.
 ///
-/// Both mutexes guard `()`. They exist to stop tests that mutate process-wide state — environment
-/// variables, the Hook canvas runtime — from running at the same time, and they carry no data that a
+/// The mutex stops tests that mutate process-wide state — environment variables and the Hook canvas
+/// runtime — from running at the same time, and it carries no data that a
 /// panicking test could have left half-written. Poisoning is therefore the wrong signal here: the
 /// state each test depends on is state that test sets up itself, so the next holder of the lock is
 /// unaffected by whatever the previous one did before it panicked.
@@ -251,7 +250,7 @@ fn hook_bridge_status_advertises_only_formal_namespaced_protocol() {
 
 #[test]
 fn hook_art_request_ids_are_idempotent_and_generations_replace_previous_work() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let first = hook_art_request("request:first", "node:one", 1);
@@ -298,7 +297,7 @@ fn hook_art_request_ids_are_idempotent_and_generations_replace_previous_work() {
 
 #[test]
 fn hook_art_generation_resets_after_client_restart_when_node_is_idle() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let first = hook_art_request("request:completed", "node:restart", 5);
@@ -327,7 +326,7 @@ fn hook_art_generation_resets_after_client_restart_when_node_is_idle() {
 
 #[test]
 fn hook_art_request_coordination_is_scoped_by_device() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let device_one = hook_art_request("request:shared", "node:shared", 4);
@@ -380,7 +379,7 @@ fn hook_art_request_coordination_is_scoped_by_device() {
 
 #[test]
 fn hook_art_request_id_replay_requires_an_identical_request() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let request = hook_art_request("request:identity", "node:identity", 1);
@@ -404,7 +403,7 @@ fn hook_art_request_id_replay_requires_an_identical_request() {
 
 #[test]
 fn hook_art_cancellation_binds_node_generation_and_device() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let request = hook_art_request("request:cancel", "node:cancel", 4);

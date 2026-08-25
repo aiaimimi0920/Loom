@@ -111,12 +111,18 @@ function Invoke-JsonPost {
     param(
         [string]$Uri,
         [object]$Body,
+        [int]$TimeoutSec = 20,
         [hashtable]$Headers = $script:DaemonAuthHeaders
     )
 
     Assert-SmokeLoopbackUri -Uri $Uri
     $json = $Body | ConvertTo-Json -Depth 20
-    return Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers -ContentType "application/json" -Body $json -TimeoutSec 20 -MaximumRedirection 0
+    try {
+        return Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers -ContentType "application/json" -Body $json -TimeoutSec $TimeoutSec -MaximumRedirection 0
+    }
+    catch {
+        throw "Smoke POST failed for ${Uri} (timeoutSec=$TimeoutSec): $($_.Exception.Message)"
+    }
 }
 
 function Invoke-JsonPut {

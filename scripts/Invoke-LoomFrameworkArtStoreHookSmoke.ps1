@@ -299,7 +299,7 @@ try {
         Send-LoomHookBridgeWebSocketJson `
             -Client $subscriber `
             -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:release-framework-smoke","events":["loom.hook.workflow.instantiated","loom.hook.workflow.updated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.preview","loom.hook.art.result","loom.hook.art.failure"]}}'
-        $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
+        $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $subscriber -Operation "subscribe"
         Assert-Equal "loom.hook.v1" ([string]$subscribed.protocolVersion) "Hook Bridge subscribe protocol mismatch."
         Assert-Equal "succeeded" ([string]$subscribed.status) "Hook Bridge subscribe status mismatch."
 
@@ -320,7 +320,7 @@ try {
         Assert-Equal "loom.hook.v1" ([string]$instantiated.protocolVersion) "Instantiate workflow protocol mismatch."
         Assert-Equal "succeeded" ([string]$instantiated.status) "Instantiate workflow response status mismatch."
 
-        $broadcast = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
+        $broadcast = Receive-LoomHookBridgeWebSocketJson -Client $subscriber -Operation "workflow instantiate broadcast"
         Assert-Equal "loom.hook.workflow.instantiated" ([string]$broadcast.method) "Instantiate workflow broadcast method mismatch."
         Assert-Equal 6 (@($broadcast.params.nodes).Count) "Hook broadcast node count mismatch."
         $summary.instantiateWorkflow = @{
@@ -360,7 +360,7 @@ try {
                     }
                 }
             } | ConvertTo-Json -Depth 20 -Compress)
-        $overwritten = Receive-LoomHookBridgeWebSocketJson -Client $subscriber
+        $overwritten = Receive-LoomHookBridgeWebSocketJson -Client $subscriber -Operation "workflow sync"
         Assert-Equal "succeeded" ([string]$overwritten.status) "Hook live workflow sync response status mismatch."
         $summary.liveWorkflowOverwrite = @{
             workflowId = "hook-live"
