@@ -381,6 +381,7 @@ fn diagnostics_and_support_bundle_redact_secrets_and_require_existing_runs() {
 
 #[test]
 fn hook_art_execution_creates_durable_run_evidence() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-execution-evidence");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
