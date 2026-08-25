@@ -291,6 +291,21 @@ fn sqlite_immediate_transactions_preserve_concurrent_writers() {
     remove_sqlite_files(&path);
 }
 
+#[test]
+fn sqlite_open_without_interrupted_runs_does_not_require_a_write_lock() {
+    let path = unique_sqlite_path("open-reader");
+    drop(SqliteRunEvidenceStore::open(&path).expect("initialize store"));
+
+    let mut writer = rusqlite::Connection::open(&path).expect("open writer fixture");
+    let transaction = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .expect("hold writer transaction");
+    drop(SqliteRunEvidenceStore::open(&path).expect("open read-only store state"));
+    drop(transaction);
+
+    remove_sqlite_files(&path);
+}
+
 #[cfg(unix)]
 #[test]
 fn sqlite_store_rejects_symlinked_database_and_uses_private_mode() {

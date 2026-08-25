@@ -154,6 +154,7 @@ Assert-True (-not $cloudFixtureSource.Contains('Substring($headerEnd + 4)')) "Cl
 $assertionsSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $moduleRoot "Assertions.ps1")
 $httpStatusSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $moduleRoot "HttpStatus.ps1")
 Assert-True $assertionsSource.Contains('-MaximumRedirection 0') "JSON HTTP helpers allow redirects beyond loopback."
+Assert-True $assertionsSource.Contains('Smoke POST failed for ${Uri} (timeoutSec=$TimeoutSec)') "JSON POST diagnostics omit the endpoint or timeout."
 Assert-True $httpStatusSource.Contains('-MaximumRedirection 0') "HTTP status helper allows redirects beyond loopback."
 } finally {
     if (Test-Path -LiteralPath $EvidenceRoot) {
