@@ -49,11 +49,19 @@ function New-SetOperation {
     return [ordered]@{ op = "set"; nodeId = $NodeId; path = $Path; value = $Value }
 }
 
+function Write-Utf8JsonLine {
+    param([object]$Value, [int]$Depth = 80)
+    $json = ($Value | ConvertTo-Json -Depth $Depth -Compress) + [Environment]::NewLine
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($bytes, 0, $bytes.Length)
+    $stdout.Flush()
+}
+
 function Write-SurfaceSuccess {
     param([hashtable]$SurfaceAction)
     $response = [ordered]@{ status = "success"; output = [ordered]@{ surfaceAction = $SurfaceAction } }
-    [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 80 -Compress))
-    [Console]::Out.Flush()
+    Write-Utf8JsonLine -Value $response -Depth 80
 }
 
 function Write-SurfaceError {
@@ -62,8 +70,7 @@ function Write-SurfaceError {
         status = "error"
         error = [ordered]@{ code = $Code; message = $Message }
     }
-    [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
-    [Console]::Out.Flush()
+    Write-Utf8JsonLine -Value $response -Depth 20
 }
 
 try {

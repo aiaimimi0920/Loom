@@ -5,13 +5,14 @@ fn parse_surface_action_response(
     if value.get("status").and_then(Value::as_str) == Some("error") {
         return Err(parse_surface_runtime_error(&value));
     }
+    let shape = describe_response_shape(&value);
     let payload = value
         .as_object_mut()
         .and_then(|output| output.remove("surfaceAction"))
         .ok_or_else(|| {
             execution_error(
                 "surface_action_response_missing",
-                "Art output has no surfaceAction response",
+                format!("Art output has no surfaceAction response ({shape})"),
             )
         })?;
     if !loom_security::json::value_is_within_depth(
@@ -35,6 +36,28 @@ fn parse_surface_action_response(
     validate_surface_protocol(&response.protocol_version)
         .map_err(|error| execution_error("surface_action_protocol_invalid", error.to_string()))?;
     Ok(response)
+}
+
+fn describe_response_shape(value: &Value) -> String {
+    let Some(object) = value.as_object() else {
+        return "top-level JSON value is not an object".to_owned();
+    };
+    let mut top_level = object.keys().cloned().collect::<Vec<_>>();
+    top_level.sort_unstable();
+    let output = object.get("output");
+    let output_keys = output
+        .and_then(Value::as_object)
+        .map(|nested| {
+            let mut keys = nested.keys().cloned().collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys.join(",")
+        })
+        .unwrap_or_else(|| "<not-object>".to_owned());
+    format!(
+        "top-level keys=[{}], output keys=[{}]",
+        top_level.join(","),
+        output_keys
+    )
 }
 
 /// Preserve the Art runtime's structured failure instead of reporting it as a
