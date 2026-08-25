@@ -48,10 +48,10 @@ jobs:
           node-version: "22.22.2"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             . -> target
@@ -90,19 +90,25 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-            -VersionId $env:LOOM_TAG `
-            -OutputRoot .\release\Loom `
-            -RequireCleanSource
+          & .\scripts\Invoke-CiCommand.ps1 `
+            -Title "Tagged Loom build failed" `
+            -Executable "powershell" `
+            -CommandArguments @(
+              "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\scripts\build-release.ps1",
+              "-VersionId", $env:LOOM_TAG, "-OutputRoot", ".\release\Loom", "-RequireCleanSource"
+            )
 
       - name: Verify and smoke standalone Loom release
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release.ps1 `
-            -PackageDir ".\release\Loom\$env:LOOM_TAG" `
-            -RunSmoke `
-            -RequireCleanSource
+          & .\scripts\Invoke-CiCommand.ps1 `
+            -Title "Tagged Loom verification failed" `
+            -Executable "powershell" `
+            -CommandArguments @(
+              "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\scripts\verify-release.ps1",
+              "-PackageDir", ".\release\Loom\$env:LOOM_TAG", "-RunSmoke", "-RequireCleanSource"
+            )
 
       - name: Attest release build provenance
         uses: actions/attest-build-provenance@v2
