@@ -1,7 +1,7 @@
 // Loom daemon tests fragment 20; included into the shared crate test module.
 #[test]
 fn hook_art_replacement_and_cancellation_reclaim_owned_resources() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let first = hook_art_request("request:first-resource", "node:resource", 1);
@@ -70,7 +70,7 @@ fn hook_art_replacement_and_cancellation_reclaim_owned_resources() {
 
 #[test]
 fn hook_art_terminal_eviction_reclaims_unreleased_resources() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let first = hook_art_request("request:terminal:0", "node:terminal:0", 1);
