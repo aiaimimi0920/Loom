@@ -134,7 +134,7 @@ Assert-Contains 'setTimeout' $inspector "Inspector WebSocket operations must hav
 Assert-Contains 'if (client) client.close();' $inspector "Inspector must close a partially initialized CDP client."
 Assert-Contains 'this.socket.readyState === WebSocket.OPEN' $inspector "Inspector socket cleanup must only close an open WebSocket."
 Assert-Contains 'try {' $inspector "Inspector socket cleanup must not replace a completed result with a close error."
-Assert-Contains 'await fs.writeFile(args.output, `${JSON.stringify(failure, null, 2)}\n`, "utf8");' $inspector "Inspector failures must persist diagnostic JSON."
+Assert-Contains 'await fs.writeFile(outputPath, `${JSON.stringify({ error: "WebView inspection failed" }, null, 2)}\n`, "utf8");' $inspector "Inspector failures must persist a safe diagnostic marker without writing browser-controlled data to disk."
 Assert-Contains 'await new Promise((resolve, reject) => {' $inspector "Inspector must flush successful stdout before exiting."
 Assert-Contains '.then(() => process.exit(0))' $inspector "Inspector CLI must terminate after successful evidence writes."
 Assert-Contains 'process.stderr.write(message, () => {' $inspector "Inspector CLI must flush stderr before failure exit."

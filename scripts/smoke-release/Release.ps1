@@ -123,8 +123,8 @@ function Test-LoomRelease {
         $mcpRegistryRequest = Get-Content -Raw -LiteralPath $mcpRegistryRequestPath
         Assert-Contains "GET /v0/servers?limit=100&search=fixture&cursor=cursor-1" $mcpRegistryRequest "Loom MCP Registry request URL mismatch."
 
-        # POST /v1/mcp/test
-        $mcpConnectionTest = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/test" -Body @{
+        # POST /v1/mcp/test; its PowerShell fixture may cold-start under endpoint protection.
+        $mcpConnectionTest = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/test" -TimeoutSec 60 -Body @{
             id = "fixture-test"
             name = "Fixture Test MCP"
             transport = "stdio"
@@ -221,7 +221,9 @@ function Test-LoomRelease {
             }
         }
         Assert-Equal "fixture-echo" $savedMcpTool.tool.id "Loom MCP-backed tool save id mismatch."
-        $executedMcpTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/fixture-echo/execute" -Body @{
+        # The fixture starts a fresh PowerShell-backed MCP process; allow cold hosted runners the
+        # same bounded startup headroom as the direct MCP connection test.
+        $executedMcpTool = Invoke-JsonPost -Uri "$baseUrl/v1/tools/fixture-echo/execute" -TimeoutSec 60 -Body @{
             arguments = @{
                 text = "release mcp runtime"
             }
