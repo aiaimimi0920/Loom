@@ -190,6 +190,9 @@ fn authored_package_rejects_reserved_unsafe_and_duplicate_paths() {
         "art.runtime.json",
         "../escape.py",
         "C:/escape.py",
+        "C:escape.py",
+        r"\\server\share\escape.py",
+        r"\\?\C:\escape.py",
     ] {
         let error = build_authored_art_package_zip(&tool, None, &[(path.to_owned(), Vec::new())])
             .expect_err("unsafe authored path must fail");

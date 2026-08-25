@@ -192,7 +192,7 @@ fn hook_art_result_preserves_all_declared_output_ports_and_transport() {
 
 #[test]
 fn hook_art_resource_release_closes_shared_memory_and_is_idempotent() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let execution = hook_art_request("request:1", "node:1", 1);
@@ -252,7 +252,7 @@ fn hook_art_resource_release_closes_shared_memory_and_is_idempotent() {
 
 #[test]
 fn hook_art_resource_release_rejects_cross_execution_identity() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let owner = hook_art_request("request:owner", "node:owner", 7);
@@ -362,7 +362,7 @@ fn hook_art_resource_release_rejects_cross_execution_identity() {
 
 #[test]
 fn released_preview_resources_do_not_invalidate_live_final_replay() {
-    let _guard = lock_ignoring_poison(&HOOK_ART_REQUEST_TEST_LOCK);
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     clear_hook_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
     let execution = hook_art_request("request:preview-final", "node:preview-final", 1);
