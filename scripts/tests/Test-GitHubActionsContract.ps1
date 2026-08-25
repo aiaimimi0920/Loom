@@ -254,7 +254,7 @@ Assert-Workflow -Name "dependabot-triage.yml" -RequiredText @(
     'actions: read',
     'contents: read',
     'issues: write',
-    'pull-requests: read',
+    'pull-requests: write',
     'Classify without merging',
     'ref: ${{ github.event.repository.default_branch }}',
     'persist-credentials: false',
