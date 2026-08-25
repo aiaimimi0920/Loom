@@ -171,6 +171,9 @@ fn refuses_to_spawn_a_packaged_server_pointed_at_a_batch_file() {
     let _ = fs::remove_dir_all(root);
 }
 
+// The installed fixture is a PowerShell package; cross-platform integrity is covered by
+// `refuses_to_spawn_a_package_whose_entry_was_replaced` without launching that Windows entry.
+#[cfg(windows)]
 #[test]
 fn refuses_to_spawn_a_package_backed_server_whose_entry_was_replaced() {
     // The gate belongs on the spawn path, not only in the checker: `StdioMcpClient` is what
