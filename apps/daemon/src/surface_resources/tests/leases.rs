@@ -21,6 +21,9 @@ fn lease_registration_is_capped_and_debounced_but_still_survives_a_restart() {
                 None,
             )
             .expect("register the first resource");
+        // Keep the assertion independent of scheduler and filesystem latency under parallel CI.
+        store.leases_persisted_at_ms =
+            unix_time_millis().saturating_add(LEASE_PERSIST_DEBOUNCE_MILLIS);
         let second = store
             .register(
                 SurfaceResourceKind::Binary,

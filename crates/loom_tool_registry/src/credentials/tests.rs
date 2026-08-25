@@ -5,17 +5,22 @@ use super::types::{CREDENTIALS_FILE, MAX_CREDENTIAL_FILE_BYTES};
 use super::values::is_safe_scope_reference;
 use super::*;
 
+static TEMP_ROOT_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn temp_root() -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "loom-credentials-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time")
-            .as_nanos()
-    ));
-    let _ = fs::remove_dir_all(&path);
-    path
+    for _ in 0..1024 {
+        let sequence = TEMP_ROOT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "loom-credentials-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create credential test root: {error}"),
+        }
+    }
+    panic!("cannot reserve a unique credential test root")
 }
 
 #[test]

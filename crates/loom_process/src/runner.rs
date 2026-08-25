@@ -132,6 +132,13 @@ fn run_with_input_internal(
     join_stdin_writer(stdin_writer.take())?;
     let stdout = join_reader(stdout_reader)?;
     let stderr = join_reader(stderr_reader)?;
+    if stdout.truncated || stderr.truncated {
+        return Err(ProcessError::OutputLimit {
+            diagnostics: diagnostics(started, status.code(), &stdout, &stderr, false, true),
+            stdout: stdout.bytes,
+            stderr: stderr.bytes,
+        });
+    }
     // Read the counter while the isolation group is still open; it is destroyed when `isolation`
     // drops at the end of this function.
     let peak_memory_bytes = isolation.peak_memory_bytes();

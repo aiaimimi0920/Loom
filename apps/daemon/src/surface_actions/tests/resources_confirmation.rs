@@ -101,6 +101,24 @@
     }
 
     #[test]
+    fn action_response_preserves_structured_art_runtime_error() {
+        let error = parse_surface_action_response(json!({
+            "status": "error",
+            "error": {
+                "code": "surface_prototype_failed",
+                "message": "action is not declared by the prototype"
+            }
+        }))
+        .expect_err("runtime error must not parse as a success response");
+
+        assert_eq!(error.code, "surface_art_runtime_error");
+        assert_eq!(
+            error.message,
+            "Art runtime error `surface_prototype_failed`: action is not declared by the prototype"
+        );
+    }
+
+    #[test]
     fn confirmed_action_never_executes_before_device_bound_host_approval() {
         let root = temp_root("confirmation");
         let digest = "b".repeat(64);

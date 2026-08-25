@@ -1,6 +1,7 @@
 // Loom daemon tests fragment 8; included into the shared crate test module.
 #[test]
 fn hook_art_rejects_tampered_art_packages_before_execution() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-art-package-integrity");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
     runtime

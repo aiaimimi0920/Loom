@@ -45,8 +45,9 @@ function Send-LoomHookBridgeWebSocketJson {
 function Receive-LoomHookBridgeWebSocketJson {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Client,
-        [int]$TimeoutSeconds = 10,
-        [int]$MaxMessageBytes = 1MB
+        [int]$TimeoutSeconds = 30,
+        [int]$MaxMessageBytes = 1MB,
+        [string]$Operation = "message"
     )
 
     if ($TimeoutSeconds -lt 1 -or $MaxMessageBytes -lt 1) {
@@ -57,10 +58,17 @@ function Receive-LoomHookBridgeWebSocketJson {
     $receiveCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
     try {
         do {
-            $result = $Client.ReceiveAsync(
-                [ArraySegment[byte]]::new($buffer),
-                $receiveCts.Token
-            ).GetAwaiter().GetResult()
+            try {
+                $result = $Client.ReceiveAsync(
+                    [ArraySegment[byte]]::new($buffer),
+                    $receiveCts.Token
+                ).GetAwaiter().GetResult()
+            } catch {
+                if ($_.Exception.ToString() -match "OperationCanceledException|TaskCanceledException|operation was canceled") {
+                    throw "Hook Bridge $Operation receive timed out after $TimeoutSeconds seconds."
+                }
+                throw
+            }
 
             if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
                 throw "Hook Bridge WebSocket closed before sending a JSON response."
@@ -88,10 +96,16 @@ function Receive-LoomHookResponse {
         [string]$RequestId
     )
 
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    # The daemon gives Hook Art requests a 120-second execution budget. Keep a little transport
+    # headroom so a slow hosted runner reports the daemon's terminal response instead of cancelling
+    # the WebSocket first.
+    $deadline = [DateTime]::UtcNow.AddSeconds(150)
     for ($attempt = 0; $attempt -lt 64 -and [DateTime]::UtcNow -lt $deadline; $attempt++) {
         $remainingSeconds = [Math]::Max(1, [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
-        $message = Receive-LoomHookBridgeWebSocketJson -Client $Client -TimeoutSeconds ([int]$remainingSeconds)
+        $message = Receive-LoomHookBridgeWebSocketJson `
+            -Client $Client `
+            -TimeoutSeconds ([int]$remainingSeconds) `
+            -Operation "art response $RequestId"
         if ([string]$message.protocolVersion -ne "loom.hook.v1") {
             continue
         }
