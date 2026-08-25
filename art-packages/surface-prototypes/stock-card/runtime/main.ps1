@@ -52,7 +52,8 @@ function New-SetOperation {
 function Write-SurfaceSuccess {
     param([hashtable]$SurfaceAction)
     $response = [ordered]@{ status = "success"; output = [ordered]@{ surfaceAction = $SurfaceAction } }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 80 -Compress))
+    [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 80 -Compress))
+    [Console]::Out.Flush()
 }
 
 function Write-SurfaceError {
@@ -61,7 +62,8 @@ function Write-SurfaceError {
         status = "error"
         error = [ordered]@{ code = $Code; message = $Message }
     }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
+    [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
+    [Console]::Out.Flush()
 }
 
 try {
