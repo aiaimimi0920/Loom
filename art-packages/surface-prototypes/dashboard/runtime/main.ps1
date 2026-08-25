@@ -1,5 +1,14 @@
 $ErrorActionPreference = "Stop"
 
+function New-UnicodeText {
+    param([int[]]$CodePoints)
+    return -join ($CodePoints | ForEach-Object { [char]$_ })
+}
+
+$script:SyncingLabel = New-UnicodeText @(0x6B63, 0x5728, 0x540C, 0x6B65, 0x8BBE, 0x5907)
+$script:TabletOnlineLabel = New-UnicodeText @(0x5E73, 0x677F, 0x20, 0x00B7, 0x20, 0x5728, 0x7EBF)
+$script:SyncedLabel = New-UnicodeText @(0x5168, 0x90E8, 0x540C, 0x6B65, 0x5B8C, 0x6210)
+
 function Find-SurfaceAction {
     param([object]$Value)
     if ($null -eq $Value) { return $null }
@@ -49,10 +58,19 @@ function New-SetOperation {
     return [ordered]@{ op = "set"; nodeId = $NodeId; path = $Path; value = $Value }
 }
 
+function Write-Utf8JsonLine {
+    param([object]$Value, [int]$Depth = 80)
+    $json = ($Value | ConvertTo-Json -Depth $Depth -Compress) + [Environment]::NewLine
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($bytes, 0, $bytes.Length)
+    $stdout.Flush()
+}
+
 function Write-SurfaceSuccess {
     param([hashtable]$SurfaceAction)
     $response = [ordered]@{ status = "success"; output = [ordered]@{ surfaceAction = $SurfaceAction } }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 80 -Compress))
+    Write-Utf8JsonLine -Value $response -Depth 80
 }
 
 function Write-SurfaceError {
@@ -61,7 +79,7 @@ function Write-SurfaceError {
         status = "error"
         error = [ordered]@{ code = $Code; message = $Message }
     }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
+    Write-Utf8JsonLine -Value $response -Depth 20
 }
 
 try {
@@ -90,21 +108,21 @@ try {
                     [ordered]@{
                         operations = [object[]]@(
                             (New-SetOperation -NodeId "sync_progress" -Path "/props/value" -Value 0.35),
-                            (New-SetOperation -NodeId "sync_status" -Path "/props/text" -Value "正在同步设备")
+                            (New-SetOperation -NodeId "sync_status" -Path "/props/text" -Value $script:SyncingLabel)
                         )
                         statePatch = [ordered]@{}
                     },
                     [ordered]@{
                         operations = [object[]]@(
                             (New-SetOperation -NodeId "sync_progress" -Path "/props/value" -Value 0.75),
-                            (New-SetOperation -NodeId "device_2" -Path "/props/text" -Value "平板 · 在线")
+                            (New-SetOperation -NodeId "device_2" -Path "/props/text" -Value $script:TabletOnlineLabel)
                         )
                         statePatch = [ordered]@{}
                     },
                     [ordered]@{
                         operations = [object[]]@(
                             (New-SetOperation -NodeId "sync_progress" -Path "/props/value" -Value 1.0),
-                            (New-SetOperation -NodeId "sync_status" -Path "/props/text" -Value "全部同步完成"),
+                            (New-SetOperation -NodeId "sync_status" -Path "/props/text" -Value $script:SyncedLabel),
                             (New-SetOperation -NodeId "chart" -Path "/props/resourceId" -Value "surface-upload:dashboard-chart")
                         )
                         statePatch = [ordered]@{ refreshCount = 1; status = "ready" }

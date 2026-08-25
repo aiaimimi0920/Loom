@@ -1,15 +1,21 @@
 use super::*;
 
+static TEMP_ROOT_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(super) fn temp_root() -> PathBuf {
-    let base = std::env::temp_dir().join(format!(
-        "loom-art-install-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&base).unwrap();
-    base
+    for _ in 0..1024 {
+        let sequence = TEMP_ROOT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "loom-art-install-test-{}-{sequence}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create Art install test root: {error}"),
+        }
+    }
+    panic!("cannot reserve a unique Art install test root")
 }
 
 pub(super) fn build_zip(manifest: &str, extra: &[(&str, &[u8])]) -> Vec<u8> {

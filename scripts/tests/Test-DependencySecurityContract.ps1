@@ -61,16 +61,33 @@ foreach ($match in $blocks) {
 }
 
 $workflow = Read-RepoText ".github\workflows\dependency-security.yml"
-foreach ($required in @($policy.scanner.reusableWorkflow, "fail-on-vuln: true", "upload-sarif: false", "checkout-ref", "security/osv-scanner.toml") + $expectedLockfiles) {
+foreach ($required in @($policy.scanner.reusableWorkflow, "fail-on-vuln: true", "upload-sarif: true", "security-events: write", "checkout-ref", "security/osv-scanner.toml") + $expectedLockfiles) {
     Assert-True $workflow.Contains($required) "Dependency security workflow lost required contract: $required"
 }
 $dependabot = Read-RepoText ".github\dependabot.yml"
-foreach ($required in @("version: 2", "package-ecosystem: cargo", "package-ecosystem: npm", "package-ecosystem: github-actions", "package-ecosystem: docker")) {
+foreach ($required in @(
+    "version: 2",
+    "package-ecosystem: cargo",
+    "package-ecosystem: npm",
+    "package-ecosystem: github-actions",
+    "package-ecosystem: docker",
+    "cargo-cross-directory:",
+    "group-by: dependency-name",
+    "frontend-runtime-routine:",
+    "frontend-tooling-routine:",
+    "applies-to: version-updates",
+    "cooldown:",
+    "default-days: 7"
+)) {
     Assert-True $dependabot.Contains($required) "Dependabot configuration lost required contract: $required"
+}
+foreach ($limit in @(4, 3, 2)) {
+    Assert-True $dependabot.Contains("open-pull-requests-limit: $limit") "Dependabot version-update limit is missing: $limit"
 }
 $release = Read-RepoText ".github\workflows\release-tag.yml"
 Assert-True $release.Contains("uses: ./.github/workflows/dependency-security.yml") "Tag release does not call the dependency security gate."
 Assert-True $release.Contains("needs: dependency-security") "Tag publication is not blocked on dependency security."
+Assert-True $release.Contains("security-events: write") "Tag dependency scan cannot publish SARIF security results."
 
 $installer = Read-RepoText "scripts\Install-OsvScanner.ps1"
 foreach ($required in @("Get-FileHash", "windowsX64Sha256", "Invoke-WebRequest", "Assert-ScannerHash")) {

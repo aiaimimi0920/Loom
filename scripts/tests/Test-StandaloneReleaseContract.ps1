@@ -454,6 +454,20 @@ foreach ($surfacePrototypeManifestPath in $surfacePrototypeManifestPaths) {
     $surfacePrototypeManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $surfacePrototypeManifestPath | ConvertFrom-Json
     $surfaceActions = @($surfacePrototypeManifest.metadata.capabilities.surface.actions)
     Assert-True -Condition ($surfaceActions.Count -gt 0) -Message "Surface prototype must declare actions: $surfacePrototypeManifestPath"
+    $runtimeManifestPath = Join-Path (Split-Path -Parent $surfacePrototypeManifestPath) "art.runtime.json"
+    Assert-True -Condition (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf) -Message "Surface prototype runtime manifest is missing: $runtimeManifestPath"
+    $runtimeManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimeManifestPath | ConvertFrom-Json
+    $runtimeScriptPath = Join-Path (Split-Path -Parent $surfacePrototypeManifestPath) "runtime\main.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $runtimeScriptPath -PathType Leaf) -Message "Surface prototype runtime script is missing: $runtimeScriptPath"
+    $runtimeScriptBytes = [System.IO.File]::ReadAllBytes($runtimeScriptPath)
+    $nonAsciiByte = @($runtimeScriptBytes | Where-Object { $_ -gt 0x7F } | Select-Object -First 1)
+    Assert-True `
+        -Condition ($nonAsciiByte.Count -eq 0) `
+        -Message "Surface PowerShell runtime source must stay ASCII-safe for Windows PowerShell 5.1 ACP decoding: $runtimeScriptPath"
+    $maxActionTimeout = [int64](@($surfaceActions | ForEach-Object { [int64]$_.timeoutMs } | Measure-Object -Maximum).Maximum)
+    Assert-True `
+        -Condition ([int64]$runtimeManifest.limits.timeoutMs -ge $maxActionTimeout) `
+        -Message "Surface runtime timeout must cover every declared action: $surfacePrototypeManifestPath runtime=$($runtimeManifest.limits.timeoutMs) action=$maxActionTimeout"
     foreach ($surfaceAction in $surfaceActions) {
         Assert-True `
             -Condition ([int64]$surfaceAction.timeoutMs -ge 10000) `

@@ -32,6 +32,12 @@ an OSV SARIF artifact for the checked ref; a prior scan of another commit is not
 release evidence. See `docs/DEPENDENCY_SECURITY.md` for inventory, triage, and
 temporary exception rules.
 
+Runs for the same effective tag share a non-cancelling concurrency group. Before
+building, the workflow refuses any existing draft or published GitHub release
+for that tag. This prevents two runs from uploading into or replacing the same
+release. A failed deterministic build is fixed under a new version tag rather
+than by moving a published tag.
+
 ## Release subjects
 
 - Desktop ZIP and SHA-256 sidecar.
@@ -50,6 +56,46 @@ subjects. `checksums.sha256` covers every release file except itself.
 Tag releases use GitHub OIDC with `actions/attest-build-provenance@v2` and
 `actions/attest-sbom@v2`. Docker builds use Buildx provenance/SBOM and a Trivy
 high/critical vulnerability gate.
+
+## Draft, verification, and publication
+
+GitHub publication is draft-first. After all source, dependency, build, smoke,
+and attestation gates pass, the commit-pinned `softprops/action-gh-release`
+uploads the complete asset set into one draft. Trusted repository code then
+obtains that exact draft by its release ID and verifies:
+
+- the release is still a draft for the requested tag;
+- no expected subject is missing and no unexpected asset is present;
+- every remote asset byte count matches the local verified file;
+- every GitHub-provided SHA-256 asset digest matches a streaming local digest.
+
+Only that final verifier changes `draft` to `false`. If a later step fails, the
+workflow deletes only a matching draft identified by the creating step; it never
+deletes or rewrites a published release. A partial draft without a trusted
+release ID is left for human inspection rather than deleted heuristically. This
+sequence is compatible with repository-level immutable releases.
+
+## Failure recovery
+
+`.github/workflows/release-recovery.yml` observes completed Release Tag runs
+from the trusted default branch. An unsuccessful run creates or updates one
+issue containing the run, attempt, commit, ref, failed jobs, and failed steps.
+A successful re-run closes the same issue.
+
+Automatic recovery is bounded to one failed-jobs re-run and only when GitHub
+reports failures exclusively in checkout, Node/Rust setup, Rust cache, or the
+read-only publication preflight. Dependency security, compilation, tests, smoke,
+attestations, draft upload, asset comparison, cancellation, timeout, and publish
+failures never auto-retry. After review, an operator may retry an approved
+transient boundary with:
+
+```powershell
+gh run rerun <run-id> --failed
+```
+
+Do not use a re-run to bypass a reproducible defect or security finding. Fix the
+cause, rerun the affected local/CI gates, and create a new version tag when the
+source commit must change.
 
 ## Evidence versus publication
 

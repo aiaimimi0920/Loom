@@ -10,18 +10,28 @@ software has no unknown vulnerability.
 
 Loom combines controls that cover different boundaries:
 
-- Dependabot opens weekly Cargo, npm, GitHub Actions, and Docker update pull
-  requests from `.github/dependabot.yml`.
+- Dependabot checks Cargo, npm, GitHub Actions, and Docker weekly. Version-update
+  pull requests are cooled down, grouped where the review boundary is coherent,
+  and capped per ecosystem by `.github/dependabot.yml`; security updates remain
+  prompt and are not hidden by those version-update limits.
 - OSV-Scanner 2.5.0 scans the exact committed lockfiles on pull requests,
   pushes to `main`, a weekly schedule, manual dispatch, and tag publication.
+- GitHub receives a SARIF artifact and publishes the results to the repository
+  Code Scanning dashboard with the required `security-events: write` permission.
+- CodeQL runs extended security queries against Rust, JavaScript/TypeScript, and
+  GitHub Actions sources on pull requests, `main`, a weekly schedule, and manual
+  dispatch. It uses supported no-build extraction so the scan is independent of
+  packaging and still publishes language-specific Code Scanning results.
 - `security/dependency-security-policy.json` pins both the reusable workflow and
   underlying scanner Action commits, local Windows binary URL and SHA-256, scan
   inventory, and exception lifetime.
 - `security/osv-scanner.toml` contains only advisory-specific, expiring
   exceptions. Broad package overrides are forbidden.
 - Release packaging continues to generate CycloneDX and SPDX SBOMs, checksums,
-  and provenance. Container publication continues to use Trivy as a separate
-  image/runtime-layer gate.
+  and provenance. Container CI loads an ephemeral, non-published scan image
+  without incompatible manifest attestations, then uses the SHA-pinned Trivy
+  v0.36.0 Action as a separate image/runtime-layer gate. It uploads SARIF before
+  enforcing the result and fails for fixed critical or high-severity findings.
 
 The tag workflow scans the exact tag or manually requested ref before any
 release job can run. A successful scan of another branch or an earlier commit
@@ -159,7 +169,35 @@ OSV and Dependabot are disclosure controls, not malware detectors. Provenance,
 review, least-privilege CI, immutable artifacts, and incident response remain
 necessary even when no advisory exists.
 
-## 8. Current baseline and limitations
+## 8. Dependency pull-request control
+
+The version-update budget is four open Cargo pull requests, three npm pull
+requests, and two each for GitHub Actions and Docker. Cargo patch/minor updates
+for the same dependency are grouped across the root workspace, detached Tauri
+wrapper, and detached runtime host. npm patch/minor updates are grouped
+separately for production and development dependencies. Major updates remain
+separate so migration risk is visible.
+
+Routine version updates use a seven-day default cooldown. Cargo and npm further
+use a 21-day major, seven-day minor, and three-day patch cooldown. GitHub
+security updates bypass both cooldown and the configured version-update pull
+request limits, so these controls reduce noise without delaying a disclosed
+vulnerability fix.
+
+`.github/workflows/dependabot-triage.yml` classifies open Dependabot pull
+requests after CI or through a manual all-open run. It executes only the
+classifier checked out from the trusted default branch and applies orthogonal
+scope, update-type, and disposition labels. It does not approve or merge code.
+Only an isolated, non-sensitive npm development patch/minor can become a
+`dependencies:review-candidate`; runtime, major, grouped, unknown,
+supply-chain, native build-tool, workflow, Docker, scanner, and release changes
+remain `dependencies:needs-human`.
+
+Existing pull requests are not closed merely because a newer grouping policy
+was deployed. Review or supersede them with an evidence-backed grouped update;
+never bulk-close a security update or a pull request with human discussion.
+
+## 9. Current baseline and limitations
 
 The deployment baseline was established on 2026-08-24. Directly fixable
 findings were removed by updating the locked versions of `anyhow`,
@@ -167,6 +205,16 @@ findings were removed by updating the locked versions of `anyhow`,
 entries in `security/osv-scanner.toml` are time-bounded transitive maintenance
 findings or Linux-only GTK/glib findings not shipped in Loom's formal Windows
 desktop release.
+
+As of 2026-08-25, the only open GitHub Dependabot alert is `glib` 0.18.x
+(RUSTSEC-2024-0429). It is transitive through the GTK3/WebKitGTK Linux path;
+`glib` 0.20 cannot be upgraded independently while the current GTK3 parent is
+retained. The alert is therefore recorded as a time-bounded, tolerable-risk
+exception rather than hidden: Linux desktop publication remains blocked, and
+the replacement/reassessment work is tracked in
+[#38](https://github.com/aiaimimi0920/Loom/issues/38) before the
+2026-10-31 exception expiry. The formal Windows release does not compile or
+ship this path.
 
 This scheme does not prove source code safety, runtime reachability, absence of
 zero-days, or safety of untracked/vendored inputs. It also does not replace Rust
