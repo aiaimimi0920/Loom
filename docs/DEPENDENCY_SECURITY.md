@@ -206,6 +206,16 @@ entries in `security/osv-scanner.toml` are time-bounded transitive maintenance
 findings or Linux-only GTK/glib findings not shipped in Loom's formal Windows
 desktop release.
 
+As of 2026-08-25, the only open GitHub Dependabot alert is `glib` 0.18.x
+(RUSTSEC-2024-0429). It is transitive through the GTK3/WebKitGTK Linux path;
+`glib` 0.20 cannot be upgraded independently while the current GTK3 parent is
+retained. The alert is therefore recorded as a time-bounded, tolerable-risk
+exception rather than hidden: Linux desktop publication remains blocked, and
+the replacement/reassessment work is tracked in
+[#38](https://github.com/aiaimimi0920/Loom/issues/38) before the
+2026-10-31 exception expiry. The formal Windows release does not compile or
+ship this path.
+
 This scheme does not prove source code safety, runtime reachability, absence of
 zero-days, or safety of untracked/vendored inputs. It also does not replace Rust
 tests, frontend tests, plugin trust enforcement, secret scanning, container
