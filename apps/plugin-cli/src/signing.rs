@@ -51,8 +51,35 @@ fn sign_plugin_package(directory: &Path, key_path: &Path, publisher_id: &str) ->
         publisher.insert("keyId".to_owned(), json!(key.key_id.clone()));
         security.insert("signature".to_owned(), signature);
         write_pretty_json(path, &manifest)?;
+    } else if contained_regular_file_exists(directory, Path::new("mcp.server.json"))? {
+        let path = directory.join("mcp.server.json");
+        let mut manifest: Value = read_json(&path)?;
+        let object = manifest
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("MCP server manifest must be an object"))?;
+        let manifest_publisher = object
+            .get("publisher")
+            .and_then(Value::as_object)
+            .and_then(|publisher| publisher.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if manifest_publisher != publisher_id {
+            bail!(
+                "MCP server publisher id `{manifest_publisher}` does not match signer `{publisher_id}`"
+            );
+        }
+        let security = object
+            .entry("packageSecurity".to_owned())
+            .or_insert_with(|| json!({}));
+        let security = security
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("MCP server packageSecurity metadata must be an object"))?;
+        security.insert("signature".to_owned(), signature);
+        write_pretty_json(path, &manifest)?;
     } else {
-        bail!("package directory has no framework.manifest.json or manifest.json");
+        bail!(
+            "package directory has no framework.manifest.json, manifest.json, or mcp.server.json"
+        );
     }
     ensure_safe_destination(&directory.join("signature.json"))?;
     let document = sign_package(directory, "signature.json", &key)?;

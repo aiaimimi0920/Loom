@@ -126,6 +126,8 @@ foreach ($entry in $expected.GetEnumerator()) {
         Assert-True ([string]$manifest.metadata.mcp.packageId -eq "neuro.official/neuro-image-search") "Image search MCP package id is invalid."
         Assert-True ([string]$manifest.metadata.mcp.version -eq "^0.1") "Image search MCP package version requirement is invalid."
         Assert-True ([string]$manifest.metadata.mcp.toolName -eq "brave_image_search") "Image search must call brave_image_search."
+        $queryParameter = @($manifest.params | Where-Object { [string]$_.id -eq "query" }) | Select-Object -First 1
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$queryParameter.default)) "Image search must publish a non-empty query default so a newly-created Hook node does not execute an invalid empty search."
         foreach ($forbidden in @("command", "args", "env", "url", "headers", "credentialEnv", "credentialHeaders")) {
             Assert-True ($null -eq $manifest.metadata.mcp.PSObject.Properties[$forbidden]) "Image search Art must not own MCP runtime field '$forbidden'."
         }

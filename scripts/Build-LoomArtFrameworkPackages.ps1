@@ -1,7 +1,9 @@
 param(
     [string]$OutputRoot = ".loom-art-store-data\frameworks",
     [ValidateSet("Debug", "Release")]
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$SigningKeyPath = $env:LOOM_PACKAGE_SIGNING_KEY_PATH,
+    [string]$SigningPublisherId = $env:LOOM_PACKAGE_SIGNING_PUBLISHER_ID
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +43,11 @@ function Assert-PathInside {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
+. (Join-Path $scriptRoot "PackageSigning.ps1")
+$signingContext = New-LoomPackageSigningContext `
+    -RepoRoot $repoRoot `
+    -KeyPath $SigningKeyPath `
+    -PublisherId $SigningPublisherId
 $packagesRoot = Join-Path $repoRoot "framework-packages"
 $runtimeHostManifest = Join-Path $packagesRoot "runtime-host\Cargo.toml"
 $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
@@ -133,6 +140,7 @@ try {
         Write-Utf8NoBomFile `
             -Path (Join-Path $stageDir "framework.manifest.json") `
             -Content ($stagedManifest | ConvertTo-Json -Depth 20)
+        Invoke-LoomPackageSigning -Context $signingContext -PackageDirectory $stageDir
 
         $zipPath = Join-Path $outputRootPath "$id.zip"
         if (Test-Path -LiteralPath $zipPath) {

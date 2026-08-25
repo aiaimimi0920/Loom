@@ -301,6 +301,39 @@ mod tests {
     }
 
     #[test]
+    fn signing_mcp_server_adds_package_security_signature() {
+        let root = temp_root("sign-mcp");
+        let mcp_dir = root.join("mcp-package");
+        let key_path = root.join("publisher-key.json");
+        fs::create_dir_all(mcp_dir.join("runtime")).expect("MCP package directory");
+        write_pretty_json(
+            mcp_dir.join("mcp.server.json"),
+            &json!({
+                "schemaVersion": 1,
+                "id": "fixture-mcp",
+                "name": "Fixture MCP",
+                "version": "1.0.0",
+                "publisher": { "id": "publisher.example", "name": "Publisher Example" },
+                "transport": "stdio",
+                "entry": { "command": "runtime/server.ps1", "args": [] },
+                "tools": ["fixture_tool"]
+            }),
+        )
+        .expect("MCP manifest");
+        fs::write(mcp_dir.join("runtime/server.ps1"), "Write-Output fixture\n")
+            .expect("MCP runtime");
+        let key = generate_signing_key("release-key-1");
+        write_signing_key_document(&key_path, &key).expect("write key");
+
+        sign_plugin_package(&mcp_dir, &key_path, "publisher.example").expect("sign MCP");
+
+        let signed: Value = read_json(&mcp_dir.join("mcp.server.json")).expect("read MCP manifest");
+        assert_eq!(signed["packageSecurity"]["signature"]["keyId"], "release-key-1");
+        assert!(mcp_dir.join("signature.json").is_file());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn cli_sign_trust_pack_install_conformance_and_revoke_e2e() {
         let root = temp_root("e2e");
         let framework_dir = root.join("framework-package");

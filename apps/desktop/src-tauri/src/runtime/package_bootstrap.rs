@@ -92,12 +92,24 @@ pub(super) fn bootstrap_packaged_mcp_servers(
         "打包 MCP 服务目录",
     )?;
     let catalog_hash = format!("{:x}", Sha256::digest(&catalog_bytes));
+    // The MCP installer changed its immutable version-directory suffix from the
+    // legacy 12-hex prefix to 32 hex characters in phase 79.  A plain catalog
+    // hash marker cannot distinguish an already-processed catalog from a
+    // control plane populated by the pre-hardening installer, so keep a
+    // migration generation in the marker.  This forces one repair install on
+    // the first desktop start after that format change while preserving the
+    // existing "do not restore an intentionally uninstalled server" behavior
+    // for subsequent starts.
+    // v3 also repairs Art lockfiles after an MCP catalog refresh.  The marker
+    // generation is intentionally bumped so existing control planes receive
+    // one deterministic MCP + dependent-Art reinstall.
+    let migration_marker = format!("mcp-v3:{catalog_hash}");
     let marker_path = control_plane_root
         .join("migrations")
         .join("packaged-mcp-servers.sha256");
     if read_bounded_utf8_file(&marker_path, 128, "打包 MCP 服务迁移标记")
         .ok()
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case(&catalog_hash))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(&migration_marker))
     {
         return Ok(Vec::new());
     }
@@ -134,7 +146,7 @@ pub(super) fn bootstrap_packaged_mcp_servers(
     }
     write_utf8_regular_file(
         &marker_path,
-        &format!("{catalog_hash}\n"),
+        &format!("{migration_marker}\n"),
         "打包 MCP 服务迁移标记",
     )?;
     Ok(installed_ids)

@@ -131,6 +131,19 @@ fn packaged_mcp_server_bootstrap_installs_once_and_respects_uninstall_marker() {
         .expect("serialize MCP catalog"),
     )
     .expect("write MCP catalog");
+    // A legacy marker must not suppress the one-time reinstall that repairs
+    // package directories created before the 32-hex immutable suffix.
+    let marker_path = control_plane_root
+        .join("migrations")
+        .join("packaged-mcp-servers.sha256");
+    fs::create_dir_all(marker_path.parent().expect("marker parent"))
+        .expect("create MCP migration directory");
+    let catalog_bytes = fs::read(catalog_root.join("summary.json")).expect("read MCP catalog");
+    fs::write(
+        &marker_path,
+        format!("{:x}\n", Sha256::digest(catalog_bytes)),
+    )
+    .expect("write legacy MCP migration marker");
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind MCP bootstrap fixture");
     let address = listener
@@ -165,6 +178,12 @@ fn packaged_mcp_server_bootstrap_installs_once_and_respects_uninstall_marker() {
     assert!(control_plane_root
         .join("migrations/packaged-mcp-servers.sha256")
         .is_file());
+    assert!(
+        fs::read_to_string(&marker_path)
+            .expect("read migrated MCP marker")
+            .starts_with("mcp-v3:"),
+        "MCP bootstrap did not write the migration generation marker"
+    );
 
     let skipped =
         bootstrap_packaged_mcp_servers("http://127.0.0.1:1", &desktop_exe, &control_plane_root)

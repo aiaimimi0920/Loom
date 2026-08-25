@@ -22,7 +22,7 @@
       "label": "搜索词",
       "widget": "text",
       "required": true,
-      "default": "",
+      "default": "图片搜索",
       "data_type": "string"
     },
     {

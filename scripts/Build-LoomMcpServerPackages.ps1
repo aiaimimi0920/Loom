@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$OutputRoot = ".loom-art-store-data\mcp-servers"
+    [string]$OutputRoot = ".loom-art-store-data\mcp-servers",
+    [string]$SigningKeyPath = $env:LOOM_PACKAGE_SIGNING_KEY_PATH,
+    [string]$SigningPublisherId = $env:LOOM_PACKAGE_SIGNING_PUBLISHER_ID
 )
 
 Set-StrictMode -Version Latest
@@ -131,6 +133,11 @@ function Add-StockApiNodeRuntime {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
+. (Join-Path $scriptRoot "PackageSigning.ps1")
+$signingContext = New-LoomPackageSigningContext `
+    -RepoRoot $repoRoot `
+    -KeyPath $SigningKeyPath `
+    -PublisherId $SigningPublisherId
 $sourceRoot = Join-Path $repoRoot "mcp-server-packages"
 $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath($OutputRoot)
@@ -192,6 +199,7 @@ try {
         if ($id -eq "stock-api") {
             Add-StockApiNodeRuntime -StageDirectory $stageDir -ServerManifest $manifest
         }
+        Invoke-LoomPackageSigning -Context $signingContext -PackageDirectory $stageDir
         $zipPath = Join-Path $outputRootPath "$id.zip"
         [System.IO.Compression.ZipFile]::CreateFromDirectory($stageDir, $zipPath)
         $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

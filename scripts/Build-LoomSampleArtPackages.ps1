@@ -2,7 +2,9 @@
 param(
     [string]$OutputRoot = ".loom-art-store-data\arts",
     [ValidateSet("Debug", "Release")]
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$SigningKeyPath = $env:LOOM_PACKAGE_SIGNING_KEY_PATH,
+    [string]$SigningPublisherId = $env:LOOM_PACKAGE_SIGNING_PUBLISHER_ID
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +59,11 @@ function Copy-DirectoryContents {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
+. (Join-Path $scriptRoot "PackageSigning.ps1")
+$signingContext = New-LoomPackageSigningContext `
+    -RepoRoot $repoRoot `
+    -KeyPath $SigningKeyPath `
+    -PublisherId $SigningPublisherId
 $sourceRoot = Join-Path $repoRoot "art-packages\samples"
 $sharedRuntime = Join-Path $repoRoot "art-packages\shared\image-runtime-common.ps1"
 $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
@@ -160,6 +167,7 @@ try {
         if ($executionType -eq "framework_art") {
             Copy-Item -LiteralPath $sharedRuntime -Destination (Join-Path $stageDirectory "runtime\common.ps1") -Force
         }
+        Invoke-LoomPackageSigning -Context $signingContext -PackageDirectory $stageDirectory
 
         $stageManifestPath = Join-Path $stageDirectory "manifest.json"
         $stageManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $stageManifestPath | ConvertFrom-Json
