@@ -3,13 +3,17 @@ use std::fs;
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::process::Command;
-#[cfg(windows)]
-use std::sync::Mutex;
 
 // Execution fixtures intentionally model a windows-x64 framework package and copy PowerShell into
 // that package. Tests that launch the fixture are Windows-only; pure validation stays cross-platform.
 #[cfg(windows)]
-pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(super) const FUNCTIONAL_FIXTURE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(45);
+
+#[cfg(windows)]
+pub(super) fn lock_windows_powershell_fixture() -> std::sync::MutexGuard<'static, ()> {
+    crate::test_support::lock_windows_powershell_fixture()
+}
 
 #[cfg(windows)]
 pub(super) struct EnvVarGuard {
