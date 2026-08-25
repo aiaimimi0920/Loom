@@ -128,10 +128,10 @@
     },
     {
       "path": "scripts/Invoke-LoomPluginBoundarySmoke.ps1",
-      "effectiveLines": 675,
-      "sourceSha256": "9547351ecd02dc82a30cece3cf3e64e0a0adf60885d1805df09716c0904dc678",
+      "effectiveLines": 685,
+      "sourceSha256": "ab9ffc7808f4cefa424083b45c7dfc37555f5e4c098719fc5c529447415816bc",
       "responsibility": "Third-party framework and Art compilation, install, Hook execution, upgrade, enablement, restart, removal, source-integrity evidence, and cleanup",
-      "reason": "Every transition reuses the same package identities, control-plane state, upgraded runtime, Hook request, and source fingerprints; keeping the ordered lifecycle together is necessary to prove boundary behavior across restart and reinstall rather than as unrelated fixture tests.",
+      "reason": "Every transition reuses the same package identities, control-plane state, upgraded runtime, Hook request, and source fingerprints; keeping the ordered lifecycle together is necessary to prove boundary behavior across restart and reinstall rather than as unrelated fixture tests. A standalone Loom checkout may omit the optional Hook sibling while retaining the Loom lifecycle proof.",
       "owner": "Loom release smoke maintainers",
       "approvedBy": "Neuro project owner",
       "reviewBy": "2026-09-30",

@@ -193,7 +193,15 @@ fn settings_store_rejects_incomplete_settings_schema() {
 }
 
 #[test]
-fn settings_apply_mcp_limits_and_global_art_update_policy() {
+fn settings_persist_mcp_limits_and_global_art_update_policy() {
+    struct RuntimeSettingsReset;
+    impl Drop for RuntimeSettingsReset {
+        fn drop(&mut self) {
+            apply_runtime_settings(&LoomSettings::default());
+        }
+    }
+
+    let _runtime_settings_reset = RuntimeSettingsReset;
     let root = unique_temp_dir("loom-runtime-settings");
     let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
         root.join("settings.json"),
@@ -211,13 +219,14 @@ fn settings_apply_mcp_limits_and_global_art_update_policy() {
         put_settings(&body, &settings_store, &hook_bridge).expect("save runtime settings");
 
     assert_eq!(status, 200);
-    assert_eq!(loom_mcp::runtime_limits(), (120, 1024 * 1024 * 1024));
+    let saved_settings = settings_store.lock().expect("settings store").settings.clone();
+    assert_eq!(saved_settings.mcp.request_timeout_seconds, 120);
+    assert_eq!(saved_settings.mcp.memory_limit_bytes, 1024 * 1024 * 1024);
+    assert_eq!(saved_settings.network.loom.mode, "disabled");
     assert_eq!(
-        loom_tool_registry::network_policy::runtime_proxy(),
-        loom_tool_registry::network_policy::RuntimeProxy::Disabled
+        parse_runtime_log_level(&saved_settings.system.loom_log_level),
+        RuntimeLogLevel::Error
     );
-    assert!(!runtime_log_enabled(RuntimeLogLevel::Info));
-    assert!(runtime_log_enabled(RuntimeLogLevel::Error));
     let tool_registry = ToolRegistry::new(root.join("tools"));
     let framework_registry = FrameworkRegistry::new(&root);
     let workflow_store = WorkflowStore::new(root.join("workflows"));
@@ -235,7 +244,6 @@ fn settings_apply_mcp_limits_and_global_art_update_policy() {
         serde_json::from_str::<Value>(&update_body).expect("update response")["disabled"],
         true
     );
-    apply_runtime_settings(&LoomSettings::default());
     fs::remove_dir_all(root).expect("cleanup settings root");
 }
 

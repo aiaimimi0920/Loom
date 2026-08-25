@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::model::{
     ArtSettingsFile, ART_SETTINGS_FILE, MAX_ART_SETTINGS_DEPTH, MAX_ART_SETTINGS_FILE_BYTES,
@@ -11,15 +12,24 @@ use crate::credentials::{CredentialStore, CredentialValueType};
 use crate::{ToolDefinition, ToolExecution};
 
 fn temp_root() -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "loom-art-settings-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    fs::create_dir_all(&path).unwrap();
-    path
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    for _ in 0..32 {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "loom-art-settings-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create isolated art settings test root: {error}"),
+        }
+    }
+    panic!("create isolated art settings test root: exhausted unique names");
 }
 
 #[test]

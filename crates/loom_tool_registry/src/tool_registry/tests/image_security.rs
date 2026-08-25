@@ -312,6 +312,7 @@ pub(super) fn normalize_mcp_image_search_returns_friendly_message_for_empty_resu
 #[cfg(windows)]
 #[test]
 pub(super) fn powershell_httpclient_fallback_sends_browserish_accept_header() {
+    let _powershell_guard = crate::test_support::lock_windows_powershell_fixture();
     let fixture =
         HeaderAwareHttpImageFixture::start("image/png", fixture_image_bytes(), "accept: image/");
 
@@ -330,6 +331,7 @@ pub(super) fn powershell_httpclient_fallback_sends_browserish_accept_header() {
 #[cfg(windows)]
 #[test]
 pub(super) fn powershell_httpclient_fallback_downloads_image_candidate_bytes() {
+    let _powershell_guard = crate::test_support::lock_windows_powershell_fixture();
     let fixture = HttpImageFixture::start("application/octet-stream", fixture_image_bytes());
     let (mime_type, bytes) = download_image_bytes_with_powershell_httpclient(
         &fixture.url("/thumb"),

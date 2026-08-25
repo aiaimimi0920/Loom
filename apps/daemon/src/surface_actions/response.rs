@@ -2,13 +2,17 @@
 fn parse_surface_action_response(
     mut value: Value,
 ) -> Result<SurfaceActionResponse, SurfaceExecutionError> {
+    if value.get("status").and_then(Value::as_str) == Some("error") {
+        return Err(parse_surface_runtime_error(&value));
+    }
+    let shape = describe_response_shape(&value);
     let payload = value
         .as_object_mut()
         .and_then(|output| output.remove("surfaceAction"))
         .ok_or_else(|| {
             execution_error(
                 "surface_action_response_missing",
-                "Art output has no surfaceAction response",
+                format!("Art output has no surfaceAction response ({shape})"),
             )
         })?;
     if !loom_security::json::value_is_within_depth(
@@ -32,6 +36,48 @@ fn parse_surface_action_response(
     validate_surface_protocol(&response.protocol_version)
         .map_err(|error| execution_error("surface_action_protocol_invalid", error.to_string()))?;
     Ok(response)
+}
+
+fn describe_response_shape(value: &Value) -> String {
+    let Some(object) = value.as_object() else {
+        return "top-level JSON value is not an object".to_owned();
+    };
+    let mut top_level = object.keys().cloned().collect::<Vec<_>>();
+    top_level.sort_unstable();
+    let output = object.get("output");
+    let output_keys = output
+        .and_then(Value::as_object)
+        .map(|nested| {
+            let mut keys = nested.keys().cloned().collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys.join(",")
+        })
+        .unwrap_or_else(|| "<not-object>".to_owned());
+    format!(
+        "top-level keys=[{}], output keys=[{}]",
+        top_level.join(","),
+        output_keys
+    )
+}
+
+/// Preserve the Art runtime's structured failure instead of reporting it as a
+/// malformed success payload with a missing `surfaceAction` field.
+fn parse_surface_runtime_error(value: &Value) -> SurfaceExecutionError {
+    let runtime_error = value.get("error").and_then(Value::as_object);
+    let code = runtime_error
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        .filter(|code| !code.is_empty())
+        .unwrap_or("unknown");
+    let message = runtime_error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+        .unwrap_or("Art runtime returned an error");
+    execution_error(
+        "surface_art_runtime_error",
+        format!("Art runtime error `{code}`: {message}"),
+    )
 }
 
 fn apply_action_response(
