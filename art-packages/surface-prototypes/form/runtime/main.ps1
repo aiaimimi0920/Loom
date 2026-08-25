@@ -1,5 +1,14 @@
 $ErrorActionPreference = "Stop"
 
+function New-UnicodeText {
+    param([int[]]$CodePoints)
+    return -join ($CodePoints | ForEach-Object { [char]$_ })
+}
+
+$script:RequiredNameLabel = New-UnicodeText @(0x9879, 0x76EE, 0x540D, 0x79F0, 0x4E3A, 0x5FC5, 0x586B, 0x9879)
+$script:SubmittedLabel = New-UnicodeText @(0x63D0, 0x4EA4, 0x6210, 0x529F)
+$script:CancelledLabel = New-UnicodeText @(0x5DF2, 0x53D6, 0x6D88)
+
 function Find-SurfaceAction {
     param([object]$Value)
     if ($null -eq $Value) { return $null }
@@ -49,10 +58,19 @@ function New-SetOperation {
     return [ordered]@{ op = "set"; nodeId = $NodeId; path = $Path; value = $Value }
 }
 
+function Write-Utf8JsonLine {
+    param([object]$Value, [int]$Depth = 80)
+    $json = ($Value | ConvertTo-Json -Depth $Depth -Compress) + [Environment]::NewLine
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($bytes, 0, $bytes.Length)
+    $stdout.Flush()
+}
+
 function Write-SurfaceSuccess {
     param([hashtable]$SurfaceAction)
     $response = [ordered]@{ status = "success"; output = [ordered]@{ surfaceAction = $SurfaceAction } }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 80 -Compress))
+    Write-Utf8JsonLine -Value $response -Depth 80
 }
 
 function Write-SurfaceError {
@@ -61,7 +79,7 @@ function Write-SurfaceError {
         status = "error"
         error = [ordered]@{ code = $Code; message = $Message }
     }
-    [Console]::Out.Write(($response | ConvertTo-Json -Depth 20 -Compress))
+    Write-Utf8JsonLine -Value $response -Depth 20
 }
 
 try {
@@ -82,7 +100,7 @@ try {
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "project_name" -Path "/props/value" -Value $name),
                         (New-SetOperation -NodeId "name_error" -Path "/props/visible" -Value (-not $valid)),
-                        (New-SetOperation -NodeId "name_error" -Path "/props/text" -Value $(if ($valid) { "" } else { "项目名称为必填项" }))
+                        (New-SetOperation -NodeId "name_error" -Path "/props/text" -Value $(if ($valid) { "" } else { $script:RequiredNameLabel }))
                     )
                     statePatch = [ordered]@{ projectName = $name; valid = $valid }
                 })
@@ -107,7 +125,7 @@ try {
                     patches = [object[]]@([ordered]@{
                         operations = [object[]]@(
                             (New-SetOperation -NodeId "name_error" -Path "/props/visible" -Value $true),
-                            (New-SetOperation -NodeId "name_error" -Path "/props/text" -Value "项目名称为必填项")
+                            (New-SetOperation -NodeId "name_error" -Path "/props/text" -Value $script:RequiredNameLabel)
                         )
                         statePatch = [ordered]@{ valid = $false }
                     })
@@ -118,7 +136,7 @@ try {
                     protocolVersion = "loom.surface.v1"
                     patches = [object[]]@([ordered]@{
                         operations = [object[]]@(
-                            (New-SetOperation -NodeId "form_status" -Path "/props/text" -Value "提交成功"),
+                            (New-SetOperation -NodeId "form_status" -Path "/props/text" -Value $script:SubmittedLabel),
                             (New-SetOperation -NodeId "name_error" -Path "/props/visible" -Value $false)
                         )
                         statePatch = [ordered]@{ submitted = $true; valid = $true }
@@ -140,7 +158,7 @@ try {
                         (New-SetOperation -NodeId "project_name" -Path "/props/value" -Value ""),
                         (New-SetOperation -NodeId "notes" -Path "/props/value" -Value ""),
                         (New-SetOperation -NodeId "name_error" -Path "/props/visible" -Value $false),
-                        (New-SetOperation -NodeId "form_status" -Path "/props/text" -Value "已取消")
+                        (New-SetOperation -NodeId "form_status" -Path "/props/text" -Value $script:CancelledLabel)
                     )
                     statePatch = [ordered]@{ projectName = ""; notes = ""; submitted = $false; valid = $false }
                 })
