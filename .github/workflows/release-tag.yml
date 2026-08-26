@@ -129,7 +129,8 @@ jobs:
           tag_name: ${{ env.LOOM_TAG }}
           name: ${{ env.LOOM_TAG }}
           draft: true
-          generate_release_notes: true
+          body_path: docs/GITHUB_RELEASE_BODY.md
+          generate_release_notes: false
           files: |
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip.sha256
