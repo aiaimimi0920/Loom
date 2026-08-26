@@ -23,37 +23,12 @@ function sha256File(filePath) {
   });
 }
 
-function jsonFiles(directory) {
-  if (!fs.existsSync(directory)) {
-    throw new Error(`Release metadata directory is missing: ${directory}`);
-  }
-  const files = fs.readdirSync(directory)
-    .filter((name) => name.endsWith(".json"))
-    .sort()
-    .map((name) => path.join(directory, name));
-  if (files.length === 0) {
-    throw new Error(`Release metadata directory contains no JSON files: ${directory}`);
-  }
-  return files;
-}
-
 function collectExpectedAssets(packageDirectory, tag) {
   assertTag(tag);
   const packageRoot = path.resolve(packageDirectory);
-  const packageNames = [
-    `Loom-${tag}-windows-x64.zip`,
-    `Loom-${tag}-windows-x64.zip.sha256`,
-    `Loom-CLI-${tag}-windows-x64.zip`,
-    `Loom-CLI-${tag}-windows-x64.zip.sha256`,
-    `Loom-Plugin-SDK-${tag}-windows-x64.zip`,
-    `Loom-Plugin-SDK-${tag}-windows-x64.zip.sha256`,
-  ];
+  const packageNames = [`Loom-${tag}-windows-x64.zip`, `Loom-${tag}-windows-x64.zip.sha256`];
   const files = [
     ...packageNames.map((name) => path.join(packageRoot, "packages", name)),
-    ...jsonFiles(path.join(packageRoot, "sbom")),
-    ...jsonFiles(path.join(packageRoot, "provenance")),
-    path.join(packageRoot, "manifest.json"),
-    path.join(packageRoot, "checksums.sha256"),
   ];
   const records = files.map((filePath) => {
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {

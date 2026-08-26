@@ -208,9 +208,11 @@ Unix process groups currently expose those declarations as advisory.
 Desktop expose the same enforcement matrix rather than claiming a complete OS
 sandbox.
 
-Release builds publish the Plugin SDK, CycloneDX and SPDX SBOMs, and build
-provenance as independently checksummed assets. Formal release workflows require
-a clean source tree and request GitHub build/SBOM attestations.
+Release builds generate the Plugin SDK, CycloneDX and SPDX SBOMs, and build
+provenance as independently checksummed evidence. The public Release exposes only
+the desktop ZIP and its checksum sidecar; the remaining evidence stays in the
+workflow/package verification boundary. Formal release workflows require a clean
+source tree and request GitHub build/SBOM attestations.
 
 ## Integration model
 

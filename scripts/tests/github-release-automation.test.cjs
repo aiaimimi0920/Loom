@@ -32,6 +32,10 @@ function makePackage(tag) {
 test("release asset contract rejects missing, extra, size, and digest drift", async () => {
   const root = makePackage("V1.2.3");
   const expected = publication.collectExpectedAssets(root, "V1.2.3");
+  assert.deepEqual(expected.map((item) => item.name), [
+    "Loom-V1.2.3-windows-x64.zip",
+    "Loom-V1.2.3-windows-x64.zip.sha256",
+  ]);
   const actual = expected.map((item, id) => ({
     id,
     name: item.name,

@@ -223,12 +223,19 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     'generate_release_notes: true',
     'fail_on_unmatched_files: true',
     '.zip.sha256',
-    'Loom-CLI-',
-    'Loom-CLI-${{ env.LOOM_TAG }}-windows-x64.zip',
-    'Loom-Plugin-SDK-${{ env.LOOM_TAG }}-windows-x64.zip',
-    'sbom/*.json',
-    'provenance/*.json'
+    'Loom-${{ env.LOOM_TAG }}-windows-x64.zip',
+    'Loom-${{ env.LOOM_TAG }}-windows-x64.zip.sha256'
 )
+
+$releaseWorkflowPath = Join-Path $workflowRoot "release-tag.yml"
+$releaseWorkflowRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath $releaseWorkflowPath
+$publicFilesStart = $releaseWorkflowRaw.IndexOf('          files: |', [System.StringComparison]::Ordinal)
+$publicFilesEnd = $releaseWorkflowRaw.IndexOf('          fail_on_unmatched_files: true', $publicFilesStart, [System.StringComparison]::Ordinal)
+Assert-True -Condition ($publicFilesStart -ge 0 -and $publicFilesEnd -gt $publicFilesStart) -Message "Loom public release files block is missing."
+$publicFiles = $releaseWorkflowRaw.Substring($publicFilesStart, $publicFilesEnd - $publicFilesStart)
+foreach ($hiddenAsset in @('Loom-CLI-', 'Loom-Plugin-SDK-', 'sbom/', 'provenance/', 'manifest.json', 'checksums.sha256')) {
+    Assert-True -Condition (-not $publicFiles.Contains($hiddenAsset)) -Message "Loom public release must not upload maintainer asset: $hiddenAsset"
+}
 
 Assert-Workflow -Name "release-recovery.yml" -RequiredText @(
     'name: Release Recovery',
