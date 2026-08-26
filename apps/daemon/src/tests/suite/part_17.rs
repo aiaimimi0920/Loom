@@ -129,7 +129,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         response["protocolVersion"],
         loom_protocol::HOOK_PROTOCOL_VERSION
     );
-    assert_eq!(response["serverVersion"], "0.1.0");
+    assert_eq!(response["serverVersion"], "0.2.0");
     assert!(response["sessionId"].as_str().is_some());
 
     let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
