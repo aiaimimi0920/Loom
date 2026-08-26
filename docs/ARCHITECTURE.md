@@ -209,10 +209,11 @@ Desktop expose the same enforcement matrix rather than claiming a complete OS
 sandbox.
 
 Release builds generate the Plugin SDK, CycloneDX and SPDX SBOMs, and build
-provenance as independently checksummed evidence. The public Release exposes only
-the desktop ZIP and its checksum sidecar; the remaining evidence stays in the
-workflow/package verification boundary. Formal release workflows require a clean
-source tree and request GitHub build/SBOM attestations.
+provenance as independently checksummed evidence. The public Release exposes the
+desktop ZIP and the Plugin SDK ZIP, each with its checksum sidecar; the CLI and
+remaining evidence stay in the workflow/package verification boundary. Formal
+release workflows require a clean source tree and request GitHub build/SBOM
+attestations.
 
 ## Integration model
 

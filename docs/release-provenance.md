@@ -40,14 +40,14 @@ than by moving a published tag.
 
 ## Public Release subjects and private evidence
 
-The public GitHub Release contains only the Windows desktop ZIP and its SHA-256
-sidecar. GitHub also shows its automatic `Source code (zip)` and
+The public GitHub Release contains the Windows desktop ZIP and sidecar plus the
+Plugin SDK ZIP and sidecar. GitHub also shows its automatic `Source code (zip)` and
 `Source code (tar.gz)` links for the tag.
 
-The build still generates and verifies the CLI ZIP, Plugin SDK ZIP, CycloneDX/SPDX
-SBOMs, `provenance/build-provenance.json`, `manifest.json`, and
-`checksums.sha256`. These remain local or workflow evidence and are not uploaded as
-public Release assets.
+The build still generates and verifies the CLI ZIP, CycloneDX/SPDX SBOMs,
+`provenance/build-provenance.json`, `manifest.json`, and `checksums.sha256`. The CLI
+and metadata remain local or workflow evidence and are not uploaded as public
+Release assets.
 
 The manifest records source commit, target, exact build commands, file sizes and
 hashes, SDK protocol/schema metadata, SBOM records, provenance record, and ZIP

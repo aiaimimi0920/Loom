@@ -26,7 +26,12 @@ function sha256File(filePath) {
 function collectExpectedAssets(packageDirectory, tag) {
   assertTag(tag);
   const packageRoot = path.resolve(packageDirectory);
-  const packageNames = [`Loom-${tag}-windows-x64.zip`, `Loom-${tag}-windows-x64.zip.sha256`];
+  const packageNames = [
+    `Loom-${tag}-windows-x64.zip`,
+    `Loom-${tag}-windows-x64.zip.sha256`,
+    `Loom-Plugin-SDK-${tag}-windows-x64.zip`,
+    `Loom-Plugin-SDK-${tag}-windows-x64.zip.sha256`,
+  ];
   const files = [
     ...packageNames.map((name) => path.join(packageRoot, "packages", name)),
   ];

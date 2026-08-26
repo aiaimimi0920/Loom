@@ -134,6 +134,8 @@ jobs:
           files: |
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip
             release/Loom/${{ env.LOOM_TAG }}/packages/Loom-${{ env.LOOM_TAG }}-windows-x64.zip.sha256
+            release/Loom/${{ env.LOOM_TAG }}/packages/Loom-Plugin-SDK-${{ env.LOOM_TAG }}-windows-x64.zip
+            release/Loom/${{ env.LOOM_TAG }}/packages/Loom-Plugin-SDK-${{ env.LOOM_TAG }}-windows-x64.zip.sha256
           fail_on_unmatched_files: true
 
       - name: Verify assets and publish draft release

@@ -35,6 +35,8 @@ test("release asset contract rejects missing, extra, size, and digest drift", as
   assert.deepEqual(expected.map((item) => item.name), [
     "Loom-V1.2.3-windows-x64.zip",
     "Loom-V1.2.3-windows-x64.zip.sha256",
+    "Loom-Plugin-SDK-V1.2.3-windows-x64.zip",
+    "Loom-Plugin-SDK-V1.2.3-windows-x64.zip.sha256",
   ]);
   const actual = expected.map((item, id) => ({
     id,
