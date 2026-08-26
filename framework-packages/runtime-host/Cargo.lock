@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "loom_mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "loom_plugin_security",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "loom_plugin_security"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "loom_process"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "loom_protocol",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "loom_protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "semver",
  "serde",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "loom_security"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "reqwest",
  "serde_json",
