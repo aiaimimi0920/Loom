@@ -23,6 +23,7 @@ fn signed_input_and_output_schemas_are_enforced() {
             "additionalProperties": false
         })),
         &[],
+        1,
     ))
     .expect("activate schema fixture");
     let bad_input = host
@@ -51,6 +52,7 @@ fn effects_require_command_permission_and_a_real_gesture() {
             None,
             None,
             &["hook.notice.show"],
+            1,
         ))
         .expect("activate notice fixture");
     notice_host
@@ -71,6 +73,7 @@ fn effects_require_command_permission_and_a_real_gesture() {
             None,
             None,
             &["hook.clipboard.write"],
+            1,
         ))
         .expect("activate clipboard fixture");
     let target = UserGestureTarget {

@@ -147,11 +147,20 @@ fn capability_runtime_invoke_error(
             (503, "capability_runtime_unavailable", true)
         }
     };
+    let public_message = match &error {
+        Error::NotFound(_) => "capability command was not found",
+        Error::Busy => "capability runtime is busy",
+        Error::Timeout => "capability runtime timed out",
+        Error::InvalidPackage(_) | Error::Protocol(_) => "capability runtime rejected the request",
+        Error::Unavailable(_) | Error::Io(_) | Error::Process(_) | Error::Json(_) => {
+            "capability runtime is unavailable"
+        }
+    };
     invoke_error(
         status,
         Some(request_id),
         code,
-        &error.to_string(),
+        public_message,
         json!({
             "capability": capability,
             "retryable": retryable,

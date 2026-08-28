@@ -12,8 +12,8 @@ mod verification;
 pub use error::CapabilityHostError;
 pub use frame::{read_runtime_frame, write_runtime_frame};
 pub use host::{
-    CapabilityInvocation, CapabilityInvocationOutput, CapabilityRuntimeHost,
-    CapabilityRuntimePackage, RuntimeHostLimits, UserGestureTarget,
+    CapabilityInvocation, CapabilityInvocationOutput, CapabilityRuntimeHealth,
+    CapabilityRuntimeHost, CapabilityRuntimePackage, RuntimeHostLimits, UserGestureTarget,
 };
 
 #[cfg(test)]

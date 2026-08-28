@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use loom_protocol::{
     CapabilityContributions, CapabilityPackageManifest, CapabilityProcessModel,
-    CapabilityProtocolError, CapabilityRuntimeMethod, CapabilityRuntimeStatus,
-    ExtensionResourceRef, ExtensionTarget, PackageTrustStatus,
+    CapabilityProtocolError, CapabilityRuntimeMessage, CapabilityRuntimeMethod,
+    CapabilityRuntimeStatus, ExtensionResourceRef, ExtensionTarget, PackageTrustStatus,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -15,16 +15,24 @@ use uuid::Uuid;
 use crate::error::{CapabilityHostError, HostResult};
 use crate::process::{RuntimeProcess, RuntimeProcessClient};
 use crate::schema::{compile_command_schemas, CommandSchemaValidators};
-use crate::session::{call_method, start_runtime, validate_runtime_package};
+use crate::session::{
+    call_method, ensure_process, next_request_id, record_failure, runtime_request, start_runtime,
+    validate_runtime_package,
+};
 use crate::snapshot::{build_contribution_snapshot, SnapshotRegistration};
 
+mod admission;
 mod invocation;
+
+use admission::InvocationAdmission;
 
 const USER_GESTURE_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct RuntimeHostLimits {
     pub max_active_plugins: usize,
+    pub max_global_inflight: usize,
+    pub max_plugin_inflight: usize,
     pub idle_timeout: Duration,
     pub maximum_failures: u32,
 }
@@ -33,6 +41,8 @@ impl Default for RuntimeHostLimits {
     fn default() -> Self {
         Self {
             max_active_plugins: 32,
+            max_global_inflight: 32,
+            max_plugin_inflight: 1,
             idle_timeout: Duration::from_secs(60),
             maximum_failures: 5,
         }
@@ -75,6 +85,13 @@ pub struct CapabilityInvocationOutput {
     pub error: Option<CapabilityProtocolError>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapabilityRuntimeHealth {
+    pub plugin_id: String,
+    pub package_digest: String,
+    pub payload: Option<Value>,
+}
+
 pub(super) struct ActivePackage {
     pub(super) package: CapabilityRuntimePackage,
     pub(super) effective_contributions: CapabilityContributions,
@@ -107,6 +124,7 @@ pub struct CapabilityRuntimeHost {
     commands: Mutex<HashMap<String, String>>,
     gestures: Mutex<HashMap<String, UserGestureGrant>>,
     inflight: Mutex<HashMap<String, InflightInvocation>>,
+    admission: Mutex<InvocationAdmission>,
     generation: AtomicU64,
 }
 
@@ -119,6 +137,7 @@ impl CapabilityRuntimeHost {
             commands: Mutex::new(HashMap::new()),
             gestures: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
+            admission: Mutex::new(InvocationAdmission::default()),
             generation: AtomicU64::new(0),
         }
     }
@@ -222,6 +241,59 @@ impl CapabilityRuntimeHost {
         }
     }
 
+    /// Runs the protocol health method under the same restart and timeout policy as commands.
+    pub fn health(&self, plugin_id: &str) -> HostResult<CapabilityRuntimeHealth> {
+        let active = lock(&self.packages)?
+            .get(plugin_id)
+            .cloned()
+            .ok_or_else(|| CapabilityHostError::NotFound(plugin_id.to_owned()))?;
+        let mut active = lock(&active)?;
+        if active.package.manifest.entrypoints.service.is_none() {
+            return Err(CapabilityHostError::Unavailable(
+                "plugin has no service runtime".to_owned(),
+            ));
+        }
+        ensure_process(&mut active, &self.limits)?;
+        let timeout = Duration::from_secs(2).min(Duration::from_secs(
+            active.package.manifest.resources.timeout_seconds.max(1),
+        ));
+        let response = active.process.as_mut().expect("process was ensured").call(
+            runtime_request(
+                next_request_id(),
+                CapabilityRuntimeMethod::Health,
+                json!({}),
+            ),
+            timeout,
+        );
+        active.last_used = Instant::now();
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                active.process.take();
+                record_failure(&mut active);
+                return Err(error);
+            }
+        };
+        let CapabilityRuntimeMessage::Response {
+            status: CapabilityRuntimeStatus::Succeeded,
+            payload,
+            ..
+        } = response
+        else {
+            active.process.take();
+            record_failure(&mut active);
+            return Err(CapabilityHostError::Unavailable(
+                "runtime health check failed".to_owned(),
+            ));
+        };
+        active.failures = 0;
+        Ok(CapabilityRuntimeHealth {
+            plugin_id: plugin_id.to_owned(),
+            package_digest: active.package.digest.clone(),
+            payload,
+        })
+    }
+
     pub fn deactivate(&self, plugin_id: &str) -> HostResult<bool> {
         self.cancel_plugin_inflight(plugin_id)?;
         let active = lock(&self.packages)?.remove(plugin_id);
@@ -308,6 +380,13 @@ impl CapabilityRuntimeHost {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_inflight_request(&self, request_id: &str) -> bool {
+        self.inflight
+            .lock()
+            .is_ok_and(|inflight| inflight.contains_key(request_id))
     }
 
     fn remove_plugin_commands(&self, plugin_id: &str) -> HostResult<()> {

@@ -18,6 +18,9 @@ use uuid::Uuid;
 
 use super::*;
 
+#[cfg(windows)]
+mod process_tree_tests;
+mod runtime_health_tests;
 mod schema_tests;
 mod snapshot_tests;
 
@@ -260,6 +263,7 @@ fn package_with_gesture(
         None,
         None,
         &[],
+        1,
     )
 }
 
@@ -272,6 +276,7 @@ fn package_with_contract(
     input_schema: Option<serde_json::Value>,
     output_schema: Option<serde_json::Value>,
     permissions: &[&str],
+    max_processes: u32,
 ) -> CapabilityRuntimePackage {
     let file_name = executable.file_name().unwrap().to_string_lossy();
     let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -333,7 +338,7 @@ fn package_with_contract(
             "commands": [command]
         },
         "permissions": permissions,
-        "resources": { "memoryMiB": 64, "maxProcesses": 1, "timeoutSeconds": 5 },
+        "resources": { "memoryMiB": 64, "maxProcesses": max_processes, "timeoutSeconds": 5 },
         "dependencies": [],
         "signature": { "algorithm": "ed25519", "keyId": "test-key", "file": "signature.json" }
     });
@@ -360,6 +365,24 @@ fn package_with_contract(
         trust_status: PackageTrustStatus::Trusted,
         permission_grant_digest: digest,
     }
+}
+
+fn package_with_process_limit(
+    root: &Path,
+    executable: &Path,
+    args: &[&str],
+    max_processes: u32,
+) -> CapabilityRuntimePackage {
+    package_with_contract(
+        root,
+        executable,
+        args,
+        false,
+        None,
+        None,
+        &[],
+        max_processes,
+    )
 }
 
 fn invoke_fixture(
@@ -417,14 +440,32 @@ fn cleanup(root: &Path) {
 }
 
 const FIXTURE_SOURCE: &str = r###"
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 fn field(input: &str, key: &str) -> String {
     let marker = format!("\"{}\":\"", key);
     let rest = &input[input.find(&marker).unwrap() + marker.len()..];
     rest[..rest.find('\"').unwrap()].to_owned()
 }
+fn append_pid(path: &str) {
+    let mut file = OpenOptions::new().create(true).append(true).open(path).unwrap();
+    writeln!(file, "{}", std::process::id()).unwrap();
+    file.flush().unwrap();
+}
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "tree-child" || mode == "tree-leaf" {
+        let pid_file = std::env::args().nth(2).unwrap();
+        append_pid(&pid_file);
+        if mode == "tree-child" {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("tree-leaf")
+                .arg(&pid_file)
+                .spawn()
+                .unwrap();
+        }
+        loop { std::thread::sleep(std::time::Duration::from_secs(30)); }
+    }
     let mut input = std::io::stdin();
     let mut output = std::io::stdout();
     loop {
@@ -435,23 +476,42 @@ fn main() {
         let request = String::from_utf8(bytes).unwrap();
         let id = field(&request, "requestId");
         let method = field(&request, "method");
+        if (mode == "tree" || mode == "crash-tree") && method == "command" {
+            let pid_file = std::env::args().nth(2).unwrap();
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("tree-child")
+                .arg(&pid_file)
+                .spawn()
+                .unwrap();
+            for _ in 0..100 {
+                let ready = std::fs::read_to_string(&pid_file)
+                    .map(|value| value.lines().count() >= 2)
+                    .unwrap_or(false);
+                if ready { break; }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if mode == "crash-tree" { std::process::exit(19); }
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
         if mode == "hang" && method == "command" {
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
-        let payload = if mode == "extra" && method == "initialize" {
-            r#"{"contributions":{"commands":[{"id":"publisher.example/fixture.extra","title":"Extra"}]}}"#
+        let (status, payload, error) = if mode == "fail-secret" && method == "command" {
+            ("failed", "null", r#","error":{"code":"runtime_fault","message":"token=fixture-secret","retryable":false}"#)
+        } else if mode == "extra" && method == "initialize" {
+            ("succeeded", r#"{"contributions":{"commands":[{"id":"publisher.example/fixture.extra","title":"Extra"}]}}"#, "")
         } else if mode == "mutate" && method == "initialize" {
-            r#"{"contributions":{"commands":[{"id":"publisher.example/fixture.run","title":"Mutated"}]}}"#
+            ("succeeded", r#"{"contributions":{"commands":[{"id":"publisher.example/fixture.run","title":"Mutated"}]}}"#, "")
         } else if mode == "notice" {
-            r#"{"output":{"ok":true},"effects":[{"type":"notice.show","payload":{"message":"ready"}}]}"#
+            ("succeeded", r#"{"output":{"ok":true},"effects":[{"type":"notice.show","payload":{"message":"ready"}}]}"#, "")
         } else if mode == "clipboard" {
-            r#"{"output":{"ok":true},"effects":[{"type":"clipboard.writeText","payload":{"text":"ready"}}]}"#
+            ("succeeded", r#"{"output":{"ok":true},"effects":[{"type":"clipboard.writeText","payload":{"text":"ready"}}]}"#, "")
         } else if mode == "bad-output" {
-            r#"{"output":{"ok":"wrong"}}"#
-        } else { r#"{"ok":true}"# };
+            ("succeeded", r#"{"output":{"ok":"wrong"}}"#, "")
+        } else { ("succeeded", r#"{"ok":true}"#, "") };
         let response = format!(
-            "{{\"type\":\"response\",\"protocol\":\"loom.capability.runtime.v1\",\"apiVersion\":\"1.0\",\"requestId\":\"{}\",\"status\":\"succeeded\",\"payload\":{}}}",
-            id, payload
+            "{{\"type\":\"response\",\"protocol\":\"loom.capability.runtime.v1\",\"apiVersion\":\"1.0\",\"requestId\":\"{}\",\"status\":\"{}\",\"payload\":{}{} }}",
+            id, status, payload, error
         );
         output.write_all(&(response.len() as u32).to_be_bytes()).unwrap();
         output.write_all(response.as_bytes()).unwrap();

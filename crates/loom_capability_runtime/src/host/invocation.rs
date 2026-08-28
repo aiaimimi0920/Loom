@@ -1,8 +1,7 @@
+use super::admission::InvocationAdmission;
 use super::*;
 use crate::schema::{validate_command_input, validate_command_output};
-use crate::session::{
-    ensure_process, next_request_id, record_failure, response_output, runtime_request,
-};
+use crate::session::response_output;
 
 impl CapabilityRuntimeHost {
     pub fn invoke(
@@ -13,6 +12,7 @@ impl CapabilityRuntimeHost {
             .get(&invocation.command_id)
             .cloned()
             .ok_or_else(|| CapabilityHostError::NotFound(invocation.command_id.clone()))?;
+        let _permit = InvocationAdmission::acquire(&self.admission, &self.limits, &plugin_id)?;
         let active = lock(&self.packages)?
             .get(&plugin_id)
             .cloned()

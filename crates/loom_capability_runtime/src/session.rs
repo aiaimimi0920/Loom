@@ -91,7 +91,13 @@ pub(super) fn ensure_process(
             "runtime restart backoff is active".to_owned(),
         ));
     }
-    let (process, contributions) = start_runtime(&active.package)?;
+    let (process, contributions) = match start_runtime(&active.package) {
+        Ok(started) => started,
+        Err(error) => {
+            record_failure(active);
+            return Err(error);
+        }
+    };
     validate_dynamic_subset(&active.package.manifest.contributes, &contributions)?;
     active.effective_contributions = contributions;
     active.process = Some(process);
@@ -110,11 +116,8 @@ pub(super) fn call_method(
             status: CapabilityRuntimeStatus::Succeeded,
             ..
         } => Ok(response),
-        CapabilityRuntimeMessage::Response { error, .. } => Err(CapabilityHostError::Protocol(
-            error
-                .as_ref()
-                .map(|error| error.message.clone())
-                .unwrap_or_else(|| "runtime method failed".to_owned()),
+        CapabilityRuntimeMessage::Response { .. } => Err(CapabilityHostError::Protocol(
+            "runtime method reported failure".to_owned(),
         )),
         _ => Err(CapabilityHostError::Protocol(
             "runtime returned a non-response message".to_owned(),
@@ -156,7 +159,10 @@ pub(super) fn response_output(
         package_digest: package.digest.clone(),
         status,
         payload,
-        error,
+        error: error.map(|mut error| {
+            error.message = "capability runtime reported an error".to_owned();
+            error
+        }),
     })
 }
 
