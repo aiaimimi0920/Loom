@@ -337,7 +337,15 @@ fn execute_hook_ocr(
         OcrProvider::Fixture { text } => {
             let rgba = loom_image_io::decode_image_base64_to_rgba8(image_base64)
                 .map_err(|error| error.to_string())?;
-            Ok(json!({ "text": text, "width": rgba.width, "height": rgba.height }))
+            // Keep the fixture response identical to the real OCR DTO so Hook
+            // can exercise the complete recognition/render/clipboard path.
+            Ok(json!({
+                "fullText": text,
+                "textBlocks": [],
+                "width": rgba.width,
+                "height": rgba.height,
+                "scaleFactor": 1.0,
+            }))
         }
         OcrProvider::Real { engine } => {
             let image_bytes = loom_image_io::decode_data_url_bytes(image_base64)

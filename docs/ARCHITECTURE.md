@@ -317,3 +317,9 @@ Hook renders capability-declared nodes and sends typed actions. The public Rust
 types and JSON Schema are in `crates/loom_protocol/src/hook.rs` and
 `protocol/schemas/hook-message.v1.schema.json`. There is no alternate ArtLoom
 workflow or execution adapter.
+
+OCR result details, including the optional source-tagged estimated baseline,
+CTC-timestep-aligned character/word spans, and raw-text correction evidence, are
+documented in [`OCR_CONTRACT.md`](OCR_CONTRACT.md). The detector remains
+line-based; span geometry comes from real recognition timesteps projected into
+that line quad and is not presented as independent pixel-level glyph detection.

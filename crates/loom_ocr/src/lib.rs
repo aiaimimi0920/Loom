@@ -1,18 +1,39 @@
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use image::DynamicImage;
 use ort::session::builder::SessionBuilder;
-use paddle_ocr_rs::ocr_lite::OcrLite;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use serde::{Deserialize, Serialize};
+
+mod colors;
+mod ctc_decode;
+mod ctc_recognizer;
+mod geometry;
+mod ocr_core;
+mod recognition_rescue;
+mod span_geometry;
+mod text_postprocess;
+mod types;
+
+use colors::estimate_text_and_background_color;
+use geometry::{block_bounds, estimate_line_geometry};
+use ocr_core::AlignedOcrCore;
+use span_geometry::project_text_spans;
+use text_postprocess::correct_recognized_text;
+pub use types::{
+    EnhancedTextBlock, OcrDetectResult, OcrGeometrySource, OcrLineGeometry, OcrMetricPoint,
+    OcrPoint, OcrTextSpan, OcrTextSpanSource,
+};
 
 pub const REQUIRED_RAPID_OCR_V4_MODELS: &[&str] = &[
     "ch_PP-OCRv4_det_infer.onnx",
     "ch_ppocr_mobile_v2.0_cls_infer.onnx",
     "ch_PP-OCRv4_rec_infer.onnx",
 ];
+const OPTIONAL_RAPID_OCR_V5_RECOGNITION_MODEL: &str = "ch_PP-OCRv5_rec_mobile_infer.onnx";
+const MAX_ENCODED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION: u32 = 16_384;
+const MAX_IMAGE_ALLOCATION_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_MODEL_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OcrError {
@@ -27,6 +48,9 @@ pub enum OcrError {
         path: PathBuf,
         source: std::io::Error,
     },
+
+    #[error("OCR model size is outside the supported range for {path}: {size} bytes")]
+    InvalidModelSize { path: PathBuf, size: u64 },
 
     #[error("Invalid image: {0}")]
     InvalidImage(String),
@@ -46,6 +70,7 @@ pub struct OcrModelSet {
     pub det_model: PathBuf,
     pub cls_model: PathBuf,
     pub rec_model: PathBuf,
+    pub fallback_rec_model: Option<PathBuf>,
 }
 
 impl OcrModelSet {
@@ -68,10 +93,15 @@ impl OcrModelSet {
             });
         }
 
+        let fallback_rec_model = root
+            .join(OPTIONAL_RAPID_OCR_V5_RECOGNITION_MODEL)
+            .is_file()
+            .then(|| root.join(OPTIONAL_RAPID_OCR_V5_RECOGNITION_MODEL));
         Ok(Self {
             det_model: root.join(REQUIRED_RAPID_OCR_V4_MODELS[0]),
             cls_model: root.join(REQUIRED_RAPID_OCR_V4_MODELS[1]),
             rec_model: root.join(REQUIRED_RAPID_OCR_V4_MODELS[2]),
+            fallback_rec_model,
             root,
         })
     }
@@ -98,7 +128,7 @@ impl OcrModelSet {
 #[derive(Debug)]
 pub struct OcrEngine {
     model_set: OcrModelSet,
-    core: Option<OcrLite>,
+    core: Option<AlignedOcrCore>,
 }
 
 impl OcrEngine {
@@ -117,74 +147,47 @@ impl OcrEngine {
         let image = decode_image(image_data)?;
         let width = image.width();
         let height = image.height();
-        let image_buffer = match image {
-            DynamicImage::ImageRgb8(image) => image,
-            DynamicImage::ImageRgba8(image) => {
-                let rgb_data = convert_rgba_to_rgb(image.as_raw());
-                image::RgbImage::from_raw(image.width(), image.height(), rgb_data)
-                    .ok_or_else(|| OcrError::InvalidImage("invalid RGBA buffer".to_owned()))?
-            }
-            other => other.to_rgb8(),
-        };
-
-        let max_size = image_buffer.height().max(image_buffer.width());
-        let result = self
-            .session()?
-            .detect_angle_rollback(
-                &image_buffer,
-                50,
-                max_size,
-                0.5,
-                0.3,
-                2.0,
-                detect_angle,
-                false,
-                0.9,
-            )
-            .map_err(|error| OcrError::Detect(error.to_string()))?;
-
-        let full_text = result
-            .text_blocks
-            .iter()
-            .map(|block| block.text.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let image_buffer = image.to_rgb8();
+        let result = self.session()?.detect(&image_buffer, detect_angle)?;
 
         let mut text_blocks = Vec::new();
-        for block in result.text_blocks {
-            let Some(bounds) = block_bounds(&block.box_points, width, height) else {
+        for block in result {
+            let box_points = block.box_points;
+            let Some(bounds) = block_bounds(&box_points, width, height) else {
                 continue;
             };
-            let block_width = bounds.max_x.saturating_sub(bounds.min_x);
-            let block_height = bounds.max_y.saturating_sub(bounds.min_y);
-            if block_width < 10 || block_height < 10 {
+            // Do not apply a pixel-size cutoff here. A single punctuation mark
+            // (for example `#` or `-`) can legitimately have a narrow box and
+            // must remain available to the overlay and clipboard paths.
+            if bounds.width() == 0 || bounds.height() == 0 || block.line.text.trim().is_empty() {
                 continue;
             }
 
-            let (color_hex, bg_color_hex) = estimate_text_and_background_color(
-                &image_buffer,
-                bounds.min_x,
-                bounds.max_x,
-                bounds.min_y,
-                bounds.max_y,
-            );
+            let line_geometry = estimate_line_geometry(&box_points);
+            let (character_spans, word_spans) =
+                project_text_spans(&block.line, &box_points, block.axis, block.reverse_axis);
+            let corrected = correct_recognized_text(block.line.text);
+            let (color_hex, bg_color_hex) =
+                estimate_text_and_background_color(&image_buffer, bounds);
 
             text_blocks.push(EnhancedTextBlock {
-                box_points: block
-                    .box_points
-                    .into_iter()
-                    .map(|point| OcrPoint {
-                        x: point.x,
-                        y: point.y,
-                    })
-                    .collect(),
+                box_points,
                 box_score: block.box_score,
-                text: block.text,
-                text_score: block.text_score,
+                text: corrected.text,
+                text_score: block.line.text_score,
                 color_hex,
                 bg_color_hex,
+                raw_text: corrected.raw_text,
+                line_geometry,
+                character_spans,
+                word_spans,
             });
         }
+        let full_text = text_blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         Ok(OcrDetectResult {
             text_blocks,
@@ -195,56 +198,33 @@ impl OcrEngine {
         })
     }
 
-    fn session(&mut self) -> OcrResult<&mut OcrLite> {
+    fn session(&mut self) -> OcrResult<&mut AlignedOcrCore> {
         if self.core.is_none() {
             initialize_onnx_runtime(&self.model_set.root)?;
 
             let det_model = read_model(&self.model_set.det_model)?;
             let cls_model = read_model(&self.model_set.cls_model)?;
             let rec_model = read_model(&self.model_set.rec_model)?;
+            let fallback_rec_model = self
+                .model_set
+                .fallback_rec_model
+                .as_deref()
+                .map(read_model)
+                .transpose()?;
 
-            let mut core = OcrLite::new();
-            core.init_models_from_memory_custom(
+            self.core = Some(AlignedOcrCore::from_models(
                 det_model.as_ref(),
                 cls_model.as_ref(),
                 rec_model.as_ref(),
+                fallback_rec_model,
                 build_session,
-            )
-            .map_err(|error| OcrError::Init(error.to_string()))?;
-            self.core = Some(core);
+            )?);
         }
 
         self.core
             .as_mut()
             .ok_or_else(|| OcrError::Init("OCR session missing after initialization".to_owned()))
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OcrPoint {
-    pub x: u32,
-    pub y: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EnhancedTextBlock {
-    pub box_points: Vec<OcrPoint>,
-    pub box_score: f32,
-    pub text: String,
-    pub text_score: f32,
-    pub color_hex: String,
-    pub bg_color_hex: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrDetectResult {
-    pub text_blocks: Vec<EnhancedTextBlock>,
-    pub scale_factor: f32,
-    pub full_text: String,
-    pub width: u32,
-    pub height: u32,
 }
 
 pub fn default_model_dir_candidates() -> Vec<PathBuf> {
@@ -295,10 +275,37 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn read_model(path: &Path) -> OcrResult<Vec<u8>> {
-    fs::read(path).map_err(|source| OcrError::ReadModel {
+    let file = fs::File::open(path).map_err(|source| OcrError::ReadModel {
         path: path.to_path_buf(),
         source,
-    })
+    })?;
+    let size = file
+        .metadata()
+        .map_err(|source| OcrError::ReadModel {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if size == 0 || size > MAX_MODEL_BYTES {
+        return Err(OcrError::InvalidModelSize {
+            path: path.to_path_buf(),
+            size,
+        });
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(MAX_MODEL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| OcrError::ReadModel {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() as u64 != size || bytes.len() as u64 > MAX_MODEL_BYTES {
+        return Err(OcrError::InvalidModelSize {
+            path: path.to_path_buf(),
+            size: bytes.len() as u64,
+        });
+    }
+    Ok(bytes)
 }
 
 fn initialize_onnx_runtime(model_root: &Path) -> OcrResult<()> {
@@ -311,9 +318,22 @@ fn initialize_onnx_runtime(model_root: &Path) -> OcrResult<()> {
         .map_err(|error| OcrError::Init(error.to_string()))
 }
 
-fn decode_image(image_data: &[u8]) -> OcrResult<DynamicImage> {
-    image::load(Cursor::new(image_data), image::ImageFormat::Png)
-        .or_else(|_| image::load_from_memory(image_data))
+fn decode_image(image_data: &[u8]) -> OcrResult<image::DynamicImage> {
+    if image_data.is_empty() || image_data.len() > MAX_ENCODED_IMAGE_BYTES {
+        return Err(OcrError::InvalidImage(
+            "encoded image size is outside the supported range".to_owned(),
+        ));
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOCATION_BYTES);
+    let mut reader = image::ImageReader::new(Cursor::new(image_data))
+        .with_guessed_format()
+        .map_err(|error| OcrError::InvalidImage(error.to_string()))?;
+    reader.limits(limits);
+    reader
+        .decode()
         .map_err(|error| OcrError::InvalidImage(error.to_string()))
 }
 
@@ -323,145 +343,6 @@ fn build_session(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> 
         .with_inter_threads(num_thread)?
         .with_intra_threads(num_thread)?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?)
-}
-
-fn convert_rgba_to_rgb(image: &[u8]) -> Vec<u8> {
-    let pixel_count = image.len() / 4;
-    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
-
-    unsafe {
-        rgb_data.set_len(pixel_count * 3);
-
-        let image_ptr_address = image.as_ptr() as usize;
-        let rgb_ptr_address = rgb_data.as_mut_ptr() as usize;
-
-        (0..pixel_count).into_par_iter().for_each(|i| {
-            let image_base = i * 4;
-            let rgb_base = i * 3;
-            std::ptr::copy_nonoverlapping(
-                (image_ptr_address as *const u8).add(image_base),
-                (rgb_ptr_address as *mut u8).add(rgb_base),
-                3,
-            );
-        });
-    }
-
-    rgb_data
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Bounds {
-    min_x: u32,
-    max_x: u32,
-    min_y: u32,
-    max_y: u32,
-}
-
-fn block_bounds(
-    points: &[paddle_ocr_rs::ocr_result::Point],
-    width: u32,
-    height: u32,
-) -> Option<Bounds> {
-    if points.is_empty() || width == 0 || height == 0 {
-        return None;
-    }
-
-    let min_x = points.iter().map(|point| point.x).min().unwrap_or(0);
-    let min_y = points.iter().map(|point| point.y).min().unwrap_or(0);
-    let max_x = points
-        .iter()
-        .map(|point| point.x)
-        .max()
-        .unwrap_or(0)
-        .min(width - 1);
-    let max_y = points
-        .iter()
-        .map(|point| point.y)
-        .max()
-        .unwrap_or(0)
-        .min(height - 1);
-
-    Some(Bounds {
-        min_x,
-        max_x,
-        min_y,
-        max_y,
-    })
-}
-
-fn estimate_text_and_background_color(
-    image_buffer: &image::RgbImage,
-    min_x: u32,
-    max_x: u32,
-    min_y: u32,
-    max_y: u32,
-) -> (String, String) {
-    let mut total_lum: u64 = 0;
-    let mut count: u64 = 0;
-
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let pixel = image_buffer.get_pixel(x, y);
-            total_lum += luminance(pixel) as u64;
-            count += 1;
-        }
-    }
-
-    if count == 0 {
-        return ("#000000".to_owned(), "#ffffff".to_owned());
-    }
-
-    let avg_lum = total_lum / count;
-    let mut dark_sum = [0_u64; 3];
-    let mut dark_count: u64 = 0;
-    let mut light_sum = [0_u64; 3];
-    let mut light_count: u64 = 0;
-
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let pixel = image_buffer.get_pixel(x, y);
-            let lum = luminance(pixel) as u64;
-            let target = if lum < avg_lum {
-                dark_count += 1;
-                &mut dark_sum
-            } else {
-                light_count += 1;
-                &mut light_sum
-            };
-            target[0] += pixel[0] as u64;
-            target[1] += pixel[1] as u64;
-            target[2] += pixel[2] as u64;
-        }
-    }
-
-    let dark = average_color(dark_sum, dark_count, [0, 0, 0]);
-    let light = average_color(light_sum, light_count, [255, 255, 255]);
-    let (fg, bg) = if dark_count < light_count {
-        (dark, light)
-    } else {
-        (light, dark)
-    };
-
-    (format_hex(fg), format_hex(bg))
-}
-
-fn luminance(pixel: &image::Rgb<u8>) -> u32 {
-    (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) as u32
-}
-
-fn average_color(sum: [u64; 3], count: u64, fallback: [u8; 3]) -> [u8; 3] {
-    if count == 0 {
-        return fallback;
-    }
-    [
-        (sum[0] / count) as u8,
-        (sum[1] / count) as u8,
-        (sum[2] / count) as u8,
-    ]
-}
-
-fn format_hex(color: [u8; 3]) -> String {
-    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
 }
 
 #[cfg(test)]
@@ -512,6 +393,14 @@ mod tests {
         assert_eq!(model_set.root, complete);
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn retains_narrow_punctuation_blocks() {
+        let punctuation = block_bounds(&[OcrPoint { x: 4, y: 7 }], 10, 10)
+            .expect("single-pixel punctuation bounds");
+        assert_eq!(punctuation.width(), 1);
+        assert_eq!(punctuation.height(), 1);
     }
 
     #[test]

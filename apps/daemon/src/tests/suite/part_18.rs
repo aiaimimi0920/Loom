@@ -284,13 +284,84 @@ fn daemon_hook_bridge_ocr_image_fixture_provider_returns_success() {
     );
 
     assert_eq!(response["status"], "succeeded", "response={response}");
-    assert_eq!(response["data"]["text"], "hello loom ocr");
+    assert_eq!(response["data"]["fullText"], "hello loom ocr");
+    assert_eq!(response["data"]["textBlocks"], serde_json::json!([]));
+    assert_eq!(response["data"]["scaleFactor"], 1.0);
     assert_eq!(response["data"]["width"], 1);
     assert_eq!(response["data"]["height"], 1);
 
     drop(runtime);
     restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
     fs::remove_dir_all(root).expect("cleanup ocr fixture root");
+}
+
+#[test]
+fn daemon_hook_bridge_ocr_image_serializes_nested_layout_evidence() {
+    let result = loom_ocr::OcrDetectResult {
+        text_blocks: vec![loom_ocr::EnhancedTextBlock {
+            box_points: vec![
+                loom_ocr::OcrPoint { x: 10, y: 20 },
+                loom_ocr::OcrPoint { x: 90, y: 20 },
+                loom_ocr::OcrPoint { x: 90, y: 50 },
+                loom_ocr::OcrPoint { x: 10, y: 50 },
+            ],
+            box_score: 0.99,
+            text: "Alt+2".to_owned(),
+            text_score: 0.98,
+            color_hex: "#ffffff".to_owned(),
+            bg_color_hex: "#101010".to_owned(),
+            raw_text: Some("A1t+2".to_owned()),
+            line_geometry: Some(loom_ocr::OcrLineGeometry {
+                baseline: [
+                    loom_ocr::OcrMetricPoint { x: 10.0, y: 44.6 },
+                    loom_ocr::OcrMetricPoint { x: 90.0, y: 44.6 },
+                ],
+                angle_degrees: 0.0,
+                source: loom_ocr::OcrGeometrySource::EstimatedFromRapidOcrLineQuad,
+            }),
+            character_spans: vec![loom_ocr::OcrTextSpan {
+                text: "A".to_owned(),
+                box_points: [
+                    loom_ocr::OcrMetricPoint { x: 10.0, y: 20.0 },
+                    loom_ocr::OcrMetricPoint { x: 24.0, y: 20.0 },
+                    loom_ocr::OcrMetricPoint { x: 24.0, y: 50.0 },
+                    loom_ocr::OcrMetricPoint { x: 10.0, y: 50.0 },
+                ],
+                score: 0.97,
+                source: loom_ocr::OcrTextSpanSource::CtcAlignedFromRecognitionTimesteps,
+            }],
+            word_spans: vec![loom_ocr::OcrTextSpan {
+                text: "A1t".to_owned(),
+                box_points: [
+                    loom_ocr::OcrMetricPoint { x: 10.0, y: 20.0 },
+                    loom_ocr::OcrMetricPoint { x: 50.0, y: 20.0 },
+                    loom_ocr::OcrMetricPoint { x: 50.0, y: 50.0 },
+                    loom_ocr::OcrMetricPoint { x: 10.0, y: 50.0 },
+                ],
+                score: 0.96,
+                source: loom_ocr::OcrTextSpanSource::CtcAlignedFromRecognitionTimesteps,
+            }],
+        }],
+        scale_factor: 1.0,
+        full_text: "Alt+2".to_owned(),
+        width: 100,
+        height: 60,
+    };
+
+    let serialized = serde_json::to_value(result).expect("serialize OCR result");
+    let block = &serialized["textBlocks"][0];
+    assert_eq!(block["rawText"], "A1t+2");
+    assert_eq!(block["text"], "Alt+2");
+    assert_eq!(block["lineGeometry"]["source"], "estimatedFromRapidOcrLineQuad");
+    assert_eq!(block["lineGeometry"]["baseline"][1]["x"], 90.0);
+    assert_eq!(
+        block["characterSpans"][0]["source"],
+        "ctcAlignedFromRecognitionTimesteps"
+    );
+    assert_eq!(block["characterSpans"][0]["boxPoints"][1]["x"], 24.0);
+    assert_eq!(block["wordSpans"][0]["text"], "A1t");
+    assert!(block.get("raw_text").is_none());
+    assert!(block.get("line_geometry").is_none());
 }
 
 #[test]
@@ -392,6 +463,31 @@ fn daemon_hook_bridge_ocr_image_real_provider_returns_success() {
             .as_array()
             .expect("textBlocks")
             .is_empty(),
+        "response={response}"
+    );
+    let first_block = &response["data"]["textBlocks"][0];
+    assert_eq!(
+        first_block["lineGeometry"]["source"],
+        "estimatedFromRapidOcrLineQuad",
+        "response={response}"
+    );
+    assert_eq!(
+        first_block["lineGeometry"]["baseline"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "response={response}"
+    );
+    assert!(
+        first_block["characterSpans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()),
+        "response={response}"
+    );
+    assert!(
+        first_block["wordSpans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()),
         "response={response}"
     );
     assert_eq!(response["data"]["width"], 678);
