@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use loom_protocol::CapabilityPackageManifest;
 
+use super::faults::validate_failure_state;
 use super::types::{
     CapabilityInstallError, CapabilityInstalledVersion, CapabilityLifecycleStatus,
     CapabilityPluginRecord, CapabilityRegistryDocument, CapabilityResult,
@@ -113,6 +114,7 @@ impl CapabilityPluginRegistry {
                 description: manifest.description.clone(),
                 enabled_intent: false,
                 status: CapabilityLifecycleStatus::InstalledDisabled,
+                runtime_failures: Default::default(),
                 active_digest: None,
                 previous_digest: None,
                 requested_permissions: manifest.permissions.clone(),
@@ -215,6 +217,7 @@ fn validate_document(document: &CapabilityRegistryDocument) -> CapabilityResult<
     }
     let mut plugins = HashSet::new();
     for plugin in &document.plugins {
+        validate_failure_state(plugin)?;
         let expected = format!("{}/{}", plugin.publisher_id, plugin.package_id);
         if plugin.qualified_id != expected || !plugins.insert(plugin.qualified_id.clone()) {
             return Err(CapabilityInstallError::InvalidRegistry(

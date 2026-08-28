@@ -13,7 +13,8 @@ pub use error::CapabilityHostError;
 pub use frame::{read_runtime_frame, write_runtime_frame};
 pub use host::{
     CapabilityInvocation, CapabilityInvocationOutput, CapabilityRuntimeHealth,
-    CapabilityRuntimeHost, CapabilityRuntimePackage, RuntimeHostLimits, UserGestureTarget,
+    CapabilityRuntimeHost, CapabilityRuntimePackage, CapabilityStagedResource, RuntimeHostLimits,
+    UserGestureTarget,
 };
 
 #[cfg(test)]

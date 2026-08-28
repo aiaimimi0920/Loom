@@ -7,6 +7,7 @@ fn route(
     brain_planner: &SharedBrainPlanner,
     capability_runtime: &SharedCapabilityRuntime,
     capability_dispatch: &SharedCapabilityDispatchRegistry,
+    capability_resources: &SharedCapabilityResourceBroker,
     auth_token: &str,
     config_registry: &ConfigRegistry,
     config_store: &FileDocumentStore,
@@ -73,6 +74,7 @@ fn route(
         route_path,
         control_plane_root,
         capability_runtime,
+        capability_resources,
     ) {
         return response;
     }
@@ -85,6 +87,9 @@ fn route(
             run_store,
             brain_planner,
             capability_dispatch,
+            capability_resources,
+            surface_resources,
+            control_plane_root,
         );
     }
 

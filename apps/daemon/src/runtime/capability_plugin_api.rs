@@ -31,6 +31,7 @@ fn route_capability_plugins(
     route_path: &str,
     control_plane_root: &Path,
     runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
 ) -> Option<Result<(u16, String)>> {
     const PREFIX: &str = "/v1/capability-plugins/";
     let response = match (request.method.as_str(), route_path) {
@@ -71,6 +72,7 @@ fn route_capability_plugins(
                     .expect("checked capability path"),
                 control_plane_root,
                 runtime,
+                resources,
             )
         }
         ("POST", path)
@@ -102,6 +104,7 @@ fn route_capability_plugins(
                     .expect("checked capability path"),
                 control_plane_root,
                 runtime,
+                resources,
             )
         }
         ("GET", path)
@@ -219,6 +222,7 @@ fn disable_capability_plugin(
     qualified_id: &str,
     control_plane_root: &Path,
     runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
 ) -> Result<(u16, String)> {
     let registry = capability_registry(control_plane_root)?;
     let previous = match required_capability_record(&registry, qualified_id) {
@@ -228,6 +232,7 @@ fn disable_capability_plugin(
     if let Err(error) = runtime.deactivate(qualified_id) {
         return capability_runtime_error_response(error);
     }
+    resources.release_plugin(qualified_id);
     match registry.disable(qualified_id) {
         Ok(plugin) => Ok((200, serde_json::to_string(&json!({ "plugin": plugin }))?)),
         Err(error) => {
@@ -288,6 +293,7 @@ fn uninstall_capability_plugin(
     qualified_id: &str,
     control_plane_root: &Path,
     runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
 ) -> Result<(u16, String)> {
     let registry = capability_registry(control_plane_root)?;
     let previous = match required_capability_record(&registry, qualified_id) {
@@ -297,6 +303,7 @@ fn uninstall_capability_plugin(
     if let Err(error) = runtime.deactivate(qualified_id) {
         return capability_runtime_error_response(error);
     }
+    resources.release_plugin(qualified_id);
     let grants = loom_tool_registry::capability::CapabilityGrantStore::new(control_plane_root);
     let config = loom_tool_registry::capability::CapabilityConfigStore::new(control_plane_root);
     match registry.uninstall(&grants, &config, qualified_id) {

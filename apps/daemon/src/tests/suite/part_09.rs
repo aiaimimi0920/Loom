@@ -98,6 +98,9 @@ fn test_daemon_runtime_from_config(
         SurfaceResourceStore::new(control_plane_root.join("surface-resources"))
             .expect("open test Surface resource store"),
     ));
+    let capability_resources =
+        CapabilityResourceBroker::open(control_plane_root.join("capability-resources"))
+            .expect("open test Capability resource broker");
     let surface_actions = Arc::new(
         SurfaceActionExecutor::new(
             Arc::clone(&mcp_servers),
@@ -141,6 +144,7 @@ fn test_daemon_runtime_from_config(
         surface_instances,
         surface_actions,
         surface_resources,
+        capability_resources,
         settings: Arc::new(Mutex::new(LoomSettingsStore::new(
             control_plane_root.join("settings").join("settings.json"),
         ))),

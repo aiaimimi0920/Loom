@@ -148,6 +148,10 @@ impl LoomDaemon {
         // been accepted yet. Objects whose carrying instance was deleted while the daemon was down
         // are collected here; a running daemon collects on delete instead.
         collect_surface_resource_garbage_logged(&surface_instances, &surface_resources, "startup");
+        let capability_resources = CapabilityResourceBroker::open(
+            control_plane_root.join("capability-resources"),
+        )
+        .context("open Capability Plugin resource broker")?;
         let surface_actions = Arc::new(
             SurfaceActionExecutor::new(
                 Arc::clone(&mcp_servers),
@@ -190,6 +194,7 @@ impl LoomDaemon {
             surface_instances,
             surface_actions,
             surface_resources,
+            capability_resources,
             settings: Arc::new(Mutex::new(settings_store)),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
@@ -257,6 +262,8 @@ impl LoomDaemon {
         let peer_read_admission = PeerReadAdmission::new(CONNECTION_READ_PER_PEER_LIMIT);
 
         let mut read_stage_result: std::io::Result<()> = Ok(());
+        let capability_maintenance_interval = Duration::from_secs(1);
+        let mut next_capability_maintenance = Instant::now() + capability_maintenance_interval;
         let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
                 // Read the backlog before the listener goes away: shutdown can be observed before
@@ -290,6 +297,15 @@ impl LoomDaemon {
                     );
                 }
                 break Ok(());
+            }
+
+            if Instant::now() >= next_capability_maintenance {
+                if let Err(error) = self.runtime.capability_runtime.prune_idle() {
+                    runtime_log_warn(format!(
+                        "Capability Plugin idle maintenance failed: {error}"
+                    ));
+                }
+                next_capability_maintenance = Instant::now() + capability_maintenance_interval;
             }
 
             let mut accepted = false;

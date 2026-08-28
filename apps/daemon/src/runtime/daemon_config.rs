@@ -371,6 +371,7 @@ struct DaemonRuntime {
     surface_instances: SharedSurfaceInstanceStore,
     surface_actions: SharedSurfaceActionExecutor,
     surface_resources: SharedSurfaceResourceStore,
+    capability_resources: SharedCapabilityResourceBroker,
     settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
     ocr_provider: OcrProviderHandle,

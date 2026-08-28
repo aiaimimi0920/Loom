@@ -9,6 +9,7 @@ use loom_protocol::{
     CapabilityProtocolError, CapabilityRuntimeMessage, CapabilityRuntimeMethod,
     CapabilityRuntimeStatus, ExtensionResourceRef, ExtensionTarget, PackageTrustStatus,
 };
+use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -23,6 +24,7 @@ use crate::snapshot::{build_contribution_snapshot, SnapshotRegistration};
 
 mod admission;
 mod invocation;
+mod resources;
 
 use admission::InvocationAdmission;
 
@@ -72,8 +74,17 @@ pub struct CapabilityInvocation {
     pub input: Value,
     pub target: Option<ExtensionTarget>,
     pub resource_refs: Vec<ExtensionResourceRef>,
+    pub staged_resources: Vec<CapabilityStagedResource>,
     pub user_gesture_token: Option<String>,
     pub timeout: Option<Duration>,
+}
+
+/// Host-owned, read-only materialization of one opaque resource reference.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityStagedResource {
+    pub resource_ref: ExtensionResourceRef,
+    pub staged_path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -349,6 +360,14 @@ impl CapabilityRuntimeHost {
     /// Resolves a command to its signed plugin owner without exposing process state.
     pub fn command_owner(&self, command_id: &str) -> HostResult<Option<String>> {
         Ok(lock(&self.commands)?.get(command_id).cloned())
+    }
+
+    /// Returns the current registration scope used to bind invocation-owned resources.
+    pub fn plugin_scope(&self, plugin_id: &str) -> HostResult<Option<String>> {
+        let active = lock(&self.packages)?.get(plugin_id).cloned();
+        active
+            .map(|active| lock(&active).map(|active| active.scope_id.clone()))
+            .transpose()
     }
 
     pub fn contribution_snapshot(&self) -> HostResult<loom_protocol::ContributionSnapshot> {

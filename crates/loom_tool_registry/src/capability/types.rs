@@ -43,6 +43,8 @@ pub struct CapabilityPluginRecord {
     pub description: String,
     pub enabled_intent: bool,
     pub status: CapabilityLifecycleStatus,
+    #[serde(default)]
+    pub runtime_failures: CapabilityRuntimeFailureState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +53,18 @@ pub struct CapabilityPluginRecord {
     pub requested_permissions: Vec<String>,
     #[serde(default)]
     pub versions: Vec<CapabilityInstalledVersion>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityRuntimeFailureState {
+    pub count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_not_before_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

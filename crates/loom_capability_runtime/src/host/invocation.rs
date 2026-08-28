@@ -1,4 +1,5 @@
 use super::admission::InvocationAdmission;
+use super::resources::validate_staged_resources;
 use super::*;
 use crate::schema::{validate_command_input, validate_command_output};
 use crate::session::response_output;
@@ -30,6 +31,7 @@ impl CapabilityRuntimeHost {
             CapabilityHostError::InvalidPackage("command schema is missing".to_owned())
         })?;
         validate_command_input(validators, &invocation.input, &invocation.resource_refs)?;
+        validate_staged_resources(&invocation)?;
         if requires_user_gesture {
             self.consume_user_gesture(&invocation)?;
         }
@@ -48,6 +50,7 @@ impl CapabilityRuntimeHost {
                 "input": invocation.input,
                 "target": invocation.target,
                 "resourceRefs": invocation.resource_refs,
+                "stagedResources": invocation.staged_resources,
                 "userGesture": requires_user_gesture,
             }),
         );

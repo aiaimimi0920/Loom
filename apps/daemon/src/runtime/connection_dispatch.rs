@@ -297,6 +297,7 @@ fn route_with_runtime(
         &runtime.brain_planner,
         &runtime.capability_runtime,
         &runtime.capability_dispatch,
+        &runtime.capability_resources,
         &runtime.auth_token,
         runtime.config_registry.as_ref(),
         &runtime.config_store,

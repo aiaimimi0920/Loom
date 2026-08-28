@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use semver::Version;
-use serde::{Deserialize, Serialize};
 
 use super::config_store::CapabilityConfigStore;
 use super::grant_store::CapabilityGrantStore;
@@ -11,24 +10,13 @@ use super::types::{
     CapabilityInstallError, CapabilityLifecycleStatus, CapabilityPluginRecord, CapabilityResult,
 };
 use super::CapabilityPluginRegistry;
-use crate::private_store::{
-    lock_private_file, read_bounded_private_file, write_private_file_atomic,
+use crate::private_store::lock_private_file;
+
+mod journal;
+use journal::{
+    clear_journal, write_journal, CapabilityLifecycleJournal, CapabilityLifecycleJournalPhase,
+    JOURNAL_SCHEMA_VERSION,
 };
-
-const JOURNAL_SCHEMA_VERSION: u32 = 1;
-const JOURNAL_MAX_BYTES: u64 = 512 * 1024;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CapabilityLifecycleJournal {
-    schema_version: u32,
-    operation: String,
-    old_record: CapabilityPluginRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    next_record: Option<CapabilityPluginRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tombstone: Option<String>,
-}
 
 impl CapabilityPluginRegistry {
     pub fn approve_permissions(
@@ -84,6 +72,7 @@ impl CapabilityPluginRegistry {
                 record.active_digest = Some(digest);
                 record.enabled_intent = true;
                 record.status = CapabilityLifecycleStatus::Active;
+                record.runtime_failures = Default::default();
             },
         )
     }
@@ -104,6 +93,7 @@ impl CapabilityPluginRegistry {
                 }
                 record.enabled_intent = false;
                 record.status = CapabilityLifecycleStatus::InstalledDisabled;
+                record.runtime_failures = Default::default();
             },
         )
     }
@@ -129,6 +119,7 @@ impl CapabilityPluginRegistry {
                 record.previous_digest = record.active_digest.replace(digest);
                 record.enabled_intent = true;
                 record.status = CapabilityLifecycleStatus::Active;
+                record.runtime_failures = Default::default();
             },
         )
     }
@@ -153,6 +144,7 @@ impl CapabilityPluginRegistry {
                 record.previous_digest = current;
                 record.enabled_intent = true;
                 record.status = CapabilityLifecycleStatus::Active;
+                record.runtime_failures = Default::default();
             },
         )
     }
@@ -168,17 +160,15 @@ impl CapabilityPluginRegistry {
             self.disable(qualified_id)?;
             old = required_record(self, qualified_id)?;
         }
-        grants.revoke_plugin(qualified_id)?;
-        config.delete(qualified_id)?;
-
         let live = plugin_root(self, qualified_id)?;
         let tombstone_name = format!("{}--{}", qualified_id.replace('/', "--"), unique_nonce());
         let trash = self.packages_root().join(".trash");
         ensure_capability_root(&trash)?;
         let tombstone = trash.join(&tombstone_name);
-        let journal = CapabilityLifecycleJournal {
+        let mut journal = CapabilityLifecycleJournal {
             schema_version: JOURNAL_SCHEMA_VERSION,
             operation: "uninstall".to_owned(),
+            phase: CapabilityLifecycleJournalPhase::Prepared,
             old_record: old.clone(),
             next_record: None,
             tombstone: Some(tombstone_name),
@@ -186,55 +176,29 @@ impl CapabilityPluginRegistry {
         let journal_path = journal_path(self, qualified_id)?;
         let _lock = lock_private_file(&journal_path)?;
         write_journal(&journal_path, &journal)?;
+        let mut committed = false;
         let result = (|| {
             if live.exists() {
                 fs::rename(&live, &tombstone)?;
             }
             self.remove_record(qualified_id)?;
-            clear_journal(&journal_path)?;
+            journal.phase = CapabilityLifecycleJournalPhase::Committed;
+            write_journal(&journal_path, &journal)?;
+            committed = true;
+            cleanup_uninstall_side_state(grants, config, qualified_id)?;
             if tombstone.exists() {
                 remove_private_tree(&tombstone)?;
             }
+            clear_journal(&journal_path)?;
             Ok(old.clone())
         })();
-        if result.is_err() {
+        if result.is_err() && !committed {
             let _ = self.restore_record(old);
             if tombstone.exists() && !live.exists() {
                 let _ = fs::rename(&tombstone, &live);
             }
         }
         result
-    }
-
-    /// Rolls interrupted lifecycle operations back to their last durable record.
-    pub fn recover_capability_lifecycle(&self) -> CapabilityResult<usize> {
-        let root = lifecycle_root(self);
-        ensure_capability_root(&root)?;
-        let mut recovered = 0usize;
-        for entry in fs::read_dir(&root)? {
-            let path = entry?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let bytes = read_bounded_private_file(&path, JOURNAL_MAX_BYTES)?;
-            let journal: CapabilityLifecycleJournal = serde_json::from_slice(&bytes)?;
-            validate_journal(&journal)?;
-            self.restore_record(journal.old_record.clone())?;
-            if let Some(name) = &journal.tombstone {
-                let tombstone = self.packages_root().join(".trash").join(name);
-                let live = plugin_root(self, &journal.old_record.qualified_id)?;
-                if tombstone.exists() && !live.exists() {
-                    if let Some(parent) = live.parent() {
-                        ensure_capability_root(parent)?;
-                    }
-                    fs::rename(tombstone, live)?;
-                }
-            }
-            clear_journal(&path)?;
-            recovered += 1;
-        }
-        cleanup_orphan_tombstones(self)?;
-        Ok(recovered)
     }
 }
 
@@ -251,16 +215,15 @@ fn transition(
     finalize(&mut next);
     let path = journal_path(registry, &old.qualified_id)?;
     let _lock = lock_private_file(&path)?;
-    write_journal(
-        &path,
-        &CapabilityLifecycleJournal {
-            schema_version: JOURNAL_SCHEMA_VERSION,
-            operation: operation.to_owned(),
-            old_record: old.clone(),
-            next_record: Some(next.clone()),
-            tombstone: None,
-        },
-    )?;
+    let mut journal = CapabilityLifecycleJournal {
+        schema_version: JOURNAL_SCHEMA_VERSION,
+        operation: operation.to_owned(),
+        phase: CapabilityLifecycleJournalPhase::Prepared,
+        old_record: old.clone(),
+        next_record: Some(next.clone()),
+        tombstone: None,
+    };
+    write_journal(&path, &journal)?;
     if let Err(error) = registry.restore_record(intermediate) {
         let _ = registry.restore_record(old);
         return Err(error);
@@ -269,10 +232,9 @@ fn transition(
         let _ = registry.restore_record(old);
         return Err(error);
     }
-    if let Err(error) = clear_journal(&path) {
-        let _ = registry.restore_record(old);
-        return Err(error);
-    }
+    journal.phase = CapabilityLifecycleJournalPhase::Committed;
+    write_journal(&path, &journal)?;
+    clear_journal(&path)?;
     Ok(next)
 }
 
@@ -364,62 +326,13 @@ fn lifecycle_root(registry: &CapabilityPluginRegistry) -> PathBuf {
     registry.packages_root().join(".lifecycle")
 }
 
-fn write_journal(path: &Path, journal: &CapabilityLifecycleJournal) -> CapabilityResult<()> {
-    validate_journal(journal)?;
-    let mut bytes = serde_json::to_vec_pretty(journal)?;
-    bytes.push(b'\n');
-    if bytes.len() as u64 > JOURNAL_MAX_BYTES {
-        return Err(CapabilityInstallError::InvalidState(
-            "capability lifecycle journal exceeds 512 KiB".to_owned(),
-        ));
-    }
-    write_private_file_atomic(path, &bytes)?;
-    Ok(())
-}
-
-fn validate_journal(journal: &CapabilityLifecycleJournal) -> CapabilityResult<()> {
-    let valid_tombstone = journal.tombstone.as_ref().is_none_or(|name| {
-        !name.is_empty()
-            && name.len() <= 512
-            && !name
-                .chars()
-                .any(|character| matches!(character, '/' | '\\' | ':'))
-            && name != "."
-            && name != ".."
-    });
-    if journal.schema_version != JOURNAL_SCHEMA_VERSION
-        || journal.operation.is_empty()
-        || !valid_tombstone
-        || journal
-            .next_record
-            .as_ref()
-            .is_some_and(|record| record.qualified_id != journal.old_record.qualified_id)
-    {
-        return Err(CapabilityInstallError::InvalidRegistry(
-            "invalid capability lifecycle journal".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn clear_journal(path: &Path) -> CapabilityResult<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn cleanup_orphan_tombstones(registry: &CapabilityPluginRegistry) -> CapabilityResult<()> {
-    let trash = registry.packages_root().join(".trash");
-    if !trash.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(trash)? {
-        let path = entry?.path();
-        remove_private_tree(&path)?;
-    }
-    Ok(())
+fn cleanup_uninstall_side_state(
+    grants: &CapabilityGrantStore,
+    config: &CapabilityConfigStore,
+    qualified_id: &str,
+) -> CapabilityResult<()> {
+    grants.revoke_plugin(qualified_id)?;
+    config.delete(qualified_id)
 }
 
 fn remove_private_tree(path: &Path) -> CapabilityResult<()> {

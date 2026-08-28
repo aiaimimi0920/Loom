@@ -13,6 +13,10 @@ fn build_capability_runtime(control_plane_root: &Path) -> Result<SharedCapabilit
         {
             continue;
         }
+        if !registry.runtime_restart_allowed(&record) {
+            registry.mark_runtime_faulted(&record.qualified_id)?;
+            continue;
+        }
         let Some(digest) = record.active_digest.as_deref() else {
             registry.mark_faulted(&record.qualified_id)?;
             continue;
@@ -30,7 +34,8 @@ fn build_capability_runtime(control_plane_root: &Path) -> Result<SharedCapabilit
                 "Capability Plugin {} was faulted during startup: {error}",
                 record.qualified_id
             ));
-            registry.mark_faulted(&record.qualified_id)?;
+            registry.record_runtime_failure(&record.qualified_id)?;
+            registry.mark_runtime_faulted(&record.qualified_id)?;
         }
     }
     Ok(host)

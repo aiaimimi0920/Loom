@@ -87,6 +87,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 mod brain_plan;
+mod capability_resources;
 mod hook_canvas;
 mod http_request;
 mod request_executor;
@@ -97,6 +98,9 @@ mod surface_store;
 use brain_plan::{
     build_brain_planner, BrainPlanRequest, BrainPlannerConfig, BrainPlannerStatus,
     SharedBrainPlanner,
+};
+use capability_resources::{
+    CapabilityResourceBroker, CapabilityResourceError, SharedCapabilityResourceBroker,
 };
 use http_request::*;
 use request_executor::{

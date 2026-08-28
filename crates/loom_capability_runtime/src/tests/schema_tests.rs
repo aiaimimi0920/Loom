@@ -99,6 +99,48 @@ fn effects_require_command_permission_and_a_real_gesture() {
     cleanup(&clipboard_root);
 }
 
+#[test]
+fn opaque_resource_references_require_matching_host_staging() {
+    let root = temp_root("resource-staging-required");
+    let executable = compile_fixture(&root);
+    let host = CapabilityRuntimeHost::new(RuntimeHostLimits::default());
+    host.activate(package(&root, &executable, &[]))
+        .expect("activate resource fixture");
+    let digest = "1".repeat(64);
+    let mut request = invocation(json!({}), None);
+    request
+        .resource_refs
+        .push(loom_protocol::ExtensionResourceRef {
+            resource_id: format!("sha256:{digest}"),
+            kind: loom_protocol::ExtensionResourceKind::File,
+            digest,
+            byte_length: 1,
+            lease_id: "lease:fixture-resource".to_owned(),
+        });
+
+    let error = host
+        .invoke(request.clone())
+        .expect_err("unstaged resource must fail closed");
+    assert!(matches!(error, CapabilityHostError::Protocol(_)));
+    let staged_path = root.with_extension("staged.bin");
+    fs::write(&staged_path, b"x").unwrap();
+    let mut permissions = fs::metadata(&staged_path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&staged_path, permissions).unwrap();
+    request.staged_resources.push(CapabilityStagedResource {
+        resource_ref: request.resource_refs[0].clone(),
+        staged_path: staged_path.canonicalize().unwrap(),
+    });
+    host.invoke(request)
+        .expect("matching staged resource succeeds");
+    host.deactivate_all();
+    let mut permissions = fs::metadata(&staged_path).unwrap().permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&staged_path, permissions).unwrap();
+    fs::remove_file(staged_path).unwrap();
+    cleanup(&root);
+}
+
 fn invocation(
     input: serde_json::Value,
     gesture: Option<(ExtensionTarget, String)>,
@@ -112,6 +154,7 @@ fn invocation(
         input,
         target,
         resource_refs: Vec::new(),
+        staged_resources: Vec::new(),
         user_gesture_token,
         timeout: Some(Duration::from_secs(2)),
     }

@@ -131,6 +131,119 @@ fn lifecycle_upgrade_rollback_disable_and_uninstall_are_registry_driven() {
 }
 
 #[test]
+fn prepared_lifecycle_journal_restores_the_previous_record() {
+    let root = temp_root("lifecycle-prepared-recovery");
+    let key = generate_signing_key("release-1");
+    write_trust_store(&root, &key, TrustPolicy::RequireTrusted);
+    let registry = CapabilityPluginRegistry::new(&root);
+    let grants = CapabilityGrantStore::new(&root);
+    let package = signed_package(&root, &key, manifest("capability", "1.0.0"), b"runtime");
+    let installed = install_capability_from_zip(&package, &registry).expect("install");
+    let old = registry
+        .get(&installed.qualified_id)
+        .expect("get old")
+        .expect("old record");
+    let next = registry
+        .enable(&grants, &installed.qualified_id, Some(&installed.digest))
+        .expect("enable");
+
+    registry
+        .write_lifecycle_test_journal(old.clone(), next.clone(), false)
+        .expect("write prepared journal");
+    registry
+        .restore_record(next)
+        .expect("simulate interrupted transition");
+
+    assert_eq!(registry.recover_capability_lifecycle().unwrap(), 1);
+    assert_eq!(registry.get(&installed.qualified_id).unwrap(), Some(old));
+    assert_lifecycle_journals_empty(&registry);
+    cleanup(&root);
+}
+
+#[test]
+fn committed_lifecycle_journal_restores_the_next_record() {
+    let root = temp_root("lifecycle-committed-recovery");
+    let key = generate_signing_key("release-1");
+    write_trust_store(&root, &key, TrustPolicy::RequireTrusted);
+    let registry = CapabilityPluginRegistry::new(&root);
+    let grants = CapabilityGrantStore::new(&root);
+    let package = signed_package(&root, &key, manifest("capability", "1.0.0"), b"runtime");
+    let installed = install_capability_from_zip(&package, &registry).expect("install");
+    let old = registry
+        .get(&installed.qualified_id)
+        .expect("get old")
+        .expect("old record");
+    let next = registry
+        .enable(&grants, &installed.qualified_id, Some(&installed.digest))
+        .expect("enable");
+
+    registry
+        .write_lifecycle_test_journal(old.clone(), next.clone(), true)
+        .expect("write committed journal");
+    registry
+        .restore_record(old)
+        .expect("simulate stale registry record");
+
+    assert_eq!(registry.recover_capability_lifecycle().unwrap(), 1);
+    assert_eq!(registry.get(&installed.qualified_id).unwrap(), Some(next));
+    assert_lifecycle_journals_empty(&registry);
+    cleanup(&root);
+}
+
+#[test]
+fn committed_uninstall_recovery_finishes_all_plugin_side_state() {
+    let root = temp_root("lifecycle-uninstall-recovery");
+    let key = generate_signing_key("release-1");
+    write_trust_store(&root, &key, TrustPolicy::RequireTrusted);
+    let registry = CapabilityPluginRegistry::new(&root);
+    let grants = CapabilityGrantStore::new(&root);
+    let config = CapabilityConfigStore::new(&root);
+    let mut requested = manifest("capability", "1.0.0");
+    requested["permissions"] = json!(["hook.notice.show"]);
+    let package = signed_package(&root, &key, requested, b"runtime");
+    let installed = install_capability_from_zip(&package, &registry).expect("install");
+    registry
+        .approve_permissions(
+            &grants,
+            &installed.qualified_id,
+            &installed.digest,
+            &["hook.notice.show".to_owned()],
+        )
+        .expect("grant permission");
+    let mut values = serde_json::Map::new();
+    values.insert("language".to_owned(), json!("zh-CN"));
+    config
+        .write(&installed.qualified_id, 0, values)
+        .expect("write config");
+    let old = registry
+        .get(&installed.qualified_id)
+        .expect("get old")
+        .expect("old record");
+    let tombstone = registry
+        .write_uninstall_test_journal(old, true)
+        .expect("write committed uninstall journal");
+    let live = registry
+        .packages_root()
+        .join("publisher.example/text-tools");
+    fs::rename(&live, &tombstone).expect("simulate committed package removal");
+    registry
+        .remove_record(&installed.qualified_id)
+        .expect("simulate committed registry removal");
+
+    assert_eq!(registry.recover_capability_lifecycle().unwrap(), 1);
+    assert!(registry.get(&installed.qualified_id).unwrap().is_none());
+    assert!(!tombstone.exists());
+    assert!(grants
+        .list()
+        .unwrap()
+        .iter()
+        .all(|grant| grant.qualified_id != installed.qualified_id));
+    assert_eq!(config.read(&installed.qualified_id).unwrap().revision, 0);
+    assert_lifecycle_journals_empty(&registry);
+    cleanup(&root);
+}
+
+#[test]
 fn permission_expansion_requires_digest_bound_exact_approval() {
     let root = temp_root("permissions");
     let key = generate_signing_key("release-1");
@@ -202,6 +315,51 @@ fn config_store_is_revisioned_bounded_and_rejects_secret_keys() {
     assert!(store
         .write("publisher.example/text-tools", 1, secret)
         .is_err());
+    cleanup(&root);
+}
+
+#[test]
+fn runtime_failure_window_persists_backoff_and_faults_at_the_bound() {
+    let root = temp_root("runtime-failures");
+    let key = generate_signing_key("release-1");
+    write_trust_store(&root, &key, TrustPolicy::RequireTrusted);
+    let registry = CapabilityPluginRegistry::new(&root);
+    let grants = CapabilityGrantStore::new(&root);
+    let package = signed_package(&root, &key, manifest("capability", "1.0.0"), b"runtime");
+    let installed = install_capability_from_zip(&package, &registry).expect("install");
+    registry
+        .enable(&grants, &installed.qualified_id, Some(&installed.digest))
+        .expect("enable");
+
+    let first = registry
+        .record_runtime_failure_at(&installed.qualified_id, 10_000)
+        .expect("first failure");
+    assert_eq!(first.runtime_failures.count, 1);
+    assert_eq!(first.runtime_failures.restart_not_before_ms, Some(11_000));
+    let persisted = CapabilityPluginRegistry::new(&root)
+        .get(&installed.qualified_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.runtime_failures, first.runtime_failures);
+
+    let mut faulted = first;
+    for offset in 1..CAPABILITY_MAX_RUNTIME_FAILURES {
+        faulted = registry
+            .record_runtime_failure_at(&installed.qualified_id, 10_000 + u64::from(offset))
+            .expect("bounded failure");
+    }
+    assert_eq!(faulted.status, CapabilityLifecycleStatus::Faulted);
+    assert!(faulted.enabled_intent);
+    assert!(!registry.runtime_restart_allowed(&faulted));
+
+    let retried = registry
+        .enable(&grants, &installed.qualified_id, Some(&installed.digest))
+        .expect("explicit retry");
+    assert_eq!(
+        retried.runtime_failures,
+        CapabilityRuntimeFailureState::default()
+    );
+    assert_eq!(retried.status, CapabilityLifecycleStatus::Active);
     cleanup(&root);
 }
 
@@ -326,6 +484,16 @@ fn write_trust_store(
 fn assert_staging_empty(registry: &CapabilityPluginRegistry) {
     let staging = registry.packages_root().join(".staging");
     assert_eq!(fs::read_dir(staging).expect("staging").count(), 0);
+}
+
+fn assert_lifecycle_journals_empty(registry: &CapabilityPluginRegistry) {
+    let lifecycle = registry.packages_root().join(".lifecycle");
+    let journals = fs::read_dir(lifecycle)
+        .expect("lifecycle")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("json"))
+        .count();
+    assert_eq!(journals, 0);
 }
 
 fn temp_root(name: &str) -> PathBuf {

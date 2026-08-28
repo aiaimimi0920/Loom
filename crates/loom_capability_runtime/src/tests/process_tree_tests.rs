@@ -31,7 +31,9 @@ fn deactivate_removes_descendant_processes() {
 fn run_timeout_tree_case() {
     let (root, host, pid_file) = tree_host("tree-timeout", "tree");
     let error = host
-        .invoke(tree_invocation("tree-timeout", Duration::from_millis(500)))
+        // The full test binary compiles and starts several fixtures concurrently on Windows.
+        // Leave enough time for both descendants to publish their PIDs before testing teardown.
+        .invoke(tree_invocation("tree-timeout", Duration::from_secs(5)))
         .expect_err("tree command must time out");
     assert!(matches!(error, CapabilityHostError::Timeout));
     assert_tree_stopped(&pid_file);
@@ -102,6 +104,7 @@ fn tree_invocation(request_id: &str, timeout: Duration) -> CapabilityInvocation 
         input: json!({}),
         target: None,
         resource_refs: Vec::new(),
+        staged_resources: Vec::new(),
         user_gesture_token: None,
         timeout: Some(timeout),
     }

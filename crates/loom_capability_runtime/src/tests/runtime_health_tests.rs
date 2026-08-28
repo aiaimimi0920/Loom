@@ -46,6 +46,7 @@ fn concurrent_plugin_invocation_fails_fast_at_the_configured_limit() {
             input: json!({}),
             target: None,
             resource_refs: Vec::new(),
+            staged_resources: Vec::new(),
             user_gesture_token: None,
             timeout: Some(Duration::from_secs(30)),
         })
