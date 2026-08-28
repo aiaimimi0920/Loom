@@ -138,7 +138,6 @@ fn route_settings_runs(
         ),
         ("POST", "/v1/hook-bridge/stop") => stop_hook_bridge(hook_bridge, shared_images),
         ("POST", "/v1/runs") => start_tea_run(&request.body, run_store),
-        ("POST", "/v1/invoke") => invoke_capability(&request.body, run_store, brain_planner),
         ("GET", path) if execution_diagnostics_path_id(path).is_some() => execution_diagnostics(
             execution_diagnostics_path_id(path).expect("checked path"),
             run_store,

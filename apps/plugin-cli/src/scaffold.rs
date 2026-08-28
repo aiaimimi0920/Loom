@@ -85,6 +85,56 @@ fn init_art(directory: &Path, id: &str, framework: &str, publisher: &str) -> Res
     Ok(())
 }
 
+fn init_capability(directory: &Path, id: &str, publisher: &str) -> Result<()> {
+    if !is_safe_package_id(id) || !is_safe_publisher_id(publisher) {
+        bail!("capability or publisher id is not safe: {publisher}/{id}");
+    }
+    ensure_empty_directory(directory)?;
+    fs::create_dir_all(directory.join("runtime"))?;
+    let command_id = format!("{publisher}/{id}.run");
+    write_pretty_json(
+        directory.join("capability.manifest.json"),
+        &json!({
+            "schemaVersion": 1,
+            "kind": "capability",
+            "id": id,
+            "name": id,
+            "description": "Third-party Loom capability",
+            "version": "0.1.0",
+            "publisher": { "id": publisher, "keyId": "replace-with-key-id" },
+            "hostCompatibility": {
+                "loomCapabilityApi": { "minimum": "1.0", "requiredFeatures": ["commands.v1"] },
+                "hookExtensionApi": { "minimum": "1.0", "requiredFeatures": ["commands.v1"] }
+            },
+            "entrypoints": {
+                "service": {
+                    "targets": {
+                        "windows-x64": { "command": format!("runtime/{id}.exe"), "args": [] }
+                    },
+                    "processModel": "on_demand"
+                }
+            },
+            "activationEvents": [format!("onCommand:{command_id}")],
+            "contributes": {
+                "commands": [{ "id": command_id, "title": format!("Run {id}") }]
+            },
+            "permissions": [],
+            "resources": { "memoryMiB": 128, "maxProcesses": 1, "timeoutSeconds": 30 },
+            "dependencies": [],
+            "signature": {
+                "algorithm": "ed25519",
+                "keyId": "replace-with-key-id",
+                "file": "signature.json"
+            }
+        }),
+    )?;
+    write_bytes_atomic(
+        &directory.join("runtime").join("README.txt"),
+        b"Place the framed-JSON capability runtime declared by capability.manifest.json here.\n",
+    )?;
+    Ok(())
+}
+
 fn ensure_empty_directory(directory: &Path) -> Result<()> {
     match fs::symlink_metadata(directory) {
         Ok(metadata) => {

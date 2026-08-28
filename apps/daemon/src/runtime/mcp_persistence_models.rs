@@ -206,13 +206,27 @@ struct RunActionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InvokeCapabilityRequest {
-    #[serde(rename = "requestId")]
     request_id: String,
     caller: String,
     capability: String,
     #[serde(default)]
     input: Value,
+    #[serde(default)]
+    target: Option<ExtensionTarget>,
+    #[serde(default)]
+    resource_refs: Vec<ExtensionResourceRef>,
+    #[serde(default)]
+    user_gesture_token: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelCapabilityInvocationRequest {
+    request_id: String,
 }
 
 #[derive(Debug, Deserialize)]

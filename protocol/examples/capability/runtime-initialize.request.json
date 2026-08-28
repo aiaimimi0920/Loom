@@ -1,0 +1,12 @@
+{
+  "protocol": "loom.capability.runtime.v1",
+  "apiVersion": "1.0",
+  "type": "request",
+  "requestId": "req-initialize-1",
+  "method": "initialize",
+  "payload": {
+    "hostFeatures": ["framed-json.v1", "scoped-identity.v1"],
+    "platformTarget": "windows-x64",
+    "scopeId": "scope-1"
+  }
+}

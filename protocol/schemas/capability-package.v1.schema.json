@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/capability-package.v1.schema.json",
+  "title": "Loom Capability Plugin package manifest v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "id",
+    "name",
+    "description",
+    "version",
+    "publisher",
+    "hostCompatibility",
+    "entrypoints",
+    "activationEvents",
+    "contributes",
+    "permissions",
+    "resources",
+    "dependencies",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "capability" },
+    "id": { "$ref": "#/$defs/localId" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "description": { "type": "string", "maxLength": 4096 },
+    "version": { "$ref": "#/$defs/semver" },
+    "publisher": {
+      "type": "object",
+      "required": ["id", "keyId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/publisherId" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "hostCompatibility": {
+      "type": "object",
+      "required": ["loomCapabilityApi", "hookExtensionApi"],
+      "properties": {
+        "loomCapabilityApi": { "$ref": "#/$defs/apiRequirement" },
+        "hookExtensionApi": { "$ref": "#/$defs/apiRequirement" },
+        "surfaceApi": { "$ref": "#/$defs/apiRequirement" }
+      },
+      "additionalProperties": false
+    },
+    "entrypoints": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 2,
+      "properties": {
+        "service": { "$ref": "#/$defs/serviceEntrypoint" },
+        "hookUi": { "$ref": "#/$defs/surfaceEntrypoint" }
+      },
+      "additionalProperties": false
+    },
+    "activationEvents": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "contributes": {
+      "type": "object",
+      "maxProperties": 11,
+      "properties": {
+        "commands": { "$ref": "#/$defs/commands" },
+        "shortcuts": { "$ref": "#/$defs/contributionList" },
+        "menus": { "$ref": "#/$defs/contributionList" },
+        "settings": { "$ref": "#/$defs/contributionList" },
+        "dataTypes": { "$ref": "#/$defs/contributionList" },
+        "renderers": { "$ref": "#/$defs/contributionList" },
+        "unitOverlays": { "$ref": "#/$defs/contributionList" },
+        "backgroundTasks": { "$ref": "#/$defs/contributionList" },
+        "resourceProviders": { "$ref": "#/$defs/contributionList" },
+        "diagnostics": { "$ref": "#/$defs/contributionList" },
+        "eventSubscriptions": { "$ref": "#/$defs/contributionList" }
+      },
+      "additionalProperties": false
+    },
+    "permissions": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/permission" }
+    },
+    "resources": { "$ref": "#/$defs/resources" },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "keyId", "file"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "file": { "$ref": "#/$defs/relativePath" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "localId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "publisherId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+    },
+    "contributionId": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 384,
+      "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._-]*\\.[a-z0-9][a-z0-9._-]*$"
+    },
+    "semver": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "apiVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "apiRequirement": {
+      "type": "object",
+      "required": ["minimum"],
+      "properties": {
+        "minimum": { "$ref": "#/$defs/apiVersion" },
+        "maximum": { "$ref": "#/$defs/apiVersion" },
+        "requiredFeatures": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "optionalFeatures": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "targetCommand": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "$ref": "#/$defs/relativePath" },
+        "args": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "maxLength": 4096 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "serviceEntrypoint": {
+      "type": "object",
+      "required": ["targets", "processModel"],
+      "properties": {
+        "targets": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": { "pattern": "^[a-z0-9]+-[a-z0-9_]+$" },
+          "additionalProperties": { "$ref": "#/$defs/targetCommand" }
+        },
+        "processModel": { "enum": ["on_demand", "persistent"] }
+      },
+      "additionalProperties": false
+    },
+    "surfaceEntrypoint": {
+      "type": "object",
+      "required": ["kind", "manifest"],
+      "properties": {
+        "kind": { "const": "surface" },
+        "manifest": { "$ref": "#/$defs/relativePath" }
+      },
+      "additionalProperties": false
+    },
+    "permission": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(hook\\.(selection|unit\\.(metadata|image|attachments)|overlay|notice|clipboard)\\.(read|write|render|show)|loom\\.(network\\.brokered|pluginState\\.readWrite|credentials\\.use:[A-Za-z0-9._-]+))$"
+    },
+    "command": {
+      "type": "object",
+      "required": ["id", "title", "permissions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/contributionId" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": { "type": "string", "maxLength": 1024 },
+        "inputSchema": { "$ref": "#/$defs/relativePath" },
+        "outputSchema": { "$ref": "#/$defs/relativePath" },
+        "when": { "type": "string", "maxLength": 2048 },
+        "requiresUserGesture": { "type": "boolean", "default": false },
+        "cancellable": { "type": "boolean", "default": true },
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000 },
+        "permissions": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/permission" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "commands": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "genericContribution": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/contributionId" },
+        "command": { "$ref": "#/$defs/contributionId" },
+        "title": { "type": "string", "maxLength": 128 },
+        "when": { "type": "string", "maxLength": 2048 },
+        "schema": { "$ref": "#/$defs/relativePath" },
+        "placement": { "type": "string", "maxLength": 128 },
+        "order": { "type": "integer", "minimum": -10000, "maximum": 10000 }
+      },
+      "additionalProperties": true,
+      "maxProperties": 32
+    },
+    "contributionList": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/genericContribution" }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["memoryMiB", "maxProcesses", "timeoutSeconds"],
+      "properties": {
+        "memoryMiB": { "type": "integer", "minimum": 16, "maximum": 4096 },
+        "maxProcesses": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "diskMiB": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "stderrKiBPerMinute": { "type": "integer", "minimum": 1, "maximum": 256 }
+      },
+      "additionalProperties": false
+    },
+    "dependency": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 257,
+          "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "optional": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

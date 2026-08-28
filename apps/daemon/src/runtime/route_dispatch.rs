@@ -5,6 +5,8 @@ fn route(
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
     brain_planner: &SharedBrainPlanner,
+    capability_runtime: &SharedCapabilityRuntime,
+    capability_dispatch: &SharedCapabilityDispatchRegistry,
     auth_token: &str,
     config_registry: &ConfigRegistry,
     config_store: &FileDocumentStore,
@@ -63,6 +65,26 @@ fn route(
                 "code": "device_session_scope_denied",
                 "message": "device session is not permitted to access this Loom route",
             }),
+        );
+    }
+
+    if let Some(response) = route_capability_plugins(
+        request,
+        route_path,
+        control_plane_root,
+        capability_runtime,
+    ) {
+        return response;
+    }
+    if request.method == "POST" && route_path == "/v1/invoke/cancel" {
+        return cancel_capability_invocation(&request.body, capability_dispatch.plugin_runtime());
+    }
+    if request.method == "POST" && route_path == "/v1/invoke" {
+        return invoke_capability(
+            &request.body,
+            run_store,
+            brain_planner,
+            capability_dispatch,
         );
     }
 

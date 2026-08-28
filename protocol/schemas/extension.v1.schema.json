@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/extension.v1.schema.json",
+  "title": "Loom to Hook extension message v1",
+  "oneOf": [
+    { "$ref": "#/$defs/snapshot" },
+    { "$ref": "#/$defs/invoke" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "apiVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "safeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 384,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "plugin": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "packageDigest",
+        "trustStatus",
+        "permissionGrantDigest",
+        "scopeId"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeId" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "packageDigest": { "$ref": "#/$defs/digest" },
+        "trustStatus": { "enum": ["trusted", "unsigned_developer", "revoked", "untrusted"] },
+        "permissionGrantDigest": { "$ref": "#/$defs/digest" },
+        "scopeId": { "$ref": "#/$defs/safeId" }
+      },
+      "additionalProperties": false
+    },
+    "contribution": {
+      "type": "object",
+      "required": ["id", "pluginId", "scopeId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeId" },
+        "pluginId": { "$ref": "#/$defs/safeId" },
+        "scopeId": { "$ref": "#/$defs/safeId" },
+        "title": { "type": "string", "maxLength": 128 },
+        "commandId": { "$ref": "#/$defs/safeId" },
+        "when": { "type": "string", "maxLength": 2048 },
+        "placement": { "type": "string", "maxLength": 128 },
+        "order": { "type": "integer", "minimum": -10000, "maximum": 10000 },
+        "payload": {}
+      },
+      "additionalProperties": false
+    },
+    "contributionList": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/contribution" }
+    },
+    "contributions": {
+      "type": "object",
+      "required": [
+        "commands",
+        "shortcuts",
+        "menus",
+        "settings",
+        "dataTypes",
+        "renderers",
+        "unitOverlays",
+        "backgroundTasks",
+        "resourceProviders",
+        "diagnostics",
+        "eventSubscriptions"
+      ],
+      "properties": {
+        "commands": { "$ref": "#/$defs/contributionList" },
+        "shortcuts": { "$ref": "#/$defs/contributionList" },
+        "menus": { "$ref": "#/$defs/contributionList" },
+        "settings": { "$ref": "#/$defs/contributionList" },
+        "dataTypes": { "$ref": "#/$defs/contributionList" },
+        "renderers": { "$ref": "#/$defs/contributionList" },
+        "unitOverlays": { "$ref": "#/$defs/contributionList" },
+        "backgroundTasks": { "$ref": "#/$defs/contributionList" },
+        "resourceProviders": { "$ref": "#/$defs/contributionList" },
+        "diagnostics": { "$ref": "#/$defs/contributionList" },
+        "eventSubscriptions": { "$ref": "#/$defs/contributionList" }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["protocol", "apiVersion", "generation", "plugins", "contributions"],
+      "properties": {
+        "protocol": { "const": "loom.extension.v1" },
+        "apiVersion": { "$ref": "#/$defs/apiVersion" },
+        "generation": { "type": "integer", "minimum": 0 },
+        "plugins": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/plugin" }
+        },
+        "contributions": { "$ref": "#/$defs/contributions" }
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["unitId", "revision"],
+      "properties": {
+        "unitId": { "$ref": "#/$defs/safeId" },
+        "revision": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "resourceRef": {
+      "type": "object",
+      "required": ["resourceId", "kind", "digest", "byteLength", "leaseId"],
+      "properties": {
+        "resourceId": { "$ref": "#/$defs/safeId" },
+        "kind": { "enum": ["file", "shared_image", "shared_memory", "inline"] },
+        "digest": { "$ref": "#/$defs/digest" },
+        "byteLength": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "leaseId": { "$ref": "#/$defs/safeId" }
+      },
+      "additionalProperties": false
+    },
+    "invoke": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "apiVersion",
+        "requestId",
+        "pluginId",
+        "commandId",
+        "snapshotGeneration",
+        "target",
+        "input",
+        "resourceRefs"
+      ],
+      "properties": {
+        "protocol": { "const": "loom.extension.v1" },
+        "apiVersion": { "$ref": "#/$defs/apiVersion" },
+        "requestId": { "$ref": "#/$defs/safeId" },
+        "pluginId": { "$ref": "#/$defs/safeId" },
+        "commandId": { "$ref": "#/$defs/safeId" },
+        "snapshotGeneration": { "type": "integer", "minimum": 0 },
+        "target": { "$ref": "#/$defs/target" },
+        "input": {},
+        "resourceRefs": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/resourceRef" }
+        },
+        "userGestureToken": { "type": "string", "minLength": 16, "maxLength": 512 }
+      },
+      "additionalProperties": false
+    },
+    "effect": {
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": {
+          "enum": [
+            "attachment.upsert",
+            "attachment.remove",
+            "notice.show",
+            "clipboard.writeText",
+            "overlay.invalidate",
+            "resource.publish"
+          ]
+        },
+        "payload": {}
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "unsupported_api",
+            "plugin_not_active",
+            "contribution_conflict",
+            "permission_denied",
+            "stale_generation",
+            "stale_target",
+            "invalid_input",
+            "resource_not_found",
+            "busy",
+            "cancelled",
+            "runtime_fault"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["protocol", "apiVersion", "requestId", "status", "effects"],
+      "properties": {
+        "protocol": { "const": "loom.extension.v1" },
+        "apiVersion": { "$ref": "#/$defs/apiVersion" },
+        "requestId": { "$ref": "#/$defs/safeId" },
+        "status": { "enum": ["accepted", "progress", "succeeded", "failed", "cancelled"] },
+        "output": {},
+        "effects": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/effect" }
+        },
+        "error": { "$ref": "#/$defs/error" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

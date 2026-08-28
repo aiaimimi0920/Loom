@@ -28,7 +28,21 @@ fn validate_path_with_payload_after_tree_inspection(
     }
     if metadata.file_type().is_dir() {
         ensure_real_directory(path, "package root")?;
-        if contained_regular_file_exists(path, Path::new("framework.manifest.json"))? {
+        let framework =
+            contained_regular_file_exists(path, Path::new("framework.manifest.json"))?;
+        let capability =
+            contained_regular_file_exists(path, Path::new("capability.manifest.json"))?;
+        let art = contained_regular_file_exists(path, Path::new("manifest.json"))?
+            || contained_regular_file_exists(path, Path::new("art.runtime.json"))?;
+        if [framework, capability, art]
+            .into_iter()
+            .filter(|present| *present)
+            .count()
+            > 1
+        {
+            bail!("package contains conflicting manifest kinds");
+        }
+        if framework {
             return validate_framework_package(
                 path,
                 require_payload,
@@ -36,9 +50,15 @@ fn validate_path_with_payload_after_tree_inspection(
                 package_tree_inspected,
             );
         }
-        if contained_regular_file_exists(path, Path::new("manifest.json"))?
-            || contained_regular_file_exists(path, Path::new("art.runtime.json"))?
-        {
+        if capability {
+            return validate_capability_package(
+                path,
+                require_payload,
+                trust_store,
+                package_tree_inspected,
+            );
+        }
+        if art {
             return validate_art_package(
                 path,
                 require_payload,
@@ -46,7 +66,7 @@ fn validate_path_with_payload_after_tree_inspection(
                 package_tree_inspected,
             );
         }
-        bail!("directory contains neither a framework nor an Art package manifest");
+        bail!("directory contains no supported plugin package manifest");
     }
     if !metadata.file_type().is_file() {
         bail!("package path must be a manifest or package directory: {}", path.display());
@@ -54,6 +74,12 @@ fn validate_path_with_payload_after_tree_inspection(
     match path.file_name().and_then(|value| value.to_str()) {
         Some("framework.manifest.json") => validate_framework_package(
             path_parent_or_current(path).context("framework manifest has no parent directory")?,
+            require_payload,
+            trust_store,
+            package_tree_inspected,
+        ),
+        Some("capability.manifest.json") => validate_capability_package(
+            path_parent_or_current(path).context("capability manifest has no parent directory")?,
             require_payload,
             trust_store,
             package_tree_inspected,
@@ -66,6 +92,75 @@ fn validate_path_with_payload_after_tree_inspection(
         ),
         _ => bail!("unsupported manifest path: {}", path.display()),
     }
+}
+
+fn validate_capability_package(
+    directory: &Path,
+    require_payload: bool,
+    trust_store: &TrustStore,
+    package_tree_inspected: bool,
+) -> Result<String> {
+    ensure_real_directory(directory, "capability package root")?;
+    if !package_tree_inspected {
+        collect_package_files(directory).context("inspect capability package tree")?;
+    }
+    let path = directory.join("capability.manifest.json");
+    let bytes = read_bounded_regular_file(
+        &path,
+        u64::try_from(loom_protocol::MAX_CAPABILITY_MANIFEST_BYTES)
+            .expect("capability manifest budget fits u64"),
+    )?;
+    let manifest: CapabilityPackageManifest =
+        parse_capability_manifest(&bytes).map_err(|error| anyhow!(error))?;
+    if let Some(service) = &manifest.entrypoints.service {
+        for target in service.targets.values() {
+            validate_relative_package_path(directory, &target.command, require_payload)
+                .context("validate capability runtime entry")?;
+        }
+    }
+    if let Some(surface) = &manifest.entrypoints.hook_ui {
+        validate_relative_package_path(directory, &surface.manifest, require_payload)
+            .context("validate capability Hook UI manifest")?;
+    }
+    for command in &manifest.contributes.commands {
+        for schema in [&command.input_schema, &command.output_schema]
+            .into_iter()
+            .flatten()
+        {
+            validate_relative_package_path(directory, schema, require_payload)
+                .context("validate capability command schema")?;
+        }
+    }
+    validate_relative_package_path(directory, &manifest.signature.file, require_payload)
+        .context("validate capability signature path")?;
+    let signature_exists = contained_regular_file_exists(
+        directory,
+        Path::new(&manifest.signature.file),
+    )?;
+    let trust = if signature_exists {
+        let publisher = PublisherIdentity {
+            id: manifest.publisher.id.clone(),
+            name: None,
+            website: None,
+            key_id: Some(manifest.publisher.key_id.clone()),
+        };
+        let signature = PackageSignature {
+            algorithm: manifest.signature.algorithm.clone(),
+            key_id: manifest.signature.key_id.clone(),
+            file: manifest.signature.file.clone(),
+        };
+        verify_package_signature(directory, Some(&publisher), Some(&signature), trust_store)?
+    } else if require_payload {
+        bail!("capability package signature file is required");
+    } else {
+        PackageTrustStatus::Unsigned
+    };
+    reject_revoked_package(&trust)?;
+    Ok(format!(
+        "capability package valid: {} {} (loom.capability.package.v1, trust={trust:?})",
+        manifest.qualified_id(),
+        manifest.version
+    ))
 }
 
 fn validate_framework_package(

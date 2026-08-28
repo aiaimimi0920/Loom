@@ -295,6 +295,8 @@ fn route_with_runtime(
         &runtime.run_store,
         runtime.run_store_status,
         &runtime.brain_planner,
+        &runtime.capability_runtime,
+        &runtime.capability_dispatch,
         &runtime.auth_token,
         runtime.config_registry.as_ref(),
         &runtime.config_store,
@@ -591,6 +593,7 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         {
             RequestConcurrencyClass::Concurrent
         }
+        ("POST", "/v1/invoke/cancel") => RequestConcurrencyClass::Concurrent,
         ("POST", "/v1/invoke") => {
             let capability = serde_json::from_str::<Value>(&request.body)
                 .ok()

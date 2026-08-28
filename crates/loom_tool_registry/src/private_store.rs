@@ -61,6 +61,21 @@ pub(crate) fn lock_private_file(path: &Path) -> std::io::Result<PrivateFileLock>
 
 /// Reads a regular, non-linked private file without allocating past `max_bytes`.
 pub(crate) fn read_bounded_private_file(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    read_bounded_regular_file_impl(path, max_bytes, true)
+}
+
+/// Reads a regular, non-linked immutable package file without mutating its ACL.
+/// Package ACLs are fixed when the immutable tree is committed; attempting to
+/// rewrite them during verification also fails for read-only Windows packages.
+pub(crate) fn read_bounded_regular_file(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    read_bounded_regular_file_impl(path, max_bytes, false)
+}
+
+fn read_bounded_regular_file_impl(
+    path: &Path,
+    max_bytes: u64,
+    repair_private_permissions: bool,
+) -> std::io::Result<Vec<u8>> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     apply_no_follow(&mut options);
@@ -81,7 +96,9 @@ pub(crate) fn read_bounded_private_file(path: &Path, max_bytes: u64) -> std::io:
             format!("private file exceeds {max_bytes} bytes: {}", path.display()),
         ));
     }
-    loom_plugin_security::restrict_private_path_permissions(path, false)?;
+    if repair_private_permissions {
+        loom_plugin_security::restrict_private_path_permissions(path, false)?;
+    }
     let mut bytes =
         Vec::with_capacity(usize::try_from(metadata.len().min(max_bytes)).unwrap_or_default());
     file.take(max_bytes.saturating_add(1))

@@ -69,6 +69,13 @@ where
             init_art(Path::new(directory), id, framework, publisher)?;
             writeln!(writer, "initialized Art `{publisher}/{id}` at {directory}")?;
         }
+        ["init", "capability", directory, id, publisher] => {
+            init_capability(Path::new(directory), id, publisher)?;
+            writeln!(
+                writer,
+                "initialized capability `{publisher}/{id}` at {directory}"
+            )?;
+        }
         ["conformance", executable, framework_id, art_dir] => {
             let report = run_conformance(Path::new(executable), framework_id, Path::new(art_dir))?;
             writeln!(writer, "{report}")?;
@@ -93,6 +100,7 @@ fn help_text() -> &'static str {
         "Commands:\n",
         "  init framework <DIR> <ID> <PUBLISHER>  Create a framework package skeleton\n",
         "  init art <DIR> <ID> <FRAMEWORK> <PUBLISHER> Create an Art package skeleton\n",
+        "  init capability <DIR> <ID> <PUBLISHER> Create a Capability Plugin skeleton\n",
         "  validate <PATH> [--trust-store <STORE>] Validate a package directory or manifest\n",
         "  pack <SOURCE_DIR> <OUTPUT_ZIP>          Validate and build a deterministic package ZIP\n",
         "  conformance <EXE> <FRAMEWORK> <ART_DIR> Run the v1 process contract against a runtime\n",
@@ -102,7 +110,7 @@ fn help_text() -> &'static str {
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",
-        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, hook-message\n",
+        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, hook-message, capability-package, capability-runtime, extension\n",
     )
 }
 
@@ -119,6 +127,9 @@ fn schema(name: &str) -> Result<&'static str> {
         "surface-stream" => Ok(schemas::SURFACE_STREAM_V1),
         "device-session" => Ok(schemas::DEVICE_SESSION_V1),
         "hook-message" => Ok(schemas::HOOK_MESSAGE_V1),
+        "capability-package" => Ok(schemas::CAPABILITY_PACKAGE_V1),
+        "capability-runtime" => Ok(schemas::CAPABILITY_RUNTIME_V1),
+        "extension" => Ok(schemas::EXTENSION_V1),
         _ => bail!("unknown schema `{name}`"),
     }
 }

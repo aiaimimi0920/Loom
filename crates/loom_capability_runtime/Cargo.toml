@@ -1,0 +1,21 @@
+[package]
+name = "loom_capability_runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded generic runtime host for Loom Capability Plugins"
+
+[dependencies]
+jsonschema.workspace = true
+loom_process.workspace = true
+loom_plugin_security.workspace = true
+loom_protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+zip.workspace = true

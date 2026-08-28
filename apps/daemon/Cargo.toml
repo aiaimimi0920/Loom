@@ -18,6 +18,7 @@ ed25519-dalek.workspace = true
 fs2.workspace = true
 image.workspace = true
 loom_agent.workspace = true
+loom_capability_runtime.workspace = true
 loom_configuration.workspace = true
 loom_core.workspace = true
 loom_durable.workspace = true

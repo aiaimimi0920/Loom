@@ -327,7 +327,10 @@ fn request_body_size_limit(headers: &str) -> usize {
         .split_whitespace();
     let method = request_line.next().unwrap_or_default();
     let path = request_line.next().unwrap_or_default();
-    let is_package_install = matches!(path, "/v1/frameworks/install" | "/v1/arts/install");
+    let is_package_install = matches!(
+        path,
+        "/v1/frameworks/install" | "/v1/arts/install" | "/v1/capability-plugins/install"
+    );
     let is_mcp_server_package_install = path == "/v1/mcp/servers/install";
     let is_framework_upgrade = path.starts_with("/v1/frameworks/") && path.ends_with("/upgrade");
     let is_surface_resource = path == "/v1/surfaces/resources";

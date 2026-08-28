@@ -11,6 +11,11 @@ pub(crate) struct ProcessIsolation {
     process_group: i32,
 }
 
+// Windows kernel handles are process-wide rather than thread-affine. This type owns exactly one
+// handle and closes it once in Drop; callers synchronize mutable child access through ManagedChild.
+#[cfg(windows)]
+unsafe impl Send for ProcessIsolation {}
+
 impl ProcessIsolation {
     pub(crate) fn attach(
         child: &std::process::Child,

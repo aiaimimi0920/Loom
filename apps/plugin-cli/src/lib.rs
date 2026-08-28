@@ -16,9 +16,10 @@ use loom_plugin_security::{
     verify_package_signature, SigningKeyDocument, TrustStore,
 };
 use loom_protocol::{
-    is_safe_package_id, is_safe_publisher_id, is_safe_surface_identifier, schemas,
-    validate_framework_manifest_contract, validate_surface_node_tree, validate_surface_protocol,
-    ArtRuntimeManifest, FrameworkExecuteRequest, FrameworkExecuteResponse,
+    is_safe_package_id, is_safe_publisher_id, is_safe_surface_identifier,
+    parse_capability_manifest, schemas, validate_framework_manifest_contract,
+    validate_surface_node_tree, validate_surface_protocol, ArtRuntimeManifest,
+    CapabilityPackageManifest, FrameworkExecuteRequest, FrameworkExecuteResponse,
     FrameworkExecutionContext, FrameworkPackageManifest, PackageSignature, PackageTrustStatus,
     PublisherIdentity, PublisherTrustRecord, SurfaceNode, SurfacePackageManifest,
     SurfaceRuntimeKind, ART_RUNTIME_PROTOCOL_VERSION, DECLARATIVE_SURFACE_NODE_TYPES,

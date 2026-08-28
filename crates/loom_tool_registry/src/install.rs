@@ -31,7 +31,7 @@ use crate::{ToolDefinition, ToolRegistry};
 mod activation;
 mod binaries;
 mod core;
-mod fs_safety;
+pub(crate) mod fs_safety;
 mod integrity;
 mod lockfile;
 mod manifest;

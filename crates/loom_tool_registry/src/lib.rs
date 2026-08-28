@@ -1,6 +1,7 @@
 //! User-managed tool and Art registry contracts for Loom.
 
 pub mod art_settings;
+pub mod capability;
 pub mod credentials;
 pub mod dependency;
 pub mod framework;

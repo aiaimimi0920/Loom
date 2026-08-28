@@ -162,6 +162,10 @@ impl LoomDaemon {
             .context("start Surface action executor")?,
         );
         surface_actions.recover_pending();
+        let capability_runtime = build_capability_runtime(&control_plane_root)?;
+        let capability_dispatch = Arc::new(CapabilityDispatchRegistry::with_core_commands(
+            Arc::clone(&capability_runtime),
+        ));
         let runtime = DaemonRuntime {
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
@@ -192,6 +196,8 @@ impl LoomDaemon {
             settings_base_url,
             mcp_registry_endpoint: config.mcp_registry_endpoint,
             brain_planner,
+            capability_runtime,
+            capability_dispatch,
             run_store_status,
             request_executor_status: request_executor.status(),
             serialized_route_lock: Mutex::new(()),
@@ -377,12 +383,14 @@ impl LoomDaemon {
             let _ = surface_stream_shutdown_result;
             let _ = read_stage_shutdown_result;
             let _ = read_stage_result;
+            self.runtime.capability_runtime.deactivate_all();
             return Err(error);
         }
         shutdown_result.context("shutdown Loom request executor")?;
         surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
+        self.runtime.capability_runtime.deactivate_all();
         Ok(())
     }
 }

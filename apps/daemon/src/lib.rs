@@ -17,6 +17,9 @@ use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BAS
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use fs2::FileExt;
+use loom_capability_runtime::{
+    CapabilityInvocation, CapabilityRuntimeHost, CapabilityRuntimePackage, RuntimeHostLimits,
+};
 #[cfg(not(test))]
 use loom_configuration::default_configuration_root;
 use loom_configuration::{
@@ -40,14 +43,15 @@ use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocumen
 use loom_protocol::{
     device_session_signature_message, is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest,
     DeviceSessionChallengeRequest, DeviceSessionChallengeResponse, DeviceSessionIssueRequest,
-    DeviceSessionIssueResponse, HookArtAck, HookArtCancelRequest, HookArtCapability,
-    HookArtExecuteRequest, HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
-    HookArtResourcesReleaseRequest, HookArtResultCommit, HookCapabilities, HookEvent,
-    HookHandshakeResponse, HookRequest, HookRequestStatus, HookResponse, HookTransportMode,
-    PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent,
-    SurfaceExecutionFailure, SurfaceHostCapabilities, SurfaceInstanceMode,
-    SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue,
-    SurfacePreviewCommit, SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
+    DeviceSessionIssueResponse, ExtensionResourceRef, ExtensionTarget, HookArtAck,
+    HookArtCancelRequest, HookArtCapability, HookArtExecuteRequest, HookArtFailure,
+    HookArtPortValue, HookArtPreviewCommit, HookArtProgress, HookArtResourcesReleaseRequest,
+    HookArtResultCommit, HookCapabilities, HookEvent, HookHandshakeResponse, HookRequest,
+    HookRequestStatus, HookResponse, HookTransportMode, PublisherTrustRecord,
+    SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure,
+    SurfaceHostCapabilities, SurfaceInstanceMode, SurfaceInstancePersistence,
+    SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue, SurfacePreviewCommit,
+    SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
     SurfaceResourceTransportKind, SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot,
     DEVICE_SESSION_PROTOCOL_VERSION, HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED,
     SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION,
@@ -110,9 +114,13 @@ use surface_store::{
 
 // Responsibility-focused daemon implementation slices share the crate root to preserve the public API.
 include!("runtime/daemon_config.rs");
+include!("runtime/capability_runtime_state.rs");
+include!("runtime/capability_dispatch_registry.rs");
 include!("runtime/daemon_lifecycle.rs");
 include!("runtime/connection_dispatch.rs");
 include!("runtime/http_routing.rs");
+include!("runtime/capability_plugin_api.rs");
+include!("runtime/capability_plugin_runtime_api.rs");
 include!("runtime/secure_persistence.rs");
 include!("runtime/mcp_persistence_models.rs");
 include!("runtime/settings_ocr_runtime.rs");
@@ -160,6 +168,8 @@ include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
 include!("runtime/hook_art_results_broadcast.rs");
 include!("runtime/surface_recovery_errors.rs");
+include!("runtime/workflow_error_responses.rs");
+include!("runtime/capability_command_dispatch.rs");
 include!("runtime/capability_invocation.rs");
 include!("runtime/run_http_responses.rs");
 
@@ -196,4 +206,5 @@ mod tests {
     include!("tests/suite/part_29.rs");
     include!("tests/suite/part_30.rs");
     include!("tests/suite/part_31.rs");
+    include!("tests/suite/part_32.rs");
 }

@@ -111,6 +111,10 @@ fn test_daemon_runtime_from_config(
         )
         .expect("start test Surface action executor"),
     );
+    let capability_runtime = Arc::new(CapabilityRuntimeHost::new(RuntimeHostLimits::default()));
+    let capability_dispatch = Arc::new(CapabilityDispatchRegistry::with_core_commands(Arc::clone(
+        &capability_runtime,
+    )));
     DaemonRuntime {
         hook_settings: config.hook_settings,
         run_store: Arc::new(Mutex::new(run_store)),
@@ -145,6 +149,8 @@ fn test_daemon_runtime_from_config(
         settings_base_url,
         mcp_registry_endpoint: config.mcp_registry_endpoint,
         brain_planner,
+        capability_runtime,
+        capability_dispatch,
         run_store_status,
         request_executor_status: config.request_executor.status(),
         serialized_route_lock: Mutex::new(()),

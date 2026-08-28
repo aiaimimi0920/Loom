@@ -21,6 +21,26 @@ mod tests {
         root
     }
 
+    fn cleanup_test_tree(path: &Path) {
+        fn make_writable(path: &Path) {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return;
+            };
+            if metadata.is_dir() {
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        make_writable(&entry.path());
+                    }
+                }
+            }
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(false);
+            let _ = fs::set_permissions(path, permissions);
+        }
+        make_writable(path);
+        let _ = fs::remove_dir_all(path);
+    }
+
     fn run_cli(args: &[String]) -> Result<String> {
         let mut output = Vec::new();
         run(args, &mut output)?;
@@ -60,6 +80,8 @@ mod tests {
         }
     }
 
+    include!("tests/capability_cli_tests.rs");
+
     #[test]
     fn embedded_schemas_are_valid_json() {
         for schema in [
@@ -74,6 +96,9 @@ mod tests {
             schemas::SURFACE_STREAM_V1,
             schemas::DEVICE_SESSION_V1,
             schemas::HOOK_MESSAGE_V1,
+            schemas::CAPABILITY_PACKAGE_V1,
+            schemas::CAPABILITY_RUNTIME_V1,
+            schemas::EXTENSION_V1,
         ] {
             serde_json::from_str::<Value>(schema).expect("schema JSON");
         }
@@ -89,6 +114,8 @@ mod tests {
         assert!(output.contains("pack"));
         assert!(output.contains("surface-manifest"));
         assert!(output.contains("hook-message"));
+        assert!(output.contains("init capability"));
+        assert!(output.contains("capability-runtime"));
     }
 
     #[test]
@@ -192,6 +219,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert!(init_framework(&root, "../escape", "publisher.example").is_err());
         assert!(init_framework(&root, "safe-id", "../publisher").is_err());
+        assert!(init_capability(&root, "../escape", "publisher.example").is_err());
     }
 
     #[test]
