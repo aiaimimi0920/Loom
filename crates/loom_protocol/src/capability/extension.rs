@@ -217,6 +217,8 @@ pub enum ExtensionValidationError {
     InvalidInvocation,
     #[error("failed extension result requires an error")]
     MissingError,
+    #[error("extension effect payload is invalid")]
+    InvalidEffect,
 }
 
 pub fn parse_extension_message(bytes: &[u8]) -> Result<ExtensionMessage, ExtensionValidationError> {
@@ -306,7 +308,115 @@ fn validate_result(result: &ExtensionResult) -> Result<(), ExtensionValidationEr
     if matches!(result.status, ExtensionResultStatus::Failed) && result.error.is_none() {
         return Err(ExtensionValidationError::MissingError);
     }
+    for effect in &result.effects {
+        validate_effect(effect)?;
+    }
     Ok(())
+}
+
+fn validate_effect(effect: &ExtensionEffect) -> Result<(), ExtensionValidationError> {
+    let Some(payload) = effect.payload.as_object() else {
+        return Err(ExtensionValidationError::InvalidEffect);
+    };
+    match effect.effect_type {
+        ExtensionEffectType::AttachmentUpsert => {
+            let allowed = [
+                "attachmentId",
+                "typeId",
+                "schemaVersion",
+                "priorRevision",
+                "revision",
+                "rendererId",
+                "payload",
+                "resourceRefs",
+            ];
+            if payload.keys().any(|key| !allowed.contains(&key.as_str()))
+                || !bounded_effect_string(payload.get("attachmentId"), 384)
+                || !bounded_effect_string(payload.get("typeId"), 384)
+                || !bounded_effect_string(payload.get("schemaVersion"), 64)
+                || payload
+                    .get("rendererId")
+                    .is_some_and(|value| !bounded_effect_string(Some(value), 384))
+            {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+            let Some(prior) = payload.get("priorRevision").and_then(Value::as_u64) else {
+                return Err(ExtensionValidationError::InvalidEffect);
+            };
+            if payload.get("revision").and_then(Value::as_u64) != prior.checked_add(1) {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+            let payload_present = payload.get("payload").is_some();
+            let resource_refs = payload.get("resourceRefs").and_then(Value::as_array);
+            if !payload_present && resource_refs.is_none_or(Vec::is_empty) {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+            if payload.get("payload").is_some_and(|value| {
+                serde_json::to_vec(value).map_or(true, |bytes| bytes.len() > 256 * 1024)
+            }) || resource_refs.is_some_and(|values| {
+                values.len() > 16
+                    || values.iter().any(|value| {
+                        serde_json::from_value::<ExtensionResourceRef>(value.clone())
+                            .map_or(true, |resource| !valid_effect_resource(&resource))
+                    })
+            }) {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+        }
+        ExtensionEffectType::AttachmentRemove => {
+            let allowed = ["attachmentId", "priorRevision"];
+            if payload.keys().any(|key| !allowed.contains(&key.as_str()))
+                || !bounded_effect_string(payload.get("attachmentId"), 384)
+                || payload
+                    .get("priorRevision")
+                    .and_then(Value::as_u64)
+                    .is_none()
+            {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+        }
+        ExtensionEffectType::NoticeShow => {
+            let allowed = ["title", "message"];
+            if payload.keys().any(|key| !allowed.contains(&key.as_str()))
+                || payload
+                    .get("title")
+                    .is_some_and(|value| !bounded_effect_string(Some(value), 128))
+                || payload
+                    .get("message")
+                    .is_some_and(|value| !bounded_effect_string(Some(value), 2048))
+            {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+        }
+        ExtensionEffectType::ClipboardWriteText => {
+            if payload.keys().any(|key| key != "text")
+                || !bounded_effect_string(payload.get("text"), 1_048_576)
+            {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+        }
+        ExtensionEffectType::OverlayInvalidate | ExtensionEffectType::ResourcePublish => {
+            if serde_json::to_vec(payload).map_or(true, |bytes| bytes.len() > 256 * 1024) {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bounded_effect_string(value: Option<&Value>, maximum: usize) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.is_empty() && value.len() <= maximum)
+}
+
+fn valid_effect_resource(resource: &ExtensionResourceRef) -> bool {
+    resource.kind != ExtensionResourceKind::Inline
+        && valid_digest(&resource.digest)
+        && resource.resource_id == format!("sha256:{}", resource.digest)
+        && resource.byte_length <= 64 * 1024 * 1024
+        && !resource.lease_id.is_empty()
+        && resource.lease_id.len() <= 384
 }
 
 fn validate_protocol(protocol: &str, api_version: &str) -> Result<(), ExtensionValidationError> {

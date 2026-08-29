@@ -108,6 +108,7 @@ fn route(
         workflow_store,
         hook_bridge,
         capability_runtime,
+        capability_resources,
         device_registry,
         surface_instances,
         surface_actions,

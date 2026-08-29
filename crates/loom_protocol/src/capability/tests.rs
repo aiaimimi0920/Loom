@@ -184,6 +184,50 @@ fn canonical_extension_snapshot_is_atomic_and_scope_bound() {
 }
 
 #[test]
+fn extension_attachment_effects_are_cas_bound_and_content_addressed() {
+    let valid = json!({
+        "protocol": crate::EXTENSION_PROTOCOL,
+        "apiVersion": "1.0",
+        "requestId": "request-1",
+        "status": "succeeded",
+        "output": { "ok": true },
+        "effects": [{
+            "type": "attachment.upsert",
+            "payload": {
+                "attachmentId": "result",
+                "typeId": "publisher.example/demo.result.v1",
+                "schemaVersion": "1.0",
+                "priorRevision": 0,
+                "revision": 1,
+                "resourceRefs": [{
+                    "resourceId": format!("sha256:{}", "a".repeat(64)),
+                    "kind": "file",
+                    "digest": "a".repeat(64),
+                    "byteLength": 4,
+                    "leaseId": "lease-1"
+                }]
+            }
+        }]
+    });
+    assert!(parse_extension_message(valid.to_string().as_bytes()).is_ok());
+
+    let mut stale = valid.clone();
+    stale["effects"][0]["payload"]["revision"] = json!(2);
+    assert_eq!(
+        parse_extension_message(stale.to_string().as_bytes()),
+        Err(ExtensionValidationError::InvalidEffect)
+    );
+
+    let mut raw_path = valid;
+    raw_path["effects"][0]["payload"]["resourceRefs"][0]["resourceId"] =
+        json!("file:C:/private.bin");
+    assert_eq!(
+        parse_extension_message(raw_path.to_string().as_bytes()),
+        Err(ExtensionValidationError::InvalidEffect)
+    );
+}
+
+#[test]
 fn extension_handshake_negotiates_optional_features_and_rejects_required_unknowns() {
     let mut request = ExtensionHandshakeRequest {
         request_id: "handshake-1".to_owned(),

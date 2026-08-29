@@ -51,6 +51,8 @@ fn handle_extension_bridge_text(
     text: &str,
     state: &mut ExtensionConnectionState,
     runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
 ) -> ExtensionBridgeTextResult {
     let request = match serde_json::from_str::<ExtensionBridgeRequest>(text) {
         Ok(request) => request,
@@ -89,7 +91,7 @@ fn handle_extension_bridge_text(
             }
         }
         ExtensionBridgeRequest::CommandInvoke(request) => {
-            handle_extension_invocation(request, state, runtime)
+            handle_extension_invocation(request, state, runtime, resources, surface_resources)
         }
     }
 }
@@ -156,6 +158,8 @@ fn handle_extension_invocation(
     request: ExtensionCommandInvokeRequest,
     state: &mut ExtensionConnectionState,
     runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
 ) -> ExtensionBridgeTextResult {
     let request_id = request.invocation.request_id.clone();
     if !state.extension_session_matches(&request.session_id) {
@@ -201,14 +205,26 @@ fn handle_extension_invocation(
         }
         Err(error) => return extension_runtime_failure(&request_id, error),
     };
-    if !request.invocation.resource_refs.is_empty() {
-        // CP05 owns resource staging; CP04 refuses raw paths or unstaged references fail-closed.
-        return extension_result_failure(
+    let scope_id = match runtime.plugin_scope(&owner) {
+        Ok(Some(scope_id)) => scope_id,
+        Ok(None) => return extension_result_failure(
             &request_id,
-            CapabilityErrorCode::InvalidInput,
-            "bridge resource references must be staged by the host resource broker",
-        );
-    }
+            CapabilityErrorCode::PluginNotActive,
+            "extension command scope is unavailable",
+        ),
+        Err(error) => return extension_runtime_failure(&request_id, error),
+    };
+    let resource_lease = match resources.stage(
+        surface_resources,
+        &owner,
+        &scope_id,
+        &request_id,
+        &request.invocation.resource_refs,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => return extension_resource_failure(&request_id, error),
+    };
+    let staged_resources = resource_lease.resources().to_vec();
     let gesture = match request.invocation.user_gesture_token.as_deref() {
         Some(token) if state.client_gesture_is_available(token) => {
             let gesture = match runtime.issue_user_gesture(
@@ -238,19 +254,27 @@ fn handle_extension_invocation(
         command_id: request.invocation.command_id,
         input: request.invocation.input,
         target: Some(request.invocation.target),
-        resource_refs: Vec::new(),
-        staged_resources: Vec::new(),
+        resource_refs: request.invocation.resource_refs,
+        staged_resources,
         user_gesture_token: gesture,
         timeout: None,
     });
     match output {
         Ok(output) if output.plugin_id == owner => {
             let payload = output.payload.unwrap_or(Value::Null);
-            let mut effects: Vec<loom_protocol::ExtensionEffect> = payload
-                .get("effects")
-                .cloned()
-                .and_then(|effects| serde_json::from_value(effects).ok())
-                .unwrap_or_default();
+            let mut effects: Vec<loom_protocol::ExtensionEffect> = match payload.get("effects") {
+                Some(effects) => match serde_json::from_value(effects.clone()) {
+                    Ok(effects) => effects,
+                    Err(_) => {
+                        return extension_result_failure(
+                            &request_id,
+                            CapabilityErrorCode::InvalidInput,
+                            "extension runtime returned invalid effects",
+                        )
+                    }
+                },
+                None => Vec::new(),
+            };
             if !state.has_feature(loom_protocol::EXTENSION_FEATURE_NOTICES) {
                 effects.retain(|effect: &loom_protocol::ExtensionEffect| {
                     effect.effect_type != loom_protocol::ExtensionEffectType::NoticeShow
@@ -265,6 +289,13 @@ fn handle_extension_invocation(
                 effects,
                 error: None,
             };
+            if validate_extension_message(&ExtensionMessage::Result(result.clone())).is_err() {
+                return extension_result_failure(
+                    &request_id,
+                    CapabilityErrorCode::InvalidInput,
+                    "extension runtime returned invalid effects",
+                );
+            }
             extension_bridge_success(&request_id, serde_json::to_value(result).unwrap_or_default(), false)
         }
         Ok(_) => extension_result_failure(
@@ -274,6 +305,31 @@ fn handle_extension_invocation(
         ),
         Err(error) => extension_runtime_failure(&request_id, error),
     }
+}
+
+fn extension_resource_failure(
+    request_id: &str,
+    error: CapabilityResourceError,
+) -> ExtensionBridgeTextResult {
+    let (code, message) = match error {
+        CapabilityResourceError::Invalid => (
+            CapabilityErrorCode::InvalidInput,
+            "extension resource reference is invalid",
+        ),
+        CapabilityResourceError::LeaseRejected => (
+            CapabilityErrorCode::ResourceNotFound,
+            "extension resource lease was rejected",
+        ),
+        CapabilityResourceError::Busy => (
+            CapabilityErrorCode::Busy,
+            "extension resource broker is busy",
+        ),
+        CapabilityResourceError::Io(_) | CapabilityResourceError::Json(_) => (
+            CapabilityErrorCode::RuntimeFault,
+            "extension resource broker is unavailable",
+        ),
+    };
+    extension_result_failure(request_id, code, message)
 }
 
 fn extension_feature_failure(request_id: &str, feature: &str) -> ExtensionBridgeTextResult {

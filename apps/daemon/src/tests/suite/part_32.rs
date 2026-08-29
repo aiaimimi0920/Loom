@@ -40,6 +40,17 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
     loom_tool_registry::capability::CapabilityPluginRegistry::new(&root)
         .verify_installed_version("publisher.example/api-fixture", digest)
         .expect("installed package remains verifiable");
+    let (status, approval) = approve_capability_plugin(
+        "publisher.example/api-fixture",
+        &json!({
+            "digest": digest,
+            "permissions": ["hook.unit.attachments.write", "hook.notice.show"]
+        })
+        .to_string(),
+        &root,
+    )
+    .expect("approve response");
+    assert_eq!(status, 200, "{approval}");
 
     let (extension_events, _extension_subscription) = enable_api_fixture_through_extension_route(
         &daemon_runtime,
@@ -61,7 +72,11 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
         "publisher.example/api-fixture.run"
     );
 
-    assert_api_fixture_extension_invocation(&runtime);
+    assert_api_fixture_extension_invocation(
+        &runtime,
+        &resources,
+        &daemon_runtime.surface_resources,
+    );
 
     let invoked = expect_json_text_route_response(
         route_request(
@@ -85,7 +100,8 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
     );
     assert_eq!(invoked["status"], "succeeded");
     assert_eq!(invoked["pluginId"], "publisher.example/api-fixture");
-    assert_eq!(invoked["output"]["ok"], true);
+    assert_eq!(invoked["output"]["output"]["ok"], true);
+    assert!(invoked["output"]["effects"].is_array());
 
     let timed_out = expect_json_text_route_response(
         route_request(
@@ -309,12 +325,59 @@ fn capability_api_fixture(
             "hookUi": { "kind": "surface", "manifest": "ui.surface.json" }
         },
         "contributes": {
-            "commands": [{
-                "id": "publisher.example/api-fixture.run",
-                "title": "Run fixture"
+            "commands": [
+                {
+                    "id": "publisher.example/api-fixture.run",
+                    "title": "Run fixture",
+                    "permissions": ["hook.unit.attachments.write", "hook.notice.show"]
+                },
+                {
+                    "id": "publisher.example/api-fixture.notify",
+                    "title": "Notify from fixture",
+                    "permissions": ["hook.notice.show"]
+                }
+            ],
+            "dataTypes": [{
+                "id": "publisher.example/api-fixture.result.v1",
+                "schema": "data-type.v1",
+                "payload": {
+                    "jsonSchema": {
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "additionalProperties": false
+                    }
+                }
+            }],
+            "renderers": [{
+                "id": "publisher.example/api-fixture.result-card",
+                "schema": "renderer.v1",
+                "payload": {
+                    "typeId": "publisher.example/api-fixture.result.v1",
+                    "bounds": { "x": 8, "y": 8, "width": 180, "height": 44 },
+                    "scene": {
+                        "id": "fixture-result",
+                        "type": "text",
+                        "props": { "text": "Fixture result attached" }
+                    }
+                }
+            }],
+            "unitOverlays": [{
+                "id": "publisher.example/api-fixture.notify-overlay",
+                "command": "publisher.example/api-fixture.notify",
+                "schema": "unit-overlay.v1",
+                "payload": {
+                    "typeId": "publisher.example/api-fixture.result.v1",
+                    "bounds": { "x": 8, "y": 56, "width": 180, "height": 36 },
+                    "scene": {
+                        "id": "fixture-notify",
+                        "type": "button",
+                        "props": { "label": "Notify" },
+                        "events": { "click": "publisher.example/api-fixture.notify" }
+                    }
+                }
             }]
         },
-        "permissions": [],
+        "permissions": ["hook.unit.attachments.write", "hook.notice.show"],
         "resources": { "memoryMiB": 64, "maxProcesses": 1, "timeoutSeconds": 10 },
         "dependencies": [],
         "signature": {
@@ -384,6 +447,13 @@ fn field(input: &str, key: &str) -> String {
     rest[..rest.find('\"').unwrap()].to_owned()
 }
 
+fn array_field(input: &str, key: &str) -> String {
+    let marker = format!("\"{}\":[", key);
+    let Some(start) = input.find(&marker) else { return "[]".to_owned(); };
+    let rest = &input[start + marker.len()..];
+    format!("[{}]", &rest[..rest.find(']').unwrap()])
+}
+
 fn main() {
     let mut input = std::io::stdin();
     let mut output = std::io::stdout();
@@ -403,9 +473,15 @@ fn main() {
         if method == "command" && request.contains("\"hang\":true") {
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
+        let effects = if request.contains("publisher.example/api-fixture.notify") {
+            r#"[{"type":"notice.show","payload":{"title":"Fixture","message":"Overlay command completed"}}]"#.to_owned()
+        } else {
+            r#"[{"type":"attachment.upsert","payload":{"attachmentId":"publisher.example/api-fixture.fixture-result","typeId":"publisher.example/api-fixture.result.v1","schemaVersion":"1.0","priorRevision":0,"revision":1,"rendererId":"publisher.example/api-fixture.result-card","payload":{"text":"hello"},"resourceRefs":__RESOURCE_REFS__}},{"type":"notice.show","payload":{"title":"Fixture","message":"Attachment created"}}]"#
+                .replace("__RESOURCE_REFS__", &array_field(&request, "resourceRefs"))
+        };
         let response = format!(
-            "{{\"type\":\"response\",\"protocol\":\"loom.capability.runtime.v1\",\"apiVersion\":\"1.0\",\"requestId\":\"{}\",\"status\":\"succeeded\",\"payload\":{{\"ok\":true}}}}",
-            request_id
+            "{{\"type\":\"response\",\"protocol\":\"loom.capability.runtime.v1\",\"apiVersion\":\"1.0\",\"requestId\":\"{}\",\"status\":\"succeeded\",\"payload\":{{\"output\":{{\"ok\":true}},\"effects\":{}}}}}",
+            request_id, effects
         );
         output.write_all(&(response.len() as u32).to_be_bytes()).unwrap();
         output.write_all(response.as_bytes()).unwrap();

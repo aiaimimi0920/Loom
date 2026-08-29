@@ -123,6 +123,8 @@ fn start_hook_bridge(
     body: &str,
     hook_bridge: &SharedHookBridgeRuntime,
     capability_runtime: &SharedCapabilityRuntime,
+    capability_resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
@@ -181,6 +183,8 @@ fn start_hook_bridge(
     runtime.broadcast_hub.clear();
     let broadcast_hub = runtime.broadcast_hub.clone();
     let worker_capability_runtime = Arc::clone(capability_runtime);
+    let worker_capability_resources = Arc::clone(capability_resources);
+    let worker_surface_resources = Arc::clone(surface_resources);
     let worker_mcp_servers = Arc::clone(mcp_servers);
     let worker_tool_registry = tool_registry.clone();
     let worker_workflow_store = workflow_store.clone();
@@ -200,6 +204,8 @@ fn start_hook_bridge(
             connected_clients,
             broadcast_hub,
             worker_capability_runtime,
+            worker_capability_resources,
+            worker_surface_resources,
             worker_mcp_servers,
             worker_tool_registry,
             worker_workflow_store,
@@ -278,6 +284,8 @@ fn run_hook_bridge_websocket_server(
     connected_clients: Arc<AtomicUsize>,
     broadcast_hub: HookBridgeBroadcastHub,
     capability_runtime: SharedCapabilityRuntime,
+    capability_resources: SharedCapabilityResourceBroker,
+    surface_resources: SharedSurfaceResourceStore,
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
@@ -301,6 +309,8 @@ fn run_hook_bridge_websocket_server(
                 let connected_clients = Arc::clone(&connected_clients);
                 let broadcast_hub = broadcast_hub.clone();
                 let capability_runtime = Arc::clone(&capability_runtime);
+                let capability_resources = Arc::clone(&capability_resources);
+                let surface_resources = Arc::clone(&surface_resources);
                 let mcp_servers = Arc::clone(&mcp_servers);
                 let tool_registry = tool_registry.clone();
                 let workflow_store = workflow_store.clone();
@@ -319,6 +329,8 @@ fn run_hook_bridge_websocket_server(
                         connected_clients,
                         broadcast_hub,
                         capability_runtime,
+                        capability_resources,
+                        surface_resources,
                         mcp_servers,
                         tool_registry,
                         workflow_store,
@@ -347,6 +359,8 @@ fn handle_hook_bridge_websocket_connection(
     connected_clients: Arc<AtomicUsize>,
     broadcast_hub: HookBridgeBroadcastHub,
     capability_runtime: SharedCapabilityRuntime,
+    capability_resources: SharedCapabilityResourceBroker,
+    surface_resources: SharedSurfaceResourceStore,
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
@@ -399,6 +413,8 @@ fn handle_hook_bridge_websocket_connection(
                         &text,
                         &mut extension_state,
                         &capability_runtime,
+                        &capability_resources,
+                        &surface_resources,
                     );
                     if result.subscribe_to_snapshots && extension_subscription_rx.is_none() {
                         let (rx, guard) = register_hook_bridge_subscription(

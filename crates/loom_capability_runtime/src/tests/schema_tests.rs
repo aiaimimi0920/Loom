@@ -141,6 +141,31 @@ fn opaque_resource_references_require_matching_host_staging() {
     cleanup(&root);
 }
 
+#[test]
+fn attachment_effect_cannot_publish_a_resource_outside_its_invocation() {
+    let root = temp_root("attachment-resource-ownership");
+    let executable = compile_fixture(&root);
+    let host = CapabilityRuntimeHost::new(RuntimeHostLimits::default());
+    host.activate(package_with_contract(
+        &root,
+        &executable,
+        &["attachment-forged"],
+        false,
+        None,
+        None,
+        &["hook.unit.attachments.write"],
+        1,
+    ))
+    .expect("activate attachment fixture");
+
+    let error = host
+        .invoke(invocation(json!({}), None))
+        .expect_err("forged attachment resource must fail closed");
+    assert!(error.to_string().contains("outside its invocation"));
+    host.deactivate_all();
+    cleanup(&root);
+}
+
 fn invocation(
     input: serde_json::Value,
     gesture: Option<(ExtensionTarget, String)>,

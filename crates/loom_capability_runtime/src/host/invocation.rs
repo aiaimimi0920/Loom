@@ -42,6 +42,7 @@ impl CapabilityRuntimeHost {
         }
         ensure_process(&mut active, &self.limits)?;
         let request_id = next_request_id();
+        let invocation_resource_refs = invocation.resource_refs.clone();
         let message = runtime_request(
             request_id.clone(),
             CapabilityRuntimeMethod::Command,
@@ -125,6 +126,7 @@ impl CapabilityRuntimeHost {
             &command,
             validators,
             &output,
+            &invocation_resource_refs,
             requires_user_gesture,
         )?;
         Ok(output)

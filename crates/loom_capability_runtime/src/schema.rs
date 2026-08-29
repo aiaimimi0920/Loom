@@ -61,6 +61,7 @@ pub(super) fn validate_command_output(
     command: &CapabilityCommandContribution,
     validators: &CommandSchemaValidators,
     output: &CapabilityInvocationOutput,
+    invocation_resources: &[ExtensionResourceRef],
     user_gesture: bool,
 ) -> HostResult<()> {
     if matches!(output.status, CapabilityRuntimeStatus::Succeeded) && output.error.is_some() {
@@ -88,7 +89,7 @@ pub(super) fn validate_command_output(
             ));
         }
         for effect in &effects {
-            validate_effect(package, command, effect, user_gesture)?;
+            validate_effect(package, command, effect, invocation_resources, user_gesture)?;
         }
     }
     Ok(())
@@ -143,11 +144,18 @@ fn validate_effect(
     package: &CapabilityRuntimePackage,
     command: &CapabilityCommandContribution,
     effect: &ExtensionEffect,
+    invocation_resources: &[ExtensionResourceRef],
     user_gesture: bool,
 ) -> HostResult<()> {
     let required = match effect.effect_type {
-        ExtensionEffectType::AttachmentUpsert | ExtensionEffectType::AttachmentRemove => {
+        ExtensionEffectType::AttachmentUpsert => {
             validate_namespaced_payload(package, &effect.payload, "typeId")?;
+            validate_namespaced_payload(package, &effect.payload, "attachmentId")?;
+            validate_attachment_resources(effect, invocation_resources)?;
+            "hook.unit.attachments.write"
+        }
+        ExtensionEffectType::AttachmentRemove => {
+            validate_namespaced_payload(package, &effect.payload, "attachmentId")?;
             "hook.unit.attachments.write"
         }
         ExtensionEffectType::NoticeShow => "hook.notice.show",
@@ -175,6 +183,28 @@ fn validate_effect(
         return Err(CapabilityHostError::Protocol(format!(
             "command effect requires undeclared permission `{required}`"
         )));
+    }
+    Ok(())
+}
+
+fn validate_attachment_resources(
+    effect: &ExtensionEffect,
+    invocation_resources: &[ExtensionResourceRef],
+) -> HostResult<()> {
+    let Some(resources) = effect.payload.get("resourceRefs") else {
+        return Ok(());
+    };
+    let resources = serde_json::from_value::<Vec<ExtensionResourceRef>>(resources.clone())
+        .map_err(|_| {
+            CapabilityHostError::Protocol("attachment resource references are invalid".to_owned())
+        })?;
+    if resources
+        .iter()
+        .any(|resource| !invocation_resources.contains(resource))
+    {
+        return Err(CapabilityHostError::Protocol(
+            "attachment effect references a resource outside its invocation".to_owned(),
+        ));
     }
     Ok(())
 }

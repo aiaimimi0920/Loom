@@ -109,6 +109,8 @@ fn main() {
             ("succeeded", r#"{"output":{"ok":true},"effects":[{"type":"notice.show","payload":{"message":"ready"}}]}"#, "")
         } else if mode == "clipboard" {
             ("succeeded", r#"{"output":{"ok":true},"effects":[{"type":"clipboard.writeText","payload":{"text":"ready"}}]}"#, "")
+        } else if mode == "attachment-forged" {
+            ("succeeded", r#"{"output":{"ok":true},"effects":[{"type":"attachment.upsert","payload":{"attachmentId":"publisher.example/fixture.result","typeId":"publisher.example/fixture.result.v1","schemaVersion":"1.0","priorRevision":0,"revision":1,"resourceRefs":[{"resourceId":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","kind":"file","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","byteLength":1,"leaseId":"lease:forged"}]}}]}"#, "")
         } else if mode == "bad-output" {
             ("succeeded", r#"{"output":{"ok":"wrong"}}"#, "")
         } else { ("succeeded", r#"{"ok":true}"#, "") };
