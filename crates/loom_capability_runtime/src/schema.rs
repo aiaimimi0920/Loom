@@ -4,7 +4,7 @@ use std::fs;
 use jsonschema::Validator;
 use loom_protocol::{
     CapabilityCommandContribution, CapabilityRuntimeStatus, ExtensionEffect, ExtensionEffectType,
-    ExtensionResourceRef,
+    ExtensionResourceKind, ExtensionResourceRef, ExtensionUnitAttachment,
 };
 use serde_json::Value;
 
@@ -39,11 +39,15 @@ pub(super) fn compile_command_schemas(
 }
 
 pub(super) fn validate_command_input(
+    package: &CapabilityRuntimePackage,
+    command: &CapabilityCommandContribution,
     validators: &CommandSchemaValidators,
     input: &Value,
     resources: &[ExtensionResourceRef],
+    unit_attachments: &[ExtensionUnitAttachment],
 ) -> HostResult<()> {
     validate_resources(resources)?;
+    validate_input_permissions(package, command, resources, unit_attachments)?;
     if validators
         .input
         .as_ref()
@@ -51,6 +55,59 @@ pub(super) fn validate_command_input(
     {
         return Err(CapabilityHostError::Protocol(
             "command input does not match its signed schema".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_input_permissions(
+    package: &CapabilityRuntimePackage,
+    command: &CapabilityCommandContribution,
+    resources: &[ExtensionResourceRef],
+    unit_attachments: &[ExtensionUnitAttachment],
+) -> HostResult<()> {
+    let requires_image_read = resources.iter().any(|resource| {
+        matches!(
+            resource.kind,
+            ExtensionResourceKind::SharedImage | ExtensionResourceKind::SharedMemory
+        )
+    });
+    if requires_image_read
+        && (!package
+            .manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "hook.unit.image.read")
+            || !command
+                .permissions
+                .iter()
+                .any(|permission| permission == "hook.unit.image.read"))
+    {
+        return Err(CapabilityHostError::Protocol(
+            "image resources require declared permission `hook.unit.image.read`".to_owned(),
+        ));
+    }
+    if !unit_attachments.is_empty()
+        && (!package
+            .manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "hook.unit.attachments.read")
+            || !command
+                .permissions
+                .iter()
+                .any(|permission| permission == "hook.unit.attachments.read"))
+    {
+        return Err(CapabilityHostError::Protocol(
+            "unit attachments require declared permission `hook.unit.attachments.read`".to_owned(),
+        ));
+    }
+    if unit_attachments
+        .iter()
+        .any(|attachment| attachment.plugin_id != package.manifest.qualified_id())
+    {
+        return Err(CapabilityHostError::Protocol(
+            "unit attachments are outside the invoking plugin namespace".to_owned(),
         ));
     }
     Ok(())

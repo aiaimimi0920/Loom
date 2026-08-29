@@ -12,6 +12,14 @@ struct ExtensionBridgeTextResult {
     subscribe_to_snapshots: bool,
 }
 
+const MAX_EXTENSION_BRIDGE_TEXT_BYTES: usize = 24 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct ExtensionMethodProbe<'a> {
+    #[serde(borrow)]
+    method: std::borrow::Cow<'a, str>,
+}
+
 impl ExtensionConnectionState {
     fn record_hook_handshake(&mut self, response: &str) {
         let Ok(response) = serde_json::from_str::<HookHandshakeResponse>(response) else {
@@ -41,10 +49,9 @@ impl ExtensionConnectionState {
 }
 
 fn is_extension_bridge_request(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
+    serde_json::from_str::<ExtensionMethodProbe<'_>>(text)
         .ok()
-        .and_then(|value| value.get("method").and_then(Value::as_str).map(str::to_owned))
-        .is_some_and(|method| method.starts_with("loom.extension."))
+        .is_some_and(|request| request.method.starts_with("loom.extension."))
 }
 
 fn handle_extension_bridge_text(
@@ -54,6 +61,14 @@ fn handle_extension_bridge_text(
     resources: &SharedCapabilityResourceBroker,
     surface_resources: &SharedSurfaceResourceStore,
 ) -> ExtensionBridgeTextResult {
+    if text.len() > MAX_EXTENSION_BRIDGE_TEXT_BYTES {
+        return extension_bridge_failure(
+            "invalid-request",
+            "extension_request_too_large",
+            "extension request exceeds the bridge byte limit",
+            false,
+        );
+    }
     let request = match serde_json::from_str::<ExtensionBridgeRequest>(text) {
         Ok(request) => request,
         Err(error) => {
@@ -147,11 +162,7 @@ fn handle_extension_handshake(
             "features": features,
         }),
     };
-    extension_bridge_success(
-        &request.request_id,
-        data,
-        subscribe_to_snapshots,
-    )
+    extension_bridge_success(&request.request_id, data, subscribe_to_snapshots)
 }
 
 fn handle_extension_invocation(
@@ -161,7 +172,8 @@ fn handle_extension_invocation(
     resources: &SharedCapabilityResourceBroker,
     surface_resources: &SharedSurfaceResourceStore,
 ) -> ExtensionBridgeTextResult {
-    let request_id = request.invocation.request_id.clone();
+    let mut invocation = request.invocation;
+    let request_id = invocation.request_id.clone();
     if !state.extension_session_matches(&request.session_id) {
         return extension_bridge_failure(
             &request_id,
@@ -173,9 +185,9 @@ fn handle_extension_invocation(
     if !state.has_feature(loom_protocol::EXTENSION_FEATURE_COMMANDS) {
         return extension_feature_failure(&request_id, "command.invoke");
     }
-    if let Err(error) = validate_extension_message(&ExtensionMessage::Invocation(
-        request.invocation.clone(),
-    )) {
+    if let Err(error) =
+        validate_extension_message(&ExtensionMessage::Invocation(invocation.clone()))
+    {
         return extension_bridge_failure(
             &request_id,
             "invalid_extension_invocation",
@@ -187,15 +199,15 @@ fn handle_extension_invocation(
         Ok(snapshot) => snapshot,
         Err(error) => return extension_runtime_failure(&request_id, error),
     };
-    if request.invocation.snapshot_generation != snapshot.generation {
+    if invocation.snapshot_generation != snapshot.generation {
         return extension_result_failure(
             &request_id,
             CapabilityErrorCode::StaleGeneration,
             "extension contribution generation is stale",
         );
     }
-    let owner = match runtime.command_owner(&request.invocation.command_id) {
-        Ok(Some(owner)) if owner == request.invocation.plugin_id => owner,
+    let owner = match runtime.command_owner(&invocation.command_id) {
+        Ok(Some(owner)) if owner == invocation.plugin_id => owner,
         Ok(_) => {
             return extension_result_failure(
                 &request_id,
@@ -207,31 +219,52 @@ fn handle_extension_invocation(
     };
     let scope_id = match runtime.plugin_scope(&owner) {
         Ok(Some(scope_id)) => scope_id,
-        Ok(None) => return extension_result_failure(
-            &request_id,
-            CapabilityErrorCode::PluginNotActive,
-            "extension command scope is unavailable",
-        ),
+        Ok(None) => {
+            return extension_result_failure(
+                &request_id,
+                CapabilityErrorCode::PluginNotActive,
+                "extension command scope is unavailable",
+            )
+        }
         Err(error) => return extension_runtime_failure(&request_id, error),
     };
+    let _upload_lease = match stage_extension_resource_uploads(
+        request.resource_uploads,
+        &mut invocation,
+        &snapshot,
+        surface_resources,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => return extension_upload_failure(&request_id, error),
+    };
+    if let Err(error) =
+        validate_extension_message(&ExtensionMessage::Invocation(invocation.clone()))
+    {
+        return extension_bridge_failure(
+            &request_id,
+            "invalid_extension_invocation",
+            error.to_string(),
+            false,
+        );
+    }
     let resource_lease = match resources.stage(
         surface_resources,
         &owner,
         &scope_id,
         &request_id,
-        &request.invocation.resource_refs,
+        &invocation.resource_refs,
     ) {
         Ok(lease) => lease,
         Err(error) => return extension_resource_failure(&request_id, error),
     };
     let staged_resources = resource_lease.resources().to_vec();
-    let gesture = match request.invocation.user_gesture_token.as_deref() {
+    let gesture = match invocation.user_gesture_token.as_deref() {
         Some(token) if state.client_gesture_is_available(token) => {
             let gesture = match runtime.issue_user_gesture(
-                &request.invocation.command_id,
+                &invocation.command_id,
                 Some(loom_capability_runtime::UserGestureTarget {
-                    unit_id: request.invocation.target.unit_id.clone(),
-                    revision: request.invocation.target.revision,
+                    unit_id: invocation.target.unit_id.clone(),
+                    revision: invocation.target.revision,
                 }),
             ) {
                 Ok(gesture) => gesture,
@@ -251,10 +284,11 @@ fn handle_extension_invocation(
     };
     let output = runtime.invoke(CapabilityInvocation {
         request_id: request_id.clone(),
-        command_id: request.invocation.command_id,
-        input: request.invocation.input,
-        target: Some(request.invocation.target),
-        resource_refs: request.invocation.resource_refs,
+        command_id: invocation.command_id,
+        input: invocation.input,
+        target: Some(invocation.target),
+        resource_refs: invocation.resource_refs,
+        unit_attachments: invocation.unit_attachments,
         staged_resources,
         user_gesture_token: gesture,
         timeout: None,
@@ -296,7 +330,11 @@ fn handle_extension_invocation(
                     "extension runtime returned invalid effects",
                 );
             }
-            extension_bridge_success(&request_id, serde_json::to_value(result).unwrap_or_default(), false)
+            extension_bridge_success(
+                &request_id,
+                serde_json::to_value(result).unwrap_or_default(),
+                false,
+            )
         }
         Ok(_) => extension_result_failure(
             &request_id,
@@ -305,6 +343,31 @@ fn handle_extension_invocation(
         ),
         Err(error) => extension_runtime_failure(&request_id, error),
     }
+}
+
+fn extension_upload_failure(
+    request_id: &str,
+    error: ExtensionResourceUploadError,
+) -> ExtensionBridgeTextResult {
+    let (code, message) = match error {
+        ExtensionResourceUploadError::Invalid => (
+            CapabilityErrorCode::InvalidInput,
+            "extension resource upload is invalid",
+        ),
+        ExtensionResourceUploadError::PermissionDenied => (
+            CapabilityErrorCode::PermissionDenied,
+            "extension image upload requires hook.unit.image.read",
+        ),
+        ExtensionResourceUploadError::Busy => (
+            CapabilityErrorCode::Busy,
+            "extension resource upload store is busy",
+        ),
+        ExtensionResourceUploadError::Store => (
+            CapabilityErrorCode::RuntimeFault,
+            "extension resource upload store is unavailable",
+        ),
+    };
+    extension_result_failure(request_id, code, message)
 }
 
 fn extension_resource_failure(
@@ -353,9 +416,16 @@ fn extension_result_failure(
         status: ExtensionResultStatus::Failed,
         output: Value::Null,
         effects: Vec::new(),
-        error: Some(ExtensionError { code, message: message.to_owned() }),
+        error: Some(ExtensionError {
+            code,
+            message: message.to_owned(),
+        }),
     };
-    extension_bridge_success(request_id, serde_json::to_value(result).unwrap_or_default(), false)
+    extension_bridge_success(
+        request_id,
+        serde_json::to_value(result).unwrap_or_default(),
+        false,
+    )
 }
 
 fn extension_runtime_failure(
@@ -371,7 +441,12 @@ fn extension_runtime_failure(
             ("extension_runtime_unavailable", true)
         }
     };
-    extension_bridge_failure(request_id, code, "extension runtime request failed", retryable)
+    extension_bridge_failure(
+        request_id,
+        code,
+        "extension runtime request failed",
+        retryable,
+    )
 }
 
 fn extension_bridge_success(
@@ -379,7 +454,13 @@ fn extension_bridge_success(
     data: Value,
     subscribe_to_snapshots: bool,
 ) -> ExtensionBridgeTextResult {
-    extension_bridge_response(request_id, ExtensionBridgeStatus::Succeeded, data, None, subscribe_to_snapshots)
+    extension_bridge_response(
+        request_id,
+        ExtensionBridgeStatus::Succeeded,
+        data,
+        None,
+        subscribe_to_snapshots,
+    )
 }
 
 fn extension_bridge_failure(
@@ -392,7 +473,11 @@ fn extension_bridge_failure(
         request_id,
         ExtensionBridgeStatus::Failed,
         Value::Null,
-        Some(ExtensionBridgeError { code: code.to_owned(), message: message.into(), retryable }),
+        Some(ExtensionBridgeError {
+            code: code.to_owned(),
+            message: message.into(),
+            retryable,
+        }),
         false,
     )
 }

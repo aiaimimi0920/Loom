@@ -278,3 +278,51 @@ fn extension_handshake_negotiates_optional_features_and_rejects_required_unknown
         ))
     );
 }
+
+#[test]
+fn extension_resource_uploads_are_explicit_and_backward_compatible() {
+    let invocation = json!({
+        "protocol": crate::EXTENSION_PROTOCOL,
+        "apiVersion": "1.0",
+        "requestId": "request-1",
+        "pluginId": "publisher.example/plugin",
+        "commandId": "publisher.example/plugin.run",
+        "snapshotGeneration": 1,
+        "target": { "unitId": "unit-1", "revision": 2 },
+        "input": {},
+        "resourceRefs": [],
+        "unitAttachments": []
+    });
+    let legacy = json!({
+        "method": EXTENSION_METHOD_COMMAND_INVOKE,
+        "params": { "sessionId": "session-1", "invocation": invocation.clone() }
+    });
+    let parsed: ExtensionBridgeRequest = serde_json::from_value(legacy).expect("legacy request");
+    let ExtensionBridgeRequest::CommandInvoke(request) = parsed else {
+        panic!("expected command invocation");
+    };
+    assert!(request.resource_uploads.is_empty());
+
+    let with_upload = json!({
+        "method": EXTENSION_METHOD_COMMAND_INVOKE,
+        "params": {
+            "sessionId": "session-1",
+            "invocation": invocation,
+            "resourceUploads": [{
+                "kind": "image",
+                "mime": "image/png",
+                "dataBase64": "AA=="
+            }]
+        }
+    });
+    let parsed: ExtensionBridgeRequest =
+        serde_json::from_value(with_upload.clone()).expect("upload");
+    let ExtensionBridgeRequest::CommandInvoke(request) = parsed else {
+        panic!("expected command invocation");
+    };
+    assert_eq!(request.resource_uploads.len(), 1);
+
+    let mut unknown = with_upload;
+    unknown["params"]["resourceUploads"][0]["path"] = json!("C:/private.png");
+    assert!(serde_json::from_value::<ExtensionBridgeRequest>(unknown).is_err());
+}

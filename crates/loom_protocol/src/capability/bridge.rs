@@ -3,7 +3,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use super::{ContributionSnapshot, ExtensionInvocation};
-use crate::EXTENSION_PROTOCOL;
+use crate::{SurfaceResourceKind, EXTENSION_PROTOCOL};
 
 pub const EXTENSION_METHOD_HANDSHAKE: &str = "loom.extension.handshake";
 pub const EXTENSION_METHOD_SNAPSHOT_GET: &str = "loom.extension.snapshot.get";
@@ -65,6 +65,18 @@ pub struct ExtensionSessionRequest {
 pub struct ExtensionCommandInvokeRequest {
     pub session_id: String,
     pub invocation: ExtensionInvocation,
+    /// Host-bound payloads are converted to opaque resource references before
+    /// the capability process is invoked. Raw bytes never enter its JSON frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resource_uploads: Vec<ExtensionResourceUpload>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionResourceUpload {
+    pub kind: SurfaceResourceKind,
+    pub mime: String,
+    pub data_base64: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

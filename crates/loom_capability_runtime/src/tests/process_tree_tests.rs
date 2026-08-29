@@ -104,6 +104,7 @@ fn tree_invocation(request_id: &str, timeout: Duration) -> CapabilityInvocation 
         input: json!({}),
         target: None,
         resource_refs: Vec::new(),
+        unit_attachments: Vec::new(),
         staged_resources: Vec::new(),
         user_gesture_token: None,
         timeout: Some(timeout),

@@ -117,6 +117,7 @@ fn invoke_plugin_command(
         input: request.input,
         target: request.target,
         resource_refs: request.resource_refs,
+        unit_attachments: Vec::new(),
         staged_resources,
         user_gesture_token: request.user_gesture_token,
         timeout,

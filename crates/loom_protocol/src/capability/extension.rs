@@ -112,6 +112,8 @@ pub struct ExtensionInvocation {
     pub target: ExtensionTarget,
     pub input: Value,
     pub resource_refs: Vec<ExtensionResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit_attachments: Vec<ExtensionUnitAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_gesture_token: Option<String>,
 }
@@ -140,6 +142,23 @@ pub enum ExtensionResourceKind {
     SharedImage,
     SharedMemory,
     Inline,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionUnitAttachment {
+    pub attachment_id: String,
+    pub type_id: String,
+    pub schema_version: String,
+    pub revision: u64,
+    pub plugin_id: String,
+    pub plugin_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer_id: Option<String>,
+    #[serde(default)]
+    pub payload: Value,
+    #[serde(default)]
+    pub resource_refs: Vec<ExtensionResourceRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -288,12 +307,36 @@ fn validate_invocation(invocation: &ExtensionInvocation) -> Result<(), Extension
             .resource_refs
             .iter()
             .all(|resource| valid_digest(&resource.digest) && resource.byte_length <= 536_870_912);
+    let attachments_valid = invocation.unit_attachments.len() <= 32
+        && serde_json::to_vec(&invocation.unit_attachments)
+            .is_ok_and(|bytes| bytes.len() <= EXTENSION_SNAPSHOT_BYTES)
+        && invocation.unit_attachments.iter().all(|attachment| {
+            !attachment.attachment_id.is_empty()
+                && attachment.attachment_id.len() <= 384
+                && !attachment.type_id.is_empty()
+                && attachment.type_id.len() <= 384
+                && !attachment.schema_version.is_empty()
+                && attachment.schema_version.len() <= 64
+                && !attachment.plugin_id.is_empty()
+                && attachment.plugin_id.len() <= 384
+                && !attachment.plugin_version.is_empty()
+                && attachment.plugin_version.len() <= 128
+                && attachment
+                    .renderer_id
+                    .as_ref()
+                    .is_none_or(|renderer| !renderer.is_empty() && renderer.len() <= 384)
+                && serde_json::to_vec(&attachment.payload)
+                    .is_ok_and(|bytes| bytes.len() <= 256 * 1024)
+                && attachment.resource_refs.len() <= 16
+                && attachment.resource_refs.iter().all(valid_effect_resource)
+        });
     if invocation.request_id.is_empty()
         || invocation.request_id.len() > 384
         || invocation.plugin_id.is_empty()
         || invocation.command_id.is_empty()
         || !gesture_valid
         || !resources_valid
+        || !attachments_valid
     {
         return Err(ExtensionValidationError::InvalidInvocation);
     }

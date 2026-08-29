@@ -30,7 +30,14 @@ impl CapabilityRuntimeHost {
         let validators = active.command_schemas.get(&command.id).ok_or_else(|| {
             CapabilityHostError::InvalidPackage("command schema is missing".to_owned())
         })?;
-        validate_command_input(validators, &invocation.input, &invocation.resource_refs)?;
+        validate_command_input(
+            &active.package,
+            &command,
+            validators,
+            &invocation.input,
+            &invocation.resource_refs,
+            &invocation.unit_attachments,
+        )?;
         validate_staged_resources(&invocation)?;
         if requires_user_gesture {
             self.consume_user_gesture(&invocation)?;
@@ -51,6 +58,7 @@ impl CapabilityRuntimeHost {
                 "input": invocation.input,
                 "target": invocation.target,
                 "resourceRefs": invocation.resource_refs,
+                "unitAttachments": invocation.unit_attachments,
                 "stagedResources": invocation.staged_resources,
                 "userGesture": requires_user_gesture,
             }),

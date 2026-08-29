@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use loom_protocol::{
     CapabilityContributions, CapabilityPackageManifest, CapabilityProcessModel,
     CapabilityProtocolError, CapabilityRuntimeMessage, CapabilityRuntimeMethod,
-    CapabilityRuntimeStatus, ExtensionResourceRef, ExtensionTarget, PackageTrustStatus,
+    CapabilityRuntimeStatus, ExtensionResourceRef, ExtensionTarget, ExtensionUnitAttachment,
+    PackageTrustStatus,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -74,6 +75,7 @@ pub struct CapabilityInvocation {
     pub input: Value,
     pub target: Option<ExtensionTarget>,
     pub resource_refs: Vec<ExtensionResourceRef>,
+    pub unit_attachments: Vec<ExtensionUnitAttachment>,
     pub staged_resources: Vec<CapabilityStagedResource>,
     pub user_gesture_token: Option<String>,
     pub timeout: Option<Duration>,
