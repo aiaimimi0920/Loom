@@ -52,6 +52,7 @@ fn route_capability_plugins(
         .contribution_snapshot()
         .ok()
         .map(|snapshot| snapshot.generation);
+    let updates_capability_inventory = capability_lifecycle_route(request, route_path);
     let response = match (request.method.as_str(), route_path) {
         ("GET", "/v1/capability-plugins/extensions") => capability_extension_snapshot(runtime),
         ("GET", "/v1/capability-plugins") => list_capability_plugins(control_plane_root),
@@ -158,8 +159,35 @@ fn route_capability_plugins(
                 broadcast_hook_bridge_json(hook_bridge, extension_snapshot_event(snapshot));
             }
         }
+        if updates_capability_inventory {
+            // Hook refreshes the declarative capability catalog on this generic
+            // event. Installation must emit it even before a plugin is enabled.
+            broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+        }
     }
     Some(response)
+}
+
+fn capability_lifecycle_route(request: &ParsedHttpRequest, route_path: &str) -> bool {
+    if request.method != "POST" {
+        return false;
+    }
+    if matches!(
+        route_path,
+        "/v1/capability-plugins/install" | "/v1/capability-plugins/catalog/install"
+    ) {
+        return true;
+    }
+    ["/enable", "/disable", "/upgrade", "/rollback", "/uninstall"]
+        .iter()
+        .any(|suffix| {
+            decoded_package_path_id_with_suffix(
+                route_path,
+                "/v1/capability-plugins/",
+                suffix,
+            )
+            .is_some()
+        })
 }
 
 fn capability_extension_snapshot(runtime: &SharedCapabilityRuntime) -> Result<(u16, String)> {

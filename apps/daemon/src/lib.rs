@@ -227,4 +227,5 @@ mod tests {
     include!("tests/suite/part_34.rs");
     include!("tests/suite/part_35.rs");
     include!("tests/suite/part_36.rs");
+    include!("tests/suite/part_37.rs");
 }
