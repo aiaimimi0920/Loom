@@ -5,6 +5,7 @@ members = [
     "apps/cli",
     "apps/art-store",
     "apps/plugin-cli",
+    "apps/ocr-host",
     "crates/loom_core",
     "crates/loom_durable",
     "crates/loom_agent",

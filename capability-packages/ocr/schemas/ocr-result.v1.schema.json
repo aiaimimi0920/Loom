@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/capabilities/ocr-result.v1.schema.json",
+  "title": "OCR result attachment v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "visible",
+    "sourceWidth",
+    "sourceHeight",
+    "fullText",
+    "textBlocks",
+    "surfaceScene"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "visible": { "type": "boolean" },
+    "sourceWidth": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "sourceHeight": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "fullText": { "type": "string", "maxLength": 98304 },
+    "textBlocks": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "required": ["text", "left", "top", "width", "height", "textColor", "backgroundColor"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "left": { "type": "number", "minimum": 0 },
+          "top": { "type": "number", "minimum": 0 },
+          "width": { "type": "number", "exclusiveMinimum": 0 },
+          "height": { "type": "number", "exclusiveMinimum": 0 },
+          "textColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+          "backgroundColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "surfaceScene": { "type": "object" }
+  },
+  "additionalProperties": false
+}
+

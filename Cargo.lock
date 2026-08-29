@@ -1515,6 +1515,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-ocr-host"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "loom_ocr",
+ "loom_protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "loom-plugin-cli"
 version = "0.2.0"
 dependencies = [
