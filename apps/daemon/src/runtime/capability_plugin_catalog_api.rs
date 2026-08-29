@@ -165,6 +165,7 @@ fn capability_host_support(
         hook_features: vec!["commands.v1".to_owned(), "unit-overlays.v1".to_owned()],
         surface_api_version: "1.0".to_owned(),
         surface_features: vec![
+            "declarative.v1".to_owned(),
             "loom_resource".to_owned(),
             "remote_resources".to_owned(),
             "surface.javascript.v1".to_owned(),

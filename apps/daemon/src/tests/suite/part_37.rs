@@ -65,3 +65,14 @@ fn capability_install_broadcasts_inventory_update_before_enablement() {
     );
     fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[test]
+fn capability_catalog_advertises_the_declarative_overlay_surface() {
+    let root = unique_temp_dir("capability-host-support");
+    let daemon = test_daemon_runtime(&root, None);
+
+    let support = capability_host_support(&daemon.hook_bridge).expect("host support");
+
+    assert!(support.surface_features.iter().any(|feature| feature == "declarative.v1"));
+    fs::remove_dir_all(root).expect("cleanup");
+}
