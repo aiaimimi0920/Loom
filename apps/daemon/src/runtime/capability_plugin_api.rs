@@ -25,6 +25,7 @@ struct ApproveCapabilityRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UpdateCapabilityConfigRequest {
     expected_revision: u64,
+    package_digest: String,
     values: serde_json::Map<String, Value>,
 }
 
@@ -131,19 +132,19 @@ fn route_capability_plugins(
             )
         }
         ("GET", path)
-            if decoded_package_path_id_with_suffix(path, PREFIX, "/config").is_some() =>
+            if decoded_package_path_id_with_suffix(path, PREFIX, "/settings").is_some() =>
         {
-            get_capability_config(
-                &decoded_package_path_id_with_suffix(path, PREFIX, "/config")
+            get_capability_settings(
+                &decoded_package_path_id_with_suffix(path, PREFIX, "/settings")
                     .expect("checked capability path"),
                 control_plane_root,
             )
         }
         ("PUT", path)
-            if decoded_package_path_id_with_suffix(path, PREFIX, "/config").is_some() =>
+            if decoded_package_path_id_with_suffix(path, PREFIX, "/settings").is_some() =>
         {
-            update_capability_config(
-                &decoded_package_path_id_with_suffix(path, PREFIX, "/config")
+            update_capability_settings(
+                &decoded_package_path_id_with_suffix(path, PREFIX, "/settings")
                     .expect("checked capability path"),
                 &request.body,
                 control_plane_root,
@@ -360,35 +361,6 @@ fn uninstall_capability_plugin(
             capability_error_response(error)
         }
     }
-}
-
-fn get_capability_config(
-    qualified_id: &str,
-    control_plane_root: &Path,
-) -> Result<(u16, String)> {
-    let store = loom_tool_registry::capability::CapabilityConfigStore::new(control_plane_root);
-    capability_response(
-        store
-            .read(qualified_id)
-            .map(|config| json!({ "config": config })),
-    )
-}
-
-fn update_capability_config(
-    qualified_id: &str,
-    body: &str,
-    control_plane_root: &Path,
-) -> Result<(u16, String)> {
-    let request: UpdateCapabilityConfigRequest = match serde_json::from_str(body) {
-        Ok(request) => request,
-        Err(error) => return capability_bad_request("invalid_capability_config", error.to_string()),
-    };
-    let store = loom_tool_registry::capability::CapabilityConfigStore::new(control_plane_root);
-    capability_response(
-        store
-            .write(qualified_id, request.expected_revision, request.values)
-            .map(|config| json!({ "config": config })),
-    )
 }
 
 fn capability_registry(

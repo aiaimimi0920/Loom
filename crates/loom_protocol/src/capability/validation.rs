@@ -47,6 +47,8 @@ pub enum CapabilityValidationError {
     InvalidSignature,
     #[error("invalid dependency `{0}`")]
     InvalidDependency(String),
+    #[error("invalid setting contribution `{0}`")]
+    InvalidSetting(String),
 }
 
 pub fn parse_capability_manifest(
@@ -180,6 +182,53 @@ fn validate_contributions(
         if let Some(schema) = &contribution.schema {
             validate_relative_path(schema)?;
         }
+    }
+    for setting in &contributions.settings {
+        validate_setting_definition(setting)?;
+    }
+    Ok(())
+}
+
+fn validate_setting_definition(
+    setting: &CapabilityContribution,
+) -> Result<(), CapabilityValidationError> {
+    let payload = setting
+        .payload
+        .as_object()
+        .ok_or_else(|| CapabilityValidationError::InvalidSetting(setting.id.clone()))?;
+    let kind = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CapabilityValidationError::InvalidSetting(setting.id.clone()))?;
+    let default = payload.get("default");
+    let valid_default = match kind {
+        "string" => default.is_none_or(Value::is_string),
+        "number" => default.is_none_or(Value::is_number),
+        "boolean" => default.is_none_or(Value::is_boolean),
+        "json" => true,
+        "enum" => payload
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|options| {
+                !options.is_empty()
+                    && options.len() <= 128
+                    && options.iter().all(Value::is_string)
+                    && default.is_none_or(|value| options.contains(value))
+            }),
+        _ => false,
+    };
+    if !valid_default {
+        return Err(CapabilityValidationError::InvalidSetting(
+            setting.id.clone(),
+        ));
+    }
+    if payload
+        .get("description")
+        .is_some_and(|value| value.as_str().is_none_or(|text| text.len() > 1024))
+    {
+        return Err(CapabilityValidationError::InvalidSetting(
+            setting.id.clone(),
+        ));
     }
     Ok(())
 }

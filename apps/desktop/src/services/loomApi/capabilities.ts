@@ -1,5 +1,5 @@
 // Capability Plugin catalog, permission, and lifecycle clients.
-import { getJson, postJson } from "./transport.ts";
+import { getJson, postJson, putJson } from "./transport.ts";
 
 export type CapabilityLifecycleStatus =
   | "installed_disabled"
@@ -103,6 +103,32 @@ export interface CapabilityCatalogSnapshot {
 export interface CapabilityPluginSnapshot {
   plugins: CapabilityPluginRecord[];
   diskBytesByPlugin: Record<string, number>;
+}
+
+export type CapabilitySettingFieldType = "string" | "number" | "boolean" | "enum" | "json";
+
+export interface CapabilitySettingField {
+  id: string;
+  title?: string;
+  payload: {
+    type: CapabilitySettingFieldType;
+    description?: string;
+    default?: unknown;
+    options?: string[];
+  };
+}
+
+export interface CapabilitySettingsDocument {
+  schemaVersion: number;
+  qualifiedId: string;
+  revision: number;
+  values: Record<string, unknown>;
+}
+
+export interface CapabilitySettingsSnapshot {
+  settings: CapabilitySettingsDocument;
+  fields: CapabilitySettingField[];
+  packageDigest: string;
 }
 
 export interface CapabilityInstallReport {
@@ -210,3 +236,29 @@ export const rollbackCapability = (baseUrl: string, qualifiedId: string) =>
 export const uninstallCapability = (baseUrl: string, qualifiedId: string) =>
   mutateCapability(baseUrl, qualifiedId, "uninstall");
 
+export const getCapabilitySettings = async (
+  baseUrl: string,
+  qualifiedId: string,
+): Promise<CapabilitySettingsSnapshot> => {
+  const response = await getJson<CapabilitySettingsSnapshot>(
+    baseUrl,
+    pluginPath(qualifiedId, "settings"),
+  );
+  return { ...response, fields: Array.isArray(response.fields) ? response.fields : [] };
+};
+
+export const saveCapabilitySettings = async (
+  baseUrl: string,
+  qualifiedId: string,
+  expectedRevision: number,
+  packageDigest: string,
+  values: Record<string, unknown>,
+): Promise<CapabilitySettingsDocument> => {
+  const response = await putJson<{ settings?: CapabilitySettingsDocument }>(
+    baseUrl,
+    pluginPath(qualifiedId, "settings"),
+    { expectedRevision, packageDigest, values },
+  );
+  if (!response.settings) throw new Error("Loom 本地服务没有返回能力扩展设置。");
+  return response.settings;
+};

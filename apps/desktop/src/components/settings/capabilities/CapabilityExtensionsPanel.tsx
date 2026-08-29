@@ -2,6 +2,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { CapabilityCatalogItem, CapabilityPluginRecord } from "../../../services/loomApi";
 import { CapabilityPermissionDialog } from "./CapabilityPermissionDialog";
+import { CapabilitySettingsEditor } from "./CapabilitySettingsEditor";
 import {
   activeCapabilityVersion,
   capabilityStatusLabel,
@@ -23,6 +24,7 @@ function InstalledCapabilityCard({
   onEnable,
   onRollback,
   onUninstall,
+  baseUrl,
 }: {
   plugin: CapabilityPluginRecord;
   diskBytes: number;
@@ -32,6 +34,7 @@ function InstalledCapabilityCard({
   onEnable: () => void;
   onRollback: () => void;
   onUninstall: () => void;
+  baseUrl: string;
 }) {
   const activeVersion = activeCapabilityVersion(plugin);
   const shownVersion = activeVersion ?? plugin.versions[plugin.versions.length - 1];
@@ -69,6 +72,7 @@ function InstalledCapabilityCard({
           诊断：当前故障窗口记录 {plugin.runtimeFailures.count} 次失败
         </p>
       ) : null}
+      <CapabilitySettingsEditor baseUrl={baseUrl} qualifiedId={plugin.qualifiedId} disabled={busy} />
       <footer className="capability-card__actions">
         {plugin.status === "active" ? (
           <button className="ghost-button" type="button" disabled={busy} onClick={onDisable}>停用</button>
@@ -222,6 +226,7 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
               onEnable={() => controller.requestEnable(plugin)}
               onRollback={() => controller.requestRollback(plugin)}
               onUninstall={() => void controller.uninstall(plugin)}
+              baseUrl={baseUrl}
             />;
           })}
         </div> : <div className="capability-empty-state">

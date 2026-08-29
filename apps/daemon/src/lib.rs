@@ -130,6 +130,7 @@ include!("runtime/daemon_lifecycle.rs");
 include!("runtime/connection_dispatch.rs");
 include!("runtime/http_routing.rs");
 include!("runtime/capability_plugin_api.rs");
+include!("runtime/capability_plugin_settings.rs");
 include!("runtime/capability_plugin_catalog_api.rs");
 include!("runtime/capability_plugin_runtime_api.rs");
 include!("runtime/secure_persistence.rs");
@@ -223,4 +224,5 @@ mod tests {
     include!("tests/suite/part_32.rs");
     include!("tests/suite/part_33.rs");
     include!("tests/suite/part_34.rs");
+    include!("tests/suite/part_35.rs");
 }

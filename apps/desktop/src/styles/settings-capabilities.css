@@ -266,6 +266,76 @@
   padding-top: 2px;
 }
 
+.capability-plugin-settings {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--loom-theme-line);
+  border-bottom: 1px solid var(--loom-theme-line);
+}
+
+.capability-plugin-settings__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--loom-theme-text);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.capability-plugin-settings__body {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.capability-plugin-settings__body > p {
+  margin: 0;
+  color: var(--loom-theme-muted);
+  font-size: 12px;
+}
+
+.capability-setting {
+  display: grid;
+  gap: 7px;
+}
+
+.capability-setting > span {
+  display: grid;
+  gap: 2px;
+}
+
+.capability-setting small {
+  color: var(--loom-theme-muted);
+  line-height: 1.4;
+}
+
+.capability-setting input[type="text"],
+.capability-setting input[type="number"],
+.capability-setting select {
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 7px;
+  background: var(--loom-theme-control);
+  color: var(--loom-theme-text);
+}
+
+.capability-setting--toggle {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.capability-setting--toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--loom-theme-accent-text);
+}
+
 .capability-empty-state {
   display: grid;
   justify-items: start;

@@ -11,6 +11,10 @@ const capabilityController = readSource(
 const capabilityPanel = readSource(
   "../components/settings/capabilities/CapabilityExtensionsPanel.tsx",
 );
+const capabilitySettings = readSource(
+  "../components/settings/capabilities/CapabilitySettingsEditor.tsx",
+);
+const capabilityApi = readSource("./loomApi/capabilities.ts");
 const permissionDialog = readSource(
   "../components/settings/capabilities/CapabilityPermissionDialog.tsx",
 );
@@ -42,4 +46,15 @@ test("permission review displays digest-bound evidence before activation", () =>
   assert.match(permissionDialog, /aria-modal="true"/);
   assert.match(permissionDialog, /querySelectorAll<HTMLElement>/);
   assert.match(permissionDialog, /previousFocus\?\.focus/);
+});
+
+test("plugin settings are manifest-driven and use the isolated settings API", () => {
+  assert.match(capabilityPanel, /<CapabilitySettingsEditor/);
+  assert.match(capabilitySettings, /snapshot\.fields\.flatMap/);
+  assert.match(capabilitySettings, /hasOwnProperty\.call\(snapshot\.settings\.values/);
+  assert.match(capabilitySettings, /saveCapabilitySettings/);
+  assert.doesNotMatch(capabilitySettings, /saveLoomSettings|dangerouslySetInnerHTML/);
+  assert.match(capabilityApi, /pluginPath\(qualifiedId, "settings"\)/);
+  assert.match(capabilityApi, /expectedRevision/);
+  assert.match(capabilityApi, /packageDigest/);
 });

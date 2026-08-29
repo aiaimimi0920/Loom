@@ -77,6 +77,28 @@ fn contribution_ids_are_owned_and_unique_case_insensitively() {
 }
 
 #[test]
+fn settings_use_bounded_manifest_driven_field_definitions() {
+    let mut value = manifest_value();
+    value["contributes"]["settings"] = json!([{
+        "id": "publisher.example/text-tools.mode",
+        "title": "Transform mode",
+        "payload": {
+            "type": "enum",
+            "options": ["safe", "fast"],
+            "default": "safe"
+        }
+    }]);
+    let parsed = parse_capability_manifest(value.to_string().as_bytes()).expect("setting");
+    assert_eq!(parsed.contributes.settings.len(), 1);
+
+    value["contributes"]["settings"][0]["payload"]["default"] = json!("undeclared");
+    assert!(matches!(
+        parse_capability_manifest(value.to_string().as_bytes()),
+        Err(CapabilityValidationError::InvalidSetting(_))
+    ));
+}
+
+#[test]
 fn api_permissions_and_signature_are_strict() {
     let mut value = manifest_value();
     value["hostCompatibility"]["loomCapabilityApi"]["minimum"] = json!("2.0");

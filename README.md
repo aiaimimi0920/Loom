@@ -425,6 +425,20 @@ install, execution, upgrade, rollback, restart, disable, uninstall, and
 reinstall operate only on control-plane package/state directories; they do not
 edit Loom or Hook source.
 
+To prove that the Capability Plugin host accepts an unknown third-party package
+without adding a core business branch, build `loom-daemon` and `loom-plugin`,
+then run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomCapabilityPluginConformance.ps1 -PublisherId publisher.example -PackageId capability-a
+```
+
+The conformance package and its Rust runtime are created under the system temp
+directory. The smoke covers install, permission approval, enable, command and
+notice effects, manifest-driven settings, restart restoration, disable,
+re-enable, upgrade, rollback, and uninstall. It also requires zero remaining
+runtime processes and identical Hook/Loom source fingerprints at the boundary.
+
 ### Plugin SDK, trust, and lifecycle
 
 The release build publishes an independent `Loom-Plugin-SDK-<version>-windows-x64.zip`
