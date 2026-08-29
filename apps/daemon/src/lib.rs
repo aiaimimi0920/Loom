@@ -130,10 +130,12 @@ include!("runtime/daemon_lifecycle.rs");
 include!("runtime/connection_dispatch.rs");
 include!("runtime/http_routing.rs");
 include!("runtime/capability_plugin_api.rs");
+include!("runtime/capability_plugin_catalog_api.rs");
 include!("runtime/capability_plugin_runtime_api.rs");
 include!("runtime/secure_persistence.rs");
 include!("runtime/mcp_persistence_models.rs");
 include!("runtime/settings_ocr_runtime.rs");
+include!("runtime/hook_bridge_connections.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
 include!("runtime/device_auth.rs");
@@ -174,6 +176,7 @@ include!("runtime/hook_canvas_preview_session.rs");
 include!("runtime/hook_art_request_lifecycle.rs");
 include!("runtime/hook_canvas_live_persistence.rs");
 include!("runtime/capability_extension_bridge.rs");
+include!("runtime/hook_bridge_server.rs");
 include!("runtime/hook_bridge_websocket.rs");
 include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
@@ -219,4 +222,5 @@ mod tests {
     include!("tests/suite/part_31.rs");
     include!("tests/suite/part_32.rs");
     include!("tests/suite/part_33.rs");
+    include!("tests/suite/part_34.rs");
 }

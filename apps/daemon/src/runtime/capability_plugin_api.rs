@@ -5,6 +5,8 @@ struct InstallCapabilityRequest {
     zip_base64: String,
 }
 
+const MAX_LOCAL_CAPABILITY_ZIP_BASE64_BYTES: usize = 12 * 1024 * 1024;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SelectCapabilityVersionRequest {
@@ -35,6 +37,16 @@ fn route_capability_plugins(
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Option<Result<(u16, String)>> {
     const PREFIX: &str = "/v1/capability-plugins/";
+    if route_path != "/v1/capability-plugins" && !route_path.starts_with(PREFIX) {
+        return None;
+    }
+    // Lifecycle transitions include process and resource side effects in addition
+    // to atomic registry writes. Serialize the complete transition so a competing
+    // request cannot make compensation restore stale state.
+    let _operation_guard = match capability_plugin_operation_lock().lock() {
+        Ok(guard) => guard,
+        Err(_) => return Some(Err(anyhow::anyhow!("capability lifecycle lock is unavailable"))),
+    };
     let previous_generation = runtime
         .contribution_snapshot()
         .ok()
@@ -44,6 +56,12 @@ fn route_capability_plugins(
         ("GET", "/v1/capability-plugins") => list_capability_plugins(control_plane_root),
         ("GET", "/v1/capability-plugins/grants") => {
             list_capability_grants(control_plane_root)
+        }
+        ("GET", "/v1/capability-plugins/catalog") => {
+            list_capability_catalog(control_plane_root, hook_bridge)
+        }
+        ("POST", "/v1/capability-plugins/catalog/install") => {
+            install_capability_catalog_plugin(&request.body, control_plane_root, hook_bridge)
         }
         ("POST", "/v1/capability-plugins/install") => {
             install_capability_plugin(&request.body, control_plane_root)
@@ -155,7 +173,15 @@ fn capability_extension_snapshot(runtime: &SharedCapabilityRuntime) -> Result<(u
 
 fn list_capability_plugins(control_plane_root: &Path) -> Result<(u16, String)> {
     let registry = capability_registry(control_plane_root)?;
-    capability_response(registry.list().map(|plugins| json!({ "plugins": plugins })))
+    capability_response(registry.list().map(|plugins| {
+        let disk_bytes = capability_plugin_disk_bytes(&registry, &plugins);
+        json!({ "plugins": plugins, "diskBytesByPlugin": disk_bytes })
+    }))
+}
+
+fn capability_plugin_operation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn list_capability_grants(control_plane_root: &Path) -> Result<(u16, String)> {
@@ -168,6 +194,12 @@ fn install_capability_plugin(body: &str, control_plane_root: &Path) -> Result<(u
         Ok(request) => request,
         Err(error) => return capability_bad_request("invalid_capability_install", error.to_string()),
     };
+    if request.zip_base64.len() > MAX_LOCAL_CAPABILITY_ZIP_BASE64_BYTES {
+        return capability_bad_request(
+            "invalid_capability_install",
+            "local capability package exceeds the upload limit".to_owned(),
+        );
+    }
     let zip = match loom_image_io::decode_data_url_bytes(&request.zip_base64) {
         Ok(zip) => zip,
         Err(error) => {

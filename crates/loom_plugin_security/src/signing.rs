@@ -4,7 +4,7 @@ use std::path::Path;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use loom_protocol::PackageSignatureDocument;
 use rand_core::OsRng;
 
@@ -89,6 +89,21 @@ pub fn sign_message(
         ));
     }
     Ok(BASE64.encode(signing_key.sign(message).to_bytes()))
+}
+
+/// Verifies a detached Ed25519 signature over a caller-owned canonical payload.
+pub fn verify_message(
+    public_key: &str,
+    message: &[u8],
+    signature: &str,
+) -> Result<(), PluginSecurityError> {
+    let verifying_key = decode_verifying_key(public_key)?;
+    let signature_bytes = BASE64.decode(signature.as_bytes())?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|error| PluginSecurityError::InvalidKey(error.to_string()))?;
+    verifying_key
+        .verify(message, &signature)
+        .map_err(|_| PluginSecurityError::VerificationFailed)
 }
 
 pub(crate) fn decode_signing_key(value: &str) -> Result<SigningKey, PluginSecurityError> {

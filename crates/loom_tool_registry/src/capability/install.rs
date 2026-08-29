@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use loom_plugin_security::{canonical_package_digest, verify_package_signature, TrustStore};
 use loom_protocol::{
-    parse_capability_manifest, PackageSignature, PublisherIdentity, MAX_CAPABILITY_MANIFEST_BYTES,
+    parse_capability_manifest, CapabilityHostCompatibility, PackageSignature, PackageTrustStatus,
+    PublisherIdentity, MAX_CAPABILITY_MANIFEST_BYTES,
 };
 
 use super::registry::ensure_capability_root;
@@ -12,9 +13,18 @@ use super::types::{
     CapabilityInstallError, CapabilityInstallReport, CapabilityInstalledVersion, CapabilityResult,
 };
 use super::CapabilityPluginRegistry;
-use crate::private_store::read_bounded_private_file;
+use crate::private_store::{lock_private_file, read_bounded_private_file};
 
 const MANIFEST_FILE: &str = "capability.manifest.json";
+
+#[derive(Clone, Debug)]
+pub struct CapabilityCatalogInstallExpectation {
+    pub qualified_id: String,
+    pub version: String,
+    pub publisher_key_id: String,
+    pub permissions: Vec<String>,
+    pub host_compatibility: CapabilityHostCompatibility,
+}
 
 /// Installs a verified package without activating it.
 ///
@@ -27,11 +37,31 @@ pub fn install_capability_from_zip(
 ) -> CapabilityResult<CapabilityInstallReport> {
     let packages_root = registry.packages_root();
     ensure_capability_root(&packages_root)?;
+    let _install_lock = lock_private_file(&packages_root.join("install-transaction"))?;
     let staging_root = packages_root.join(".staging");
     ensure_capability_root(&staging_root)?;
     let staging = unique_staging_path(&staging_root);
 
-    let result = install_staged(zip_bytes, registry, &staging);
+    let result = install_staged(zip_bytes, registry, &staging, None);
+    if result.is_err() {
+        let _ = remove_private_tree(&staging);
+    }
+    result
+}
+
+/// Installs catalog bytes only when signed metadata and package content agree.
+pub fn install_capability_from_catalog_zip(
+    zip_bytes: &[u8],
+    registry: &CapabilityPluginRegistry,
+    expected: &CapabilityCatalogInstallExpectation,
+) -> CapabilityResult<CapabilityInstallReport> {
+    let packages_root = registry.packages_root();
+    ensure_capability_root(&packages_root)?;
+    let _install_lock = lock_private_file(&packages_root.join("install-transaction"))?;
+    let staging_root = packages_root.join(".staging");
+    ensure_capability_root(&staging_root)?;
+    let staging = unique_staging_path(&staging_root);
+    let result = install_staged(zip_bytes, registry, &staging, Some(expected));
     if result.is_err() {
         let _ = remove_private_tree(&staging);
     }
@@ -42,6 +72,7 @@ fn install_staged(
     zip_bytes: &[u8],
     registry: &CapabilityPluginRegistry,
     staging: &Path,
+    expected: Option<&CapabilityCatalogInstallExpectation>,
 ) -> CapabilityResult<CapabilityInstallReport> {
     let installed_files = crate::secure_zip::extract_zip_securely(zip_bytes, staging)
         .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
@@ -58,6 +89,9 @@ fn install_staged(
     )?;
     let manifest = parse_capability_manifest(&manifest_bytes)
         .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
+    if let Some(expected) = expected {
+        validate_catalog_expectation(&manifest, expected)?;
+    }
 
     let identity = PublisherIdentity {
         id: manifest.publisher.id.clone(),
@@ -75,6 +109,11 @@ fn install_staged(
     let trust_status =
         verify_package_signature(staging, Some(&identity), Some(&signature), &trust_store)
             .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
+    if expected.is_some() && trust_status != PackageTrustStatus::Trusted {
+        return Err(CapabilityInstallError::InvalidPackage(
+            "catalog packages require a trusted package signature".to_owned(),
+        ));
+    }
     trust_store
         .effective_policy()
         .enforce(trust_status.clone())
@@ -92,6 +131,12 @@ fn install_staged(
         ));
     let package_dir = registry.packages_root().join(&relative_path);
     let created = commit_immutable_package(staging, &package_dir, &digest, &signature.file)?;
+    if let Err(error) = verify_committed_package(&package_dir, &digest, &signature.file) {
+        if created {
+            let _ = remove_private_tree(&package_dir);
+        }
+        return Err(error);
+    }
     let result = (|| {
         let plugin_root = package_dir.parent().and_then(Path::parent).ok_or_else(|| {
             CapabilityInstallError::InvalidPackage("invalid package root".to_owned())
@@ -124,6 +169,44 @@ fn install_staged(
         let _ = remove_private_tree(&package_dir);
     }
     result
+}
+
+fn verify_committed_package(
+    target: &Path,
+    digest: &str,
+    signature_file: &str,
+) -> CapabilityResult<()> {
+    let metadata = fs::symlink_metadata(target)?;
+    if crate::install::fs_safety::metadata_has_link_semantics(&metadata) || !metadata.is_dir() {
+        return Err(CapabilityInstallError::Conflict(
+            "committed package is linked or not a directory".to_owned(),
+        ));
+    }
+    let actual = canonical_package_digest(target, Some(signature_file))
+        .map_err(|error| CapabilityInstallError::Conflict(error.to_string()))?;
+    if actual != digest {
+        return Err(CapabilityInstallError::Conflict(
+            "committed package digest changed".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_catalog_expectation(
+    manifest: &loom_protocol::CapabilityPackageManifest,
+    expected: &CapabilityCatalogInstallExpectation,
+) -> CapabilityResult<()> {
+    if manifest.qualified_id() != expected.qualified_id
+        || manifest.version != expected.version
+        || manifest.publisher.key_id != expected.publisher_key_id
+        || manifest.permissions != expected.permissions
+        || manifest.host_compatibility != expected.host_compatibility
+    {
+        return Err(CapabilityInstallError::InvalidPackage(
+            "package manifest does not match signed catalog metadata".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_package_kind(installed_files: &[String]) -> CapabilityResult<()> {

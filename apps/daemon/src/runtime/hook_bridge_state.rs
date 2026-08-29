@@ -4,6 +4,8 @@ struct HookBridgeRuntime {
     shutdown_tx: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
     connected_clients: Arc<AtomicUsize>,
+    extension_capable_clients: Arc<AtomicUsize>,
+    connections: HookBridgeConnections,
     broadcast_hub: HookBridgeBroadcastHub,
     workflow_root: PathBuf,
 }
@@ -15,6 +17,8 @@ impl HookBridgeRuntime {
             shutdown_tx: None,
             worker: None,
             connected_clients: Arc::new(AtomicUsize::new(0)),
+            extension_capable_clients: Arc::new(AtomicUsize::new(0)),
+            connections: HookBridgeConnections::new(),
             broadcast_hub: HookBridgeBroadcastHub::new(),
             workflow_root,
         }

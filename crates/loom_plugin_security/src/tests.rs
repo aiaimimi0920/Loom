@@ -70,6 +70,15 @@ fn package_signature_roundtrip_and_trust_status() {
 }
 
 #[test]
+fn detached_message_signature_rejects_modified_payloads() {
+    let key = generate_signing_key("catalog-key");
+    let signature = sign_message(&key, b"catalog-v1").expect("sign message");
+
+    verify_message(&key.public_key, b"catalog-v1", &signature).expect("verify message");
+    assert!(verify_message(&key.public_key, b"catalog-v2", &signature).is_err());
+}
+
+#[test]
 fn trust_policy_is_explicit() {
     assert!(TrustPolicy::AllowUnsigned
         .enforce(PackageTrustStatus::Unsigned)

@@ -13,6 +13,7 @@
 @import "./styles/settings-shell.css";
 @import "./styles/settings-shortcuts.css";
 @import "./styles/settings-panels.css";
+@import "./styles/settings-capabilities.css";
 @import "./styles/devices.css";
 @import "./styles/responsive.css";
 @import "./styles/tooling-art.css";

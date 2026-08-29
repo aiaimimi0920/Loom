@@ -16,9 +16,32 @@ struct ConnectedClientGuard {
     connected_clients: Arc<AtomicUsize>,
 }
 
+struct ExtensionClientGuard {
+    extension_clients: Arc<AtomicUsize>,
+}
+
+impl Drop for ExtensionClientGuard {
+    fn drop(&mut self) {
+        decrement_client_count(&self.extension_clients);
+    }
+}
+
+fn track_extension_client(
+    guard: &mut Option<ExtensionClientGuard>,
+    state: &ExtensionConnectionState,
+    extension_clients: &Arc<AtomicUsize>,
+) {
+    if guard.is_none() && state.extension_session_id.is_some() {
+        extension_clients.fetch_add(1, Ordering::SeqCst);
+        *guard = Some(ExtensionClientGuard {
+            extension_clients: Arc::clone(extension_clients),
+        });
+    }
+}
+
 impl Drop for ConnectedClientGuard {
     fn drop(&mut self) {
-        self.connected_clients.fetch_sub(1, Ordering::SeqCst);
+        decrement_client_count(&self.connected_clients);
     }
 }
 

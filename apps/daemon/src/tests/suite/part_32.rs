@@ -289,6 +289,20 @@ fn capability_api_fixture(
     root: &Path,
     key: &loom_plugin_security::SigningKeyDocument,
 ) -> Vec<u8> {
+    capability_api_fixture_version(
+        root,
+        key,
+        "1.0.0",
+        &["hook.unit.attachments.write", "hook.notice.show"],
+    )
+}
+
+fn capability_api_fixture_version(
+    root: &Path,
+    key: &loom_plugin_security::SigningKeyDocument,
+    version: &str,
+    permissions: &[&str],
+) -> Vec<u8> {
     let package = root.join("api-fixture-package");
     fs::create_dir_all(package.join("runtime")).expect("package dirs");
     fs::write(package.join("ui.surface.json"), b"{}\n").expect("Surface manifest");
@@ -311,7 +325,7 @@ fn capability_api_fixture(
         "id": "api-fixture",
         "name": "API Fixture",
         "description": "Lifecycle API fixture",
-        "version": "1.0.0",
+        "version": version,
         "publisher": { "id": "publisher.example", "keyId": key.key_id },
         "hostCompatibility": {
             "loomCapabilityApi": { "minimum": "1.0" },
@@ -329,7 +343,7 @@ fn capability_api_fixture(
                 {
                     "id": "publisher.example/api-fixture.run",
                     "title": "Run fixture",
-                    "permissions": ["hook.unit.attachments.write", "hook.notice.show"]
+                    "permissions": permissions
                 },
                 {
                     "id": "publisher.example/api-fixture.notify",
@@ -377,7 +391,7 @@ fn capability_api_fixture(
                 }
             }]
         },
-        "permissions": ["hook.unit.attachments.write", "hook.notice.show"],
+        "permissions": permissions,
         "resources": { "memoryMiB": 64, "maxProcesses": 1, "timeoutSeconds": 10 },
         "dependencies": [],
         "signature": {

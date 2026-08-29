@@ -14,7 +14,8 @@ pub use error::PluginSecurityError;
 pub use model::{SigningKeyDocument, TrustPolicy};
 pub use permissions::{repair_private_tree_permissions, restrict_private_path_permissions};
 pub use signing::{
-    generate_signing_key, read_signing_key, sign_message, sign_package, write_signing_key,
+    generate_signing_key, read_signing_key, sign_message, sign_package, verify_message,
+    write_signing_key,
 };
 pub use trust_store::TrustStore;
 pub use verify::verify_package_signature;

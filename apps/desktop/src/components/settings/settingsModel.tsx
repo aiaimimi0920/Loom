@@ -3,7 +3,7 @@ import desktopPackage from "../../../package.json";
 import { type KeyboardEvent, type ReactNode } from "react";
 
 export type SettingsAppId = "loom" | "hook";
-export type SettingsSectionId = "general" | "shortcuts" | "mcp" | "art-store" | "network" | "cache" | "about";
+export type SettingsSectionId = "general" | "shortcuts" | "mcp" | "art-store" | "capabilities" | "network" | "cache" | "about";
 export type SettingsSectionIconKind = SettingsSectionId | "system";
 
 export interface ApplicationDiagnosticsInfo {

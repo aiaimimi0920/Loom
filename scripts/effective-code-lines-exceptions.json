@@ -39,17 +39,6 @@
       "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
     },
     {
-      "path": "apps/desktop/src/components/settings/SettingsPanel.tsx",
-      "effectiveLines": 539,
-      "sourceSha256": "ff3ab0f7aa9e78cdd582b25f6b0fadb7792c5c3c1a70d8eb2e56b2ddfc6caacd",
-      "responsibility": "Accessible Loom and Hook settings page composition, shortcut editors, and quick-binding dialogs",
-      "reason": "State and side effects are already isolated in a controller hook; the attached tab and portal markup remains together to preserve its ARIA and focus contracts.",
-      "owner": "Loom desktop maintainers",
-      "approvedBy": "Neuro project owner",
-      "reviewBy": "2026-09-30",
-      "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
-    },
-    {
       "path": "apps/desktop/src/components/settings/useSettingsPanelController.ts",
       "effectiveLines": 676,
       "sourceSha256": "c721deaa3e5b70924089a44a916d55421682b2094d0f434fcc9253419b0a40dc",

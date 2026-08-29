@@ -7,6 +7,7 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
     let stopped = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(stopped["running"], false);
     assert_eq!(stopped["connectedClients"], 0);
+    assert_eq!(stopped["extensionCapableClients"], 0);
 
     let started = expect_json_result_response(
         start_hook_bridge(
@@ -183,13 +184,21 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
             .expect("connected clients")
             >= 1
     );
+    assert_eq!(running["extensionCapableClients"], 1);
 
-    drop(socket);
     let stopped = expect_json_result_response(
         stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
         200,
     );
     assert_eq!(stopped["running"], false);
+    assert_eq!(stopped["connectedClients"], 0);
+    assert_eq!(stopped["extensionCapableClients"], 0);
+    drop(socket);
+
+    let restarted = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    assert_eq!(restarted["connectedClients"], 0);
+    assert_eq!(restarted["extensionCapableClients"], 0);
+    stop_test_hook_bridge(&runtime);
 
     drop(runtime);
     fs::remove_dir_all(root).expect("cleanup hook bridge root");
