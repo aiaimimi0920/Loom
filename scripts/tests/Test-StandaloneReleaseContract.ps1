@@ -21,6 +21,7 @@ $buildModuleNames = @(
 )
 $buildModulePaths = @($buildModuleNames | ForEach-Object { Join-Path $buildModuleRoot $_ })
 $buildContractPaths = @($buildPath) + $buildModulePaths
+$ocrCapabilityBuildPath = Join-Path $repoRoot "scripts\Build-LoomOcrCapabilityPackage.ps1"
 $verifyModuleRoot = Join-Path $repoRoot "scripts\verify-release"
 $verifyModuleNames = @(
     "Common.ps1",
@@ -199,7 +200,6 @@ Assert-ScriptContract `
         'sampleArtCatalog',
         'New-LoomSbom.ps1',
         'build-provenance.json',
-        'runtime\resources\ocr',
         'expectedIds = @(',
         'sourcePaths = @(".")',
         'checksums.sha256',
@@ -211,7 +211,23 @@ Assert-ScriptContract `
         $commonForbidden
         'New-ExeSpec -Name "loom.exe"'
         'New-ExeSpec -Name "loom-desktop.exe"'
+        'runtime\resources\ocr'
     )
+
+Assert-ScriptContract `
+    -Path @($ocrCapabilityBuildPath) `
+    -RequiredText @(
+        'loom-ocr-host.exe',
+        'capability.manifest.json',
+        'Invoke-LoomPackageSigning',
+        'trust=Trusted',
+        'ocr.zip.sha256',
+        'ocr.cdx.json',
+        'ocr.provenance.json',
+        'deterministic = $true',
+        'runtime\resources\ocr'
+    ) `
+    -ForbiddenText @('fixtures\test_1.png')
 
 Assert-ScriptContract `
     -Path $verifyContractPaths `
@@ -263,6 +279,7 @@ Assert-ScriptContract `
         'Invoke-LoomSurfacePrototypeSmoke.ps1',
         'surfacePrototypeSmoke',
         'runtime/python/Arts/',
+        'runtime/resources/ocr/',
         '-PackageDir',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'

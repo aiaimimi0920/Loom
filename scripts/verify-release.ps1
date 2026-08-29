@@ -31,7 +31,8 @@ $forbiddenOptionalPayloadPrefixes = @(
     "resources/script-arts/",
     "resources/workflow-arts/",
     "framework-runtimes/",
-    "runtime/python/Arts/"
+    "runtime/python/Arts/",
+    "runtime/resources/ocr/"
 )
 $packageFiles = Get-LoomSafeDescendantFiles -RootPath $packageFullPath | ForEach-Object {
     $_.FullName.Substring($packageFullPath.Length).TrimStart('\', '/').Replace('\', '/')

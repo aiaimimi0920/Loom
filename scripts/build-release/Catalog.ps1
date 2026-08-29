@@ -7,23 +7,14 @@ function Get-LoomCatalog {
         [string]$SampleArtPackageOutputRoot
     )
 
-    $ocrRoot = Join-Path $repoRoot "resources\ocr"
-
     $exes = @(
         New-ExeSpec -Name "Loom.exe" -Source (Join-Path $repoRoot "apps\desktop\src-tauri\target\release\loom-desktop.exe")
         New-ExeSpec -Name "loom-daemon.exe" -Source (Join-Path $repoRoot "target\release\loom-daemon.exe") -DestinationRelativePath "runtime\loom-daemon.exe"
     )
 
-    $support = @(
-        New-SupportSpec -Source (Join-Path $ocrRoot "README.txt") -DestinationRelativePath "runtime\resources\ocr\README.txt"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_det_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv4_det_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_ppocr_mobile_v2.0_cls_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_ppocr_mobile_v2.0_cls_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_rec_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv4_rec_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv5_rec_mobile_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv5_rec_mobile_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "fixtures\test_1.png") -DestinationRelativePath "runtime\resources\ocr\fixtures\test_1.png"
-        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime.dll"
-        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime_providers_shared.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime_providers_shared.dll"
-    )
+    # Capability payloads are distributed through the signed capability catalog,
+    # never embedded in the minimal desktop archive.
+    $support = @()
 
     $cliArtifact = [ordered]@{
         name = "loom-cli"
