@@ -90,12 +90,12 @@
         "command": "neuro.official/ocr.recognize-selected-unit",
         "when": "unit.kind == 'sticker' && unit.hasImage",
         "order": 20,
-        "payload": { "keys": "ctrl+2" }
+        "payload": { "keys": "ctrl+2", "global": true }
       },
       {
         "id": "neuro.official/ocr.shortcut.toggle-overlay",
         "command": "neuro.official/ocr.toggle-overlay",
-        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "when": "unit.kind == 'sticker'",
         "order": 21,
         "payload": { "keys": "alt+2" }
       }
@@ -110,7 +110,8 @@
         "order": 20,
         "payload": {
           "groupId": "neuro.official/ocr.menu",
-          "groupTitle": "OCR"
+          "groupTitle": "OCR",
+          "disabledTitle": "请先按 Ctrl+2 重新识别当前贴图"
         }
       }
     ],
