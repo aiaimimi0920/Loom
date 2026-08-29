@@ -15,29 +15,106 @@
   "properties": {
     "schemaVersion": { "const": "1" },
     "visible": { "type": "boolean" },
+    "showTranslated": { "type": "boolean", "default": false },
     "sourceWidth": { "type": "integer", "minimum": 1, "maximum": 100000 },
     "sourceHeight": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "coordinateScale": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
     "fullText": { "type": "string", "maxLength": 98304 },
     "textBlocks": {
       "type": "array",
-      "maxItems": 128,
+      "maxItems": 512,
       "items": {
         "type": "object",
         "required": ["text", "left", "top", "width", "height", "textColor", "backgroundColor"],
         "properties": {
           "text": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "translatedText": { "type": "string", "maxLength": 1024 },
+          "translating": { "type": "boolean" },
+          "rawText": { "type": "string", "maxLength": 1024 },
           "left": { "type": "number", "minimum": 0 },
           "top": { "type": "number", "minimum": 0 },
           "width": { "type": "number", "exclusiveMinimum": 0 },
           "height": { "type": "number", "exclusiveMinimum": 0 },
-          "textColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
-          "backgroundColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+          "boxScore": { "type": "number", "minimum": 0, "maximum": 1 },
+          "textScore": { "type": "number", "minimum": 0, "maximum": 1 },
+          "textColor": { "$ref": "#/$defs/color" },
+          "backgroundColor": { "$ref": "#/$defs/color" },
+          "colorHex": { "$ref": "#/$defs/color" },
+          "bgColorHex": { "$ref": "#/$defs/color" },
+          "boxPoints": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": { "$ref": "#/$defs/point" }
+          },
+          "lineGeometry": { "$ref": "#/$defs/lineGeometry" },
+          "characterSpans": {
+            "type": "array",
+            "maxItems": 2048,
+            "items": { "$ref": "#/$defs/textSpan" }
+          },
+          "wordSpans": {
+            "type": "array",
+            "maxItems": 2048,
+            "items": { "$ref": "#/$defs/textSpan" }
+          }
         },
         "additionalProperties": false
       }
     },
-    "surfaceScene": { "type": "object" }
+    "surfaceScene": { "type": "object" },
+    "migration": {
+      "type": "object",
+      "required": ["source", "version"],
+      "properties": {
+        "source": { "const": "hook.unitData.ocrResult" },
+        "version": { "const": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "lineGeometry": {
+      "type": "object",
+      "required": ["baseline", "angleDegrees", "source"],
+      "properties": {
+        "baseline": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "angleDegrees": { "type": "number" },
+        "source": { "const": "estimatedFromRapidOcrLineQuad" }
+      },
+      "additionalProperties": false
+    },
+    "textSpan": {
+      "type": "object",
+      "required": ["text", "boxPoints", "score", "source"],
+      "properties": {
+        "text": { "type": "string", "maxLength": 1024 },
+        "boxPoints": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source": { "const": "ctcAlignedFromRecognitionTimesteps" }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }
-

@@ -6,7 +6,7 @@ use loom_protocol::{
     CapabilityErrorCode, CapabilityProtocolError, ExtensionResourceKind, ExtensionResourceRef,
     ExtensionUnitAttachment,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::overlay::{self, OcrAttachmentPayload};
@@ -124,12 +124,18 @@ fn recognize(
 
 fn toggle_overlay(attachments: &[ExtensionUnitAttachment]) -> Result<Value, CommandFailure> {
     let attachment = current_attachment(attachments).ok_or_else(missing_result)?;
-    let mut payload: OcrAttachmentPayload =
-        serde_json::from_value(attachment.payload.clone()).map_err(|_| missing_result())?;
-    payload.visible = !payload.visible;
-    payload.surface_scene["props"]["visible"] = json!(payload.visible);
+    let mut payload = attachment.payload.clone();
+    let visible = payload
+        .get("visible")
+        .and_then(Value::as_bool)
+        .ok_or_else(missing_result)?;
+    let scene_visible = payload
+        .pointer_mut("/surfaceScene/props/visible")
+        .ok_or_else(missing_result)?;
+    *scene_visible = json!(!visible);
+    payload["visible"] = json!(!visible);
     Ok(json!({
-        "output": { "visible": payload.visible },
+        "output": { "visible": !visible },
         "effects": [upsert_effect(attachment.revision, &payload)],
     }))
 }
@@ -138,10 +144,11 @@ fn copy_full_text(attachments: &[ExtensionUnitAttachment]) -> Result<Value, Comm
     let attachment = current_attachment(attachments).ok_or_else(missing_result)?;
     let payload: OcrAttachmentPayload =
         serde_json::from_value(attachment.payload.clone()).map_err(|_| missing_result())?;
-    if payload.full_text.is_empty() {
+    let text = payload.copy_text();
+    if text.is_empty() {
         return Err(missing_result());
     }
-    Ok(json!({ "effects": copy_effects(&payload.full_text, "OCR 全文已复制") }))
+    Ok(json!({ "effects": copy_effects(&text, "OCR 全文已复制") }))
 }
 
 fn copy_block(input: &Value) -> Result<Value, CommandFailure> {
@@ -196,7 +203,7 @@ fn current_attachment(attachments: &[ExtensionUnitAttachment]) -> Option<&Extens
     })
 }
 
-fn upsert_effect(revision: u64, payload: &OcrAttachmentPayload) -> Value {
+fn upsert_effect(revision: u64, payload: &impl Serialize) -> Value {
     json!({
         "type": "attachment.upsert",
         "payload": {

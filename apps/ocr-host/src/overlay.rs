@@ -1,4 +1,4 @@
-use loom_ocr::{EnhancedTextBlock, OcrDetectResult};
+use loom_ocr::{EnhancedTextBlock, OcrDetectResult, OcrLineGeometry, OcrPoint, OcrTextSpan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -14,8 +14,12 @@ const MAX_ATTACHMENT_BYTES: usize = 240 * 1024;
 pub struct OcrAttachmentPayload {
     pub schema_version: String,
     pub visible: bool,
+    #[serde(default)]
+    pub show_translated: bool,
     pub source_width: u32,
     pub source_height: u32,
+    #[serde(default = "default_coordinate_scale")]
+    pub coordinate_scale: f32,
     pub full_text: String,
     pub text_blocks: Vec<OcrAttachmentBlock>,
     pub surface_scene: Value,
@@ -25,12 +29,27 @@ pub struct OcrAttachmentPayload {
 #[serde(rename_all = "camelCase")]
 pub struct OcrAttachmentBlock {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_text: Option<String>,
     pub left: f32,
     pub top: f32,
     pub width: f32,
     pub height: f32,
     pub text_color: String,
     pub background_color: String,
+    pub box_points: Vec<OcrPoint>,
+    pub box_score: f32,
+    pub text_score: f32,
+    pub color_hex: String,
+    pub bg_color_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_geometry: Option<OcrLineGeometry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub character_spans: Vec<OcrTextSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub word_spans: Vec<OcrTextSpan>,
 }
 
 pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrAttachmentPayload {
@@ -40,7 +59,15 @@ pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrA
     let mut text_blocks = result
         .text_blocks
         .iter()
-        .filter_map(|block| normalize_block(block, source_width, source_height, &fill_color))
+        .filter_map(|block| {
+            normalize_block(
+                block,
+                source_width,
+                source_height,
+                result.scale_factor,
+                &fill_color,
+            )
+        })
         .take(MAX_BLOCKS)
         .collect::<Vec<_>>();
     let mut full_text = truncate_utf8(&result.full_text, MAX_FULL_TEXT_BYTES);
@@ -48,8 +75,10 @@ pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrA
         let payload = OcrAttachmentPayload {
             schema_version: "1".to_owned(),
             visible,
+            show_translated: false,
             source_width,
             source_height,
+            coordinate_scale: normalized_coordinate_scale(result.scale_factor),
             full_text: full_text.clone(),
             surface_scene: scene(&text_blocks, source_width, source_height, visible),
             text_blocks: text_blocks.clone(),
@@ -68,6 +97,7 @@ fn normalize_block(
     block: &EnhancedTextBlock,
     source_width: u32,
     source_height: u32,
+    coordinate_scale: f32,
     fill_color: &str,
 ) -> Option<OcrAttachmentBlock> {
     if block.text.trim().is_empty() || block.box_points.is_empty() {
@@ -80,22 +110,58 @@ fn normalize_block(
     if max_x <= min_x || max_y <= min_y {
         return None;
     }
-    let left = min_x.min(source_width) as f32;
-    let top = min_y.min(source_height) as f32;
-    let right = max_x.min(source_width) as f32;
-    let bottom = max_y.min(source_height) as f32;
+    let scale = normalized_coordinate_scale(coordinate_scale);
+    let left = (min_x as f32 / scale).clamp(0.0, source_width as f32);
+    let top = (min_y as f32 / scale).clamp(0.0, source_height as f32);
+    let right = (max_x as f32 / scale).clamp(0.0, source_width as f32);
+    let bottom = (max_y as f32 / scale).clamp(0.0, source_height as f32);
     if right <= left || bottom <= top {
         return None;
     }
     Some(OcrAttachmentBlock {
         text: truncate_utf8(&block.text, MAX_BLOCK_TEXT_BYTES),
+        translated_text: None,
         left,
         top,
         width: right - left,
         height: bottom - top,
         text_color: safe_color(&block.color_hex, "#f8fafc"),
         background_color: fill_color.to_owned(),
+        box_points: block.box_points.clone(),
+        box_score: block.box_score,
+        text_score: block.text_score,
+        color_hex: safe_color(&block.color_hex, "#f8fafc"),
+        bg_color_hex: safe_color(&block.bg_color_hex, "#000000"),
+        raw_text: block.raw_text.clone(),
+        line_geometry: block.line_geometry.clone(),
+        character_spans: block.character_spans.clone(),
+        word_spans: block.word_spans.clone(),
     })
+}
+
+fn default_coordinate_scale() -> f32 {
+    1.0
+}
+
+fn normalized_coordinate_scale(value: f32) -> f32 {
+    if value.is_finite() && value > 0.0 && value <= 1000.0 {
+        value
+    } else {
+        default_coordinate_scale()
+    }
+}
+
+impl OcrAttachmentPayload {
+    pub fn copy_text(&self) -> String {
+        if !self.show_translated {
+            return self.full_text.clone();
+        }
+        self.text_blocks
+            .iter()
+            .map(|block| block.translated_text.as_deref().unwrap_or(&block.text))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 fn scene(

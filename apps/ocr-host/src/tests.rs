@@ -62,8 +62,28 @@ fn attachment_payload_remains_inside_the_host_budget() {
 }
 
 #[test]
+fn attachment_geometry_accounts_for_ocr_preprocessing_scale() {
+    let mut result = fixture_result();
+    result.scale_factor = 2.0;
+    let payload = build_attachment_payload(&result, true);
+    let first = &payload.text_blocks[0];
+
+    assert_eq!(payload.coordinate_scale, 2.0);
+    assert_eq!(first.left, 5.0);
+    assert_eq!(first.top, 10.0);
+    assert_eq!(
+        payload.surface_scene["children"][0]["layout"]["left"],
+        "5.00000%"
+    );
+    assert_eq!(first.box_points, fixture_result().text_blocks[0].box_points);
+}
+
+#[test]
 fn cached_and_clicked_text_commands_return_only_brokered_effects() {
     let payload = build_attachment_payload(&fixture_result(), true);
+    let mut payload_value = serde_json::to_value(&payload).unwrap();
+    payload_value["migration"] = json!({ "source": "hook.unitData.ocrResult", "version": 1 });
+    payload_value["textBlocks"][0]["rawText"] = json!("OCR raw text");
     let attachment = ExtensionUnitAttachment {
         attachment_id: commands::RESULT_ATTACHMENT_ID.to_owned(),
         type_id: commands::RESULT_TYPE_ID.to_owned(),
@@ -72,7 +92,7 @@ fn cached_and_clicked_text_commands_return_only_brokered_effects() {
         plugin_id: commands::PLUGIN_ID.to_owned(),
         plugin_version: "1.0.0".to_owned(),
         renderer_id: Some(commands::RESULT_RENDERER_ID.to_owned()),
-        payload: serde_json::to_value(&payload).unwrap(),
+        payload: payload_value,
         resource_refs: Vec::new(),
     };
     let copy = execute(
@@ -101,6 +121,43 @@ fn cached_and_clicked_text_commands_return_only_brokered_effects() {
     assert_eq!(
         toggle["effects"][0]["payload"]["payload"]["surfaceScene"]["props"]["visible"],
         false
+    );
+    assert_eq!(
+        toggle["effects"][0]["payload"]["payload"]["migration"]["source"],
+        "hook.unitData.ocrResult"
+    );
+    assert_eq!(
+        toggle["effects"][0]["payload"]["payload"]["textBlocks"][0]["rawText"],
+        "OCR raw text"
+    );
+}
+
+#[test]
+fn migrated_translation_fields_are_preserved_and_drive_copy_when_selected() {
+    let mut payload = build_attachment_payload(&fixture_result(), true);
+    payload.show_translated = true;
+    payload.text_blocks[0].translated_text = Some("first line".to_owned());
+    payload.text_blocks[1].translated_text = Some("second line".to_owned());
+    let attachment = ExtensionUnitAttachment {
+        attachment_id: commands::RESULT_ATTACHMENT_ID.to_owned(),
+        type_id: commands::RESULT_TYPE_ID.to_owned(),
+        schema_version: "1".to_owned(),
+        revision: 1,
+        plugin_id: commands::PLUGIN_ID.to_owned(),
+        plugin_version: "1.0.0".to_owned(),
+        renderer_id: Some(commands::RESULT_RENDERER_ID.to_owned()),
+        payload: serde_json::to_value(payload).unwrap(),
+        resource_refs: Vec::new(),
+    };
+
+    let copy = execute(
+        "neuro.official/ocr.copy-full-text",
+        json!({}),
+        vec![attachment],
+    );
+    assert_eq!(
+        copy["effects"][0]["payload"]["text"],
+        "first line\nsecond line"
     );
 }
 
