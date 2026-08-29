@@ -12,6 +12,7 @@ fn route_settings_runs(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     hook_bridge: &SharedHookBridgeRuntime,
+    capability_runtime: &SharedCapabilityRuntime,
     device_registry: &SharedDeviceRegistryStore,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
@@ -124,6 +125,7 @@ fn route_settings_runs(
         ("POST", "/v1/hook-bridge/start") => start_hook_bridge(
             &request.body,
             hook_bridge,
+            capability_runtime,
             mcp_servers,
             tool_registry,
             workflow_store,

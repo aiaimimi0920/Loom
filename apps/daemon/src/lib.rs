@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Write};
@@ -41,21 +41,27 @@ use loom_mcp::package::{
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
-    device_session_signature_message, is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest,
-    DeviceSessionChallengeRequest, DeviceSessionChallengeResponse, DeviceSessionIssueRequest,
-    DeviceSessionIssueResponse, ExtensionResourceRef, ExtensionTarget, HookArtAck,
-    HookArtCancelRequest, HookArtCapability, HookArtExecuteRequest, HookArtFailure,
-    HookArtPortValue, HookArtPreviewCommit, HookArtProgress, HookArtResourcesReleaseRequest,
-    HookArtResultCommit, HookCapabilities, HookEvent, HookHandshakeResponse, HookRequest,
-    HookRequestStatus, HookResponse, HookTransportMode, PublisherTrustRecord,
-    SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure,
-    SurfaceHostCapabilities, SurfaceInstanceMode, SurfaceInstancePersistence,
-    SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue, SurfacePreviewCommit,
-    SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
-    SurfaceResourceTransportKind, SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot,
-    DEVICE_SESSION_PROTOCOL_VERSION, HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED,
-    SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION,
-    SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH, SURFACE_EVENT_SNAPSHOT,
+    device_session_signature_message, is_safe_package_id, is_safe_publisher_id,
+    negotiate_extension_features, validate_extension_message, ArtRuntimeManifest,
+    CapabilityErrorCode, ContributionSnapshot, DeviceSessionChallengeRequest,
+    DeviceSessionChallengeResponse, DeviceSessionIssueRequest, DeviceSessionIssueResponse,
+    ExtensionBridgeError, ExtensionBridgeRequest, ExtensionBridgeResponse, ExtensionBridgeStatus,
+    ExtensionCommandInvokeRequest, ExtensionError, ExtensionHandshakeRequest, ExtensionMessage,
+    ExtensionResourceRef, ExtensionResult, ExtensionResultStatus, ExtensionSnapshotEvent,
+    ExtensionSnapshotEventParams, ExtensionTarget, HookArtAck, HookArtCancelRequest,
+    HookArtCapability, HookArtExecuteRequest, HookArtFailure, HookArtPortValue,
+    HookArtPreviewCommit, HookArtProgress, HookArtResourcesReleaseRequest, HookArtResultCommit,
+    HookCapabilities, HookEvent, HookHandshakeResponse, HookRequest, HookRequestStatus,
+    HookResponse, HookTransportMode, PublisherTrustRecord, SurfaceActionCancelRequest,
+    SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure, SurfaceHostCapabilities,
+    SurfaceInstanceMode, SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode,
+    SurfacePatch, SurfacePortValue, SurfacePreviewCommit, SurfaceResourceDescriptor,
+    SurfaceResourceKind, SurfaceResourceTransport, SurfaceResourceTransportKind,
+    SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot, CAPABILITY_API_VERSION,
+    DEVICE_SESSION_PROTOCOL_VERSION, EXTENSION_EVENT_SNAPSHOT_UPDATED, EXTENSION_PROTOCOL,
+    HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED, SURFACE_EVENT_CONFIRMATION_REQUEST,
+    SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION, SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH,
+    SURFACE_EVENT_SNAPSHOT,
 };
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
 use loom_tool_registry::art_settings::{
@@ -167,6 +173,7 @@ include!("runtime/canvas_bridge_routes.rs");
 include!("runtime/hook_canvas_preview_session.rs");
 include!("runtime/hook_art_request_lifecycle.rs");
 include!("runtime/hook_canvas_live_persistence.rs");
+include!("runtime/capability_extension_bridge.rs");
 include!("runtime/hook_bridge_websocket.rs");
 include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
@@ -211,4 +218,5 @@ mod tests {
     include!("tests/suite/part_30.rs");
     include!("tests/suite/part_31.rs");
     include!("tests/suite/part_32.rs");
+    include!("tests/suite/part_33.rs");
 }

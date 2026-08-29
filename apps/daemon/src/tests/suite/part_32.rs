@@ -41,17 +41,12 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
         .verify_installed_version("publisher.example/api-fixture", digest)
         .expect("installed package remains verifiable");
 
-    let (status, enabled) = enable_capability_plugin(
-        "publisher.example/api-fixture",
-        &json!({ "digest": digest }).to_string(),
+    let (extension_events, _extension_subscription) = enable_api_fixture_through_extension_route(
+        &daemon_runtime,
         &root,
         &runtime,
-    )
-    .expect("enable response");
-    assert_eq!(status, 200, "{enabled}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&enabled).unwrap()["plugin"]["status"],
-        "active"
+        &resources,
+        digest,
     );
     let (status, snapshot) = capability_extension_snapshot(&runtime).expect("extension snapshot");
     assert_eq!(status, 200);
@@ -65,6 +60,8 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
         snapshot["snapshot"]["contributions"]["commands"][0]["id"],
         "publisher.example/api-fixture.run"
     );
+
+    assert_api_fixture_extension_invocation(&runtime);
 
     let invoked = expect_json_text_route_response(
         route_request(
@@ -212,8 +209,13 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
         serde_json::from_str::<Value>(&retried).unwrap()["plugin"]["runtimeFailures"]["count"],
         0
     );
-    disable_capability_plugin("publisher.example/api-fixture", &root, &runtime, &resources)
-        .expect("disable");
+    disable_api_fixture_through_extension_route(
+        &daemon_runtime,
+        &root,
+        &runtime,
+        &resources,
+        &extension_events,
+    );
     let (status, _) = uninstall_capability_plugin(
         "publisher.example/api-fixture",
         &root,
@@ -255,7 +257,15 @@ fn capability_plugin_api_rejects_unknown_fields_and_routes_only_its_namespace() 
         body: String::new(),
     };
     assert!(
-        route_capability_plugins(&request, "/v1/unrelated", &root, &runtime, &resources).is_none()
+        route_capability_plugins(
+            &request,
+            "/v1/unrelated",
+            &root,
+            &runtime,
+            &resources,
+            &Arc::new(Mutex::new(HookBridgeRuntime::new(root.clone()))),
+        )
+        .is_none()
     );
 }
 

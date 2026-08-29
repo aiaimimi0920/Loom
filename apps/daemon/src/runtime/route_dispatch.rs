@@ -75,6 +75,7 @@ fn route(
         control_plane_root,
         capability_runtime,
         capability_resources,
+        hook_bridge,
     ) {
         return response;
     }
@@ -106,6 +107,7 @@ fn route(
         tool_registry,
         workflow_store,
         hook_bridge,
+        capability_runtime,
         device_registry,
         surface_instances,
         surface_actions,

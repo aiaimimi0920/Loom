@@ -182,3 +182,33 @@ fn canonical_extension_snapshot_is_atomic_and_scope_bound() {
         Err(ExtensionValidationError::InvalidDigest)
     );
 }
+
+#[test]
+fn extension_handshake_negotiates_optional_features_and_rejects_required_unknowns() {
+    let mut request = ExtensionHandshakeRequest {
+        request_id: "handshake-1".to_owned(),
+        hook_session_id: "hook:session-1".to_owned(),
+        protocol: crate::EXTENSION_PROTOCOL.to_owned(),
+        api_version: "1.0".to_owned(),
+        required_features: vec![EXTENSION_FEATURE_SNAPSHOT.to_owned()],
+        optional_features: vec![
+            EXTENSION_FEATURE_MENUS.to_owned(),
+            "future.optional".to_owned(),
+        ],
+    };
+    assert_eq!(
+        negotiate_extension_features(&request).expect("negotiate extension features"),
+        vec![
+            EXTENSION_FEATURE_SNAPSHOT.to_owned(),
+            EXTENSION_FEATURE_MENUS.to_owned(),
+        ]
+    );
+
+    request.required_features.push("future.required".to_owned());
+    assert_eq!(
+        negotiate_extension_features(&request),
+        Err(ExtensionHandshakeError::UnsupportedFeature(
+            "future.required".to_owned()
+        ))
+    );
+}

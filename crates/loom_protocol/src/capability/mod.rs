@@ -1,10 +1,12 @@
 //! Contracts shared by Capability Plugin packages, runtimes, and hosts.
 
+mod bridge;
 mod extension;
 mod package;
 mod runtime;
 mod validation;
 
+pub use bridge::*;
 pub use extension::*;
 pub use package::*;
 pub use runtime::*;

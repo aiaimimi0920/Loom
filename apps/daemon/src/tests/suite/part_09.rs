@@ -251,6 +251,7 @@ fn start_test_hook_bridge(runtime: &DaemonRuntime, body: &str) -> serde_json::Va
         start_hook_bridge(
             body,
             &runtime.hook_bridge,
+            &runtime.capability_runtime,
             &runtime.mcp_servers,
             &runtime.tool_registry,
             &runtime.workflow_store,

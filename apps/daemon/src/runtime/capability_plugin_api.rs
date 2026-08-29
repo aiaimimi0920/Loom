@@ -32,8 +32,13 @@ fn route_capability_plugins(
     control_plane_root: &Path,
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
+    hook_bridge: &SharedHookBridgeRuntime,
 ) -> Option<Result<(u16, String)>> {
     const PREFIX: &str = "/v1/capability-plugins/";
+    let previous_generation = runtime
+        .contribution_snapshot()
+        .ok()
+        .map(|snapshot| snapshot.generation);
     let response = match (request.method.as_str(), route_path) {
         ("GET", "/v1/capability-plugins/extensions") => capability_extension_snapshot(runtime),
         ("GET", "/v1/capability-plugins") => list_capability_plugins(control_plane_root),
@@ -128,6 +133,13 @@ fn route_capability_plugins(
         }
         _ => return None,
     };
+    if response.as_ref().is_ok_and(|(status, _)| *status < 400) {
+        if let Ok(snapshot) = runtime.contribution_snapshot() {
+            if previous_generation.is_some_and(|generation| generation != snapshot.generation) {
+                broadcast_hook_bridge_json(hook_bridge, extension_snapshot_event(snapshot));
+            }
+        }
+    }
     Some(response)
 }
 
