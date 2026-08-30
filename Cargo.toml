@@ -47,7 +47,7 @@ fs2 = "0.4"
 libc = "0.2"
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 num_cpus = "1.17"
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic", "download-binaries", "copy-dylibs"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "download-binaries", "copy-dylibs"] }
 paddle-ocr-rs = { version = "=0.6.1", default-features = false }
 rayon = "1.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
