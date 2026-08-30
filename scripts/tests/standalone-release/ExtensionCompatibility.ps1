@@ -9,3 +9,8 @@ Assert-ScriptContract `
         'function Assert-LoomExtensionCompatibility'
     ) `
     -ForbiddenText @('neuro.official/ocr')
+
+Assert-ScriptContract `
+    -Path @($buildPath) `
+    -RequiredText @('[string]$PreparedPayloadRoot', 'preparedPayload') `
+    -ForbiddenText @()

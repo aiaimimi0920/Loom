@@ -3,6 +3,7 @@ param(
     [string]$VersionId = "",
     [string]$OutputRoot = ".\release\Loom",
     [string]$ExtensionCompatibilityPath = "",
+    [string]$PreparedPayloadRoot = "",
     [switch]$NoZip,
     [switch]$DryRun,
     [switch]$RequireCleanSource
@@ -45,6 +46,38 @@ if (-not [string]::IsNullOrWhiteSpace($ExtensionCompatibilityPath)) {
             -DestinationRelativePath "extension-compatibility.json"
     )
 }
+$preparedPayload = $null
+if (-not [string]::IsNullOrWhiteSpace($PreparedPayloadRoot)) {
+    $preparedPayload = [System.IO.Path]::GetFullPath($PreparedPayloadRoot)
+    if (-not (Test-Path -LiteralPath $preparedPayload -PathType Container)) {
+        throw "Prepared Loom payload directory is missing: $preparedPayload"
+    }
+    Assert-LoomPathHasNoReparsePoints -RootPath $preparedPayload -Path $preparedPayload
+    $preparedManifest = Read-LoomBoundedJsonFile `
+        -Path (Resolve-LoomPackageRelativePath -PackageDir $preparedPayload -RelativePath "manifest.json") `
+        -MaxBytes 4MB
+    $preparedGitHead = Get-GitText -Arguments @("rev-parse", "HEAD")
+    if ([string]$preparedManifest.app -cne "Loom" -or
+        [string]$preparedManifest.target -cne $targetName -or
+        [string]$preparedManifest.gitHead -cne $preparedGitHead) {
+        throw "Prepared Loom payload does not match the current Loom source commit and target."
+    }
+    $catalog.exes = @(
+        New-ExeSpec -Name "Loom.exe" `
+            -Source (Resolve-LoomPackageRelativePath -PackageDir $preparedPayload -RelativePath "Loom.exe") `
+            -DestinationRelativePath "Loom.exe"
+        New-ExeSpec -Name "loom-daemon.exe" `
+            -Source (Resolve-LoomPackageRelativePath -PackageDir $preparedPayload -RelativePath "runtime\loom-daemon.exe") `
+            -DestinationRelativePath "runtime\loom-daemon.exe"
+    )
+    foreach ($exe in $catalog.exes) {
+        if (-not (Test-Path -LiteralPath $exe.source -PathType Leaf)) {
+            throw "Prepared Loom executable is missing: $($exe.source)"
+        }
+        Assert-LoomPathHasNoReparsePoints -RootPath $preparedPayload -Path $exe.source
+    }
+    $catalog.commands = @($catalog.commands | Select-Object -Skip 3)
+}
 $sourceGitDirty = Get-GitDirty
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
     throw "Formal Loom release requires a clean, readable Git worktree. gitDirty=$sourceGitDirty"
@@ -52,6 +85,7 @@ if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
 
 if ($DryRun) {
     $plan = New-Plan -Catalog $catalog -ResolvedVersionId $resolvedVersionId -ResolvedOutputRoot $resolvedOutputRoot -Destination $destination
+    $plan.preparedPayload = $null -ne $preparedPayload
     Write-Output ($plan | ConvertTo-Json -Depth 20)
     exit 0
 }
