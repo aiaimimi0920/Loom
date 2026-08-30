@@ -1,5 +1,16 @@
 <# Shared validation for paired Hook/Loom candidate evidence. #>
 
+function Assert-LoomCompatibilityFeatures {
+    param([object]$Requirement, [string[]]$Expected, [string]$Label)
+
+    $actual = @($Requirement.requiredFeatures | ForEach-Object { [string]$_ } | Sort-Object)
+    $expectedSorted = @($Expected | Sort-Object)
+    if ([string]$Requirement.minimum -cne "1.0" -or
+        ($actual -join ",") -cne ($expectedSorted -join ",")) {
+        throw "Extension compatibility evidence has invalid $Label requirements."
+    }
+}
+
 function Read-LoomExtensionCompatibility {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -24,6 +35,15 @@ function Read-LoomExtensionCompatibility {
     if (@($document.surfaceFeatures) -notcontains "declarative.v1") {
         throw "Extension compatibility evidence omits the declarative Surface feature."
     }
+    Assert-LoomCompatibilityFeatures `
+        -Requirement $document.pluginHostRequirements.loomCapabilityApi `
+        -Expected @("commands.v1", "attachments.v1") -Label "Loom capability host"
+    Assert-LoomCompatibilityFeatures `
+        -Requirement $document.pluginHostRequirements.hookExtensionApi `
+        -Expected @("commands.v1", "unit-overlays.v1") -Label "Hook extension host"
+    Assert-LoomCompatibilityFeatures `
+        -Requirement $document.pluginHostRequirements.surfaceApi `
+        -Expected @("declarative.v1") -Label "Surface host"
     return $document
 }
 
