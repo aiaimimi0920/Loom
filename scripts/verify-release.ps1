@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 . $layoutPath
+. (Join-Path $PSScriptRoot "ExtensionCompatibility.ps1")
 
 $moduleRoot = Join-Path $PSScriptRoot "verify-release"
 . (Join-Path $moduleRoot "Common.ps1")
@@ -74,6 +75,21 @@ $supportRecords = @(Get-ManifestRecord -Manifest $manifest -Name "supportFiles")
 foreach ($record in $supportRecords) {
     $payloadPaths += Assert-FileRecord -PackagePath $packageFullPath -Record $record
 }
+$extensionCompatibilityRecords = @($supportRecords | Where-Object {
+    ([string]$_.path).Replace("\", "/") -ceq "extension-compatibility.json"
+})
+$declaredExtensionCompatibility = if ($null -ne $manifest.PSObject.Properties["extensionCompatibility"]) {
+    $manifest.extensionCompatibility
+} else { $null }
+if ($null -ne $declaredExtensionCompatibility) {
+    Assert-Equal -Expected 1 -Actual $extensionCompatibilityRecords.Count -Message "Manifest must contain one extension compatibility support record."
+    Assert-Equal -Expected ([string]$declaredExtensionCompatibility.sha256) -Actual ([string]$extensionCompatibilityRecords[0].sha256) -Message "Extension compatibility manifest record mismatch."
+    $extensionCompatibilityPath = Resolve-PackageRelativePath -BasePath $packageFullPath -RelativePath ([string]$extensionCompatibilityRecords[0].path)
+    $extensionCompatibility = Read-LoomExtensionCompatibility -Path $extensionCompatibilityPath
+    Assert-LoomExtensionCompatibility -Document $extensionCompatibility -GitHead ([string]$manifest.gitHead) -ExecutableRecords $exeRecords
+} else {
+    Assert-Equal -Expected 0 -Actual $extensionCompatibilityRecords.Count -Message "Undeclared extension compatibility evidence is forbidden."
+}
 $payloadPaths += @(Assert-FrameworkPackages -PackagePath $packageFullPath -Manifest $manifest)
 $payloadPaths += @(Assert-McpServerPackages -PackagePath $packageFullPath -Manifest $manifest)
 $payloadPaths += @(Assert-SampleArtPackages -PackagePath $packageFullPath -Manifest $manifest)
@@ -119,6 +135,12 @@ Assert-ZipPayload -PackagePath $packageFullPath -Manifest $manifest -ExpectedPay
 Assert-CliZipPayload -PackagePath $packageFullPath -Manifest $manifest
 Assert-PluginSdkZipPayload -PackagePath $packageFullPath -Manifest $manifest
 Assert-SupplyChainMetadata -PackagePath $packageFullPath -Manifest $manifest
+if ($extensionCompatibilityRecords.Count -eq 1) {
+    $provenance = Read-LoomVerifiedJsonFile -Path (Join-Path $packageFullPath "provenance\build-provenance.json") -MaxBytes 4MB
+    $compatibilitySubjects = @($provenance.subjects | Where-Object { [string]$_.name -ceq "extension-compatibility.json" })
+    Assert-Equal -Expected 1 -Actual $compatibilitySubjects.Count -Message "Loom provenance must cover extension compatibility evidence."
+    Assert-Equal -Expected ([string]$extensionCompatibilityRecords[0].sha256) -Actual ([string]$compatibilitySubjects[0].sha256) -Message "Loom compatibility provenance hash mismatch."
+}
 
 $smokeStatus = "not-run"
 $hookCanvasSmokeStatus = "not-run"

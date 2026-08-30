@@ -2,6 +2,7 @@
 param(
     [string]$VersionId = "",
     [string]$OutputRoot = ".\release\Loom",
+    [string]$ExtensionCompatibilityPath = "",
     [switch]$NoZip,
     [switch]$DryRun,
     [switch]$RequireCleanSource
@@ -14,6 +15,7 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $targetName = "windows-x64"
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 . $layoutPath
+. (Join-Path $PSScriptRoot "ExtensionCompatibility.ps1")
 
 $moduleRoot = Join-Path $PSScriptRoot "build-release"
 . (Join-Path $moduleRoot "Common.ps1")
@@ -34,6 +36,15 @@ $catalog = Get-LoomCatalog `
     -FrameworkPackageOutputRoot (Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "packages\frameworks") `
     -McpServerPackageOutputRoot (Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "packages\mcp-servers") `
     -SampleArtPackageOutputRoot (Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "packages\arts")
+$extensionCompatibility = $null
+if (-not [string]::IsNullOrWhiteSpace($ExtensionCompatibilityPath)) {
+    $extensionCompatibility = Read-LoomExtensionCompatibility -Path $ExtensionCompatibilityPath
+    $catalog.supportFiles = @($catalog.supportFiles) + @(
+        New-SupportSpec `
+            -Source ([System.IO.Path]::GetFullPath($ExtensionCompatibilityPath)) `
+            -DestinationRelativePath "extension-compatibility.json"
+    )
+}
 $sourceGitDirty = Get-GitDirty
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
     throw "Formal Loom release requires a clean, readable Git worktree. gitDirty=$sourceGitDirty"
@@ -119,6 +130,18 @@ if ([string]::IsNullOrWhiteSpace($gitShortSha)) {
     $gitShortSha = "nogit"
 }
 $gitDirty = $sourceGitDirty
+$extensionCompatibilityRecord = @($supportRecords | Where-Object {
+    ([string]$_.path).Replace("\", "/") -ceq "extension-compatibility.json"
+})
+if ($null -ne $extensionCompatibility) {
+    if ($extensionCompatibilityRecord.Count -ne 1) {
+        throw "The Loom release must contain one extension compatibility record."
+    }
+    Assert-LoomExtensionCompatibility `
+        -Document $extensionCompatibility `
+        -GitHead $gitHead `
+        -ExecutableRecords $exeRecords
+}
 
 $buildInfoPath = Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "BUILD_INFO.txt"
 Write-Utf8NoBom -Path $buildInfoPath -Value (New-BuildInfo `
@@ -201,6 +224,16 @@ $sbomRecords = @(Get-LoomSafeDescendantFiles -RootPath $sbomDir | Sort-Object Na
 
 $provenanceDir = Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "provenance"
 $provenancePath = Resolve-LoomPackageRelativePath -PackageDir $provenanceDir -RelativePath "build-provenance.json"
+$provenanceSubjects = @($artifactRecords | Where-Object { ([string]$_.kind).EndsWith("-zip") } | ForEach-Object {
+    [ordered]@{ name = $_.name; sha256 = $_.sha256; bytes = $_.bytes }
+})
+if ($extensionCompatibilityRecord.Count -eq 1) {
+    $provenanceSubjects += [ordered]@{
+        name = "extension-compatibility.json"
+        sha256 = $extensionCompatibilityRecord[0].sha256
+        bytes = $extensionCompatibilityRecord[0].bytes
+    }
+}
 $provenance = [ordered]@{
     schemaVersion = 1
     builder = "Loom scripts/build-release.ps1"
@@ -210,9 +243,7 @@ $provenance = [ordered]@{
     gitDirty = $gitDirty
     sourcePaths = @(".")
     commands = @($commandRecords)
-    subjects = @($artifactRecords | Where-Object { ([string]$_.kind).EndsWith("-zip") } | ForEach-Object {
-        [ordered]@{ name = $_.name; sha256 = $_.sha256; bytes = $_.bytes }
-    })
+    subjects = $provenanceSubjects
 }
 Write-Utf8NoBom -Path $provenancePath -Value (($provenance | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
 $provenanceDigest = Get-LoomFileDigest -Path $provenancePath
@@ -241,6 +272,7 @@ $manifest = [ordered]@{
     commands = $commandRecords
     exes = $exeRecords
     supportFiles = $supportRecords
+    extensionCompatibility = if ($extensionCompatibilityRecord.Count -eq 1) { $extensionCompatibilityRecord[0] } else { $null }
     cliArtifact = $cliArtifactManifest
     pluginSdkArtifact = $pluginSdkArtifactManifest
     frameworkPackages = $frameworkPackageRecords

@@ -22,6 +22,7 @@ $buildModuleNames = @(
 $buildModulePaths = @($buildModuleNames | ForEach-Object { Join-Path $buildModuleRoot $_ })
 $buildContractPaths = @($buildPath) + $buildModulePaths
 $ocrCapabilityBuildPath = Join-Path $repoRoot "scripts\Build-LoomOcrCapabilityPackage.ps1"
+$extensionCompatibilityPath = Join-Path $repoRoot "scripts\ExtensionCompatibility.ps1"
 $verifyModuleRoot = Join-Path $repoRoot "scripts\verify-release"
 $verifyModuleNames = @(
     "Common.ps1",
@@ -180,6 +181,7 @@ Assert-ScriptContract `
         '[string]$OutputRoot = ".\release\Loom"',
         '[switch]$DryRun',
         '[switch]$RequireCleanSource',
+        '[string]$ExtensionCompatibilityPath',
         'New-ExeSpec -Name "Loom.exe"',
         '-DestinationRelativePath "runtime\loom-daemon.exe"',
         'Loom-CLI-',
@@ -204,6 +206,7 @@ Assert-ScriptContract `
         'sourcePaths = @(".")',
         'checksums.sha256',
         'manifest.json',
+        'extension-compatibility.json',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'
     ) `
@@ -228,6 +231,8 @@ Assert-ScriptContract `
         'runtime\resources\ocr'
     ) `
     -ForbiddenText @('fixtures\test_1.png')
+
+. (Join-Path $PSScriptRoot "standalone-release\ExtensionCompatibility.ps1")
 
 Assert-ScriptContract `
     -Path $verifyContractPaths `
@@ -269,6 +274,7 @@ Assert-ScriptContract `
         'manifest.json',
         '[switch]$RunSmoke',
         '[switch]$RequireCleanSource',
+        'extension-compatibility.json',
         'function Invoke-CapturedPowerShell',
         'Invoke-LoomHookErrorPreviewSmoke.ps1',
         'hookErrorPreviewSmoke',
