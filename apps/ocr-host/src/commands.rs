@@ -1,7 +1,7 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use loom_ocr::{OcrEngine, OcrModelSet};
+use loom_ocr::{discover_default_model_set, OcrEngine};
 use loom_protocol::{
     CapabilityErrorCode, CapabilityProtocolError, ExtensionResourceKind, ExtensionResourceRef,
     ExtensionUnitAttachment,
@@ -378,12 +378,9 @@ fn read_staged_image(resources: &[StagedResource]) -> Result<Vec<u8>, CommandFai
 }
 
 fn load_engine() -> Result<OcrEngine, CommandFailure> {
-    let executable = std::env::current_exe().map_err(|_| model_unavailable())?;
-    let model_dir = executable
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("resources/ocr");
-    let models = OcrModelSet::from_dir(&model_dir).map_err(|_| model_unavailable())?;
+    let models = discover_default_model_set()
+        .map_err(|_| model_unavailable())?
+        .ok_or_else(model_unavailable)?;
     OcrEngine::new(models).map_err(|_| model_unavailable())
 }
 

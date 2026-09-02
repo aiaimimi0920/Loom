@@ -14,6 +14,7 @@ mod line_fragment_merge_tests;
 mod list_marker_recovery;
 mod ocr_core;
 mod quality;
+mod reading_order;
 mod recognition_rescue;
 mod span_geometry;
 mod text_postprocess;
@@ -212,6 +213,7 @@ impl OcrEngine {
         }
         let mut text_blocks = line_fragment_merge::merge_line_fragments(text_blocks, width, height);
         recover_leading_list_markers(&image_buffer, &mut text_blocks);
+        reading_order::sort_blocks(&mut text_blocks, width, height);
         let full_text = text_blocks
             .iter()
             .map(|block| block.text.as_str())
@@ -367,11 +369,20 @@ fn decode_image(image_data: &[u8]) -> OcrResult<image::DynamicImage> {
 }
 
 fn build_session(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
-    let num_thread = num_cpus::get_physical();
+    let num_thread = ocr_thread_count();
     Ok(builder
-        .with_inter_threads(num_thread)?
+        .with_inter_threads(1)?
         .with_intra_threads(num_thread)?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?)
+}
+
+fn ocr_thread_count() -> usize {
+    let physical = num_cpus::get_physical().max(1);
+    std::env::var("LOOM_OCR_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map_or(physical.min(8), |value| value.min(physical).min(8))
 }
 
 #[cfg(test)]

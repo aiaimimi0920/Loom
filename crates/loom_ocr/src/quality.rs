@@ -1,5 +1,5 @@
 use crate::geometry::block_bounds;
-use crate::types::{EnhancedTextBlock, OcrDetectResult, OcrPoint};
+use crate::types::{OcrDetectResult, OcrPoint};
 use serde::{Deserialize, Serialize};
 
 const MAX_METRIC_TEXT_CHARS: usize = 4_096;
@@ -255,6 +255,7 @@ fn bounds_iou(left: crate::geometry::Bounds, right: crate::geometry::Bounds) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::EnhancedTextBlock;
 
     fn block(text: &str, left: u32, top: u32, right: u32, bottom: u32) -> EnhancedTextBlock {
         EnhancedTextBlock {

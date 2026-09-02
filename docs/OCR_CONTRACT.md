@@ -53,6 +53,13 @@ core `imageBase64` request. The successful result attachment contains:
 }
 ```
 
+Recognition requests may include an optional `input.mode` value. `auto` is the
+backward-compatible default and runs bounded local rescue; `quick` skips rescue
+passes for lower latency; `highAccuracy` expands the rescue budget and may run
+the contrast-enhanced fallback model. Unknown values are rejected as invalid
+input. The mode changes inference effort only; attachment schemas, reading
+order, clipboard behavior, and QR/code suppression remain unchanged.
+
 ## Evidence semantics
 
 - `boxPoints`, `boxScore`, `text`, and `textScore` originate from the current
@@ -77,6 +84,9 @@ core `imageBase64` request. The successful result attachment contains:
 - `fullText` is composed from the filtered, displayed block text, so clipboard
   text and block overlays cannot disagree after an empty or invalid block is
   rejected.
+- After fragment merging, Loom applies a stable visual order: blocks sharing a
+  line are sorted left-to-right, and separate rows top-to-bottom. Exact ties
+  retain detector order, so punctuation and same-pixel fragments remain stable.
 
 ## Text correction boundary
 

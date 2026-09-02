@@ -242,4 +242,10 @@ mod tests {
         assert_eq!(rescue_limit(OcrQualityMode::Auto), MAX_RESCUE_LINES);
         assert_eq!(rescue_limit(OcrQualityMode::HighAccuracy), MAX_TEXT_BOXES);
     }
+
+    #[test]
+    fn thread_count_is_positive_and_capped() {
+        let count = crate::ocr_thread_count();
+        assert!((1..=8).contains(&count));
+    }
 }
