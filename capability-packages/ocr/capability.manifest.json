@@ -46,6 +46,7 @@
         "id": "neuro.official/ocr.recognize-selected-unit",
         "title": "重新识别并复制 OCR 全文",
         "description": "重新识别当前贴图，复制完整文本，并同时标记二维码或条码。",
+        "inputSchema": "schemas/recognize-input.v1.schema.json",
         "when": "unit.kind == 'sticker' && unit.hasImage",
         "requiresUserGesture": true,
         "cancellable": true,

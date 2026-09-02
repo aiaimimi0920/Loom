@@ -12,7 +12,7 @@ use crate::ctc_recognizer::SessionBuilderFn;
 use crate::recognition_rescue::RecognitionRescue;
 use crate::span_geometry::RecognitionAxis;
 use crate::types::OcrPoint;
-use crate::{OcrError, OcrResult};
+use crate::{OcrError, OcrQualityMode, OcrResult};
 
 const DETECTION_PADDING: u32 = 50;
 const MIN_DETECTION_LONG_SIDE: u32 = 1_600;
@@ -67,6 +67,7 @@ impl AlignedOcrCore {
         &mut self,
         image: &image::RgbImage,
         detect_angle: bool,
+        quality_mode: OcrQualityMode,
     ) -> OcrResult<Vec<RawOcrBlock>> {
         if image.width() == 0 || image.height() == 0 {
             return Err(OcrError::InvalidImage(
@@ -105,11 +106,17 @@ impl AlignedOcrCore {
             if reverse_axis {
                 OcrUtils::mat_rotate_clock_wise_180(&mut part_image);
             }
-            let allow_rescue = index < MAX_RESCUE_LINES;
-            let mut line = self.recognition.recognize(&part_image, allow_rescue)?;
+            let allow_rescue = !matches!(quality_mode, OcrQualityMode::Quick)
+                && index < rescue_limit(quality_mode);
+            let enhanced_fallback = matches!(quality_mode, OcrQualityMode::HighAccuracy);
+            let mut line =
+                self.recognition
+                    .recognize(&part_image, allow_rescue, enhanced_fallback)?;
             if line.text_score.is_nan() || line.text_score < ANGLE_ROLLBACK_THRESHOLD {
                 if let Some(original) = original {
-                    line = self.recognition.recognize(&original, allow_rescue)?;
+                    line =
+                        self.recognition
+                            .recognize(&original, allow_rescue, enhanced_fallback)?;
                     reverse_axis = false;
                 }
             }
@@ -122,6 +129,14 @@ impl AlignedOcrCore {
             });
         }
         Ok(blocks)
+    }
+}
+
+fn rescue_limit(quality_mode: OcrQualityMode) -> usize {
+    match quality_mode {
+        OcrQualityMode::Quick => 0,
+        OcrQualityMode::Auto => MAX_RESCUE_LINES,
+        OcrQualityMode::HighAccuracy => MAX_TEXT_BOXES,
     }
 }
 
@@ -218,5 +233,12 @@ mod tests {
                 OcrPoint { x: 0, y: 79 },
             ]
         );
+    }
+
+    #[test]
+    fn quality_modes_use_bounded_rescue_limits() {
+        assert_eq!(rescue_limit(OcrQualityMode::Quick), 0);
+        assert_eq!(rescue_limit(OcrQualityMode::Auto), MAX_RESCUE_LINES);
+        assert_eq!(rescue_limit(OcrQualityMode::HighAccuracy), MAX_TEXT_BOXES);
     }
 }

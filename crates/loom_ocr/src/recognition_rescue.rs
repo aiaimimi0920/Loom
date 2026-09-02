@@ -37,6 +37,7 @@ impl RecognitionRescue {
         &mut self,
         image: &image::RgbImage,
         allow_rescue: bool,
+        enhanced_fallback: bool,
     ) -> OcrResult<DecodedLine> {
         let mut best = self.primary.recognize(image)?;
         if !allow_rescue || !needs_rescue(image, &best) {
@@ -51,6 +52,10 @@ impl RecognitionRescue {
             if let Some(fallback) = self.fallback()? {
                 let fallback_candidate = fallback.recognize(image)?;
                 best = choose_preferred_line(best, fallback_candidate);
+                if enhanced_fallback && needs_rescue(image, &best) {
+                    let enhanced_fallback_candidate = fallback.recognize(&enhanced)?;
+                    best = choose_preferred_line(best, enhanced_fallback_candidate);
+                }
             }
         }
         Ok(best)

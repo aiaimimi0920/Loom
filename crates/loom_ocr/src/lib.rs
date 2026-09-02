@@ -31,6 +31,15 @@ pub use types::{
     OcrPoint, OcrTextSpan, OcrTextSpanSource,
 };
 
+/// Controls the bounded accuracy/performance trade-off for one OCR request.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OcrQualityMode {
+    Quick,
+    #[default]
+    Auto,
+    HighAccuracy,
+}
+
 pub const REQUIRED_RAPID_OCR_V4_MODELS: &[&str] = &[
     "ch_PP-OCRv4_det_infer.onnx",
     "ch_ppocr_mobile_v2.0_cls_infer.onnx",
@@ -151,11 +160,22 @@ impl OcrEngine {
         image_data: &[u8],
         detect_angle: bool,
     ) -> OcrResult<OcrDetectResult> {
+        self.detect_image_bytes_with_mode(image_data, detect_angle, OcrQualityMode::Auto)
+    }
+
+    pub fn detect_image_bytes_with_mode(
+        &mut self,
+        image_data: &[u8],
+        detect_angle: bool,
+        quality_mode: OcrQualityMode,
+    ) -> OcrResult<OcrDetectResult> {
         let image = decode_image(image_data)?;
         let width = image.width();
         let height = image.height();
         let image_buffer = image.to_rgb8();
-        let result = self.session()?.detect(&image_buffer, detect_angle)?;
+        let result = self
+            .session()?
+            .detect(&image_buffer, detect_angle, quality_mode)?;
 
         let mut text_blocks = Vec::new();
         for block in result {

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::code_exclusion;
 use crate::code_overlay;
 use crate::code_scan;
+use crate::command_options::parse_quality_mode;
 use crate::overlay::{self, OcrAttachmentPayload};
 
 pub const PLUGIN_ID: &str = "neuro.official/ocr";
@@ -113,10 +114,11 @@ fn recognize(
     if engine.is_none() {
         *engine = Some(load_engine()?);
     }
+    let quality_mode = parse_quality_mode(&request.input)?;
     let result = engine
         .as_mut()
         .expect("engine was initialized")
-        .detect_image_bytes(&image, false)
+        .detect_image_bytes_with_mode(&image, false, quality_mode)
         .map_err(|_| {
             CommandFailure::new(
                 CapabilityErrorCode::RuntimeFault,

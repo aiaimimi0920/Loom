@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/ocr-recognize-input.v1.json",
+  "title": "OCR recognition options",
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["quick", "auto", "highAccuracy"],
+      "default": "auto",
+      "description": "Select speed-first, automatic rescue, or high-accuracy recognition."
+    },
+    "keys": { "type": "string", "maxLength": 64 },
+    "global": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

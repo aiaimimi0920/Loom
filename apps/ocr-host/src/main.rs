@@ -1,6 +1,7 @@
 mod code_exclusion;
 mod code_overlay;
 mod code_scan;
+mod command_options;
 mod commands;
 mod frame;
 mod overlay;

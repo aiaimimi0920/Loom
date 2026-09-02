@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use loom_ocr::{evaluate_quality, GoldenFixture, OcrEngine, OcrModelSet};
+use loom_ocr::{evaluate_quality, GoldenFixture, OcrEngine, OcrModelSet, OcrQualityMode};
 
 const MAX_INPUT_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_GOLDEN_JSON_BYTES: u64 = 1024 * 1024;
@@ -36,26 +36,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::from_slice(&read_bounded(&golden_path, MAX_GOLDEN_JSON_BYTES)?)?;
     let models = OcrModelSet::from_dir(model_dir)?;
     let mut engine = OcrEngine::new(models)?;
-    let started = Instant::now();
-    let result = engine.detect_image_bytes(&image, false)?;
-    let elapsed_ms = started.elapsed().as_millis();
-    let metrics = evaluate_quality(&golden, &result);
+    let modes = [
+        ("quick", OcrQualityMode::Quick),
+        ("auto", OcrQualityMode::Auto),
+        ("highAccuracy", OcrQualityMode::HighAccuracy),
+    ];
+    let mut reports = Vec::with_capacity(modes.len());
+    for (mode_name, mode) in modes {
+        let started = Instant::now();
+        let result = engine.detect_image_bytes_with_mode(&image, false, mode)?;
+        let elapsed_ms = started.elapsed().as_millis();
+        let metrics = evaluate_quality(&golden, &result);
+        reports.push(serde_json::json!({
+            "mode": mode_name,
+            "ocrMs": elapsed_ms,
+            "actualFullText": result.full_text,
+            "actualBlockTexts": result
+                .text_blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>(),
+            "actualBlockBoxes": result
+                .text_blocks
+                .iter()
+                .map(|block| &block.box_points)
+                .collect::<Vec<_>>(),
+            "metrics": metrics,
+        }));
+    }
     let report = serde_json::json!({
-        "ocrMs": elapsed_ms,
         "imageBytes": image.len(),
         "fixture": golden.fixture,
-        "actualFullText": result.full_text,
-        "actualBlockTexts": result
-            .text_blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>(),
-        "actualBlockBoxes": result
-            .text_blocks
-            .iter()
-            .map(|block| &block.box_points)
-            .collect::<Vec<_>>(),
-        "metrics": metrics,
+        "modes": reports,
     });
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
