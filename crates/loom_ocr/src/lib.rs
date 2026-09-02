@@ -13,6 +13,7 @@ mod line_fragment_merge;
 mod line_fragment_merge_tests;
 mod list_marker_recovery;
 mod ocr_core;
+mod quality;
 mod recognition_rescue;
 mod span_geometry;
 mod text_postprocess;
@@ -22,6 +23,7 @@ use colors::estimate_text_and_background_color;
 use geometry::{block_bounds, estimate_line_geometry};
 use list_marker_recovery::recover_leading_list_markers;
 use ocr_core::AlignedOcrCore;
+pub use quality::{evaluate_quality, GoldenBlock, GoldenFixture, OcrQualityMetrics};
 use span_geometry::project_text_spans;
 use text_postprocess::correct_recognized_text;
 pub use types::{
