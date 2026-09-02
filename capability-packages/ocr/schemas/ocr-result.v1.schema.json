@@ -29,6 +29,7 @@
         "properties": {
           "text": { "type": "string", "minLength": 1, "maxLength": 1024 },
           "translatedText": { "type": "string", "maxLength": 1024 },
+          "normalizedText": { "type": "string", "maxLength": 1024 },
           "translating": { "type": "boolean" },
           "rawText": { "type": "string", "maxLength": 1024 },
           "left": { "type": "number", "minimum": 0 },
@@ -37,6 +38,10 @@
           "height": { "type": "number", "exclusiveMinimum": 0 },
           "boxScore": { "type": "number", "minimum": 0, "maximum": 1 },
           "textScore": { "type": "number", "minimum": 0, "maximum": 1 },
+          "confidenceSource": {
+            "type": "string",
+            "enum": ["modelTextScoreMean"]
+          },
           "textColor": { "$ref": "#/$defs/color" },
           "backgroundColor": { "$ref": "#/$defs/color" },
           "colorHex": { "$ref": "#/$defs/color" },

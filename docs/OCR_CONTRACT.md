@@ -81,6 +81,11 @@ order, clipboard behavior, and QR/code suppression remain unchanged.
 - `rawText` is optional and appears only when Loom applies a conservative text
   correction. It preserves the recognizer output for diagnostics and future
   correction review.
+- `text` remains the display/clipboard text for backward compatibility. When a
+  correction was applied, `normalizedText` repeats that corrected value while
+  `rawText` preserves the model output. `confidenceSource` identifies the
+  heuristic behind the existing `textScore`; `modelTextScoreMean` is not a
+  calibrated probability and must not be presented as one.
 - `fullText` is composed from the filtered, displayed block text, so clipboard
   text and block overlays cannot disagree after an empty or invalid block is
   rejected.

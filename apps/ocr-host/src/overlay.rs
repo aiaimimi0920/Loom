@@ -32,6 +32,8 @@ pub struct OcrAttachmentBlock {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translated_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_text: Option<String>,
     pub left: f32,
     pub top: f32,
     pub width: f32,
@@ -41,6 +43,8 @@ pub struct OcrAttachmentBlock {
     pub box_points: Vec<OcrPoint>,
     pub box_score: f32,
     pub text_score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_source: Option<String>,
     pub color_hex: String,
     pub bg_color_hex: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,6 +126,10 @@ fn normalize_block(
     Some(OcrAttachmentBlock {
         text: truncate_utf8(&block.text, MAX_BLOCK_TEXT_BYTES),
         translated_text: None,
+        normalized_text: block
+            .raw_text
+            .as_ref()
+            .map(|_| truncate_utf8(&block.text, MAX_BLOCK_TEXT_BYTES)),
         left,
         top,
         width: right - left,
@@ -131,6 +139,7 @@ fn normalize_block(
         box_points: block.box_points.clone(),
         box_score: block.box_score,
         text_score: block.text_score,
+        confidence_source: Some("modelTextScoreMean".to_owned()),
         color_hex: safe_color(&block.color_hex, "#f8fafc"),
         bg_color_hex: safe_color(&block.bg_color_hex, "#000000"),
         raw_text: block.raw_text.clone(),

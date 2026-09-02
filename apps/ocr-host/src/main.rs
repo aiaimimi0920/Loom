@@ -10,6 +10,8 @@ mod overlay_typography;
 mod runtime;
 
 #[cfg(test)]
+mod normalized_text_tests;
+#[cfg(test)]
 mod tests;
 
 fn main() {
