@@ -110,7 +110,7 @@ fn scored_semantic_core(line: &DecodedLine) -> Vec<(char, f32)> {
             symbol
                 .text
                 .chars()
-                .filter(char::is_ascii_alphanumeric)
+                .filter(|character| character.is_alphanumeric())
                 .map(|character| (character, symbol.score))
         })
         .collect()
@@ -255,6 +255,14 @@ mod tests {
         assert_eq!(
             choose_preferred_line(line("safe", 0.96), line("saXfe", 0.80)).text,
             "safe"
+        );
+    }
+
+    #[test]
+    fn treats_non_ascii_letters_as_real_semantic_core_characters() {
+        assert_eq!(
+            choose_preferred_line(line("甲乙", 0.96), line("甲丙乙", 0.95)).text,
+            "甲丙乙"
         );
     }
 

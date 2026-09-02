@@ -114,9 +114,10 @@ impl AlignedOcrCore {
                     .recognize(&part_image, allow_rescue, enhanced_fallback)?;
             if line.text_score.is_nan() || line.text_score < ANGLE_ROLLBACK_THRESHOLD {
                 if let Some(original) = original {
-                    line =
-                        self.recognition
-                            .recognize(&original, allow_rescue, enhanced_fallback)?;
+                    // The first orientation already performed bounded rescue. The rollback
+                    // pass only verifies the opposite orientation, avoiding duplicate
+                    // contrast/fallback inference for the same detector box.
+                    line = self.recognition.recognize(&original, false, false)?;
                     reverse_axis = false;
                 }
             }
