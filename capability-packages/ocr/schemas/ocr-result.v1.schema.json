@@ -42,6 +42,7 @@
             "type": "string",
             "enum": ["modelTextScoreMean"]
           },
+          "confidence": { "$ref": "#/$defs/textConfidence" },
           "textColor": { "$ref": "#/$defs/color" },
           "backgroundColor": { "$ref": "#/$defs/color" },
           "colorHex": { "$ref": "#/$defs/color" },
@@ -117,6 +118,24 @@
         },
         "score": { "type": "number", "minimum": 0, "maximum": 1 },
         "source": { "const": "ctcAlignedFromRecognitionTimesteps" }
+      },
+      "additionalProperties": false
+    },
+    "textConfidence": {
+      "type": "object",
+      "required": [
+        "meanSymbolScore",
+        "minimumSymbolScore",
+        "symbolCount",
+        "recoveredSymbolCount",
+        "source"
+      ],
+      "properties": {
+        "meanSymbolScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minimumSymbolScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "symbolCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "recoveredSymbolCount": { "type": "integer", "minimum": 0, "maximum": 4096 },
+        "source": { "const": "ctcDecodedSymbolScores" }
       },
       "additionalProperties": false
     }

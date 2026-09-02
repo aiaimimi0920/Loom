@@ -1,4 +1,6 @@
-use loom_ocr::{EnhancedTextBlock, OcrDetectResult, OcrLineGeometry, OcrPoint, OcrTextSpan};
+use loom_ocr::{
+    EnhancedTextBlock, OcrDetectResult, OcrLineGeometry, OcrPoint, OcrTextConfidence, OcrTextSpan,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -45,6 +47,8 @@ pub struct OcrAttachmentBlock {
     pub text_score: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<OcrTextConfidence>,
     pub color_hex: String,
     pub bg_color_hex: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,6 +144,7 @@ fn normalize_block(
         box_score: block.box_score,
         text_score: block.text_score,
         confidence_source: Some("modelTextScoreMean".to_owned()),
+        confidence: block.confidence.clone(),
         color_hex: safe_color(&block.color_hex, "#f8fafc"),
         bg_color_hex: safe_color(&block.bg_color_hex, "#000000"),
         raw_text: block.raw_text.clone(),

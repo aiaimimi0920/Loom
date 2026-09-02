@@ -223,6 +223,7 @@ mod tests {
             color_hex: "#e0e0e0".to_owned(),
             bg_color_hex: "#1a1a1a".to_owned(),
             raw_text: None,
+            confidence: None,
             line_geometry: None,
             character_spans: Vec::new(),
             word_spans: Vec::new(),

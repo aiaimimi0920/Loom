@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use ort::session::builder::SessionBuilder;
 
 mod colors;
+mod confidence;
 mod ctc_decode;
 mod ctc_recognizer;
 mod geometry;
@@ -29,7 +30,7 @@ use span_geometry::project_text_spans;
 use text_postprocess::correct_recognized_text;
 pub use types::{
     EnhancedTextBlock, OcrDetectResult, OcrGeometrySource, OcrLineGeometry, OcrMetricPoint,
-    OcrPoint, OcrTextSpan, OcrTextSpanSource,
+    OcrPoint, OcrTextConfidence, OcrTextConfidenceSource, OcrTextSpan, OcrTextSpanSource,
 };
 
 /// Controls the bounded accuracy/performance trade-off for one OCR request.
@@ -192,6 +193,7 @@ impl OcrEngine {
             }
 
             let line_geometry = estimate_line_geometry(&box_points);
+            let confidence = confidence::summarize_line(&block.line);
             let (character_spans, word_spans) =
                 project_text_spans(&block.line, &box_points, block.axis, block.reverse_axis);
             let corrected = correct_recognized_text(block.line.text);
@@ -206,6 +208,7 @@ impl OcrEngine {
                 color_hex,
                 bg_color_hex,
                 raw_text: corrected.raw_text,
+                confidence,
                 line_geometry,
                 character_spans,
                 word_spans,

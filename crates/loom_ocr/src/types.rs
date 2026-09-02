@@ -24,6 +24,23 @@ pub enum OcrTextSpanSource {
     CtcAlignedFromRecognitionTimesteps,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OcrTextConfidenceSource {
+    CtcDecodedSymbolScores,
+}
+
+/// Bounded diagnostics for the decoded symbols; values are not calibrated probabilities.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrTextConfidence {
+    pub mean_symbol_score: f32,
+    pub minimum_symbol_score: f32,
+    pub symbol_count: u32,
+    pub recovered_symbol_count: u32,
+    pub source: OcrTextConfidenceSource,
+}
+
 /// Recognition geometry projected from CTC timesteps into the detected line quad.
 /// This is model-aligned evidence, not an independently detected glyph outline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,6 +76,8 @@ pub struct EnhancedTextBlock {
     pub bg_color_hex: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<OcrTextConfidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_geometry: Option<OcrLineGeometry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -112,6 +131,13 @@ mod tests {
                 color_hex: "#ffffff".to_owned(),
                 bg_color_hex: "#101010".to_owned(),
                 raw_text: Some("A1t+2".to_owned()),
+                confidence: Some(OcrTextConfidence {
+                    mean_symbol_score: 0.98,
+                    minimum_symbol_score: 0.96,
+                    symbol_count: 5,
+                    recovered_symbol_count: 0,
+                    source: OcrTextConfidenceSource::CtcDecodedSymbolScores,
+                }),
                 line_geometry: Some(OcrLineGeometry {
                     baseline: [metric_point(10.0, 44.6), metric_point(90.0, 44.6)],
                     angle_degrees: 0.0,
@@ -135,6 +161,10 @@ mod tests {
         assert_eq!(block["lineGeometry"]["baseline"][1]["x"], 90.0);
         assert_eq!(block["characterSpans"][0]["boxPoints"][1]["x"], 24.0);
         assert_eq!(block["wordSpans"][0]["text"], "A1t");
+        let minimum_score = block["confidence"]["minimumSymbolScore"]
+            .as_f64()
+            .expect("serialized score");
+        assert!((minimum_score - 0.96).abs() < 0.0001);
         assert!(block.get("raw_text").is_none());
     }
 }

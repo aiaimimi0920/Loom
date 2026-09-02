@@ -36,6 +36,7 @@ fn fixture_block() -> EnhancedTextBlock {
         color_hex: "#ffffff".to_owned(),
         bg_color_hex: "#101010".to_owned(),
         raw_text: Some("0CR 文本".to_owned()),
+        confidence: None,
         line_geometry: None,
         character_spans: Vec::new(),
         word_spans: Vec::new(),

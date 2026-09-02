@@ -250,6 +250,7 @@ mod tests {
             color_hex: "#f7f8ef".to_owned(),
             bg_color_hex: "#101010".to_owned(),
             raw_text: None,
+            confidence: None,
             line_geometry: estimate_line_geometry(&[
                 OcrPoint { x: left, y: top },
                 OcrPoint { x: right, y: top },

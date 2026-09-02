@@ -4,6 +4,7 @@ use crate::OcrResult;
 
 const TINY_TEXT_HEIGHT: u32 = 24;
 const LOW_CONFIDENCE_SCORE: f32 = 0.92;
+const LOWEST_SYMBOL_SCORE: f32 = 0.55;
 const STRONGER_CANDIDATE_MARGIN: f32 = 0.08;
 const PUNCTUATION_RECOVERY_MARGIN: f32 = 0.12;
 const CORE_EXTENSION_SCORE_TOLERANCE: f32 = 0.04;
@@ -85,6 +86,10 @@ fn needs_rescue(image: &image::RgbImage, line: &DecodedLine) -> bool {
         || image.height() <= TINY_TEXT_HEIGHT
         || line.text.trim().is_empty()
         || confidence(line) < LOW_CONFIDENCE_SCORE
+        || line
+            .symbols
+            .iter()
+            .any(|symbol| !symbol.score.is_finite() || symbol.score < LOWEST_SYMBOL_SCORE)
 }
 
 fn semantic_core(text: &str) -> Vec<char> {
@@ -277,5 +282,14 @@ mod tests {
             choose_preferred_line(weak, line("## title", 0.82)).text,
             "## title"
         );
+    }
+
+    #[test]
+    fn a_weak_symbol_triggers_rescue_even_when_the_line_average_is_high() {
+        let image = image::RgbImage::new(180, 32);
+        let mut weak = line("mostly confident", 0.98);
+        weak.symbols[4].score = 0.20;
+
+        assert!(needs_rescue(&image, &weak));
     }
 }

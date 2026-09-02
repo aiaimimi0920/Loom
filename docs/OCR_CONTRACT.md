@@ -86,6 +86,12 @@ order, clipboard behavior, and QR/code suppression remain unchanged.
   `rawText` preserves the model output. `confidenceSource` identifies the
   heuristic behind the existing `textScore`; `modelTextScoreMean` is not a
   calibrated probability and must not be presented as one.
+- Optional `confidence` diagnostics expose the mean and minimum decoded-symbol
+  scores plus total and recovered symbol counts. Its explicit
+  `ctcDecodedSymbolScores` source means consumers can identify a weak local
+  symbol without treating the values as language confidence. Merged detector
+  fragments use a symbol-count-weighted mean and retain the weakest score; if a
+  fragment lacks complete evidence, the merged confidence summary is omitted.
 - `fullText` is composed from the filtered, displayed block text, so clipboard
   text and block overlays cannot disagree after an empty or invalid block is
   rejected.

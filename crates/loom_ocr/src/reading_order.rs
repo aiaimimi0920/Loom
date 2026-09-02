@@ -63,6 +63,7 @@ mod tests {
             color_hex: "#ffffff".to_owned(),
             bg_color_hex: "#101010".to_owned(),
             raw_text: None,
+            confidence: None,
             line_geometry: None,
             character_spans: Vec::<OcrTextSpan>::new(),
             word_spans: Vec::new(),

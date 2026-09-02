@@ -44,6 +44,7 @@ fn block(text: &str, left: u32, top: u32, right: u32, bottom: u32) -> EnhancedTe
         color_hex: "#ffffff".to_owned(),
         bg_color_hex: "#101010".to_owned(),
         raw_text: None,
+        confidence: None,
         character_spans: Vec::new(),
         word_spans: Vec::new(),
     }

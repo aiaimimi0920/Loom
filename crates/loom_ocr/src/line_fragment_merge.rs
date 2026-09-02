@@ -1,5 +1,6 @@
 // Merges detector fragments that occupy one evidenced visual row.
 
+use crate::confidence;
 use crate::geometry::{block_bounds, estimate_line_geometry, Bounds};
 use crate::types::{EnhancedTextBlock, OcrPoint, OcrTextSpan};
 
@@ -103,6 +104,7 @@ fn merge_pair(first: &mut EnhancedTextBlock, second: EnhancedTextBlock, second_b
     first.text_score = first.text_score.min(second.text_score);
     first.text = text;
     first.raw_text = raw_text;
+    first.confidence = confidence::merge(first.confidence.take(), second.confidence);
     first.box_points = rectangle(bounds);
     first.line_geometry = estimate_line_geometry(&first.box_points);
     merge_spans(
