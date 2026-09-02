@@ -78,6 +78,16 @@
         "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
       },
       {
+        "id": "neuro.official/ocr.copy-layout-text",
+        "title": "保留版式复制",
+        "description": "从缓存的 OCR 坐标恢复相对缩进、块间空格和段落间距后复制。",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
+      },
+      {
         "id": "neuro.official/ocr.copy-block",
         "title": "复制 OCR 文本块",
         "when": "attachment.has('neuro.official/ocr.result.v1')",
@@ -141,6 +151,19 @@
         "when": "attachment.has('neuro.official/ocr.result.v1')",
         "placement": "hook.unit.toolbar",
         "order": 20,
+        "payload": {
+          "groupId": "neuro.official/ocr.menu",
+          "groupTitle": "OCR",
+          "disabledTitle": "请先按 Ctrl+2 重新识别当前贴图"
+        }
+      },
+      {
+        "id": "neuro.official/ocr.menu.copy-layout-text",
+        "command": "neuro.official/ocr.copy-layout-text",
+        "title": "保留版式复制",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "placement": "hook.unit.toolbar",
+        "order": 21,
         "payload": {
           "groupId": "neuro.official/ocr.menu",
           "groupTitle": "OCR",

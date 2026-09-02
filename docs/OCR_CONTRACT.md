@@ -93,6 +93,9 @@ suppression.
   `rawText` preserves the model output. `confidenceSource` identifies the
   heuristic behind the existing `textScore`; `modelTextScoreMean` is not a
   calibrated probability and must not be presented as one.
+- `copy-full-text` keeps the normalized reading-order text unchanged.
+  `copy-layout-text` uses cached block geometry only (no new inference) to
+  restore relative indentation, horizontal gaps, and evident paragraph breaks.
 - Optional `confidence` diagnostics expose the mean and minimum decoded-symbol
   scores plus total and recovered symbol counts. Its explicit
   `ctcDecodedSymbolScores` source means consumers can identify a weak local

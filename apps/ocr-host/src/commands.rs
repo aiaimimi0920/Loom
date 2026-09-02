@@ -13,7 +13,7 @@ use crate::code_exclusion;
 use crate::code_overlay;
 use crate::code_scan;
 use crate::command_options::{parse_quality_mode, parse_region};
-use crate::overlay::{self, OcrAttachmentPayload};
+use crate::overlay;
 
 pub const PLUGIN_ID: &str = "neuro.official/ocr";
 pub const RESULT_ATTACHMENT_ID: &str = "neuro.official/ocr.result";
@@ -25,6 +25,7 @@ pub const CODES_RENDERER_ID: &str = "neuro.official/ocr.codes-overlay";
 const RECOGNIZE_COMMAND: &str = "neuro.official/ocr.recognize-selected-unit";
 const TOGGLE_COMMAND: &str = "neuro.official/ocr.toggle-overlay";
 const COPY_FULL_COMMAND: &str = "neuro.official/ocr.copy-full-text";
+const COPY_LAYOUT_COMMAND: &str = "neuro.official/ocr.copy-layout-text";
 const COPY_BLOCK_COMMAND: &str = "neuro.official/ocr.copy-block";
 const SCAN_CODES_COMMAND: &str = "neuro.official/ocr.scan-codes";
 const COPY_CODE_COMMAND: &str = "neuro.official/ocr.copy-code";
@@ -87,8 +88,9 @@ pub fn execute(payload: Value, engine: &mut Option<OcrEngine>) -> Result<Value, 
     match request.command_id.as_str() {
         RECOGNIZE_COMMAND => recognize(&request, engine),
         TOGGLE_COMMAND => toggle_overlay(&request.unit_attachments),
-        COPY_FULL_COMMAND => copy_full_text(&request.unit_attachments),
-        COPY_BLOCK_COMMAND => copy_block(&request.input),
+        COPY_FULL_COMMAND => crate::copy_commands::copy_full_text(&request.unit_attachments),
+        COPY_LAYOUT_COMMAND => crate::copy_commands::copy_layout_text(&request.unit_attachments),
+        COPY_BLOCK_COMMAND => crate::copy_commands::copy_block(&request.input),
         SCAN_CODES_COMMAND => scan_codes(&request),
         COPY_CODE_COMMAND => code_action(&request),
         _ => Err(CommandFailure::new(
@@ -203,34 +205,6 @@ fn toggle_overlay(attachments: &[ExtensionUnitAttachment]) -> Result<Value, Comm
         "output": { "visible": visible },
         "effects": effects,
     }))
-}
-
-fn copy_full_text(attachments: &[ExtensionUnitAttachment]) -> Result<Value, CommandFailure> {
-    let attachment = current_ocr_attachment(attachments).ok_or_else(missing_result)?;
-    let payload: OcrAttachmentPayload =
-        serde_json::from_value(attachment.payload.clone()).map_err(|_| missing_result())?;
-    let text = payload.copy_text();
-    if text.is_empty() {
-        return Err(missing_result());
-    }
-    Ok(json!({ "effects": copy_effects(&text, "OCR 全文已复制") }))
-}
-
-fn copy_block(input: &Value) -> Result<Value, CommandFailure> {
-    let text = input
-        .get("surfaceEvent")
-        .and_then(|value| value.get("payload"))
-        .and_then(|value| value.get("text"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= MAX_COPY_BYTES)
-        .ok_or_else(|| {
-            CommandFailure::new(
-                CapabilityErrorCode::InvalidInput,
-                "OCR text block is invalid",
-                false,
-            )
-        })?;
-    Ok(json!({ "effects": copy_effects(text, "OCR 文本已复制") }))
 }
 
 fn scan_codes(request: &CommandEnvelope) -> Result<Value, CommandFailure> {
