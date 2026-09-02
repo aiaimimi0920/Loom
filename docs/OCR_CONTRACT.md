@@ -60,6 +60,13 @@ the contrast-enhanced fallback model. Unknown values are rejected as invalid
 input. The mode changes inference effort only; attachment schemas, reading
 order, clipboard behavior, and QR/code suppression remain unchanged.
 
+Requests may also include an optional `input.region` object using source-image
+pixel coordinates: `left`, `top`, `width`, and `height`. Empty, overflowing, or
+out-of-bounds regions are rejected. Detection and line merging happen inside
+the crop, then line boxes, baselines, character spans, and word spans are all
+translated back into the full-image coordinate space before rendering or QR
+suppression.
+
 ## Evidence semantics
 
 - `boxPoints`, `boxScore`, `text`, and `textScore` originate from the current

@@ -10,6 +10,18 @@
       "default": "auto",
       "description": "Select speed-first, automatic rescue, or high-accuracy recognition."
     },
+    "region": {
+      "type": "object",
+      "description": "Optional OCR region in source-image pixel coordinates.",
+      "properties": {
+        "left": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "top": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "width": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+      },
+      "required": ["left", "top", "width", "height"],
+      "additionalProperties": false
+    },
     "keys": { "type": "string", "maxLength": 64 },
     "global": { "type": "boolean" }
   },

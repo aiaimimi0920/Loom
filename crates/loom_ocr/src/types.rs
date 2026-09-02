@@ -6,6 +6,16 @@ pub struct OcrPoint {
     pub y: u32,
 }
 
+/// Pixel coordinates in the original image for an optional OCR subregion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrRegion {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OcrMetricPoint {
     pub x: f32,

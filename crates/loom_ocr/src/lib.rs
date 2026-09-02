@@ -17,6 +17,7 @@ mod ocr_core;
 mod quality;
 mod reading_order;
 mod recognition_rescue;
+mod region;
 mod span_geometry;
 mod text_postprocess;
 mod types;
@@ -30,7 +31,8 @@ use span_geometry::project_text_spans;
 use text_postprocess::correct_recognized_text;
 pub use types::{
     EnhancedTextBlock, OcrDetectResult, OcrGeometrySource, OcrLineGeometry, OcrMetricPoint,
-    OcrPoint, OcrTextConfidence, OcrTextConfidenceSource, OcrTextSpan, OcrTextSpanSource,
+    OcrPoint, OcrRegion, OcrTextConfidence, OcrTextConfidenceSource, OcrTextSpan,
+    OcrTextSpanSource,
 };
 
 /// Controls the bounded accuracy/performance trade-off for one OCR request.
@@ -171,7 +173,26 @@ impl OcrEngine {
         detect_angle: bool,
         quality_mode: OcrQualityMode,
     ) -> OcrResult<OcrDetectResult> {
+        self.detect_image_region_bytes_with_mode(image_data, detect_angle, quality_mode, None)
+    }
+
+    pub fn detect_image_region_bytes_with_mode(
+        &mut self,
+        image_data: &[u8],
+        detect_angle: bool,
+        quality_mode: OcrQualityMode,
+        requested_region: Option<OcrRegion>,
+    ) -> OcrResult<OcrDetectResult> {
         let image = decode_image(image_data)?;
+        let source_width = image.width();
+        let source_height = image.height();
+        let region = requested_region
+            .map(|value| region::validate(value, source_width, source_height))
+            .transpose()?;
+        let image = match region {
+            Some(value) => image.crop_imm(value.left, value.top, value.width, value.height),
+            None => image,
+        };
         let width = image.width();
         let height = image.height();
         let image_buffer = image.to_rgb8();
@@ -217,6 +238,9 @@ impl OcrEngine {
         let mut text_blocks = line_fragment_merge::merge_line_fragments(text_blocks, width, height);
         recover_leading_list_markers(&image_buffer, &mut text_blocks);
         reading_order::sort_blocks(&mut text_blocks, width, height);
+        if let Some(region) = region {
+            region::translate_blocks(&mut text_blocks, region, source_width, source_height);
+        }
         let full_text = text_blocks
             .iter()
             .map(|block| block.text.as_str())
@@ -227,8 +251,8 @@ impl OcrEngine {
             text_blocks,
             scale_factor: 1.0,
             full_text,
-            width,
-            height,
+            width: source_width,
+            height: source_height,
         })
     }
 

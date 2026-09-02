@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use loom_ocr::{discover_default_model_set, OcrEngine};
+use loom_ocr::{discover_default_model_set, OcrEngine, OcrError};
 use loom_protocol::{
     CapabilityErrorCode, CapabilityProtocolError, ExtensionResourceKind, ExtensionResourceRef,
     ExtensionUnitAttachment,
@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::code_exclusion;
 use crate::code_overlay;
 use crate::code_scan;
-use crate::command_options::parse_quality_mode;
+use crate::command_options::{parse_quality_mode, parse_region};
 use crate::overlay::{self, OcrAttachmentPayload};
 
 pub const PLUGIN_ID: &str = "neuro.official/ocr";
@@ -104,6 +104,16 @@ fn recognize(
     engine: &mut Option<OcrEngine>,
 ) -> Result<Value, CommandFailure> {
     let image = read_staged_image(&request.staged_resources)?;
+    let quality_mode = parse_quality_mode(&request.input)?;
+    let region = parse_region(&request.input)?;
+    if engine.is_none() {
+        *engine = Some(load_engine()?);
+    }
+    let result = engine
+        .as_mut()
+        .expect("engine was initialized")
+        .detect_image_region_bytes_with_mode(&image, false, quality_mode, region)
+        .map_err(map_ocr_error)?;
     let code_scan = code_scan::decode(&image).map_err(|_| {
         CommandFailure::new(
             CapabilityErrorCode::RuntimeFault,
@@ -111,21 +121,6 @@ fn recognize(
             true,
         )
     })?;
-    if engine.is_none() {
-        *engine = Some(load_engine()?);
-    }
-    let quality_mode = parse_quality_mode(&request.input)?;
-    let result = engine
-        .as_mut()
-        .expect("engine was initialized")
-        .detect_image_bytes_with_mode(&image, false, quality_mode)
-        .map_err(|_| {
-            CommandFailure::new(
-                CapabilityErrorCode::RuntimeFault,
-                "OCR inference failed",
-                true,
-            )
-        })?;
     let result = code_exclusion::suppress_code_text(result, &code_scan);
     let attachment = overlay::build_attachment_payload(&result, true);
     let code_attachment = code_overlay::build_attachment_payload(&code_scan);
@@ -169,6 +164,21 @@ fn recognize(
         },
         "effects": effects,
     }))
+}
+
+fn map_ocr_error(error: OcrError) -> CommandFailure {
+    match error {
+        OcrError::InvalidImage(_) => CommandFailure::new(
+            CapabilityErrorCode::InvalidInput,
+            "OCR image or requested region is invalid",
+            false,
+        ),
+        _ => CommandFailure::new(
+            CapabilityErrorCode::RuntimeFault,
+            "OCR inference failed",
+            true,
+        ),
+    }
 }
 
 fn toggle_overlay(attachments: &[ExtensionUnitAttachment]) -> Result<Value, CommandFailure> {
