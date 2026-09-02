@@ -102,10 +102,12 @@ try {
     $profile = if ($Configuration -eq "Release") { "release" } else { "debug" }
     $hostPath = Join-Path $repoRoot "target\$profile\loom-ocr-host.exe"
     $manifestPath = Join-Path $sourceRoot "capability.manifest.json"
+    $recognizeSchemaPath = Join-Path $sourceRoot "schemas\recognize-input.v1.schema.json"
     $ocrSchemaPath = Join-Path $sourceRoot "schemas\ocr-result.v1.schema.json"
     $codesSchemaPath = Join-Path $sourceRoot "schemas\ocr-codes.v1.schema.json"
     $requiredFiles = @(
         $manifestPath,
+        $recognizeSchemaPath,
         $ocrSchemaPath,
         $codesSchemaPath,
         $hostPath
@@ -119,6 +121,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $stageRoot "schemas") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $stageRoot "runtime\resources\ocr") -Force | Out-Null
     Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $stageRoot "capability.manifest.json")
+    Copy-Item -LiteralPath $recognizeSchemaPath -Destination (Join-Path $stageRoot "schemas\recognize-input.v1.schema.json")
     Copy-Item -LiteralPath $ocrSchemaPath -Destination (Join-Path $stageRoot "schemas\ocr-result.v1.schema.json")
     Copy-Item -LiteralPath $codesSchemaPath -Destination (Join-Path $stageRoot "schemas\ocr-codes.v1.schema.json")
     Copy-Item -LiteralPath $hostPath -Destination (Join-Path $stageRoot "runtime\loom-ocr-host.exe")

@@ -4,7 +4,7 @@
   "id": "ocr",
   "name": "OCR 识别能力",
   "description": "按需为 Hook 贴图提供本地 OCR、二维码/条码识别、文本复制和可交互覆盖层。",
-  "version": "1.2.8",
+  "version": "1.3.0",
   "publisher": {
     "id": "neuro.official",
     "keyId": "neuro-official-capability-2"

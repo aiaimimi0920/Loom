@@ -28,6 +28,7 @@ $capabilities = @($summary.capabilities)
 Assert-True ($capabilities.Count -eq 1) "OCR summary must describe exactly one capability."
 $capability = $capabilities[0]
 Assert-True ([string]$capability.qualifiedId -ceq "neuro.official/ocr") "OCR capability identity mismatch."
+Assert-True ([string]$capability.version -ceq "1.3.0") "OCR capability version mismatch."
 
 $zipName = [string]$capability.zip
 $zipPath = Join-Path $root $zipName
@@ -50,6 +51,7 @@ try {
     $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
     foreach ($required in @(
         "capability.manifest.json",
+        "schemas/recognize-input.v1.schema.json",
         "schemas/ocr-result.v1.schema.json",
         "schemas/ocr-codes.v1.schema.json",
         "runtime/loom-ocr-host.exe"
@@ -60,6 +62,17 @@ try {
         $_ -like "runtime/resources/ocr/*" -and -not $_.EndsWith('/')
     })
     Assert-True ($resourceEntries.Count -eq 7) "OCR ZIP model/runtime resource count mismatch."
+    $manifestEntry = $archive.GetEntry("capability.manifest.json")
+    $manifestStream = $manifestEntry.Open()
+    try {
+        $reader = [System.IO.StreamReader]::new($manifestStream, [System.Text.Encoding]::UTF8, $true, 4096, $true)
+        try { $packageManifest = $reader.ReadToEnd() | ConvertFrom-Json }
+        finally { $reader.Dispose() }
+    }
+    finally { $manifestStream.Dispose() }
+    Assert-True ([string]$packageManifest.publisher.id -ceq "neuro.official") "OCR package manifest publisher mismatch."
+    Assert-True ([string]$packageManifest.id -ceq "ocr") "OCR package manifest id mismatch."
+    Assert-True ([string]$packageManifest.version -ceq [string]$capability.version) "OCR package manifest version differs from summary.json."
 }
 finally {
     $archive.Dispose()

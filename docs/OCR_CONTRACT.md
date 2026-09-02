@@ -67,6 +67,12 @@ the crop, then line boxes, baselines, character spans, and word spans are all
 translated back into the full-image coordinate space before rendering or QR
 suppression.
 
+The OCR host, ONNX Runtime libraries, model files, command schemas, and result
+schemas ship in one signed Capability package. Package installation verifies the
+publisher signature and canonical digest before committing an immutable version;
+runtime activation verifies both again. Upgrade and rollback therefore switch
+between complete, verified OCR versions instead of mutating model files in place.
+
 ## Evidence semantics
 
 - `boxPoints`, `boxScore`, `text`, and `textScore` originate from the current

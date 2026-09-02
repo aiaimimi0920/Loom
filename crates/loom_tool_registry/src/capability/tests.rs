@@ -9,6 +9,8 @@ use zip::write::SimpleFileOptions;
 
 use super::*;
 
+mod runtime_integrity_tests;
+
 #[test]
 fn installs_trusted_package_disabled_and_reuses_identical_version() {
     let root = temp_root("trusted");
@@ -410,13 +412,18 @@ fn signed_package(
 ) -> Vec<u8> {
     let package = root.join("fixture-package");
     let _ = fs::remove_dir_all(&package);
-    fs::create_dir_all(package.join("runtime")).expect("package dirs");
+    fs::create_dir_all(package.join("runtime/resources/ocr")).expect("package dirs");
     fs::write(
         package.join("capability.manifest.json"),
         serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
     )
     .expect("manifest");
     fs::write(package.join("runtime/text-tools.exe"), payload).expect("runtime");
+    fs::write(
+        package.join("runtime/resources/ocr/text-model.onnx"),
+        b"model",
+    )
+    .expect("model");
     sign_package(&package, "signature.json", key).expect("sign package");
     zip_directory(&package)
 }
@@ -429,6 +436,7 @@ fn zip_directory(directory: &Path) -> Vec<u8> {
         for name in [
             "capability.manifest.json",
             "runtime/text-tools.exe",
+            "runtime/resources/ocr/text-model.onnx",
             "signature.json",
         ] {
             writer.start_file(name, options).expect("zip entry");
