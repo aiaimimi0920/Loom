@@ -136,6 +136,10 @@ line width, so long results shrink instead of being clipped by their detector bo
 Recognized text nodes opt into native WebView text selection. Dragging across a
 substring keeps that selection instead of firing the block's whole-text copy action;
 a selection-free click continues to copy the complete block.
+Shift+click toggles an OCR block in the attachment's bounded multi-block selection
+without changing ordinary click behavior. Selected blocks receive a signal-green
+border, remain in reading order, and can be copied from the OCR toolbar. Re-running
+OCR clears stale block selections because recognition produces a new attachment.
 
 The separate shortcut correction remains bounded by a token boundary and an
 actual keyboard shortcut key, such as `A1t+2` to `Alt+2` or `Ctr1+E` to

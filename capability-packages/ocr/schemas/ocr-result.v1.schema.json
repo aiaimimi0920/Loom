@@ -20,9 +20,15 @@
     "sourceHeight": { "type": "integer", "minimum": 1, "maximum": 100000 },
     "coordinateScale": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
     "fullText": { "type": "string", "maxLength": 98304 },
+    "selectedBlockIndices": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 0, "maximum": 127 }
+    },
     "textBlocks": {
       "type": "array",
-      "maxItems": 512,
+      "maxItems": 128,
       "items": {
         "type": "object",
         "required": ["text", "left", "top", "width", "height", "textColor", "backgroundColor"],

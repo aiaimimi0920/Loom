@@ -88,13 +88,28 @@
         "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
       },
       {
+        "id": "neuro.official/ocr.copy-selected-text",
+        "title": "复制已选文本块",
+        "description": "复制通过 Shift+点击选择的 OCR 文本块。",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
+      },
+      {
         "id": "neuro.official/ocr.copy-block",
         "title": "复制 OCR 文本块",
         "when": "attachment.has('neuro.official/ocr.result.v1')",
         "requiresUserGesture": true,
         "cancellable": false,
         "timeoutMs": 5000,
-        "permissions": ["hook.clipboard.write", "hook.notice.show"]
+        "permissions": [
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.clipboard.write",
+          "hook.notice.show"
+        ]
       },
       {
         "id": "neuro.official/ocr.scan-codes",
@@ -168,6 +183,19 @@
           "groupId": "neuro.official/ocr.menu",
           "groupTitle": "OCR",
           "disabledTitle": "请先按 Ctrl+2 重新识别当前贴图"
+        }
+      },
+      {
+        "id": "neuro.official/ocr.menu.copy-selected-text",
+        "command": "neuro.official/ocr.copy-selected-text",
+        "title": "复制已选文本块",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "placement": "hook.unit.toolbar",
+        "order": 22,
+        "payload": {
+          "groupId": "neuro.official/ocr.menu",
+          "groupTitle": "OCR",
+          "disabledTitle": "请先 Shift+点击选择 OCR 文本块"
         }
       }
     ],

@@ -24,6 +24,8 @@ pub struct OcrAttachmentPayload {
     #[serde(default = "default_coordinate_scale")]
     pub coordinate_scale: f32,
     pub full_text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_block_indices: Vec<usize>,
     pub text_blocks: Vec<OcrAttachmentBlock>,
     pub surface_scene: Value,
 }
@@ -89,7 +91,8 @@ pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrA
             source_height,
             coordinate_scale: normalized_coordinate_scale(result.scale_factor),
             full_text: full_text.clone(),
-            surface_scene: scene(&text_blocks, source_width, source_height, visible),
+            selected_block_indices: Vec::new(),
+            surface_scene: scene(&text_blocks, source_width, source_height, visible, &[]),
             text_blocks: text_blocks.clone(),
         };
         if serde_json::to_vec(&payload).is_ok_and(|bytes| bytes.len() <= MAX_ATTACHMENT_BYTES) {
@@ -177,6 +180,53 @@ impl OcrAttachmentPayload {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    pub fn toggle_block_selection(&mut self, index: usize) -> Option<(bool, usize)> {
+        if index >= self.text_blocks.len() || index >= MAX_BLOCKS {
+            return None;
+        }
+        let selected = match self
+            .selected_block_indices
+            .iter()
+            .position(|selected| *selected == index)
+        {
+            Some(position) => {
+                self.selected_block_indices.remove(position);
+                false
+            }
+            None => {
+                if self.selected_block_indices.len() >= MAX_BLOCKS {
+                    return None;
+                }
+                self.selected_block_indices.push(index);
+                self.selected_block_indices.sort_unstable();
+                true
+            }
+        };
+        self.surface_scene = scene(
+            &self.text_blocks,
+            self.source_width,
+            self.source_height,
+            self.visible,
+            &self.selected_block_indices,
+        );
+        Some((selected, self.selected_block_indices.len()))
+    }
+
+    pub fn selected_text(&self) -> String {
+        self.selected_block_indices
+            .iter()
+            .filter_map(|index| self.text_blocks.get(*index))
+            .map(|block| {
+                if self.show_translated {
+                    block.translated_text.as_deref().unwrap_or(&block.text)
+                } else {
+                    &block.text
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 fn scene(
@@ -184,11 +234,13 @@ fn scene(
     source_width: u32,
     source_height: u32,
     visible: bool,
+    selected_indices: &[usize],
 ) -> Value {
     let children = blocks
         .iter()
         .enumerate()
         .map(|(index, block)| {
+            let selected = selected_indices.contains(&index);
             let typography = scene_typography(
                 &block.text,
                 block.width,
@@ -199,7 +251,7 @@ fn scene(
             json!({
                 "id": format!("ocr-block-{index}"),
                 "type": "stack",
-                "props": { "eventPayload": { "text": block.text } },
+                "props": { "eventPayload": { "text": block.text, "blockIndex": index } },
                 "layout": {
                     "position": "absolute",
                     "left": percent(block.left, source_width),
@@ -207,7 +259,11 @@ fn scene(
                     "width": percent(block.width, source_width),
                     "height": percent(block.height, source_height)
                 },
-                "style": { "background": block.background_color },
+                "style": {
+                    "background": block.background_color,
+                    "borderColor": selected.then_some("#b7f34a"),
+                    "borderWidth": selected.then_some("1px")
+                },
                 "events": { "click": "neuro.official/ocr.copy-block" },
                 "children": [{
                     "id": format!("ocr-text-{index}"),

@@ -26,6 +26,7 @@ const RECOGNIZE_COMMAND: &str = "neuro.official/ocr.recognize-selected-unit";
 const TOGGLE_COMMAND: &str = "neuro.official/ocr.toggle-overlay";
 const COPY_FULL_COMMAND: &str = "neuro.official/ocr.copy-full-text";
 const COPY_LAYOUT_COMMAND: &str = "neuro.official/ocr.copy-layout-text";
+const COPY_SELECTED_COMMAND: &str = "neuro.official/ocr.copy-selected-text";
 const COPY_BLOCK_COMMAND: &str = "neuro.official/ocr.copy-block";
 const SCAN_CODES_COMMAND: &str = "neuro.official/ocr.scan-codes";
 const COPY_CODE_COMMAND: &str = "neuro.official/ocr.copy-code";
@@ -90,7 +91,12 @@ pub fn execute(payload: Value, engine: &mut Option<OcrEngine>) -> Result<Value, 
         TOGGLE_COMMAND => toggle_overlay(&request.unit_attachments),
         COPY_FULL_COMMAND => crate::copy_commands::copy_full_text(&request.unit_attachments),
         COPY_LAYOUT_COMMAND => crate::copy_commands::copy_layout_text(&request.unit_attachments),
-        COPY_BLOCK_COMMAND => crate::copy_commands::copy_block(&request.input),
+        COPY_SELECTED_COMMAND => {
+            crate::copy_commands::copy_selected_text(&request.unit_attachments)
+        }
+        COPY_BLOCK_COMMAND => {
+            crate::copy_commands::copy_block(&request.input, &request.unit_attachments)
+        }
         SCAN_CODES_COMMAND => scan_codes(&request),
         COPY_CODE_COMMAND => code_action(&request),
         _ => Err(CommandFailure::new(
