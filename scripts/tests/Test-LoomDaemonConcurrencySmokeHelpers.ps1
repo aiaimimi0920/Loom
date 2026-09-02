@@ -12,6 +12,11 @@ $moduleRoot = Join-Path $scriptRoot "daemon-concurrency-smoke"
 . (Join-Path $scriptRoot "LoomSmokePorts.ps1")
 $script:DaemonAuthHeaders = @{}
 
+$smokeScript = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $scriptRoot "Invoke-LoomDaemonConcurrencySmoke.ps1")
+Assert-True `
+    $smokeScript.Contains('Error: $($summary.error)') `
+    "Concurrency smoke must interpolate the recorded failure detail."
+
 function Join-ByteArrays {
     param([byte[][]]$Arrays)
 

@@ -475,7 +475,7 @@ if ($null -ne $failure) {
     throw "Loom daemon concurrency smoke failed. Evidence: $summaryPath Error: $(Redact-Text $failure.Exception.Message)"
 }
 if ($summary.status -ne "passed") {
-    throw "Loom daemon concurrency smoke failed. Evidence: $summaryPath Error: $summary.error"
+    throw "Loom daemon concurrency smoke failed. Evidence: $summaryPath Error: $($summary.error)"
 }
 
 $summary | ConvertTo-Json -Depth 40
