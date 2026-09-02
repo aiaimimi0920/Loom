@@ -75,10 +75,35 @@ if (-not [string]::IsNullOrWhiteSpace($PreparedPayloadRoot)) {
             throw "Prepared Loom executable is missing: $($exe.source)"
         }
         Assert-LoomPathHasNoReparsePoints -RootPath $preparedPayload -Path $exe.source
+        $relative = ([string]$exe.destinationRelativePath).Replace("/", "\")
+        $record = @($preparedManifest.exes | Where-Object {
+            ([string]$_.path).Replace("/", "\") -ceq $relative
+        })
+        if ($record.Count -ne 1) {
+            throw "Prepared Loom manifest must contain one executable record for $relative."
+        }
+        $digest = Get-LoomFileDigest -Path $exe.source
+        if ([int64]$record[0].bytes -ne [int64]$digest.bytes -or
+            [string]$record[0].sha256 -cne [string]$digest.sha256) {
+            throw "Prepared Loom executable does not match its manifest record: $relative"
+        }
     }
     $catalog.commands = @($catalog.commands | Select-Object -Skip 3)
 }
 $sourceGitDirty = Get-GitDirty
+if ($null -eq $sourceGitDirty) {
+    throw "Loom release build requires a readable Git worktree state."
+}
+if ($null -ne $preparedPayload) {
+    if (-not ($preparedManifest.PSObject.Properties.Name -contains "sourceGitDirty") -or
+        $null -eq $preparedManifest.sourceGitDirty) {
+        throw "Prepared Loom manifest must record a definite sourceGitDirty value."
+    }
+    if ([bool]$preparedManifest.sourceGitDirty -ne [bool]$sourceGitDirty) {
+        throw "Prepared Loom manifest does not match the current worktree state."
+    }
+    $sourceGitDirty = [bool]$preparedManifest.sourceGitDirty
+}
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
     throw "Formal Loom release requires a clean, readable Git worktree. gitDirty=$sourceGitDirty"
 }

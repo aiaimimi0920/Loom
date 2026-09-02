@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use loom_plugin_security::{
-    generate_signing_key, restrict_private_path_permissions, sign_package,
+    generate_signing_key, restrict_private_path_permissions, sign_message, sign_package,
     verify_package_signature, SigningKeyDocument, TrustStore,
 };
 use loom_protocol::{
@@ -42,6 +42,7 @@ include!("cli.rs");
 include!("filesystem.rs");
 include!("validation.rs");
 include!("signing.rs");
+include!("catalog_cli.rs");
 include!("package.rs");
 include!("scaffold.rs");
 include!("conformance.rs");

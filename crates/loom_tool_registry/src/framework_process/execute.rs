@@ -83,6 +83,9 @@ pub(super) fn execute_framework_art_in_root_with_timeout(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
 ) -> ToolRegistryResult<Value> {
+    // Capture before resolving an MCP server. Removal advances this generation after deleting the
+    // persisted server entry, so an execution that raced with removal cannot recache its old host.
+    let host_generation = persistent_host_generation();
     if !crate::framework::is_valid_framework_reference(framework) {
         return Err(ToolRegistryError::FrameworkProcessProtocol {
             id: tool.id.clone(),
@@ -361,6 +364,7 @@ pub(super) fn execute_framework_art_in_root_with_timeout(
         let key = persistent_host_key(&command_path, &manifest_text, &process.args);
         let (stdout, host) = request_persistent_mcp_host(
             key,
+            host_generation,
             &process,
             &stdin_payload,
             cancellation,

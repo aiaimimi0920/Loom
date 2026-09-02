@@ -50,6 +50,21 @@ where
                 sign_plugin_package(Path::new(directory), Path::new(key_path), publisher_id)?;
             writeln!(writer, "{status}")?;
         }
+        ["catalog", "sign", payload, key_path, output] => {
+            let status = sign_capability_catalog(
+                Path::new(payload),
+                Path::new(key_path),
+                Path::new(output),
+            )?;
+            writeln!(writer, "{status}")?;
+        }
+        ["catalog", "validate", catalog, trust_store] => {
+            let status = validate_capability_catalog(
+                Path::new(catalog),
+                Path::new(trust_store),
+            )?;
+            writeln!(writer, "{status}")?;
+        }
         ["trust", "add", store_path, publisher_id, key_path] => {
             trust_publisher(Path::new(store_path), publisher_id, Path::new(key_path))?;
             writeln!(writer, "trusted publisher `{publisher_id}`")?;
@@ -107,6 +122,8 @@ fn help_text() -> &'static str {
         "  schema <NAME>                           Print an embedded public JSON Schema\n",
         "  keygen <KEY_FILE> <KEY_ID>              Generate an Ed25519 signing key\n",
         "  sign <PACKAGE_DIR> <KEY_FILE> <PUBLISHER> Sign a framework or Art package\n",
+        "  catalog sign <PAYLOAD> <KEY_FILE> <OUTPUT> Sign an official Capability catalog\n",
+        "  catalog validate <CATALOG> <TRUST_STORE> Validate a signed Capability catalog\n",
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",

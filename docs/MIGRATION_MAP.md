@@ -39,7 +39,8 @@ Repository planning source:
 The original headless Loom baseline deferred several capabilities. Later work
 restored them through Loom-owned boundaries:
 
-- OCR and packaged ONNX runtime resources.
+- OCR restored as a separately installed Capability package that owns its ONNX
+  runtime resources; the default Loom release does not embed the models.
 - Embedded Python and Python Art resources.
 - Native image, image conversion, and shared image handling.
 - MCP, registry, workflow store, desktop control plane, and Hook Bridge compatibility.

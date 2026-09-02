@@ -19,7 +19,7 @@ import { appSource, styleSource } from "./artHubUiContractSource.ts";
 
 test("renders Loom and Hook as attached application settings tabs", () => {
   assert.match(appSource, /type SettingsAppId = "loom" \| "hook"/);
-  assert.match(appSource, /type SettingsSectionId = "general" \| "shortcuts" \| "mcp" \| "art-store" \| "network" \| "cache" \| "about"/);
+  assert.match(appSource, /type SettingsSectionId = "general" \| "shortcuts" \| "mcp" \| "art-store" \| "capabilities" \| "network" \| "cache" \| "about"/);
   assert.match(appSource, /function SettingsAccordionSection\(/);
   assert.match(appSource, /aria-expanded=\{open\}/);
   assert.match(appSource, /aria-controls=\{contentId\}/);

@@ -3,11 +3,10 @@ use std::collections::HashSet;
 use loom_ocr::EnhancedTextBlock;
 
 const MAX_SAMPLES: usize = 512;
-const HUES: [f64; 12] = [
-    210.0, 185.0, 250.0, 315.0, 15.0, 45.0, 85.0, 125.0, 160.0, 0.0, 280.0, 225.0,
-];
+// Error red and neighbouring magenta/orange-red hues are not valid OCR fills.
+const HUES: [f64; 9] = [210.0, 185.0, 250.0, 45.0, 85.0, 125.0, 160.0, 280.0, 225.0];
 const SATURATIONS: [f64; 2] = [0.68, 0.84];
-const VALUES: [f64; 3] = [0.5, 0.7, 0.88];
+const VALUES: [f64; 5] = [0.26, 0.4, 0.56, 0.72, 0.88];
 
 #[derive(Clone, Copy)]
 struct Rgb {
@@ -19,7 +18,7 @@ struct Rgb {
 #[derive(Clone, Copy)]
 struct Score {
     distance: f64,
-    contrast: f64,
+    foreground_contrast: f64,
 }
 
 /// Chooses one deterministic opaque fill distinct from all bounded OCR colors.
@@ -50,13 +49,30 @@ pub fn shared_fill_color(blocks: &[EnhancedTextBlock]) -> String {
                     .map(move |value| from_hsv(hue, saturation, value))
             })
         })
-        .filter(|candidate| !occupied.contains(&candidate.packed()))
+        .filter(|candidate| !is_red_like(*candidate) && !occupied.contains(&candidate.packed()))
         .collect::<Vec<_>>();
     candidates.push(unoccupied_fallback(&occupied));
     let selected = candidates
         .into_iter()
         .max_by(|left, right| compare_score(score(*left, &samples), score(*right, &samples)))
         .unwrap_or(Rgb::new(47, 111, 237));
+    format!("#{:06x}", selected.packed())
+}
+
+/// Keeps sampled text color when readable and otherwise selects a neutral foreground.
+pub fn readable_text_color(source: &str, fill: &str) -> String {
+    let fill = parse_hex(fill).unwrap_or(Rgb::new(0, 80, 160));
+    let foreground = parse_hex(source).unwrap_or(Rgb::new(255, 255, 255));
+    if contrast_ratio(foreground, fill) >= 4.5 {
+        return format!("#{:06x}", foreground.packed());
+    }
+    let light = Rgb::new(248, 250, 252);
+    let dark = Rgb::new(6, 8, 13);
+    let selected = if contrast_ratio(light, fill) >= contrast_ratio(dark, fill) {
+        light
+    } else {
+        dark
+    };
     format!("#{:06x}", selected.packed())
 }
 
@@ -107,21 +123,40 @@ fn from_hsv(hue: f64, saturation: f64, value: f64) -> Rgb {
     )
 }
 
+fn is_red_like(color: Rgb) -> bool {
+    let red = f64::from(color.red) / 255.0;
+    let green = f64::from(color.green) / 255.0;
+    let blue = f64::from(color.blue) / 255.0;
+    let maximum = red.max(green).max(blue);
+    let minimum = red.min(green).min(blue);
+    let delta = maximum - minimum;
+    if delta <= f64::EPSILON {
+        return false;
+    }
+    let hue = if maximum == red {
+        60.0 * ((green - blue) / delta).rem_euclid(6.0)
+    } else if maximum == green {
+        60.0 * ((blue - red) / delta + 2.0)
+    } else {
+        60.0 * ((red - green) / delta + 4.0)
+    };
+    hue <= 30.0 || hue >= 300.0
+}
+
 fn score(fill: Rgb, samples: &[(Rgb, Rgb)]) -> Score {
     samples.iter().fold(
         Score {
             distance: f64::INFINITY,
-            contrast: f64::INFINITY,
+            foreground_contrast: f64::INFINITY,
         },
         |score, (foreground, background)| Score {
             distance: score
                 .distance
                 .min(color_distance(fill, *foreground))
                 .min(color_distance(fill, *background)),
-            contrast: score
-                .contrast
-                .min(contrast_ratio(fill, *foreground))
-                .min(contrast_ratio(fill, *background)),
+            foreground_contrast: score
+                .foreground_contrast
+                .min(contrast_ratio(fill, *foreground)),
         },
     )
 }
@@ -156,18 +191,56 @@ fn contrast_ratio(left: Rgb, right: Rgb) -> f64 {
 }
 
 fn compare_score(left: Score, right: Score) -> std::cmp::Ordering {
-    left.distance
-        .total_cmp(&right.distance)
-        .then_with(|| left.contrast.total_cmp(&right.contrast))
+    left.foreground_contrast
+        .total_cmp(&right.foreground_contrast)
+        .then_with(|| left.distance.total_cmp(&right.distance))
 }
 
 fn unoccupied_fallback(occupied: &HashSet<u32>) -> Rgb {
-    let mut packed = 0x2f6fed;
-    for _ in 0..=MAX_SAMPLES * 2 {
+    for offset in 0..=MAX_SAMPLES * 2 {
+        let packed = 0x0050a0 + offset as u32;
         if !occupied.contains(&packed) {
-            break;
+            return Rgb::new((packed >> 16) as u8, (packed >> 8) as u8, packed as u8);
         }
-        packed = (packed + 0x010101) & 0xffffff;
     }
-    Rgb::new((packed >> 16) as u8, (packed >> 8) as u8, packed as u8)
+    // At most 1024 source colors are occupied, while the loop checks 1025
+    // distinct blue/cyan candidates.
+    unreachable!("bounded OCR fallback palette must contain a free color")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loom_ocr::OcrPoint;
+
+    #[test]
+    fn shared_fill_prioritizes_readability_against_recognized_text() {
+        let block = EnhancedTextBlock {
+            box_points: vec![OcrPoint { x: 0, y: 0 }, OcrPoint { x: 10, y: 10 }],
+            box_score: 0.99,
+            text: "text".to_owned(),
+            text_score: 0.99,
+            color_hex: "#e0e0e0".to_owned(),
+            bg_color_hex: "#1a1a1a".to_owned(),
+            raw_text: None,
+            line_geometry: None,
+            character_spans: Vec::new(),
+            word_spans: Vec::new(),
+        };
+
+        let fill = parse_hex(&shared_fill_color(&[block])).expect("valid fill");
+
+        assert!(contrast_ratio(fill, Rgb::new(224, 224, 224)) >= 4.5);
+        assert!(!is_red_like(fill));
+    }
+
+    #[test]
+    fn low_contrast_antialiased_text_uses_a_readable_neutral_foreground() {
+        let fill = "#140b42";
+        let selected = readable_text_color("#727272", fill);
+
+        assert_eq!(selected, "#f8fafc");
+        assert!(contrast_ratio(parse_hex(&selected).unwrap(), parse_hex(fill).unwrap()) >= 4.5);
+        assert_eq!(readable_text_color("#f8fafc", fill), "#f8fafc");
+    }
 }

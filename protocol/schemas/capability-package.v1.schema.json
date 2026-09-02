@@ -198,7 +198,7 @@
     "permission": {
       "type": "string",
       "maxLength": 256,
-      "pattern": "^(hook\\.(selection|unit\\.(metadata|image|attachments)|overlay|notice|clipboard)\\.(read|write|render|show)|loom\\.(network\\.brokered|pluginState\\.readWrite|credentials\\.use:[A-Za-z0-9._-]+))$"
+      "pattern": "^(hook\\.(selection\\.read|unit\\.(metadata\\.read|image\\.read|attachments\\.(read|write))|overlay\\.render|notice\\.show|clipboard\\.write|external\\.open)|loom\\.(network\\.brokered|pluginState\\.readWrite|credentials\\.use:[A-Za-z0-9._-]+))$"
     },
     "command": {
       "type": "object",

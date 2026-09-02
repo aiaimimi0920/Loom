@@ -311,7 +311,6 @@ fn route_with_runtime(
         &runtime.surface_resources,
         &runtime.settings,
         &runtime.shared_images,
-        &runtime.ocr_provider,
         &runtime.settings_base_url,
         &runtime.mcp_registry_endpoint,
         runtime.request_executor_status,

@@ -2,7 +2,8 @@ use loom_ocr::{EnhancedTextBlock, OcrDetectResult, OcrLineGeometry, OcrPoint, Oc
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::overlay_color::shared_fill_color;
+use crate::overlay_color::{readable_text_color, shared_fill_color};
+use crate::overlay_typography::scene_typography;
 
 const MAX_BLOCKS: usize = 128;
 const MAX_BLOCK_TEXT_BYTES: usize = 1024;
@@ -125,7 +126,7 @@ fn normalize_block(
         top,
         width: right - left,
         height: bottom - top,
-        text_color: safe_color(&block.color_hex, "#f8fafc"),
+        text_color: readable_text_color(&block.color_hex, fill_color),
         background_color: fill_color.to_owned(),
         box_points: block.box_points.clone(),
         box_score: block.box_score,
@@ -174,8 +175,13 @@ fn scene(
         .iter()
         .enumerate()
         .map(|(index, block)| {
-            let font_size = (block.height / source_height as f32 * 82.0).clamp(0.2, 100.0);
-            let line_height = (block.height / source_height as f32 * 100.0).clamp(0.2, 100.0);
+            let typography = scene_typography(
+                &block.text,
+                block.width,
+                block.height,
+                source_width,
+                source_height,
+            );
             json!({
                 "id": format!("ocr-block-{index}"),
                 "type": "stack",
@@ -185,21 +191,19 @@ fn scene(
                     "left": percent(block.left, source_width),
                     "top": percent(block.top, source_height),
                     "width": percent(block.width, source_width),
-                    "height": percent(block.height, source_height),
-                    "overflowX": "hidden",
-                    "overflowY": "hidden"
+                    "height": percent(block.height, source_height)
                 },
                 "style": { "background": block.background_color },
                 "events": { "click": "neuro.official/ocr.copy-block" },
                 "children": [{
                     "id": format!("ocr-text-{index}"),
                     "type": "text",
-                    "props": { "text": block.text },
+                    "props": { "text": block.text, "selectable": true },
                     "layout": { "width": "100%", "height": "100%" },
                     "style": {
                         "color": block.text_color,
-                        "fontSize": format!("{font_size:.4}cqh"),
-                        "lineHeight": format!("{line_height:.4}cqh"),
+                        "fontSize": typography.font_size,
+                        "lineHeight": typography.line_height,
                         "whiteSpace": "nowrap"
                     }
                 }]

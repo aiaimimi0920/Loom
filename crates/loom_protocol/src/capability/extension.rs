@@ -203,6 +203,8 @@ pub enum ExtensionEffectType {
     NoticeShow,
     #[serde(rename = "clipboard.writeText")]
     ClipboardWriteText,
+    #[serde(rename = "external.openUrl")]
+    ExternalOpenUrl,
     #[serde(rename = "overlay.invalidate")]
     OverlayInvalidate,
     #[serde(rename = "resource.publish")]
@@ -434,6 +436,16 @@ fn validate_effect(effect: &ExtensionEffect) -> Result<(), ExtensionValidationEr
         ExtensionEffectType::ClipboardWriteText => {
             if payload.keys().any(|key| key != "text")
                 || !bounded_effect_string(payload.get("text"), 1_048_576)
+            {
+                return Err(ExtensionValidationError::InvalidEffect);
+            }
+        }
+        ExtensionEffectType::ExternalOpenUrl => {
+            if payload.keys().any(|key| key != "url")
+                || !payload
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(super::is_safe_external_https_url)
             {
                 return Err(ExtensionValidationError::InvalidEffect);
             }

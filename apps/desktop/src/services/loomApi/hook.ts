@@ -18,6 +18,12 @@ export async function startHookBridge(
   return await postJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/start", body);
 }
 
+export async function getHookBridgeStatus(
+  baseUrl = DEFAULT_LOOM_DAEMON_URL,
+): Promise<LoomHookBridgeStatus> {
+  return await getJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/status");
+}
+
 export async function stopHookBridge(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise<LoomHookBridgeStatus> {
   return await postJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/stop", {});
 }

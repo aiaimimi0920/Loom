@@ -418,8 +418,6 @@ fn default_shortcuts() -> Vec<LoomShortcutConfig> {
         ("copy_unit", "Copy Unit", "Ctrl+C"),
         ("paste_unit", "Paste Unit", "Ctrl+V"),
         ("save_image", "Save Image", "Ctrl+S"),
-        ("toggle_ocr", "Toggle OCR", "Alt+2"),
-        ("toggle_translation", "Toggle Translation", "Alt+3"),
     ]
     .into_iter()
     .map(|(id, label, keys)| LoomShortcutConfig {
@@ -429,35 +427,4 @@ fn default_shortcuts() -> Vec<LoomShortcutConfig> {
         enabled: true,
     })
     .collect()
-}
-
-#[derive(Debug)]
-enum OcrProvider {
-    Unavailable,
-    Fixture { text: String },
-    Real { engine: loom_ocr::OcrEngine },
-}
-
-impl OcrProvider {
-    fn from_env() -> Self {
-        if let Some(text) = std::env::var("LOOM_OCR_FIXTURE_TEXT")
-            .ok()
-            .map(|text| text.trim().to_owned())
-            .filter(|text| !text.is_empty())
-        {
-            return Self::Fixture { text };
-        }
-
-        match loom_ocr::discover_default_model_set() {
-            Ok(Some(model_set)) => match loom_ocr::OcrEngine::new(model_set) {
-                Ok(engine) => Self::Real { engine },
-                Err(_) => Self::Unavailable,
-            },
-            Ok(None) | Err(_) => Self::Unavailable,
-        }
-    }
-
-    fn is_available(&self) -> bool {
-        matches!(self, Self::Fixture { .. } | Self::Real { .. })
-    }
 }

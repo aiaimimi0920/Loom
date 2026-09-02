@@ -81,6 +81,7 @@ mod tests {
     }
 
     include!("tests/capability_cli_tests.rs");
+    include!("tests/catalog_cli_tests.rs");
 
     #[test]
     fn embedded_schemas_are_valid_json() {

@@ -146,6 +146,13 @@ invent a content digest, lease ID, expiry, or transport descriptor: every
 descriptor must match a verified object in the Surface resource store and every
 lease must exactly match a live host-issued lease.
 
+Capability results may request the generic `external.openUrl` effect only for a
+bounded, credential-free HTTPS URL. The package and command must declare
+`hook.external.open`, the capability runtime must consume a user gesture, and
+the host must revalidate the URL at its native browser boundary. This effect is
+never an instruction to execute a file or silently navigate without a direct
+user action.
+
 ## Canonical identities
 
 Package-local IDs use ASCII letters, digits, `.`, `_`, and `-`. Signed or
@@ -316,6 +323,8 @@ loom-plugin pack <SOURCE_DIR> <OUTPUT_ZIP>
 loom-plugin conformance <EXE> <FRAMEWORK> <ART_DIR>
 loom-plugin keygen <KEY_FILE> <KEY_ID>
 loom-plugin sign <PACKAGE_DIR> <KEY_FILE> <PUBLISHER>
+loom-plugin catalog sign <PAYLOAD_JSON> <KEY_FILE> <OUTPUT_JSON>
+loom-plugin catalog validate <CATALOG_JSON> <TRUST_STORE>
 loom-plugin trust add <STORE> <PUBLISHER> <KEY_FILE>
 loom-plugin trust revoke <STORE> <PUBLISHER> <KEY_ID>
 ```

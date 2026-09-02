@@ -96,6 +96,58 @@
   gap: 12px;
 }
 
+.capability-ocr-quickstart {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, auto);
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--loom-theme-accent-text) 56%, var(--loom-theme-line));
+  border-left: 3px solid var(--loom-theme-accent-text);
+  border-radius: 10px;
+  background: var(--loom-theme-panel);
+}
+
+.capability-ocr-quickstart h3,
+.capability-ocr-quickstart p {
+  margin: 0;
+}
+
+.capability-ocr-quickstart p,
+.capability-ocr-quickstart small {
+  color: var(--loom-theme-muted);
+  line-height: 1.5;
+}
+
+.capability-ocr-quickstart__copy,
+.capability-ocr-quickstart__action {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.capability-ocr-quickstart__action {
+  justify-items: end;
+  text-align: right;
+}
+
+.capability-ocr-quickstart__action small {
+  max-width: 280px;
+}
+
+.capability-ocr-quickstart__signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.capability-ocr-quickstart__signals span {
+  padding: 3px 7px;
+  border: 1px solid var(--loom-theme-line);
+  border-radius: 5px;
+  color: var(--loom-theme-muted);
+  font: 700 10px/1.4 ui-monospace, "SFMono-Regular", "Menlo", monospace;
+}
+
 .capability-card {
   display: grid;
   align-content: start;
@@ -396,6 +448,15 @@
   .capability-card__header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .capability-ocr-quickstart {
+    grid-template-columns: 1fr;
+  }
+
+  .capability-ocr-quickstart__action {
+    justify-items: start;
+    text-align: left;
   }
 
   .capability-settings__header-actions {

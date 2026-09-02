@@ -19,6 +19,7 @@ import { HookBridgePanel } from "./components/hook/HookBridgePanel";
 import { type WorkflowArtCreationRequest } from "./components/hook/HookCanvasThumbnail";
 import { McpPanel } from "./components/mcp/McpPanel";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
+import { maintainHookBridgeAvailability } from "./services/hookBridgeAvailability";
 import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
 import {
   getHookCanvasRefreshTrigger,
@@ -34,7 +35,6 @@ import {
   LoomSnapshot,
   readLoomSnapshot,
   retainAvailableSnapshotData,
-  startHookBridge,
   startLoomDaemon,
   waitForLoomOnline,
 } from "./services/loomApi";
@@ -268,23 +268,15 @@ export default function App() {
     };
   }, [refresh, snapshot.baseUrl, snapshot.connectionState]);
 
-  // Ensure the configured Hook bridge is running once the daemon is online.
-  // Idempotent: the daemon returns 409 if already running, which we ignore.
+  // Keep the daemon-owned bridge alive; WebSocket retries alone cannot recover
+  // when a transient startup failure leaves the listener stopped.
   useEffect(() => {
-    if (snapshot.connectionState !== "online") {
-      return;
-    }
-    let bridgePort: number | undefined;
-    try {
-      const parsedPort = Number(new URL(hookBridgeUrl).port);
-      bridgePort = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : undefined;
-    } catch {
-      bridgePort = undefined;
-    }
-    void startHookBridge(snapshot.baseUrl, bridgePort).catch(() => {
-      // Already running or transient failure — the workflow-sync client below
-      // will retry connecting regardless.
+    if (snapshot.connectionState !== "online") return;
+    const availability = maintainHookBridgeAvailability({
+      baseUrl: snapshot.baseUrl,
+      websocketUrl: hookBridgeUrl,
     });
+    return () => availability.dispose();
   }, [hookBridgeUrl, snapshot.connectionState, snapshot.baseUrl]);
 
   useEffect(() => {

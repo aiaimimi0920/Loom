@@ -76,3 +76,65 @@ pub struct OcrDetectResult {
     pub width: u32,
     pub height: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn metric_point(x: f32, y: f32) -> OcrMetricPoint {
+        OcrMetricPoint { x, y }
+    }
+
+    #[test]
+    fn layout_evidence_serializes_with_the_capability_contract_shape() {
+        let span = OcrTextSpan {
+            text: "A".to_owned(),
+            box_points: [
+                metric_point(10.0, 20.0),
+                metric_point(24.0, 20.0),
+                metric_point(24.0, 50.0),
+                metric_point(10.0, 50.0),
+            ],
+            score: 0.97,
+            source: OcrTextSpanSource::CtcAlignedFromRecognitionTimesteps,
+        };
+        let result = OcrDetectResult {
+            text_blocks: vec![EnhancedTextBlock {
+                box_points: vec![
+                    OcrPoint { x: 10, y: 20 },
+                    OcrPoint { x: 90, y: 20 },
+                    OcrPoint { x: 90, y: 50 },
+                    OcrPoint { x: 10, y: 50 },
+                ],
+                box_score: 0.99,
+                text: "Alt+2".to_owned(),
+                text_score: 0.98,
+                color_hex: "#ffffff".to_owned(),
+                bg_color_hex: "#101010".to_owned(),
+                raw_text: Some("A1t+2".to_owned()),
+                line_geometry: Some(OcrLineGeometry {
+                    baseline: [metric_point(10.0, 44.6), metric_point(90.0, 44.6)],
+                    angle_degrees: 0.0,
+                    source: OcrGeometrySource::EstimatedFromRapidOcrLineQuad,
+                }),
+                character_spans: vec![span.clone()],
+                word_spans: vec![OcrTextSpan {
+                    text: "A1t".to_owned(),
+                    ..span
+                }],
+            }],
+            scale_factor: 1.0,
+            full_text: "Alt+2".to_owned(),
+            width: 100,
+            height: 60,
+        };
+
+        let serialized = serde_json::to_value(result).expect("serialize OCR result");
+        let block = &serialized["textBlocks"][0];
+        assert_eq!(block["rawText"], "A1t+2");
+        assert_eq!(block["lineGeometry"]["baseline"][1]["x"], 90.0);
+        assert_eq!(block["characterSpans"][0]["boxPoints"][1]["x"], 24.0);
+        assert_eq!(block["wordSpans"][0]["text"], "A1t");
+        assert!(block.get("raw_text").is_none());
+    }
+}

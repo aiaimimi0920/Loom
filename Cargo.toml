@@ -55,6 +55,7 @@ paddle-ocr-rs = { version = "=0.6.1", default-features = false }
 rayon = "1.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
+rxing = { version = "0.9.2", default-features = false, features = ["client_support", "encoding_rs", "decoders", "full_barcode_format_support", "multi_barcode_readers"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

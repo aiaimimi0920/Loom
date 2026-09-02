@@ -14,7 +14,6 @@ fn run_hook_bridge_websocket_server(
     workflow_store: WorkflowStore,
     settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
-    ocr_provider: OcrProviderHandle,
     framework_registry: FrameworkRegistry,
     control_plane_root: PathBuf,
     workflow_root: PathBuf,
@@ -42,7 +41,6 @@ fn run_hook_bridge_websocket_server(
                 let workflow_store = workflow_store.clone();
                 let settings = Arc::clone(&settings);
                 let shared_images = Arc::clone(&shared_images);
-                let ocr_provider = Arc::clone(&ocr_provider);
                 let framework_registry = framework_registry.clone();
                 let control_plane_root = control_plane_root.clone();
                 let workflow_root = workflow_root.clone();
@@ -64,7 +62,6 @@ fn run_hook_bridge_websocket_server(
                         workflow_store,
                         settings,
                         shared_images,
-                        ocr_provider,
                         framework_registry,
                         control_plane_root,
                         workflow_root,

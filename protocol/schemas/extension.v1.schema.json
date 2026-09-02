@@ -171,6 +171,7 @@
             "attachment.remove",
             "notice.show",
             "clipboard.writeText",
+            "external.openUrl",
             "overlay.invalidate",
             "resource.publish"
           ]

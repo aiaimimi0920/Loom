@@ -44,7 +44,9 @@ function Get-GitText {
 
 function Get-GitDirty {
     try {
-        $output = @(& git -C $repoRoot status --porcelain --untracked-files=all 2>$null | Select-Object -First 1)
+        # Truncating a native process through Select-Object can close stdout early and make Git
+        # report a broken-pipe failure, so collect the bounded porcelain records before inspecting.
+        $output = @(& git -C $repoRoot status --porcelain --untracked-files=all 2>$null)
         if ($LASTEXITCODE -ne 0) {
             return $null
         }

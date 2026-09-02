@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "kind": "capability",
   "id": "ocr",
-  "name": "OCR 文本识别",
-  "description": "按需为 Hook 贴图提供本地 OCR、全文与文本块复制和可交互覆盖层。",
-  "version": "1.0.0",
+  "name": "OCR 识别能力",
+  "description": "按需为 Hook 贴图提供本地 OCR、二维码/条码识别、文本复制和可交互覆盖层。",
+  "version": "1.2.8",
   "publisher": {
     "id": "neuro.official",
-    "keyId": "neuro-official-capability-1"
+    "keyId": "neuro-official-capability-2"
   },
   "hostCompatibility": {
     "loomCapabilityApi": {
@@ -36,14 +36,16 @@
   },
   "activationEvents": [
     "onCommand:neuro.official/ocr.recognize-selected-unit",
-    "onOverlay:neuro.official/ocr.result.v1"
+    "onCommand:neuro.official/ocr.scan-codes",
+    "onOverlay:neuro.official/ocr.result.v1",
+    "onOverlay:neuro.official/ocr.codes.v1"
   ],
   "contributes": {
     "commands": [
       {
         "id": "neuro.official/ocr.recognize-selected-unit",
         "title": "重新识别并复制 OCR 全文",
-        "description": "重新识别当前贴图，并把完整文本复制到剪贴板。",
+        "description": "重新识别当前贴图，复制完整文本，并同时标记二维码或条码。",
         "when": "unit.kind == 'sticker' && unit.hasImage",
         "requiresUserGesture": true,
         "cancellable": true,
@@ -59,7 +61,7 @@
       {
         "id": "neuro.official/ocr.toggle-overlay",
         "title": "显示或隐藏 OCR 结果",
-        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "when": "unit.kind == 'sticker'",
         "requiresUserGesture": false,
         "cancellable": false,
         "timeoutMs": 5000,
@@ -82,6 +84,36 @@
         "cancellable": false,
         "timeoutMs": 5000,
         "permissions": ["hook.clipboard.write", "hook.notice.show"]
+      },
+      {
+        "id": "neuro.official/ocr.scan-codes",
+        "title": "识别二维码/条码",
+        "description": "在当前贴图中本地识别二维码和常见条码，并显示可复制标记。",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "requiresUserGesture": true,
+        "cancellable": true,
+        "timeoutMs": 30000,
+        "permissions": [
+          "hook.unit.image.read",
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.notice.show"
+        ]
+      },
+      {
+        "id": "neuro.official/ocr.copy-code",
+        "title": "操作二维码/条码结果",
+        "when": "attachment.has('neuro.official/ocr.codes.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": [
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.clipboard.write",
+          "hook.notice.show",
+          "hook.external.open"
+        ]
       }
     ],
     "shortcuts": [
@@ -120,6 +152,11 @@
         "id": "neuro.official/ocr.result.v1",
         "schema": "schemas/ocr-result.v1.schema.json",
         "payload": { "version": "1" }
+      },
+      {
+        "id": "neuro.official/ocr.codes.v1",
+        "schema": "schemas/ocr-codes.v1.schema.json",
+        "payload": { "version": "1" }
       }
     ],
     "renderers": [
@@ -129,6 +166,16 @@
         "schema": "renderer.v1",
         "payload": {
           "typeId": "neuro.official/ocr.result.v1",
+          "bounds": { "x": 0, "y": 0, "width": 8192, "height": 8192 },
+          "attachmentScenePath": "/surfaceScene"
+        }
+      },
+      {
+        "id": "neuro.official/ocr.codes-overlay",
+        "command": "neuro.official/ocr.copy-code",
+        "schema": "renderer.v1",
+        "payload": {
+          "typeId": "neuro.official/ocr.codes.v1",
           "bounds": { "x": 0, "y": 0, "width": 8192, "height": 8192 },
           "attachmentScenePath": "/surfaceScene"
         }
@@ -147,7 +194,8 @@
     "hook.unit.attachments.write",
     "hook.overlay.render",
     "hook.notice.show",
-    "hook.clipboard.write"
+    "hook.clipboard.write",
+    "hook.external.open"
   ],
   "resources": {
     "memoryMiB": 1024,
@@ -159,7 +207,7 @@
   "dependencies": [],
   "signature": {
     "algorithm": "ed25519",
-    "keyId": "neuro-official-capability-1",
+    "keyId": "neuro-official-capability-2",
     "file": "signature.json"
   }
 }

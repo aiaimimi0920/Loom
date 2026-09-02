@@ -303,28 +303,6 @@ fn test_png_bytes() -> Vec<u8> {
     png.into_inner()
 }
 
-fn packaged_ocr_fixture_base64() -> String {
-    let image = fs::read(
-        workspace_ocr_resources()
-            .join("fixtures")
-            .join("test_1.png"),
-    )
-    .expect("read packaged OCR fixture");
-    format!("data:image/png;base64,{}", BASE64.encode(image))
-}
-
-fn workspace_ocr_resources() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .find_map(|candidate| {
-            let path = candidate.join("resources").join("ocr");
-            path.join("ch_PP-OCRv4_det_infer.onnx")
-                .exists()
-                .then_some(path)
-        })
-        .expect("locate Loom/resources/ocr")
-}
-
 struct GatewayBrainPlanFixture {
     port: u16,
     worker: Option<thread::JoinHandle<()>>,

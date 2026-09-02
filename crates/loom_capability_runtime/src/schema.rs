@@ -224,6 +224,16 @@ fn validate_effect(
             }
             "hook.clipboard.write"
         }
+        ExtensionEffectType::ExternalOpenUrl => {
+            let url = effect.payload.get("url").and_then(Value::as_str);
+            if !user_gesture || !url.is_some_and(loom_protocol::is_safe_external_https_url) {
+                return Err(CapabilityHostError::Protocol(
+                    "external URL effect requires a consumed user gesture and a safe HTTPS URL"
+                        .to_owned(),
+                ));
+            }
+            "hook.external.open"
+        }
         ExtensionEffectType::OverlayInvalidate => "hook.overlay.render",
         ExtensionEffectType::ResourcePublish => {
             validate_namespaced_payload(package, &effect.payload, "resourceId")?;

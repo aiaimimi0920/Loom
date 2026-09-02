@@ -439,12 +439,51 @@ notice effects, manifest-driven settings, restart restoration, disable,
 re-enable, upgrade, rollback, and uninstall. It also requires zero remaining
 runtime processes and identical Hook/Loom source fingerprints at the boundary.
 
+### Installing the official OCR capability
+
+The Desktop **Settings > Capability Extensions** page contains a dedicated
+`neuro.official/ocr` card. Text OCR plus QR/barcode recognition ship in that one
+optional package. `Ctrl+2` runs both automatically, while the OCR unit-toolbar
+menu exposes cached-result actions instead of a redundant code-only scan item.
+The quick action uses the same signed catalog installer as the
+generic catalog tab; it does not download from a hard-coded URL or use the small
+local-ZIP upload path. Loom verifies the catalog signature, package SHA-256,
+package signature, SBOM, provenance, host compatibility, and exact permissions
+before presenting the digest-bound approval dialog.
+
+Operators configure the catalog with `LOOM_CAPABILITY_CATALOG_URL` and provision
+the matching public `neuro.official` key in the control-plane
+`plugin-trust.json`. HTTPS is required in production. Loopback HTTP is disabled
+unless `LOOM_CAPABILITY_CATALOG_ALLOW_LOOPBACK=1` is explicitly set for an
+isolated development test.
+
+Release engineers can build a deterministic signed package and catalog with:
+
+```powershell
+.\scripts\Build-LoomOcrCapabilityPackage.ps1 -OutputRoot <OCR_OUTPUT> -SigningKeyPath <KEY> -SigningPublisherId neuro.official
+.\scripts\Build-LoomOcrCapabilityCatalog.ps1 -PackageRoot <OCR_OUTPUT> -BaseUrl https://downloads.example/capabilities/ocr/ -SigningKeyPath <KEY> -SigningPublisherId neuro.official
+.\scripts\tests\Test-OcrCapabilityPackageContract.ps1 -ArtifactRoot <OCR_OUTPUT>
+```
+
+The package output includes `ocr.zip`, `ocr.zip.sha256`, CycloneDX SBOM,
+provenance, and the signed catalog metadata. The contract test verifies their
+hashes, required OCR/code-recognition runtime files, catalog identity, and
+catalog signature before the candidate is handed to a tester.
+
+For a local manual candidate, build the catalog with a loopback base URL and
+`-AllowHttpLoopback`, then run
+`scripts/Start-LoomWithLocalOcrCatalog.ps1`. The launcher uses an isolated
+control plane, serves only the four allowlisted OCR artifacts on loopback, and
+keeps the main Loom release free of models. Development signing keys must never
+be published or copied into a release payload.
+
 ### Plugin SDK, trust, and lifecycle
 
 The release build publishes an independent `Loom-Plugin-SDK-<version>-windows-x64.zip`
 containing `loom-plugin.exe`, the five v1 JSON Schemas, and the public plugin
 documentation. The CLI supports `init`, `keygen`, `sign`, `validate`, `pack`,
-`conformance`, `trust add`, and `trust revoke`. The language-neutral source of
+`conformance`, `catalog sign`, `catalog validate`, `trust add`, and
+`trust revoke`. The language-neutral source of
 truth is [protocol/README.md](protocol/README.md).
 
 Installed code is immutable under `versions/<version>-<digest-prefix>/`.

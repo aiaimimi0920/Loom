@@ -18,6 +18,9 @@ const capabilityApi = readSource("./loomApi/capabilities.ts");
 const permissionDialog = readSource(
   "../components/settings/capabilities/CapabilityPermissionDialog.tsx",
 );
+const officialOcrCard = readSource(
+  "../components/settings/capabilities/OfficialOcrCapabilityCard.tsx",
+);
 
 test("capability lifecycle owns an independent Loom settings section", () => {
   assert.match(settingsSections, /id="capabilities"[\s\S]*?<CapabilityExtensionsPanel/);
@@ -37,6 +40,16 @@ test("capability UI exposes installed, local ZIP, and signed catalog workflows",
   assert.match(capabilityPanel, /hostCompatibility\.loomCapabilityApi/);
   assert.match(capabilityPanel, /role="tabpanel"/);
   assert.match(capabilityPanel, /aria-controls="capability-panel-installed"/);
+});
+
+test("official OCR quick install reuses the signed catalog lifecycle", () => {
+  assert.match(officialOcrCard, /neuro\.official\/ocr/);
+  assert.match(officialOcrCard, /下载并安装 OCR/);
+  assert.match(officialOcrCard, /大模型包只通过受信任目录下载/);
+  assert.match(capabilityPanel, /controller\.installFromCatalog\(item\)/);
+  assert.doesNotMatch(officialOcrCard, /fetch\(|installLocalCapability|https?:\/\//);
+  assert.match(officialOcrCard, /aria-live="polite"/);
+  assert.match(officialOcrCard, /disabled=\{busy \|\| loading \|\| !canInstall\}/);
 });
 
 test("permission review displays digest-bound evidence before activation", () => {

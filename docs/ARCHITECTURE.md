@@ -59,11 +59,16 @@ keeps the daemon and its owned support files under one internal runtime tree:
 Loom.exe
 runtime/
   loom-daemon.exe
-  resources/ocr/*
 packages/
   frameworks/*.zip
   arts/*.zip
+capabilities/              # optional, separately downloaded packages
+  neuro.official-ocr.capability.zip
 ```
+
+The `capabilities/` lines describe a separately hosted artifact set, not files
+inside the default Loom desktop ZIP. The release verifier rejects OCR models and
+other optional plugin payloads from the default runtime.
 
 `Loom.exe` resolves its daemon in this order: an explicit
 `LOOM_DAEMON_EXECUTABLE`, `runtime/loom-daemon.exe` beside the packaged shell,
@@ -71,7 +76,10 @@ then the development `target/debug/loom-daemon.exe` fallback. The daemon's
 executable-relative resource discovery therefore remains unchanged in the
 packaged layout.
 
-Framework and Art ZIPs stay outside both executables. The desktop validates the
+Framework, Art, and Capability Plugin ZIPs stay outside both executables. OCR
+models and inference binaries are not part of the default Loom runtime tree;
+the signed OCR capability package is installed explicitly through the capability
+catalog. The desktop validates the
 packaged catalogs and applies the six repo-owned sample Arts once per catalog
 hash through the public framework and Art install APIs. The migration marker is
 stored in the writable control plane, not in the release directory. It records
@@ -173,6 +181,12 @@ The package roots are:
     state/
     cache/
     outputs/
+  capabilities/
+    registry.json
+    grants.json
+    config/
+    .lifecycle/
+    <publisher>/<id>/versions/<version>-<digest-prefix>/
 ```
 
 Install and upgrade validate a securely extracted staging tree, signature and
@@ -182,6 +196,14 @@ identity, signature/trust/revocation, digest, lockfile, and runtime checks.
 Uninstall first atomically renames the live package to a same-parent tombstone,
 then commits registry removal; startup restores or deletes interrupted
 tombstones according to the durable registry state.
+
+The official Capability catalog is a detached signed JSON document. Its entries
+pin the package URL, byte length, SHA-256, package signing key, SBOM, provenance,
+host API requirements, permissions, and installed disk estimate. The daemon
+fetches it through the bounded outbound client and accepts only the
+`neuro.official` catalog publisher. Catalog install re-fetches and revalidates
+all evidence before secure extraction. The Desktop OCR quick card calls this
+generic catalog path; it is presentation, not an OCR-specific daemon endpoint.
 
 Hook does not load plugin code and does not contain per-plugin branches. It
 consumes generic capability metadata from Loom. HTTP and `loom.hook.v1`
@@ -266,8 +288,8 @@ Concurrent-safe routes are `/health`, `/status`,
 `/status` are reserved probes and bypass the normal queue so they remain
 available during worker pressure. All other file-backed control-plane routes
 use one serialized route lock while still running on a worker. This preserves
-deterministic ordering for configuration, MCP, tool, workflow, Hook, image, OCR,
-Python, and cloud stores.
+deterministic ordering for configuration, MCP, tool, workflow, Hook, image,
+Capability Plugin, Python, and cloud stores.
 
 The queue capacity counts jobs waiting in addition to active worker jobs.
 Queue saturation returns HTTP 503 with `daemon_busy` and `retryable: true`
@@ -318,7 +340,7 @@ types and JSON Schema are in `crates/loom_protocol/src/hook.rs` and
 `protocol/schemas/hook-message.v1.schema.json`. There is no alternate ArtLoom
 workflow or execution adapter.
 
-OCR result details, including the optional source-tagged estimated baseline,
+The official OCR Capability Plugin's versioned attachment details, including the optional source-tagged estimated baseline,
 CTC-timestep-aligned character/word spans, and raw-text correction evidence, are
 documented in [`OCR_CONTRACT.md`](OCR_CONTRACT.md). The detector remains
 line-based; span geometry comes from real recognition timesteps projected into

@@ -197,7 +197,6 @@ impl LoomDaemon {
             capability_resources,
             settings: Arc::new(Mutex::new(settings_store)),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
-            ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
             settings_base_url,
             mcp_registry_endpoint: config.mcp_registry_endpoint,
             brain_planner,

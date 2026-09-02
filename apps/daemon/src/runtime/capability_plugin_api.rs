@@ -305,6 +305,8 @@ fn disable_capability_plugin(
     if let Err(error) = runtime.deactivate(qualified_id) {
         return capability_runtime_error_response(error);
     }
+    // deactivate waits for in-flight invocations to unwind, so their staging
+    // leases can be invalidated before the persistent lifecycle mutation.
     resources.release_plugin(qualified_id);
     match registry.disable(qualified_id) {
         Ok(plugin) => Ok((200, serde_json::to_string(&json!({ "plugin": plugin }))?)),
@@ -376,6 +378,8 @@ fn uninstall_capability_plugin(
     if let Err(error) = runtime.deactivate(qualified_id) {
         return capability_runtime_error_response(error);
     }
+    // Resource leases are invocation-scoped; a restored runtime stages fresh
+    // resources on its next invocation rather than reacquiring old leases.
     resources.release_plugin(qualified_id);
     let grants = loom_tool_registry::capability::CapabilityGrantStore::new(control_plane_root);
     let config = loom_tool_registry::capability::CapabilityConfigStore::new(control_plane_root);

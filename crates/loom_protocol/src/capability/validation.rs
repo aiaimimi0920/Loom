@@ -330,6 +330,7 @@ pub fn is_valid_capability_permission(permission: &str) -> bool {
             | "hook.overlay.render"
             | "hook.notice.show"
             | "hook.clipboard.write"
+            | "hook.external.open"
             | "loom.network.brokered"
             | "loom.pluginState.readWrite"
     ) || permission

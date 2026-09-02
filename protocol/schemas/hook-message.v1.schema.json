@@ -331,10 +331,7 @@
         { "$ref": "#/$defs/artExecuteEnvelope" },
         { "$ref": "#/$defs/artCancelEnvelope" },
         { "$ref": "#/$defs/artResourcesReleaseEnvelope" },
-        { "$ref": "#/$defs/settingsGetEnvelope" },
-        { "$ref": "#/$defs/enhancementsGetEnvelope" },
-        { "$ref": "#/$defs/ocrExecuteEnvelope" },
-        { "$ref": "#/$defs/translationExecuteEnvelope" }
+        { "$ref": "#/$defs/settingsGetEnvelope" }
       ]
     },
     "handshakeRequestEnvelope": {
@@ -427,55 +424,6 @@
           "type": "object",
           "required": ["requestId"],
           "properties": { "requestId": { "$ref": "#/$defs/safeIdentifier" } },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "enhancementsGetEnvelope": {
-      "type": "object",
-      "required": ["method", "params"],
-      "properties": {
-        "method": { "const": "loom.hook.enhancements.get" },
-        "params": {
-          "type": "object",
-          "required": ["requestId"],
-          "properties": { "requestId": { "$ref": "#/$defs/safeIdentifier" } },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "ocrExecuteEnvelope": {
-      "type": "object",
-      "required": ["method", "params"],
-      "properties": {
-        "method": { "const": "loom.hook.ocr.execute" },
-        "params": {
-          "type": "object",
-          "required": ["requestId", "imageBase64"],
-          "properties": {
-            "requestId": { "$ref": "#/$defs/safeIdentifier" },
-            "imageBase64": { "type": "string", "minLength": 1 }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "translationExecuteEnvelope": {
-      "type": "object",
-      "required": ["method", "params"],
-      "properties": {
-        "method": { "const": "loom.hook.translation.execute" },
-        "params": {
-          "type": "object",
-          "required": ["requestId", "text", "targetLanguage"],
-          "properties": {
-            "requestId": { "$ref": "#/$defs/safeIdentifier" },
-            "text": { "type": "string" },
-            "targetLanguage": { "$ref": "#/$defs/safeIdentifier" }
-          },
           "additionalProperties": false
         }
       },

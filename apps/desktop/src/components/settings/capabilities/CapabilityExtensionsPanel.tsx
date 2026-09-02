@@ -4,6 +4,10 @@ import type { CapabilityCatalogItem, CapabilityPluginRecord } from "../../../ser
 import { CapabilityPermissionDialog } from "./CapabilityPermissionDialog";
 import { CapabilitySettingsEditor } from "./CapabilitySettingsEditor";
 import {
+  OFFICIAL_OCR_QUALIFIED_ID,
+  OfficialOcrCapabilityCard,
+} from "./OfficialOcrCapabilityCard";
+import {
   activeCapabilityVersion,
   capabilityStatusLabel,
   capabilityStatusTone,
@@ -165,6 +169,9 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
     `${grant.qualifiedId}:${grant.packageDigest}`,
     grant.permissions,
   ])), [controller.grants]);
+  const officialOcr = controller.catalog.packages.find(
+    (item) => item.entry.qualifiedId === OFFICIAL_OCR_QUALIFIED_ID,
+  );
 
   return (
     <div className="capability-settings">
@@ -194,6 +201,17 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
           </button>
         </div>
       </header>
+
+      <OfficialOcrCapabilityCard
+        installed={installedById.get(OFFICIAL_OCR_QUALIFIED_ID)}
+        catalogItem={officialOcr}
+        catalogConfigured={controller.catalog.configured}
+        catalogDiagnostic={controller.catalog.diagnostic}
+        loading={controller.loading}
+        busy={Boolean(controller.busyPluginId)}
+        onInstall={(item) => void controller.installFromCatalog(item)}
+        onManage={() => setTab("installed")}
+      />
 
       <nav className="capability-tabs" role="tablist" aria-label="能力扩展来源">
         <button id="capability-tab-installed" type="button" role="tab" aria-controls="capability-panel-installed" aria-selected={tab === "installed"} className={tab === "installed" ? "is-active" : ""} onClick={() => setTab("installed")}>
@@ -237,7 +255,7 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
         </section>
       ) : (
         <section id="capability-panel-catalog" role="tabpanel" aria-labelledby="capability-tab-catalog">
-        {controller.catalog.configured ? <div className="capability-card-grid">
+        {controller.catalog.configured && controller.catalog.packages.length ? <div className="capability-card-grid">
           {controller.catalog.packages.map((item) => <CatalogCapabilityCard
             key={`${item.entry.qualifiedId}:${item.entry.version}`}
             item={item}
@@ -246,8 +264,10 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
             onInstall={() => void controller.installFromCatalog(item)}
           />)}
         </div> : <div className="capability-empty-state">
-          <strong>官方目录尚未配置</strong>
-          <p>{controller.catalog.diagnostic || "设置目录地址和官方签名信任后即可浏览。"}</p>
+          <strong>{controller.catalog.configured ? "官方目录暂无可安装能力" : "官方目录尚未配置"}</strong>
+          <p>{controller.catalog.diagnostic || (controller.catalog.configured
+            ? "目录已通过验证，但当前没有与本机兼容的能力包。"
+            : "设置目录地址和官方签名信任后即可浏览。")}</p>
         </div>}
         </section>
       )}

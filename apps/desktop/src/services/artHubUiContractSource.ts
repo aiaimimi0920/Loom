@@ -21,6 +21,7 @@ export const appSource = [
   "../components/security/PluginSecurityPanel.tsx",
   "../components/settings/settingsModel.tsx",
   "../components/settings/SettingsPanels.tsx",
+  "../components/settings/LoomSettingsSections.tsx",
   "../components/settings/SettingsPanel.tsx",
   "../components/settings/useApplicationLinks.ts",
   "../components/settings/useSettingsPanelController.ts",

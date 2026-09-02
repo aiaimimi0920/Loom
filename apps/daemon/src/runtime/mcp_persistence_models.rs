@@ -405,7 +405,6 @@ type SharedRunStore = Arc<Mutex<Box<dyn RunEvidenceStore>>>;
 type SharedMcpServerStore = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 type SharedHookBridgeRuntime = Arc<Mutex<HookBridgeRuntime>>;
 type SharedImageStoreHandle = Arc<Mutex<SharedImageStore>>;
-type OcrProviderHandle = Arc<Mutex<OcrProvider>>;
 type SharedLoomSettingsStore = Arc<Mutex<LoomSettingsStore>>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

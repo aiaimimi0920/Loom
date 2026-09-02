@@ -44,10 +44,11 @@ export const installedCapabilityVersion = (plugin: CapabilityPluginRecord) =>
   activeCapabilityVersion(plugin) ?? plugin.versions[plugin.versions.length - 1] ?? null;
 
 export const permissionLabel = (permission: string) => ({
+  "hook.unit.image.read": "读取当前贴图图像",
   "hook.notice.show": "在贴图内显示通知",
   "hook.unit.attachments.read": "读取贴图能力数据",
   "hook.unit.attachments.write": "写入贴图能力数据",
-  "hook.unit.overlays.render": "在贴图内绘制扩展界面",
+  "hook.overlay.render": "在贴图内绘制扩展界面",
+  "hook.clipboard.write": "写入系统剪贴板",
   "hook.command.invoke": "响应 Hook 扩展命令",
 }[permission] ?? permission);
-

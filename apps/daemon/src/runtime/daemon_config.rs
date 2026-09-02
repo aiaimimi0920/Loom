@@ -374,7 +374,6 @@ struct DaemonRuntime {
     capability_resources: SharedCapabilityResourceBroker,
     settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
-    ocr_provider: OcrProviderHandle,
     settings_base_url: String,
     mcp_registry_endpoint: String,
     brain_planner: SharedBrainPlanner,

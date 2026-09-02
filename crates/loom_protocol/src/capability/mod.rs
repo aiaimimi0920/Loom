@@ -2,12 +2,14 @@
 
 mod bridge;
 mod extension;
+mod external_url;
 mod package;
 mod runtime;
 mod validation;
 
 pub use bridge::*;
 pub use extension::*;
+pub use external_url::*;
 pub use package::*;
 pub use runtime::*;
 pub use validation::*;

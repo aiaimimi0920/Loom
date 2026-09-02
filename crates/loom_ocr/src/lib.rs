@@ -8,6 +8,10 @@ mod colors;
 mod ctc_decode;
 mod ctc_recognizer;
 mod geometry;
+mod line_fragment_merge;
+#[cfg(test)]
+mod line_fragment_merge_tests;
+mod list_marker_recovery;
 mod ocr_core;
 mod recognition_rescue;
 mod span_geometry;
@@ -16,6 +20,7 @@ mod types;
 
 use colors::estimate_text_and_background_color;
 use geometry::{block_bounds, estimate_line_geometry};
+use list_marker_recovery::recover_leading_list_markers;
 use ocr_core::AlignedOcrCore;
 use span_geometry::project_text_spans;
 use text_postprocess::correct_recognized_text;
@@ -183,6 +188,8 @@ impl OcrEngine {
                 word_spans,
             });
         }
+        let mut text_blocks = line_fragment_merge::merge_line_fragments(text_blocks, width, height);
+        recover_leading_list_markers(&image_buffer, &mut text_blocks);
         let full_text = text_blocks
             .iter()
             .map(|block| block.text.as_str())

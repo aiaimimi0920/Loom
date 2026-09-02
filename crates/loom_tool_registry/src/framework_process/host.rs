@@ -45,6 +45,7 @@ impl PersistentHostStderr {
 
 pub(super) struct PersistentFrameworkHost {
     key: String,
+    generation: u64,
     process: ManagedChild,
     stdin: Option<ChildStdin>,
     stdout: Receiver<PersistentHostStdoutEvent>,
@@ -71,13 +72,14 @@ impl Drop for PersistentFrameworkHost {
     }
 }
 
-enum PersistentHostError {
+pub(super) enum PersistentHostError {
     Process(ProcessError),
     Exited { code: Option<i32>, stderr: String },
     Reader(String),
     Timeout { stderr: String },
     Cancelled { stderr: String },
     OutputLimit { stderr: String },
+    Invalidated,
     PoolExhausted,
 }
 
@@ -86,30 +88,37 @@ struct PersistentFrameworkHostPool {
     hosts: Vec<PersistentFrameworkHost>,
 }
 
-thread_local! {
-    static PERSISTENT_FRAMEWORK_HOST_POOL: RefCell<PersistentFrameworkHostPool> =
-        RefCell::new(PersistentFrameworkHostPool::default());
+static PERSISTENT_FRAMEWORK_HOST_POOL: OnceLock<Mutex<PersistentFrameworkHostPool>> =
+    OnceLock::new();
+const PERSISTENT_HOST_INVALIDATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn persistent_host_pool() -> &'static Mutex<PersistentFrameworkHostPool> {
+    PERSISTENT_FRAMEWORK_HOST_POOL
+        .get_or_init(|| Mutex::new(PersistentFrameworkHostPool::default()))
 }
 
-static PERSISTENT_HOST_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Close every idle MCP framework host and prevent an in-flight host from being cached again.
+///
+/// MCP server removal calls this before deleting package files. The generation boundary matters:
+/// an execution that already resolved the removed server may still finish, but its host must close
+/// instead of re-entering the pool with a session that references the removed package.
+pub fn invalidate_persistent_mcp_framework_hosts() -> PersistentMcpHostInvalidationOutcome {
+    let (hosts, invalidated_generation) = {
+        let mut pool = persistent_host_pool()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let invalidated_generation = advance_persistent_host_generation();
+        (std::mem::take(&mut pool.hosts), invalidated_generation)
+    };
+    let closed_idle_hosts = hosts.len();
+    drop(hosts);
 
-struct PersistentHostSlot;
-
-impl PersistentHostSlot {
-    fn acquire() -> Result<Self, PersistentHostError> {
-        PERSISTENT_HOST_COUNT
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_PERSISTENT_MCP_HOSTS).then_some(current + 1)
-            })
-            .map(|_| Self)
-            .map_err(|_| PersistentHostError::PoolExhausted)
-    }
-}
-
-impl Drop for PersistentHostSlot {
-    fn drop(&mut self) {
-        let previous = PERSISTENT_HOST_COUNT.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "persistent host count underflow");
+    PersistentMcpHostInvalidationOutcome {
+        closed_idle_hosts,
+        drained: wait_for_invalidated_persistent_hosts(
+            invalidated_generation,
+            PERSISTENT_HOST_INVALIDATION_TIMEOUT,
+        ),
     }
 }
 
@@ -137,8 +146,12 @@ impl Drop for TempDirectoryGuard {
 }
 
 impl PersistentFrameworkHost {
-    fn spawn(key: String, spec: &ProcessSpec) -> Result<Self, PersistentHostError> {
-        let slot = PersistentHostSlot::acquire()?;
+    fn spawn(
+        key: String,
+        generation: u64,
+        spec: &ProcessSpec,
+    ) -> Result<Self, PersistentHostError> {
+        let slot = PersistentHostSlot::acquire(generation)?;
         let (process, pipes) = ManagedChild::spawn(spec).map_err(PersistentHostError::Process)?;
         let (stdout_tx, stdout_rx) = mpsc::channel();
         let stdout_limit = spec.limits.stdout_bytes;
@@ -148,6 +161,7 @@ impl PersistentFrameworkHost {
         thread::spawn(move || drain_persistent_host_stderr(pipes.stderr, stderr_capture));
         Ok(Self {
             key,
+            generation,
             process,
             stdin: Some(pipes.stdin),
             stdout: stdout_rx,
@@ -183,6 +197,10 @@ impl PersistentFrameworkHost {
 
         let deadline = Instant::now() + timeout.max(Duration::from_millis(1));
         loop {
+            if self.generation != persistent_host_generation() {
+                self.process.terminate();
+                return Err(PersistentHostError::Invalidated);
+            }
             if cancellation.is_some_and(|token| token.load(Ordering::Acquire)) {
                 self.process.terminate();
                 return Err(PersistentHostError::Cancelled {
@@ -324,15 +342,18 @@ pub(super) fn persistent_host_key(
     format!("{:x}", hasher.finalize())
 }
 
-fn take_persistent_host(key: &str) -> Option<PersistentFrameworkHost> {
+fn take_persistent_host(key: &str, generation: u64) -> Option<PersistentFrameworkHost> {
     let now = Instant::now();
-    let (host, expired) = PERSISTENT_FRAMEWORK_HOST_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
+    let (host, expired) = {
+        let mut pool = persistent_host_pool()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut expired = Vec::new();
         let mut index = 0;
         while index < pool.hosts.len() {
-            if now.saturating_duration_since(pool.hosts[index].last_used)
-                >= PERSISTENT_MCP_HOST_IDLE_LIFETIME
+            if pool.hosts[index].generation != generation
+                || now.saturating_duration_since(pool.hosts[index].last_used)
+                    >= PERSISTENT_MCP_HOST_IDLE_LIFETIME
             {
                 expired.push(pool.hosts.remove(index));
             } else {
@@ -345,15 +366,22 @@ fn take_persistent_host(key: &str) -> Option<PersistentFrameworkHost> {
             .position(|host| host.key == key)
             .map(|index| pool.hosts.remove(index));
         (host, expired)
-    });
+    };
     drop(expired);
     host
 }
 
 pub(super) fn return_persistent_host(mut host: PersistentFrameworkHost) {
     host.last_used = Instant::now();
-    let evicted = PERSISTENT_FRAMEWORK_HOST_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
+    let evicted = {
+        let mut pool = persistent_host_pool()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if host.generation != persistent_host_generation() {
+            drop(pool);
+            drop(host);
+            return;
+        }
         let duplicate = pool.hosts.iter().any(|existing| existing.key == host.key);
         if duplicate {
             Some(host)
@@ -372,31 +400,28 @@ pub(super) fn return_persistent_host(mut host: PersistentFrameworkHost) {
                 None
             }
         }
-    });
+    };
     drop(evicted);
 }
 
 #[cfg(test)]
 pub(super) fn clear_persistent_host_pool() {
-    PERSISTENT_FRAMEWORK_HOST_POOL.with(|pool| pool.borrow_mut().hosts.clear());
-}
-
-#[cfg(test)]
-pub(super) fn persistent_host_count() -> usize {
-    PERSISTENT_HOST_COUNT.load(Ordering::Acquire)
+    invalidate_persistent_mcp_framework_hosts();
 }
 
 #[cfg(test)]
 pub(super) fn exercise_persistent_host_slot_limit() -> (usize, bool, usize) {
     let slots = (0..MAX_PERSISTENT_MCP_HOSTS)
-        .map(|_| match PersistentHostSlot::acquire() {
-            Ok(slot) => slot,
-            Err(_) => panic!("reserve host slot within the limit"),
-        })
+        .map(
+            |_| match PersistentHostSlot::acquire(persistent_host_generation()) {
+                Ok(slot) => slot,
+                Err(_) => panic!("reserve host slot within the limit"),
+            },
+        )
         .collect::<Vec<_>>();
     let reserved = persistent_host_count();
     let exhausted = matches!(
-        PersistentHostSlot::acquire(),
+        PersistentHostSlot::acquire(persistent_host_generation()),
         Err(PersistentHostError::PoolExhausted)
     );
     drop(slots);
@@ -405,15 +430,16 @@ pub(super) fn exercise_persistent_host_slot_limit() -> (usize, bool, usize) {
 
 pub(super) fn request_persistent_mcp_host(
     key: String,
+    generation: u64,
     spec: &ProcessSpec,
     payload: &[u8],
     cancellation: Option<&AtomicBool>,
     tool: &ToolDefinition,
     framework: &str,
 ) -> ToolRegistryResult<(Vec<u8>, PersistentFrameworkHost)> {
-    let mut host = match take_persistent_host(&key) {
+    let mut host = match take_persistent_host(&key, generation) {
         Some(host) => host,
-        None => PersistentFrameworkHost::spawn(key, spec).map_err(|error| {
+        None => PersistentFrameworkHost::spawn(key, generation, spec).map_err(|error| {
             map_persistent_host_error(tool, framework, spec.limits.timeout, error)
         })?,
     };
@@ -482,6 +508,13 @@ fn map_persistent_host_error(
                 },
             },
         ),
+        PersistentHostError::Invalidated => ToolRegistryError::FrameworkProcessFailed {
+            id: tool.id.clone(),
+            framework: framework.to_owned(),
+            code: "cancelled".to_owned(),
+            message: "persistent MCP framework host was invalidated".to_owned(),
+            detail: String::new(),
+        },
         PersistentHostError::PoolExhausted => ToolRegistryError::FrameworkProcessFailed {
             id: tool.id.clone(),
             framework: framework.to_owned(),

@@ -2,6 +2,7 @@
 param(
     [string]$OutputRoot = ".loom-capability-packages\ocr",
     [ValidateSet("Debug", "Release")][string]$Configuration = "Release",
+    [string]$ResourceRoot = "",
     [string]$SigningKeyPath = $env:LOOM_PACKAGE_SIGNING_KEY_PATH,
     [string]$SigningPublisherId = $env:LOOM_PACKAGE_SIGNING_PUBLISHER_ID
 )
@@ -62,7 +63,13 @@ $trustPath = Join-Path $outputRootPath ".signing-trust.json"
 $zipPath = Join-Path $outputRootPath "ocr.zip"
 $reproZipPath = Join-Path $outputRootPath ".ocr-repro.zip"
 $sourceRoot = Join-Path $repoRoot "capability-packages\ocr"
-$resourceRoot = Join-Path $repoRoot "resources\ocr"
+$resourceRoot = if ([string]::IsNullOrWhiteSpace($ResourceRoot)) {
+    Join-Path $repoRoot "resources\ocr"
+} elseif ([System.IO.Path]::IsPathRooted($ResourceRoot)) {
+    [System.IO.Path]::GetFullPath($ResourceRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $ResourceRoot))
+}
 $resourceNames = @(
     "README.txt",
     "ch_PP-OCRv4_det_infer.onnx",
@@ -94,9 +101,13 @@ try {
     }
     $profile = if ($Configuration -eq "Release") { "release" } else { "debug" }
     $hostPath = Join-Path $repoRoot "target\$profile\loom-ocr-host.exe"
+    $manifestPath = Join-Path $sourceRoot "capability.manifest.json"
+    $ocrSchemaPath = Join-Path $sourceRoot "schemas\ocr-result.v1.schema.json"
+    $codesSchemaPath = Join-Path $sourceRoot "schemas\ocr-codes.v1.schema.json"
     $requiredFiles = @(
-        (Join-Path $sourceRoot "capability.manifest.json"),
-        (Join-Path $sourceRoot "schemas\ocr-result.v1.schema.json"),
+        $manifestPath,
+        $ocrSchemaPath,
+        $codesSchemaPath,
         $hostPath
     ) + @($resourceNames | ForEach-Object { Join-Path $resourceRoot $_ })
     foreach ($required in $requiredFiles) {
@@ -107,8 +118,9 @@ try {
 
     New-Item -ItemType Directory -Path (Join-Path $stageRoot "schemas") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $stageRoot "runtime\resources\ocr") -Force | Out-Null
-    Copy-Item -LiteralPath $requiredFiles[0] -Destination (Join-Path $stageRoot "capability.manifest.json")
-    Copy-Item -LiteralPath $requiredFiles[1] -Destination (Join-Path $stageRoot "schemas\ocr-result.v1.schema.json")
+    Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $stageRoot "capability.manifest.json")
+    Copy-Item -LiteralPath $ocrSchemaPath -Destination (Join-Path $stageRoot "schemas\ocr-result.v1.schema.json")
+    Copy-Item -LiteralPath $codesSchemaPath -Destination (Join-Path $stageRoot "schemas\ocr-codes.v1.schema.json")
     Copy-Item -LiteralPath $hostPath -Destination (Join-Path $stageRoot "runtime\loom-ocr-host.exe")
     foreach ($name in $resourceNames) {
         Copy-Item -LiteralPath (Join-Path $resourceRoot $name) -Destination (Join-Path $stageRoot "runtime\resources\ocr\$name")
@@ -133,6 +145,12 @@ try {
     if ($zipHash -ne $reproHash) {
         throw "OCR capability packaging is not deterministic."
     }
+    $sidecarPath = "$zipPath.sha256"
+    [System.IO.File]::WriteAllText(
+        $sidecarPath,
+        "$zipHash  $([System.IO.Path]::GetFileName($zipPath))`n",
+        [System.Text.UTF8Encoding]::new($false)
+    )
 
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $stageRoot "capability.manifest.json") | ConvertFrom-Json
     $materials = @(Get-ChildItem -LiteralPath $stageRoot -Recurse -File | ForEach-Object {

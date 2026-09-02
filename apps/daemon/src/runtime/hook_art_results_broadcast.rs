@@ -1,4 +1,4 @@
-// Hook Art input materialization, results, OCR and translation, and broadcasts.
+// Hook Art input materialization, results, and broadcasts.
 fn materialize_hook_art_inputs(
     inputs: &BTreeMap<String, HookArtPortValue>,
     shared_images: &SharedImageStoreHandle,
@@ -278,84 +278,6 @@ fn hook_protocol_event_json(method: &str, params: &impl Serialize) -> String {
         params,
     })
     .unwrap_or_else(|error| hook_protocol_failure_json("event", "serialization_failed", error))
-}
-
-fn translate_text_via_provider(
-    text: &str,
-    target_lang: &str,
-) -> std::result::Result<Option<String>, String> {
-    let endpoint = match std::env::var("LOOM_TRANSLATE_ENDPOINT") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(None),
-    };
-
-    let client = loom_tool_registry::network_policy::apply_runtime_proxy(
-        reqwest::blocking::Client::builder(),
-    )
-    .map_err(|error| format!("configure translate provider proxy: {error}"))?
-    .timeout(Duration::from_secs(15))
-    .build()
-    .map_err(|error| format!("build translate provider client: {error}"))?;
-    let response = client
-        .post(endpoint)
-        .json(&json!({
-            "text": text,
-            "target_lang": target_lang,
-            "source_lang": "auto"
-        }))
-        .send()
-        .map_err(|error| format!("translate provider request failed: {error}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|error| format!("read translate provider response: {error}"))?;
-    if !status.is_success() {
-        return Err(format!("translate provider returned {status}: {body}"));
-    }
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("translate provider returned invalid JSON: {error}"))?;
-    value
-        .get("translated_text")
-        .or_else(|| value.get("data"))
-        .or_else(|| value.get("translation"))
-        .and_then(Value::as_str)
-        .map(|translated| Some(translated.to_owned()))
-        .ok_or_else(|| "translate provider response missing translated text".to_owned())
-}
-
-fn execute_hook_ocr(
-    image_base64: &str,
-    ocr_provider: &OcrProviderHandle,
-) -> std::result::Result<Value, String> {
-    let mut provider = match ocr_provider.lock() {
-        Ok(provider) => provider,
-        Err(_) => return Err("OCR enhancement unavailable".to_owned()),
-    };
-
-    match &mut *provider {
-        OcrProvider::Unavailable => Err("OCR enhancement unavailable".to_owned()),
-        OcrProvider::Fixture { text } => {
-            let rgba = loom_image_io::decode_image_base64_to_rgba8(image_base64)
-                .map_err(|error| error.to_string())?;
-            // Keep the fixture response identical to the real OCR DTO so Hook
-            // can exercise the complete recognition/render/clipboard path.
-            Ok(json!({
-                "fullText": text,
-                "textBlocks": [],
-                "width": rgba.width,
-                "height": rgba.height,
-                "scaleFactor": 1.0,
-            }))
-        }
-        OcrProvider::Real { engine } => {
-            let image_bytes = loom_image_io::decode_data_url_bytes(image_base64)
-                .map_err(|error| error.to_string())?;
-            let result = engine
-                .detect_image_bytes(&image_bytes, false)
-                .map_err(|error| error.to_string())?;
-            serde_json::to_value(result).map_err(|error| error.to_string())
-        }
-    }
 }
 
 fn register_hook_bridge_subscription(

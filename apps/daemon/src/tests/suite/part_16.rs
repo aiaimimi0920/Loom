@@ -147,6 +147,7 @@ fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
     expect_binary_route_response(authorized, 200, "image/png");
 
     fs::write(session_dir.join("session.json"), "{not-json").expect("corrupt session");
+    drop(runtime);
     let malformed_runtime = test_daemon_runtime(&control_plane_root, None);
     let response = route_request(
         &malformed_runtime,
@@ -159,6 +160,7 @@ fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
         "hook_canvas_error"
     );
 
+    drop(malformed_runtime);
     restore_env("APPDATA", previous);
     fs::remove_dir_all(appdata).expect("cleanup");
     fs::remove_dir_all(control_plane_root).expect("cleanup control plane");

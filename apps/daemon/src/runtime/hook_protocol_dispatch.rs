@@ -69,7 +69,6 @@ fn handle_hook_bridge_websocket_text(
     workflow_store: &WorkflowStore,
     settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
-    ocr_provider: &OcrProviderHandle,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     workflow_root: &Path,
@@ -82,7 +81,6 @@ fn handle_hook_bridge_websocket_text(
         workflow_store,
         settings,
         shared_images,
-        ocr_provider,
         framework_registry,
         control_plane_root,
         workflow_root,
@@ -100,7 +98,6 @@ fn handle_hook_bridge_websocket_text_with_intermediate(
     workflow_store: &WorkflowStore,
     settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
-    ocr_provider: &OcrProviderHandle,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     workflow_root: &Path,
@@ -141,7 +138,6 @@ fn handle_hook_bridge_websocket_text_with_intermediate(
             tool_registry,
             workflow_store,
             settings,
-            ocr_provider,
             workflow_root,
         ),
     }
@@ -152,7 +148,6 @@ fn handle_hook_protocol_request(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     settings: &SharedLoomSettingsStore,
-    ocr_provider: &OcrProviderHandle,
     workflow_root: &Path,
 ) -> HookBridgeWebSocketTextResult {
     match request {
@@ -339,36 +334,6 @@ fn handle_hook_protocol_request(
                 "lock Loom settings",
             ),
         },
-        HookRequest::EnhancementsGet(request) => {
-            let ocr = ocr_provider
-                .lock()
-                .map(|provider| provider.is_available())
-                .unwrap_or(false);
-            hook_protocol_success(
-                &request.request_id,
-                json!({ "ocr": ocr, "translation": true }),
-            )
-        }
-        HookRequest::OcrExecute(request) => {
-            match execute_hook_ocr(&request.image_base64, ocr_provider) {
-                Ok(result) => hook_protocol_success(&request.request_id, result),
-                Err(error) => hook_protocol_failure(&request.request_id, "ocr_failed", error),
-            }
-        }
-        HookRequest::TranslationExecute(request) => {
-            match translate_text_via_provider(&request.text, &request.target_language) {
-                Ok(translated_text) => hook_protocol_success(
-                    &request.request_id,
-                    json!({
-                        "translatedText": translated_text.unwrap_or(request.text),
-                        "targetLanguage": request.target_language,
-                    }),
-                ),
-                Err(error) => {
-                    hook_protocol_failure(&request.request_id, "translation_failed", error)
-                }
-            }
-        }
         HookRequest::ArtExecute(_)
         | HookRequest::ArtCancel(_)
         | HookRequest::ArtResourcesRelease(_) => hook_protocol_failure(

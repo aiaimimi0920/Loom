@@ -29,7 +29,6 @@ loom_image_io.workspace = true
 loom_memory.workspace = true
 loom_mcp.workspace = true
 loom_native_image.workspace = true
-loom_ocr.workspace = true
 loom_plugin_security.workspace = true
 loom_protocol.workspace = true
 loom_sandbox.workspace = true

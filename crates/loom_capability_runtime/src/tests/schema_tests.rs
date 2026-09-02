@@ -97,6 +97,43 @@ fn effects_require_command_permission_and_a_real_gesture() {
         .expect("gesture-authorized clipboard effect");
     clipboard_host.deactivate_all();
     cleanup(&clipboard_root);
+
+    let external_root = temp_root("external-url-effect");
+    let external_executable = compile_fixture(&external_root);
+    let external_host = CapabilityRuntimeHost::new(RuntimeHostLimits::default());
+    external_host
+        .activate(package_with_contract(
+            &external_root,
+            &external_executable,
+            &["external-url"],
+            true,
+            None,
+            None,
+            &["hook.external.open"],
+            1,
+        ))
+        .expect("activate external URL fixture");
+    let target = UserGestureTarget {
+        unit_id: "unit-1".to_owned(),
+        revision: 1,
+    };
+    let token = external_host
+        .issue_user_gesture("publisher.example/fixture.run", Some(target))
+        .expect("external URL gesture token");
+    external_host
+        .invoke(invocation(
+            json!({}),
+            Some((
+                ExtensionTarget {
+                    unit_id: "unit-1".to_owned(),
+                    revision: 1,
+                },
+                token,
+            )),
+        ))
+        .expect("gesture-authorized external URL effect");
+    external_host.deactivate_all();
+    cleanup(&external_root);
 }
 
 #[test]
