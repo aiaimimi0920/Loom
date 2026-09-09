@@ -1,4 +1,40 @@
 // Capability extension bridge helpers keep lifecycle assertions out of the core API fixture test.
+#[test]
+fn extension_bridge_preserves_unsuccessful_runtime_status() {
+    use loom_protocol::{CapabilityProtocolError, CapabilityRuntimeStatus};
+    for status in [CapabilityRuntimeStatus::Failed, CapabilityRuntimeStatus::Cancelled,
+        CapabilityRuntimeStatus::Accepted, CapabilityRuntimeStatus::Progress] {
+        let output = loom_capability_runtime::CapabilityInvocationOutput {
+            plugin_id: "publisher.example/api-fixture".to_owned(),
+            package_digest: "fixture".to_owned(), status,
+            payload: Some(json!({ "output": { "untrusted": true }, "effects": ["untrusted"] })),
+            error: Some(CapabilityProtocolError { code: CapabilityErrorCode::Busy,
+                message: "private-runtime-detail".to_owned(), retryable: false }),
+        };
+        let response = extension_runtime_status_failure("failed-command", &output).unwrap();
+        assert!(!response.response.contains("private-runtime-detail"));
+        let envelope: ExtensionBridgeResponse = serde_json::from_str(&response.response).unwrap();
+        let result: ExtensionResult = serde_json::from_value(envelope.data).unwrap();
+        assert_eq!(result.request_id, "failed-command");
+        assert_eq!(result.status, ExtensionResultStatus::Failed);
+        assert!(result.output.is_null());
+        assert!(result.effects.is_empty());
+        assert_eq!(result.error.unwrap().code, if status == CapabilityRuntimeStatus::Cancelled {
+            CapabilityErrorCode::Cancelled
+        } else { CapabilityErrorCode::Busy });
+    }
+    let mut output = loom_capability_runtime::CapabilityInvocationOutput {
+        plugin_id: "publisher.example/api-fixture".to_owned(), package_digest: "fixture".to_owned(),
+        status: CapabilityRuntimeStatus::Succeeded, payload: None, error: None,
+    };
+    assert!(extension_runtime_status_failure("success", &output).is_none());
+    output.status = CapabilityRuntimeStatus::Failed;
+    let response = extension_runtime_status_failure("missing-error", &output).unwrap();
+    let envelope: ExtensionBridgeResponse = serde_json::from_str(&response.response).unwrap();
+    let result: ExtensionResult = serde_json::from_value(envelope.data).unwrap();
+    assert_eq!(result.error.unwrap().code, CapabilityErrorCode::RuntimeFault);
+}
+
 fn enable_api_fixture_through_extension_route(
     daemon: &DaemonRuntime,
     root: &Path,

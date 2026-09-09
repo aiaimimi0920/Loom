@@ -197,6 +197,72 @@ fn trust_status_distinguishes_unknown_revoked_and_mismatched_keys() {
 }
 
 #[test]
+fn a_revoked_key_stays_revoked_after_it_is_relabelled() {
+    // `key_id` is package-controlled text, so revoking `(publisher, key_id)` only holds if the
+    // check follows the key material. Re-signing with the same private key under a new label
+    // used to miss the record and report `Verified`, which `require-signed` installs.
+    let (package, key, publisher, _signature, mut trust) = signed_fixture("revoked-relabel");
+    assert!(trust.revoke(&publisher.id, &key.key_id));
+    let relabelled = SigningKeyDocument {
+        key_id: "rotated-key".to_owned(),
+        ..key
+    };
+    sign_package(&package, "rotated.json", &relabelled).expect("re-sign under a new label");
+    let signature = PackageSignature {
+        algorithm: "ed25519".to_owned(),
+        key_id: relabelled.key_id.clone(),
+        file: "rotated.json".to_owned(),
+    };
+    let identity = PublisherIdentity {
+        key_id: Some(relabelled.key_id.clone()),
+        ..publisher
+    };
+
+    assert_eq!(
+        verify_package_signature(&package, Some(&identity), Some(&signature), &trust).unwrap(),
+        PackageTrustStatus::Revoked
+    );
+    // Dropping the publisher field must not launder the same key either.
+    assert_eq!(
+        verify_package_signature(&package, None, Some(&signature), &trust).unwrap(),
+        PackageTrustStatus::Revoked
+    );
+    let _ = fs::remove_dir_all(package);
+}
+
+#[test]
+fn an_unrecorded_key_cannot_sign_under_a_pinned_publisher_name() {
+    let (package, _key, publisher, _signature, trust) = signed_fixture("pinned-publisher");
+    let impostor = generate_signing_key("impostor-key");
+    sign_package(&package, "impostor.json", &impostor).expect("sign with an unrecorded key");
+    let signature = PackageSignature {
+        algorithm: "ed25519".to_owned(),
+        key_id: impostor.key_id.clone(),
+        file: "impostor.json".to_owned(),
+    };
+    let identity = PublisherIdentity {
+        key_id: Some(impostor.key_id.clone()),
+        ..publisher
+    };
+    assert!(matches!(
+        verify_package_signature(&package, Some(&identity), Some(&signature), &trust),
+        Err(PluginSecurityError::PublisherKeyMismatch { .. })
+    ));
+
+    // A publisher nobody has pinned is unaffected: there is no recorded key to contradict.
+    let unknown = PublisherIdentity {
+        id: "unknown.vendor".to_owned(),
+        key_id: Some(impostor.key_id.clone()),
+        ..PublisherIdentity::default()
+    };
+    assert_eq!(
+        verify_package_signature(&package, Some(&unknown), Some(&signature), &trust).unwrap(),
+        PackageTrustStatus::Verified
+    );
+    let _ = fs::remove_dir_all(package);
+}
+
+#[test]
 fn trust_store_rejects_unknown_schema_and_duplicate_keys() {
     let root = temp_dir("trust-schema");
     let path = root.join("plugin-trust.json");
@@ -329,5 +395,20 @@ fn signature_path_rejects_parent_traversal() {
         sign_package(&package, "../outside.json", &generate_signing_key("key")),
         Err(PluginSecurityError::UnsafePath(_))
     ));
+    let _ = fs::remove_dir_all(package);
+}
+
+#[test]
+fn signature_path_rejects_cross_platform_windows_ambiguities() {
+    let package = temp_dir("signature-windows-paths");
+    fs::write(package.join("manifest.json"), b"{}\n").unwrap();
+    let key = generate_signing_key("key");
+
+    for path in ["nested\\signature.json", "CON.json", "signature. "] {
+        assert!(matches!(
+            sign_package(&package, path, &key),
+            Err(PluginSecurityError::UnsafePath(_))
+        ));
+    }
     let _ = fs::remove_dir_all(package);
 }

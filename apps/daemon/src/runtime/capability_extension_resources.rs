@@ -1,6 +1,19 @@
 // Invocation-scoped upload conversion for authenticated Hook extension commands.
 const MAX_EXTENSION_RESOURCE_UPLOADS: usize = 4;
 const EXTENSION_IMAGE_READ_PERMISSION: &str = "hook.unit.image.read";
+/// How long a staged upload stays leased.
+///
+/// The plugin reads the uploaded image partway through its own invocation, so the lease has to
+/// outlive that invocation. The bridge requests no caller-side timeout, which makes the manifest
+/// budget the ceiling, and a manifest may declare up to `MAX_CAPABILITY_TIMEOUT_SECONDS`; a
+/// shorter lease turned a legitimate late read into `unknown or expired lease`. The grace margin
+/// covers the staging and result-handling either side of the invocation itself.
+///
+/// This is only the crash-recovery backstop for the normal lifetime:
+/// `ExtensionResourceUploadLease::drop` releases every lease on all exit paths, and the store
+/// clamps the value to its own maximum, so lengthening it cannot leak resources.
+const EXTENSION_UPLOAD_LEASE_MILLIS: u64 =
+    (loom_protocol::MAX_CAPABILITY_TIMEOUT_SECONDS + 60) * 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExtensionResourceUploadError {
@@ -51,7 +64,11 @@ fn stage_extension_resource_uploads(
         return Ok(lease);
     }
     if uploads.len() > MAX_EXTENSION_RESOURCE_UPLOADS
-        || invocation.resource_refs.len().saturating_add(uploads.len()) > 128
+        || invocation
+            .resource_refs
+            .len()
+            .saturating_add(uploads.len())
+            > loom_protocol::MAX_EXTENSION_RESOURCE_REFS
     {
         return Err(ExtensionResourceUploadError::Invalid);
     }
@@ -79,7 +96,7 @@ fn stage_extension_resource_uploads(
                 &bytes,
                 None,
                 None,
-                Some(60_000),
+                Some(EXTENSION_UPLOAD_LEASE_MILLIS),
             )
             .map_err(map_extension_upload_store_error)?;
         let digest = resource_lease

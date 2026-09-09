@@ -13,10 +13,16 @@ fn build_capability_runtime(control_plane_root: &Path) -> Result<SharedCapabilit
         {
             continue;
         }
-        if !registry.runtime_restart_allowed(&record) {
-            registry.mark_runtime_faulted(&record.qualified_id)?;
-            continue;
-        }
+        // The crash-loop guard is the durable failure *count*, and it already survives restarts:
+        // the fifth failure inside the window sets `Faulted`, which the status filter above skips.
+        //
+        // The restart backoff deadline is deliberately not consulted here. It throttles repeated
+        // restarts inside one host process, and this is a fresh process with no restarts behind it.
+        // Gating startup on it meant a daemon restart that happened to land inside the window — as
+        // little as one second after a single transient failure — permanently faulted a plugin that
+        // was never crash-looping, because a `Faulted` record needs an explicit re-enable to come
+        // back. A daemon that really does fail activation every boot still converges on `Faulted`
+        // through the count.
         let Some(digest) = record.active_digest.as_deref() else {
             registry.mark_faulted(&record.qualified_id)?;
             continue;

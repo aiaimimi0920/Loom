@@ -47,6 +47,16 @@ pub(super) enum CapabilityLifecycleJournalPhase {
 
 impl CapabilityPluginRegistry {
     /// Rolls interrupted lifecycle operations back or forward from their durable phase.
+    ///
+    /// One bad journal must not stop the others. Both callers treat an error here as fatal — the
+    /// daemon refuses to build the capability runtime, and every control-plane request then fails —
+    /// so propagating a single unreadable journal would disable the whole subsystem, including the
+    /// API needed to uninstall whatever wrote it. Per-journal outcomes instead:
+    ///
+    /// * unreadable or invalid: quarantined next to the original so the sweep makes progress and
+    ///   the bytes stay on disk for diagnosis;
+    /// * apply failed: left in place, because the usual cause is transient (a busy store, a locked
+    ///   record) and the next start retries it.
     pub fn recover_capability_lifecycle(&self) -> CapabilityResult<usize> {
         let root = lifecycle_root(self);
         ensure_capability_root(&root)?;
@@ -57,12 +67,35 @@ impl CapabilityPluginRegistry {
                 continue;
             }
             // Serialize recovery with the live operation that owns this journal.
-            let _lock = lock_private_file(&path)?;
-            let bytes = read_bounded_private_file(&path, JOURNAL_MAX_BYTES)?;
-            let journal: CapabilityLifecycleJournal = serde_json::from_slice(&bytes)?;
-            validate_journal(&journal)?;
-            recover_journal(self, &journal)?;
-            clear_journal(&path)?;
+            let Ok(_lock) = lock_private_file(&path) else {
+                continue;
+            };
+            let bytes = match read_bounded_private_file(&path, JOURNAL_MAX_BYTES) {
+                Ok(bytes) => bytes,
+                // A journal cleared by the transition that owned it between this sweep's `read_dir`
+                // and its lock acquisition is the expected outcome of a concurrent lifecycle
+                // request, not a fault: there is nothing left to recover or to quarantine.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(_) => {
+                    quarantine_journal(&path);
+                    continue;
+                }
+            };
+            let journal = serde_json::from_slice::<CapabilityLifecycleJournal>(&bytes)
+                .ok()
+                .filter(|journal| validate_journal(journal).is_ok());
+            let Some(journal) = journal else {
+                quarantine_journal(&path);
+                continue;
+            };
+            if recover_journal(self, &journal).is_err() {
+                continue;
+            }
+            if clear_journal(&path).is_err() {
+                continue;
+            }
             recovered += 1;
         }
         Ok(recovered)
@@ -96,8 +129,8 @@ impl CapabilityPluginRegistry {
         committed: bool,
     ) -> CapabilityResult<PathBuf> {
         let tombstone_name = format!(
-            "{}--test-recovery",
-            old_record.qualified_id.replace('/', "--")
+            "{}~test-recovery",
+            old_record.qualified_id.replace('/', "~")
         );
         let tombstone = self.packages_root().join(".trash").join(&tombstone_name);
         ensure_capability_root(tombstone.parent().expect("tombstone parent"))?;
@@ -141,6 +174,20 @@ pub(super) fn clear_journal(path: &Path) -> CapabilityResult<()> {
     }
 }
 
+/// Moves a journal that cannot be read or validated out of the sweep's way.
+///
+/// Deleting it would destroy the only record of an interrupted operation, and leaving it in place
+/// would make every future sweep stop at the same file. The new name keeps the `.invalid` extension
+/// so the sweep skips it, and carries a nonce so repeated quarantines do not overwrite each other.
+/// Best-effort by design: if the rename itself fails the sweep still continues to the next journal.
+fn quarantine_journal(path: &Path) {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let quarantined = path.with_file_name(format!("{name}.{}.invalid", super::unique_nonce()));
+    let _ = fs::rename(path, quarantined);
+}
+
 fn recover_journal(
     registry: &CapabilityPluginRegistry,
     journal: &CapabilityLifecycleJournal,
@@ -182,15 +229,10 @@ fn recover_journal(
 }
 
 fn validate_journal(journal: &CapabilityLifecycleJournal) -> CapabilityResult<()> {
-    let valid_tombstone = journal.tombstone.as_ref().is_none_or(|name| {
-        !name.is_empty()
-            && name.len() <= 512
-            && !name
-                .chars()
-                .any(|character| matches!(character, '/' | '\\' | ':'))
-            && name != "."
-            && name != ".."
-    });
+    let valid_tombstone = journal
+        .tombstone
+        .as_ref()
+        .is_none_or(|name| valid_tombstone_name(name));
     if journal.schema_version != JOURNAL_SCHEMA_VERSION
         || journal.operation.is_empty()
         || !valid_tombstone
@@ -209,11 +251,38 @@ fn validate_journal(journal: &CapabilityLifecycleJournal) -> CapabilityResult<()
     Ok(())
 }
 
+fn valid_tombstone_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 512
+        && !name
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+        && !name.ends_with(['.', ' '])
+        && name != "."
+        && name != ".."
+        && !loom_protocol::is_windows_reserved_device_name(name)
+}
+
 #[cfg(test)]
 fn phase(committed: bool) -> CapabilityLifecycleJournalPhase {
     if committed {
         CapabilityLifecycleJournalPhase::Committed
     } else {
         CapabilityLifecycleJournalPhase::Prepared
+    }
+}
+
+#[cfg(test)]
+mod tombstone_name_tests {
+    use super::valid_tombstone_name;
+
+    #[test]
+    fn rejects_windows_device_names_and_ambiguous_suffixes() {
+        for name in ["CON", "nul.txt", "plugin. ", "plugin."] {
+            assert!(!valid_tombstone_name(name), "{name}");
+        }
+        assert!(valid_tombstone_name(
+            "publisher.example~text-tools~123456789"
+        ));
     }
 }

@@ -4,8 +4,10 @@ param(
     [Parameter(Mandatory = $true)][string]$PackageId,
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
     [string]$PluginCliExecutable = ".\target\debug\loom-plugin.exe",
-    [string]$HookRepository = "..\Hook",
-    [string]$EvidenceRoot = ".\target\capability-plugin-conformance"
+    [string]$EvidenceRoot = ".\target\capability-plugin-conformance",
+    [switch]$AuditSourceIsolation,
+    [string]$LoomRepository = "",
+    [string]$HookRepository = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +27,16 @@ function Resolve-RepoPath {
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
+}
+
+function Assert-SafeCapabilityIdentifier {
+    param([string]$Label, [string]$Value, [bool]$AllowDots)
+    $alphabet = if ($AllowDots) { '^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$' } else { '^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$' }
+    $base = @($Value -split '\.', 2)[0].ToUpperInvariant()
+    $reserved = $base -match '^(CON|PRN|AUX|NUL)$' -or $base -match '^(COM|LPT)0*[1-9]$'
+    $safe = -not [string]::IsNullOrWhiteSpace($Value) -and $Value.Length -le 128 -and
+        $Value -match $alphabet -and -not $Value.Contains("..") -and -not $reserved
+    Assert-True $safe "Unsafe capability ${Label}: $Value"
 }
 
 function Write-Utf8NoBomFile {
@@ -304,7 +316,10 @@ fn main() {
 function New-CapabilityPackage {
     param([string]$Directory, [string]$Version, [string]$Archive, [string]$MarkerPath)
     Invoke-NativeChecked -Executable $pluginCliPath -Arguments @("init", "capability", $Directory, $PackageId, $PublisherId)
-    $runtimePath = Join-Path $Directory "runtime\$PackageId.exe"
+    $directoryRoot = [System.IO.Path]::GetFullPath($Directory)
+    $directoryPrefix = $directoryRoot + [System.IO.Path]::DirectorySeparatorChar
+    $runtimePath = [System.IO.Path]::GetFullPath((Join-Path $directoryRoot "runtime\$PackageId.exe"))
+    Assert-True ($runtimePath.StartsWith($directoryPrefix, [System.StringComparison]::OrdinalIgnoreCase)) "Capability runtime escaped its package directory"
     Write-CapabilityRuntime -Path $runtimePath -CommandId $commandId -TypeId $typeId `
         -RendererId $rendererId -Version $Version -MarkerPath $MarkerPath
     $manifestPath = Join-Path $Directory "capability.manifest.json"
@@ -334,13 +349,13 @@ function Install-CapabilityArchive {
     }
 }
 
+Assert-SafeCapabilityIdentifier -Label "publisher id" -Value $PublisherId -AllowDots $true
+Assert-SafeCapabilityIdentifier -Label "package id" -Value $PackageId -AllowDots $false
 $daemonPath = Resolve-RepoPath $DaemonExecutable
 $pluginCliPath = Resolve-RepoPath $PluginCliExecutable
-$hookPath = Resolve-RepoPath $HookRepository
 $evidencePath = Resolve-RepoPath $EvidenceRoot
 Assert-True (Test-Path -LiteralPath $daemonPath -PathType Leaf) "Loom daemon executable not found: $daemonPath"
 Assert-True (Test-Path -LiteralPath $pluginCliPath -PathType Leaf) "loom-plugin executable not found: $pluginCliPath"
-Assert-True (Test-Path -LiteralPath $hookPath -PathType Container) "Hook repository not found: $hookPath"
 New-Item -ItemType Directory -Force -Path $evidencePath | Out-Null
 
 $qualifiedId = "$PublisherId/$PackageId"
@@ -350,16 +365,27 @@ $typeId = "$qualifiedId.result.v1"
 $rendererId = "$qualifiedId.result-card"
 $encodedId = [Uri]::EscapeDataString($qualifiedId)
 $pluginPath = "/v1/capability-plugins/$encodedId"
-$sourceLiteral = [regex]::Escape($qualifiedId)
-$loomIdMatch = Get-ChildItem -LiteralPath (Join-Path $repoRoot "apps"), (Join-Path $repoRoot "crates") -Recurse -File |
-    Select-String -Pattern $sourceLiteral | Select-Object -First 1
-$hookIdMatch = Get-ChildItem -LiteralPath (Join-Path $hookPath "src") -Recurse -File |
-    Select-String -Pattern $sourceLiteral | Select-Object -First 1
-Assert-True ($null -eq $loomIdMatch) "Loom core contains the external capability id"
-Assert-True ($null -eq $hookIdMatch) "Hook core contains the external capability id"
-
-$loomBefore = Get-GitStateFingerprint $repoRoot
-$hookBefore = Get-GitStateFingerprint $hookPath
+$loomSourcePath = $null
+$hookSourcePath = $null
+$loomBefore = $null
+$hookBefore = $null
+if ($AuditSourceIsolation) {
+    Assert-True (-not [string]::IsNullOrWhiteSpace($LoomRepository)) "-LoomRepository is required with -AuditSourceIsolation"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($HookRepository)) "-HookRepository is required with -AuditSourceIsolation"
+    $loomSourcePath = Resolve-RepoPath $LoomRepository
+    $hookSourcePath = Resolve-RepoPath $HookRepository
+    Assert-True (Test-Path -LiteralPath $loomSourcePath -PathType Container) "Loom repository not found: $loomSourcePath"
+    Assert-True (Test-Path -LiteralPath $hookSourcePath -PathType Container) "Hook repository not found: $hookSourcePath"
+    $sourceLiteral = [regex]::Escape($qualifiedId)
+    $loomIdMatch = Get-ChildItem -LiteralPath (Join-Path $loomSourcePath "apps"), (Join-Path $loomSourcePath "crates") -Recurse -File |
+        Select-String -Pattern $sourceLiteral | Select-Object -First 1
+    $hookIdMatch = Get-ChildItem -LiteralPath (Join-Path $hookSourcePath "src") -Recurse -File |
+        Select-String -Pattern $sourceLiteral | Select-Object -First 1
+    Assert-True ($null -eq $loomIdMatch) "Loom core contains the external capability id"
+    Assert-True ($null -eq $hookIdMatch) "Hook core contains the external capability id"
+    $loomBefore = Get-GitStateFingerprint $loomSourcePath
+    $hookBefore = Get-GitStateFingerprint $hookSourcePath
+}
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-capability-conformance-" + [Guid]::NewGuid().ToString("N"))
 $controlRoot = Join-Path $tempRoot "control"
 $manifestRoot = Join-Path $tempRoot "manifest"
@@ -483,11 +509,14 @@ finally {
     if ($cleanupErrors.Count -gt 0) { throw ($cleanupErrors -join "; ") }
 }
 
-$loomAfter = Get-GitStateFingerprint $repoRoot
-$hookAfter = Get-GitStateFingerprint $hookPath
-Assert-True ($loomBefore -eq $loomAfter) "Loom source fingerprint changed during external plugin conformance"
-Assert-True ($hookBefore -eq $hookAfter) "Hook source fingerprint changed during external plugin conformance"
-$evidence.sourceFingerprints = @{ loom = $loomAfter; hook = $hookAfter }
+if ($AuditSourceIsolation) {
+    $loomAfter = Get-GitStateFingerprint $loomSourcePath
+    $hookAfter = Get-GitStateFingerprint $hookSourcePath
+    Assert-True ($loomBefore -eq $loomAfter) "Loom source fingerprint changed during external plugin conformance"
+    Assert-True ($hookBefore -eq $hookAfter) "Hook source fingerprint changed during external plugin conformance"
+    $evidence.sourceFingerprints = @{ loom = $loomAfter; hook = $hookAfter }
+}
+$evidence.sourceIsolationAudit = [bool]$AuditSourceIsolation
 $evidence.completedAt = [DateTime]::UtcNow.ToString("o")
 $evidencePathJson = Join-Path $evidencePath "capability-plugin-conformance.json"
 Write-Utf8NoBomFile -Path $evidencePathJson -Content (($evidence | ConvertTo-Json -Depth 16) + "`n")

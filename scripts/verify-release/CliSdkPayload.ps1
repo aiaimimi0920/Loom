@@ -52,6 +52,9 @@ function Assert-PluginSdkZipPayload {
         "loom-plugin.exe",
         "protocol/README.md",
         "protocol/schemas/art-runtime.v1.schema.json",
+        "protocol/schemas/capability-package.v1.schema.json",
+        "protocol/schemas/capability-runtime.v1.schema.json",
+        "protocol/schemas/extension.v1.schema.json",
         "protocol/schemas/framework-authoring.v1.schema.json",
         "protocol/schemas/framework-execute-request.v1.schema.json",
         "protocol/schemas/framework-execute-response.v1.schema.json",
@@ -62,6 +65,15 @@ function Assert-PluginSdkZipPayload {
         "protocol/schemas/surface-message.v1.schema.json",
         "protocol/schemas/surface-scene.v1.schema.json",
         "protocol/schemas/surface-stream.v1.schema.json",
+        "scripts/Invoke-LoomCapabilityPluginConformance.ps1",
+        "scripts/LoomSmokePorts.ps1",
+        "sdk/capability/README.md",
+        "sdk/capability/Test-Templates.ps1",
+        "sdk/capability/fake_host.py",
+        "sdk/capability/templates/python/runtime.py",
+        "sdk/capability/templates/rust/Cargo.toml",
+        "sdk/capability/templates/rust/src/main.rs",
+        "sdk/capability/templates/typescript/runtime.ts",
         "sdk/surface/README.md",
         "sdk/surface/neuro-surface.d.ts"
     ) | Sort-Object
@@ -91,5 +103,5 @@ function Assert-PluginSdkZipPayload {
     Assert-True -Condition ($null -ne $sdkProperty -and $null -ne $sdkProperty.Value) -Message "Manifest is missing pluginSdkArtifact."
     Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$sdkProperty.Value.entryName) -Message "Plugin SDK entry name mismatch."
     Assert-Equal -Expected "loom.framework.v1" -Actual ([string]$sdkProperty.Value.protocolVersion) -Message "Plugin SDK protocol version mismatch."
-    Assert-Equal -Expected 11 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
+    Assert-Equal -Expected 14 -Actual ([int]$sdkProperty.Value.schemaCount) -Message "Plugin SDK schema count mismatch."
 }

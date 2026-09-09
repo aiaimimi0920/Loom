@@ -108,7 +108,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
     },
     "publisherId": {
       "type": "string",
@@ -120,7 +120,7 @@
       "type": "string",
       "minLength": 5,
       "maxLength": 384,
-      "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._-]*\\.[a-z0-9][a-z0-9._-]*$"
+      "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9_-]*\\.[a-z0-9][a-z0-9._-]*$"
     },
     "semver": {
       "type": "string",
@@ -267,7 +267,7 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 257,
-          "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._-]*$"
+          "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9_-]*$"
         },
         "version": { "type": "string", "minLength": 1, "maxLength": 128 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },

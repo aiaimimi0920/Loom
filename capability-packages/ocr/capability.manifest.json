@@ -4,7 +4,7 @@
   "id": "ocr",
   "name": "OCR 识别能力",
   "description": "按需为 Hook 贴图提供本地 OCR、二维码/条码识别、文本复制和可交互覆盖层。",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "publisher": {
     "id": "neuro.official",
     "keyId": "neuro-official-capability-2"
@@ -148,14 +148,14 @@
         "command": "neuro.official/ocr.recognize-selected-unit",
         "when": "unit.kind == 'sticker' && unit.hasImage",
         "order": 20,
-        "payload": { "keys": "ctrl+2", "global": true }
+        "payload": { "keys": "ctrl+4", "global": true }
       },
       {
         "id": "neuro.official/ocr.shortcut.toggle-overlay",
         "command": "neuro.official/ocr.toggle-overlay",
         "when": "unit.kind == 'sticker'",
         "order": 21,
-        "payload": { "keys": "alt+2" }
+        "payload": { "keys": "alt+4" }
       }
     ],
     "menus": [
@@ -169,7 +169,7 @@
         "payload": {
           "groupId": "neuro.official/ocr.menu",
           "groupTitle": "OCR",
-          "disabledTitle": "请先按 Ctrl+2 重新识别当前贴图"
+          "disabledTitle": "请先按 Ctrl+4 重新识别当前贴图"
         }
       },
       {
@@ -182,7 +182,7 @@
         "payload": {
           "groupId": "neuro.official/ocr.menu",
           "groupTitle": "OCR",
-          "disabledTitle": "请先按 Ctrl+2 重新识别当前贴图"
+          "disabledTitle": "请先按 Ctrl+4 重新识别当前贴图"
         }
       },
       {
@@ -253,8 +253,8 @@
     "memoryMiB": 1024,
     "maxProcesses": 1,
     "timeoutSeconds": 60,
-    "diskMib": 1024,
-    "stderrKibPerMinute": 64
+    "diskMiB": 1024,
+    "stderrKiBPerMinute": 64
   },
   "dependencies": [],
   "signature": {

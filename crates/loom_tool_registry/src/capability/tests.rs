@@ -1,15 +1,15 @@
 use std::fs;
-use std::io::{Cursor, Write as _};
-use std::path::{Path, PathBuf};
 
-use loom_plugin_security::{generate_signing_key, sign_package, TrustPolicy, TrustStore};
-use loom_protocol::{PackageTrustStatus, PublisherTrustRecord};
-use serde_json::{json, Value};
-use zip::write::SimpleFileOptions;
+use loom_plugin_security::{generate_signing_key, TrustPolicy};
+use loom_protocol::PackageTrustStatus;
+use serde_json::json;
 
 use super::*;
 
+mod fixtures;
 mod runtime_integrity_tests;
+
+use fixtures::*;
 
 #[test]
 fn installs_trusted_package_disabled_and_reuses_identical_version() {
@@ -129,6 +129,43 @@ fn lifecycle_upgrade_rollback_disable_and_uninstall_are_registry_driven() {
         .packages_root()
         .join("publisher.example/text-tools")
         .exists());
+    cleanup(&root);
+}
+
+#[test]
+fn disabling_and_re_enabling_keeps_the_rollback_target() {
+    let root = temp_root("lifecycle-rollback-target");
+    let key = generate_signing_key("release-1");
+    write_trust_store(&root, &key, TrustPolicy::RequireTrusted);
+    let registry = CapabilityPluginRegistry::new(&root);
+    let grants = CapabilityGrantStore::new(&root);
+    let v1 = signed_package(&root, &key, manifest("capability", "1.0.0"), b"one");
+    let v1 = install_capability_from_zip(&v1, &registry).expect("install v1");
+    registry
+        .enable(&grants, &v1.qualified_id, Some(&v1.digest))
+        .expect("enable v1");
+    let v2 = signed_package(&root, &key, manifest("capability", "2.0.0"), b"two");
+    let v2 = install_capability_from_zip(&v2, &registry).expect("install v2");
+    registry
+        .upgrade(&grants, &v2.qualified_id, &v2.digest)
+        .expect("upgrade to v2");
+
+    registry.disable(&v1.qualified_id).expect("disable");
+    let enabled = registry
+        .enable(&grants, &v1.qualified_id, None)
+        .expect("re-enable");
+
+    // The rollback target is the version the upgrade displaced, and switching the plugin off and
+    // back on is not an activation that displaces anything.
+    assert_eq!(enabled.active_digest.as_deref(), Some(v2.digest.as_str()));
+    assert_eq!(enabled.previous_digest.as_deref(), Some(v1.digest.as_str()));
+    let rolled_back = registry
+        .rollback(&grants, &v1.qualified_id)
+        .expect("rollback after the round trip");
+    assert_eq!(
+        rolled_back.active_digest.as_deref(),
+        Some(v1.digest.as_str())
+    );
     cleanup(&root);
 }
 
@@ -317,6 +354,13 @@ fn config_store_is_revisioned_bounded_and_rejects_secret_keys() {
     assert!(store
         .write("publisher.example/text-tools", 1, secret)
         .is_err());
+    for unsafe_id in [
+        "publisher.example/con",
+        "publisher.example/text.tools",
+        "con/text-tools",
+    ] {
+        assert!(store.read(unsafe_id).is_err(), "{unsafe_id}");
+    }
     cleanup(&root);
 }
 
@@ -363,159 +407,4 @@ fn runtime_failure_window_persists_backoff_and_faults_at_the_bound() {
     );
     assert_eq!(retried.status, CapabilityLifecycleStatus::Active);
     cleanup(&root);
-}
-
-fn manifest(kind: &str, version: &str) -> Value {
-    json!({
-        "schemaVersion": 1,
-        "kind": kind,
-        "id": "text-tools",
-        "name": "Text Tools",
-        "description": "Test package",
-        "version": version,
-        "publisher": { "id": "publisher.example", "keyId": "release-1" },
-        "hostCompatibility": {
-            "loomCapabilityApi": { "minimum": "1.0" },
-            "hookExtensionApi": { "minimum": "1.0" }
-        },
-        "entrypoints": {
-            "service": {
-                "targets": {
-                    "windows-x64": { "command": "runtime/text-tools.exe" }
-                },
-                "processModel": "on_demand"
-            }
-        },
-        "activationEvents": ["onCommand:publisher.example/text-tools.transform"],
-        "contributes": {
-            "commands": [{
-                "id": "publisher.example/text-tools.transform",
-                "title": "Transform text"
-            }]
-        },
-        "permissions": [],
-        "resources": { "memoryMiB": 64, "maxProcesses": 1, "timeoutSeconds": 10 },
-        "dependencies": [],
-        "signature": {
-            "algorithm": "ed25519",
-            "keyId": "release-1",
-            "file": "signature.json"
-        }
-    })
-}
-
-fn signed_package(
-    root: &Path,
-    key: &loom_plugin_security::SigningKeyDocument,
-    manifest: Value,
-    payload: &[u8],
-) -> Vec<u8> {
-    let package = root.join("fixture-package");
-    let _ = fs::remove_dir_all(&package);
-    fs::create_dir_all(package.join("runtime/resources/ocr")).expect("package dirs");
-    fs::write(
-        package.join("capability.manifest.json"),
-        serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
-    )
-    .expect("manifest");
-    fs::write(package.join("runtime/text-tools.exe"), payload).expect("runtime");
-    fs::write(
-        package.join("runtime/resources/ocr/text-model.onnx"),
-        b"model",
-    )
-    .expect("model");
-    sign_package(&package, "signature.json", key).expect("sign package");
-    zip_directory(&package)
-}
-
-fn zip_directory(directory: &Path) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    {
-        let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options = SimpleFileOptions::default();
-        for name in [
-            "capability.manifest.json",
-            "runtime/text-tools.exe",
-            "runtime/resources/ocr/text-model.onnx",
-            "signature.json",
-        ] {
-            writer.start_file(name, options).expect("zip entry");
-            writer
-                .write_all(&fs::read(directory.join(name)).expect("package file"))
-                .expect("zip content");
-        }
-        writer.finish().expect("finish zip");
-    }
-    bytes
-}
-
-fn replace_zip_entry(bytes: &[u8], target: &str, replacement: &[u8]) -> Vec<u8> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("read zip");
-    let mut output = Vec::new();
-    {
-        let mut writer = zip::ZipWriter::new(Cursor::new(&mut output));
-        let options = SimpleFileOptions::default();
-        for index in 0..archive.len() {
-            let mut entry = archive.by_index(index).expect("zip entry");
-            let name = entry.name().to_owned();
-            writer.start_file(&name, options).expect("start entry");
-            if name == target {
-                writer.write_all(replacement).expect("replacement");
-            } else {
-                std::io::copy(&mut entry, &mut writer).expect("copy entry");
-            }
-        }
-        writer.finish().expect("finish zip");
-    }
-    output
-}
-
-fn write_trust_store(
-    root: &Path,
-    key: &loom_plugin_security::SigningKeyDocument,
-    policy: TrustPolicy,
-) {
-    fs::create_dir_all(root).expect("control root");
-    let mut store = TrustStore::default();
-    store.set_policy(policy);
-    store.trust(PublisherTrustRecord {
-        publisher_id: "publisher.example".to_owned(),
-        key_id: key.key_id.clone(),
-        public_key: key.public_key.clone(),
-        revoked: false,
-    });
-    store
-        .write_atomic(&root.join("plugin-trust.json"))
-        .expect("trust store");
-}
-
-fn assert_staging_empty(registry: &CapabilityPluginRegistry) {
-    let staging = registry.packages_root().join(".staging");
-    assert_eq!(fs::read_dir(staging).expect("staging").count(), 0);
-}
-
-fn assert_lifecycle_journals_empty(registry: &CapabilityPluginRegistry) {
-    let lifecycle = registry.packages_root().join(".lifecycle");
-    let journals = fs::read_dir(lifecycle)
-        .expect("lifecycle")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("json"))
-        .count();
-    assert_eq!(journals, 0);
-}
-
-fn temp_root(name: &str) -> PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "loom-capability-{name}-{}-{nonce}",
-        std::process::id()
-    ))
-}
-
-fn cleanup(root: &Path) {
-    let _ = crate::install::fs_safety::set_tree_readonly(root, false);
-    let _ = fs::remove_dir_all(root);
 }

@@ -14,11 +14,11 @@ impl CapabilityRuntimeHost {
             .cloned()
             .ok_or_else(|| CapabilityHostError::NotFound(invocation.command_id.clone()))?;
         let _permit = InvocationAdmission::acquire(&self.admission, &self.limits, &plugin_id)?;
-        let active = lock(&self.packages)?
+        let active_handle = lock(&self.packages)?
             .get(&plugin_id)
             .cloned()
             .ok_or_else(|| CapabilityHostError::Unavailable(plugin_id.clone()))?;
-        let mut active = lock(&active)?;
+        let mut active = lock(&active_handle)?;
         let command = active
             .effective_contributions
             .commands
@@ -40,7 +40,7 @@ impl CapabilityRuntimeHost {
         )?;
         validate_staged_resources(&invocation)?;
         if requires_user_gesture {
-            self.consume_user_gesture(&invocation)?;
+            self.consume_user_gesture(&plugin_id, &invocation)?;
         }
         if active.package.manifest.entrypoints.service.is_none() {
             return Err(CapabilityHostError::Unavailable(
@@ -78,6 +78,16 @@ impl CapabilityRuntimeHost {
             .as_ref()
             .expect("process was ensured")
             .client()?;
+        // Snapshot what the response path needs so the per-package lock can be
+        // released across the blocking call. The package is pinned to the one
+        // the input was validated against.
+        let package = Arc::clone(&active.package);
+        let on_demand = package
+            .manifest
+            .entrypoints
+            .service
+            .as_ref()
+            .is_some_and(|service| service.process_model == CapabilityProcessModel::OnDemand);
         {
             let mut inflight = lock(&self.inflight)?;
             if inflight.contains_key(&invocation.request_id) {
@@ -92,10 +102,20 @@ impl CapabilityRuntimeHost {
                 },
             );
         }
+        // Holding the package lock here would stall `health`, `contribution_snapshot`,
+        // `prune_idle`, `deactivate` and `cancel` for the full command timeout — up to
+        // a minute for OCR. The admission permit plus `max_plugin_inflight` already
+        // serialise same-plugin invocations, so the lock is not what protects this call.
+        // Stamp the dispatch rather than only the completion: `prune_idle` decides purely on
+        // `last_used`, so a plugin that had been idle just short of the timeout would have its
+        // runtime reaped out from under a request that had only just started.
+        active.last_used = Instant::now();
+        drop(active);
         let response = process.call(message, timeout);
         lock(&self.inflight)?.remove(&invocation.request_id);
         // Drop the last request sender before failed runtime teardown joins its writer thread.
         drop(process);
+        let mut active = lock(&active_handle)?;
         active.last_used = Instant::now();
         let response = match response {
             Ok(response) => {
@@ -108,14 +128,7 @@ impl CapabilityRuntimeHost {
                 return Err(error);
             }
         };
-        if active
-            .package
-            .manifest
-            .entrypoints
-            .service
-            .as_ref()
-            .is_some_and(|service| service.process_model == CapabilityProcessModel::OnDemand)
-        {
+        if on_demand {
             if let Some(mut process) = active.process.take() {
                 let _ = call_method(
                     &mut process,
@@ -125,12 +138,12 @@ impl CapabilityRuntimeHost {
                 );
             }
         }
-        let output = response_output(&active.package, response)?;
+        let output = response_output(&package, response)?;
         let validators = active.command_schemas.get(&command.id).ok_or_else(|| {
             CapabilityHostError::InvalidPackage("command schema is missing".to_owned())
         })?;
         validate_command_output(
-            &active.package,
+            &package,
             &command,
             validators,
             &output,
@@ -173,7 +186,11 @@ impl CapabilityRuntimeHost {
         }
     }
 
-    fn consume_user_gesture(&self, invocation: &CapabilityInvocation) -> HostResult<()> {
+    fn consume_user_gesture(
+        &self,
+        plugin_id: &str,
+        invocation: &CapabilityInvocation,
+    ) -> HostResult<()> {
         let token = invocation.user_gesture_token.as_deref().ok_or_else(|| {
             CapabilityHostError::Protocol("command requires a user gesture token".to_owned())
         })?;
@@ -184,7 +201,11 @@ impl CapabilityRuntimeHost {
         let grant = lock(&self.gestures)?.remove(token).ok_or_else(|| {
             CapabilityHostError::Protocol("user gesture token is invalid or consumed".to_owned())
         })?;
+        // The grant records the owner the command resolved to when the gesture was issued, so
+        // checking it keeps the token bound to that plugin even if command ownership moves
+        // between issuing and consuming.
         if grant.expires_at <= Instant::now()
+            || grant.plugin_id != plugin_id
             || grant.command_id != invocation.command_id
             || grant.target != target
         {

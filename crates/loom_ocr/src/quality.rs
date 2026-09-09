@@ -150,12 +150,19 @@ fn reading_order_accuracy(expected: &[&str], actual: &[&str]) -> Option<f32> {
     let mut used = vec![false; actual.len()];
     let mut matched_positions = Vec::new();
     for expected_text in expected {
+        // `is_plausible_distance` and the nearest-match ordering both need the same edit
+        // distance, so computing it once and carrying it into the comparison halves the
+        // dynamic-programming work over a fixture set instead of filling the same table
+        // twice per candidate.
         let position = actual
             .iter()
             .enumerate()
             .filter(|(index, _)| !used[*index])
-            .filter(|(_, text)| plausible_text_match(expected_text, text))
-            .min_by_key(|(_, text)| text_distance(expected_text, text))
+            .filter_map(|(index, text)| {
+                let distance = text_distance(expected_text, text);
+                is_plausible_distance(expected_text, distance).then_some((index, distance))
+            })
+            .min_by_key(|(_, distance)| *distance)
             .map(|(index, _)| index);
         if let Some(position) = position {
             used[position] = true;
@@ -172,8 +179,7 @@ fn reading_order_accuracy(expected: &[&str], actual: &[&str]) -> Option<f32> {
     Some(ordered_pairs as f32 / (expected.len() - 1) as f32)
 }
 
-fn plausible_text_match(expected: &str, actual: &str) -> bool {
-    let distance = text_distance(expected, actual);
+fn is_plausible_distance(expected: &str, distance: usize) -> bool {
     if distance == usize::MAX {
         return false;
     }

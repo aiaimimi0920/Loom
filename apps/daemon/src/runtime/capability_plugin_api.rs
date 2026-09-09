@@ -44,14 +44,27 @@ fn route_capability_plugins(
     // Lifecycle transitions include process and resource side effects in addition
     // to atomic registry writes. Serialize the complete transition so a competing
     // request cannot make compensation restore stale state.
-    let _operation_guard = match capability_plugin_operation_lock().lock() {
-        Ok(guard) => guard,
-        Err(_) => return Some(Err(anyhow::anyhow!("capability lifecycle lock is unavailable"))),
-    };
-    let previous_generation = runtime
-        .contribution_snapshot()
-        .ok()
-        .map(|snapshot| snapshot.generation);
+    //
+    // Read-only routes stay outside the guard on purpose. Both catalog routes talk to a remote
+    // host while they hold it, so serializing reads too would let one slow catalog fetch stall
+    // every list, settings read and lifecycle transition for as long as the request executor
+    // waits. Reads need no guard of their own: the registry re-reads its document under a file
+    // lock on every call, and journal recovery takes the same per-plugin file lock the live
+    // transition holds.
+    //
+    // Poisoning is recovered rather than reported. The guard orders on-disk work that is already
+    // crash-safe on its own, so a handler that panicked leaves nothing a later caller could
+    // observe half-applied; honouring the flag would instead disable the whole capability API
+    // until the daemon restarts.
+    let _operation_guard = capability_mutating_route(request, route_path).then(|| {
+        capability_plugin_operation_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
+    // Only the counter is read here. Building a whole snapshot to learn the generation would lock
+    // and deep-clone every active package on every capability request, including the reads that
+    // never change contributions.
+    let previous_generation = runtime.generation();
     let updates_capability_inventory = capability_lifecycle_route(request, route_path);
     let response = match (request.method.as_str(), route_path) {
         ("GET", "/v1/capability-plugins/extensions") => capability_extension_snapshot(runtime),
@@ -154,8 +167,8 @@ fn route_capability_plugins(
         _ => return None,
     };
     if response.as_ref().is_ok_and(|(status, _)| *status < 400) {
-        if let Ok(snapshot) = runtime.contribution_snapshot() {
-            if previous_generation.is_some_and(|generation| generation != snapshot.generation) {
+        if runtime.generation() != previous_generation {
+            if let Ok(snapshot) = runtime.contribution_snapshot() {
                 broadcast_hook_bridge_json(hook_bridge, extension_snapshot_event(snapshot));
             }
         }
@@ -166,6 +179,21 @@ fn route_capability_plugins(
         }
     }
     Some(response)
+}
+
+// Every route that writes control-plane state, whether or not it changes the installed inventory.
+fn capability_mutating_route(request: &ParsedHttpRequest, route_path: &str) -> bool {
+    const PREFIX: &str = "/v1/capability-plugins/";
+    match request.method.as_str() {
+        // Approval writes a grant rather than an inventory entry, so it is not a lifecycle route,
+        // but an activation racing it must still observe one whole grant or none of it.
+        "POST" => {
+            capability_lifecycle_route(request, route_path)
+                || decoded_package_path_id_with_suffix(route_path, PREFIX, "/approve").is_some()
+        }
+        "PUT" => decoded_package_path_id_with_suffix(route_path, PREFIX, "/settings").is_some(),
+        _ => false,
+    }
 }
 
 fn capability_lifecycle_route(request: &ParsedHttpRequest, route_path: &str) -> bool {

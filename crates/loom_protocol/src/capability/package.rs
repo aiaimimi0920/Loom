@@ -181,9 +181,22 @@ pub struct CapabilityResourceLimits {
     pub memory_mib: u64,
     pub max_processes: u32,
     pub timeout_seconds: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // `deny_unknown_fields` makes the wire spelling load-bearing: the published schema names these
+    // `diskMiB` and `stderrKiBPerMinute`, and a manifest written against it would otherwise be
+    // rejected with an opaque deserialization error.
+    #[serde(
+        default,
+        rename = "diskMiB",
+        alias = "diskMib",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub disk_mib: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "stderrKiBPerMinute",
+        alias = "stderrKibPerMinute",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stderr_kib_per_minute: Option<u64>,
 }
 

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use loom_protocol::{is_safe_capability_package_id, is_safe_capability_publisher_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -117,7 +118,7 @@ impl CapabilityConfigStore {
         let (publisher, package) = qualified_id.split_once('/').ok_or_else(|| {
             CapabilityInstallError::InvalidState("invalid capability id".to_owned())
         })?;
-        if !safe_segment(publisher) || !safe_segment(package) {
+        if !is_safe_capability_publisher_id(publisher) || !is_safe_capability_package_id(package) {
             return Err(CapabilityInstallError::InvalidState(
                 "invalid capability id".to_owned(),
             ));
@@ -127,8 +128,10 @@ impl CapabilityConfigStore {
 }
 
 fn validate_values(values: &Map<String, Value>) -> CapabilityResult<()> {
-    let value = Value::Object(values.clone());
-    if json_depth(&value) > CONFIG_MAX_DEPTH || contains_secret_key(&value) {
+    // Walked in place rather than through a `Value::Object(values.clone())` wrapper: the wrapper
+    // deep-copied the whole document, up to `CONFIG_MAX_BYTES`, on every settings read and write
+    // purely to inspect it.
+    if map_depth(values) > CONFIG_MAX_DEPTH || map_contains_secret_key(values) {
         return Err(CapabilityInstallError::InvalidState(
             "capability config is too deep or contains a secret-like key".to_owned(),
         ));
@@ -136,26 +139,34 @@ fn validate_values(values: &Map<String, Value>) -> CapabilityResult<()> {
     Ok(())
 }
 
+fn map_contains_secret_key(values: &Map<String, Value>) -> bool {
+    values.iter().any(|(key, value)| {
+        let key = key.to_ascii_lowercase().replace('-', "_");
+        [
+            "secret",
+            "password",
+            "token",
+            "api_key",
+            "apikey",
+            "credential",
+            "private_key",
+        ]
+        .iter()
+        .any(|needle| key.contains(needle))
+            || contains_secret_key(value)
+    })
+}
+
 fn contains_secret_key(value: &Value) -> bool {
     match value {
-        Value::Object(values) => values.iter().any(|(key, value)| {
-            let key = key.to_ascii_lowercase().replace('-', "_");
-            [
-                "secret",
-                "password",
-                "token",
-                "api_key",
-                "apikey",
-                "credential",
-                "private_key",
-            ]
-            .iter()
-            .any(|needle| key.contains(needle))
-                || contains_secret_key(value)
-        }),
+        Value::Object(values) => map_contains_secret_key(values),
         Value::Array(values) => values.iter().any(contains_secret_key),
         _ => false,
     }
+}
+
+fn map_depth(values: &Map<String, Value>) -> usize {
+    1 + values.values().map(json_depth).max().unwrap_or(0)
 }
 
 fn json_depth(value: &Value) -> usize {
@@ -164,13 +175,4 @@ fn json_depth(value: &Value) -> usize {
         Value::Object(values) => 1 + values.values().map(json_depth).max().unwrap_or(0),
         _ => 1,
     }
-}
-
-fn safe_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
-        })
-        && !value.contains("..")
 }

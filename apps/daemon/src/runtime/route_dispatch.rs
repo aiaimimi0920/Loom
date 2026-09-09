@@ -16,6 +16,7 @@ fn route(
     workflow_store: &WorkflowStore,
     hook_bridge: &SharedHookBridgeRuntime,
     device_registry: &SharedDeviceRegistryStore,
+    live_sessions: &SharedLiveSessionStore,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
     surface_resources: &SharedSurfaceResourceStore,
@@ -93,6 +94,17 @@ fn route(
         );
     }
 
+    if let Some(response) = route_live_sessions(
+        request,
+        route_path,
+        live_sessions,
+        surface_instances,
+        surface_actions,
+        authenticated_device_id.as_deref(),
+    ) {
+        return response;
+    }
+
     // Ordered route groups preserve the former match-table precedence and final fallback.
     route_surfaces_devices(
         request,
@@ -109,6 +121,7 @@ fn route(
         capability_runtime,
         capability_resources,
         device_registry,
+        live_sessions,
         surface_instances,
         surface_actions,
         surface_resources,

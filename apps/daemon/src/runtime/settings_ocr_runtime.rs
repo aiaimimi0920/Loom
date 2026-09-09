@@ -377,7 +377,7 @@ struct LoomSettingsStore {
 
 impl LoomSettingsStore {
     fn new(path: PathBuf) -> Self {
-        let settings = match fs::read_to_string(&path) {
+        let mut settings = match fs::read_to_string(&path) {
             Ok(content) => match serde_json::from_str::<LoomSettings>(&content) {
                 Ok(settings) => settings,
                 // Defaulting silently here used to be invisible, and the next `save` would then
@@ -402,6 +402,7 @@ impl LoomSettingsStore {
                 LoomSettings::default()
             }
         };
+        migrate_shortcut_defaults(&mut settings);
         Self { path, settings }
     }
 
@@ -415,9 +416,13 @@ fn default_shortcuts() -> Vec<LoomShortcutConfig> {
     [
         ("cancel", "Cancel / Deselect", "Escape"),
         ("capture", "Screenshot", "Ctrl+1"),
+        ("live_capture", "Live Screenshot", "Ctrl+2"),
+        ("long_capture", "Long Screenshot", "Ctrl+3"),
         ("copy_unit", "Copy Unit", "Ctrl+C"),
         ("paste_unit", "Paste Unit", "Ctrl+V"),
         ("save_image", "Save Image", "Ctrl+S"),
+        ("toggle_clean_view", "Clean View", "Ctrl+Shift+4"),
+        ("toggle_ocr", "Toggle OCR", "Alt+4"),
     ]
     .into_iter()
     .map(|(id, label, keys)| LoomShortcutConfig {
@@ -427,4 +432,23 @@ fn default_shortcuts() -> Vec<LoomShortcutConfig> {
         enabled: true,
     })
     .collect()
+}
+
+fn migrate_shortcut_defaults(settings: &mut LoomSettings) {
+    if let Some(shortcut) = settings.shortcuts.get_mut("toggle_clean_view") {
+        if shortcut.keys.trim().eq_ignore_ascii_case("Ctrl+4") {
+            shortcut.keys = "Ctrl+Shift+4".to_owned();
+        }
+    }
+    if let Some(shortcut) = settings.shortcuts.get_mut("toggle_ocr") {
+        if shortcut.keys.trim().eq_ignore_ascii_case("Alt+2") {
+            shortcut.keys = "Alt+4".to_owned();
+        }
+    }
+    for shortcut in default_shortcuts() {
+        settings
+            .shortcuts
+            .entry(shortcut.id.clone())
+            .or_insert(shortcut);
+    }
 }

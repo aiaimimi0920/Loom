@@ -24,6 +24,14 @@ pub enum PluginSecurityError {
     InvalidKey(String),
     #[error("signature verification failed")]
     VerificationFailed,
+    #[error(
+        "package claims publisher `{publisher_id}` but is signed with key `{key_id}`, which this \
+         machine does not record for that publisher"
+    )]
+    PublisherKeyMismatch {
+        publisher_id: String,
+        key_id: String,
+    },
     #[error("plugin trust policy rejected package status {0:?}")]
     TrustPolicyRejected(PackageTrustStatus),
     #[error("io error: {0}")]

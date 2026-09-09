@@ -77,6 +77,71 @@ fn contribution_ids_are_owned_and_unique_case_insensitively() {
 }
 
 #[test]
+fn package_ids_cannot_nest_so_one_package_cannot_claim_another_namespace() {
+    // Everything a package owns is matched by the prefix `"{publisher}/{package}."`. A dotted
+    // package id makes those prefixes nest — `publisher.example/text-tools.` is a prefix of every
+    // id belonging to a package called `text-tools.extra` — which would let one package mint
+    // contribution, attachment, data type and resource ids inside another's namespace.
+    let mut value = manifest_value();
+    value["id"] = json!("text-tools.extra");
+    value["contributes"]["commands"][0]["id"] =
+        json!("publisher.example/text-tools.extra.transform");
+    assert!(matches!(
+        parse_capability_manifest(value.to_string().as_bytes()),
+        Err(CapabilityValidationError::UnsafeId {
+            field: "package id",
+            ..
+        })
+    ));
+
+    // A dependency names a package the same way, so it carries the same restriction.
+    let mut value = manifest_value();
+    value["dependencies"] =
+        json!([{ "id": "publisher.example/text-tools.extra", "version": "1.0.0" }]);
+    assert!(matches!(
+        parse_capability_manifest(value.to_string().as_bytes()),
+        Err(CapabilityValidationError::InvalidDependency(id)) if id == "publisher.example/text-tools.extra"
+    ));
+
+    // Publishers keep reverse-DNS dots: `/` belongs to no id alphabet, so they cannot nest.
+    let mut value = manifest_value();
+    value["publisher"]["id"] = json!("publisher.example.team");
+    value["activationEvents"] = json!(["onCommand:publisher.example.team/text-tools.transform"]);
+    value["contributes"]["commands"][0]["id"] =
+        json!("publisher.example.team/text-tools.transform");
+    assert!(parse_capability_manifest(value.to_string().as_bytes()).is_ok());
+}
+
+#[test]
+fn capability_id_rules_are_exported_so_the_catalog_cannot_advertise_uninstallable_packages() {
+    // The signed catalog decides whether a package is installable before anything is downloaded,
+    // so it has to apply the manifest's rule rather than the package-wide one. `is_safe_package_id`
+    // allows dots because framework and art ids are dotted by convention; capability package ids
+    // cannot be, or their namespaces nest.
+    assert!(crate::is_safe_package_id("core.image.pixelate"));
+    assert!(!is_safe_capability_package_id("core.image.pixelate"));
+    assert!(is_safe_capability_package_id("text-tools"));
+    assert!(is_safe_capability_publisher_id("publisher.example"));
+
+    // Both halves become directory components under the packages root.
+    for reserved in ["con", "nul", "aux", "com1", "lpt9", "con.example"] {
+        assert!(
+            !is_safe_capability_publisher_id(reserved),
+            "{reserved} names a Windows device"
+        );
+    }
+    let mut value = manifest_value();
+    value["publisher"]["id"] = json!("nul");
+    assert!(matches!(
+        parse_capability_manifest(value.to_string().as_bytes()),
+        Err(CapabilityValidationError::UnsafeId {
+            field: "publisher id",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn settings_use_bounded_manifest_driven_field_definitions() {
     let mut value = manifest_value();
     value["contributes"]["settings"] = json!([{
@@ -134,6 +199,64 @@ fn command_permissions_must_be_declared_by_the_package() {
 }
 
 #[test]
+fn sandbox_budgets_are_bounded_so_a_package_cannot_opt_out_of_containment() {
+    // Each of these is applied verbatim by the runtime: an unbounded `memoryMiB` overflows the
+    // byte conversion and removes the memory cap, and an unbounded timeout pins an invocation
+    // slot indefinitely.
+    for (pointer, value) in [
+        ("memoryMiB", json!(MAX_CAPABILITY_MEMORY_MIB + 1)),
+        ("memoryMiB", json!(MIN_CAPABILITY_MEMORY_MIB - 1)),
+        ("maxProcesses", json!(MAX_CAPABILITY_PROCESSES + 1)),
+        ("maxProcesses", json!(0)),
+        ("timeoutSeconds", json!(MAX_CAPABILITY_TIMEOUT_SECONDS + 1)),
+        ("timeoutSeconds", json!(0)),
+        ("diskMiB", json!(MAX_CAPABILITY_DISK_MIB + 1)),
+        (
+            "stderrKiBPerMinute",
+            json!(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE + 1),
+        ),
+    ] {
+        let mut manifest = manifest_value();
+        manifest["resources"][pointer] = value.clone();
+        assert!(
+            matches!(
+                parse_capability_manifest(manifest.to_string().as_bytes()),
+                Err(CapabilityValidationError::InvalidResourceLimit { field }) if field == pointer
+            ),
+            "resources.{pointer} = {value} must be rejected"
+        );
+    }
+
+    // A per-command timeout replaces the package-wide one, so it carries the same ceiling.
+    let mut manifest = manifest_value();
+    manifest["contributes"]["commands"][0]["timeoutMs"] =
+        json!(MAX_CAPABILITY_TIMEOUT_SECONDS * 1_000 + 1);
+    assert!(matches!(
+        parse_capability_manifest(manifest.to_string().as_bytes()),
+        Err(CapabilityValidationError::InvalidResourceLimit {
+            field: "command timeoutMs"
+        })
+    ));
+
+    let mut manifest = manifest_value();
+    manifest["resources"]["memoryMiB"] = json!(MAX_CAPABILITY_MEMORY_MIB);
+    manifest["resources"]["timeoutSeconds"] = json!(MAX_CAPABILITY_TIMEOUT_SECONDS);
+    // The published schema spells these two with the `MiB`/`KiB` casing; `deny_unknown_fields`
+    // turns any disagreement between it and the Rust type into a load failure.
+    manifest["resources"]["diskMiB"] = json!(MAX_CAPABILITY_DISK_MIB);
+    manifest["resources"]["stderrKiBPerMinute"] = json!(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE);
+    manifest["contributes"]["commands"][0]["timeoutMs"] =
+        json!(MAX_CAPABILITY_TIMEOUT_SECONDS * 1_000);
+    let parsed =
+        parse_capability_manifest(manifest.to_string().as_bytes()).expect("budgets at the ceiling");
+    assert_eq!(parsed.resources.disk_mib, Some(MAX_CAPABILITY_DISK_MIB));
+    assert_eq!(
+        parsed.resources.stderr_kib_per_minute,
+        Some(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE)
+    );
+}
+
+#[test]
 fn manifest_depth_and_bytes_are_bounded_before_typed_use() {
     let mut nested = json!(null);
     for _ in 0..=MAX_CAPABILITY_JSON_DEPTH {
@@ -154,6 +277,24 @@ fn manifest_depth_and_bytes_are_bounded_before_typed_use() {
         parse_capability_manifest(&oversized),
         Err(CapabilityValidationError::ManifestTooLarge)
     );
+}
+
+#[test]
+fn legacy_resource_limit_casing_loads_but_serializes_canonically() {
+    let mut manifest = manifest_value();
+    manifest["resources"]["diskMib"] = json!(512);
+    manifest["resources"]["stderrKibPerMinute"] = json!(256);
+
+    let parsed = parse_capability_manifest(manifest.to_string().as_bytes())
+        .expect("legacy released manifest must remain loadable");
+    assert_eq!(parsed.resources.disk_mib, Some(512));
+    assert_eq!(parsed.resources.stderr_kib_per_minute, Some(256));
+
+    let serialized = serde_json::to_value(parsed.resources).expect("serialize resources");
+    assert_eq!(serialized["diskMiB"], json!(512));
+    assert_eq!(serialized["stderrKiBPerMinute"], json!(256));
+    assert!(serialized.get("diskMib").is_none());
+    assert!(serialized.get("stderrKibPerMinute").is_none());
 }
 
 #[test]
@@ -250,6 +391,39 @@ fn extension_attachment_effects_are_cas_bound_and_content_addressed() {
 }
 
 #[test]
+fn extension_effect_payload_budget_is_measured_exactly_at_the_boundary() {
+    // The budget is enforced by a counting sink rather than a materialised encoding, so the
+    // boundary is pinned here: `{"blob":"<value>"}` serializes to `value.len() + 11` bytes.
+    let effect = |blob_len: usize| {
+        json!({
+            "protocol": crate::EXTENSION_PROTOCOL,
+            "apiVersion": "1.0",
+            "requestId": "request-1",
+            "status": "succeeded",
+            "effects": [{
+                "type": "attachment.upsert",
+                "payload": {
+                    "attachmentId": "result",
+                    "typeId": "publisher.example/demo.result.v1",
+                    "schemaVersion": "1.0",
+                    "priorRevision": 0,
+                    "revision": 1,
+                    "payload": { "blob": "a".repeat(blob_len) }
+                }
+            }]
+        })
+        .to_string()
+    };
+
+    const MAXIMUM: usize = 256 * 1024;
+    assert!(parse_extension_message(effect(MAXIMUM - 11).as_bytes()).is_ok());
+    assert_eq!(
+        parse_extension_message(effect(MAXIMUM - 10).as_bytes()),
+        Err(ExtensionValidationError::InvalidEffect)
+    );
+}
+
+#[test]
 fn extension_handshake_negotiates_optional_features_and_rejects_required_unknowns() {
     let mut request = ExtensionHandshakeRequest {
         request_id: "handshake-1".to_owned(),
@@ -325,4 +499,60 @@ fn extension_resource_uploads_are_explicit_and_backward_compatible() {
     let mut unknown = with_upload;
     unknown["params"]["resourceUploads"][0]["path"] = json!("C:/private.png");
     assert!(serde_json::from_value::<ExtensionBridgeRequest>(unknown).is_err());
+}
+
+#[test]
+fn extension_invocation_resources_are_unique_content_addressed_and_aggregate_bounded() {
+    let resource = |marker: char, byte_length: u64, lease_id: &str| {
+        let digest = marker.to_string().repeat(64);
+        json!({
+            "resourceId": format!("sha256:{digest}"),
+            "kind": "file",
+            "digest": digest,
+            "byteLength": byte_length,
+            "leaseId": lease_id
+        })
+    };
+    let invocation = |resources: Value| {
+        json!({
+            "protocol": crate::EXTENSION_PROTOCOL,
+            "apiVersion": "1.0",
+            "requestId": "request-1",
+            "pluginId": "publisher.example/plugin",
+            "commandId": "publisher.example/plugin.run",
+            "snapshotGeneration": 1,
+            "target": { "unitId": "unit-1", "revision": 2 },
+            "input": {},
+            "resourceRefs": resources
+        })
+        .to_string()
+    };
+
+    let maximum = MAX_EXTENSION_INVOCATION_RESOURCE_BYTES;
+    let valid = invocation(json!([
+        resource('a', maximum / 2, "lease-1"),
+        resource('b', maximum / 2, "lease-2")
+    ]));
+    assert!(parse_extension_message(valid.as_bytes()).is_ok());
+
+    for invalid in [
+        json!([resource('a', 1, "lease-1"), resource('a', 1, "lease-2")]),
+        json!([resource('a', 1, "lease-1"), resource('b', 1, "lease-1")]),
+        json!([
+            resource('a', maximum / 2, "lease-1"),
+            resource('b', maximum / 2 + 1, "lease-2")
+        ]),
+    ] {
+        assert_eq!(
+            parse_extension_message(invocation(invalid).as_bytes()),
+            Err(ExtensionValidationError::InvalidInvocation)
+        );
+    }
+
+    let mut inline = resource('a', 1, "lease-1");
+    inline["kind"] = json!("inline");
+    assert_eq!(
+        parse_extension_message(invocation(json!([inline])).as_bytes()),
+        Err(ExtensionValidationError::InvalidInvocation)
+    );
 }

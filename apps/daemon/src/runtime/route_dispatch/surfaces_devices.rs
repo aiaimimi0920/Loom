@@ -15,6 +15,7 @@ fn route_surfaces_devices(
     capability_runtime: &SharedCapabilityRuntime,
     capability_resources: &SharedCapabilityResourceBroker,
     device_registry: &SharedDeviceRegistryStore,
+    live_sessions: &SharedLiveSessionStore,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
     surface_resources: &SharedSurfaceResourceStore,
@@ -61,6 +62,7 @@ fn route_surfaces_devices(
                 brain_planner: brain_planner.status(),
                 run_store: run_store_status,
                 request_executor,
+                live_sessions: live_sessions.status(),
             })?,
         )),
         ("GET", "/v1/configuration/claims") if configuration_claim_app(&request.path).is_some() => {

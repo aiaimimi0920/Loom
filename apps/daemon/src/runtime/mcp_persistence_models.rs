@@ -179,6 +179,8 @@ struct StatusResponse {
     run_store: RunStoreStatus,
     #[serde(rename = "requestExecutor")]
     request_executor: RequestExecutorStatus,
+    #[serde(rename = "liveSessions")]
+    live_sessions: LiveRelayStatus,
 }
 
 #[derive(Serialize)]

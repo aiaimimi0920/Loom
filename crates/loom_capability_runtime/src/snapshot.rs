@@ -9,7 +9,7 @@ use crate::error::HostResult;
 use crate::host::CapabilityRuntimePackage;
 
 pub(super) struct SnapshotRegistration {
-    pub package: CapabilityRuntimePackage,
+    pub package: std::sync::Arc<CapabilityRuntimePackage>,
     pub contributions: CapabilityContributions,
     pub scope_id: String,
 }

@@ -1,9 +1,12 @@
 use std::fs;
 
-use loom_plugin_security::{canonical_package_digest, verify_package_signature, TrustStore};
+use loom_plugin_security::{
+    canonical_package_digest, verify_package_signature_with_digest, TrustStore,
+};
 use loom_protocol::{
     parse_capability_manifest, PackageSignature, PublisherIdentity, MAX_CAPABILITY_MANIFEST_BYTES,
 };
+use loom_security::metadata_has_link_semantics;
 
 use crate::error::HostResult;
 use crate::{CapabilityHostError, CapabilityRuntimePackage};
@@ -13,7 +16,7 @@ pub(crate) fn verify_runtime_package(package: &CapabilityRuntimePackage) -> Host
     let metadata = fs::symlink_metadata(&package.package_dir).map_err(|error| {
         CapabilityHostError::InvalidPackage(format!("read package directory: {error}"))
     })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if metadata_has_link_semantics(&metadata) || !metadata.is_dir() {
         return Err(CapabilityHostError::InvalidPackage(
             "package directory is linked or not a directory".to_owned(),
         ));
@@ -23,7 +26,7 @@ pub(crate) fn verify_runtime_package(package: &CapabilityRuntimePackage) -> Host
     let manifest_metadata = fs::symlink_metadata(&manifest_path).map_err(|error| {
         CapabilityHostError::InvalidPackage(format!("read capability manifest: {error}"))
     })?;
-    if manifest_metadata.file_type().is_symlink()
+    if metadata_has_link_semantics(&manifest_metadata)
         || !manifest_metadata.is_file()
         || manifest_metadata.len() > MAX_CAPABILITY_MANIFEST_BYTES as u64
     {
@@ -55,20 +58,40 @@ pub(crate) fn verify_runtime_package(package: &CapabilityRuntimePackage) -> Host
     };
     let trust_store = TrustStore::load(&package.trust_store_path)
         .map_err(|error| CapabilityHostError::InvalidPackage(error.to_string()))?;
-    let trust_status = verify_package_signature(
+    let verified = verify_package_signature_with_digest(
         &package.package_dir,
         Some(&identity),
         Some(&signature),
         &trust_store,
     )
     .map_err(|error| CapabilityHostError::InvalidPackage(error.to_string()))?;
+    let trust_status = verified.trust_status;
     trust_store
         .effective_policy()
-        .enforce(trust_status)
+        .enforce(trust_status.clone())
         .map_err(|error| CapabilityHostError::InvalidPackage(error.to_string()))?;
+    // The recorded status is what the contribution snapshot publishes to Hook, which gates UI
+    // affordances on it. Policy enforcement alone only rejects statuses the policy forbids, so a
+    // downgrade the policy still tolerates — a publisher key removed from the trust store turning
+    // `Trusted` into `Unsigned` — would leave the plugin running while Hook keeps showing the
+    // status it had at activation. Treat any drift as evidence the package must be re-admitted.
+    if trust_status != package.trust_status {
+        return Err(CapabilityHostError::InvalidPackage(
+            "installed package trust status no longer matches the registry".to_owned(),
+        ));
+    }
 
-    let actual_digest = canonical_package_digest(&package.package_dir, Some(&signature.file))
-        .map_err(|error| CapabilityHostError::InvalidPackage(error.to_string()))?;
+    // Reuses the digest the signature check already hashed the tree for. Recomputing it here meant
+    // every reverification walked and hashed the whole package twice, and this runs before every
+    // spawn — including every lazy restart after an idle session is pruned.
+    let actual_digest = match verified.canonical_digest {
+        Some(digest) => digest,
+        // Unreachable while a signature is supplied: the digest is skipped only for an unsigned
+        // package. Recomputed rather than assumed so an unsigned path added later still gets the
+        // integrity check instead of silently losing it.
+        None => canonical_package_digest(&package.package_dir, Some(&signature.file))
+            .map_err(|error| CapabilityHostError::InvalidPackage(error.to_string()))?,
+    };
     if actual_digest != package.digest {
         return Err(CapabilityHostError::InvalidPackage(
             "installed package digest no longer matches the registry".to_owned(),

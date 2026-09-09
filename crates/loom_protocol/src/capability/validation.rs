@@ -10,6 +10,15 @@ use crate::capability::CAPABILITY_SCHEMA_VERSION;
 
 pub const MAX_CAPABILITY_MANIFEST_BYTES: usize = 256 * 1024;
 pub const MAX_CAPABILITY_JSON_DEPTH: usize = 32;
+/// Ceilings for the sandbox budgets a package declares for itself. These mirror
+/// `protocol/schemas/capability-package.v1.schema.json`, which is the contract package authors
+/// write against; the schema is documentation only, so the numbers have to be enforced here too.
+pub const MIN_CAPABILITY_MEMORY_MIB: u64 = 16;
+pub const MAX_CAPABILITY_MEMORY_MIB: u64 = 4096;
+pub const MAX_CAPABILITY_PROCESSES: u32 = 16;
+pub const MAX_CAPABILITY_TIMEOUT_SECONDS: u64 = 120;
+pub const MAX_CAPABILITY_DISK_MIB: u64 = 2048;
+pub const MAX_CAPABILITY_STDERR_KIB_PER_MINUTE: u64 = 256;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CapabilityValidationError {
@@ -49,6 +58,8 @@ pub enum CapabilityValidationError {
     InvalidDependency(String),
     #[error("invalid setting contribution `{0}`")]
     InvalidSetting(String),
+    #[error("resource limit `{field}` is outside the supported range")]
+    InvalidResourceLimit { field: &'static str },
 }
 
 pub fn parse_capability_manifest(
@@ -91,6 +102,7 @@ pub fn validate_capability_manifest(
     validate_entrypoints(manifest)?;
     validate_permissions(&manifest.permissions)?;
     validate_contributions(manifest)?;
+    validate_resource_limits(manifest)?;
     validate_dependencies(manifest)?;
     if manifest.signature.algorithm != "ed25519"
         || manifest.signature.key_id != manifest.publisher.key_id
@@ -251,6 +263,64 @@ fn generic_contributions(
         .chain(&contributions.event_subscriptions)
 }
 
+/// Bounds the sandbox budgets a package can ask the host to enforce on its own behalf.
+///
+/// Every field here is turned into a live limit: `timeoutSeconds` becomes the ceiling on a
+/// command that declares no `timeoutMs`, `memoryMiB` and `maxProcesses` become job-object
+/// limits. Leaving them unbounded lets a package opt out of its own containment - an
+/// out-of-range `memoryMiB` overflows the byte conversion and drops the memory cap entirely,
+/// and an enormous `timeoutSeconds` pins an invocation slot for as long as the host runs.
+fn validate_resource_limits(
+    manifest: &CapabilityPackageManifest,
+) -> Result<(), CapabilityValidationError> {
+    let resources = &manifest.resources;
+    let out_of_range = [
+        (
+            "memoryMiB",
+            !(MIN_CAPABILITY_MEMORY_MIB..=MAX_CAPABILITY_MEMORY_MIB)
+                .contains(&resources.memory_mib),
+        ),
+        (
+            "maxProcesses",
+            !(1..=MAX_CAPABILITY_PROCESSES).contains(&resources.max_processes),
+        ),
+        (
+            "timeoutSeconds",
+            !(1..=MAX_CAPABILITY_TIMEOUT_SECONDS).contains(&resources.timeout_seconds),
+        ),
+        (
+            "diskMiB",
+            resources
+                .disk_mib
+                .is_some_and(|disk| !(1..=MAX_CAPABILITY_DISK_MIB).contains(&disk)),
+        ),
+        (
+            "stderrKiBPerMinute",
+            resources
+                .stderr_kib_per_minute
+                .is_some_and(|rate| !(1..=MAX_CAPABILITY_STDERR_KIB_PER_MINUTE).contains(&rate)),
+        ),
+    ]
+    .into_iter()
+    .find_map(|(field, invalid)| invalid.then_some(field));
+    if let Some(field) = out_of_range {
+        return Err(CapabilityValidationError::InvalidResourceLimit { field });
+    }
+    // A per-command timeout replaces the package-wide one rather than narrowing it, so it needs
+    // the same ceiling.
+    for command in &manifest.contributes.commands {
+        if command
+            .timeout_ms
+            .is_some_and(|timeout| !(1..=MAX_CAPABILITY_TIMEOUT_SECONDS * 1_000).contains(&timeout))
+        {
+            return Err(CapabilityValidationError::InvalidResourceLimit {
+                field: "command timeoutMs",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_dependencies(
     manifest: &CapabilityPackageManifest,
 ) -> Result<(), CapabilityValidationError> {
@@ -335,7 +405,7 @@ pub fn is_valid_capability_permission(permission: &str) -> bool {
             | "loom.pluginState.readWrite"
     ) || permission
         .strip_prefix("loom.credentials.use:")
-        .is_some_and(|name| is_safe_id(name, false))
+        .is_some_and(|name| is_safe_id(name, true))
 }
 
 fn validate_contribution_id(
@@ -344,7 +414,9 @@ fn validate_contribution_id(
     seen: &mut HashSet<String>,
 ) -> Result<(), CapabilityValidationError> {
     let local_id = id.strip_prefix(namespace);
-    if id.len() > 384 || !local_id.is_some_and(|value| is_safe_id(value, false)) {
+    // The local part may still be dotted — `menu.main` and `result.v1` are ordinary shapes — and
+    // that stays safe now that the namespace it hangs off cannot itself be extended with a dot.
+    if id.len() > 384 || !local_id.is_some_and(|value| is_safe_id(value, true)) {
         return Err(CapabilityValidationError::InvalidNamespace(id.to_owned()));
     }
     let folded = id.to_ascii_lowercase();
@@ -389,14 +461,47 @@ fn validate_publisher_id(value: &str) -> Result<(), CapabilityValidationError> {
     }
 }
 
-fn is_safe_id(value: &str, _publisher: bool) -> bool {
+/// Validates a capability package id: the local half of a `"{publisher}/{package}"` qualified id.
+///
+/// This is deliberately stricter than the package-wide [`crate::is_safe_package_id`], which allows
+/// dots because framework and art ids are dotted by convention. Callers that decide whether a
+/// capability package *could* be installed — the signed remote catalog, for one — have to apply
+/// the manifest's rule, otherwise they advertise packages that only fail at install time, after
+/// the download and signature verification have already been paid for.
+#[must_use]
+pub fn is_safe_capability_package_id(value: &str) -> bool {
+    is_safe_id(value, false)
+}
+
+/// Validates a capability publisher id. Dots stay legal so reverse-DNS publishers keep working.
+#[must_use]
+pub fn is_safe_capability_publisher_id(value: &str) -> bool {
+    is_safe_id(value, true)
+}
+
+/// Validates one identifier segment, optionally allowing `.` as an inner separator.
+///
+/// A package id must not contain `.`, because everything the package owns is namespaced by
+/// `"{publisher}/{package}."` and matched with a prefix test. With dots allowed there, namespaces
+/// nest: package `a` claims the prefix `pub/a.`, and every id belonging to package `a.b` —
+/// `pub/a.b.thing` — also starts with it. That let one package mint contribution ids, attachment
+/// ids, data type ids and resource ids inside another package's namespace. Publisher ids keep
+/// their dots: the `/` separator is not part of any id alphabet, so reverse-DNS publishers cannot
+/// nest the same way.
+///
+/// Both halves of a qualified id become directory components under the packages root, so they also
+/// carry the reserved-device-name rule the package-wide validator applies. Windows resolves those
+/// names to devices whatever the extension, which turns an install into an unexplained I/O error
+/// instead of a validation failure.
+fn is_safe_id(value: &str, allow_dots: bool) -> bool {
     !value.is_empty()
         && value.len() <= 128
+        && !crate::is_windows_reserved_device_name(value)
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase()
                 || byte.is_ascii_digit()
                 || matches!(byte, b'-' | b'_')
-                || byte == b'.'
+                || (allow_dots && byte == b'.')
         })
         && value
             .bytes()

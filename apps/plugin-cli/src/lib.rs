@@ -39,6 +39,7 @@ static CONFORMANCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 include!("cli.rs");
+include!("capability_install_cli.rs");
 include!("filesystem.rs");
 include!("validation.rs");
 include!("signing.rs");

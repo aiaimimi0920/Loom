@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Duration, Utc};
 use loom_plugin_security::{verify_message, TrustStore};
 use loom_protocol::{
-    is_safe_package_id, is_safe_publisher_id, is_valid_capability_permission,
+    is_safe_capability_package_id, is_safe_capability_publisher_id, is_valid_capability_permission,
     CapabilityApiRequirement,
 };
 use reqwest::Url;
@@ -77,7 +77,7 @@ fn validate_document(
         || document.signature.algorithm != "ed25519"
         || document.signature.key_id != payload.publisher.key_id
         || payload.publisher.id != OFFICIAL_CAPABILITY_CATALOG_PUBLISHER_ID
-        || !is_safe_publisher_id(&payload.publisher.id)
+        || !is_safe_capability_publisher_id(&payload.publisher.id)
         || payload.packages.len() > MAX_CATALOG_PACKAGES
     {
         return Err(CapabilityCatalogError::Invalid(
@@ -116,8 +116,12 @@ fn validate_entry(entry: &CapabilityCatalogEntry) -> Result<(), CapabilityCatalo
             "package identity is unqualified".to_owned(),
         ));
     };
-    if !is_safe_publisher_id(publisher)
-        || !is_safe_package_id(package)
+    // These are the manifest's own id rules, not the looser package-wide ones. A catalog entry is
+    // an installability claim, and `parse_capability_manifest` rejects a dotted package id because
+    // dotted ids let one package's namespace nest inside another's. Validating the weaker rule
+    // here still failed closed, but only after the package had been downloaded and verified.
+    if !is_safe_capability_publisher_id(publisher)
+        || !is_safe_capability_package_id(package)
         || publisher != entry.publisher.id
         || entry.publisher.key_id != entry.package.signature.key_id
         || entry.package.signature.algorithm != "ed25519"
@@ -163,7 +167,17 @@ fn validate_entry(entry: &CapabilityCatalogEntry) -> Result<(), CapabilityCatalo
 fn validate_artifact_url(value: &str) -> Result<(), CapabilityCatalogError> {
     let url = Url::parse(value)
         .map_err(|_| CapabilityCatalogError::Invalid("artifact URL is invalid".to_owned()))?;
-    if !matches!(url.scheme(), "https" | "http")
+    // Plaintext HTTP is accepted only for loopback, which is what the local
+    // catalog fixtures serve. Allowing it for a routable host would leak which
+    // packages a user installs and let a network position swap the bytes for
+    // garbage: the digest check that follows fails closed, but only after the
+    // download has already been paid for.
+    let transport_ok = match url.scheme() {
+        "https" => true,
+        "http" => is_loopback_host(&url),
+        _ => false,
+    };
+    if !transport_ok
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
@@ -173,6 +187,19 @@ fn validate_artifact_url(value: &str) -> Result<(), CapabilityCatalogError> {
         ));
     }
     Ok(())
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
 }
 
 fn validate_requirement(

@@ -148,10 +148,9 @@ impl LoomDaemon {
         // been accepted yet. Objects whose carrying instance was deleted while the daemon was down
         // are collected here; a running daemon collects on delete instead.
         collect_surface_resource_garbage_logged(&surface_instances, &surface_resources, "startup");
-        let capability_resources = CapabilityResourceBroker::open(
-            control_plane_root.join("capability-resources"),
-        )
-        .context("open Capability Plugin resource broker")?;
+        let capability_resources =
+            CapabilityResourceBroker::open(control_plane_root.join("capability-resources"))
+                .context("open Capability Plugin resource broker")?;
         let surface_actions = Arc::new(
             SurfaceActionExecutor::new(
                 Arc::clone(&mcp_servers),
@@ -191,6 +190,7 @@ impl LoomDaemon {
                 )
                 .context("open device registry")?,
             )),
+            live_sessions: Arc::new(LiveSessionStore::new()),
             surface_instances,
             surface_actions,
             surface_resources,
@@ -398,6 +398,7 @@ impl LoomDaemon {
             let _ = surface_stream_shutdown_result;
             let _ = read_stage_shutdown_result;
             let _ = read_stage_result;
+            self.runtime.live_sessions.shutdown_media_workers();
             self.runtime.capability_runtime.deactivate_all();
             return Err(error);
         }
@@ -405,6 +406,7 @@ impl LoomDaemon {
         surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
+        self.runtime.live_sessions.shutdown_media_workers();
         self.runtime.capability_runtime.deactivate_all();
         Ok(())
     }

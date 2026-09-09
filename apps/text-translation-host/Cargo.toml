@@ -1,0 +1,18 @@
+[package]
+name = "loom-text-translation-host"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reference out-of-process text translation Capability Plugin runtime"
+
+[[bin]]
+name = "loom-text-translation-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+loom_protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true

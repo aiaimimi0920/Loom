@@ -141,6 +141,7 @@ fn test_daemon_runtime_from_config(
             )
             .expect("open test device registry"),
         )),
+        live_sessions: Arc::new(LiveSessionStore::new()),
         surface_instances,
         surface_actions,
         surface_resources,

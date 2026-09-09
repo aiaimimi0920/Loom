@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use semver::Version;
+use loom_protocol::{is_safe_capability_package_id, is_safe_capability_publisher_id};
 
 use super::config_store::CapabilityConfigStore;
 use super::grant_store::CapabilityGrantStore;
@@ -65,10 +65,17 @@ impl CapabilityPluginRegistry {
             old,
             CapabilityLifecycleStatus::Activating,
             |record| {
-                record.previous_digest = record
+                // `previous_digest` is the rollback target, so only an activation that displaces
+                // a different version writes it. Disabling displaces nothing, and re-enabling the
+                // same version displaces nothing either; overwriting in those cases would drop
+                // the version the user actually wants to roll back to.
+                if let Some(displaced) = record
                     .active_digest
                     .take()
-                    .filter(|previous| previous != &digest);
+                    .filter(|previous| previous != &digest)
+                {
+                    record.previous_digest = Some(displaced);
+                }
                 record.active_digest = Some(digest);
                 record.enabled_intent = true;
                 record.status = CapabilityLifecycleStatus::Active;
@@ -88,9 +95,10 @@ impl CapabilityPluginRegistry {
             old,
             CapabilityLifecycleStatus::Disabling,
             |record| {
-                if let Some(active) = record.active_digest.take() {
-                    record.previous_digest = Some(active);
-                }
+                // Deliberately leaves `previous_digest` alone: disabling is not an activation, so
+                // the version the user can roll back to is still whatever the last upgrade
+                // displaced.
+                record.active_digest = None;
                 record.enabled_intent = false;
                 record.status = CapabilityLifecycleStatus::InstalledDisabled;
                 record.runtime_failures = Default::default();
@@ -161,7 +169,9 @@ impl CapabilityPluginRegistry {
             old = required_record(self, qualified_id)?;
         }
         let live = plugin_root(self, qualified_id)?;
-        let tombstone_name = format!("{}--{}", qualified_id.replace('/', "--"), unique_nonce());
+        // `~` is not in the id alphabet; `--` was, so publisher `a--b` package `c` and publisher
+        // `a` package `b--c` produced the same tombstone name if they shared a nanos timestamp.
+        let tombstone_name = format!("{}~{}", qualified_id.replace('/', "~"), unique_nonce());
         let trash = self.packages_root().join(".trash");
         ensure_capability_root(&trash)?;
         let tombstone = trash.join(&tombstone_name);
@@ -271,16 +281,7 @@ fn installed_version<'a>(
 }
 
 fn latest_digest(record: &CapabilityPluginRecord) -> Option<String> {
-    record
-        .versions
-        .iter()
-        .filter_map(|candidate| {
-            Version::parse(&candidate.version)
-                .ok()
-                .map(|version| (version, &candidate.digest))
-        })
-        .max_by(|left, right| left.0.cmp(&right.0))
-        .map(|(_, digest)| digest.clone())
+    record.latest_semver_digest().map(str::to_owned)
 }
 
 fn required_record(
@@ -299,7 +300,7 @@ fn plugin_root(
     let (publisher, package) = qualified_id
         .split_once('/')
         .ok_or_else(|| CapabilityInstallError::InvalidState("invalid capability id".to_owned()))?;
-    if !safe_component(publisher) || !safe_component(package) {
+    if !is_safe_capability_publisher_id(publisher) || !is_safe_capability_package_id(package) {
         return Err(CapabilityInstallError::InvalidState(
             "invalid capability id".to_owned(),
         ));
@@ -314,12 +315,17 @@ fn journal_path(
     let (publisher, package) = qualified_id
         .split_once('/')
         .ok_or_else(|| CapabilityInstallError::InvalidState("invalid capability id".to_owned()))?;
-    if !safe_component(publisher) || !safe_component(package) {
+    if !is_safe_capability_publisher_id(publisher) || !is_safe_capability_package_id(package) {
         return Err(CapabilityInstallError::InvalidState(
             "invalid capability id".to_owned(),
         ));
     }
-    Ok(lifecycle_root(registry).join(format!("{publisher}--{package}.json")))
+    // `~` is not in the id alphabet, which makes this mapping injective. A `--` separator was not:
+    // `-` is legal anywhere inside an id, so publisher `a--b` package `c` and publisher `a`
+    // package `b--c` produced the same file name. Two plugins sharing one journal means one
+    // plugin's prepared operation is overwritten by the other's, and the interrupted record is
+    // then left in its intermediate status with nothing left on disk to recover it from.
+    Ok(lifecycle_root(registry).join(format!("{publisher}~{package}.json")))
 }
 
 fn lifecycle_root(registry: &CapabilityPluginRegistry) -> PathBuf {
@@ -338,15 +344,6 @@ fn cleanup_uninstall_side_state(
 fn remove_private_tree(path: &Path) -> CapabilityResult<()> {
     crate::install::fs_safety::remove_tree(path)
         .map_err(|error| CapabilityInstallError::InvalidState(error.to_string()))
-}
-
-fn safe_component(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
-        })
-        && !value.contains("..")
 }
 
 fn unique_nonce() -> u128 {

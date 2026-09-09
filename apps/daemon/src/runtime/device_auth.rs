@@ -96,12 +96,16 @@ fn device_session_route_allowed(method: &str, path: &str) -> bool {
         return path == "/v1/capabilities"
             || path == "/v1/surfaces/stream"
             || path.starts_with("/v1/surfaces/resources/")
+            || path == "/v1/live/sessions"
+            || path.starts_with("/v1/live/sessions/")
             || path == "/v1/hook-bridge/status";
     }
     if method != "POST" {
         return false;
     }
     path == "/v1/surfaces/actions/cancel"
+        || path == "/v1/live/sessions"
+        || path.starts_with("/v1/live/sessions/")
         || path == "/v1/surfaces/attach"
         || path == "/v1/surfaces/confirmations/decision"
         || path_id_with_suffix(path, "/v1/surfaces/instances/", "/attachments").is_some()

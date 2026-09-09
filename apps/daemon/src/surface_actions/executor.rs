@@ -262,6 +262,22 @@ impl SurfaceActionExecutor {
         Ok((tool, action))
     }
 
+    /// Resolves one declared action without exposing the locked package internals.
+    pub(crate) fn action_definition(
+        &self,
+        instance_id: &str,
+        action_id: &str,
+    ) -> Result<SurfaceActionDefinition, SurfaceStoreError> {
+        let descriptor = self
+            .surface_instances
+            .lock()
+            .map_err(|_| SurfaceStoreError::Conflict("Surface store is unavailable".into()))?
+            .descriptor(instance_id)
+            .ok_or_else(|| SurfaceStoreError::NotFound(instance_id.to_owned()))?;
+        self.resolve_action(&descriptor, action_id)
+            .map(|(_, action)| action)
+    }
+
     /// Returns the Surface manifest of a resolved package, parsing it at most once per locked package
     /// identity.
     ///

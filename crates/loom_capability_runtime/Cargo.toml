@@ -12,6 +12,7 @@ jsonschema.workspace = true
 loom_process.workspace = true
 loom_plugin_security.workspace = true
 loom_protocol.workspace = true
+loom_security.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

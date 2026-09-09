@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex, Weak};
 
 use fs2::FileExt as _;
 use loom_capability_runtime::CapabilityStagedResource;
-use loom_protocol::{ExtensionResourceKind, ExtensionResourceRef, SurfaceResourceKind};
+use loom_protocol::{
+    ExtensionResourceKind, ExtensionResourceRef, SurfaceResourceKind,
+    MAX_EXTENSION_INVOCATION_RESOURCE_BYTES,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -19,7 +22,6 @@ use crate::surface_resources::{
 use crate::unix_time_millis;
 
 const MAX_ACTIVE_STAGING_LEASES: usize = 64;
-const MAX_STAGED_BYTES_PER_INVOCATION: u64 = 64 * 1024 * 1024;
 const STAGING_TTL_MILLIS: u64 = 5 * 60 * 1000;
 
 pub(crate) type SharedCapabilityResourceBroker = Arc<CapabilityResourceBroker>;
@@ -194,7 +196,7 @@ impl CapabilityResourceBroker {
             total = total
                 .checked_add(payload.descriptor.size)
                 .ok_or(CapabilityResourceError::Invalid)?;
-            if total > MAX_STAGED_BYTES_PER_INVOCATION {
+            if total > MAX_EXTENSION_INVOCATION_RESOURCE_BYTES {
                 return Err(CapabilityResourceError::Invalid);
             }
             let file_name = format!("{index:03}-{}.bin", reference.digest);

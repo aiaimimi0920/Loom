@@ -1,11 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 
-use loom_plugin_security::{canonical_package_digest, verify_package_signature, TrustStore};
+use loom_plugin_security::{
+    canonical_package_digest, verify_package_signature_with_digest, TrustStore,
+};
 use loom_protocol::{
     parse_capability_manifest, CapabilityPackageManifest, PackageSignature, PackageTrustStatus,
     PublisherIdentity, MAX_CAPABILITY_MANIFEST_BYTES,
 };
+use loom_security::metadata_has_link_semantics;
 
 use super::types::{CapabilityInstallError, CapabilityResult};
 use super::CapabilityPluginRegistry;
@@ -38,7 +41,7 @@ impl CapabilityPluginRegistry {
         let package_dir = root.join(&version.relative_path);
         let root_canonical = fs::canonicalize(&root)?;
         let package_metadata = fs::symlink_metadata(&package_dir)?;
-        if package_metadata.file_type().is_symlink() || !package_metadata.is_dir() {
+        if metadata_has_link_semantics(&package_metadata) || !package_metadata.is_dir() {
             return Err(CapabilityInstallError::InvalidPackage(
                 "installed package root is linked or not a directory".to_owned(),
             ));
@@ -78,19 +81,29 @@ impl CapabilityPluginRegistry {
         let trust_store_path = self.control_plane_root().join("plugin-trust.json");
         let trust_store = TrustStore::load(&trust_store_path)
             .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
-        let trust_status = verify_package_signature(
+        let verified = verify_package_signature_with_digest(
             &package_dir,
             Some(&identity),
             Some(&signature),
             &trust_store,
         )
         .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
+        let trust_status = verified.trust_status;
         trust_store
             .effective_policy()
             .enforce(trust_status.clone())
             .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
-        let actual_digest = canonical_package_digest(&package_dir, Some(&signature.file))
-            .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?;
+        // Reuses the digest the signature check already hashed the tree for; recomputing it walked
+        // and hashed the whole package a second time on every enable, upgrade, rollback, settings
+        // read and startup activation.
+        let actual_digest = match verified.canonical_digest {
+            Some(digest) => digest,
+            // Unreachable while a signature is supplied: the digest is skipped only for an unsigned
+            // package. Recomputed rather than assumed so an unsigned path added later still gets
+            // the integrity check instead of silently losing it.
+            None => canonical_package_digest(&package_dir, Some(&signature.file))
+                .map_err(|error| CapabilityInstallError::InvalidPackage(error.to_string()))?,
+        };
         if actual_digest != digest {
             return Err(CapabilityInstallError::InvalidPackage(
                 "installed package digest changed".to_owned(),

@@ -368,6 +368,7 @@ struct DaemonRuntime {
     bundled_art_sha256_allowlist: BTreeSet<String>,
     hook_bridge: SharedHookBridgeRuntime,
     device_registry: SharedDeviceRegistryStore,
+    live_sessions: SharedLiveSessionStore,
     surface_instances: SharedSurfaceInstanceStore,
     surface_actions: SharedSurfaceActionExecutor,
     surface_resources: SharedSurfaceResourceStore,

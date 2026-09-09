@@ -101,9 +101,9 @@ impl AlignedOcrCore {
             boxes.into_iter().zip(part_images).zip(angles).enumerate()
         {
             let axis = recognition_axis(&text_box);
-            let original = (angle.index == 1).then(|| part_image.clone());
-            let mut reverse_axis = angle.index == 1;
-            if reverse_axis {
+            let rotated = angle.index == 1;
+            let mut reverse_axis = rotated;
+            if rotated {
                 OcrUtils::mat_rotate_clock_wise_180(&mut part_image);
             }
             let allow_rescue = !matches!(quality_mode, OcrQualityMode::Quick)
@@ -112,14 +112,18 @@ impl AlignedOcrCore {
             let mut line =
                 self.recognition
                     .recognize(&part_image, allow_rescue, enhanced_fallback)?;
-            if line.text_score.is_nan() || line.text_score < ANGLE_ROLLBACK_THRESHOLD {
-                if let Some(original) = original {
-                    // The first orientation already performed bounded rescue. The rollback
-                    // pass only verifies the opposite orientation, avoiding duplicate
-                    // contrast/fallback inference for the same detector box.
-                    line = self.recognition.recognize(&original, false, false)?;
-                    reverse_axis = false;
-                }
+            if rotated && (line.text_score.is_nan() || line.text_score < ANGLE_ROLLBACK_THRESHOLD) {
+                // A 180 degree rotation is an in-place pixel permutation and its own
+                // inverse, so rotating the same buffer back restores the original crop
+                // exactly. Keeping a defensive copy of every angle-corrected crop cost one
+                // full RGB clone per box - up to 512 per page - and all but the few that
+                // actually rolled back were discarded untouched.
+                OcrUtils::mat_rotate_clock_wise_180(&mut part_image);
+                // The first orientation already performed bounded rescue. The rollback
+                // pass only verifies the opposite orientation, avoiding duplicate
+                // contrast/fallback inference for the same detector box.
+                line = self.recognition.recognize(&part_image, false, false)?;
+                reverse_axis = false;
             }
             blocks.push(RawOcrBlock {
                 box_points: remove_padding(&text_box.points, image.width(), image.height()),

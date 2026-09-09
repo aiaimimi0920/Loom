@@ -70,10 +70,14 @@ fn settings_package(
     let record = registry
         .get(qualified_id)?
         .ok_or_else(|| CapabilityInstallError::NotFound(qualified_id.to_owned()))?;
+    // `versions` is sorted by version *string*, so `last()` returned the lexicographically largest
+    // version rather than the newest — `"1.9.0"` sorts above `"1.10.0"`. A plugin with no active
+    // version therefore showed the field definitions of an arbitrary older release, and an update
+    // then validated the submitted values against that release's schema.
     let digest = record
         .active_digest
         .as_deref()
-        .or_else(|| record.versions.last().map(|version| version.digest.as_str()))
+        .or_else(|| record.latest_semver_digest())
         .ok_or_else(|| CapabilityInstallError::NotFound(qualified_id.to_owned()))?;
     registry.verify_installed_version(qualified_id, digest)
 }

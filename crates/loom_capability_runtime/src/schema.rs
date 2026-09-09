@@ -6,6 +6,7 @@ use loom_protocol::{
     CapabilityCommandContribution, CapabilityRuntimeStatus, ExtensionEffect, ExtensionEffectType,
     ExtensionResourceKind, ExtensionResourceRef, ExtensionUnitAttachment,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{CapabilityHostError, HostResult};
@@ -138,13 +139,22 @@ pub(super) fn validate_command_output(
         ));
     }
     if let Some(effects) = payload.get("effects") {
-        let effects = serde_json::from_value::<Vec<ExtensionEffect>>(effects.clone())
-            .map_err(|_| CapabilityHostError::Protocol("command effects are invalid".to_owned()))?;
-        if effects.len() > 256 {
+        // Bound the array before materialising it. Deserializing first meant a runtime could make
+        // the host allocate an arbitrarily long effect list only to have the budget check below
+        // reject it afterwards.
+        if effects
+            .as_array()
+            .is_some_and(|effects| effects.len() > 256)
+        {
             return Err(CapabilityHostError::Protocol(
                 "command effects exceed the result budget".to_owned(),
             ));
         }
+        // Deserialize by reference: `from_value` needs an owned `Value`, so the previous
+        // `effects.clone()` deep-copied every effect payload — up to 256 of them per invocation —
+        // before serde had a chance to reject a malformed one.
+        let effects = Vec::<ExtensionEffect>::deserialize(effects)
+            .map_err(|_| CapabilityHostError::Protocol("command effects are invalid".to_owned()))?;
         for effect in &effects {
             validate_effect(package, command, effect, invocation_resources, user_gesture)?;
         }
@@ -167,7 +177,7 @@ fn compile_schema(
         ));
     }
     let metadata = fs::symlink_metadata(&path)?;
-    if metadata.file_type().is_symlink()
+    if loom_security::metadata_has_link_semantics(&metadata)
         || !metadata.is_file()
         || metadata.len() > MAX_COMMAND_SCHEMA_BYTES
     {
@@ -261,10 +271,23 @@ fn validate_attachment_resources(
     let Some(resources) = effect.payload.get("resourceRefs") else {
         return Ok(());
     };
-    let resources = serde_json::from_value::<Vec<ExtensionResourceRef>>(resources.clone())
-        .map_err(|_| {
-            CapabilityHostError::Protocol("attachment resource references are invalid".to_owned())
-        })?;
+    // The signed protocol caps an attachment at 16 references; re-check it here so the
+    // cross-product against the invocation set below cannot be driven by the runtime, and so a
+    // long list is rejected before it is materialised.
+    if resources
+        .as_array()
+        .is_some_and(|resources| resources.len() > 16)
+    {
+        return Err(CapabilityHostError::Protocol(
+            "attachment effect exceeds its resource reference budget".to_owned(),
+        ));
+    }
+    // `ExtensionResourceRef` holds no `Value` fields, so deserializing by reference builds the
+    // structs straight from the borrowed payload; the previous `resources.clone()` allocated a
+    // throwaway copy of the whole array first.
+    let resources = Vec::<ExtensionResourceRef>::deserialize(resources).map_err(|_| {
+        CapabilityHostError::Protocol("attachment resource references are invalid".to_owned())
+    })?;
     if resources
         .iter()
         .any(|resource| !invocation_resources.contains(resource))

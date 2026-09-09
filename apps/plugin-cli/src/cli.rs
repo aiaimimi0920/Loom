@@ -36,6 +36,10 @@ where
             let report = pack_directory(Path::new(source), Path::new(output))?;
             writeln!(writer, "{report}")?;
         }
+        ["install", "capability", archive, "--control-plane", root] => {
+            let report = install_local_capability(Path::new(archive), Path::new(root))?;
+            writeln!(writer, "{report}")?;
+        }
         ["schema", name] => {
             writer.write_all(schema(name)?.as_bytes())?;
             writer.write_all(b"\n")?;
@@ -118,6 +122,7 @@ fn help_text() -> &'static str {
         "  init capability <DIR> <ID> <PUBLISHER> Create a Capability Plugin skeleton\n",
         "  validate <PATH> [--trust-store <STORE>] Validate a package directory or manifest\n",
         "  pack <SOURCE_DIR> <OUTPUT_ZIP>          Validate and build a deterministic package ZIP\n",
+        "  install capability <ZIP> --control-plane <ROOT> Install disabled into an explicit local registry\n",
         "  conformance <EXE> <FRAMEWORK> <ART_DIR> Run the v1 process contract against a runtime\n",
         "  schema <NAME>                           Print an embedded public JSON Schema\n",
         "  keygen <KEY_FILE> <KEY_ID>              Generate an Ed25519 signing key\n",

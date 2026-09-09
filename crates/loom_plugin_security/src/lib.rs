@@ -18,7 +18,9 @@ pub use signing::{
     write_signing_key,
 };
 pub use trust_store::TrustStore;
-pub use verify::verify_package_signature;
+pub use verify::{
+    verify_package_signature, verify_package_signature_with_digest, VerifiedPackageSignature,
+};
 
 pub(crate) const TRUST_STORE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const SIGNING_KEY_SCHEMA_VERSION: u32 = 1;

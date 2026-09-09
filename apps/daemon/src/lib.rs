@@ -53,15 +53,20 @@ use loom_protocol::{
     HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
     HookArtResourcesReleaseRequest, HookArtResultCommit, HookCapabilities, HookEvent,
     HookHandshakeResponse, HookRequest, HookRequestStatus, HookResponse, HookTransportMode,
-    PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent,
-    SurfaceExecutionFailure, SurfaceHostCapabilities, SurfaceInstanceMode,
-    SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue,
-    SurfacePreviewCommit, SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
-    SurfaceResourceTransportKind, SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot,
-    CAPABILITY_API_VERSION, DEVICE_SESSION_PROTOCOL_VERSION, EXTENSION_EVENT_SNAPSHOT_UPDATED,
-    EXTENSION_PROTOCOL, HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED,
-    SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION,
-    SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH, SURFACE_EVENT_SNAPSHOT,
+    LiveBinaryFrame, LiveConditionOperator, LiveControlEnvelope, LiveControlMessage,
+    LiveDeviceRole, LiveObservation, LiveObservationCapability, LiveObservationConfidence,
+    LiveObservationSource, LiveObservationState, LiveScreenshotSession, LiveSessionState,
+    LiveTriggerAudit, LiveTriggerBinding, LiveTriggerCondition, LiveTriggerOutcome,
+    LiveVisibilityState, PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceActionStatus,
+    SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure, SurfaceHostCapabilities,
+    SurfaceInstanceMode, SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode,
+    SurfacePatch, SurfacePortValue, SurfacePreviewCommit, SurfaceResourceDescriptor,
+    SurfaceResourceKind, SurfaceResourceTransport, SurfaceResourceTransportKind,
+    SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot, CAPABILITY_API_VERSION,
+    DEVICE_SESSION_PROTOCOL_VERSION, EXTENSION_EVENT_SNAPSHOT_UPDATED, EXTENSION_PROTOCOL,
+    HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED, SURFACE_EVENT_CONFIRMATION_REQUEST,
+    SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION, SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH,
+    SURFACE_EVENT_SNAPSHOT,
 };
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
 use loom_tool_registry::art_settings::{
@@ -140,6 +145,18 @@ include!("runtime/hook_bridge_connections.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
 include!("runtime/device_auth.rs");
+include!("runtime/live_session_state.rs");
+include!("runtime/live_session_state_helpers.rs");
+include!("runtime/live_session_events.rs");
+include!("runtime/live_session_media.rs");
+include!("runtime/live_session_control.rs");
+include!("runtime/live_session_input.rs");
+include!("runtime/live_session_observation.rs");
+include!("runtime/live_session_triggers.rs");
+include!("runtime/live_session_trigger_dispatch.rs");
+include!("runtime/live_session_routes.rs");
+include!("runtime/live_session_route_support.rs");
+include!("runtime/live_media_websocket.rs");
 include!("runtime/route_dispatch.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");
@@ -177,6 +194,7 @@ include!("runtime/hook_canvas_preview_session.rs");
 include!("runtime/hook_art_request_lifecycle.rs");
 include!("runtime/hook_canvas_live_persistence.rs");
 include!("runtime/capability_extension_resources.rs");
+include!("runtime/capability_extension_state.rs");
 include!("runtime/capability_extension_bridge.rs");
 include!("runtime/hook_bridge_server.rs");
 include!("runtime/hook_bridge_websocket.rs");
@@ -228,4 +246,8 @@ mod tests {
     include!("tests/suite/part_35.rs");
     include!("tests/suite/part_36.rs");
     include!("tests/suite/part_37.rs");
+    include!("tests/suite/part_38.rs");
+    include!("tests/suite/part_39.rs");
+    include!("tests/suite/part_40.rs");
+    include!("tests/suite/part_41.rs");
 }

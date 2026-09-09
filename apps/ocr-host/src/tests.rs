@@ -46,6 +46,14 @@ fn attachment_payload_remains_inside_the_host_budget() {
     let payload = build_attachment_payload(&result, true);
     assert!(payload.text_blocks.len() <= 128);
     assert!(serde_json::to_vec(&payload).unwrap().len() <= 240 * 1024);
+    // The budget search must return the largest prefix that fits, not the first
+    // one it can prove safe: dropping every block would leave the overlay empty
+    // even though the page is well inside the budget once the tail is gone.
+    assert!(!payload.text_blocks.is_empty());
+    assert_eq!(
+        payload.surface_scene["children"].as_array().unwrap().len(),
+        payload.text_blocks.len()
+    );
 }
 
 #[test]

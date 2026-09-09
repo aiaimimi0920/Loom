@@ -1,9 +1,17 @@
 use crate::geometry::Bounds;
 
+const LUMINANCE_BINS: usize = 256;
+
 pub(crate) fn estimate_text_and_background_color(
     image_buffer: &image::RgbImage,
     bounds: Bounds,
 ) -> (String, String) {
+    // Single pass: bin every pixel by luminance and keep the per-bin colour
+    // sums. The dark/light split is then derived from the histogram instead of
+    // re-walking the region, which halves the per-block pixel cost on pages
+    // that produce hundreds of text blocks.
+    let mut bin_counts = [0_u64; LUMINANCE_BINS];
+    let mut bin_colors = [[0_u64; 3]; LUMINANCE_BINS];
     let mut total_lum: u64 = 0;
     let mut total_color = [0_u64; 3];
     let mut count: u64 = 0;
@@ -11,7 +19,13 @@ pub(crate) fn estimate_text_and_background_color(
     for y in bounds.min_y..=bounds.max_y {
         for x in bounds.min_x..=bounds.max_x {
             let pixel = image_buffer.get_pixel(x, y);
-            total_lum += luminance(pixel) as u64;
+            let lum = luminance(pixel) as u64;
+            let bin = (lum as usize).min(LUMINANCE_BINS - 1);
+            bin_counts[bin] += 1;
+            bin_colors[bin][0] += pixel[0] as u64;
+            bin_colors[bin][1] += pixel[1] as u64;
+            bin_colors[bin][2] += pixel[2] as u64;
+            total_lum += lum;
             total_color[0] += pixel[0] as u64;
             total_color[1] += pixel[1] as u64;
             total_color[2] += pixel[2] as u64;
@@ -23,27 +37,25 @@ pub(crate) fn estimate_text_and_background_color(
         return ("#000000".to_owned(), "#ffffff".to_owned());
     }
 
-    let avg_lum = total_lum / count;
+    let avg_lum = (total_lum / count) as usize;
     let mut dark_sum = [0_u64; 3];
     let mut dark_count: u64 = 0;
     let mut light_sum = [0_u64; 3];
     let mut light_count: u64 = 0;
 
-    for y in bounds.min_y..=bounds.max_y {
-        for x in bounds.min_x..=bounds.max_x {
-            let pixel = image_buffer.get_pixel(x, y);
-            let lum = luminance(pixel) as u64;
-            let target = if lum < avg_lum {
-                dark_count += 1;
-                &mut dark_sum
-            } else {
-                light_count += 1;
-                &mut light_sum
-            };
-            target[0] += pixel[0] as u64;
-            target[1] += pixel[1] as u64;
-            target[2] += pixel[2] as u64;
+    for (bin, bin_count) in bin_counts.iter().copied().enumerate() {
+        if bin_count == 0 {
+            continue;
         }
+        let (sum, total) = if bin < avg_lum {
+            (&mut dark_sum, &mut dark_count)
+        } else {
+            (&mut light_sum, &mut light_count)
+        };
+        *total += bin_count;
+        sum[0] += bin_colors[bin][0];
+        sum[1] += bin_colors[bin][1];
+        sum[2] += bin_colors[bin][2];
     }
 
     let dark = average_color(dark_sum, dark_count, [0, 0, 0]);

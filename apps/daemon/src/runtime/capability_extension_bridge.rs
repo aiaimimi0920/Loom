@@ -1,12 +1,4 @@
 // Stateful loom.extension.v1 dispatch layered on an authenticated Hook WebSocket.
-#[derive(Default)]
-struct ExtensionConnectionState {
-    hook_session_id: Option<String>,
-    extension_session_id: Option<String>,
-    negotiated_features: HashSet<String>,
-    consumed_gestures: HashSet<String>,
-}
-
 struct ExtensionBridgeTextResult {
     response: String,
     subscribe_to_snapshots: bool,
@@ -18,34 +10,6 @@ const MAX_EXTENSION_BRIDGE_TEXT_BYTES: usize = 24 * 1024 * 1024;
 struct ExtensionMethodProbe<'a> {
     #[serde(borrow)]
     method: std::borrow::Cow<'a, str>,
-}
-
-impl ExtensionConnectionState {
-    fn record_hook_handshake(&mut self, response: &str) {
-        let Ok(response) = serde_json::from_str::<HookHandshakeResponse>(response) else {
-            return;
-        };
-        self.hook_session_id = Some(response.session_id);
-        self.extension_session_id = None;
-        self.negotiated_features.clear();
-        self.consumed_gestures.clear();
-    }
-
-    fn extension_session_matches(&self, session_id: &str) -> bool {
-        self.extension_session_id.as_deref() == Some(session_id)
-    }
-
-    fn has_feature(&self, feature: &str) -> bool {
-        self.negotiated_features.contains(feature)
-    }
-
-    fn client_gesture_is_available(&self, token: &str) -> bool {
-        self.consumed_gestures.len() < 1_024 && !self.consumed_gestures.contains(token)
-    }
-
-    fn record_client_gesture(&mut self, token: &str) {
-        self.consumed_gestures.insert(token.to_owned());
-    }
 }
 
 fn is_extension_bridge_request(text: &str) -> bool {
@@ -147,9 +111,7 @@ fn handle_extension_handshake(
     } else {
         None
     };
-    state.extension_session_id = Some(session_id.clone());
-    state.negotiated_features = features.iter().cloned().collect();
-    state.consumed_gestures.clear();
+    state.begin_extension_session(session_id.clone(), &features);
     runtime.invalidate_user_gestures();
     let data = match snapshot {
         Some(snapshot) => json!({
@@ -185,9 +147,9 @@ fn handle_extension_invocation(
     if !state.has_feature(loom_protocol::EXTENSION_FEATURE_COMMANDS) {
         return extension_feature_failure(&request_id, "command.invoke");
     }
-    if let Err(error) =
-        validate_extension_message(&ExtensionMessage::Invocation(invocation.clone()))
-    {
+    // Validated by reference: an invocation may approach the 24 MiB bridge
+    // budget, and this path validates twice (before and after upload staging).
+    if let Err(error) = loom_protocol::validate_extension_invocation(&invocation) {
         return extension_bridge_failure(
             &request_id,
             "invalid_extension_invocation",
@@ -237,9 +199,7 @@ fn handle_extension_invocation(
         Ok(lease) => lease,
         Err(error) => return extension_upload_failure(&request_id, error),
     };
-    if let Err(error) =
-        validate_extension_message(&ExtensionMessage::Invocation(invocation.clone()))
-    {
+    if let Err(error) = loom_protocol::validate_extension_invocation(&invocation) {
         return extension_bridge_failure(
             &request_id,
             "invalid_extension_invocation",
@@ -258,8 +218,16 @@ fn handle_extension_invocation(
         Err(error) => return extension_resource_failure(&request_id, error),
     };
     let staged_resources = resource_lease.resources().to_vec();
+    if runtime.generation() != invocation.snapshot_generation {
+        return extension_result_failure(
+            &request_id,
+            CapabilityErrorCode::StaleGeneration,
+            "extension contribution generation changed while staging resources",
+        );
+    }
+    let snapshot_generation = invocation.snapshot_generation;
     let gesture = match invocation.user_gesture_token.as_deref() {
-        Some(token) if state.client_gesture_is_available(token) => {
+        Some(token) if state.record_client_gesture(token) => {
             let gesture = match runtime.issue_user_gesture(
                 &invocation.command_id,
                 Some(loom_capability_runtime::UserGestureTarget {
@@ -270,14 +238,13 @@ fn handle_extension_invocation(
                 Ok(gesture) => gesture,
                 Err(error) => return extension_runtime_failure(&request_id, error),
             };
-            state.record_client_gesture(token);
             Some(gesture)
         }
         Some(_) => {
             return extension_result_failure(
                 &request_id,
                 CapabilityErrorCode::PermissionDenied,
-                "user gesture token is invalid or already consumed",
+                "user gesture token is invalid, consumed, or the session gesture budget is exhausted",
             )
         }
         None => None,
@@ -293,11 +260,25 @@ fn handle_extension_invocation(
         user_gesture_token: gesture,
         timeout: None,
     });
+    if runtime.generation() != snapshot_generation {
+        return extension_result_failure(
+            &request_id,
+            CapabilityErrorCode::StaleGeneration,
+            "extension contribution generation changed during invocation",
+        );
+    }
     match output {
         Ok(output) if output.plugin_id == owner => {
-            let payload = output.payload.unwrap_or(Value::Null);
+            if let Some(failure) = extension_runtime_status_failure(&request_id, &output) {
+                return failure;
+            }
+            let mut payload = output.payload.unwrap_or(Value::Null);
+            // Deserialize the effects by reference. `from_value` needs an owned `Value`, so the
+            // previous `effects.clone()` deep-copied the whole effect list — the runtime allows up
+            // to 256 effects of 256 KiB each — on every successful invocation, only to drop the
+            // copy again once the typed values had been built.
             let mut effects: Vec<loom_protocol::ExtensionEffect> = match payload.get("effects") {
-                Some(effects) => match serde_json::from_value(effects.clone()) {
+                Some(effects) => match Vec::deserialize(effects) {
                     Ok(effects) => effects,
                     Err(_) => {
                         return extension_result_failure(
@@ -314,16 +295,25 @@ fn handle_extension_invocation(
                     effect.effect_type != loom_protocol::ExtensionEffectType::NoticeShow
                 });
             }
+            // The payload is not read after this, so the `output` member is taken by value. The
+            // fallback argument of `unwrap_or` is evaluated eagerly, so cloning it here deep-copied
+            // the entire payload — up to the whole bridge text budget — on every invocation,
+            // including the common one where the copy was dropped unused.
+            let taken_output = payload.get_mut("output").map(Value::take);
             let result = ExtensionResult {
                 protocol: EXTENSION_PROTOCOL.to_owned(),
                 api_version: CAPABILITY_API_VERSION.to_owned(),
                 request_id: request_id.clone(),
                 status: ExtensionResultStatus::Succeeded,
-                output: payload.get("output").cloned().unwrap_or(payload.clone()),
+                output: taken_output.unwrap_or(payload),
                 effects,
                 error: None,
             };
-            if validate_extension_message(&ExtensionMessage::Result(result.clone())).is_err() {
+            // Validating through the owned message rather than a clone keeps the payload out of a
+            // second deep copy. `ExtensionMessage` is an untagged enum, so serializing the message
+            // emits exactly the result the client expects on the wire.
+            let message = ExtensionMessage::Result(result);
+            if validate_extension_message(&message).is_err() {
                 return extension_result_failure(
                     &request_id,
                     CapabilityErrorCode::InvalidInput,
@@ -332,7 +322,7 @@ fn handle_extension_invocation(
             }
             extension_bridge_success(
                 &request_id,
-                serde_json::to_value(result).unwrap_or_default(),
+                serde_json::to_value(&message).unwrap_or_default(),
                 false,
             )
         }
@@ -343,6 +333,24 @@ fn handle_extension_invocation(
         ),
         Err(error) => extension_runtime_failure(&request_id, error),
     }
+}
+
+fn extension_runtime_status_failure(
+    request_id: &str,
+    output: &loom_capability_runtime::CapabilityInvocationOutput,
+) -> Option<ExtensionBridgeTextResult> {
+    use loom_protocol::CapabilityRuntimeStatus;
+    if output.status == CapabilityRuntimeStatus::Succeeded {
+        return None;
+    }
+    // Ok means the runtime transport completed, not that the command succeeded.
+    // Never publish effects or arbitrary runtime error text from a failed command.
+    let code = if output.status == CapabilityRuntimeStatus::Cancelled {
+        CapabilityErrorCode::Cancelled
+    } else {
+        output.error.as_ref().map_or(CapabilityErrorCode::RuntimeFault, |error| error.code)
+    };
+    Some(extension_result_failure(request_id, code, "capability runtime command did not succeed"))
 }
 
 fn extension_upload_failure(

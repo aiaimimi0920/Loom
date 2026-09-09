@@ -7,7 +7,7 @@ use loom_process::{executable_path_within, ProcessSpec};
 use loom_protocol::{
     validate_capability_manifest, CapabilityContributions, CapabilityPackageManifest,
     CapabilityRuntimeMessage, CapabilityRuntimeMethod, CapabilityRuntimeStatus,
-    CAPABILITY_API_VERSION, CAPABILITY_RUNTIME_PROTOCOL,
+    CAPABILITY_API_VERSION, CAPABILITY_RUNTIME_PROTOCOL, MAX_CAPABILITY_STDERR_KIB_PER_MINUTE,
 };
 use serde_json::{json, Value};
 
@@ -50,12 +50,16 @@ pub(super) fn start_runtime(
         .and_then(|mib| mib.checked_mul(1024 * 1024));
     spec.limits.max_processes = Some(package.manifest.resources.max_processes.max(1));
     spec.limits.stdout_bytes = loom_protocol::CAPABILITY_RUNTIME_FRAME_BYTES;
+    // `validate_capability_manifest` already bounds every budget below, so the clamps here only
+    // guard against a package that reached this point without going through it. The default for
+    // an undeclared stderr budget is the same ceiling a package is allowed to ask for, so
+    // omitting the field is never more permissive than declaring it.
     spec.limits.stderr_bytes = package
         .manifest
         .resources
         .stderr_kib_per_minute
-        .unwrap_or(1024)
-        .min(8192) as usize
+        .unwrap_or(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE)
+        .min(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE) as usize
         * 1024;
     let mut process = RuntimeProcess::spawn(&spec)?;
     let initialize = call_method(
@@ -98,7 +102,16 @@ pub(super) fn ensure_process(
             return Err(error);
         }
     };
-    validate_dynamic_subset(&active.package.manifest.contributes, &contributions)?;
+    // Defence in depth: `effective_contributions` already checked this, but a
+    // rejection here must still arm the restart backoff. Without it a runtime
+    // that keeps announcing an over-broad contribution set is respawned (and
+    // fully re-hashed by `verify_runtime_package`) on every single request.
+    if let Err(error) =
+        validate_dynamic_subset(&active.package.manifest.contributes, &contributions)
+    {
+        record_failure(active);
+        return Err(error);
+    }
     active.effective_contributions = contributions;
     active.process = Some(process);
     Ok(())

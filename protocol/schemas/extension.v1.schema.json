@@ -130,6 +130,17 @@
       },
       "additionalProperties": false
     },
+    "invokeResourceRef": {
+      "allOf": [
+        { "$ref": "#/$defs/resourceRef" },
+        {
+          "properties": {
+            "kind": { "enum": ["file", "shared_image", "shared_memory"] },
+            "byteLength": { "type": "integer", "minimum": 0, "maximum": 67108864 }
+          }
+        }
+      ]
+    },
     "invoke": {
       "type": "object",
       "required": [
@@ -155,7 +166,8 @@
         "resourceRefs": {
           "type": "array",
           "maxItems": 128,
-          "items": { "$ref": "#/$defs/resourceRef" }
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/invokeResourceRef" }
         },
         "userGestureToken": { "type": "string", "minLength": 16, "maxLength": 512 }
       },

@@ -2,6 +2,8 @@
 
 use std::fs;
 
+use loom_security::metadata_has_link_semantics;
+
 use super::*;
 
 pub(super) fn validate_staged_resources(invocation: &CapabilityInvocation) -> HostResult<()> {
@@ -27,11 +29,20 @@ pub(super) fn validate_staged_resources(invocation: &CapabilityInvocation) -> Ho
             CapabilityHostError::Protocol("staged resource is unavailable".to_owned())
         })?;
         if !metadata.is_file()
-            || metadata.file_type().is_symlink()
+            || metadata_has_link_semantics(&metadata)
             || !metadata.permissions().readonly()
         {
             return Err(CapabilityHostError::Protocol(
                 "staged resource must be a read-only regular file".to_owned(),
+            ));
+        }
+        // The runtime reads the file, not the reference, so the declared length has to describe
+        // what is actually on disk. Everything downstream - the plugin's own budget checks and
+        // the 512 MiB ceiling `validate_resources` enforces on `byte_length` - is derived from
+        // that number, and a staged file larger than its reference would slip past all of them.
+        if metadata.len() != reference.byte_length {
+            return Err(CapabilityHostError::Protocol(
+                "staged resource length does not match its opaque reference".to_owned(),
             ));
         }
     }

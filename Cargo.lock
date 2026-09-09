@@ -1618,6 +1618,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-text-translation-host"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "loom_protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "loom_agent"
 version = "0.2.0"
 dependencies = [
@@ -1635,6 +1645,7 @@ dependencies = [
  "loom_plugin_security",
  "loom_process",
  "loom_protocol",
+ "loom_security",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1785,6 +1796,7 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "loom_protocol",
+ "loom_security",
  "rand_core 0.6.4",
  "serde",
  "serde_json",

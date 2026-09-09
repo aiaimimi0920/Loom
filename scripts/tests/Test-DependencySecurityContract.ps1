@@ -112,4 +112,4 @@ foreach ($required in @("# Loom Dependency Security", "Machine-authoritative inv
     Assert-True $manual.Contains($required) "Dependency security manual lost required guidance: $required"
 }
 
-Write-Output "Loom dependency security contract passed: locks=4 exceptions=$($blocks.Count) max-days=$($policy.maximumExceptionDays)"
+Write-Output "Loom dependency security contract passed: locks=$($expectedLockfiles.Count) exceptions=$($blocks.Count) max-days=$($policy.maximumExceptionDays)"

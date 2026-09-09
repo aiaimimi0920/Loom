@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "capability",
+  "id": "text-translation",
+  "name": "Text Translation Reference",
+  "description": "A bounded local text translation capability used to prove that the plugin host is not OCR-specific.",
+  "version": "1.0.0",
+  "publisher": {
+    "id": "neuro.official",
+    "keyId": "neuro-official-capability-2"
+  },
+  "hostCompatibility": {
+    "loomCapabilityApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1"]
+    },
+    "hookExtensionApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1"]
+    }
+  },
+  "entrypoints": {
+    "service": {
+      "targets": {
+        "windows-x64": {
+          "command": "runtime/loom-text-translation-host.exe",
+          "args": []
+        }
+      },
+      "processModel": "on_demand"
+    }
+  },
+  "activationEvents": [
+    "onCommand:neuro.official/text-translation.translate"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "neuro.official/text-translation.translate",
+        "title": "Translate text",
+        "description": "Translate bounded text with the reference local dictionary.",
+        "inputSchema": "schemas/translate-input.v1.schema.json",
+        "outputSchema": "schemas/translate-output.v1.schema.json",
+        "requiresUserGesture": false,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": []
+      }
+    ]
+  },
+  "permissions": [],
+  "resources": {
+    "memoryMiB": 32,
+    "maxProcesses": 1,
+    "timeoutSeconds": 5,
+    "diskMiB": 32,
+    "stderrKiBPerMinute": 16
+  },
+  "dependencies": [],
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "neuro-official-capability-2",
+    "file": "signature.json"
+  }
+}

@@ -50,7 +50,7 @@ impl RecognitionRescue {
         best = choose_preferred_line(best, enhanced_candidate);
 
         if needs_rescue(image, &best) {
-            if let Some(fallback) = self.fallback()? {
+            if let Some(fallback) = self.fallback() {
                 let fallback_candidate = fallback.recognize(image)?;
                 best = choose_preferred_line(best, fallback_candidate);
                 if enhanced_fallback && needs_rescue(image, &best) {
@@ -62,14 +62,26 @@ impl RecognitionRescue {
         Ok(best)
     }
 
-    fn fallback(&mut self) -> OcrResult<Option<&mut CtcRecognizer>> {
+    /// Lazily materialises the optional fallback recognizer.
+    ///
+    /// The fallback model is an accuracy bonus, not a requirement: the primary pass has
+    /// already produced a usable line by the time this runs. Propagating a session-build
+    /// failure out of here aborted the whole page instead of returning the text the
+    /// primary model had recognised, so a bad or unreadable optional model turned a
+    /// degraded result into no result at all. The failure is reported once on stderr and
+    /// the fallback stays permanently unavailable for the rest of the process.
+    fn fallback(&mut self) -> Option<&mut CtcRecognizer> {
         if self.fallback.is_none() {
-            let Some(model) = self.fallback_model.take() else {
-                return Ok(None);
-            };
-            self.fallback = Some(CtcRecognizer::from_memory(&model, self.builder_fn)?);
+            let model = self.fallback_model.take()?;
+            match CtcRecognizer::from_memory(&model, self.builder_fn) {
+                Ok(recognizer) => self.fallback = Some(recognizer),
+                Err(error) => {
+                    eprintln!("ocr fallback recognizer unavailable, continuing with the primary model: {error}");
+                    return None;
+                }
+            }
         }
-        Ok(self.fallback.as_mut())
+        self.fallback.as_mut()
     }
 }
 

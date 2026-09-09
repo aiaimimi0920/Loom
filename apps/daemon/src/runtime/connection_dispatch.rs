@@ -242,6 +242,15 @@ fn dispatch_connection(
         }
         HttpReadOutcome::Request(request) => {
             let request = ParsedHttpRequest::from_raw(request);
+            if is_live_media_websocket_request(&request) {
+                if shutdown_after_read {
+                    let (status, body) = daemon_shutting_down_response();
+                    write_response_safely(stream, status, &body);
+                    return DispatchOutcome::Stop;
+                }
+                handle_live_media_websocket_upgrade(stream, request, runtime);
+                return DispatchOutcome::Continue;
+            }
             let job = RequestJob { stream, request };
             if shutdown_after_read && (executor.is_none() || is_reserved_probe(&job.request)) {
                 let (status, body) = daemon_shutting_down_response();
@@ -306,6 +315,7 @@ fn route_with_runtime(
         &runtime.workflow_store,
         &runtime.hook_bridge,
         &runtime.device_registry,
+        &runtime.live_sessions,
         &runtime.surface_instances,
         &runtime.surface_actions,
         &runtime.surface_resources,

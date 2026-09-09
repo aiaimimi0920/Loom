@@ -7,6 +7,8 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use loom_security::metadata_has_link_semantics;
+
 use crate::error::invalid_data;
 use crate::{PluginSecurityError, MAX_SIGNED_PACKAGE_BYTES, MAX_SIGNED_PACKAGE_FILES};
 
@@ -33,7 +35,7 @@ fn hash_file(
     expected_length: u64,
 ) -> Result<(), PluginSecurityError> {
     let link_metadata = fs::symlink_metadata(path)?;
-    if link_metadata.file_type().is_symlink() {
+    if metadata_has_link_semantics(&link_metadata) {
         return Err(PluginSecurityError::SymbolicLink(
             path.display().to_string(),
         ));
@@ -69,22 +71,28 @@ fn collect_files(
     let mut seen = BTreeSet::new();
     let mut total = 0u64;
     while let Some(directory) = pending.pop() {
+        let directory_metadata = fs::symlink_metadata(&directory)?;
+        if metadata_has_link_semantics(&directory_metadata) || !directory_metadata.is_dir() {
+            return Err(PluginSecurityError::SymbolicLink(
+                directory.display().to_string(),
+            ));
+        }
         for entry in fs::read_dir(&directory)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata_has_link_semantics(&metadata) {
                 return Err(PluginSecurityError::SymbolicLink(
-                    entry.path().display().to_string(),
+                    path.display().to_string(),
                 ));
             }
-            if file_type.is_dir() {
-                pending.push(entry.path());
+            if metadata.is_dir() {
+                pending.push(path);
                 continue;
             }
-            if !file_type.is_file() {
+            if !metadata.is_file() {
                 continue;
             }
-            let path = entry.path();
             let relative = path
                 .strip_prefix(root)
                 .map_err(|_| PluginSecurityError::UnsafePath(path.display().to_string()))?
@@ -98,7 +106,7 @@ fn collect_files(
             if !seen.insert(folded) {
                 return Err(PluginSecurityError::DuplicatePath(relative));
             }
-            let length = entry.metadata()?.len();
+            let length = metadata.len();
             total = total.saturating_add(length);
             if total > MAX_SIGNED_PACKAGE_BYTES {
                 return Err(PluginSecurityError::PackageSize);
@@ -116,6 +124,8 @@ fn collect_files(
 pub(crate) fn validate_relative_path(value: &str) -> Result<(), PluginSecurityError> {
     let path = Path::new(value);
     if value.trim().is_empty()
+        || value.contains('\\')
+        || value.contains(':')
         || path.is_absolute()
         || path.components().any(|component| {
             matches!(
@@ -125,6 +135,18 @@ pub(crate) fn validate_relative_path(value: &str) -> Result<(), PluginSecurityEr
         })
     {
         return Err(PluginSecurityError::UnsafePath(value.to_owned()));
+    }
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            return Err(PluginSecurityError::UnsafePath(value.to_owned()));
+        };
+        let component = component.to_string_lossy();
+        if component.ends_with('.')
+            || component.ends_with(' ')
+            || loom_protocol::is_windows_reserved_device_name(&component)
+        {
+            return Err(PluginSecurityError::UnsafePath(value.to_owned()));
+        }
     }
     Ok(())
 }
@@ -140,7 +162,7 @@ pub(crate) fn checked_package_output_path(
     for (index, component) in components.iter().enumerate() {
         current.push(component.as_os_str());
         match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
+            Ok(metadata) if metadata_has_link_semantics(&metadata) => {
                 return Err(PluginSecurityError::SymbolicLink(
                     current.display().to_string(),
                 ));

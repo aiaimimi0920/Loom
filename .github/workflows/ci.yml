@@ -74,6 +74,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DependencySecurityContract.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-CiCommandDiagnostics.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-GitHubActionsContract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-CapabilityPluginConformanceContract.ps1
 
       - name: Install desktop dependencies
         working-directory: apps/desktop
@@ -193,7 +194,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-MaliciousPluginPackages.ps1 -Case "${{ matrix.case }}"
 
   plugin-sdk-clean-host:
-    name: Clean-host plugin SDK and schema validation
+    name: Clean-host plugin SDK, schema, and capability validation
     runs-on: windows-latest
     steps:
       - name: Checkout clean host
@@ -202,11 +203,60 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.22.2"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Test plugin CLI end to end
         run: cargo test --locked -p loom-plugin-cli cli_sign_trust_pack_install_conformance_and_revoke_e2e
+
+      - name: Build capability conformance host
+        run: cargo build --locked -p loom-daemon -p loom-plugin-cli
+
+      - name: Exercise unknown capability package without sibling sources
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomCapabilityPluginConformance.ps1 `
+            -PublisherId ci.example `
+            -PackageId unknown-capability `
+            -DaemonExecutable .\target\debug\loom-daemon.exe `
+            -PluginCliExecutable .\target\debug\loom-plugin.exe `
+            -EvidenceRoot .\target\capability-plugin-conformance-ci
+
+      - name: Exercise capability SDK templates without source imports
+        shell: powershell
+        run: |
+          $cleanHost = Join-Path $env:RUNNER_TEMP "loom-capability-sdk"
+          New-Item -ItemType Directory -Force -Path $cleanHost | Out-Null
+          Copy-Item -LiteralPath .\sdk\capability -Destination $cleanHost -Recurse
+          powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $cleanHost "capability\Test-Templates.ps1")
+
+      - name: Build and verify non-OCR reference capability
+        shell: powershell
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "loom-text-translation"
+          $key = Join-Path $env:RUNNER_TEMP "loom-capability-test-key.json"
+          .\target\debug\loom-plugin.exe keygen $key neuro-official-capability-2
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LoomCapabilityPackage.ps1 `
+            -PackageSourceRoot .\capability-packages\text-translation `
+            -RuntimeCargoPackage loom-text-translation-host `
+            -RuntimeBinaryName loom-text-translation-host `
+            -OutputRoot $root -Configuration Debug `
+            -SigningKeyPath $key -SigningPublisherId neuro.official | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LoomCapabilityCatalog.ps1 `
+            -PackageRoot $root -BaseUrl http://127.0.0.1:43190/ `
+            -SigningKeyPath $key -SigningPublisherId neuro.official -AllowHttpLoopback | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-TextTranslationCapabilityPackage.ps1 `
+            -ArtifactRoot $root
 
       - name: Validate embedded public schemas
         shell: powershell

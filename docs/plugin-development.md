@@ -10,7 +10,9 @@ Download `Loom-Plugin-SDK-<version>-windows-x64.zip`. It contains:
 
 - `loom-plugin.exe`;
 - `protocol/README.md`;
-- the five v1 JSON Schemas;
+- all 14 public v1 JSON Schemas, including capability package/runtime/extension;
+- the clean-host capability conformance harness under `scripts/`;
+- Rust, TypeScript, and Python capability templates plus a fake host under `sdk/capability/`;
 - signing, security, permission, migration, and provenance documentation.
 
 ## Create a framework
@@ -57,6 +59,34 @@ must not require a new Loom enum variant or a Hook source branch.
 
 `pack` refuses missing payload entries, unsafe paths, links, excessive package
 size/count, and case-insensitive collisions. It writes a SHA-256 sidecar.
+
+## Exercise an unknown capability package
+
+The SDK conformance harness generates, signs, installs, invokes, upgrades,
+rolls back, and uninstalls a publisher-qualified capability that is unknown to
+the host. It requires a Rust toolchain plus a built `loom-daemon.exe`; it does
+not require a Loom or Hook source checkout.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\Invoke-LoomCapabilityPluginConformance.ps1 `
+  -PublisherId publisher.example `
+  -PackageId capability-a `
+  -DaemonExecutable C:\path\to\loom-daemon.exe `
+  -PluginCliExecutable .\loom-plugin.exe
+```
+
+Repository maintainers can additionally pass `-AuditSourceIsolation` together
+with explicit `-LoomRepository` and `-HookRepository` paths. That optional mode
+proves that the lifecycle did not mutate either source tree; it is not a plugin
+runtime dependency.
+
+From the extracted SDK, verify all three language templates without Loom or
+Hook source:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\sdk\capability\Test-Templates.ps1
+```
 
 ## Install and operate
 

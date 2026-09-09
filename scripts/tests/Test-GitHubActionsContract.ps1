@@ -51,6 +51,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'actions/checkout@v5',
     'fetch-depth: 0',
     'actions/setup-node@v6',
+    'actions/setup-python@v6',
     'actions/upload-artifact@v6',
     'node-version: "22.22.2"',
     'node --test .\scripts\tests\effective-code-lines.test.mjs',
@@ -81,9 +82,20 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     '.\scripts\tests\Test-DependencySecurityContract.ps1',
     '.\scripts\tests\Test-CiCommandDiagnostics.ps1',
     '.\scripts\tests\Test-GitHubActionsContract.ps1',
+    '.\scripts\tests\Test-CapabilityPluginConformanceContract.ps1',
     '.\scripts\tests\Test-MaliciousPluginPackages.ps1',
-    'Clean-host plugin SDK and schema validation',
-    'cli_sign_trust_pack_install_conformance_and_revoke_e2e'
+    'Clean-host plugin SDK, schema, and capability validation',
+    'cli_sign_trust_pack_install_conformance_and_revoke_e2e',
+    'cargo build --locked -p loom-daemon -p loom-plugin-cli',
+    '.\scripts\Invoke-LoomCapabilityPluginConformance.ps1',
+    '-PackageId unknown-capability',
+    '-EvidenceRoot .\target\capability-plugin-conformance-ci',
+    'Exercise capability SDK templates without source imports',
+    'capability\Test-Templates.ps1',
+    'Build and verify non-OCR reference capability',
+    '.\scripts\Build-LoomCapabilityPackage.ps1',
+    '.\scripts\Build-LoomCapabilityCatalog.ps1',
+    '.\scripts\tests\Test-TextTranslationCapabilityPackage.ps1'
 )
 
 $ciPath = Join-Path $workflowRoot "ci.yml"

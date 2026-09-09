@@ -171,14 +171,14 @@ preserved without executing or rendering them so user data is not silently lost.
 ## QR and barcode child capability
 
 The same `neuro.official/ocr` package also owns local QR/barcode decoding.
-`Ctrl+2` performs text OCR and code decoding against the same bounded staged
+`Ctrl+4` performs text OCR and code decoding against the same bounded staged
 image. The unit toolbar intentionally exposes only cached-result actions and
 does not duplicate recognition with a code-only refresh item. The retained
 `neuro.official/ocr.scan-codes` command remains protocol-compatible for existing
 callers but is not contributed to `hook.unit.toolbar`. Code results use the separate
 `neuro.official/ocr.codes.v1` attachment. Text and code results therefore have
 independent schemas and renderers while sharing one install, signature, runtime
-process, permission review, and lifecycle. `Alt+2` changes both attachments to
+process, permission review, and lifecycle. `Alt+4` changes both attachments to
 one shared visible/hidden state.
 
 ```json
@@ -231,8 +231,8 @@ uses the same lossless migration rule as legacy OCR data.
 2. Open **Settings > Capability Extensions** and select **Download and install
    OCR**. Review the immutable digest and seven requested permissions, including
    external HTTPS opening, then enable.
-3. Capture a clear text image containing a QR code. Confirm `Ctrl+2` writes both
-   attachments and `Alt+2` hides and restores both layers together.
+3. Capture a clear text image containing a QR code. Confirm `Ctrl+4` writes both
+   attachments and `Alt+4` hides and restores both layers together.
 4. Click each center circle. Confirm the nearby action panel, per-result copy,
    HTTPS browser opening, close behavior, block copy, overlay layout, and the
    unit-scoped notices. A non-HTTPS payload must not expose **Open**.

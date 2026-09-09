@@ -55,6 +55,27 @@ pub struct CapabilityPluginRecord {
     pub versions: Vec<CapabilityInstalledVersion>,
 }
 
+impl CapabilityPluginRecord {
+    /// Returns the digest of the newest installed version by semantic version order.
+    ///
+    /// Records store their versions sorted by the version *string*, so the last element is the
+    /// lexicographically largest one rather than the newest: `"1.9.0"` sorts above `"1.10.0"`.
+    /// Callers that want "the newest version" have to compare parsed semver, and non-semver
+    /// versions are skipped because they cannot be ordered against the rest.
+    #[must_use]
+    pub fn latest_semver_digest(&self) -> Option<&str> {
+        self.versions
+            .iter()
+            .filter_map(|candidate| {
+                semver::Version::parse(&candidate.version)
+                    .ok()
+                    .map(|version| (version, candidate.digest.as_str()))
+            })
+            .max_by(|left, right| left.0.cmp(&right.0))
+            .map(|(_, digest)| digest)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapabilityRuntimeFailureState {

@@ -27,3 +27,5 @@ pub const CAPABILITY_PACKAGE_V1: &str =
 pub const CAPABILITY_RUNTIME_V1: &str =
     include_str!("../../../protocol/schemas/capability-runtime.v1.schema.json");
 pub const EXTENSION_V1: &str = include_str!("../../../protocol/schemas/extension.v1.schema.json");
+pub const LIVE_CONTROL_V1: &str =
+    include_str!("../../../protocol/schemas/live-control.v1.schema.json");

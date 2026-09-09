@@ -26,24 +26,42 @@ pub struct CodeAttachmentPayload {
 pub fn build_attachment_payload(scan: &CodeScanResult) -> CodeAttachmentPayload {
     let source_width = scan.width.max(1);
     let source_height = scan.height.max(1);
-    let mut results = scan.results.clone();
-    loop {
-        let payload = CodeAttachmentPayload {
-            schema_version: "1".to_owned(),
-            visible: true,
-            source_width,
-            source_height,
-            selected_id: None,
-            surface_scene: scene(&results, source_width, source_height, true, None),
-            results: results.clone(),
-        };
-        if serde_json::to_vec(&payload).is_ok_and(|bytes| bytes.len() <= MAX_ATTACHMENT_BYTES) {
-            return payload;
-        }
-        if results.pop().is_none() {
-            return payload;
+    let results = scan.results.clone();
+    let compose = |results: &[CodeResult]| CodeAttachmentPayload {
+        schema_version: "1".to_owned(),
+        visible: true,
+        source_width,
+        source_height,
+        selected_id: None,
+        surface_scene: scene(results, source_width, source_height, true, None),
+        results: results.to_vec(),
+    };
+    let payload = compose(&results);
+    if fits(&payload) {
+        return payload;
+    }
+    // Each retained result adds one payload entry plus one Surface marker, so the
+    // serialized size only grows with the count. Searching the retained prefix keeps
+    // 32 decoded codes carrying a 16 KiB payload each from costing 32 full
+    // serializations of a half-megabyte document.
+    let mut low = 0usize;
+    let mut high = results.len().saturating_sub(1);
+    let mut best = compose(&[]);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let candidate = compose(&results[..mid]);
+        if fits(&candidate) {
+            low = mid;
+            best = candidate;
+        } else {
+            high = mid - 1;
         }
     }
+    best
+}
+
+fn fits(payload: &CodeAttachmentPayload) -> bool {
+    serde_json::to_vec(payload).is_ok_and(|bytes| bytes.len() <= MAX_ATTACHMENT_BYTES)
 }
 
 /// Updates only the scene selection while preserving unknown migration fields.

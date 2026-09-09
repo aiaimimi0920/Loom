@@ -11,6 +11,7 @@ mod validation;
 pub mod capability;
 pub mod device;
 pub mod hook;
+pub mod live;
 pub mod schemas;
 pub mod surface;
 
@@ -18,6 +19,7 @@ pub use capability::*;
 pub use device::*;
 pub use execution::*;
 pub use hook::*;
+pub use live::*;
 pub use package::*;
 pub use runtime::*;
 pub use surface::*;

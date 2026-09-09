@@ -192,11 +192,14 @@ try {
         subject = $zipRecord
         materials = $materials
     })
+    $diskBytes = [int64](@($materials | ForEach-Object { [int64]$_['bytes'] } | Measure-Object -Sum).Sum)
     $summary = [ordered]@{
         schemaVersion = 1
         capabilities = @([ordered]@{
             id = "ocr"
             qualifiedId = "neuro.official/ocr"
+            name = [string]$manifest.name
+            description = [string]$manifest.description
             version = [string]$manifest.version
             target = "windows-x64"
             zip = "ocr.zip"
@@ -207,6 +210,9 @@ try {
             sbom = Get-FileRecord -Path $sbomPath -Root $outputRootPath
             provenance = Get-FileRecord -Path $provenancePath -Root $outputRootPath
             deterministic = $true
+            diskBytes = $diskBytes
+            hostCompatibility = $manifest.hostCompatibility
+            permissions = @($manifest.permissions)
         })
     }
     Write-Utf8NoBomFile -Path (Join-Path $outputRootPath "summary.json") -Value $summary

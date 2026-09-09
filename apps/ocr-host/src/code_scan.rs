@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_RESULTS: usize = 32;
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
+const MAX_EXTERNAL_URL_BYTES: usize = 8 * 1024;
 const MAX_POINTS: usize = 16;
 const MAX_PIXELS: u64 = 50_000_000;
 
@@ -150,6 +151,12 @@ fn position(result: &CodeResult) -> (f32, f32) {
 
 pub(crate) fn classify_https_url(text: &str) -> Option<String> {
     let candidate = text.trim();
+    // Mirrors `loom_protocol::is_safe_external_https_url`, including its byte
+    // budget: a longer link would be surfaced as openable and then rejected by
+    // the host at click time.
+    if candidate.is_empty() || candidate.len() > MAX_EXTERNAL_URL_BYTES {
+        return None;
+    }
     if candidate
         .chars()
         .any(|character| character.is_control() || character.is_whitespace() || character == '\\')

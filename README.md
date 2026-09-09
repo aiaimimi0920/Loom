@@ -437,13 +437,15 @@ The conformance package and its Rust runtime are created under the system temp
 directory. The smoke covers install, permission approval, enable, command and
 notice effects, manifest-driven settings, restart restoration, disable,
 re-enable, upgrade, rollback, and uninstall. It also requires zero remaining
-runtime processes and identical Hook/Loom source fingerprints at the boundary.
+runtime processes. It runs without a sibling Hook checkout. Maintainers can add
+`-AuditSourceIsolation -LoomRepository . -HookRepository ..\Hook` to also prove
+identical Hook/Loom source fingerprints at the boundary.
 
 ### Installing the official OCR capability
 
 The Desktop **Settings > Capability Extensions** page contains a dedicated
 `neuro.official/ocr` card. Text OCR plus QR/barcode recognition ship in that one
-optional package. `Ctrl+2` runs both automatically, while the OCR unit-toolbar
+optional package. `Ctrl+4` runs both automatically, while the OCR unit-toolbar
 menu exposes cached-result actions instead of a redundant code-only scan item.
 The quick action uses the same signed catalog installer as the
 generic catalog tab; it does not download from a hard-coded URL or use the small
@@ -480,8 +482,10 @@ be published or copied into a release payload.
 ### Plugin SDK, trust, and lifecycle
 
 The release build publishes an independent `Loom-Plugin-SDK-<version>-windows-x64.zip`
-containing `loom-plugin.exe`, the five v1 JSON Schemas, and the public plugin
-documentation. The CLI supports `init`, `keygen`, `sign`, `validate`, `pack`,
+containing `loom-plugin.exe`, all 14 public v1 JSON Schemas, three language
+capability templates, their fake host, the clean-host
+capability conformance harness, and the public plugin documentation. The CLI
+supports `init`, `keygen`, `sign`, `validate`, `pack`,
 `conformance`, `catalog sign`, `catalog validate`, `trust add`, and
 `trust revoke`. The language-neutral source of
 truth is [protocol/README.md](protocol/README.md).
@@ -876,3 +880,4 @@ cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 - `docs/WORKFLOW_CONTRACT.md`
 - `docs/AGENT_DEFINITIONS.md`
 - `docs/GATEWAY_INTEGRATION.md`
+- `docs/ASSET_LIBRARY_INTEGRATION.md`

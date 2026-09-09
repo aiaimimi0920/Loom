@@ -67,7 +67,7 @@ pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrA
     let source_width = result.width.max(1);
     let source_height = result.height.max(1);
     let fill_color = shared_fill_color(&result.text_blocks);
-    let mut text_blocks = result
+    let text_blocks = result
         .text_blocks
         .iter()
         .filter_map(|block| {
@@ -82,27 +82,53 @@ pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrA
         .take(MAX_BLOCKS)
         .collect::<Vec<_>>();
     let mut full_text = truncate_utf8(&result.full_text, MAX_FULL_TEXT_BYTES);
-    loop {
-        let payload = OcrAttachmentPayload {
-            schema_version: "1".to_owned(),
-            visible,
-            show_translated: false,
-            source_width,
-            source_height,
-            coordinate_scale: normalized_coordinate_scale(result.scale_factor),
-            full_text: full_text.clone(),
-            selected_block_indices: Vec::new(),
-            surface_scene: scene(&text_blocks, source_width, source_height, visible, &[]),
-            text_blocks: text_blocks.clone(),
-        };
-        if serde_json::to_vec(&payload).is_ok_and(|bytes| bytes.len() <= MAX_ATTACHMENT_BYTES) {
-            return payload;
-        }
-        if text_blocks.pop().is_none() {
-            let next_limit = full_text.len().saturating_sub(4096);
-            full_text = truncate_utf8(&full_text, next_limit);
+    let compose = |blocks: &[OcrAttachmentBlock], full_text: &str| OcrAttachmentPayload {
+        schema_version: "1".to_owned(),
+        visible,
+        show_translated: false,
+        source_width,
+        source_height,
+        coordinate_scale: normalized_coordinate_scale(result.scale_factor),
+        full_text: full_text.to_owned(),
+        selected_block_indices: Vec::new(),
+        surface_scene: scene(blocks, source_width, source_height, visible, &[]),
+        text_blocks: blocks.to_vec(),
+    };
+    let mut payload = compose(&text_blocks, &full_text);
+    if !fits(&payload) {
+        // The serialized size grows monotonically with the retained block count:
+        // every extra block contributes one payload entry plus one Surface node and
+        // nothing is ever removed elsewhere. Dropping blocks one at a time therefore
+        // re-cloned and re-serialized the whole payload on each step, which is
+        // quadratic on a dense page — a page of 128 lines carrying character and word
+        // spans paid well over a hundred full serializations. Searching the retained
+        // prefix instead costs ceil(log2(128)) = 7.
+        let mut low = 0usize;
+        let mut high = text_blocks.len().saturating_sub(1);
+        payload = compose(&[], &full_text);
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            let candidate = compose(&text_blocks[..mid], &full_text);
+            if fits(&candidate) {
+                low = mid;
+                payload = candidate;
+            } else {
+                high = mid - 1;
+            }
         }
     }
+    // Only an oversized full text can still exceed the budget once every block is
+    // gone. The emptiness guard keeps a serializer that never reports a fitting
+    // payload from spinning here forever.
+    while !fits(&payload) && !full_text.is_empty() {
+        full_text = truncate_utf8(&full_text, full_text.len().saturating_sub(4096));
+        payload = compose(&[], &full_text);
+    }
+    payload
+}
+
+fn fits(payload: &OcrAttachmentPayload) -> bool {
+    serde_json::to_vec(payload).is_ok_and(|bytes| bytes.len() <= MAX_ATTACHMENT_BYTES)
 }
 
 fn normalize_block(

@@ -117,6 +117,10 @@ fn invoke_plugin_command(
         input: request.input,
         target: request.target,
         resource_refs: request.resource_refs,
+        // The HTTP invoke surface carries no unit context: `InvokeCapabilityRequest`
+        // has no `unitAttachments` field by design. Attachment-bearing commands are
+        // reached through the Hook extension bridge instead, which forwards the
+        // caller's attachments after `validate_extension_invocation`.
         unit_attachments: Vec::new(),
         staged_resources,
         user_gesture_token: request.user_gesture_token,

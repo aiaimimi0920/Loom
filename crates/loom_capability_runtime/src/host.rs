@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -106,7 +106,11 @@ pub struct CapabilityRuntimeHealth {
 }
 
 pub(super) struct ActivePackage {
-    pub(super) package: CapabilityRuntimePackage,
+    /// Shared rather than owned: `invoke` needs the package to outlive the per-package lock it
+    /// releases across the blocking runtime call, and `contribution_snapshot` needs one per
+    /// active plugin. Owning it made both deep-copy the entire manifest — every contribution,
+    /// schema and entrypoint — on paths that only ever read it.
+    pub(super) package: Arc<CapabilityRuntimePackage>,
     pub(super) effective_contributions: CapabilityContributions,
     command_schemas: HashMap<String, CommandSchemaValidators>,
     scope_id: String,
@@ -190,7 +194,7 @@ impl CapabilityRuntimeHost {
         let registered_contributions = effective_contributions.clone();
         let scope_id = format!("scope:{}", Uuid::new_v4().simple());
         let active = ActivePackage {
-            package,
+            package: Arc::new(package),
             effective_contributions,
             command_schemas,
             scope_id,
@@ -211,14 +215,15 @@ impl CapabilityRuntimeHost {
                 return Err(CapabilityHostError::Busy);
             }
             validate_command_conflicts(&commands, &plugin_id, &registered_contributions)?;
+            self.invalidate_plugin_gestures(&plugin_id)?;
             commands.retain(|_, owner| owner != &plugin_id);
             for command in &registered_contributions.commands {
                 commands.insert(command.id.clone(), plugin_id.clone());
             }
-            packages.insert(plugin_id.clone(), active)
+            let old = packages.insert(plugin_id.clone(), active);
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            old
         };
-        self.invalidate_plugin_gestures(&plugin_id)?;
-        self.generation.fetch_add(1, Ordering::SeqCst);
         drop(old);
         Ok(())
     }
@@ -309,13 +314,20 @@ impl CapabilityRuntimeHost {
 
     pub fn deactivate(&self, plugin_id: &str) -> HostResult<bool> {
         self.cancel_plugin_inflight(plugin_id)?;
-        let active = lock(&self.packages)?.remove(plugin_id);
+        let active = {
+            let mut commands = lock(&self.commands)?;
+            let mut packages = lock(&self.packages)?;
+            self.invalidate_plugin_gestures(plugin_id)?;
+            let active = packages.remove(plugin_id);
+            if active.is_some() {
+                commands.retain(|_, owner| owner != plugin_id);
+                self.generation.fetch_add(1, Ordering::SeqCst);
+            }
+            active
+        };
         let Some(active) = active else {
             return Ok(false);
         };
-        self.remove_plugin_commands(plugin_id)?;
-        self.invalidate_plugin_gestures(plugin_id)?;
-        self.generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut active) = active.lock() {
             if let Some(mut process) = active.process.take() {
                 let _ = call_method(
@@ -341,7 +353,21 @@ impl CapabilityRuntimeHost {
     }
 
     pub fn prune_idle(&self) -> HostResult<usize> {
-        let active = lock(&self.packages)?.values().cloned().collect::<Vec<_>>();
+        // A command runs with the package lock released, so `last_used` alone cannot tell an
+        // idle runtime from one that is busy answering a long request. Skipping plugins with
+        // in-flight invocations keeps the reaper from killing a live OCR pass whose declared
+        // budget is as long as the idle timeout itself. The in-flight snapshot is taken and
+        // released before any package lock: `invoke` acquires them the other way round, so
+        // holding both here would close a deadlock cycle.
+        let busy = lock(&self.inflight)?
+            .values()
+            .map(|inflight| inflight.plugin_id.clone())
+            .collect::<HashSet<_>>();
+        let active = lock(&self.packages)?
+            .iter()
+            .filter(|(plugin_id, _)| !busy.contains(plugin_id.as_str()))
+            .map(|(_, active)| Arc::clone(active))
+            .collect::<Vec<_>>();
         let mut pruned = 0usize;
         for active in active {
             let mut active = lock(&active)?;
@@ -373,17 +399,26 @@ impl CapabilityRuntimeHost {
     }
 
     pub fn contribution_snapshot(&self) -> HostResult<loom_protocol::ContributionSnapshot> {
-        let active = lock(&self.packages)?.values().cloned().collect::<Vec<_>>();
-        let mut registrations = Vec::with_capacity(active.len());
-        for active in active {
-            let active = lock(&active)?;
+        let packages = lock(&self.packages)?;
+        let mut registrations = Vec::with_capacity(packages.len());
+        for active in packages.values() {
+            let active = lock(active)?;
             registrations.push(SnapshotRegistration {
-                package: active.package.clone(),
+                package: Arc::clone(&active.package),
                 contributions: active.effective_contributions.clone(),
                 scope_id: active.scope_id.clone(),
             });
         }
         build_contribution_snapshot(self.generation.load(Ordering::SeqCst), registrations)
+    }
+
+    /// Reads the contribution generation without materialising a snapshot.
+    ///
+    /// `contribution_snapshot` locks and deep-clones every active package, so a caller that only
+    /// needs to know whether contributions moved should compare this counter instead.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     pub fn process_ids(&self) -> Vec<u32> {
@@ -408,11 +443,6 @@ impl CapabilityRuntimeHost {
         self.inflight
             .lock()
             .is_ok_and(|inflight| inflight.contains_key(request_id))
-    }
-
-    fn remove_plugin_commands(&self, plugin_id: &str) -> HostResult<()> {
-        lock(&self.commands)?.retain(|_, owner| owner != plugin_id);
-        Ok(())
     }
 
     fn invalidate_plugin_gestures(&self, plugin_id: &str) -> HostResult<()> {

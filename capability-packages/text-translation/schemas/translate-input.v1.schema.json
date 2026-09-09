@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/capabilities/text-translation/translate-input.v1.schema.json",
+  "type": "object",
+  "required": ["text", "targetLanguage"],
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "targetLanguage": {
+      "enum": ["zh-CN", "en"]
+    }
+  },
+  "additionalProperties": false
+}

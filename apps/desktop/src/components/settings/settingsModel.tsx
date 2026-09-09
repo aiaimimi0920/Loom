@@ -102,10 +102,11 @@ export const HOOK_SHORTCUT_GROUPS: HookShortcutDisplayGroup[] = [
     icon: "capture",
     items: [
       { id: "capture", sourceId: "capture", label: "截图", description: "截取屏幕区域", keys: ["Ctrl+1"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
+      { id: "live-capture", sourceId: "live_capture", label: "实时截图", description: "截取持续更新的窗口或屏幕区域", keys: ["Ctrl+2"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
       { id: "long-capture", sourceId: "long_capture", label: "长截图", description: "开始或结束长截图", keys: ["Ctrl+3"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
       { id: "open-image", sourceId: "open_image", label: "打开图片", description: "导入图片并创建贴图", keys: ["Ctrl+O"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
       { id: "save", sourceId: "save_image", label: "保存图片", description: "保存当前贴图的正式输出", keys: ["Ctrl+S"], contexts: ["unit-selected"] },
-      { id: "toggle-clean-view", sourceId: "toggle_clean_view", label: "清爽视图", description: "显示或隐藏界面辅助控件", keys: ["Ctrl+4"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
+      { id: "toggle-clean-view", sourceId: "toggle_clean_view", label: "清爽视图", description: "显示或隐藏界面辅助控件", keys: ["Ctrl+Shift+4"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
       { id: "cancel", sourceId: "cancel", label: "取消 / 退出", description: "根据当前状态取消、删除或退出", keys: ["Escape", "Delete", "Backspace"], contexts: ["capture-selecting", "sticker-editing", "unit-selected"], conflictFamily: "contextual-cancel-delete" },
       { id: "force-close", label: "强行关闭", description: "连续按下 3 次 Esc 强行退出 Hook", keys: ["Esc × 3"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
     ],
