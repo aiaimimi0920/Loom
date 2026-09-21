@@ -398,9 +398,32 @@ fn inline_art_input(data_url: &str) -> Value {
 }
 
 fn remove_test_dir(path: &Path) {
+    fn make_writable(path: &Path) -> std::io::Result<()> {
+        let metadata = fs::symlink_metadata(path)?;
+        if loom_security::metadata_has_link_semantics(&metadata) {
+            return Ok(());
+        }
+        let mut permissions = metadata.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions)?;
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                make_writable(&entry?.path())?;
+            }
+        }
+        Ok(())
+    }
+
     let mut last_error = None;
     for _ in 0..20 {
-        match fs::remove_dir_all(path) {
+        // Installed packages are immutable; restore owner write access before cleanup.
+        match make_writable(path).and_then(|()| fs::remove_dir_all(path)) {
             Ok(()) => return,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => {

@@ -1,6 +1,7 @@
 // Loom daemon tests fragment 17; included into the shared crate test module.
 #[test]
 fn daemon_hook_bridge_runtime_start_status_stop() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-bridge-runtime");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -82,6 +83,7 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
 
 #[test]
 fn daemon_hook_bridge_accepts_websocket_handshake_request() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-bridge-handshake");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -203,6 +205,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
 
 #[test]
 fn daemon_extension_bridge_rejects_a_socket_without_hook_handshake() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("extension-bridge-auth-order");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);

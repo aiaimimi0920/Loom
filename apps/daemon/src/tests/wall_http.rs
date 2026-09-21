@@ -20,7 +20,7 @@ mod wall_http {
 
     impl Drop for Root {
         fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).expect("clean wall HTTP fixture");
+            remove_test_dir(&self.0);
         }
     }
 

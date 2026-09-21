@@ -137,6 +137,13 @@ pub fn extract_zip_securely(
             return Err(SecureZipError::CompressionRatio { name: raw_name });
         }
         output.sync_all()?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            // Preserve executable payloads without importing archive write or special bits.
+            let current = output.metadata()?.permissions().mode();
+            output.set_permissions(fs::Permissions::from_mode(current | (mode & 0o111)))?;
+        }
         installed_files.push(enclosed.to_string_lossy().replace('\\', "/"));
     }
     Ok(installed_files)
@@ -258,6 +265,32 @@ mod tests {
             b"ok"
         );
         let _ = fs::remove_dir_all(destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracted_runtime_is_executable_without_special_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "runtime",
+                SimpleFileOptions::default().unix_permissions(0o7777),
+            )
+            .unwrap();
+        writer.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let destination = temp_dir("executable");
+        extract_zip_securely(&bytes, &destination).expect("extract runtime");
+        let runtime = destination.join("runtime");
+        let mode = fs::metadata(&runtime).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111);
+        assert_eq!(mode & 0o7000, 0);
+        assert!(std::process::Command::new(runtime)
+            .status()
+            .unwrap()
+            .success());
+        fs::remove_dir_all(destination).unwrap();
     }
 
     #[test]

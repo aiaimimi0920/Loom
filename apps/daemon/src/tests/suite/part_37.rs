@@ -63,7 +63,7 @@ fn capability_install_broadcasts_inventory_update_before_enablement() {
         0,
         "install is visible without pretending the disabled plugin contributes"
     );
-    fs::remove_dir_all(root).expect("cleanup");
+    remove_test_dir(&root);
 }
 
 #[test]
@@ -74,5 +74,5 @@ fn capability_catalog_advertises_the_declarative_overlay_surface() {
     let support = capability_host_support(&daemon.hook_bridge).expect("host support");
 
     assert!(support.surface_features.iter().any(|feature| feature == "declarative.v1"));
-    fs::remove_dir_all(root).expect("cleanup");
+    remove_test_dir(&root);
 }
