@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read;
 
 use loom_protocol::{
     SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceLease, SurfaceResourceTransport,
@@ -115,8 +116,15 @@ impl SurfaceResourceStore {
         let descriptor = stored.descriptor.clone();
         // Capture the stamp before reading so a concurrent replacement cannot be marked verified.
         let stamp = self.payload_stamp(&digest);
-        let bytes = fs::read(self.root.join(format!("{digest}.bin")))?;
-        if bytes.len() as u64 != descriptor.size || hex_digest(&bytes) != digest {
+        let mut bytes = Vec::new();
+        fs::File::open(self.root.join(format!("{digest}.bin")))?
+            .take(MAX_SURFACE_RESOURCE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.is_empty()
+            || bytes.len() > MAX_SURFACE_RESOURCE_BYTES
+            || bytes.len() as u64 != descriptor.size
+            || hex_digest(&bytes) != digest
+        {
             self.verified.remove(&resource_id);
             return Err(SurfaceResourceStoreError::Invalid(format!(
                 "resource payload failed integrity validation: {resource_id}"

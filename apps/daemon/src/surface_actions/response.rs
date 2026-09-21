@@ -90,26 +90,21 @@ fn apply_action_response(
     let response = broker_action_resource_uploads(response, surface_resources)?;
     validate_action_response_resources(&response, surface_resources)?;
     for update in response.patches {
+        // Selection and fanout share the mount lock; a mirror cannot mount between them.
+        let mut store = surface_instances.lock().map_err(|_| {
+            execution_error("surface_store_unavailable", "Surface store is unavailable")
+        })?;
         let target_attachments = {
-            let store = surface_instances.lock().map_err(|_| {
-                execution_error("surface_store_unavailable", "Surface store is unavailable")
-            })?;
             let instance = store.get(&job.event.instance_id).ok_or_else(|| {
                 execution_error("surface_instance_missing", "Surface instance was removed")
             })?;
-            if let Some(attachment_id) = update.attachment_id.as_ref() {
-                vec![attachment_id.clone()]
-            } else if instance.descriptor.instance_mode == SurfaceInstanceMode::Shared {
-                instance
-                    .attachments
-                    .values()
-                    .filter(|attachment| attachment.snapshot.is_some())
-                    .map(|attachment| attachment.descriptor.attachment_id.clone())
-                    .collect::<Vec<_>>()
-            } else {
-                vec![job.event.attachment_id.clone()]
-            }
+            surface_patch_targets(
+                &instance,
+                &job.event.attachment_id,
+                update.attachment_id.as_deref(),
+            )
         };
+        let mut broadcasts = Vec::new();
         for (target_index, target_attachment) in target_attachments.into_iter().enumerate() {
             let mut target_update = update.clone();
             if target_index > 0 && !target_update.resource_leases.is_empty() {
@@ -127,9 +122,6 @@ fn apply_action_response(
                     .map_err(resource_execution_error)?;
             }
             let (patch, hook_node_id) = {
-                let mut store = surface_instances.lock().map_err(|_| {
-                    execution_error("surface_store_unavailable", "Surface store is unavailable")
-                })?;
                 let instance = store.get(&job.event.instance_id).ok_or_else(|| {
                     execution_error("surface_instance_missing", "Surface instance was removed")
                 })?;
@@ -170,6 +162,10 @@ fn apply_action_response(
                     .map_err(store_execution_error)?;
                 (patch, hook_node_id)
             };
+            broadcasts.push((patch, hook_node_id));
+        }
+        drop(store);
+        for (patch, hook_node_id) in broadcasts {
             broadcast_hook_bridge_json(
                 hook_bridge,
                 json!({

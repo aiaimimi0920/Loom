@@ -22,6 +22,14 @@ authors must not depend on private Loom or Hook source code.
 - `loom.surface.v1` describes distributed Art Surface manifests, snapshots,
   patches, typed events, content-addressed resources, previews, and atomic
   formal result commits. It is independent of Hook's frontend framework.
+- `loom.wall.v1` describes physical endpoints, wall layouts and source placement.
+  Its strict field and coordinate rules are defined in
+  [WALL_PROTOCOL.md](WALL_PROTOCOL.md); geometry alone does not authorize input.
+  [WALL_SURFACE_API.md](WALL_SURFACE_API.md) defines ephemeral Art views,
+  scoped resources, host confirmation and cancellation for wall terminals.
+  [WALL_PRESENTATION_API.md](WALL_PRESENTATION_API.md) defines freeze/black/resume;
+  [WALL_IDENTIFICATION_API.md](WALL_IDENTIFICATION_API.md) defines physical display
+  metadata and identification. Their optional fields retain Wall's strict rules.
 - Unknown optional fields must be ignored. Missing optional fields use the
   secure defaults defined by `loom_protocol`.
 - Streaming or persistent workers require a separately named protocol and
@@ -338,6 +346,9 @@ credential values, URL credentials/query/fragment, and oversized strings.
 - `schemas/surface-stream.v1.schema.json`
 - `schemas/device-session.v1.schema.json`
 - `schemas/hook-message.v1.schema.json`
+- `schemas/wall.v1.schema.json`
+- `schemas/wall-presentation.v1.schema.json`
+- `schemas/wall-identification.v1.schema.json`
 
 Use the independently released `loom-plugin.exe`:
 
@@ -356,6 +367,6 @@ loom-plugin trust add <STORE> <PUBLISHER> <KEY_FILE>
 loom-plugin trust revoke <STORE> <PUBLISHER> <KEY_ID>
 ```
 
-The Plugin SDK ZIP contains this CLI, all 14 schemas, capability runtime
+The Plugin SDK ZIP contains this CLI, plugin schemas, capability runtime
 templates and fake host, and the developer/security documents. It does not
 contain Loom or Hook source.

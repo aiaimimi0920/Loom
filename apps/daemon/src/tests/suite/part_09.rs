@@ -142,6 +142,9 @@ fn test_daemon_runtime_from_config(
             .expect("open test device registry"),
         )),
         live_sessions: Arc::new(LiveSessionStore::new()),
+        walls: Arc::new(
+            WallStore::open(&control_plane_root.join("walls")).expect("open test wall store"),
+        ),
         surface_instances,
         surface_actions,
         surface_resources,

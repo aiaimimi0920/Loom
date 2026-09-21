@@ -1,4 +1,43 @@
 // Top-level authenticated HTTP route selection and handler dispatch.
+fn route_with_runtime(
+    runtime: &DaemonRuntime,
+    request: &ParsedHttpRequest,
+) -> Result<(u16, String)> {
+    runtime_log_debug(format!("{} {}", request.method, request.path));
+    route(
+        request,
+        &runtime.hook_settings,
+        &runtime.run_store,
+        runtime.run_store_status,
+        &runtime.brain_planner,
+        &runtime.capability_runtime,
+        &runtime.capability_dispatch,
+        &runtime.capability_resources,
+        &runtime.auth_token,
+        runtime.config_registry.as_ref(),
+        &runtime.config_store,
+        &runtime.mcp_servers,
+        &runtime.tool_registry,
+        &runtime.workflow_store,
+        &runtime.hook_bridge,
+        &runtime.device_registry,
+        &runtime.live_sessions,
+        &runtime.walls,
+        &runtime.surface_instances,
+        &runtime.surface_actions,
+        &runtime.surface_resources,
+        &runtime.settings,
+        &runtime.shared_images,
+        &runtime.settings_base_url,
+        &runtime.mcp_registry_endpoint,
+        runtime.request_executor_status,
+        &runtime.canvas_workflow_root,
+        &runtime.framework_registry,
+        &runtime.control_plane_root,
+        &runtime.bundled_art_sha256_allowlist,
+    )
+}
+
 fn route(
     request: &ParsedHttpRequest,
     hook_settings: &HookSettings,
@@ -17,6 +56,7 @@ fn route(
     hook_bridge: &SharedHookBridgeRuntime,
     device_registry: &SharedDeviceRegistryStore,
     live_sessions: &SharedLiveSessionStore,
+    walls: &SharedWallStore,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
     surface_resources: &SharedSurfaceResourceStore,
@@ -94,6 +134,27 @@ fn route(
         );
     }
 
+    if let Some(response) = route_wall_surfaces(request, route_path, &WallSurfaceServices {
+        walls, instances: surface_instances, actions: surface_actions,
+        resources: surface_resources, shared_images, bridge: hook_bridge, tools: tool_registry,
+        frameworks: framework_registry, root: control_plane_root,
+    }, authenticated_device_id.as_deref()) {
+        return response;
+    }
+
+    if let Some(response) = route_walls(
+        request,
+        route_path,
+        walls,
+        device_registry,
+        surface_resources,
+        live_sessions,
+        authenticated_device_id.as_deref(),
+    ) {
+        prune_wall_surfaces(walls, device_registry, surface_instances, surface_resources, shared_images);
+        return response;
+    }
+
     if let Some(response) = route_live_sessions(
         request,
         route_path,
@@ -136,5 +197,6 @@ fn route(
         bundled_art_sha256_allowlist,
         &authenticated_device_id,
         route_path,
+        walls,
     )
 }

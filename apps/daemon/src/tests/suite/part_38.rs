@@ -173,8 +173,8 @@ fn live_viewer_resume_does_not_duplicate_session_and_controller_is_single() {
     }
     let acquire_a = LiveControlLeaseRequest {
         protocol_version: loom_protocol::LIVE_PROTOCOL_VERSION.to_owned(),
-        surface_instance_id: "surface:fixture".to_owned(),
-        attachment_id: "attachment:a".to_owned(),
+        surface_instance_id: Some("surface:fixture".to_owned()),
+        attachment_id: Some("attachment:a".to_owned()),
         action: LiveControlLeaseAction::Acquire,
         sequence: 2,
         epoch: 1,
@@ -184,7 +184,7 @@ fn live_viewer_resume_does_not_duplicate_session_and_controller_is_single() {
         .change_controller("device-viewer-a", "live:authority", &acquire_a)
         .expect("first viewer acquires controller");
     let acquire_b = LiveControlLeaseRequest {
-        attachment_id: "attachment:b".to_owned(),
+        attachment_id: Some("attachment:b".to_owned()),
         ..acquire_a
     };
     let conflict = store

@@ -2,8 +2,8 @@
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LiveSessionCreateRequest {
-    surface_instance_id: String,
-    source_attachment_id: String,
+    surface_instance_id: Option<String>,
+    source_attachment_id: Option<String>,
     envelope: LiveControlEnvelope,
 }
 
@@ -32,8 +32,8 @@ struct LiveInputForwardRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LiveObservationPublishRequest {
-    surface_instance_id: String,
-    attachment_id: String,
+    surface_instance_id: Option<String>,
+    attachment_id: Option<String>,
     envelope: LiveControlEnvelope,
 }
 
@@ -179,13 +179,14 @@ fn create_live_session(
     let actor = authenticated_device_id
         .unwrap_or(start.requested_by_device_id.as_str())
         .to_owned();
-    validate_live_attachment(
+    validate_live_source_binding(
         surface_instances,
-        &request.surface_instance_id,
-        &request.source_attachment_id,
+        request.surface_instance_id.as_deref(),
+        request.source_attachment_id.as_deref(),
         &start.session.source_device_id,
         Some(&start.session.source_hook_id),
         authenticated_device_id,
+        true,
     )?;
     let (created, snapshot) = live_sessions.create(&actor, request.envelope)?;
     let status = if created { 201 } else { 200 };
@@ -262,13 +263,14 @@ fn change_live_controller(
             "administrator controller requests must use a paired device session",
         )
     })?;
-    validate_live_attachment(
+    validate_live_source_binding(
         surface_instances,
-        &request.surface_instance_id,
-        &request.attachment_id,
+        request.surface_instance_id.as_deref(),
+        request.attachment_id.as_deref(),
         actor,
         None,
         authenticated_device_id,
+        matches!(request.action, LiveControlLeaseAction::Revoke),
     )?;
     live_sessions
         .change_controller(actor, session_id, &request)
@@ -370,13 +372,14 @@ fn publish_live_observation(
             "live observations require a paired source device session",
         )
     })?;
-    validate_live_attachment(
+    validate_live_source_binding(
         surface_instances,
-        &request.surface_instance_id,
-        &request.attachment_id,
+        request.surface_instance_id.as_deref(),
+        request.attachment_id.as_deref(),
         actor,
         None,
         authenticated_device_id,
+        true,
     )?;
     let accepted_sequence = request.envelope.sequence;
     let accepted_observation_sequence = match &request.envelope.message {
@@ -390,12 +393,8 @@ fn publish_live_observation(
     debug_assert_eq!(observation.sequence, accepted_observation_sequence);
     for dispatch in outcome.dispatches {
         let epoch = dispatch.epoch;
-        let audit = dispatch_live_trigger(
-            dispatch,
-            live_sessions,
-            surface_instances,
-            surface_actions,
-        );
+        let audit =
+            dispatch_live_trigger(dispatch, live_sessions, surface_instances, surface_actions);
         if let Err(error) = live_sessions.finalize_trigger_dispatch(session_id, epoch, audit) {
             eprintln!(
                 "live trigger audit finalization failed after reserved dispatch: {}",

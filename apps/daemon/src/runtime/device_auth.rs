@@ -92,6 +92,9 @@ fn is_public_device_auth_route(method: &str, path: &str) -> bool {
 }
 
 fn device_session_route_allowed(method: &str, path: &str) -> bool {
+    if wall_device_route_allowed(method, path) {
+        return true;
+    }
     if method == "GET" {
         return path == "/v1/capabilities"
             || path == "/v1/surfaces/stream"
@@ -184,8 +187,57 @@ fn validate_authenticated_surface_attachment(
             "Surface attachment was not found",
         )
     })?;
+    if attachment.ephemeral {
+        return Err(DeviceAuthError::new(
+            403,
+            "wall_surface_binding_required",
+            "connection-owned Surface views require their wall presenter binding",
+        ));
+    }
     validate_authenticated_device_identity(
         Some(authenticated_device_id),
         &attachment.descriptor.device_id,
     )
+}
+
+fn validate_authenticated_surface_cancellation(
+    actor: Option<&str>,
+    instance_id: &str,
+    request_id: &str,
+    instances: &SharedSurfaceInstanceStore,
+) -> std::result::Result<(), DeviceAuthError> {
+    if actor.is_none() {
+        return Ok(());
+    }
+    let attachment_id = {
+        let store = instances.lock().map_err(|_| {
+            DeviceAuthError::new(
+                503,
+                "surface_store_unavailable",
+                "Surface store is unavailable",
+            )
+        })?;
+        store.get(instance_id).and_then(|instance| {
+            instance
+                .pending_events
+                .iter()
+                .chain(
+                    instance
+                        .pending_confirmations
+                        .values()
+                        .map(|pending| &pending.event),
+                )
+                .find(|event| {
+                    instance
+                        .event_acks
+                        .get(&event.event_id)
+                        .is_some_and(|ack| ack.request_id == request_id)
+                })
+                .map(|event| event.attachment_id.clone())
+        })
+    };
+    if let Some(attachment_id) = attachment_id {
+        validate_authenticated_surface_attachment(actor, instance_id, &attachment_id, instances)?;
+    }
+    Ok(())
 }

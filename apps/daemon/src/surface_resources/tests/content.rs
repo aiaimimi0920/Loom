@@ -7,6 +7,35 @@ use super::super::*;
 use crate::unix_time_millis;
 
 #[test]
+fn oversized_backing_file_is_rejected_without_reading_the_entire_file() {
+    let root = std::env::temp_dir().join(format!("loom-surface-bounded-{}", Uuid::new_v4()));
+    let mut store = SurfaceResourceStore::new(&root).unwrap();
+    let lease = store
+        .register(
+            SurfaceResourceKind::Image,
+            "image/png",
+            b"small",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let digest = lease.resource.resource_id.strip_prefix("sha256:").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(root.join(format!("{digest}.bin")))
+        .unwrap()
+        .set_len(128 * 1024 * 1024)
+        .unwrap();
+    assert!(matches!(
+        store.get(digest),
+        Err(SurfaceResourceStoreError::Invalid(_))
+    ));
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn resources_are_content_addressed_reused_and_verified_after_restart() {
     let root = std::env::temp_dir().join(format!("loom-surface-resources-{}", Uuid::new_v4()));
     let first = {

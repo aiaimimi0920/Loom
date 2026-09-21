@@ -14,6 +14,7 @@ pub mod hook;
 pub mod live;
 pub mod schemas;
 pub mod surface;
+pub mod wall;
 
 pub use capability::*;
 pub use device::*;

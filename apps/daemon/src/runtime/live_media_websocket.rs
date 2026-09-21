@@ -18,7 +18,7 @@ fn is_live_media_websocket_request(request: &ParsedHttpRequest) -> bool {
             .path
             .split('?')
             .next()
-            .is_some_and(|path| path == "/v1/live/media")
+            .is_some_and(|path| matches!(path, "/v1/live/media" | "/v1/walls/live/media"))
         && request
             .header("upgrade")
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
@@ -29,6 +29,10 @@ fn handle_live_media_websocket_upgrade(
     request: ParsedHttpRequest,
     runtime: &DaemonRuntime,
 ) {
+    if request.path.split('?').next() == Some("/v1/walls/live/media") {
+        handle_wall_live_upgrade(stream, request, runtime);
+        return;
+    }
     let result = prepare_live_media_upgrade(&request, runtime);
     let (device_id, session_id, role, after_epoch, after_frame_id, accept_key) = match result {
         Ok(value) => value,
@@ -101,7 +105,7 @@ fn prepare_live_media_upgrade(
             .unwrap_or_else(|| "live media request security validation failed".to_owned());
         LiveRuntimeError::new(status, "live_media_request_denied", message)
     })?;
-    validate_live_websocket_headers(request)?;
+    validate_live_websocket_headers(request, loom_protocol::LIVE_PROTOCOL_VERSION)?;
     let session_id = request
         .query_parameter("sessionId")
         .ok_or_else(|| invalid_live_upgrade("sessionId is required"))?;
@@ -151,6 +155,7 @@ fn prepare_live_media_upgrade(
 
 fn validate_live_websocket_headers(
     request: &ParsedHttpRequest,
+    expected_protocol: &str,
 ) -> std::result::Result<(), LiveRuntimeError> {
     if request.header_count("upgrade") != 1
         || !request
@@ -171,12 +176,12 @@ fn validate_live_websocket_headers(
             .is_some_and(|value| {
                 value
                     .split(',')
-                    .any(|protocol| protocol.trim() == loom_protocol::LIVE_PROTOCOL_VERSION)
+                    .any(|protocol| protocol.trim() == expected_protocol)
             })
     {
-        return Err(invalid_live_upgrade(
-            "the WebSocket upgrade headers or loom.live.v1 subprotocol are invalid",
-        ));
+        return Err(invalid_live_upgrade(format!(
+            "the WebSocket upgrade headers or {expected_protocol} subprotocol are invalid"
+        )));
     }
     Ok(())
 }

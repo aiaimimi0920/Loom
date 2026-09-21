@@ -15,12 +15,8 @@ impl SurfaceInstanceStore {
         let action = event.action.as_deref().ok_or_else(|| {
             SurfaceStoreError::Invalid("remote Surface event has no declared action".to_owned())
         })?;
-        if let Some(existing) = self
-            .instances
-            .get(instance_id)
-            .and_then(|instance| instance.event_acks.get(&event.event_id))
-        {
-            return Ok(existing.clone());
+        if let Some(existing) = self.event_ack_for_event(instance_id, &event)? {
+            return Ok(existing);
         }
         let ack = {
             let instance = self
@@ -39,21 +35,23 @@ impl SurfaceInstanceStore {
             }
         };
 
-        if event.class == SurfaceEventClass::Continuous {
-            // Continuous events are transient coalescing signals. No consumer
-            // reads them from the store, so retaining every distinct key would
-            // only keep payloads alive for the lifetime of the daemon.
+        let continuous = event.class == SurfaceEventClass::Continuous;
+        if continuous && !self.instances[instance_id].attachments[&event.attachment_id].ephemeral {
+            // Ordinary continuous signals keep their existing non-retaining admission path.
             return Ok(ack);
         }
 
         self.transaction(|instances| {
             let instance = instance_mut(instances, instance_id)?;
-            if instance.pending_events.len() >= MAX_PENDING_SURFACE_EVENTS {
-                return Err(SurfaceStoreError::Conflict(
-                    "Surface action queue is full".to_owned(),
-                ));
+            if !continuous {
+                if instance.pending_events.len() >= MAX_PENDING_SURFACE_EVENTS {
+                    return Err(SurfaceStoreError::Conflict(
+                        "Surface action queue is full".to_owned(),
+                    ));
+                }
+                instance.pending_events.push(event.clone());
             }
-            instance.pending_events.push(event.clone());
+            remember_ephemeral_event(instance, &event)?;
             instance
                 .event_acks
                 .insert(event.event_id.clone(), ack.clone());
@@ -84,6 +82,7 @@ impl SurfaceInstanceStore {
             SurfaceStoreError::Invalid("remote Surface event has no declared action".to_owned())
         })?;
         if let Some(instance) = self.instances.get(instance_id) {
+            validate_ephemeral_event_owner(instance, &event)?;
             if let Some(existing) = instance.event_acks.get(&event.event_id) {
                 let pending = instance
                     .pending_confirmations
@@ -143,6 +142,7 @@ impl SurfaceInstanceStore {
                     "Surface confirmation queue is full".to_owned(),
                 ));
             }
+            remember_ephemeral_event(instance, &event)?;
             instance
                 .event_acks
                 .insert(event.event_id.clone(), ack.clone());

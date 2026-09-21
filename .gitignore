@@ -1,6 +1,7 @@
 # Rust and Tauri build output
 /target/
 framework-packages/runtime-host/target/
+capability-packages/*/launcher/target/
 /apps/desktop/src-tauri/target/
 **/*.rs.bk
 
@@ -22,6 +23,8 @@ __pycache__/
 /.runtime/
 /evidence/
 /artifacts/effective-code-lines*.json
+/artifacts/
+/.playwright-cli/
 *.log
 
 # Local daemon, Art Store, and one-off protocol fixtures
@@ -40,7 +43,7 @@ __pycache__/
 !.env.example
 
 # Temporary and editor files
-/.tmp/
+.tmp/
 /_temp/
 /.tmp-framework-*/
 /.memsearch/

@@ -26,8 +26,8 @@ fn phase_five_store(session_id: &str) -> LiveSessionStore {
 fn phase_five_lease(action: LiveControlLeaseAction, sequence: u64) -> LiveControlLeaseRequest {
     LiveControlLeaseRequest {
         protocol_version: loom_protocol::LIVE_PROTOCOL_VERSION.to_owned(),
-        surface_instance_id: "surface:fixture".to_owned(),
-        attachment_id: "attachment:fixture".to_owned(),
+        surface_instance_id: Some("surface:fixture".to_owned()),
+        attachment_id: Some("attachment:fixture".to_owned()),
         action,
         sequence,
         epoch: 1,

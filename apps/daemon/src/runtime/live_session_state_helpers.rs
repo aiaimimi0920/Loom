@@ -119,11 +119,15 @@ fn ensure_viewer(
 }
 
 fn expire_controller(record: &mut LiveSessionRecord) {
+    if record.wall_controller.as_ref().is_some_and(|owner| owner.deadline <= Instant::now()) {
+        clear_wall_controller(record, "wall_controller_expired");
+    }
     if record
         .controller_expires_at_ms
         .is_some_and(|expires| expires <= unix_time_millis())
     {
         record.session.controller_device = None;
+        record.wall_controller = None;
         record.controller_expires_at_ms = None;
         record.session.revision = record.session.revision.saturating_add(1);
         push_state_event(record, "controller_expired");

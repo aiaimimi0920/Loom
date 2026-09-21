@@ -37,12 +37,14 @@ include!("surface_actions/executor_helpers.rs");
 include!("surface_actions/coordination.rs");
 include!("surface_actions/job_runtime.rs");
 include!("surface_actions/response.rs");
+include!("surface_actions/mirrors.rs");
 include!("surface_actions/outcomes.rs");
 
 #[cfg(test)]
 mod tests {
     include!("surface_actions/tests/fixtures.rs");
     include!("surface_actions/tests/commit_fanout.rs");
+    include!("surface_actions/tests/mirrors.rs");
     include!("surface_actions/tests/resources_confirmation.rs");
     include!("surface_actions/tests/cancel_replace.rs");
     include!("surface_actions/tests/guard_reaper.rs");

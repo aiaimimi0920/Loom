@@ -27,6 +27,7 @@ impl LiveRuntimeError {
 
 #[derive(Clone)]
 struct StoredLiveFrame {
+    received_at: Instant,
     epoch: u64,
     frame_id: u64,
     bytes: Arc<Vec<u8>>,
@@ -42,6 +43,7 @@ struct LiveSessionRecord {
     source_connected: bool,
     viewer_connections: BTreeMap<String, usize>,
     controller_expires_at_ms: Option<u64>,
+    wall_controller: Option<WallController>,
     frames: VecDeque<StoredLiveFrame>,
     events: VecDeque<LiveControlEnvelope>,
     next_event_sequence: u64,
@@ -187,6 +189,7 @@ impl LiveSessionStore {
             source_connected: false,
             viewer_connections: BTreeMap::new(),
             controller_expires_at_ms: None,
+            wall_controller: None,
             frames: VecDeque::with_capacity(3),
             events: VecDeque::with_capacity(LIVE_CONTROL_HISTORY_LIMIT),
             next_event_sequence: 1,
@@ -334,6 +337,7 @@ impl LiveSessionStore {
         accept_control_sequence(record, actor_device_id, envelope.epoch, envelope.sequence)?;
         record.closed = true;
         record.session.visibility_state = LiveVisibilityState::Closed;
+        record.wall_controller = None;
         record.session.controller_device = None;
         record.controller_expires_at_ms = None;
         record.frames.clear();

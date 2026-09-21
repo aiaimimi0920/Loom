@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/protocol/wall-identification.v1.schema.json",
+  "title": "Wall v1 physical display identification extension",
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,160}$" },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestId", "remainingMs", "applied"],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/id", "description": "Opaque request identity; the daemon emits a UUID." },
+        "remainingMs": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "applied": { "type": "boolean" }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointId", "leaseId", "requestId", "outcome"],
+      "properties": {
+        "endpointId": { "$ref": "#/$defs/id" },
+        "leaseId": { "$ref": "#/$defs/id" },
+        "requestId": { "$ref": "#/$defs/id", "format": "uuid" },
+        "outcome": { "enum": ["applied", "dismissed"] }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["endpointId"],
+  "properties": { "endpointId": { "$ref": "#/$defs/id" } }
+}

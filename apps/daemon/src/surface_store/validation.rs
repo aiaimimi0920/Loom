@@ -103,7 +103,7 @@ impl Write for BoundedStoreWriter {
 #[serde(rename_all = "camelCase")]
 struct SurfaceStoreDocumentRef<'a> {
     schema_version: u32,
-    instances: BTreeMap<&'a str, &'a SurfaceInstanceRecord>,
+    instances: BTreeMap<&'a str, std::borrow::Cow<'a, SurfaceInstanceRecord>>,
 }
 
 /// Serializes the persistent projection of `instances` exactly as `persist` writes it.
@@ -127,7 +127,7 @@ fn document_bytes_with_limit(
             .filter(|(_, record)| {
                 record.descriptor.persistence == SurfaceInstancePersistence::Persistent
             })
-            .map(|(id, record)| (id.as_str(), record))
+            .map(|(id, record)| (id.as_str(), durable_surface_record(record)))
             .collect(),
     };
     let mut writer = BoundedStoreWriter::new(max_bytes);

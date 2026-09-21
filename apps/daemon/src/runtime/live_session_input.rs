@@ -16,7 +16,7 @@ impl LiveSessionStore {
         let mut sessions = self.lock_state()?;
         let record = active_record_mut(&mut sessions, session_id)?;
         ensure_viewer(record, actor_device_id)?;
-        if record.session.controller_device.as_deref() != Some(actor_device_id) {
+        if record.wall_controller.is_some() || record.session.controller_device.as_deref() != Some(actor_device_id) {
             return Err(LiveRuntimeError::new(
                 403,
                 "live_input_controller_required",

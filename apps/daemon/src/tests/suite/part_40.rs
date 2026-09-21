@@ -27,6 +27,7 @@ fn phase_six_observation(
     control_sequence: u64,
     observation_sequence: u64,
 ) -> LiveControlEnvelope {
+    let observed_at_ms = unix_time_millis();
     LiveControlEnvelope {
         protocol_version: loom_protocol::LIVE_PROTOCOL_VERSION.to_owned(),
         session_id: session_id.to_owned(),
@@ -38,8 +39,8 @@ fn phase_six_observation(
             state: loom_protocol::LiveObservationState::Stable,
             source: LiveObservationSource::UiAutomation,
             confidence: loom_protocol::LiveObservationConfidence::Exact,
-            observed_at_ms: unix_time_millis(),
-            stable_since_ms: Some(unix_time_millis()),
+            observed_at_ms,
+            stable_since_ms: Some(observed_at_ms),
             locator: Some(loom_protocol::LiveElementLocator {
                 automation_id: Some("buildProgress".to_owned()),
                 name: None,

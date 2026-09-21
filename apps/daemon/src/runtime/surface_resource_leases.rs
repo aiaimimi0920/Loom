@@ -213,6 +213,7 @@ fn collect_surface_resource_ids(records: &[SurfaceInstanceRecord]) -> BTreeSet<S
 fn collect_surface_resource_garbage(
     surface_instances: &SharedSurfaceInstanceStore,
     surface_resources: &SharedSurfaceResourceStore,
+    walls: &SharedWallStore,
 ) -> Result<SurfaceResourceGcOutcome> {
     let records = {
         let store = surface_instances
@@ -220,11 +221,13 @@ fn collect_surface_resource_garbage(
             .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
         store.list()
     };
-    let referenced = collect_surface_resource_ids(&records);
-    let mut store = surface_resources
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
-    Ok(store.collect_garbage(&referenced))
+    let mut referenced = collect_surface_resource_ids(&records);
+    walls.with_image_references(|images| {
+        referenced.extend(images);
+        let mut store = surface_resources.lock()
+            .map_err(|_| anyhow::anyhow!("Surface resource store is unavailable"))?;
+        Ok(store.collect_garbage(&referenced))
+    })?
 }
 
 /// Collects Surface resource garbage and reports the result to the runtime log. A failed pass is
@@ -233,8 +236,9 @@ fn collect_surface_resource_garbage_logged(
     surface_instances: &SharedSurfaceInstanceStore,
     surface_resources: &SharedSurfaceResourceStore,
     reason: &str,
+    walls: &SharedWallStore,
 ) {
-    match collect_surface_resource_garbage(surface_instances, surface_resources) {
+    match collect_surface_resource_garbage(surface_instances, surface_resources, walls) {
         Ok(outcome) => {
             let SurfaceResourceGcOutcome {
                 removed_objects,

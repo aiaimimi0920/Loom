@@ -10,6 +10,7 @@ fn attach_and_mount_surface(
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
     authenticated_device_id: Option<&str>,
+    walls: &SharedWallStore,
 ) -> Result<(u16, String)> {
     let request = match serde_json::from_str::<AttachAndMountSurfaceRequest>(body) {
         Ok(request) => request,
@@ -62,6 +63,7 @@ fn attach_and_mount_surface(
             hook_bridge,
             surface_resources,
             shared_images,
+            walls,
         );
         return Ok((attach_status, attached));
     }
@@ -89,6 +91,7 @@ fn attach_and_mount_surface(
             hook_bridge,
             surface_resources,
             shared_images,
+            walls,
         );
     } else {
         dispose_superseded_surface_attachments(

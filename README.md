@@ -641,13 +641,15 @@ opt into bounded mode explicitly with
 `DaemonConfig::with_bounded_request_executor(...)`; only the production binary
 opts into bounded mode automatically through the environment.
 
-The concurrent route allowlist is deliberately narrow: `/health`, `/status`,
-`/v1/capabilities`, run reads and events, run creation, run stop/retry, and
-`/v1/invoke` for `brain.plan` and `tea.ticket.decompose.v1`. Only `/health` and
-`/status` are reserved probes outside the normal queue. The other allowlisted
-routes still use a worker and bounded queue capacity. Other file-backed
-control-plane and compatibility routes also run on a worker but acquire a
-serialized route boundary until their stores have stronger per-store locking.
+The concurrent route allowlist includes `/health`, `/status`, `/v1/capabilities`,
+the MCP registry, Hook canvas/previews, run reads/events and creation/stop/retry,
+invocation cancellation, and `/v1/invoke` for `brain.plan` and
+`tea.ticket.decompose.v1`. Surface stream and Live event long-polls also run
+concurrently: they wait under their stores' own synchronization and must not
+hold the global route lock against the input/action that wakes them. Only
+`/health` and `/status` are reserved probes outside the normal queue. The other
+allowlisted routes still use a worker and bounded queue capacity. Other
+file-backed control-plane mutations retain the serialized route boundary.
 
 When the bounded queue is full, Loom returns HTTP `503 Service Unavailable`
 with `error.code = "daemon_busy"` and `retryable = true`. The rejected request

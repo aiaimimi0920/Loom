@@ -369,6 +369,7 @@ struct DaemonRuntime {
     hook_bridge: SharedHookBridgeRuntime,
     device_registry: SharedDeviceRegistryStore,
     live_sessions: SharedLiveSessionStore,
+    walls: SharedWallStore,
     surface_instances: SharedSurfaceInstanceStore,
     surface_actions: SharedSurfaceActionExecutor,
     surface_resources: SharedSurfaceResourceStore,

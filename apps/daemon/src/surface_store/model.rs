@@ -39,6 +39,10 @@ pub(crate) type SharedSurfaceInstanceStore = Arc<Mutex<SurfaceInstanceStore>>;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SurfaceAttachmentRecord {
     pub descriptor: SurfaceAttachmentDescriptor,
+    #[serde(skip)]
+    pub ephemeral: bool,
+    #[serde(skip)]
+    pub mirror_of: Option<String>,
     pub lifecycle: SurfaceLifecycleState,
     #[serde(default)]
     pub lifecycle_revision: u64,
@@ -66,6 +70,8 @@ pub(crate) struct SurfaceInstanceRecord {
     pub pending_events: Vec<SurfaceEvent>,
     #[serde(default)]
     pub event_acks: BTreeMap<String, SurfaceActionAck>,
+    #[serde(skip)]
+    ephemeral_events: BTreeMap<String, std::collections::VecDeque<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending_confirmations: BTreeMap<String, SurfacePendingConfirmation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
