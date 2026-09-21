@@ -39,7 +39,7 @@ pub(super) fn temp_root(name: &str) -> PathBuf {
 
 pub(super) fn cleanup(root: &Path) {
     let _ = fs::remove_dir_all(root);
-    let _ = fs::remove_file(root.with_extension("trust.json"));
+    let _ = fs::remove_dir_all(root.with_extension("state"));
 }
 
 const FIXTURE_SOURCE: &str = r###"

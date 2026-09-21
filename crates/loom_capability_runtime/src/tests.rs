@@ -355,7 +355,8 @@ fn package_with_contract(
     fs::write(root.join("capability.manifest.json"), &manifest_bytes).unwrap();
     let key = generate_signing_key("test-key");
     sign_package(root, "signature.json", &key).unwrap();
-    let trust_store_path = root.with_extension("trust.json");
+    // Keep mutable trust outside signed bytes and never privatize the shared temp directory.
+    let trust_store_path = root.with_extension("state").join("trust.json");
     let mut trust = TrustStore::default();
     trust.set_policy(TrustPolicy::RequireTrusted);
     trust.trust(PublisherTrustRecord {
