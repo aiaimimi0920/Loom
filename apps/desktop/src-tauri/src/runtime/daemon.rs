@@ -231,6 +231,27 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
         .env("LOOM_DAEMON_HOST", host)
         .env("LOOM_DAEMON_PORT", port.to_string())
         .env_remove(BUNDLED_ART_SHA256_ALLOWLIST_ENV);
+
+    // Keep provider configuration in the desktop process boundary. The
+    // capability runtime owns provider credentials and injects only its
+    // loopback broker into a plugin; dropping these variables here makes OCR
+    // translation fail even when Loom was launched from a configured shell.
+    for name in [
+        "LOOM_GATEWAY_MODEL",
+        "LOOM_GATEWAY_BASE_URL",
+        "LOOM_GATEWAY_TOKEN",
+        "LOOM_GATEWAY_TIMEOUT_SECS",
+        "LOOM_TRANSLATION_MODE",
+        "LOOM_LOCAL_TRANSLATION_BASE_URL",
+        "LOOM_LOCAL_TRANSLATION_MODEL",
+        "LOOM_LOCAL_TRANSLATION_TOKEN",
+    ] {
+        if let Ok(value) = std::env::var(name) {
+            if !value.trim().is_empty() {
+                command.env(name, value);
+            }
+        }
+    }
     if !bundled_art_sha256_allowlist.is_empty() {
         command.env(
             BUNDLED_ART_SHA256_ALLOWLIST_ENV,

@@ -16,12 +16,15 @@ It owns the local runtime contracts for:
 - memory and retrieval interfaces,
 - safe execution boundaries,
 - hook event dispatch, and
-- Gateway-backed model access.
+- Gateway-backed model access, with an optional loopback-only local adapter for
+  the signed text-translation capability.
 
-Loom is not a Gateway replacement. Gateway continues to own provider routing,
-credentials, relay APIs, and provider/runtime details. Platform continues to
-own account, quota, entitlement, and public web surfaces. Hook continues to own
-foreground capture/integration behavior.
+Loom is not a Gateway replacement. Gateway continues to own hosted-provider
+routing, credentials, relay APIs, and provider/runtime details. The optional
+translation local adapter accepts only an IP-loopback OpenAI-compatible origin;
+it does not expose provider URLs or credentials to capability processes. Platform
+continues to own account, quota, entitlement, and public web surfaces. Hook
+continues to own foreground capture/integration behavior.
 
 Loom now also ships a desktop workbench under `apps/desktop`. The visible user
 entry in a packaged desktop release is `Loom.exe`; it connects to the local
@@ -675,9 +678,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -PackageDir .\release\Loom\<versionId>
 ```
 
-This changes request scheduling only. Gateway continues to own provider
+This changes request scheduling only. Gateway continues to own hosted-provider
 routing, credential selection, relay APIs, and provider/runtime details; Loom
-does not move Gateway provider routing into the daemon.
+does not move Gateway provider routing into the daemon. Text translation may
+additionally select its bounded, IP-loopback local adapter when explicitly
+configured, while the capability process still sees only the scoped broker.
 
 ## Persistent run evidence
 

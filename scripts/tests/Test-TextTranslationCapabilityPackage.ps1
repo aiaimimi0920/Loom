@@ -40,7 +40,7 @@ $capabilities = @($summary.capabilities)
 Assert-True ($capabilities.Count -eq 1) "Translation summary must contain exactly one capability."
 $capability = $capabilities[0]
 Assert-True ([string]$capability.qualifiedId -ceq "neuro.official/text-translation") "Translation capability identity mismatch."
-Assert-True ([string]$capability.version -ceq "1.0.0") "Translation capability version mismatch."
+Assert-True ([string]$capability.version -ceq "0.2.37") "Translation capability version mismatch."
 Assert-True ($capability.deterministic -eq $true) "Translation capability must be deterministic."
 
 $zipPath = Resolve-ArtifactFile -Root $root -RelativePath ([string]$capability.zip)

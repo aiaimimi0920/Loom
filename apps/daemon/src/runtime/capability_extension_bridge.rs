@@ -190,6 +190,13 @@ fn handle_extension_invocation(
         }
         Err(error) => return extension_runtime_failure(&request_id, error),
     };
+    let needs_ocr_context = snapshot.contributions.commands.iter().any(|command| {
+        command.id == invocation.command_id
+            && command.payload.pointer("/payload/inputContext").and_then(Value::as_str) == Some("ocr-text.v1")
+    });
+    if needs_ocr_context && !state.has_feature(loom_protocol::EXTENSION_FEATURE_OCR_TEXT) {
+        return extension_feature_failure(&request_id, loom_protocol::EXTENSION_FEATURE_OCR_TEXT);
+    }
     let _upload_lease = match stage_extension_resource_uploads(
         request.resource_uploads,
         &mut invocation,

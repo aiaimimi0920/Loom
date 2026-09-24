@@ -61,7 +61,18 @@ pub(super) fn start_runtime(
         .unwrap_or(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE)
         .min(MAX_CAPABILITY_STDERR_KIB_PER_MINUTE) as usize
         * 1024;
+    let broker = package
+        .manifest
+        .permissions
+        .iter()
+        .any(|permission| permission == "loom.network.brokered")
+        .then(crate::model_broker::ModelBroker::start)
+        .transpose()?;
+    if let Some(broker) = &broker {
+        broker.configure(&mut spec);
+    }
     let mut process = RuntimeProcess::spawn(&spec)?;
+    process.own_model_broker(broker);
     let initialize = call_method(
         &mut process,
         CapabilityRuntimeMethod::Initialize,

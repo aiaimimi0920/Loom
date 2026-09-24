@@ -1,6 +1,7 @@
 //! Contracts shared by Capability Plugin packages, runtimes, and hosts.
 
 mod bridge;
+mod command_context;
 mod extension;
 mod external_url;
 mod package;

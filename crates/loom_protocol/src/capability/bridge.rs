@@ -21,12 +21,14 @@ pub const EXTENSION_FEATURE_COMMANDS: &str = "command.invoke";
 pub const EXTENSION_FEATURE_SHORTCUTS: &str = "shortcut.registry";
 pub const EXTENSION_FEATURE_MENUS: &str = "menu.registry";
 pub const EXTENSION_FEATURE_NOTICES: &str = "notice.effects";
+pub const EXTENSION_FEATURE_OCR_TEXT: &str = "ocr-text.v1";
 pub const EXTENSION_FEATURES: &[&str] = &[
     EXTENSION_FEATURE_SNAPSHOT,
     EXTENSION_FEATURE_COMMANDS,
     EXTENSION_FEATURE_SHORTCUTS,
     EXTENSION_FEATURE_MENUS,
     EXTENSION_FEATURE_NOTICES,
+    EXTENSION_FEATURE_OCR_TEXT,
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

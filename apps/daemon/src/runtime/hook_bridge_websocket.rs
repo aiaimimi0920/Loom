@@ -183,6 +183,8 @@ fn start_hook_bridge(
     connected_clients.store(0, Ordering::SeqCst);
     let extension_clients = Arc::clone(&runtime.extension_capable_clients);
     extension_clients.store(0, Ordering::SeqCst);
+    let ocr_text_clients = Arc::clone(&runtime.ocr_text_capable_clients);
+    ocr_text_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     let broadcast_hub = runtime.broadcast_hub.clone();
     let worker_capability_runtime = Arc::clone(capability_runtime);
@@ -205,6 +207,7 @@ fn start_hook_bridge(
             shutdown_rx,
             connected_clients,
             extension_clients,
+            ocr_text_clients,
             connections,
             broadcast_hub,
             worker_capability_runtime,
@@ -250,6 +253,7 @@ fn stop_hook_bridge(
     runtime.connections.cancel_and_join();
     runtime.connected_clients.store(0, Ordering::SeqCst);
     runtime.extension_capable_clients.store(0, Ordering::SeqCst);
+    runtime.ocr_text_capable_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
     clear_hook_canvas_runtime_state(Some(shared_images));
@@ -290,6 +294,7 @@ fn handle_hook_bridge_websocket_connection(
     cancelled: Arc<AtomicBool>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
+    ocr_text_clients: Arc<AtomicUsize>,
     broadcast_hub: HookBridgeBroadcastHub,
     capability_runtime: SharedCapabilityRuntime,
     capability_resources: SharedCapabilityResourceBroker,
@@ -355,7 +360,7 @@ fn handle_hook_bridge_websocket_connection(
                         &capability_resources,
                         &surface_resources,
                     );
-                    track_extension_client(&mut _extension_client_guard, &extension_state, &extension_clients);
+                    track_extension_client(&mut _extension_client_guard, &extension_state, &extension_clients, &ocr_text_clients);
                     if result.subscribe_to_snapshots && extension_subscription_rx.is_none() {
                         let (rx, guard) = register_hook_bridge_subscription(
                             &broadcast_hub,

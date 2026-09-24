@@ -18,11 +18,14 @@ struct ConnectedClientGuard {
 
 struct ExtensionClientGuard {
     extension_clients: Arc<AtomicUsize>,
+    ocr_text_clients: Arc<AtomicUsize>,
+    has_ocr_text: bool,
 }
 
 impl Drop for ExtensionClientGuard {
     fn drop(&mut self) {
         decrement_client_count(&self.extension_clients);
+        if self.has_ocr_text { decrement_client_count(&self.ocr_text_clients); }
     }
 }
 
@@ -30,12 +33,27 @@ fn track_extension_client(
     guard: &mut Option<ExtensionClientGuard>,
     state: &ExtensionConnectionState,
     extension_clients: &Arc<AtomicUsize>,
+    ocr_text_clients: &Arc<AtomicUsize>,
 ) {
+    if state.extension_session_id.is_none() {
+        *guard = None;
+        return;
+    }
     if guard.is_none() && state.extension_session_id.is_some() {
         extension_clients.fetch_add(1, Ordering::SeqCst);
         *guard = Some(ExtensionClientGuard {
             extension_clients: Arc::clone(extension_clients),
+            ocr_text_clients: Arc::clone(ocr_text_clients),
+            has_ocr_text: false,
         });
+    }
+    if let Some(guard) = guard {
+        let supported = state.has_feature(loom_protocol::EXTENSION_FEATURE_OCR_TEXT);
+        if supported != guard.has_ocr_text {
+            if supported { ocr_text_clients.fetch_add(1, Ordering::SeqCst); }
+            else { decrement_client_count(ocr_text_clients); }
+            guard.has_ocr_text = supported;
+        }
     }
 }
 

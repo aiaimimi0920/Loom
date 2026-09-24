@@ -7,10 +7,46 @@
     "text": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 4096
+      "maxLength": 16384
     },
     "targetLanguage": {
       "enum": ["zh-CN", "en"]
+    },
+    "providerMode": {
+      "enum": ["auto", "local", "gateway"],
+      "default": "auto"
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "sourceAttachment": { "$ref": "#/$defs/sourceAttachment" },
+    "sourceWidth": { "type": "number", "minimum": 1, "maximum": 100000 },
+    "sourceHeight": { "type": "number", "minimum": 1, "maximum": 100000 },
+    "textBlocks": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/textBlock" } }
+  },
+  "$defs": {
+    "sourceAttachment": {
+      "type": "object", "required": ["attachmentId", "revision"], "additionalProperties": false,
+      "properties": {
+        "attachmentId": { "const": "neuro.official/ocr.result" },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "textBlock": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text", "left", "top", "width", "height", "textColor", "backgroundColor"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 16384 },
+        "left": { "type": "number", "minimum": 0, "maximum": 100000 },
+        "top": { "type": "number", "minimum": 0, "maximum": 100000 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "textColor": { "type": "string", "pattern": "^#[a-fA-F0-9]{6}$" },
+        "backgroundColor": { "type": "string", "pattern": "^#[a-fA-F0-9]{6}$" }
+      }
     }
   },
   "additionalProperties": false

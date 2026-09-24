@@ -1642,6 +1642,7 @@ name = "loom_capability_runtime"
 version = "0.2.0"
 dependencies = [
  "jsonschema",
+ "loom_gateway",
  "loom_plugin_security",
  "loom_process",
  "loom_protocol",

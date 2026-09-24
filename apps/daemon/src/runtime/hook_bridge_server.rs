@@ -4,6 +4,7 @@ fn run_hook_bridge_websocket_server(
     shutdown_rx: Receiver<()>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
+    ocr_text_clients: Arc<AtomicUsize>,
     connections: HookBridgeConnections,
     broadcast_hub: HookBridgeBroadcastHub,
     capability_runtime: SharedCapabilityRuntime,
@@ -32,6 +33,7 @@ fn run_hook_bridge_websocket_server(
                 let connection_cancelled = connections.cancellation();
                 let connected_clients = Arc::clone(&connected_clients);
                 let extension_clients = Arc::clone(&extension_clients);
+                let ocr_text_clients = Arc::clone(&ocr_text_clients);
                 let broadcast_hub = broadcast_hub.clone();
                 let capability_runtime = Arc::clone(&capability_runtime);
                 let capability_resources = Arc::clone(&capability_resources);
@@ -53,6 +55,7 @@ fn run_hook_bridge_websocket_server(
                         connection_cancelled,
                         connected_clients,
                         extension_clients,
+                        ocr_text_clients,
                         broadcast_hub,
                         capability_runtime,
                         capability_resources,

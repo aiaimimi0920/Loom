@@ -213,6 +213,8 @@
         "requiresUserGesture": { "type": "boolean", "default": false },
         "cancellable": { "type": "boolean", "default": true },
         "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000 },
+        "inputContext": { "const": "ocr-text.v1" },
+        "toggleAttachmentType": { "$ref": "#/$defs/contributionId" },
         "permissions": {
           "type": "array",
           "maxItems": 32,

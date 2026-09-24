@@ -170,6 +170,7 @@ fn validate_contributions(
     for command in &contributions.commands {
         validate_contribution_id(&command.id, &namespace, &mut seen)?;
         validate_permissions(&command.permissions)?;
+        super::command_context::validate(command, manifest, &namespace)?;
         if let Some(permission) = command
             .permissions
             .iter()
