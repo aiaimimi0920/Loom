@@ -105,6 +105,15 @@ The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
 Tauri dependencies.
 
+Under **设备管理 → 发送图片**, choose an online, approved Hook terminal output
+and a local raster image. Loom uploads the image, creates a dedicated single-output
+layout, and waits for the terminal to acknowledge its exact revision. Later sends
+replace that output's previous image without overwriting ordinary composed walls.
+Remove the dedicated layout in **屏幕墙** to stop displaying it. This self-hosted
+path uses paired-device authority, without Platform login; it does not grant
+cross-account access. Remote terminals still require a trusted HTTPS connection
+configuration and explicit pairing. See [the wall API](protocol/WALL_CONTROL_API.md).
+
 Install and verify the desktop frontend:
 
 ```powershell

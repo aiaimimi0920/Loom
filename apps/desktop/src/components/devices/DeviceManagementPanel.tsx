@@ -25,6 +25,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { WallManagementPanel } from "./WallManagementPanel";
+import { DeviceImageTransferPanel } from "./DeviceImageTransferPanel";
 
 export const deviceKindLabels: Record<LoomDeviceKind, string> = {
   computer: "电脑",
@@ -34,14 +35,16 @@ export const deviceKindLabels: Record<LoomDeviceKind, string> = {
 };
 
 export function DeviceManagementPanel(props: { baseUrl: string; online: boolean }) {
-  const [page, setPage] = useState<"devices" | "walls">("devices");
+  const [page, setPage] = useState<"devices" | "walls" | "images">("devices");
   return <div>
     <nav className="device-workspace-tabs" aria-label="设备管理页面">
       <button type="button" className="ghost-button" aria-pressed={page === "devices"} onClick={() => setPage("devices")}>配对设备</button>
       <button type="button" className="ghost-button" aria-pressed={page === "walls"} onClick={() => setPage("walls")}>屏幕墙</button>
+      <button type="button" className="ghost-button" aria-pressed={page === "images"} onClick={() => setPage("images")}>发送图片</button>
     </nav>
     <div hidden={page !== "devices"}><ManagedDevicesPanel {...props} /></div>
     <div hidden={page !== "walls"}><WallManagementPanel key={props.baseUrl} {...props} /></div>
+    {page === "images" && <DeviceImageTransferPanel key={props.baseUrl + String(props.online)} {...props} />}
   </div>;
 }
 
