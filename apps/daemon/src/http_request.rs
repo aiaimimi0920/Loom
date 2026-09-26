@@ -334,7 +334,20 @@ fn request_body_size_limit(headers: &str) -> usize {
     let is_mcp_server_package_install = path == "/v1/mcp/servers/install";
     let is_framework_upgrade = path.starts_with("/v1/frameworks/") && path.ends_with("/upgrade");
     let is_surface_resource = path == "/v1/surfaces/resources";
-    if method.eq_ignore_ascii_case("POST") && is_mcp_server_package_install {
+    if method == "POST"
+        && matches!(
+            path,
+            "/v1/projections/create"
+                | "/v1/projections/update"
+                | "/v1/projection-peers/raster-check"
+                | "/v1/projection-peer/raster-check"
+                | "/v1/projection-peer/transfer"
+                | "/v1/offline-projections/create"
+                | "/v1/offline-projections/update"
+        )
+    {
+        loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES
+    } else if method.eq_ignore_ascii_case("POST") && is_mcp_server_package_install {
         MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES
     } else if method.eq_ignore_ascii_case("POST")
         && (is_package_install || is_framework_upgrade || is_surface_resource)

@@ -119,6 +119,8 @@ fn test_daemon_runtime_from_config(
         &capability_runtime,
     )));
     DaemonRuntime {
+        offline_peers: offline_peers::OfflinePeers::new(control_plane_root).expect("offline peers"),
+        projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf()).expect("projection owner"),
         hook_settings: config.hook_settings,
         run_store: Arc::new(Mutex::new(run_store)),
         auth_token: config

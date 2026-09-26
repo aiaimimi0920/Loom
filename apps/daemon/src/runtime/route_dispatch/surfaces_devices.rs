@@ -33,6 +33,9 @@ fn route_surfaces_devices(
     walls: &SharedWallStore,
 ) -> Result<(u16, String)> {
     match (request.method.as_str(), route_path) {
+        ("POST", path) if PROJECTION_ROUTES.contains(&path) => handle_projection_route(
+            path, &request.body, authenticated_device_id.as_deref(), device_registry,
+        ),
         ("POST", "/v1/surfaces/resources") => {
             create_surface_resource(&request.body, surface_resources, shared_images)
         }

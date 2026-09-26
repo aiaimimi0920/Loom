@@ -178,6 +178,8 @@ impl LoomDaemon {
             Arc::clone(&capability_runtime),
         ));
         let runtime = DaemonRuntime {
+            offline_peers: offline_peers::OfflinePeers::new(&control_plane_root)?,
+            projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())?,
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
             auth_token,

@@ -1,5 +1,6 @@
 // Keeps Loom-owned settings sections cohesive and separate from Hook settings UI.
 import { AboutPanel } from "./AboutPanel";
+import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { CapabilityExtensionsPanel } from "./capabilities/CapabilityExtensionsPanel";
 import { SettingsAccordionSection } from "./settingsModel";
 import {
@@ -45,6 +46,7 @@ export function LoomSettingsSections({
   return (
     <div className="settings-accordion">
       <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
+        <AccountSettingsPanel baseUrl={baseUrl} />
         <GeneralSettingsPanel
           appName="loom"
           value={{

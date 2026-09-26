@@ -127,7 +127,8 @@ try {
     foreach ($focusedName in @(
         "Invoke-LoomGatewayBrainPlanSmoke.ps1",
         "Invoke-LoomRunPersistenceSmoke.ps1",
-        "Invoke-LoomDaemonConcurrencySmoke.ps1"
+        "Invoke-LoomDaemonConcurrencySmoke.ps1",
+        "Invoke-LoomQrProjectionSmoke.ps1"
     )) {
         $expectedFocusedPath = Join-Path (Join-Path $repoRoot "scripts") $focusedName
         $null = Invoke-FocusedLoomSmoke -ScriptName $focusedName -EvidenceSubdirectory "contract"

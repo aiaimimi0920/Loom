@@ -4,7 +4,15 @@ fn route_with_runtime(
     request: &ParsedHttpRequest,
 ) -> Result<(u16, String)> {
     runtime_log_debug(format!("{} {}", request.method, request.path));
-    route(
+    let path = request.path.split('?').next().unwrap_or_default();
+    if offline_peers::OfflinePeers::handles(path) {
+        // Peer proofs have their own pinned-key authentication; config remains admin-only.
+        return match runtime.offline_peers.handle(request, request.has_admin_credential(&runtime.auth_token), &runtime.device_registry) {
+            Ok(value) => Ok((200, serde_json::to_string(&value)?)),
+            Err(error) => structured_error(error.status, json!({"code": error.code, "message": error.code})),
+        };
+    }
+    let (status, body) = route(
         request,
         &runtime.hook_settings,
         &runtime.run_store,
@@ -35,7 +43,14 @@ fn route_with_runtime(
         &runtime.framework_registry,
         &runtime.control_plane_root,
         &runtime.bundled_art_sha256_allowlist,
-    )
+        &runtime.projection_owner,
+    )?;
+    if request.method == "POST" && path == "/v1/projections/targets" && status == 200 {
+        let mut value: Value = serde_json::from_str(&body)?;
+        runtime.offline_peers.append_targets(&mut value);
+        return Ok((status, serde_json::to_string(&value)?));
+    }
+    Ok((status, body))
 }
 
 fn route(
@@ -69,6 +84,7 @@ fn route(
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     bundled_art_sha256_allowlist: &BTreeSet<String>,
+    projection_owner: &ProjectionOwner,
 ) -> Result<(u16, String)> {
     let route_path = request
         .path
@@ -109,6 +125,16 @@ fn route(
         );
     }
 
+    // Account credentials remain admin-only; Hook device sessions cannot operate this API.
+    if request.method == "POST" && route_path.starts_with("/v1/account/") {
+        return match projection_owner.account(control_plane_root, &route_path[12..], &request.body) {
+            Ok(value) => Ok((200, serde_json::to_string(&value)?)),
+            Err(error) => structured_error(error.status, json!({"code":error.code, "message":error.code})),
+        };
+    }
+    if request.method == "POST" && PROJECTION_V2_ROUTES.contains(&route_path) {
+        return handle_projection_v2_route(route_path, &request.body, authenticated_device_id.as_deref(), control_plane_root, projection_owner);
+    }
     if let Some(response) = route_capability_plugins(
         request,
         route_path,

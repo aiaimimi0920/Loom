@@ -97,6 +97,7 @@ use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
+mod account_login;
 mod brain_plan;
 mod capability_resources;
 mod hook_canvas;
@@ -117,6 +118,7 @@ use capability_resources::{
     CapabilityResourceBroker, CapabilityResourceError, SharedCapabilityResourceBroker,
 };
 use http_request::*;
+mod offline_peers;
 use request_executor::{
     BoundedRequestExecutor, RequestExecutorConfig, RequestExecutorStatus, SubmitError,
 };
@@ -148,6 +150,11 @@ include!("runtime/settings_ocr_runtime.rs");
 include!("runtime/hook_bridge_connections.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
+include!("runtime/projection_snapshot.rs");
+include!("runtime/projection_store.rs");
+include!("runtime/projection_routes.rs");
+include!("runtime/projection_v2_owner.rs");
+include!("runtime/projection_v2_api.rs");
 include!("runtime/device_auth.rs");
 include!("runtime/wall_routes.rs");
 include!("runtime/wall_image_routes.rs");
@@ -225,6 +232,7 @@ include!("runtime/run_http_responses.rs");
 
 #[cfg(test)]
 mod tests {
+    include!("tests/projection_http.rs");
     include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");
     include!("tests/connection_read_admission.rs");

@@ -98,6 +98,9 @@ pub fn daemon_help_text() -> &'static str {
         "  POST /v1/surfaces/confirmations/decision\n",
         "  POST /v1/device-sessions/challenges\n",
         "  POST /v1/device-sessions\n",
+        "  POST /v1/projections/v2/context\n",
+        "  POST /v1/projections/v2/configuration\n",
+        "  POST /v1/projections/v2/create|inspect|accept|publish|read|unlink|sync|peer\n",
         "  POST /v1/invoke\n",
         "  POST /v1/invoke/cancel\n",
         "  GET  /v1/capability-plugins/extensions\n",
@@ -354,6 +357,8 @@ pub fn default_run_store_path() -> PathBuf {
 }
 
 struct DaemonRuntime {
+    offline_peers: offline_peers::OfflinePeers,
+    projection_owner: ProjectionOwner,
     hook_settings: HookSettings,
     run_store: SharedRunStore,
     auth_token: String,

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/qr-projection.v1.schema.json",
+  "title": "Neuro QR projection envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "projectionId", "serverOrigin", "source", "content", "expiresAtMs", "nonce", "signature"],
+  "properties": {
+    "protocol": { "const": "neuro.qr-projection.v1" },
+    "projectionId": {
+      "type": "string", "pattern": "^projection:[a-fA-F0-9]{32}$"
+    },
+    "serverOrigin": {
+      "type": "string", "maxLength": 256,
+      "pattern": "^(https://([A-Za-z0-9.-]+|\\[[0-9a-fA-F:]+\\])|http://(localhost|127(\\.[0-9]{1,3}){3}|\\[::1\\]))(:[0-9]{1,5})?$"
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["deviceId", "sessionId", "unitId", "revision"],
+      "properties": {
+        "deviceId": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]{1,160}$" },
+        "sessionId": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]{1,160}$" },
+        "unitId": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]{1,160}$" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "content": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "digest"],
+      "properties": {
+        "kind": { "enum": ["sticker", "art"] },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "expiresAtMs": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "nonce": { "type": "string", "pattern": "^[a-fA-F0-9]{32}$" },
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["algorithm", "keyId", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "value": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      }
+    }
+  }
+}

@@ -584,6 +584,9 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
             RequestConcurrencyClass::Concurrent
         }
         ("POST", "/v1/invoke/cancel") => RequestConcurrencyClass::Concurrent,
+        ("POST", path) if PROJECTION_V2_ROUTES.contains(&path) => {
+            RequestConcurrencyClass::Concurrent
+        }
         ("POST", "/v1/invoke") => {
             let capability = serde_json::from_str::<Value>(&request.body)
                 .ok()

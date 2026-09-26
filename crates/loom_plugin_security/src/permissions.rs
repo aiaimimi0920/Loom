@@ -3,6 +3,33 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(all(test, windows))]
+#[test]
+fn private_acl_accepts_forward_slash_windows_paths() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "loom-acl-separators-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).unwrap();
+    let file = root.join("private.txt");
+    fs::write(&file, b"fixture").unwrap();
+    let directory_result = restrict_private_path_permissions(
+        Path::new(&root.to_string_lossy().replace('\\', "/")),
+        true,
+    );
+    let file_result = restrict_private_path_permissions(
+        Path::new(&file.to_string_lossy().replace('\\', "/")),
+        false,
+    );
+    fs::remove_dir_all(&root).unwrap();
+    directory_result.expect("forward-slash directory ACL");
+    file_result.expect("forward-slash file ACL");
+}
+
 #[cfg(unix)]
 pub fn restrict_private_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -29,7 +56,18 @@ pub fn restrict_private_path_permissions(path: &Path, directory: bool) -> std::i
     } else {
         std::env::current_dir()?.join(path)
     };
-    let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+    // Verbatim Win32 paths bypass slash normalization; preserve UTF-16 names.
+    let wide = absolute
+        .as_os_str()
+        .encode_wide()
+        .map(|unit| {
+            if unit == b'/' as u16 {
+                b'\\' as u16
+            } else {
+                unit
+            }
+        })
+        .collect::<Vec<_>>();
     let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
         || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
     {

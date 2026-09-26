@@ -44,6 +44,7 @@ struct DeviceRegistryDocument {
 
 struct DeviceRegistryStore {
     path: PathBuf,
+    projections: ProjectionStore,
     devices: BTreeMap<String, ManagedDevice>,
     challenges: BTreeMap<String, DeviceSessionChallenge>,
     sessions: BTreeMap<String, ActiveDeviceSession>,
@@ -152,6 +153,7 @@ impl DeviceRegistryStore {
             },
         );
         let store = Self {
+            projections: ProjectionStore::open(path.with_file_name("qr-projections"))?,
             path,
             devices,
             challenges: BTreeMap::new(),

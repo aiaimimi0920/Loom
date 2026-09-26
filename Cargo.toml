@@ -26,6 +26,7 @@ members = [
     "crates/loom_image_io",
     "crates/loom_ocr",
     "crates/loom_protocol",
+    "crates/loom_projection",
     "crates/loom_plugin_security",
     "crates/loom_process",
     "crates/loom_security",
@@ -90,6 +91,7 @@ loom_shared_image = { path = "crates/loom_shared_image" }
 loom_image_io = { path = "crates/loom_image_io" }
 loom_ocr = { path = "crates/loom_ocr" }
 loom_protocol = { path = "crates/loom_protocol" }
+loom_projection = { path = "crates/loom_projection" }
 loom_plugin_security = { path = "crates/loom_plugin_security" }
 loom_process = { path = "crates/loom_process" }
 loom_security = { path = "crates/loom_security" }

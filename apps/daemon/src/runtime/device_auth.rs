@@ -92,6 +92,7 @@ fn is_public_device_auth_route(method: &str, path: &str) -> bool {
 }
 
 fn device_session_route_allowed(method: &str, path: &str) -> bool {
+    if method == "POST" && (PROJECTION_ROUTES.contains(&path) || PROJECTION_V2_ROUTES.contains(&path)) { return true; }
     if wall_device_route_allowed(method, path) {
         return true;
     }

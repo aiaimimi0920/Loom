@@ -25,6 +25,23 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-Depende
 The clean-source gate runs before build output is created. Formal manifests
 must record `gitDirty=false` and `sourceGitDirty=false`.
 
+`-RunSmoke` includes a QR projection check against the packaged daemon, using
+three temporary Ed25519 device identities and an isolated loopback listener.
+It verifies invitation confirmation, two image updates, retries, process-loss
+recovery, persistent unlink, and source/receiver revocation. The script checks
+the executable against the package manifest before starting it, removes its
+temporary credentials and state, and retains a bounded JSON result. It requires
+Node.js 22.18 or newer; the release workflow pins Node.js 22.22.2.
+
+The same check can run independently:
+
+```powershell
+.\scripts\Invoke-LoomQrProjectionSmoke.ps1 -PackageDir .\release\Loom\Vx.y.z
+```
+
+This is packaged-daemon protocol evidence. Native Hook windows and cross-machine
+HTTPS still require separate acceptance on the actual devices.
+
 `.github/workflows/release-tag.yml` calls the reusable dependency security
 workflow first and makes publication depend on that job. For manual dispatch it
 passes the requested tag, not the workflow's default branch. The scan produces
