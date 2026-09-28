@@ -7,6 +7,16 @@ tests, scripts, release tooling, and styles.
 This document is the day-to-day development contract. Historical modularization
 records are available through Git tag `cleanup-base-20260928`; remaining joint
 release acceptance is described in [release provenance](release-provenance.md).
+The archived cross-repository review includes deferred suggestions as well as
+completed fixes. Archiving that diary does not close those suggestions or prove
+they still apply. Before reusing a finding, check the current implementation and
+tests; do not restore its obsolete paths, temporary ownership rules or release
+status as current facts. Retrieve the original review with:
+
+```powershell
+git show cleanup-base-20260928:docs/progress/phase-78-post-baseline-review.md
+```
+
 The machine-authoritative implementation is:
 
 - `scripts/effective-code-lines.mjs`
