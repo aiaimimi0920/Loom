@@ -27,6 +27,8 @@ Implementation, configuration and executable tests remain the source of truth.
   and [translation modes](TRANSLATION_HYBRID_MODE.md).
 - [Stock Monitor](STOCK_MONITOR.md): packaged market sources, optional credentials,
   refresh/freshness, chart colors, structured outputs and verification limits.
+- [Image Search](IMAGE_SEARCH.md): independent MCP dependency, credentials,
+  authoritative inputs, argument schemas and image/source-page mapping.
 - [Wall guide](TILE_WALL.md): terminal and source ownership, functional contracts
   and the 19 remaining joint acceptance conditions.
 - [Wall control API](../protocol/WALL_CONTROL_API.md): paired terminal outputs,
