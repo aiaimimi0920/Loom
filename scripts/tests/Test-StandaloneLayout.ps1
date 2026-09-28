@@ -47,7 +47,7 @@ $requiredPaths = @(
     "apps\cli",
     "apps\desktop",
     "crates",
-    "docs\progress\MASTER.md",
+    "docs\README.md",
     "examples",
     "resources",
     "scripts"

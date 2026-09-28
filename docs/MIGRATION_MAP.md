@@ -12,9 +12,9 @@ Primary reference sources:
   concepts and smoke scenarios.
 - `Z:\project\project\ArtNexus\ArtLoom` only for reviewed local deltas.
 
-Repository planning source:
-
-- `docs/analysis/loom-source-migration-matrix.md`
+The original source-by-source planning matrix is preserved in Git at
+`cleanup-base-20260928:docs/analysis/loom-source-migration-matrix.md`.
+Use [the architecture](ARCHITECTURE.md) for current responsibility boundaries.
 
 ## Implemented targets
 
@@ -54,13 +54,10 @@ These concerns remain behind external Gateway and Platform boundaries. The
 desktop remains a thin Tauri/React shell over the Loom daemon; it does not copy
 the ArtLoom monolithic desktop-local backend.
 
-## Current completion boundary
+## Current verification boundary
 
-The baseline is complete when:
-
-1. all phase progress files are checked;
-2. `cargo fmt --all -- --check` passes;
-3. `cargo check --locked --workspace --all-targets`
-   passes;
-4. `cargo test --locked --workspace` passes;
-5. daemon/CLI smoke passes against `Loom/examples`.
+The completed migration checklists remain in Git history. Current changes follow
+[the development manual](DEVELOPMENT.md), with formatter, focused tests, compile
+checks and the strict effective-line gate. Packaged acceptance additionally
+follows [release provenance](release-provenance.md); historical migration smoke
+results do not validate a new binary.

@@ -889,6 +889,7 @@ cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 
 ## Docs
 
+- [Documentation index](docs/README.md)
 - `docs/DEVELOPMENT.md`
 - `docs/DEPENDENCY_SECURITY.md`
 - `docs/ARCHITECTURE.md`
