@@ -79,6 +79,11 @@ collections in authoritative state instead of duplicating history, depth, tape
 and favorites in the output; non-Surface responses include those collections.
 Preview drawing is not an additional formal output.
 
+The runtime sends the state update once in `patches` and keeps an explicit
+`statePatch: {}` in the accompanying result. Omitting that result field defaults
+to JSON null; merge-patch handling would replace the authoritative state with
+null. An empty object preserves the state without retransmitting collections.
+
 ## MCP integration contract
 
 `metadata.mcp.calls` supports at most 8 calls with nonempty unique IDs in a single

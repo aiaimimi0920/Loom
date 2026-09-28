@@ -1,5 +1,15 @@
 # Phase 78 — Post-baseline cross-repo review (Hook v0.1.7 → HEAD, Loom a8e3df0 → HEAD)
 
+> Historical review snapshot through 2026-08-23. Lane reservations, build locks,
+> dirty-worktree descriptions and handoff instructions below are historical, not
+> active work assignments. The final F18/F10 audit supersedes earlier status text;
+> current release requirements are in [release provenance](../release-provenance.md).
+> The companion lane diary is archived in the local recovery tag. Retrieve it with
+> `git show cleanup-base-20260928:docs/progress/phase-78-lane-sync.md`.
+> This review remains until its accepted backlog and remote-Surface owner decisions
+> have been checked against current implementations; old findings are not automatically
+> current defects.
+
 ## Purpose
 
 Review every change made since the last big version, in both repos, and record the
@@ -194,7 +204,7 @@ which is exactly when nobody will be looking at this code. Fix it with S3-1, not
 Owner: **Lane B** (taken 2026-08-21, out of F8). Hook half only. The Loom half of the fix —
 declaring the identifier in `crates/loom_protocol` and `protocol/schemas/*` — needs Lane A,
 so Lane B will post the exact constant and shape it expects in
-`docs/progress/phase-78-lane-sync.md` before changing anything in `Hook/`.
+the archived lane diary before changing anything in `Hook/`.
 **Closed: Hook half by Lane B 2026-08-21, Loom half by Lane A 2026-08-22 in F14.**
 
 `Loom/apps/daemon/src/lib.rs:4256` answers `"protocolVersion": "loom.surface-stream.v1"`.
@@ -399,7 +409,7 @@ is the docs note plus the feature flag; S1-1, S1-3 and S3-2 stay open as gate co
 > loopback paths use them; with the flag off the former is a documented no-op and
 > `authorize_surface_request` refuses a non-loopback endpoint with an error naming the flag and
 > the document. Both combinations verified. See `### F13` in
-> `docs/progress/phase-78-lane-sync.md`.
+> the archived lane diary.
 
 **S3-2 (P2, gate condition for remote Surface — see "Deliberately deferred") — four different definitions of "loopback", two of them naive prefix matches with a userinfo bypass.**
 
@@ -3216,7 +3226,7 @@ containment in `validate_resolved_server`, rejects a resolved server reporting n
 re-checks the `metadata.dependencies.mcpServers` tie at load. `semver` could not be added to that
 package (its `Cargo.lock` references Lane A's uncommitted `loom_security`), so the bound arithmetic
 is local and deliberately incomplete — it never rejects what
-`framework_process.rs:785-813` accepts. Record: `### F13` in `phase-78-lane-sync.md`.
+`framework_process.rs:785-813` accepts. Record: `### F13` in the archived lane diary.
 
 **S7c1-2 (P3) — required and optional credential mappings can collide, and the optional one
 wins.** `build_environment:393-430` inserts every `credential_env` entry and then every
@@ -3372,7 +3382,7 @@ now has `inputs`/`params` filtered through the union of every argument name its 
 (config arguments, per-call arguments, binding targets); an Art that declares none has stated no
 policy and is unfiltered, as before. Today that changes exactly one shipped Art: Stock Monitor stops
 forwarding its `interval_seconds` slider to `get_stock`. Record: `### F13` in
-`phase-78-lane-sync.md`.
+the archived lane diary.
 
 **S7c2-2 (P3) — a supplied `surfaceAction` is silently ignored when the Art declares none, and
 the whole invocation object then leaks in as a tool argument.** `:569` filters the invocation
@@ -3389,7 +3399,7 @@ Owner: **Lane B / F13** (co-located with S7c2-1). **Half fixed 2026-08-22.** The
 longer leaves the host under that name. The other half — rejecting an invocation the Art cannot
 handle — is **accepted backlog**, because turning today's silent ignore into an error changes
 behaviour for any caller that sends invocations to a legacy Art, which is a compatibility decision
-rather than a fix. Reason recorded in `### F13` in `phase-78-lane-sync.md`, together with the
+rather than a fix. Reason recorded in `### F13` in the archived lane diary, together with the
 remaining fourteen P3s in the S7c1/S7c2 slices that F13 did not take.
 
 **S7c2-3 (P3) — `disabled_params` silently deletes bound arguments the Art declared as
@@ -4145,7 +4155,7 @@ Confirmed correct in this file:
 
 ### S8c1 — Stock-monitor Art runtime: request handling, upstream fetch, parsing
 
-Owner of every fix in this slice: **Lane B / F7** (`art-packages/samples/stock-monitor/runtime/main.ps1` is reserved by Lane B from 2026-08-21). **All fixed 2026-08-21 — the batch record is `### F7` in `phase-78-lane-sync.md`.**
+Owner of every fix in this slice: **Lane B / F7** (`art-packages/samples/stock-monitor/runtime/main.ps1` is reserved by Lane B from 2026-08-21). **All fixed 2026-08-21 — the batch record is `### F7` in the archived lane diary.**
 
 `art-packages/samples/stock-monitor/runtime/main.ps1:1-500`. Unlike the image samples this Art does
 not dot-source `common.ps1`; it is self-contained, opens with `$ErrorActionPreference = "Stop"` plus
@@ -4325,7 +4335,7 @@ Confirmed correct in this half:
 
 ### S8c2 — Stock-monitor Art runtime: rendering, output assembly, entry point
 
-Owner of every fix in this slice: **Lane B / F7** (same reserved file as S8c1). **All fixed 2026-08-21 — the batch record is `### F7` in `phase-78-lane-sync.md`. S8c2-1 was fixed without changing `apps/daemon`; see handoff H7 there for why the result patch must stay an explicit empty object.**
+Owner of every fix in this slice: **Lane B / F7** (same reserved file as S8c1). **All fixed 2026-08-21 — the batch record is `### F7` in the archived lane diary. S8c2-1 was fixed without changing `apps/daemon`; see handoff H7 there for why the result patch must stay an explicit empty object.**
 
 Scope: `art-packages/samples/stock-monitor/runtime/main.ps1:501-1000` — the tail of
 `ConvertTo-LiveTape`, the snapshot assembler `Get-StockSnapshot:522-716`, the display formatters
@@ -4591,7 +4601,7 @@ Confirmed correct in this slice:
 
 ### S8d2 — Stock-monitor Surface: rendering and chart drawing
 
-Owner of every fix in this slice: **Lane B / F5 and F6** (same reserved file as S8d1; S8d2-9 is fixed here, not in F7). **All fixed 2026-08-21 — records `### F5`, `### F6` and, for S8d2-9, `### F7` in `phase-78-lane-sync.md`.**
+Owner of every fix in this slice: **Lane B / F5 and F6** (same reserved file as S8d1; S8d2-9 is fixed here, not in F7). **All fixed 2026-08-21 — records `### F5`, `### F6` and, for S8d2-9, `### F7` in the archived lane diary.**
 
 Scope: `art-packages/samples/stock-monitor/surface/main.js:451-900` — the two request helpers
 (`:452-465`), the polling planner `refreshPlan`/`setRefreshTimer` (`:467-504`), the four DOM
@@ -5011,7 +5021,7 @@ opening any file listed in it, and change it before crossing it.
 | Lane | Owner | Batches | Reserved paths | Build lock |
 | --- | --- | --- | --- | --- |
 | A | the agent that shipped F1 and is mid-F2 | F2, F3, F8, F9 | Loom `crates/**`, `framework-packages/**` (**except** `framework-packages/runtime-host/src/mcp.rs`, lent to Lane B for F13 — see the note below), root `Cargo.toml` / `Cargo.lock`, Loom `.github/**`, `art-packages/samples/image-search/**`, `art-packages/shared/**`, `apps/desktop/**` | owns Loom's `cargo` and `target/` |
-| B | second agent, joined 2026-08-21 | F4, F5, F6, F7, F13, plus the Hook-side P2s S1-2 (Hook half), S2-1, S2-2, S3-3, and the Hook-side P3 S3-4 (claimed 2026-08-22 — it belonged to no batch) | the whole `Hook/` repository, Loom `art-packages/samples/stock-monitor/**`, `mcp-server-packages/**`, `docs/progress/phase-78-lane-sync.md`, plus `framework-packages/runtime-host/src/mcp.rs` while F13 is open | Hook `npm` and Hook `src-tauri` cargo only — a separate tree with its own `target/`, plus the detached `framework-packages/runtime-host` manifest (its own `[workspace]` and `target/`, so it does not take the Loom workspace lock) |
+| B | second agent, joined 2026-08-21 | F4, F5, F6, F7, F13, plus the Hook-side P2s S1-2 (Hook half), S2-1, S2-2, S3-3, and the Hook-side P3 S3-4 (claimed 2026-08-22 — it belonged to no batch) | the whole `Hook/` repository, Loom `art-packages/samples/stock-monitor/**`, `mcp-server-packages/**`, the archived lane diary, plus `framework-packages/runtime-host/src/mcp.rs` while F13 is open | Hook `npm` and Hook `src-tauri` cargo only — a separate tree with its own `target/`, plus the detached `framework-packages/runtime-host` manifest (its own `[workspace]` and `target/`, so it does not take the Loom workspace lock) |
 
 Boundary loan, 2026-08-22 (F13): `framework-packages/runtime-host/src/mcp.rs` is held by Lane B
 for the duration of F13, which claims the two findings in that file that belonged to no batch —
@@ -5049,7 +5059,7 @@ Rules both lanes follow:
    tree holds both lanes' work in progress at the same time, so a catch-all stage would
    commit the other lane's half-finished batch.
 3. Lane B does not append to this document outside this section. Lane B's batch records go
-   to `docs/progress/phase-78-lane-sync.md`, and whoever runs F10 merges them back here.
+   to the archived lane diary, and whoever runs F10 merges them back here.
 4. Lane B does not run `cargo` against the Loom workspace. If a stock-monitor change needs
    the sample-art contract test (`ci.yml:85`), Lane B requests a window in the sync document
    and runs that single test, not `--workspace --all-targets`.
@@ -5058,7 +5068,7 @@ Rules both lanes follow:
    are `r76` for Loom and `r89` for Hook.
 
 Cross-lane status, open questions and handoffs live in
-`docs/progress/phase-78-lane-sync.md`. Both lanes update it at the start and end of every
+the archived lane diary. Both lanes update it at the start and end of every
 batch.
 
 ### F1 — done
@@ -7457,7 +7467,7 @@ The S9 queue is now empty for Lane A.
 
 ### F11r — done (Lane B's two hand-backs: the poison cascade and the shutdown-race sleep)
 
-Both items came from Lane B's entries on `docs/progress/phase-78-lane-sync.md`, and both sit in
+Both items came from Lane B's entries on the archived lane diary, and both sit in
 `apps/daemon/src/lib.rs`. They are recorded here because they are Lane A's lines and because they decide
 whether F10's full-suite run is usable as evidence.
 
