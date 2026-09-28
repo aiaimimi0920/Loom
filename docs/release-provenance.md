@@ -182,6 +182,15 @@ Historical phase records and detailed candidate evidence can be recovered from
 Git tag `cleanup-base-20260928`. Keep future verification results with the exact
 release artifacts rather than extending a completed implementation diary.
 
+For Art Surface native acceptance, bind the exact Hook/daemon paths and SHA-256
+values to startup, pairing/approval, attachment, action/resource/formal result,
+600-second resource sampling, same-instance restart recovery and final teardown.
+Historical passing pairs cannot validate later source or package bytes. Record
+whether `HOOK_NATIVE_ACCEPTANCE=1` isolates native global Delete input; such
+test-mode evidence must not be presented as an ungated production-input run.
+Do not stop unknown user processes or weaken protocol dispose/cancellation to
+make an acceptance run pass.
+
 ## Evidence versus publication
 
 A dirty candidate may be retained as runtime evidence, but it is not a formal

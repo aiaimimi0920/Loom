@@ -37,7 +37,7 @@ authors must not depend on private Loom or Hook source code.
 
 ### Loom<->Hook Art contract and legacy retirement
 
-Phase 71 canonical-only cleanup is the current production baseline. Obsolete
+The canonical-only contract is the current production baseline. Obsolete
 wire aliases, persisted forms, package layouts, provider/process fields, and
 app-data identities are rejected rather than discovered or migrated.
 
@@ -302,8 +302,9 @@ The manifest permission policy declares network, filesystem, process, GPU,
 clipboard, and named credential requirements. Loom currently enforces process
 tree/resource limits, package path containment, writable-directory separation,
 credential scoping, and host-brokered HTTP/download policy. Raw credential
-values are encrypted/protected at rest and are never returned by list,
-diagnostic, or support-bundle APIs.
+values are never returned by list, diagnostic, or support-bundle APIs. Windows
+uses current-user DPAPI and owner-only ACLs; Unix uses owner-only files with a
+reversible local-file fallback, not an OS keyring or at-rest encryption guarantee.
 
 Windows Job Objects and Unix process groups are resource/process boundaries;
 they are not a complete AppContainer/namespace sandbox. Direct network,

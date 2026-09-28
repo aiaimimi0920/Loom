@@ -36,13 +36,15 @@ executables in the desktop package. Loom and Hook use the versioned
 
 ## Current canonical-only baseline
 
-Phase 71 is the current Art production baseline. Loom and Hook accept only the
+Loom and Hook accept only the
 current persisted shapes, publisher-qualified package identities and storage
 layouts, exact framework/process fields, and the `com.yamiyu.hook` app-data
 identity. Obsolete aliases and migrations are rejected rather than translated.
-See
-[`docs/progress/phase-71-art-canonical-layout-legacy-zero.md`](docs/progress/phase-71-art-canonical-layout-legacy-zero.md)
-for the code, package, release, and native acceptance evidence.
+See the [public protocol](protocol/README.md),
+[package scope](docs/plugin-development.md#canonical-package-scope) and
+[canvas contract](docs/HOOK_CANVAS.md). Historical migration and native acceptance
+records remain recoverable through Git tag `cleanup-base-20260928`; they do not
+establish acceptance of a later package.
 
 ## Workspace
 

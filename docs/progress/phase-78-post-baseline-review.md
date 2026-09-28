@@ -35,10 +35,10 @@ missed by choosing it.
 
 ## Already-closed findings — do not re-report
 
-- `docs/progress/art-framework-refactor-audit-2026-08-12.md` (4 closed gaps + verification matrix).
-- `docs/progress/art-framework-refactor-independent-review-handoff-2026-08-13.md`
-  §4.1 known platform limits, §4.2 what still needs review, §4.3 deliberately not
-  implemented and must not be added back, §6 questions the review must answer.
+- The independent Art/Framework audit and handoff are preserved in Git tag
+  `cleanup-base-20260928`. Current package/platform limits are in
+  `docs/plugin-development.md`, `docs/plugin-security.md` and
+  `docs/plugin-permissions.md`; canonical wire rules are in `protocol/README.md`.
 - `docs/progress/phase-69` … `phase-77` records.
 - `docs/progress/MASTER.md` R-numbered ledger (R29 superseded by R30).
 

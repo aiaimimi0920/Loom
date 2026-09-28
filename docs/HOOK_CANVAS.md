@@ -23,6 +23,16 @@ and `useHookCanvasViewport.ts` under `apps/desktop/src/components/hook`.
 
 ## Synchronization and degradation
 
+Two current producers have distinct canonical shapes: persisted Hook sessions
+use `stickers`/`links` and `fromUnitId`/`toUnitId`/`fromPortId`/`toPortId`; the
+`loom.hook.workflow.sync` wire uses `nodes`/`edges` and
+`source`/`target`/`sourceHandle`/`targetHandle`. Persisted node types are `sticker`
+or `art`; public workflow types are `sticker` or `artNode`. Packaged Art IDs must
+be publisher-qualified; native `core.image.*` identities remain separate.
+These are two active producers, not automatic migration of historical forms.
+Do not infer an Art from an ID alone or accept missing/unknown/stale node types.
+The live workflow retains the `hook-live` to `latest.yaml` storage contract.
+
 The desktop reads `GET /v1/hook-bridge/canvas` and listens for
 `loom.hook.workflow.updated` and `loom.hook.capabilities.updated`. A workflow
 update naming a workflow other than `hook-live` is ignored by the live refresh
