@@ -12,6 +12,8 @@ Implementation, configuration and executable tests remain the source of truth.
 - [Development manual](DEVELOPMENT.md) and [contribution guide](../CONTRIBUTING.md):
   module size, hardening, formatting, testing and release requirements.
 - [Agent definitions](AGENT_DEFINITIONS.md) and [workflow contract](WORKFLOW_CONTRACT.md).
+- [Hook canvas](HOOK_CANVAS.md): live projection, workflow actions, event refresh
+  and daemon-owned image preview authorization.
 - [Gateway integration](GATEWAY_INTEGRATION.md): model access and planner behavior.
 - [Asset Library integration](ASSET_LIBRARY_INTEGRATION.md).
 

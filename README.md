@@ -153,8 +153,10 @@ stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Hook
 
 For the normal user path, open **Hook 同步** to inspect the real Hook canvas:
 node placement, image previews, and links are rendered directly in the Loom
-workbench. Click **打开可视化工作流** or a node to enter the full visual
-workflow canvas. YAML, cURL, raw JSON, protocol methods, session paths, IPC,
+workbench. Select a live node to save its connected component as a workflow;
+saved workflows can be instantiated on the Hook desktop or exported as an Art.
+See [Hook canvas](docs/HOOK_CANVAS.md) for navigation and preview boundaries.
+YAML, cURL, raw JSON, protocol methods, session paths, IPC,
 and shared-memory diagnostics remain available only inside the collapsed
 **高级技术信息** disclosure.
 

@@ -25,6 +25,34 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-Depende
 The clean-source gate runs before build output is created. Formal manifests
 must record `gitDirty=false` and `sourceGitDirty=false`.
 
+Loom is an independent repository, including when checked out as a Neuro
+submodule. The manifest's `sourcePaths` must be exactly `["."]`, relative to
+that repository. The retired monorepo scope of `Loom` plus a parent build script
+is not accepted. Parent or sibling changes do not redefine Loom's source identity.
+
+## Package layout and integrity
+
+The desktop package has exactly one root executable, `Loom.exe`, and the daemon
+at `runtime/loom-daemon.exe`. Daemon-owned support files remain under `runtime`;
+optional OCR/package payloads follow the current catalog rather than an old
+design's bundled-resource list. Docker remains daemon-first, without the desktop.
+The separate CLI ZIP contains exactly one `loom.exe`. CLI artifacts remain local
+or workflow evidence under the public-asset policy below.
+
+The verifier binds artifact names, package-relative paths, byte counts and
+SHA-256 values to the manifest. ZIP contents must match their declared payload;
+extra root executables are rejected even when generic checksums are consistent.
+Each ZIP sidecar must match the expected ASCII line containing its lowercase
+SHA-256 and filename. CLI extraction refuses stale nonempty destinations.
+
+`scripts/tests/Test-ReleaseIntegrityTamper.ps1` exercises valid synthetic packages
+and targeted corruptions; `Test-StandaloneReleaseContract.ps1` and
+`Test-StandaloneLayout.ps1` protect the repository and package boundaries. Keep
+these contracts passing when changing packaging. A synthetic tamper test does
+not replace verification and smoke of the actual release package.
+
+## Packaged QR smoke
+
 `-RunSmoke` includes a QR projection check against the packaged daemon, using
 three temporary Ed25519 device identities and an isolated loopback listener.
 It verifies invitation confirmation, two image updates, retries, process-loss
