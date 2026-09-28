@@ -52,42 +52,15 @@ missed by choosing it.
 - `docs/progress/phase-69` … `phase-77` records.
 - `docs/progress/MASTER.md` R-numbered ledger (R29 superseded by R30).
 
-## Deliberately deferred — cross-device remote Surface
+## Remote Surface status
 
-Recorded 2026-08-21, after S3-1 was reviewed. This is an owner decision, not a review
-finding, and it settles the "two readings" question S3-1 raised.
-
-**The intended feature.** A user adds devices to Loom, actively or passively. Loom then
-pushes Hook's sticker blocks / Art nodes to those devices, and each device renders what it
-receives. Loom is the central compute; the other devices are display endpoints. The
-payload being pushed is rendered output (an Art node's result), not the computation — an
-edge-compute-shaped split where the frames, not the work, cross the wire.
-
-**Its status.** Future work. The device-management half is knowingly incomplete and that
-is accepted. It is not a defect to report.
-
-**What this reclassifies.** S3-1 stands as an accurate description of the code — the
-remote / device-session half really is unreachable in the shipped binary — but it is no
-longer a P1 defect. It is a documentation and feature-flag gap: the pairing, Ed25519
-identity, device-session, and HTTPS-validation code is present in the tree and therefore
-*looks* shipped, while `validate_loom_manifest` (`loom_connector.rs:184-189`) gates all of
-it off. Mark it staged-for-later in the docs and put it behind a feature flag, so no
-reader assumes those controls are protecting anything today.
-
-**What this does not reclassify.**
-
-- S1-1, S1-3, and S3-2 remain gate conditions. They are unreachable only because the
-  remote path is unreachable; each becomes a live defect the day the flag is flipped, so
-  they must be fixed *before* that switch, not after.
-- S5b-1 is unrelated to remote and is unaffected. It is about the default loopback
-  configuration shipping with no authentication at all, and it becomes more important, not
-  less, once cross-device push is built on top.
-- The snapshot / Art-node push pipeline itself is live code and stays fully in scope:
-  surface snapshots, `surface_resources`, and the Hook-bridge canvas all run on the
-  loopback path today. Only the "deliver to another device" half is gated.
-- The Loom-side device surface is partially implemented and stays in scope:
-  `/v1/devices/requests`, `/v1/device-sessions/challenges`, `/v1/device-sessions`, and the
-  device registry exist (see S5b-1 and S5b-2). Hook's half is what the validator disables.
+The August 21 staged-off decision was superseded by activation on August 23.
+Hook enables `remote-surface` by default. Its functional contract, URL policy,
+stream recovery rules and two-feature-build verification matrix are maintained
+in Hook's `docs/REMOTE_SURFACE_STAGED.md`. The old S1-1, S1-3, S3-1 and S3-2
+descriptions below are historical observations, not a current activation plan.
+The separate daemon authentication finding S5b-1 was addressed by the F18
+closeout below; it must not be inferred from remote feature availability.
 
 ## Facts reviewers must not get wrong
 
@@ -5000,7 +4973,7 @@ Batch order is chosen so earlier batches unblock later ones, not by severity alo
 | Batch | Scope | Findings addressed | Depends on |
 | --- | --- | --- | --- |
 | F1 | New leaf crate `loom_security`: hardened zip extraction, outbound URL/UNC policy, bounded-recursion depth guard. Rewire `loom_mcp`, `loom_tool_registry` and `framework-packages/runtime-host` onto it. | S9-10 (structural) | — |
-| F2 (Lane A) | Apply the F1 primitives at their call sites. **S8c1-1 moved out of this batch to F7 / Lane B** — see "Parallel lanes" below. | S7a-1, S7b2-1, S8b1-1, S8b2-1, S6b2d3-2, S8b1-2 | F1 |
+| F2 (Lane A) | Apply the F1 primitives at their call sites. **S8c1-1 moved out of this batch to F7 / Lane B** — see "Historical batch ownership" below. | S7a-1, S7b2-1, S8b1-1, S8b2-1, S6b2d3-2, S8b1-2 | F1 |
 | F3 (Lane A) | Loom CI: add `fmt`/`check`/`test` for the `runtime-host` manifest, add `cargo test` plus `--all-targets` for the Tauri wrapper, make the desktop test glob recursive. | S9-2, S9-3, S9-7 | — |
 | F4 (Lane B) | Hook CI: add `lint`, `typecheck:test` and `test:surface-browser` to `build-hook-exe.yml` and to `verify:local`, then fix what they report. | S9-4 | — |
 | F5 (Lane B) | Stock-monitor Surface correctness: escape or DOM-build both `innerHTML` sinks, correlate pending state with the action that produced a revision, negotiate the client timeout against the host budget, reset the tick-capability latch, stop the full refresh from being starved by ticks, re-render on resume. | S8d3-1, S8d3-2, S8d1-1, S8d2-1, S8d2-2, S8d3-3 | F4 (so the browser smoke gates it) |
@@ -5012,64 +4985,18 @@ Batch order is chosen so earlier batches unblock later ones, not by severity alo
 
 Batches F1, F3, F4 and F7 are independent of each other and may run in any order.
 
-### Parallel lanes — F4, F5, F6, F7 and the Hook-side P2s are taken by Lane B
+### Historical batch ownership
 
-Recorded 2026-08-21 by the second agent. The fix phase now runs as two lanes worked in
-parallel by two different agents. This section is the ownership boundary: read it before
-opening any file listed in it, and change it before crossing it.
+The August lane reservations, temporary file loans, build locks and handoff
+instructions are retired. Their full record is available in Git tag
+`cleanup-base-20260928`; they impose no current ownership restrictions.
 
-| Lane | Owner | Batches | Reserved paths | Build lock |
-| --- | --- | --- | --- | --- |
-| A | the agent that shipped F1 and is mid-F2 | F2, F3, F8, F9 | Loom `crates/**`, `framework-packages/**` (**except** `framework-packages/runtime-host/src/mcp.rs`, lent to Lane B for F13 — see the note below), root `Cargo.toml` / `Cargo.lock`, Loom `.github/**`, `art-packages/samples/image-search/**`, `art-packages/shared/**`, `apps/desktop/**` | owns Loom's `cargo` and `target/` |
-| B | second agent, joined 2026-08-21 | F4, F5, F6, F7, F13, plus the Hook-side P2s S1-2 (Hook half), S2-1, S2-2, S3-3, and the Hook-side P3 S3-4 (claimed 2026-08-22 — it belonged to no batch) | the whole `Hook/` repository, Loom `art-packages/samples/stock-monitor/**`, `mcp-server-packages/**`, the archived lane diary, plus `framework-packages/runtime-host/src/mcp.rs` while F13 is open | Hook `npm` and Hook `src-tauri` cargo only — a separate tree with its own `target/`, plus the detached `framework-packages/runtime-host` manifest (its own `[workspace]` and `target/`, so it does not take the Loom workspace lock) |
-
-Boundary loan, 2026-08-22 (F13): `framework-packages/runtime-host/src/mcp.rs` is held by Lane B
-for the duration of F13, which claims the two findings in that file that belonged to no batch —
-S7c1-1 and S7c2-1. Scope of the loan is that one file plus its in-file `#[cfg(test)]` module;
-`framework-packages/runtime-host/Cargo.toml` and `Cargo.lock` stay with Lane A and were
-deliberately left untouched (the lock currently carries Lane A's uncommitted `loom_security`
-edit, and `crates/loom_security/` is still untracked, so committing it would break a clean
-checkout). That constraint shaped the S7c1-1 fix: no new dependency, therefore no `semver` crate
-in runtime-host. See H11 in the lane-sync document.
-
-Why the split is drawn here and not by batch number: two agents in one Cargo workspace
-serialize on the `target/` lock, and workspace verification is where most of the wall time
-goes, so halving F8 would buy almost nothing. Hook is a separate repository with its own
-`target/`, and the stock-monitor Art layer is PowerShell plus browser JavaScript with no
-cargo step at all, so Lane B never contends for the lock. The dependency chain F4 → F5 → F6
-also lands entirely inside Lane B, because F5's gate is Hook's `test:surface-browser`, which
-F4 is the batch that wires up.
-
-Two ownership corrections this forces:
-
-- **S8c1-1 moves from F2 to F7, and therefore to Lane B.** It lives in
-  `art-packages/samples/stock-monitor/runtime/main.ps1`, the file F7 rewrites, and its fix
-  edits the same `Find-SurfaceAction` region as F7's S8c1-2 and S8c1-3 work. Lane A's F2
-  keeps the other six call sites. Lane B implements the bounded-depth shape from
-  `framework-packages/runtime-host/src/mcp.rs:703-716` locally in PowerShell; it cannot
-  depend on `loom_security`, because PowerShell does not call the crate.
-- **S8d2-9 stays with Lane B.** It is listed under F7 but lives in
-  `art-packages/samples/stock-monitor/surface/main.js`, so it is fixed with F5 and F6.
-
-Rules both lanes follow:
-
-1. Do not edit a path reserved by the other lane. To cross the boundary, amend the table
-   above first and say so in the sync document.
-2. Commit with explicit paths (`git commit -- <path>`), never `git add -A`. The Loom working
-   tree holds both lanes' work in progress at the same time, so a catch-all stage would
-   commit the other lane's half-finished batch.
-3. Lane B does not append to this document outside this section. Lane B's batch records go
-   to the archived lane diary, and whoever runs F10 merges them back here.
-4. Lane B does not run `cargo` against the Loom workspace. If a stock-monitor change needs
-   the sample-art contract test (`ci.yml:85`), Lane B requests a window in the sync document
-   and runs that single test, not `--workspace --all-targets`.
-5. F10 is single-owner and strictly last. `build-release.ps1 -RequireCleanSource` refuses on
-   any dirty or untracked file, so both lanes must have committed first. Next version ids
-   are `r76` for Loom and `r89` for Hook.
-
-Cross-lane status, open questions and handoffs live in
-the archived lane diary. Both lanes update it at the start and end of every
-batch.
+For interpreting finding closures below: F7 includes S8c1-1 and S8d2-9;
+F13 covers the runtime-host MCP findings S7c1-1 and S7c2-1. The temporary
+F13 dependency-edit restriction explains its original local implementation,
+but is not a constraint on current maintenance. Current development rules are
+in [DEVELOPMENT.md](../DEVELOPMENT.md), and clean-source package requirements
+are in [release provenance](../release-provenance.md).
 
 ### F1 — done
 
