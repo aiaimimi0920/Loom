@@ -30,9 +30,7 @@ mod timing;
 pub(crate) type SharedWallStore = Arc<WallStore>;
 pub(crate) use identification::{WallIdentification, WallIdentificationOutcome};
 pub(crate) use input::{WallInputBinding, WallInputTarget};
-pub(crate) use presentation::{
-    WallPresentation, WallPresentationMode, WallPresentationOutcome, WallPresentationReport,
-};
+pub(crate) use presentation::{WallPresentation, WallPresentationMode, WallPresentationReport};
 use surface_requests::WallSurfaceRequests;
 pub(crate) use surfaces::WallSurfaceLink;
 pub(crate) use timing::{WallSceneReport, WallTiming};

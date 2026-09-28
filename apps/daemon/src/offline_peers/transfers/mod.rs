@@ -3,6 +3,7 @@ use super::*;
 use handshake::{Challenge, ProbeGuard};
 mod actions;
 mod create;
+mod edit;
 mod local;
 mod model;
 mod peer;
@@ -13,6 +14,7 @@ use model::{Create, Offer, Record};
 pub(crate) use store::Store;
 const MAX_BODY: usize = loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES;
 pub(crate) const ROUTES: &[&str] = &[
+    "/v1/offline-projections/edit",
     "/v1/offline-projections/create",
     "/v1/offline-projections/inbox",
     "/v1/offline-projections/inspect",

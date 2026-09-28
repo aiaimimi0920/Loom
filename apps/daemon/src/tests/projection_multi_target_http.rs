@@ -1,0 +1,50 @@
+#[test]
+fn multi_target_shared_and_peer_links_update_stop_and_recover_independently() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let ra = ProjectionRoot::new(); let rb = ProjectionRoot::new();
+    let (a, mut sa) = start(&ra.0); let (b, mut sb) = start(&rb.0);
+    let va = peer_view(a); let vb = peer_view(b); trust_peer(a, &vb, b); trust_peer(b, &va, a);
+    let mut source = Identity::pair(a, "Source"); let mut local = Identity::pair(a, "Local");
+    let mut remote = Identity::pair(b, "Remote");
+    local.post(a, "inbox", json!({"policy":"confirm"}));
+    remote.offline(b, "inbox", json!({"policy":"confirm"}));
+    let snapshot = png(21);
+    let first = source.invitation(&snapshot, unix_time_millis() + 270_000);
+    let second = source.invitation(&snapshot, unix_time_millis() + 270_000);
+    assert_eq!(first.source.unit_id, second.source.unit_id);
+    assert_eq!(source.post(a, "create", json!({"envelope":first,"snapshot":snapshot,"targetDeviceId":local.id})).0, 200);
+    assert_eq!(source.offline(a, "create", offline_create(&source, &remote, &vb, &second, &snapshot)).0, 200);
+    // Recover from a lost create response using the persisted signed identity.
+    let replay = source.post(a, "create", json!({"envelope":first,"snapshot":snapshot,"targetDeviceId":local.id}));
+    assert!(replay.1.to_string().contains("projection_invitation_replayed"));
+    let recovered = source.post(a, "read", json!({"projectionId":first.projection_id,"knownRevision":0}));
+    assert_eq!(recovered.0, 200);
+    assert_eq!(recovered.1["envelope"], json!(first));
+    assert_eq!(recovered.1["delivery"]["targetDeviceId"], json!(local.id));
+    let recovered = source.offline(a, "read", json!({"projectionId":second.projection_id,"knownRevision":0}));
+    assert_eq!(recovered.0, 200);
+    assert_eq!(recovered.1["envelope"], json!(second));
+    assert_eq!(recovered.1["delivery"]["targetDeviceId"], offline_create(&source, &remote, &vb, &second, &snapshot)["targetDeviceId"]);
+    assert_eq!(local.post(a, "accept", acceptance(&first, "local-unit")).0, 200);
+    assert_eq!(remote.offline(b, "accept", acceptance(&second, "remote-unit")).0, 200);
+    thread::sleep(Duration::from_millis(550));
+    let changed = png(77);
+    assert_eq!(source.post(a, "update", update(&first, 1, &changed)).0, 200);
+    assert_eq!(source.offline(a, "update", update(&second, 1, &changed)).0, 200);
+    let read = |envelope: &ProjectionEnvelope| json!({"projectionId":envelope.projection_id,"knownRevision":1});
+    assert_eq!(local.post(a, "read", read(&first)).1["snapshot"], json!(changed));
+    assert_eq!(remote.offline(b, "read", read(&second)).1["snapshot"], json!(changed));
+    assert_eq!(source.post(a, "unlink", json!({"projectionId":first.projection_id})).0, 200);
+    thread::sleep(Duration::from_millis(550));
+    assert_eq!(source.offline(a, "update", update(&second, 2, &png(99))).0, 200);
+    assert_eq!(local.post(a, "read", read(&first)).0, 410);
+    assert_eq!(remote.offline(b, "read", read(&second)).1["revision"], 3);
+    sa.finish().unwrap(); sb.finish().unwrap();
+    let mut sa = restart_offline(&ra.0, a); let mut sb = restart_offline(&rb.0, b);
+    source.session(a); local.session(a); remote.session(b);
+    assert_eq!(local.post(a, "read", read(&first)).0, 410);
+    assert_eq!(remote.offline(b, "read", read(&second)).1["snapshot"], json!(png(99)));
+    assert_eq!(source.offline(a, "unlink", json!({"projectionId":second.projection_id})).0, 200);
+    assert_eq!(remote.offline(b, "read", read(&second)).0, 410);
+    sa.finish().unwrap(); sb.finish().unwrap();
+}

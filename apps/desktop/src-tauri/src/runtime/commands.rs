@@ -80,11 +80,12 @@ pub(super) async fn put_loom_daemon_json(
 pub(super) async fn delete_loom_daemon_json(
     base_url: String,
     path: String,
+    body: Option<Value>,
 ) -> Result<Value, String> {
     run_blocking_command(move || {
         let resolved_base_url = resolve_command_base_url(base_url);
         let path = normalize_daemon_path(path)?;
-        http_delete_json(&resolved_base_url, &path)
+        http_delete_json(&resolved_base_url, &path, body.as_ref())
     })
     .await
 }

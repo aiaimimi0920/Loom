@@ -1,0 +1,7 @@
+.projection-peers form, .projection-peers fieldset { display: grid; gap: 12px; min-width: 0; }
+.projection-peers fieldset { border: 0; padding: 0; margin: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.projection-peers label { display: grid; gap: 6px; min-width: 0; }
+.projection-peers input:not([type="checkbox"]) { width: 100%; min-width: 0; box-sizing: border-box; }
+.projection-peers label:has(input[type="checkbox"]) { display: flex; align-items: center; }
+.projection-peers details label { margin-top: 12px; }
+.projection-peers .wall-toolbar > span { overflow-wrap: anywhere; min-width: 0; }

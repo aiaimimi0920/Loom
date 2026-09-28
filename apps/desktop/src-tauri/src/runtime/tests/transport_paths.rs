@@ -3,6 +3,30 @@
 use super::*;
 
 #[test]
+fn delete_peer_configuration_preserves_revision_body() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind delete fixture");
+    let address = listener.local_addr().expect("fixture address");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept delete");
+        let request = read_test_http_request(&mut stream);
+        write_test_json_response(&mut stream, "200 OK", r#"{"revision":5}"#);
+        request
+    });
+    let body = serde_json::json!({"expectedRevision": 4, "peerId": "loom-peer"});
+    let result = http_delete_json(
+        &format!("http://127.0.0.1:{}", address.port()),
+        "/v1/projection-peers",
+        Some(&body),
+    )
+    .expect("delete response");
+    let request = server.join().expect("join delete fixture");
+    assert!(request.starts_with("DELETE /v1/projection-peers HTTP/1.1\r\n"));
+    let (_, payload) = request.split_once("\r\n\r\n").expect("request body");
+    assert_eq!(serde_json::from_str::<Value>(payload).unwrap(), body);
+    assert_eq!(result["revision"], 5);
+}
+
+#[test]
 fn daemon_that_disappears_after_core_probes_is_offline() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind disappearing fixture");
     let address = listener
