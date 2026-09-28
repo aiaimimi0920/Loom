@@ -23,6 +23,8 @@ Implementation, configuration and executable tests remain the source of truth.
   and [signing and trust](plugin-signing-and-trust.md).
 - [OCR contract](OCR_CONTRACT.md), [OCR golden dataset](OCR_GOLDEN_DATASET.md),
   and [translation modes](TRANSLATION_HYBRID_MODE.md).
+- [Wall guide](TILE_WALL.md): terminal and source ownership, functional contracts
+  and the 19 remaining joint acceptance conditions.
 - [Wall control API](../protocol/WALL_CONTROL_API.md): paired terminal outputs,
   layouts, image delivery and acknowledgement.
 
