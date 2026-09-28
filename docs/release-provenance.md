@@ -116,6 +116,44 @@ Do not use a re-run to bypass a reproducible defect or security finding. Fix the
 cause, rerun the affected local/CI gates, and create a new version tag when the
 source commit must change.
 
+## Joint release acceptance
+
+The former Phase 77-79 records mixed implementation history with joint acceptance.
+Their cleanup does not complete the remaining exact-package Hook/Loom release
+gate. Old shared-dirty-worktree descriptions and reserved candidate IDs are not
+current instructions; inspect both repositories and choose unused output paths.
+
+For a joint release, retain evidence for all of the following:
+
+- Reviewed coherent commits in both repositories, with each untracked path
+  assigned or preserved deliberately. Formal builds require clean source;
+  never bulk-stage or remove unrelated work to manufacture that condition.
+- Tested effective-line tooling and strict enforcement: no handwritten file
+  above 700 effective lines, no hard-cap waiver, and exact current justification
+  for each 501-700 exception. Use the registries rather than old phase counts.
+- Composition boundaries, meaningful purpose/invariant comments and coverage of
+  public protocol, HTTP, IPC, events, serialization, package and release contracts.
+- Security, resource lifetime and performance review of changed modules, regression
+  evidence for fixed high/critical issues and leaks, and measurements for sensitive
+  paths without unexplained regressions.
+- Loom's full Rust, desktop, smoke and release gates from the reviewed source,
+  followed by `verify-release.ps1 -RunSmoke -RequireCleanSource` on the exact package.
+- Hook's full frontend, browser, Rust, native/runtime and release gates from its
+  reviewed source, with the executable and ZIP digests matching provenance.
+- New verified artifacts under the required release roots, final commit identity,
+  `gitDirty=false` and `sourceGitDirty=false`, plus recorded commands, results,
+  current exceptions and actual package paths.
+
+The old Phase 79 RC1 package failed its exact-package verifier even though the
+build completed; it remains diagnostic evidence, not an accepted release. A
+resolver fix or a later package build does not retroactively validate RC1.
+Package existence, headless self-check and an independently passing QR smoke do
+not replace full verification or [wall joint acceptance](TILE_WALL.md).
+
+Historical phase records and detailed candidate evidence can be recovered from
+Git tag `cleanup-base-20260928`. Keep future verification results with the exact
+release artifacts rather than extending a completed implementation diary.
+
 ## Evidence versus publication
 
 A dirty candidate may be retained as runtime evidence, but it is not a formal
