@@ -177,6 +177,12 @@ publisher-owned packages have the canonical identity `publisher/id`.
 
 ## Capability runtime ABI
 
+The experimental Browser Live document-pinning consumer has been retired from
+Hook; browser windows use native window capture. Its package-specific command
+description is archived at
+`cleanup-base-20260928:protocol/BROWSER_DOCUMENT_PROVIDER.md` and is not an active
+host contract. The generic capability ABI below remains the extension boundary.
+
 Capability services use `loom.capability.runtime.v1`. Each message is one
 UTF-8 JSON document prefixed by a four-byte unsigned big-endian length. A frame
 larger than 4 MiB is rejected. The host and runtime keep stdin/stdout open for a
