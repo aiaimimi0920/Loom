@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -166,19 +165,6 @@ impl RuntimeRegistry {
             Err(_) => self.path.clone(),
         }
     }
-}
-
-pub fn dependency_index_by_id(
-    records: &[PackageCandidate],
-) -> BTreeMap<String, Vec<PackageCandidate>> {
-    let mut index = BTreeMap::<String, Vec<PackageCandidate>>::new();
-    for record in records {
-        index
-            .entry(record.id.clone())
-            .or_default()
-            .push(record.clone());
-    }
-    index
 }
 
 #[cfg(test)]
