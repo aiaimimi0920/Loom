@@ -28,10 +28,6 @@ export interface LoomMcpServer {
   usedByArtIds?: string[];
 }
 
-export interface LoomMcpServersResponse {
-  servers?: LoomMcpServer[];
-}
-
 export interface LoomMcpTestResult {
   success?: boolean;
   tools?: unknown[];
