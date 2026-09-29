@@ -237,10 +237,6 @@ export function ShellIcon({ kind }: { kind: ShellIconKind }) {
   }
 }
 
-export function EnabledChip({ enabled }: { enabled?: boolean }) {
-  return <span className="mini-chip">{enabled === false ? "已禁用" : "已启用"}</span>;
-}
-
 export type ArtIconKind =
   | "cloud"
   | "terminal"
