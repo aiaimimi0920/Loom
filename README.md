@@ -897,7 +897,6 @@ cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 - `docs/DEVELOPMENT.md`
 - `docs/DEPENDENCY_SECURITY.md`
 - `docs/ARCHITECTURE.md`
-- `docs/MIGRATION_MAP.md`
 - `docs/WORKFLOW_CONTRACT.md`
 - `docs/AGENT_DEFINITIONS.md`
 - `docs/GATEWAY_INTEGRATION.md`
