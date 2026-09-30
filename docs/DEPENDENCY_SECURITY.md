@@ -216,6 +216,20 @@ the replacement/reassessment work is tracked in
 2026-10-31 exception expiry. The formal Windows release does not compile or
 ship this path.
 
+On 2026-09-30, a fresh scan confirmed that GTK3 maintenance advisories
+RUSTSEC-2024-0411 through RUSTSEC-2024-0420 no longer apply after upstream
+maintenance resumed. Their advisory records mark them withdrawn, effective
+2026-08-14; see the [GTK advisory record](https://github.com/rustsec/advisory-db/blob/main/crates/gtk/RUSTSEC-2024-0415.md).
+The ten obsolete exception entries were removed. This does not resolve the
+separate, active RUSTSEC-2024-0429 flaw in the locked glib 0.18.5. Its exception
+and 2026-10-31 expiry remain unchanged, and Linux publication remains blocked.
+
+The new official GTK3 0.19 bindings use glib 0.22. The coordinated parent-stack
+upgrade is tracked by [Tauri #16170](https://github.com/tauri-apps/tauri/pull/16170),
+but was still an unreleased draft requiring Git patches at this reassessment.
+Do not substitute those development branches for compatible official releases
+or treat the resumed maintenance as a fix to the locked vulnerable version.
+
 This scheme does not prove source code safety, runtime reachability, absence of
 zero-days, or safety of untracked/vendored inputs. It also does not replace Rust
 tests, frontend tests, plugin trust enforcement, secret scanning, container
