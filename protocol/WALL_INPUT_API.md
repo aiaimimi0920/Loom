@@ -1,7 +1,8 @@
 # Wall endpoint Live input
 
-This extends the [wall control API](WALL_CONTROL_API.md). Art input and final
-multi-terminal acceptance remain in [the plan](../docs/TILE_WALL_IMPLEMENTATION_PLAN.md).
+This extends the [wall control API](WALL_CONTROL_API.md). Art input is specified in
+[WALL_SURFACE_API.md](WALL_SURFACE_API.md); final multi-terminal acceptance remains
+in [the wall guide](../docs/TILE_WALL.md).
 
 ## Paired-device routes
 

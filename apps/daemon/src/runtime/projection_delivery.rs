@@ -87,6 +87,7 @@ fn projection_delivery_target(
     if source == target {
         return Err(ProjectionError::new(409, "projection_same_device"));
     }
+    projection_receive_allowed(registry, target, source, None)?;
     let device = registry
         .authorized_keyed_device(target)
         .map_err(|_| ProjectionError::new(403, "projection_target_unavailable"))?;
@@ -116,6 +117,7 @@ fn handle_projection_delivery(
     registry: &mut DeviceRegistryStore,
     now: u64,
 ) -> std::result::Result<Value, ProjectionError> {
+    registry.projection_settings.view()?;
     registry
         .projections
         .presence
@@ -135,9 +137,11 @@ fn handle_projection_delivery(
                         return None;
                     }
                     let target = registry.authorized_keyed_device(id).ok()?;
+                    let policy = projection_receive_decision(registry, id, &device.id, None).ok()?;
+                    if policy == projection_settings::Decision::Reject { return None; }
                     (target.session_epoch == presence.epoch).then(|| {
                         json!({ "deviceId": id,
-                    "name": target.name, "policy": presence.policy, "route": "shared_loom" })
+                    "name": target.name, "policy": policy, "route": "shared_loom" })
                     })
                 })
                 .take(MAX_PROJECTIONS)
@@ -172,9 +176,13 @@ fn handle_projection_delivery(
                     && record.delivery.as_ref().is_some_and(|target|
                         target.target_device_id == device.id && target.target_epoch == device.session_epoch
                         && matches!(target.status, DeliveryStatus::AwaitingConfirmation | DeliveryStatus::Accepted))
-            }).map(|record| json!({ "envelope": record.envelope, "revision": record.revision,
+            }).filter_map(|record| {
+                let policy = projection_receive_decision(registry, &device.id, &record.envelope.source.device_id, None).ok()?;
+                if record.receiver.is_none() && policy == projection_settings::Decision::Reject { return None; }
+                Some(json!({ "envelope": record.envelope, "revision": record.revision,
                 "digest": record.digest, "delivery": record.delivery,
-                "sourceName": registry.devices.get(&record.envelope.source.device_id).map(|source| &source.name) }))
+                "receivePolicy": if record.receiver.is_some() { projection_settings::Decision::Auto } else { policy },
+                "sourceName": registry.devices.get(&record.envelope.source.device_id).map(|source| &source.name) })) })
                 .take(MAX_PROJECTIONS).collect();
             Ok(json!({ "invitations": invitations, "offlinePeers": true }))
         }

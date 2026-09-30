@@ -1,4 +1,4 @@
-// Hook bridge, managed-device, workflow-instantiation, and session contracts.
+// Hook bridge, managed-device, and workflow-instantiation contracts.
 
 export interface LoomHookBridgeStatus {
   running?: boolean;
@@ -39,21 +39,4 @@ export interface HookWorkflowInstantiateResponse {
   broadcasted?: boolean;
   subscribedClients?: number;
   params?: unknown;
-}
-
-
-export interface HookSessionSnapshot {
-  running?: boolean;
-  port?: number;
-  connectedClients?: number;
-  subscribedClients?: number;
-  protocol?: string;
-  sessionPath?: string;
-  available?: boolean;
-  error?: string | null;
-  session?: {
-    stickers?: unknown[];
-    links?: unknown[];
-    [key: string]: unknown;
-  };
 }

@@ -71,6 +71,7 @@ impl SurfaceInstanceStore {
             .map(|instance| instance.descriptor.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn event_ack(&self, instance_id: &str, event_id: &str) -> Option<SurfaceActionAck> {
         self.instances
             .get(instance_id)

@@ -46,7 +46,14 @@ identity exports. The identity output path must not already exist.
 
 Export B and register A on B in the same way before probing. Never exchange
 administrator tokens or the private offline-projection-peers.json file with a peer.
-The helper is an operator interface; a desktop settings panel is not included yet.
+The helper remains an operator interface. The desktop Devices workspace now has a
+Projection connections panel for reading the public identity, adding/editing peers,
+probing mutual trust, and removing peers. It uses the same administrator-only API
+through the local authenticated native transport; it never exports private keys or
+administrator tokens. DELETE carries expectedRevision and peerId in its JSON body.
+Revision conflicts keep the draft and require an explicit refresh before retrying.
+The panel warns before trust changes because they invalidate existing cross-Loom
+transfers. A successful probe is labeled as a connectivity check, not delivery proof.
 
 ## Signed probe
 

@@ -3,7 +3,7 @@
 Status: implementation in progress. The geometry contract below is implemented;
 registration and persistence are documented in [WALL_CONTROL_API.md](WALL_CONTROL_API.md).
 Presentation and input routing have separate acceptance
-tasks in [the implementation plan](../docs/TILE_WALL_IMPLEMENTATION_PLAN.md).
+tasks in [the wall guide](../docs/TILE_WALL.md).
 This document does not assert completed multi-terminal runtime support.
 
 ## Ownership and compatibility

@@ -2,6 +2,11 @@ mod projection_http {
     include!("projection_fixture.rs");
     include!("projection_revocation.rs");
     include!("projection_delivery_tests.rs");
+    include!("projection_settings_http.rs");
+    include!("projection_group_directory_http.rs");
+    include!("projection_multi_target_http.rs");
+    include!("projection_edit_http.rs");
+    include!("projection_edit_peer_http.rs");
     include!("projection_delivery_state_tests.rs");
     include!("offline_peers_http.rs");
     include!("offline_catalog_http.rs");

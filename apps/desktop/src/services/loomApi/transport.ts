@@ -142,8 +142,8 @@ const putJsonViaTauri = async <T>(baseUrl: string, path: string, body: unknown):
   return await invokeJsonViaTauri<T>("put_loom_daemon_json", { baseUrl, path, body });
 };
 
-const deleteJsonViaTauri = async <T>(baseUrl: string, path: string): Promise<T> => {
-  return await invokeJsonViaTauri<T>("delete_loom_daemon_json", { baseUrl, path });
+const deleteJsonViaTauri = async <T>(baseUrl: string, path: string, body?: unknown): Promise<T> => {
+  return await invokeJsonViaTauri<T>("delete_loom_daemon_json", { baseUrl, path, ...(body === undefined ? {} : { body }) });
 };
 
 export const getJson = async <T>(baseUrl: string, path: string): Promise<T> => {
@@ -215,15 +215,17 @@ export const putJson = async <T>(baseUrl: string, path: string, body: unknown): 
   return await responseJson<T>(response, path);
 };
 
-export const deleteJson = async <T>(baseUrl: string, path: string): Promise<T> => {
+export const deleteJson = async <T>(baseUrl: string, path: string, body?: unknown): Promise<T> => {
   if (isTauri()) {
-    return await deleteJsonViaTauri<T>(baseUrl, path);
+    return await deleteJsonViaTauri<T>(baseUrl, path, body);
   }
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "DELETE",
     headers: {
       Accept: "application/json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
   return await responseJson<T>(response, path);

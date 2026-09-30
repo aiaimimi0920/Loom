@@ -108,3 +108,31 @@ The parent workflow package never receives child source code and neither Loom
 nor Hook source is modified. Uninstall does not maintain dependency reference
 counts or automatically garbage-collect orphan child Arts; operators still
 remove independently installed child packages explicitly.
+
+## Image blend and compress example
+
+The canonical example is `art-packages/samples/image-blend-compress`, with Art ID
+`neuro.official/custom-image-blend-compress-workflow` and workflow ID
+`image-blend-compress-workflow`. It requires the independently installed `workflow`
+framework and two separately installed process Arts:
+`neuro.official/custom-image-blend-script` and
+`neuro.official/custom-1770146354922`. It does not bundle their implementations.
+
+Two image inputs, `input` and `reference`, feed the blend node. `mix_ratio` ranges
+from 0 to 100 (default 50); `quality_num` ranges from 60 to 100 (default 90).
+Compression uses `lossless: false`; lower quality values permit stronger lossy
+compression. Current manifest/YAML values are authoritative, including parameters
+not exposed by this Art.
+
+`compress` declares `needs: [blend]` and reads
+`${{ nodes.blend.outputs.output_base64 }}` as its input. Manifest bindings map
+the two root images and scalar parameters to their child arguments. The
+`primaryOutput` uses `node_result` from `compress`, preserving the terminal image
+response rather than returning an intermediate blend or stringifying it.
+
+Missing required images and child failures must produce execution failures;
+compression must not run after failed blending or report the intermediate image
+as success. Package creation uses `scripts/Build-LoomSampleArtPackages.ps1`, and
+installation uses the normal package lifecycle. Retired built-in `script`/
+`cli_wrapper` frameworks, AHRP calls and one-off resource-tree installers are not
+the current implementation. Hook uses the public `loom.hook.v1` execution contract.

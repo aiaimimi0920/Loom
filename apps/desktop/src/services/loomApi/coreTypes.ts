@@ -26,11 +26,6 @@ export interface LoomCapability {
   [key: string]: unknown;
 }
 
-export interface LoomCapabilitiesResponse {
-  capabilities?: LoomCapability[];
-}
-
-
 export interface LoomToolExecution {
   type?: string;
   [key: string]: unknown;
@@ -56,20 +51,12 @@ export interface LoomArtRuntimeManifest {
   };
 }
 
-export interface LoomToolsResponse {
-  tools?: LoomToolDefinition[];
-}
-
 export interface LoomWorkflowMetadata {
   id: string;
   name: string;
   description?: string;
   nodeCount?: number;
   updatedAt?: string;
-}
-
-export interface LoomWorkflowsResponse {
-  workflows?: LoomWorkflowMetadata[];
 }
 
 export interface LoomWorkflowBundle extends LoomWorkflowMetadata {
