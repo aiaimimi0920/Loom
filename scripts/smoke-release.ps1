@@ -54,6 +54,9 @@ $focusedResults = @(
     Invoke-FocusedLoomSmoke `
         -ScriptName "Invoke-LoomDaemonConcurrencySmoke.ps1" `
         -EvidenceSubdirectory "concurrency"
+    Invoke-FocusedLoomSmoke `
+        -ScriptName "Invoke-LoomQrProjectionSmoke.ps1" `
+        -EvidenceSubdirectory "qr-projection"
 )
 
 $safeVersion = $VersionId -replace "[^A-Za-z0-9._-]", "_"

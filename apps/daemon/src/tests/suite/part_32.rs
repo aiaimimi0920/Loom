@@ -294,7 +294,7 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
             .expect("registry")
             .is_empty()
     );
-    fs::remove_dir_all(root).expect("cleanup");
+    remove_test_dir(&root);
 }
 
 #[test]

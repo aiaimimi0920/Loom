@@ -9,6 +9,7 @@ description = "Bounded generic runtime host for Loom Capability Plugins"
 
 [dependencies]
 jsonschema.workspace = true
+loom_gateway.workspace = true
 loom_process.workspace = true
 loom_plugin_security.workspace = true
 loom_protocol.workspace = true

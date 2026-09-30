@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.neuro/protocol/wall-timing.v1.schema.json",
+  "title": "Wall boot clock, scene schedule and presenter receipt",
+  "oneOf": [{ "$ref": "#/$defs/timing" }, { "$ref": "#/$defs/report" }],
+  "$defs": {
+    "id": { "$ref": "wall.v1.schema.json#/$defs/id" },
+    "time": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "scene": {
+      "type": "object", "additionalProperties": false,
+      "required": ["wallId", "revision", "preparedAtMs", "activateAtMs"],
+      "properties": {
+        "wallId": { "$ref": "#/$defs/id" }, "revision": { "$ref": "#/$defs/time" },
+        "preparedAtMs": { "$ref": "#/$defs/time" }, "activateAtMs": { "$ref": "#/$defs/time" }
+      }
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clockId", "serverTimeMs", "scenes"],
+      "properties": {
+        "clockId": { "$ref": "#/$defs/id" }, "serverTimeMs": { "$ref": "#/$defs/time" },
+        "scenes": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/scene" } }
+      }
+    },
+    "report": {
+      "type": "object", "additionalProperties": false,
+      "required": ["revision", "prepared", "appliedAtMs", "clockUncertaintyMs"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/time" }, "prepared": { "type": "boolean" },
+        "appliedAtMs": { "oneOf": [{ "$ref": "#/$defs/time" }, { "type": "null" }] },
+        "clockUncertaintyMs": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000 }
+      }
+    }
+  }
+}

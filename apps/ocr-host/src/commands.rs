@@ -122,13 +122,9 @@ fn recognize(
         .expect("engine was initialized")
         .detect_image_region_bytes_with_mode(&image, false, quality_mode, region)
         .map_err(map_ocr_error)?;
-    let code_scan = code_scan::decode(&image).map_err(|_| {
-        CommandFailure::new(
-            CapabilityErrorCode::RuntimeFault,
-            "QR/barcode decoding failed",
-            true,
-        )
-    })?;
+    // QR/barcode detection is an optional best-effort companion to OCR. A
+    // decoder failure must not discard otherwise valid text recognition.
+    let code_scan = best_effort_code_scan(&image, result.width, result.height);
     let result = code_exclusion::suppress_code_text(result, &code_scan);
     let attachment = overlay::build_attachment_payload(&result, true);
     let code_attachment = code_overlay::build_attachment_payload(&code_scan);
@@ -172,6 +168,24 @@ fn recognize(
         },
         "effects": effects,
     }))
+}
+
+pub(crate) fn best_effort_code_scan(
+    image: &[u8],
+    width: u32,
+    height: u32,
+) -> code_scan::CodeScanResult {
+    match code_scan::decode(image) {
+        Ok(scan) => scan,
+        Err(error) => {
+            eprintln!("OCR code scan degraded to no results: {error}");
+            code_scan::CodeScanResult {
+                width,
+                height,
+                results: Vec::new(),
+            }
+        }
+    }
 }
 
 fn map_ocr_error(error: OcrError) -> CommandFailure {

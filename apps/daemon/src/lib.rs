@@ -97,14 +97,19 @@ use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
+mod account_login;
 mod brain_plan;
 mod capability_resources;
 mod hook_canvas;
 mod http_request;
+mod projection_settings;
 mod request_executor;
 mod surface_actions;
 mod surface_resources;
 mod surface_store;
+mod wall_store;
+
+use wall_store::{SharedWallStore, WallStore, WallStoreError};
 
 use brain_plan::{
     build_brain_planner, BrainPlanRequest, BrainPlannerConfig, BrainPlannerStatus,
@@ -114,6 +119,7 @@ use capability_resources::{
     CapabilityResourceBroker, CapabilityResourceError, SharedCapabilityResourceBroker,
 };
 use http_request::*;
+mod offline_peers;
 use request_executor::{
     BoundedRequestExecutor, RequestExecutorConfig, RequestExecutorStatus, SubmitError,
 };
@@ -133,6 +139,7 @@ include!("runtime/capability_runtime_state.rs");
 include!("runtime/capability_dispatch_registry.rs");
 include!("runtime/daemon_lifecycle.rs");
 include!("runtime/connection_dispatch.rs");
+include!("runtime/connection_read_admission.rs");
 include!("runtime/http_routing.rs");
 include!("runtime/capability_plugin_api.rs");
 include!("runtime/capability_plugin_settings.rs");
@@ -144,7 +151,22 @@ include!("runtime/settings_ocr_runtime.rs");
 include!("runtime/hook_bridge_connections.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
+mod projection_edit;
+include!("runtime/projection_snapshot.rs");
+include!("runtime/projection_store.rs");
+include!("runtime/projection_routes.rs");
+include!("runtime/projection_settings_routes.rs");
+include!("runtime/projection_v2_owner.rs");
+include!("runtime/projection_v2_api.rs");
 include!("runtime/device_auth.rs");
+include!("runtime/wall_routes.rs");
+include!("runtime/wall_image_routes.rs");
+include!("runtime/wall_surface_models.rs");
+include!("runtime/wall_surface_views.rs");
+include!("runtime/wall_surface_routes.rs");
+include!("runtime/wall_input_models.rs");
+include!("runtime/wall_input_control.rs");
+include!("runtime/wall_input_routes.rs");
 include!("runtime/live_session_state.rs");
 include!("runtime/live_session_state_helpers.rs");
 include!("runtime/live_session_events.rs");
@@ -155,8 +177,12 @@ include!("runtime/live_session_observation.rs");
 include!("runtime/live_session_triggers.rs");
 include!("runtime/live_session_trigger_dispatch.rs");
 include!("runtime/live_session_routes.rs");
+
+include!("runtime/live_source_binding.rs");
 include!("runtime/live_session_route_support.rs");
 include!("runtime/live_media_websocket.rs");
+include!("runtime/wall_media_encoding.rs");
+include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");
@@ -209,7 +235,10 @@ include!("runtime/run_http_responses.rs");
 
 #[cfg(test)]
 mod tests {
+    include!("tests/projection_http.rs");
+    include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");
+    include!("tests/connection_read_admission.rs");
     include!("tests/suite/part_02.rs");
     include!("tests/suite/part_03.rs");
     include!("tests/suite/part_04.rs");

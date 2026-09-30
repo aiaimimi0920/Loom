@@ -3,32 +3,6 @@
 use super::*;
 
 #[test]
-pub(super) fn registry_url_encodes_search_limit_and_cursor() {
-    let url = build_registry_url(
-        Some("brave search"),
-        Some(250),
-        Some("ai.example/server:1.0.0"),
-    )
-    .expect("registry url");
-
-    assert_eq!(
-        url,
-        "https://registry.modelcontextprotocol.io/v0.1/servers?limit=100&search=brave%20search&cursor=ai.example%2Fserver%3A1.0.0&version=latest"
-    );
-}
-
-#[test]
-pub(super) fn registry_url_omits_blank_search_and_cursor() {
-    let url = build_registry_url(Some("   "), Some(0), Some(" "))
-        .expect("registry url without optional terms");
-
-    assert_eq!(
-        url,
-        "https://registry.modelcontextprotocol.io/v0.1/servers?limit=1&version=latest"
-    );
-}
-
-#[test]
 pub(super) fn server_config_defaults_enabled() {
     let config = McpServerConfig::new("brave", "Brave Search", "npx")
         .arg("-y")

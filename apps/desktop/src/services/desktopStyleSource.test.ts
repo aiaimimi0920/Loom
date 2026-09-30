@@ -25,6 +25,7 @@ const expectedImportOrder = [
   "./styles/settings-panels.css",
   "./styles/settings-capabilities.css",
   "./styles/devices.css",
+  "./styles/walls.css",
   "./styles/responsive.css",
   "./styles/tooling-art.css",
   "./styles/tooling-dialogs.css",

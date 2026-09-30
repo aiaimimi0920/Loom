@@ -45,6 +45,7 @@ impl LiveSessionStore {
             record.relay_dropped_frames = record.relay_dropped_frames.saturating_add(1);
         }
         record.frames.push_back(StoredLiveFrame {
+            received_at: Instant::now(),
             epoch: frame.epoch,
             frame_id: frame.metadata.frame_id,
             bytes: Arc::new(bytes),
@@ -147,6 +148,7 @@ impl LiveSessionStore {
             }
         }
         if let Some(reason) = revoke_reason {
+            record.wall_controller = None;
             record.session.controller_device = None;
             record.controller_expires_at_ms = None;
             record.session.revision = record.session.revision.saturating_add(1);

@@ -89,6 +89,7 @@ pub struct GatewayClientConfig {
     base_url: String,
     auth_token: Option<String>,
     timeout: Duration,
+    disable_proxy: bool,
 }
 
 impl GatewayClientConfig {
@@ -99,7 +100,42 @@ impl GatewayClientConfig {
             base_url: base_url.into(),
             auth_token: None,
             timeout: DEFAULT_GATEWAY_TIMEOUT,
+            disable_proxy: false,
         }
+    }
+
+    /// Create a client configuration restricted to an IP loopback origin.
+    pub fn new_loopback(base_url: impl Into<String>) -> GatewayResult<Self> {
+        let raw = base_url.into();
+        let url = Url::parse(raw.trim())
+            .map_err(|error| GatewayError::InvalidBaseUrl(error.to_string()))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(GatewayError::UnsupportedScheme);
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| GatewayError::InvalidBaseUrl("loopback host is missing".to_owned()))?;
+        let address = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| GatewayError::InvalidBaseUrl("loopback host must be an IP".to_owned()))?;
+        if !address.is_loopback() {
+            return Err(GatewayError::InvalidBaseUrl(
+                "base URL host must be an IP loopback address".to_owned(),
+            ));
+        }
+        if url.username() != ""
+            || url.password().is_some()
+            || (url.path() != "" && url.path() != "/")
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(GatewayError::InvalidBaseUrl(
+                "loopback base URL must be an origin without credentials or path".to_owned(),
+            ));
+        }
+        Ok(Self::new(raw))
     }
 
     /// Attach an optional serving API bearer token.
@@ -114,6 +150,13 @@ impl GatewayClientConfig {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Disable the process-wide proxy for a provider that is required to stay on loopback.
+    #[must_use]
+    pub fn without_proxy(mut self) -> Self {
+        self.disable_proxy = true;
         self
     }
 }
@@ -149,6 +192,10 @@ pub struct GatewayChatRequest {
     pub model: String,
     pub messages: Vec<GatewayChatMessage>,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<serde_json::Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<Value>,
 }
 
 /// Normalized first assistant message returned by Gateway.
@@ -191,14 +238,18 @@ impl GatewayClient {
 
         base_url.set_path("/v1/chat/completions");
         let builder = Client::builder().timeout(config.timeout);
-        let builder = match runtime_proxy_store()
-            .read()
-            .map(|proxy| proxy.clone())
-            .unwrap_or_default()
-        {
-            RuntimeProxy::System => builder,
-            RuntimeProxy::Disabled => builder.no_proxy(),
-            RuntimeProxy::Custom(url) => builder.proxy(Proxy::all(url)?),
+        let builder = if config.disable_proxy {
+            builder.no_proxy()
+        } else {
+            match runtime_proxy_store()
+                .read()
+                .map(|proxy| proxy.clone())
+                .unwrap_or_default()
+            {
+                RuntimeProxy::System => builder,
+                RuntimeProxy::Disabled => builder.no_proxy(),
+                RuntimeProxy::Custom(url) => builder.proxy(Proxy::all(url)?),
+            }
         };
         let http = builder.build()?;
         Ok(Self {
@@ -326,6 +377,8 @@ mod tests {
                 GatewayChatMessage::user("hello"),
             ],
             stream: false,
+            temperature: None,
+            response_format: None,
         }
     }
 
@@ -390,6 +443,7 @@ mod tests {
             assert!(request.contains("\"role\":\"system\""));
             assert!(request.contains("\"role\":\"user\""));
             assert!(request.contains("\"stream\":false"));
+            assert!(request.contains("\"temperature\":0.2"));
 
             let body = r#"{
                 "id":"chatcmpl-test",
@@ -411,7 +465,10 @@ mod tests {
         )
         .expect("create client");
 
-        let response = client.chat(request("gpt-test")).expect("chat response");
+        let mut chat_request = request("gpt-test");
+        chat_request.temperature =
+            Some(serde_json::Number::from_f64(0.2).expect("finite temperature"));
+        let response = client.chat(chat_request).expect("chat response");
 
         assert_eq!(
             response.content,
@@ -485,5 +542,14 @@ mod tests {
             GatewayClient::new(GatewayClientConfig::new("http://127.0.0.1:4200/api")),
             Err(GatewayError::InvalidBaseUrl(_))
         ));
+    }
+
+    #[test]
+    fn loopback_config_rejects_non_loopback_hosts() {
+        assert!(GatewayClientConfig::new_loopback("http://127.0.0.1:4200").is_ok());
+        assert!(GatewayClientConfig::new_loopback("http://[::1]:4200").is_ok());
+        assert!(GatewayClientConfig::new_loopback("http://10.0.0.2:4200").is_err());
+        assert!(GatewayClientConfig::new_loopback("http://127.0.0.1:4200/api").is_err());
+        assert!(GatewayClientConfig::new_loopback("ftp://127.0.0.1:4200").is_err());
     }
 }

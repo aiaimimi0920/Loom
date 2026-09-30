@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.neuro/protocol/wall.v1.schema.json",
+  "title": "Loom physical tile endpoint and logical wall v1",
+  "description": "Structural validation. Hosts also validate geometry, unique identities, containment and authorization before use.",
+  "oneOf": [{ "$ref": "#/$defs/endpoint" }, { "$ref": "#/$defs/layout" }],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9_.:/-]+$" },
+    "coordinate": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+    "extent": { "type": "number", "minimum": 0.0000152587890625, "maximum": 1000000 },
+    "rect": {
+      "type": "object", "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "$ref": "#/$defs/coordinate" }, "y": { "$ref": "#/$defs/coordinate" },
+        "width": { "$ref": "#/$defs/extent" }, "height": { "$ref": "#/$defs/extent" }
+      }
+    },
+    "crop": {
+      "type": "object", "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "minimum": 0.0000152587890625, "maximum": 1 },
+        "height": { "type": "number", "minimum": 0.0000152587890625, "maximum": 1 }
+      }
+    },
+    "endpoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "endpointId", "deviceId", "outputId", "pixelSize", "renderModes", "inputCapabilities"],
+      "properties": {
+        "protocolVersion": { "const": "loom.wall.v1" },
+        "endpointId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" },
+        "outputId": { "$ref": "#/$defs/id" },
+        "scheduledPresentation": { "type": "boolean" },
+        "display": {
+          "type": "object", "additionalProperties": false, "required": ["name", "canIdentify"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+            "canIdentify": { "type": "boolean" }
+          }
+        },
+        "pixelSize": {
+          "type": "object", "additionalProperties": false, "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+            "height": { "type": "integer", "minimum": 1, "maximum": 16384 }
+          }
+        },
+        "renderModes": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": { "enum": ["raw_bgra", "h264", "image", "surface_v1"] }
+        },
+        "inputCapabilities": {
+          "type": "array", "maxItems": 6, "uniqueItems": true,
+          "items": { "enum": ["pointer", "wheel", "keyboard", "text", "touch", "pen"] }
+        }
+      }
+    },
+    "tile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tileId", "endpointId", "rect", "rotation"],
+      "properties": {
+        "tileId": { "$ref": "#/$defs/id" }, "endpointId": { "$ref": "#/$defs/id" },
+        "rect": { "$ref": "#/$defs/rect" },
+        "rotation": { "enum": ["deg0", "deg90", "deg180", "deg270"] }
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "id"],
+      "properties": { "kind": { "enum": ["live", "image", "surface"] }, "id": { "$ref": "#/$defs/id" } },
+      "if": { "properties": { "kind": { "const": "image" } } },
+      "then": { "properties": { "id": { "pattern": "^sha256:[0-9a-f]{64}$" } } }
+    },
+    "placement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["placementId", "source", "rect", "sourceCrop", "zIndex", "interactive"],
+      "properties": {
+        "placementId": { "$ref": "#/$defs/id" }, "source": { "$ref": "#/$defs/source" },
+        "rect": { "$ref": "#/$defs/rect" }, "sourceCrop": { "$ref": "#/$defs/crop" },
+        "zIndex": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "interactive": { "type": "boolean" }
+      },
+      "if": { "properties": { "source": { "properties": { "kind": { "const": "image" } } } } },
+      "then": { "properties": { "interactive": { "const": false } } }
+    },
+    "layout": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "wallId", "revision", "bounds", "tiles", "placements"],
+      "properties": {
+        "protocolVersion": { "const": "loom.wall.v1" }, "wallId": { "$ref": "#/$defs/id" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "bounds": { "$ref": "#/$defs/rect" },
+        "tiles": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tile" } },
+        "placements": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/placement" } }
+      }
+    }
+  }
+}

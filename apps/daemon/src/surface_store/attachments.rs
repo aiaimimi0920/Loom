@@ -7,6 +7,59 @@ impl SurfaceInstanceStore {
         device_id: &str,
         host_capabilities: Option<SurfaceHostCapabilities>,
     ) -> Result<SurfaceAttachmentRecord, SurfaceStoreError> {
+        self.attach_with_lifetime(
+            instance_id,
+            hook_node_id,
+            device_id,
+            host_capabilities,
+            false,
+        )
+    }
+
+    pub(crate) fn attach_ephemeral(
+        &mut self,
+        instance_id: &str,
+        hook_node_id: &str,
+        device_id: &str,
+        host_capabilities: SurfaceHostCapabilities,
+    ) -> Result<SurfaceAttachmentRecord, SurfaceStoreError> {
+        if let Some(existing) = self.instances.get(instance_id).and_then(|instance| {
+            instance.attachments.values().find(|attachment| {
+                attachment.ephemeral
+                    && attachment.descriptor.hook_node_id == hook_node_id
+                    && attachment.descriptor.device_id == device_id
+            })
+        }) {
+            return Ok(existing.clone());
+        }
+        let count = self
+            .instances
+            .values()
+            .flat_map(|i| i.attachments.values())
+            .filter(|a| a.ephemeral)
+            .count();
+        if count >= 128 {
+            return Err(SurfaceStoreError::Conflict(
+                "transient Surface attachment capacity reached".into(),
+            ));
+        }
+        self.attach_with_lifetime(
+            instance_id,
+            hook_node_id,
+            device_id,
+            Some(host_capabilities),
+            true,
+        )
+    }
+
+    fn attach_with_lifetime(
+        &mut self,
+        instance_id: &str,
+        hook_node_id: &str,
+        device_id: &str,
+        host_capabilities: Option<SurfaceHostCapabilities>,
+        ephemeral: bool,
+    ) -> Result<SurfaceAttachmentRecord, SurfaceStoreError> {
         validate_identity(hook_node_id, "Hook node id")?;
         validate_identity(device_id, "device id")?;
         self.transaction(|instances| {
@@ -14,11 +67,31 @@ impl SurfaceInstanceStore {
             if let Some(existing) = instance.attachments.values().find(|attachment| {
                 attachment.descriptor.hook_node_id == hook_node_id
                     && attachment.descriptor.device_id == device_id
+                    && attachment.ephemeral == ephemeral
             }) {
                 return Ok(existing.clone());
             }
             let attachment_id = format!("attachment:{}", Uuid::new_v4());
+            let mut sources = instance
+                .attachments
+                .values()
+                .filter(|attachment| !attachment.ephemeral && attachment.snapshot.is_some());
+            let source = sources.next();
+            if ephemeral
+                && instance.descriptor.instance_mode == SurfaceInstanceMode::Independent
+                && (source.is_none() || sources.next().is_some())
+            {
+                // An instance-only wall reference cannot choose between independent views.
+                return Err(SurfaceStoreError::Conflict(
+                    "independent Surface requires exactly one mounted source view".into(),
+                ));
+            }
+            let mirror_of = ephemeral
+                .then(|| source.map(|attachment| attachment.descriptor.attachment_id.clone()))
+                .flatten();
             let record = SurfaceAttachmentRecord {
+                ephemeral,
+                mirror_of,
                 descriptor: SurfaceAttachmentDescriptor {
                     attachment_id: attachment_id.clone(),
                     instance_id: instance_id.to_owned(),
@@ -31,7 +104,9 @@ impl SurfaceInstanceStore {
                 snapshot: None,
             };
             instance.attachments.insert(attachment_id, record.clone());
-            instance.updated_at_ms = unix_time_millis();
+            if !ephemeral {
+                instance.updated_at_ms = unix_time_millis();
+            }
             Ok(record)
         })
     }
