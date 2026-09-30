@@ -1,4 +1,4 @@
-# Owns the ordered MCP-to-Stock Monitor snapshot aggregation workflow.
+﻿# Owns the ordered MCP-to-Stock Monitor snapshot aggregation workflow.
 
 function Get-StockSnapshot {
     param([object]$Request)

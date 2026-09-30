@@ -1,4 +1,4 @@
-# Owns fixed-position Surface action parsing, correlation echoes, and action budgets.
+﻿# Owns fixed-position Surface action parsing, correlation echoes, and action budgets.
 
 function Get-ObjectPropertyValue {
     param(

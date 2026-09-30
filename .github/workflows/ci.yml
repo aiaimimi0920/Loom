@@ -36,6 +36,9 @@ jobs:
       - name: Test GitHub release and dependency triage automation
         run: node --test .\scripts\tests\dependabot-triage.test.cjs .\scripts\tests\github-release-automation.test.cjs
 
+      - name: Test PowerShell contract failure propagation
+        run: node --test .\scripts\tests\ci-contract-fail-fast.test.cjs
+
       - name: Enforce effective-code-line migration ratchet
         run: node .\scripts\effective-code-lines.mjs --mode ratchet --json artifacts/effective-code-lines.json
 
@@ -65,16 +68,27 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneLayout.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneReleaseContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-FrameworkArtStoreHookSmokeModules.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-SmokeReleaseModules.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-HookCanvasUiContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DevelopmentManualContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DependencySecurityContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-CiCommandDiagnostics.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-GitHubActionsContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-CapabilityPluginConformanceContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install desktop dependencies
         working-directory: apps/desktop
@@ -135,9 +149,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LoomRunPersistenceSmokeContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-LoomDaemonConcurrencySmokeContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-LoomSampleArtPackageContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-LoomSampleArtInstallExecutionContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   linux:
     name: Linux Rust validation
@@ -231,6 +249,7 @@ jobs:
             -DaemonExecutable .\target\debug\loom-daemon.exe `
             -PluginCliExecutable .\target\debug\loom-plugin.exe `
             -EvidenceRoot .\target\capability-plugin-conformance-ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Exercise capability SDK templates without source imports
         shell: powershell
@@ -239,6 +258,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $cleanHost | Out-Null
           Copy-Item -LiteralPath .\sdk\capability -Destination $cleanHost -Recurse
           powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $cleanHost "capability\Test-Templates.ps1")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build and verify non-OCR reference capability
         shell: powershell
@@ -246,17 +266,21 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP "loom-text-translation"
           $key = Join-Path $env:RUNNER_TEMP "loom-capability-test-key.json"
           .\target\debug\loom-plugin.exe keygen $key neuro-official-capability-2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LoomCapabilityPackage.ps1 `
             -PackageSourceRoot .\capability-packages\text-translation `
             -RuntimeCargoPackage loom-text-translation-host `
             -RuntimeBinaryName loom-text-translation-host `
             -OutputRoot $root -Configuration Debug `
             -SigningKeyPath $key -SigningPublisherId neuro.official | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LoomCapabilityCatalog.ps1 `
             -PackageRoot $root -BaseUrl http://127.0.0.1:43190/ `
             -SigningKeyPath $key -SigningPublisherId neuro.official -AllowHttpLoopback | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-TextTranslationCapabilityPackage.ps1 `
             -ArtifactRoot $root
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Validate embedded public schemas
         shell: powershell

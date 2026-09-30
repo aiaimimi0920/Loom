@@ -18,6 +18,11 @@ vendors upstream npm `stock-api` 2.7.3 and a Node implementation of the pysnowba
 entry is PowerShell with a one-process limit. No Python adapter process, runtime
 `npx`, `npm install` or global Node installation is required.
 
+The PowerShell entry and modules use UTF-8 with BOM so Windows PowerShell 5.1
+parses localized text independently of the system ANSI code page. Runtime JSON
+uses UTF-8 bytes on stdin and stdout; the console/OEM code page is not the ABI.
+Keep the source BOMs when editing or copying these files into a package.
+
 Upstream source identity, license and digests are owned by `runtime/UPSTREAM.json`,
 `runtime/PYSNOWBALL.json` and `runtime/node-runtime.json` in the MCP package.
 Package construction checks the pinned inputs; update those records, contracts
@@ -103,7 +108,10 @@ Focused deterministic contracts are `scripts/tests/Test-LoomStockApiMcpServer.ps
 `Test-LoomStockMonitorArt.ps1` and `Test-LoomStockMonitorSurface.mjs` in the same
 directory. Package checks are `Test-LoomMcpServerPackageContract.ps1` and
 `Test-LoomSampleArtPackageContract.ps1`. They cover local protocol, freshness,
-cadence, output and packaging behavior with fixtures.
+cadence, output and packaging behavior with fixtures. The Art contract also runs
+`Test-LoomStockMonitorProcess.ps1` against source or packaged runtime files. It
+checks source encoding, Unicode transport, early-exit diagnostics, concurrent
+pipe draining, byte limits and timeout cleanup.
 
 Fixture success does not prove current public-provider availability, token
 permissions, quote accuracy or native paired-window acceptance. Those require

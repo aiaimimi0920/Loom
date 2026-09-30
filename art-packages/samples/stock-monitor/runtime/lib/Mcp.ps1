@@ -1,4 +1,4 @@
-# Owns MCP result extraction and authoritative quote fallback normalization.
+﻿# Owns MCP result extraction and authoritative quote fallback normalization.
 
 function Get-SafeMcpErrorMessage {
     param([AllowNull()][object]$Value)

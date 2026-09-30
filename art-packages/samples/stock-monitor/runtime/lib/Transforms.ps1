@@ -1,4 +1,4 @@
-# Owns bounded favorite, history, order-book, and live-tape projections.
+﻿# Owns bounded favorite, history, order-book, and live-tape projections.
 
 function Select-FirstBoundedValue {
     param(
