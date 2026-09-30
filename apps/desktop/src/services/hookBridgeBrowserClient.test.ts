@@ -144,3 +144,89 @@ test("dispatches hook bridge payloads to matching desktop listeners", () => {
 
   client.dispose();
 });
+
+test("retired socket callbacks cannot dispatch into a replacement subscription", () => {
+  const sockets: FakeWebSocket[] = [];
+  const reconnects = new Map<number, () => void>();
+  let nextHandle = 0;
+  const client = createHookBridgeBrowserClient({
+    websocketFactory: (url) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+    scheduleReconnect: (callback) => {
+      const handle = ++nextHandle;
+      reconnects.set(handle, callback);
+      return handle;
+    },
+    cancelReconnect: (handle) => { reconnects.delete(handle); },
+  });
+  const channel = "loom.hook.workflow.updated";
+  const stop = client.subscribe(channel, () => {});
+  sockets[0].open();
+  const staleMessage = sockets[0].onmessage;
+  const staleClose = sockets[0].onclose;
+  stop();
+
+  const received: unknown[] = [];
+  client.subscribe(channel, (payload) => received.push(payload));
+  sockets[1].open();
+  staleMessage?.({ data: JSON.stringify({ method: channel, params: "stale" }) });
+  staleClose?.();
+  sockets[1].emitMessage({ method: channel, params: "current" });
+
+  assert.deepEqual(received, ["current"]);
+  assert.equal(reconnects.size, 0);
+  client.dispose();
+});
+
+test("a retired open callback cannot cancel the current socket's reconnect", () => {
+  const sockets: FakeWebSocket[] = [];
+  const reconnects = new Map<number, () => void>();
+  let nextHandle = 0;
+  const client = createHookBridgeBrowserClient({
+    websocketFactory: (url) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+    scheduleReconnect: (callback) => {
+      const handle = ++nextHandle;
+      reconnects.set(handle, callback);
+      return handle;
+    },
+    cancelReconnect: (handle) => { reconnects.delete(handle); },
+  });
+  const stop = client.subscribe("loom.hook.workflow.updated", () => {});
+  const staleOpen = sockets[0].onopen;
+  stop();
+  client.subscribe("loom.hook.workflow.updated", () => {});
+  sockets[1].close();
+  assert.equal(reconnects.size, 1);
+
+  staleOpen?.();
+
+  assert.equal(reconnects.size, 1);
+  const [handle, reconnect] = [...reconnects][0];
+  reconnects.delete(handle);
+  reconnect();
+  assert.equal(sockets.length, 3);
+  sockets[2].open();
+  assert.equal(sockets[2].sent.length, 1);
+  client.dispose();
+});
+
+test("adding a channel to an open socket sends one updated subscription", () => {
+  const socket = new FakeWebSocket("ws://127.0.0.1:19820");
+  const client = createHookBridgeBrowserClient({ websocketFactory: () => socket });
+  client.subscribe("loom.hook.workflow.updated", () => {});
+  socket.open();
+  client.subscribe("loom.hook.capabilities.updated", () => {});
+
+  assert.equal(socket.sent.length, 2);
+  assert.deepEqual(JSON.parse(socket.sent[1]).params.events, [
+    "loom.hook.workflow.updated", "loom.hook.capabilities.updated",
+  ]);
+  client.dispose();
+});
