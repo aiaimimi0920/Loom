@@ -1,5 +1,5 @@
 use super::*;
-use crate::wall_store::{WallPresentationMode::*, WallPresentationOutcome::*};
+use crate::wall_store::{presentation::WallPresentationOutcome::*, WallPresentationMode::*};
 use loom_protocol::wall::TileInputCapability;
 
 fn applied(revision: u64) -> Option<WallPresentationReport> {

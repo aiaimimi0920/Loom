@@ -29,10 +29,6 @@ export async function getWorkflowBundle(baseUrl: string, workflowId: string): Pr
   return response.workflow;
 }
 
-export async function deleteWorkflowBundle(baseUrl: string, workflowId: string): Promise<void> {
-  await deleteJson(baseUrl, `/v1/workflows/${encodeURIComponent(workflowId)}`);
-}
-
 export async function saveToolDefinition(
   baseUrl: string,
   tool: LoomToolDefinition,

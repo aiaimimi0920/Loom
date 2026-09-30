@@ -39,6 +39,13 @@ impl OfflinePeers {
                 .try_lock()
                 .map_err(|_| failure(503, "projection_busy"))?;
             let target = device(&registry, &offer.target_id)?;
+            crate::projection_receive_allowed(
+                &registry,
+                &target.id,
+                &offer.envelope.source.device_id,
+                Some(peer_id),
+            )
+            .map_err(convert)?;
             let mut store = self
                 .transfers
                 .lock()
@@ -103,7 +110,7 @@ impl OfflinePeers {
         if state.document.revision != revision {
             return Err(failure(403, "projection_peer_revoked"));
         }
-        let registry = registry
+        let mut registry = registry
             .try_lock()
             .map_err(|_| failure(503, "projection_busy"))?;
         let mut store = self
@@ -123,14 +130,40 @@ impl OfflinePeers {
         }
         let epoch_changed = record.target_epoch != input.target_epoch;
         record.target_epoch = input.target_epoch;
+        if !stop && input.operation == "edit" {
+            record.active()?;
+            if record.receiver_unit.is_none() {
+                return Err(failure(403, "projection_access_denied"));
+            }
+            let body = serde_json::to_string(&input.input)
+                .map_err(|_| failure(400, "projection_invalid_request"))?;
+            return crate::projection_edit::handle_authorized(
+                &body,
+                edit::access(&record, false),
+                &mut registry.projection_edits,
+            )
+            .map_err(convert);
+        }
         let response = if stop {
             record.unlinked = true;
             json!({"unlinked": true})
         } else {
             actions::receiver_action(&mut record, &input.operation, input.input)?
         };
+        let response = if !stop && matches!(input.operation.as_str(), "read" | "inspect" | "accept")
+        {
+            edit::document(&registry, &record, response)?
+        } else {
+            response
+        };
+        let stopped_id = record
+            .unlinked
+            .then(|| record.envelope.projection_id.clone());
         if stop || epoch_changed || !matches!(input.operation.as_str(), "read" | "inspect") {
             store.commit(record)?;
+        }
+        if let Some(id) = stopped_id {
+            registry.projection_edits.release(&id).map_err(convert)?;
         }
         Ok(response)
     }

@@ -1,6 +1,7 @@
 include!("projection_delivery.rs");
 
 const PROJECTION_ROUTES: &[&str] = &[
+    "/v1/projections/edit",
     "/v1/projections/targets",
     "/v1/projections/inbox",
     "/v1/projections/receipt",
@@ -112,7 +113,8 @@ fn handle_projection_route(
             .map_err(|_| ProjectionError::new(403, "projection_pairing_required"))?
             .clone();
         let now = unix_time_millis();
-        match path {
+        let mut value = match path {
+            "/v1/projections/edit" => projection_edit::handle(body, &device, &mut registry, now),
             "/v1/projections/targets" | "/v1/projections/inbox" | "/v1/projections/receipt" => {
                 handle_projection_delivery(path, body, &device, &mut registry, now)
             }
@@ -150,6 +152,7 @@ fn handle_projection_route(
                 let source = registry
                     .authorized_keyed_device(&input.envelope.source.device_id)
                     .map_err(|_| ProjectionError::new(403, "projection_source_revoked"))?;
+                if record.receiver.is_none() { projection_receive_allowed(&registry, actor, &source.id, None)?; }
                 verify_projection_signature(
                     &input.envelope,
                     source.public_key.as_deref().unwrap_or_default(),
@@ -174,6 +177,10 @@ fn handle_projection_route(
                     &registry,
                     registry.projections.get(&input.envelope.projection_id)?,
                 )?;
+                let existing = registry.projections.get(&input.envelope.projection_id)?;
+                if existing.receiver.is_none() {
+                    projection_receive_allowed(&registry, actor, &existing.envelope.source.device_id, None)?;
+                }
                 let record = registry.projections.accept(
                     &input.envelope,
                     actor,
@@ -193,6 +200,9 @@ fn handle_projection_route(
                     return Err(ProjectionError::new(403, "projection_source_mismatch"));
                 }
                 validate_projection_snapshot(&input.snapshot, &input.digest)?;
+                if !record.unlinked && registry.projection_edits.has_binding(&input.projection_id)? {
+                    return Err(ProjectionError::new(409, "projection_edit_snapshot_locked"));
+                }
                 registry.projections.update(
                     &input.projection_id,
                     actor,
@@ -244,10 +254,17 @@ fn handle_projection_route(
                 registry
                     .projections
                     .unlink(&input.projection_id, actor, device.session_epoch)?;
+                registry.projection_edits.release(&input.projection_id)?;
                 Ok(json!({ "unlinked": true }))
             }
             _ => Err(ProjectionError::new(404, "projection_route_missing")),
+        }?;
+        if let Some(id) = value["envelope"]["projectionId"].as_str() {
+            if let Some(document) = registry.projection_edits.document(id)? {
+                value["editing"] = document;
+            }
         }
+        Ok(value)
     })();
     match result {
         Ok(value) => Ok((200, serde_json::to_string(&value)?)),

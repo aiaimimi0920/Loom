@@ -46,6 +46,10 @@ eight records per source. Updates are separated by at least 500 ms. Only the
 latest snapshot is retained. This transport provides HTTPS rendezvous and
 snapshots; LAN discovery, NAT traversal, interactive Art and video are outside v1.
 
+The opt-in [editing session contract](PROJECTION_EDIT.md) adds a separate shared-Loom
+object document. Its backend is implemented, but Hook and offline-peer integration
+are pending. PNG-only clients do not opt in automatically.
+
 The first implementation must keep the envelope and transfer record bounded,
 rate-limited, and auditable. It must reject replay, expiry, signature mismatch,
 cross-session use, unknown projection IDs, digest mismatch, and source revision

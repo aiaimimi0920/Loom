@@ -78,6 +78,22 @@ impl OfflinePeers {
             .map_err(|_| failure(503, "projection_busy"))?;
         let current = store.get(&record.envelope.projection_id)?;
         authorized(&state, &registry, &current)?;
+        // Recheck after peer I/O so a concurrent local rule update cannot publish acceptance.
+        if current.status == DeliveryStatus::AwaitingConfirmation
+            && (matches!(operation, "accept" | "inspect")
+                || matches!(
+                    next.status,
+                    DeliveryStatus::Accepted | DeliveryStatus::Displayed
+                ))
+        {
+            crate::projection_receive_allowed(
+                &registry,
+                actor,
+                &current.envelope.source.device_id,
+                Some(&current.peer_id),
+            )
+            .map_err(convert)?;
+        }
         // A source stop can arrive over the independent peer handler while this read is pending.
         if current.unlinked
             && operation != "unlink"
@@ -88,7 +104,11 @@ impl OfflinePeers {
         let returned = if matches!(operation, "receipt" | "unlink") {
             response
         } else {
-            next.response(!response["snapshot"].is_null())
+            let mut value = next.response(!response["snapshot"].is_null());
+            if let Some(editing) = response.get("editing") {
+                value["editing"] = editing.clone();
+            }
+            value
         };
         // Preserve updated image/state for restart recovery, without rewriting every poll.
         if !matches!(operation, "read" | "inspect")

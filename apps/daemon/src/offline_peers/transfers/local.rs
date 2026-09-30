@@ -69,7 +69,27 @@ impl OfflinePeers {
                             DeliveryStatus::AwaitingConfirmation | DeliveryStatus::Accepted
                         )
                 })
-                .map(|r| r.response(false))
+                .filter_map(|r| {
+                    let policy = crate::projection_receive_decision(
+                        &registry,
+                        &actor.id,
+                        &r.envelope.source.device_id,
+                        Some(&r.peer_id),
+                    )
+                    .ok()?;
+                    if r.status == DeliveryStatus::AwaitingConfirmation
+                        && policy == crate::projection_settings::Decision::Reject
+                    {
+                        return None;
+                    }
+                    let mut response = r.response(false);
+                    response["receivePolicy"] = json!(if r.status == DeliveryStatus::Accepted {
+                        crate::projection_settings::Decision::Auto
+                    } else {
+                        policy
+                    });
+                    Some(response)
+                })
                 .collect();
             return Ok(json!({"invitations": invitations}));
         }
@@ -90,7 +110,7 @@ impl OfflinePeers {
                 .state
                 .lock()
                 .map_err(|_| failure(503, "peer_unavailable"))?;
-            let registry = registry
+            let mut registry = registry
                 .try_lock()
                 .map_err(|_| failure(503, "projection_busy"))?;
             let mut store = self
@@ -107,15 +127,44 @@ impl OfflinePeers {
             if owner != &actor {
                 return Err(failure(403, "projection_access_denied"));
             }
+            if record.incoming
+                && record.status == DeliveryStatus::AwaitingConfirmation
+                && matches!(operation, "accept" | "inspect")
+            {
+                crate::projection_receive_allowed(
+                    &registry,
+                    &actor,
+                    &record.envelope.source.device_id,
+                    Some(&record.peer_id),
+                )
+                .map_err(convert)?;
+            }
             let result = if record.incoming {
                 None
             } else {
                 match operation {
                     "read" => {
                         record.active()?;
-                        Some(record.response(false))
+                        Some(edit::document(&registry, &record, record.response(false))?)
+                    }
+                    "edit" => {
+                        record.active()?;
+                        if matches!(body["operation"].as_str(), Some("initialize" | "attach")) {
+                            edit::prune(&state, &mut registry, &store)?;
+                        }
+                        Some(
+                            crate::projection_edit::handle_authorized(
+                                &request.body,
+                                edit::access(&record, true),
+                                &mut registry.projection_edits,
+                            )
+                            .map_err(convert)?,
+                        )
                     }
                     "update" => {
+                        if registry.projection_edits.has_binding(id).map_err(convert)? {
+                            return Err(failure(409, "projection_edit_snapshot_locked"));
+                        }
                         actions::update(
                             &mut record,
                             update.ok_or_else(|| failure(400, "projection_invalid_request"))?,
@@ -126,6 +175,7 @@ impl OfflinePeers {
                     "unlink" => {
                         record.unlinked = true;
                         store.commit(record.clone())?;
+                        registry.projection_edits.release(id).map_err(convert)?;
                         Some(json!({"unlinked": true}))
                     }
                     _ => return Err(failure(403, "projection_access_denied")),
@@ -146,9 +196,12 @@ impl OfflinePeers {
         }
         if !matches!(
             operation,
-            "read" | "inspect" | "accept" | "receipt" | "unlink"
+            "read" | "inspect" | "accept" | "receipt" | "unlink" | "edit"
         ) {
             return Err(failure(403, "projection_access_denied"));
+        }
+        if operation == "edit" {
+            return self.forward_edit(&actor, record, body, registry);
         }
         self.forward_receiver(&actor, record, operation, body, registry)
     }
