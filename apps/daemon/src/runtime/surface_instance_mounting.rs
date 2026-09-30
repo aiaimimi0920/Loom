@@ -38,7 +38,9 @@ fn mount_surface_instance(
         })
         .unwrap_or_default();
     let existing_snapshot_source = attachment.snapshot.clone();
-    let shared_snapshot_source = if instance.descriptor.instance_mode == SurfaceInstanceMode::Shared
+    let shared_snapshot_source = if (instance.descriptor.instance_mode
+        == SurfaceInstanceMode::Shared
+        || attachment.ephemeral)
         && existing_snapshot_source.is_none()
     {
         instance
@@ -46,6 +48,10 @@ fn mount_surface_instance(
             .values()
             .filter(|candidate| {
                 candidate.descriptor.attachment_id != attachment.descriptor.attachment_id
+                    && attachment
+                        .mirror_of
+                        .as_ref()
+                        .is_none_or(|id| candidate.descriptor.attachment_id == *id)
             })
             .find_map(|candidate| candidate.snapshot.clone())
     } else {
@@ -269,7 +275,7 @@ fn mount_surface_instance(
                                 "code": "invalid_surface_javascript",
                                 "message": "JavaScript Surface source or descriptor is invalid",
                             }),
-                        )
+                        );
                     }
                 };
                 let lease = {
@@ -368,6 +374,29 @@ fn mount_surface_instance(
     let mut store = surface_instances
         .lock()
         .map_err(|_| anyhow::anyhow!("Surface instance store is unavailable"))?;
+    if attachment.ephemeral && attachment.mirror_of.is_some() {
+        // Package/resource reads happen outside the store lock. Never publish an older
+        // source scene after an action has updated it while this mirror was mounting.
+        let current = store.get(instance_id).and_then(|instance| {
+            instance
+                .attachments
+                .get(attachment.mirror_of.as_ref().unwrap())
+                .and_then(|source| source.snapshot.as_ref())
+                .map(|source| source.revision)
+        });
+        if current != snapshot_source.map(|source| source.revision) {
+            drop(store);
+            let leases = snapshot
+                .resource_leases
+                .iter()
+                .map(|lease| lease.lease_id.clone())
+                .collect::<Vec<_>>();
+            release_surface_resource_leases(surface_resources, &leases, shared_images)?;
+            return surface_store_error(SurfaceStoreError::Conflict(
+                "source view changed during mirror mount".into(),
+            ));
+        }
+    }
     match store.put_snapshot(instance_id, snapshot) {
         Ok(instance) => {
             let response = serde_json::to_string(&json!({

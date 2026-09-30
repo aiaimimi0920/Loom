@@ -24,17 +24,14 @@ impl VersionBounds {
 /// Returns `None` for everything else — conjunctions, inequality comparators, wildcards and
 /// pre-release comparators — which means "not checked here", not "satisfied". That is deliberate.
 /// The authoritative containment check belongs to the host and already runs with the real `semver`
-/// crate in `crates/loom_tool_registry/src/framework_process.rs` before the dependency is
+/// crate in `crates/loom_tool_registry/src/framework_process/package.rs` before the dependency is
 /// resolved; this one exists so that a resolved server the Art never declared cannot slip through
 /// a host that skipped, lost or predates that check. It is therefore written to be *sound* rather
 /// than complete: it must never reject a version the host would accept, so anything it cannot
 /// decide exactly it admits.
 ///
-/// When `semver` can be added to this package's manifest, delete both this and
-/// `parse_release_version` and use `VersionReq::parse(requirement)` with `Version::parse(version)`
-/// instead. The dependency is absent today only because regenerating
-/// `framework-packages/runtime-host/Cargo.lock` is blocked by another lane's uncommitted crate;
-/// see F13 and H11 in `docs/progress/phase-78-lane-sync.md`.
+/// This package has no direct `semver` dependency. If this conservative guard is replaced with
+/// `VersionReq`/`Version`, preserve the host's authority and the dependency/version tests.
 fn requirement_bounds(requirement: &str) -> Option<VersionBounds> {
     let requirement = requirement.trim();
     if requirement.contains(',') {

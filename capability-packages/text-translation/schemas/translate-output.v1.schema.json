@@ -2,17 +2,62 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://loom.local/capabilities/text-translation/translate-output.v1.schema.json",
   "type": "object",
-  "required": ["text", "targetLanguage", "translated"],
+  "required": ["text", "originalText", "targetLanguage", "translated", "sourceWidth", "sourceHeight", "textBlocks", "surfaceScene"],
   "properties": {
     "text": {
       "type": "string",
-      "maxLength": 4096
+      "minLength": 1,
+      "maxLength": 32768
     },
     "targetLanguage": {
       "enum": ["zh-CN", "en"]
     },
     "translated": {
       "type": "boolean"
+    },
+    "visible": {
+      "type": "boolean",
+      "default": true
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "originalText": { "type": "string", "minLength": 1, "maxLength": 16384 },
+    "sourceAttachment": { "$ref": "#/$defs/sourceAttachment" },
+    "sourceWidth": { "type": "number", "minimum": 1, "maximum": 100000 },
+    "sourceHeight": { "type": "number", "minimum": 1, "maximum": 100000 },
+    "textBlocks": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/textBlock" } },
+    "surfaceScene": { "type": "object" }
+  },
+  "$defs": {
+    "sourceAttachment": {
+      "type": "object", "required": ["attachmentId", "revision"], "additionalProperties": false,
+      "properties": {
+        "attachmentId": { "const": "neuro.official/ocr.result" },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "textBlock": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text", "translatedText", "left", "top", "width", "height", "textColor", "backgroundColor"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 16384 },
+        "translatedText": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "sourceBlockIndices": {
+          "description": "Original OCR input block indices, in paragraph reading order. Absent on older per-block results.",
+          "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0, "maximum": 127 }
+        },
+        "left": { "type": "number", "minimum": 0, "maximum": 100000 },
+        "top": { "type": "number", "minimum": 0, "maximum": 100000 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+        "textColor": { "type": "string", "pattern": "^#[a-fA-F0-9]{6}$" },
+        "backgroundColor": { "type": "string", "pattern": "^#[a-fA-F0-9]{6}$" }
+      }
     }
   },
   "additionalProperties": false

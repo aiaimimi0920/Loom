@@ -148,6 +148,17 @@ pub struct CapabilityCommandContribution {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub permissions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_context: Option<CapabilityCommandInputContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toggle_attachment_type: Option<String>,
+}
+
+/// Public, read-only host normalization contracts; never grants foreign attachment writes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CapabilityCommandInputContext {
+    #[serde(rename = "ocr-text.v1")]
+    OcrTextV1,
 }
 
 const fn default_true() -> bool {

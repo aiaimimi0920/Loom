@@ -121,10 +121,6 @@ export async function autoUpdateArts(
   return await postJson(baseUrl, "/v1/arts/auto-update", {});
 }
 
-export async function installArtPackage(baseUrl: string, zipBase64: string): Promise<void> {
-  await postJson(baseUrl, "/v1/arts/install", { zipBase64 });
-}
-
 export async function createAuthoredArtPackage(
   baseUrl: string,
   tool: LoomToolDefinition,

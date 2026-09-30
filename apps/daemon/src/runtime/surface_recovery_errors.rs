@@ -12,7 +12,7 @@ fn surface_snapshot_recovery_messages_for_device(
         let instance_id = instance.descriptor.instance_id.clone();
         let generation = instance.descriptor.generation;
         for attachment in instance.attachments.into_values() {
-            if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
+            if attachment.ephemeral || attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
                 continue;
             }
             if authenticated_device_id
@@ -68,6 +68,8 @@ fn surface_snapshot_recovery_messages_for_device(
             .pending_confirmations()
             .into_iter()
             .filter_map(|confirmation| {
+                if store.get(&confirmation.instance_id).and_then(|instance| instance.attachments.get(&confirmation.attachment_id).cloned())
+                    .is_none_or(|attachment| attachment.ephemeral) { return None; }
                 if authenticated_device_id
                     .is_some_and(|device_id| confirmation.device_id != device_id)
                 {
@@ -94,9 +96,6 @@ fn surface_message_visible_to_device(
     let Some(params) = message.get("params") else {
         return false;
     };
-    if params.get("deviceId").and_then(Value::as_str) == Some(device_id) {
-        return true;
-    }
     let Ok(store) = surface_instances.lock() else {
         return false;
     };
@@ -104,14 +103,14 @@ fn surface_message_visible_to_device(
         store
             .get(instance_id)
             .and_then(|instance| instance.attachments.get(attachment_id).cloned())
-            .is_some_and(|attachment| attachment.descriptor.device_id == device_id)
+            .is_some_and(|attachment| !attachment.ephemeral && attachment.descriptor.device_id == device_id)
     };
     let instance_matches = |instance_id: &str| {
         store.get(instance_id).is_some_and(|instance| {
             instance
                 .attachments
                 .values()
-                .any(|attachment| attachment.descriptor.device_id == device_id)
+                .any(|attachment| !attachment.ephemeral && attachment.descriptor.device_id == device_id)
         })
     };
 
@@ -159,7 +158,7 @@ fn surface_message_visible_to_device(
         }
         return instance_matches(instance_id);
     }
-    false
+    params.get("deviceId").and_then(Value::as_str) == Some(device_id)
 }
 
 fn subscriber_accepts_broadcast(subscriber: &HookBridgeSubscriber, broadcast: &str) -> bool {

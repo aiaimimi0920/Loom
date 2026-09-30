@@ -34,6 +34,14 @@ fn attachment_scene_preserves_source_geometry_and_uses_one_opaque_fill() {
 }
 
 #[test]
+fn ocr_keeps_text_path_when_code_decoder_fails() {
+    let scan = commands::best_effort_code_scan(b"not-an-image", 320, 180);
+    assert_eq!(scan.width, 320);
+    assert_eq!(scan.height, 180);
+    assert!(scan.results.is_empty());
+}
+
+#[test]
 fn attachment_payload_remains_inside_the_host_budget() {
     let block = fixture_block("中".repeat(4096));
     let result = OcrDetectResult {

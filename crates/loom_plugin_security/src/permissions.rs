@@ -3,6 +3,33 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(all(test, windows))]
+#[test]
+fn private_acl_accepts_forward_slash_windows_paths() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "loom-acl-separators-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).unwrap();
+    let file = root.join("private.txt");
+    fs::write(&file, b"fixture").unwrap();
+    let directory_result = restrict_private_path_permissions(
+        Path::new(&root.to_string_lossy().replace('\\', "/")),
+        true,
+    );
+    let file_result = restrict_private_path_permissions(
+        Path::new(&file.to_string_lossy().replace('\\', "/")),
+        false,
+    );
+    fs::remove_dir_all(&root).unwrap();
+    directory_result.expect("forward-slash directory ACL");
+    file_result.expect("forward-slash file ACL");
+}
+
 #[cfg(unix)]
 pub fn restrict_private_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -29,7 +56,18 @@ pub fn restrict_private_path_permissions(path: &Path, directory: bool) -> std::i
     } else {
         std::env::current_dir()?.join(path)
     };
-    let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+    // Verbatim Win32 paths bypass slash normalization; preserve UTF-16 names.
+    let wide = absolute
+        .as_os_str()
+        .encode_wide()
+        .map(|unit| {
+            if unit == b'/' as u16 {
+                b'\\' as u16
+            } else {
+                unit
+            }
+        })
+        .collect::<Vec<_>>();
     let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
         || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
     {
@@ -111,7 +149,7 @@ pub fn repair_private_tree_permissions(root: &Path) -> std::io::Result<Vec<PathB
                     ),
                 ));
             }
-            if let Err(error) = restrict_private_path_permissions(&path, file_type.is_dir()) {
+            if let Err(error) = restrict_private_tree_entry_permissions(&path, file_type.is_dir()) {
                 if error.kind() != std::io::ErrorKind::PermissionDenied {
                     return Err(std::io::Error::new(
                         error.kind(),
@@ -136,6 +174,65 @@ pub fn repair_private_tree_permissions(root: &Path) -> std::io::Result<Vec<PathB
         }
     }
     Ok(quarantined)
+}
+
+fn restrict_private_tree_entry_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        // Installed runtimes need owner execute access after both install and startup repair.
+        let mode = if directory {
+            0o700
+        } else {
+            0o600 | (permissions.mode() & 0o100)
+        };
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions)
+    }
+    #[cfg(not(unix))]
+    restrict_private_path_permissions(path, directory)
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn private_tree_repair_preserves_only_owner_execute_for_runtimes() {
+    use std::os::unix::fs::PermissionsExt;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "loom-private-executable-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let executable = root.join("runtime");
+    let data = root.join("settings.json");
+    fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::write(&data, b"{}").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o7777)).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o666)).unwrap();
+    for _ in 0..2 {
+        assert!(repair_private_tree_permissions(&root).unwrap().is_empty());
+        assert_eq!(
+            fs::metadata(&executable).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&data).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert!(std::process::Command::new(&executable)
+            .status()
+            .unwrap()
+            .success());
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(windows)]

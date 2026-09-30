@@ -40,9 +40,6 @@ export const shortCapabilityDigest = (digest?: string) => digest
 export const activeCapabilityVersion = (plugin: CapabilityPluginRecord) =>
   plugin.versions.find((version) => version.digest === plugin.activeDigest) ?? null;
 
-export const installedCapabilityVersion = (plugin: CapabilityPluginRecord) =>
-  activeCapabilityVersion(plugin) ?? plugin.versions[plugin.versions.length - 1] ?? null;
-
 export const permissionLabel = (permission: string) => ({
   "hook.unit.image.read": "读取当前贴图图像",
   "hook.notice.show": "在贴图内显示通知",

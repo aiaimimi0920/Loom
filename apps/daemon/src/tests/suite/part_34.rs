@@ -26,7 +26,7 @@ fn capability_catalog_is_disabled_until_an_official_source_is_configured() {
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["error"]["code"], "capability_catalog_not_found");
 
     drop(daemon);
-    fs::remove_dir_all(root).expect("cleanup capability catalog root");
+    remove_test_dir(&root);
     restore_env(CAPABILITY_CATALOG_URL_ENV, previous_url);
     restore_env(CAPABILITY_CATALOG_LOOPBACK_ENV, previous_loopback);
 }
@@ -112,7 +112,7 @@ fn signed_catalog_route_installs_a_digest_pinned_package() {
 
     drop(daemon);
     server.join().expect("catalog server");
-    fs::remove_dir_all(root).expect("cleanup catalog install root");
+    remove_test_dir(&root);
     restore_env(CAPABILITY_CATALOG_URL_ENV, previous_url);
     restore_env(CAPABILITY_CATALOG_LOOPBACK_ENV, previous_loopback);
 }
@@ -143,7 +143,7 @@ fn capability_list_reports_bounded_installed_disk_usage() {
     let body: Value = serde_json::from_str(&body).expect("capability list JSON");
     assert!(body["diskBytesByPlugin"]["publisher.example/api-fixture"].as_u64().unwrap() > 0);
 
-    fs::remove_dir_all(root).expect("cleanup capability disk root");
+    remove_test_dir(&root);
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn enabled_capability_is_restored_after_daemon_restart() {
     let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
     assert_eq!(snapshot["snapshot"]["plugins"][0]["id"], "publisher.example/api-fixture");
     restarted.deactivate_all();
-    fs::remove_dir_all(root).expect("cleanup capability restart root");
+    remove_test_dir(&root);
 }
 
 #[test]
@@ -295,7 +295,7 @@ fn permission_expansion_requires_new_digest_approval_after_restart() {
     assert_eq!(upgraded["plugin"]["previousDigest"], digest_v1);
 
     restarted.deactivate_all();
-    fs::remove_dir_all(root).expect("cleanup expanded permissions root");
+    remove_test_dir(&root);
 }
 
 fn capability_catalog_fixture(

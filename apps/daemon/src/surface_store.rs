@@ -3,6 +3,8 @@
 include!("surface_store/model.rs");
 include!("surface_store/read_create.rs");
 include!("surface_store/attachments.rs");
+include!("surface_store/ephemeral.rs");
+include!("surface_store/ephemeral_events.rs");
 include!("surface_store/lifecycle_results.rs");
 include!("surface_store/events_confirmations.rs");
 include!("surface_store/cancel_persist.rs");
@@ -18,4 +20,6 @@ mod tests {
     include!("surface_store/tests/generation_failure.rs");
     include!("surface_store/tests/events_lifecycle.rs");
     include!("surface_store/tests/projection_expiry.rs");
+    include!("surface_store/tests/ephemeral.rs");
+    include!("surface_store/tests/ephemeral_events.rs");
 }

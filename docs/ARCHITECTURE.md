@@ -14,6 +14,21 @@ daemon, CLI, and desktop remain application shells.
 - This Loom repository owns local agent planning, workflows, memory, durable orchestration,
   safe tool execution contracts, hooks, and Gateway client calls.
 
+The desktop is a thin Tauri/React shell over the Loom daemon; it does not copy
+the ArtLoom monolithic desktop-local backend.
+
+### Historical migration references
+
+Loom adapted Rust runtime patterns from NeuroLoom and workflow concepts from
+ArtLoom into this independent workspace. The completed source mapping, original
+reference paths, and parity history are preserved in Git at
+`ade6992:docs/MIGRATION_MAP.md`; the original planning matrix is at
+`cleanup-base-20260928:docs/analysis/loom-source-migration-matrix.md`.
+Use the boundaries below for current behavior. Changes follow
+[the development manual](DEVELOPMENT.md), and packaged acceptance follows
+[release provenance](release-provenance.md); old migration smoke results do not
+validate a new binary.
+
 ## Crates
 
 - `loom_core`: shared IDs, errors, result type, messages, run/session state,

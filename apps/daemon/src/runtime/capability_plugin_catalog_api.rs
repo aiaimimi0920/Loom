@@ -151,18 +151,20 @@ fn capability_catalog_client(
 fn capability_host_support(
     hook_bridge: &SharedHookBridgeRuntime,
 ) -> Result<loom_tool_registry::capability::CapabilityHostSupport> {
-    let hook_connected = hook_bridge
+    let hook = hook_bridge
         .lock()
-        .map_err(|_| anyhow::anyhow!("Hook bridge state is unavailable"))?
-        .extension_capable_clients
-        .load(Ordering::SeqCst)
-        > 0;
+        .map_err(|_| anyhow::anyhow!("Hook bridge state is unavailable"))?;
+    let hook_connected = hook.extension_capable_clients.load(Ordering::SeqCst) > 0;
+    let mut hook_features = vec!["commands.v1".to_owned(), "unit-overlays.v1".to_owned()];
+    if hook.ocr_text_capable_clients.load(Ordering::SeqCst) > 0 {
+        hook_features.push(loom_protocol::EXTENSION_FEATURE_OCR_TEXT.to_owned());
+    }
     Ok(loom_tool_registry::capability::CapabilityHostSupport {
         loom_api_version: loom_protocol::CAPABILITY_API_VERSION.to_owned(),
-        loom_features: vec!["commands.v1".to_owned(), "attachments.v1".to_owned()],
+        loom_features: vec!["commands.v1".to_owned(), "attachments.v1".to_owned(), "model-broker.v1".to_owned()],
         hook_connected,
         hook_api_version: "1.0".to_owned(),
-        hook_features: vec!["commands.v1".to_owned(), "unit-overlays.v1".to_owned()],
+        hook_features,
         surface_api_version: "1.0".to_owned(),
         surface_features: vec![
             "declarative.v1".to_owned(),

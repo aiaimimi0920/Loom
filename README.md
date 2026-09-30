@@ -16,12 +16,15 @@ It owns the local runtime contracts for:
 - memory and retrieval interfaces,
 - safe execution boundaries,
 - hook event dispatch, and
-- Gateway-backed model access.
+- Gateway-backed model access, with an optional loopback-only local adapter for
+  the signed text-translation capability.
 
-Loom is not a Gateway replacement. Gateway continues to own provider routing,
-credentials, relay APIs, and provider/runtime details. Platform continues to
-own account, quota, entitlement, and public web surfaces. Hook continues to own
-foreground capture/integration behavior.
+Loom is not a Gateway replacement. Gateway continues to own hosted-provider
+routing, credentials, relay APIs, and provider/runtime details. The optional
+translation local adapter accepts only an IP-loopback OpenAI-compatible origin;
+it does not expose provider URLs or credentials to capability processes. Platform
+continues to own account, quota, entitlement, and public web surfaces. Hook
+continues to own foreground capture/integration behavior.
 
 Loom now also ships a desktop workbench under `apps/desktop`. The visible user
 entry in a packaged desktop release is `Loom.exe`; it connects to the local
@@ -33,13 +36,15 @@ executables in the desktop package. Loom and Hook use the versioned
 
 ## Current canonical-only baseline
 
-Phase 71 is the current Art production baseline. Loom and Hook accept only the
+Loom and Hook accept only the
 current persisted shapes, publisher-qualified package identities and storage
 layouts, exact framework/process fields, and the `com.yamiyu.hook` app-data
 identity. Obsolete aliases and migrations are rejected rather than translated.
-See
-[`docs/progress/phase-71-art-canonical-layout-legacy-zero.md`](docs/progress/phase-71-art-canonical-layout-legacy-zero.md)
-for the code, package, release, and native acceptance evidence.
+See the [public protocol](protocol/README.md),
+[package scope](docs/plugin-development.md#canonical-package-scope) and
+[canvas contract](docs/HOOK_CANVAS.md). Historical migration and native acceptance
+records remain recoverable through Git tag `cleanup-base-20260928`; they do not
+establish acceptance of a later package.
 
 ## Workspace
 
@@ -102,6 +107,15 @@ The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
 Tauri dependencies.
 
+Under **设备管理 → 发送图片**, choose an online, approved Hook terminal output
+and a local raster image. Loom uploads the image, creates a dedicated single-output
+layout, and waits for the terminal to acknowledge its exact revision. Later sends
+replace that output's previous image without overwriting ordinary composed walls.
+Remove the dedicated layout in **屏幕墙** to stop displaying it. This self-hosted
+path uses paired-device authority, without Platform login; it does not grant
+cross-account access. Remote terminals still require a trusted HTTPS connection
+configuration and explicit pairing. See [the wall API](protocol/WALL_CONTROL_API.md).
+
 Install and verify the desktop frontend:
 
 ```powershell
@@ -141,8 +155,10 @@ stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Hook
 
 For the normal user path, open **Hook 同步** to inspect the real Hook canvas:
 node placement, image previews, and links are rendered directly in the Loom
-workbench. Click **打开可视化工作流** or a node to enter the full visual
-workflow canvas. YAML, cURL, raw JSON, protocol methods, session paths, IPC,
+workbench. Select a live node to save its connected component as a workflow;
+saved workflows can be instantiated on the Hook desktop or exported as an Art.
+See [Hook canvas](docs/HOOK_CANVAS.md) for navigation and preview boundaries.
+YAML, cURL, raw JSON, protocol methods, session paths, IPC,
 and shared-memory diagnostics remain available only inside the collapsed
 **高级技术信息** disclosure.
 
@@ -641,13 +657,15 @@ opt into bounded mode explicitly with
 `DaemonConfig::with_bounded_request_executor(...)`; only the production binary
 opts into bounded mode automatically through the environment.
 
-The concurrent route allowlist is deliberately narrow: `/health`, `/status`,
-`/v1/capabilities`, run reads and events, run creation, run stop/retry, and
-`/v1/invoke` for `brain.plan` and `tea.ticket.decompose.v1`. Only `/health` and
-`/status` are reserved probes outside the normal queue. The other allowlisted
-routes still use a worker and bounded queue capacity. Other file-backed
-control-plane and compatibility routes also run on a worker but acquire a
-serialized route boundary until their stores have stronger per-store locking.
+The concurrent route allowlist includes `/health`, `/status`, `/v1/capabilities`,
+the MCP registry, Hook canvas/previews, run reads/events and creation/stop/retry,
+invocation cancellation, and `/v1/invoke` for `brain.plan` and
+`tea.ticket.decompose.v1`. Surface stream and Live event long-polls also run
+concurrently: they wait under their stores' own synchronization and must not
+hold the global route lock against the input/action that wakes them. Only
+`/health` and `/status` are reserved probes outside the normal queue. The other
+allowlisted routes still use a worker and bounded queue capacity. Other
+file-backed control-plane mutations retain the serialized route boundary.
 
 When the bounded queue is full, Loom returns HTTP `503 Service Unavailable`
 with `error.code = "daemon_busy"` and `retryable = true`. The rejected request
@@ -673,9 +691,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -PackageDir .\release\Loom\<versionId>
 ```
 
-This changes request scheduling only. Gateway continues to own provider
+This changes request scheduling only. Gateway continues to own hosted-provider
 routing, credential selection, relay APIs, and provider/runtime details; Loom
-does not move Gateway provider routing into the daemon.
+does not move Gateway provider routing into the daemon. Text translation may
+additionally select its bounded, IP-loopback local adapter when explicitly
+configured, while the capability process still sees only the scoped broker.
 
 ## Persistent run evidence
 
@@ -873,10 +893,10 @@ cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 
 ## Docs
 
+- [Documentation index](docs/README.md)
 - `docs/DEVELOPMENT.md`
 - `docs/DEPENDENCY_SECURITY.md`
 - `docs/ARCHITECTURE.md`
-- `docs/MIGRATION_MAP.md`
 - `docs/WORKFLOW_CONTRACT.md`
 - `docs/AGENT_DEFINITIONS.md`
 - `docs/GATEWAY_INTEGRATION.md`

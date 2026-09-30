@@ -3,6 +3,10 @@
 mod error;
 mod frame;
 mod host;
+mod model_broker;
+mod model_gateway;
+mod model_provider;
+mod model_schema;
 mod process;
 mod schema;
 mod session;

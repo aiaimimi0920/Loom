@@ -69,6 +69,10 @@ pub fn daemon_help_text() -> &'static str {
         "  LOOM_GATEWAY_BASE_URL  Gateway origin [default: http://127.0.0.1:4200]\n",
         "  LOOM_GATEWAY_TOKEN     Optional Gateway bearer token\n",
         "  LOOM_GATEWAY_TIMEOUT_SECS  Gateway request timeout [default: 60]\n",
+        "  LOOM_TRANSLATION_MODE  Translation backend: gateway, local, or auto\n",
+        "  LOOM_LOCAL_TRANSLATION_BASE_URL  Loopback OpenAI-compatible local translation origin\n",
+        "  LOOM_LOCAL_TRANSLATION_MODEL  Local translation model [default: translation-local]\n",
+        "  LOOM_LOCAL_TRANSLATION_TOKEN  Optional local service bearer token\n",
         "\n",
         "HTTP API:\n",
         "  GET  /health\n",
@@ -94,6 +98,9 @@ pub fn daemon_help_text() -> &'static str {
         "  POST /v1/surfaces/confirmations/decision\n",
         "  POST /v1/device-sessions/challenges\n",
         "  POST /v1/device-sessions\n",
+        "  POST /v1/projections/v2/context\n",
+        "  POST /v1/projections/v2/configuration\n",
+        "  POST /v1/projections/v2/create|inspect|accept|publish|read|unlink|sync|peer\n",
         "  POST /v1/invoke\n",
         "  POST /v1/invoke/cancel\n",
         "  GET  /v1/capability-plugins/extensions\n",
@@ -350,6 +357,8 @@ pub fn default_run_store_path() -> PathBuf {
 }
 
 struct DaemonRuntime {
+    offline_peers: offline_peers::OfflinePeers,
+    projection_owner: ProjectionOwner,
     hook_settings: HookSettings,
     run_store: SharedRunStore,
     auth_token: String,
@@ -369,6 +378,7 @@ struct DaemonRuntime {
     hook_bridge: SharedHookBridgeRuntime,
     device_registry: SharedDeviceRegistryStore,
     live_sessions: SharedLiveSessionStore,
+    walls: SharedWallStore,
     surface_instances: SharedSurfaceInstanceStore,
     surface_actions: SharedSurfaceActionExecutor,
     surface_resources: SharedSurfaceResourceStore,
