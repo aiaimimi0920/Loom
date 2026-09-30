@@ -30,8 +30,12 @@ fn route_surfaces_devices(
     bundled_art_sha256_allowlist: &BTreeSet<String>,
     authenticated_device_id: &Option<String>,
     route_path: &str,
+    walls: &SharedWallStore,
 ) -> Result<(u16, String)> {
     match (request.method.as_str(), route_path) {
+        ("POST", path) if PROJECTION_ROUTES.contains(&path) => handle_projection_route(
+            path, &request.body, authenticated_device_id.as_deref(), device_registry,
+        ),
         ("POST", "/v1/surfaces/resources") => {
             create_surface_resource(&request.body, surface_resources, shared_images)
         }
@@ -108,12 +112,14 @@ fn route_surfaces_devices(
             &request.body,
             surface_actions,
             device_registry,
+            surface_instances,
             authenticated_device_id.as_deref(),
         ),
         ("POST", "/v1/surfaces/confirmations/decision") => decide_surface_confirmation(
             &request.body,
             surface_actions,
             device_registry,
+            surface_instances,
             authenticated_device_id.as_deref(),
         ),
         ("GET", "/v1/surfaces/instances") => list_surface_instances(surface_instances),
@@ -128,6 +134,7 @@ fn route_surfaces_devices(
             surface_resources,
             shared_images,
             authenticated_device_id.as_deref(),
+            walls,
         ),
         ("POST", "/v1/surfaces/instances") => create_surface_instance(
             &request.body,
@@ -286,6 +293,7 @@ fn route_surfaces_devices(
                 hook_bridge,
                 surface_resources,
                 shared_images,
+                walls,
             )
         }
         _ => route_mcp_art(

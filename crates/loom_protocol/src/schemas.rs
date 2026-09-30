@@ -29,3 +29,4 @@ pub const CAPABILITY_RUNTIME_V1: &str =
 pub const EXTENSION_V1: &str = include_str!("../../../protocol/schemas/extension.v1.schema.json");
 pub const LIVE_CONTROL_V1: &str =
     include_str!("../../../protocol/schemas/live-control.v1.schema.json");
+pub const WALL_V1: &str = include_str!("../../../protocol/schemas/wall.v1.schema.json");

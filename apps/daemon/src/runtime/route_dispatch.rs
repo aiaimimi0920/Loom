@@ -1,4 +1,69 @@
 // Top-level authenticated HTTP route selection and handler dispatch.
+fn route_with_runtime(
+    runtime: &DaemonRuntime,
+    request: &ParsedHttpRequest,
+) -> Result<(u16, String)> {
+    runtime_log_debug(format!("{} {}", request.method, request.path));
+    let path = request.path.split('?').next().unwrap_or_default();
+    if offline_peers::OfflinePeers::handles(path) {
+        // Peer proofs have their own pinned-key authentication; config remains admin-only.
+        return match runtime.offline_peers.handle(request, request.has_admin_credential(&runtime.auth_token), &runtime.device_registry) {
+            Ok(value) => Ok((200, serde_json::to_string(&value)?)),
+            Err(error) => structured_error(error.status, json!({"code": error.code, "message": error.code})),
+        };
+    }
+    let (status, body) = route(
+        request,
+        &runtime.hook_settings,
+        &runtime.run_store,
+        runtime.run_store_status,
+        &runtime.brain_planner,
+        &runtime.capability_runtime,
+        &runtime.capability_dispatch,
+        &runtime.capability_resources,
+        &runtime.auth_token,
+        runtime.config_registry.as_ref(),
+        &runtime.config_store,
+        &runtime.mcp_servers,
+        &runtime.tool_registry,
+        &runtime.workflow_store,
+        &runtime.hook_bridge,
+        &runtime.device_registry,
+        &runtime.live_sessions,
+        &runtime.walls,
+        &runtime.surface_instances,
+        &runtime.surface_actions,
+        &runtime.surface_resources,
+        &runtime.settings,
+        &runtime.shared_images,
+        &runtime.settings_base_url,
+        &runtime.mcp_registry_endpoint,
+        runtime.request_executor_status,
+        &runtime.canvas_workflow_root,
+        &runtime.framework_registry,
+        &runtime.control_plane_root,
+        &runtime.bundled_art_sha256_allowlist,
+        &runtime.projection_owner,
+        &runtime.offline_peers,
+    )?;
+    if status == 200 && ((request.method == "POST" && path == "/v1/projections/targets")
+        || (request.method == "GET" && path == "/v1/projection-settings")) {
+        let mut value: Value = serde_json::from_str(&body)?;
+        runtime.offline_peers.append_targets(&mut value);
+        if path == "/v1/projections/targets" {
+            // Peer I/O has finished before taking the registry lock. Directory membership
+            // is advisory; create/offer still recheck live device and recipient authority.
+            let registry = runtime.device_registry.lock().map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?;
+            match registry.projection_settings.view() {
+                Ok(document) => projection_settings::append_groups(&mut value, document),
+                Err(error) => return structured_error(error.status, json!({"code": error.code, "message": error.code})),
+            }
+        }
+        return Ok((status, serde_json::to_string(&value)?));
+    }
+    Ok((status, body))
+}
+
 fn route(
     request: &ParsedHttpRequest,
     hook_settings: &HookSettings,
@@ -17,6 +82,7 @@ fn route(
     hook_bridge: &SharedHookBridgeRuntime,
     device_registry: &SharedDeviceRegistryStore,
     live_sessions: &SharedLiveSessionStore,
+    walls: &SharedWallStore,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
     surface_resources: &SharedSurfaceResourceStore,
@@ -29,6 +95,8 @@ fn route(
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     bundled_art_sha256_allowlist: &BTreeSet<String>,
+    projection_owner: &ProjectionOwner,
+    offline_peers: &offline_peers::OfflinePeers,
 ) -> Result<(u16, String)> {
     let route_path = request
         .path
@@ -69,6 +137,26 @@ fn route(
         );
     }
 
+    if request.method == "POST" && route_path == "/v1/projections/edit"
+        && authenticated_device_id.is_some() && projection_edit::needs_prune(&request.body) {
+        if let Err(error) = offline_peers.prune_edit_sessions(device_registry) {
+            return structured_error(error.status, json!({"code": error.code, "message": error.code}));
+        }
+    }
+    if route_path == "/v1/projection-settings" {
+        if !admin_authenticated { return structured_error(403, json!({"code":"projection_settings_admin_required"})); }
+        return route_projection_settings(request, device_registry);
+    }
+    // Account credentials remain admin-only; Hook device sessions cannot operate this API.
+    if request.method == "POST" && route_path.starts_with("/v1/account/") {
+        return match projection_owner.account(control_plane_root, &route_path[12..], &request.body) {
+            Ok(value) => Ok((200, serde_json::to_string(&value)?)),
+            Err(error) => structured_error(error.status, json!({"code":error.code, "message":error.code})),
+        };
+    }
+    if request.method == "POST" && PROJECTION_V2_ROUTES.contains(&route_path) {
+        return handle_projection_v2_route(route_path, &request.body, authenticated_device_id.as_deref(), control_plane_root, projection_owner);
+    }
     if let Some(response) = route_capability_plugins(
         request,
         route_path,
@@ -92,6 +180,27 @@ fn route(
             surface_resources,
             control_plane_root,
         );
+    }
+
+    if let Some(response) = route_wall_surfaces(request, route_path, &WallSurfaceServices {
+        walls, instances: surface_instances, actions: surface_actions,
+        resources: surface_resources, shared_images, bridge: hook_bridge, tools: tool_registry,
+        frameworks: framework_registry, root: control_plane_root,
+    }, authenticated_device_id.as_deref()) {
+        return response;
+    }
+
+    if let Some(response) = route_walls(
+        request,
+        route_path,
+        walls,
+        device_registry,
+        surface_resources,
+        live_sessions,
+        authenticated_device_id.as_deref(),
+    ) {
+        prune_wall_surfaces(walls, device_registry, surface_instances, surface_resources, shared_images);
+        return response;
     }
 
     if let Some(response) = route_live_sessions(
@@ -136,5 +245,6 @@ fn route(
         bundled_art_sha256_allowlist,
         &authenticated_device_id,
         route_path,
+        walls,
     )
 }

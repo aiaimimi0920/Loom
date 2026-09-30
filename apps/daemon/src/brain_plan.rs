@@ -225,6 +225,8 @@ impl BrainPlanner for GatewayPlanner {
                 GatewayChatMessage::user(user_payload),
             ],
             stream: false,
+            temperature: None,
+            response_format: None,
         })?;
         let validated = validate_model_plan(&response.content)?;
         Ok(BrainPlanResult {

@@ -40,10 +40,10 @@ export function startHookBridgeWorkflowSync(
       void Promise.resolve()
         .then(() => options.refresh())
         .then(() => {
-          options.invalidateHookCanvas();
+          if (!disposed) options.invalidateHookCanvas();
         })
         .catch(() => {
-          options.invalidateHookCanvas();
+          if (!disposed) options.invalidateHookCanvas();
         });
     }, debounceMs);
   };

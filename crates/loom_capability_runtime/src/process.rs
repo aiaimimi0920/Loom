@@ -44,6 +44,7 @@ pub(crate) struct RuntimeProcess {
     writer: Option<JoinHandle<()>>,
     reader: Option<JoinHandle<()>>,
     stderr: Arc<Mutex<Vec<u8>>>,
+    model_broker: Option<crate::model_broker::ModelBroker>,
 }
 
 impl RuntimeProcess {
@@ -78,6 +79,7 @@ impl RuntimeProcess {
             writer: Some(writer),
             reader: Some(reader),
             stderr,
+            model_broker: None,
         })
     }
 
@@ -92,6 +94,10 @@ impl RuntimeProcess {
         })
     }
 
+    pub(crate) fn own_model_broker(&mut self, broker: Option<crate::model_broker::ModelBroker>) {
+        self.model_broker = broker;
+    }
+
     pub(crate) fn call(
         &self,
         message: CapabilityRuntimeMessage,
@@ -103,6 +109,7 @@ impl RuntimeProcess {
     pub(crate) fn terminate(&mut self) {
         self.requests.take();
         terminate_child(&self.child);
+        self.model_broker.take();
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }

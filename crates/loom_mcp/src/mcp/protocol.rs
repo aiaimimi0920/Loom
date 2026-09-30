@@ -1,27 +1,6 @@
-//! Registry URL and MCP JSON-RPC protocol helpers.
+//! MCP JSON-RPC protocol helpers.
 
 use super::*;
-
-/// Build the official MCP Registry URL using bounded pagination.
-pub fn build_registry_url(
-    search: Option<&str>,
-    limit: Option<u32>,
-    cursor: Option<&str>,
-) -> McpResult<String> {
-    let safe_limit = limit.unwrap_or(60).clamp(1, 100);
-    let mut pairs = vec![format!("limit={safe_limit}")];
-
-    if let Some(search_text) = search.map(str::trim).filter(|value| !value.is_empty()) {
-        pairs.push(format!("search={}", percent_encode(search_text)));
-    }
-
-    if let Some(cursor_text) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
-        pairs.push(format!("cursor={}", percent_encode(cursor_text)));
-    }
-
-    pairs.push("version=latest".to_owned());
-    Ok(format!("{MCP_REGISTRY_ENDPOINT}?{}", pairs.join("&")))
-}
 
 #[must_use]
 pub fn initialize_request(id: u64) -> serde_json::Value {
@@ -156,17 +135,4 @@ pub(super) fn validate_tool_call_payload(name: &str, arguments: &JsonValue) -> M
         });
     }
     Ok(())
-}
-
-pub(super) fn percent_encode(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(char::from(byte));
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }

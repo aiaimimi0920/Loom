@@ -121,8 +121,12 @@ pub(super) fn http_put_json(base_url: &str, path: &str, body: &Value) -> Result<
     http_request_json(base_url, "PUT", path, Some(body))
 }
 
-pub(super) fn http_delete_json(base_url: &str, path: &str) -> Result<Value, String> {
-    http_request_json(base_url, "DELETE", path, None)
+pub(super) fn http_delete_json(
+    base_url: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
+    http_request_json(base_url, "DELETE", path, body)
 }
 
 pub(super) fn daemon_error_message(body: &str) -> Option<String> {

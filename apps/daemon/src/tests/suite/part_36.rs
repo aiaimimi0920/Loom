@@ -31,7 +31,7 @@ fn extension_image_upload_becomes_an_invocation_scoped_resource() {
         .unwrap()
         .get_with_lease(&resource.digest, &resource.lease_id)
         .is_err());
-    fs::remove_dir_all(root).expect("cleanup upload fixture");
+    remove_test_dir(&root);
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn extension_image_upload_requires_the_command_permission() {
     };
     assert_eq!(error, ExtensionResourceUploadError::PermissionDenied);
     assert!(invocation.resource_refs.is_empty());
-    fs::remove_dir_all(root).expect("cleanup upload permission fixture");
+    remove_test_dir(&root);
 }
 
 fn extension_upload_invocation() -> ExtensionInvocation {

@@ -35,16 +35,6 @@ impl FrameworkRegistry {
         self.install_framework_package_zip(zip_bytes, None)
     }
 
-    /// Upgrade a package by replacing its installed directory with a fully
-    /// validated new ZIP. Installation and upgrade share the same atomic path
-    /// so a bad package cannot leave a half-written runtime behind.
-    pub fn upgrade_framework_package_from_zip(
-        &self,
-        zip_bytes: &[u8],
-    ) -> Result<FrameworkStatus, FrameworkError> {
-        self.install_framework_package_zip(zip_bytes, None)
-    }
-
     /// Upgrade a specific installed framework package and reject a ZIP whose
     /// manifest belongs to another framework.
     pub fn upgrade_framework_package(

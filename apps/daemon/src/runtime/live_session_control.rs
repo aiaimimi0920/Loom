@@ -3,8 +3,8 @@
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LiveControlLeaseRequest {
     protocol_version: String,
-    surface_instance_id: String,
-    attachment_id: String,
+    surface_instance_id: Option<String>,
+    attachment_id: Option<String>,
     action: LiveControlLeaseAction,
     sequence: u64,
     epoch: u64,
@@ -36,6 +36,15 @@ impl LiveSessionStore {
         }
         let mut sessions = self.lock_state()?;
         let record = active_record_mut(&mut sessions, session_id)?;
+        if record.wall_controller.is_some()
+            && !matches!(request.action, LiveControlLeaseAction::Revoke)
+        {
+            return Err(LiveRuntimeError::new(
+                409,
+                "live_controller_conflict",
+                "a wall endpoint owns the controller lease",
+            ));
+        }
         match request.action {
             LiveControlLeaseAction::Acquire => {
                 ensure_viewer(record, actor_device_id)?;
@@ -84,6 +93,7 @@ impl LiveSessionStore {
                 }
                 accept_control_sequence(record, actor_device_id, request.epoch, request.sequence)?;
                 record.session.controller_device = None;
+                record.wall_controller = None;
                 record.controller_expires_at_ms = None;
                 record.session.revision = record.session.revision.saturating_add(1);
                 push_state_event(record, &format!("controller_released:{actor_device_id}"));
@@ -98,6 +108,7 @@ impl LiveSessionStore {
                 }
                 accept_control_sequence(record, actor_device_id, request.epoch, request.sequence)?;
                 record.session.controller_device = None;
+                record.wall_controller = None;
                 record.controller_expires_at_ms = None;
                 record.session.revision = record.session.revision.saturating_add(1);
                 push_state_event(

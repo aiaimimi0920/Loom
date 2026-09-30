@@ -160,6 +160,48 @@ while an already accepted request is still being read, it receives
 control events request this graceful shutdown; accepted work drains and workers
 join without forced cancellation.
 
+Probe queue bypass does not bypass authentication: `/health` remains public and
+`/status` retains the configured authorization rules. Route panics/errors return
+the generic HTTP 500 `request_worker_failed` when the connection is writable;
+internal diagnostics are not copied into the public response, and workers remain
+available for later jobs. Per-socket reads have a 2-second timeout and writes a
+30-second timeout; a per-read limit is not a whole-request latency guarantee.
+Current route admission and parser budgets are owned by
+`apps/daemon/src/runtime/connection_dispatch.rs`; use the current allowlist rather
+than the original design's narrower set of concurrent routes.
+
+## Durable evidence storage
+
+The packaged daemon uses `LOOM_RUN_STORE_PATH` when configured, otherwise
+`<control-plane-root>/runs/loom-runs.sqlite3`. Library fixtures can use the separate
+in-memory store. Selecting persistent storage never silently falls back to memory
+after an open, schema or integrity error. This synchronous `RunEvidenceStore`
+remains separate from the typed workflow `EventStore`.
+
+Schema v1 is defined in `crates/loom_durable/src/run_store/sqlite.rs`: `runs`
+stores the indexed ID/status, canonical JSON and creation/update timestamps;
+`run_events` stores an autoincrementing sequence, run ID, kind and object fields.
+A foreign key cascades run deletion and the `(run_id, sequence)` index supports
+ordered event reads. Sequence, kind and run ID are store-owned metadata, not
+caller-controlled fields. The connection requires WAL, foreign keys, FULL
+synchronous writes and a 5-second busy timeout.
+
+Opening validates the schema, `PRAGMA quick_check`, indexed identity/status and
+bounded JSON records before serving. Interrupted-run recovery is one transaction;
+it retains the original input/events, fails stale running records and appends
+`run_interrupted` without replay. Malformed records abort startup rather than
+being discarded. Run creation and terminal transitions commit their events
+atomically; request-time storage failures report `run_store_failed` without
+claiming execution success. Stop/retry use canonical stored fields rather than
+accepting replacement run contents from the caller.
+
+The database contains user run input/context and is local application data,
+without application-level encryption at rest. Protect it with the OS account and
+filesystem boundary; a shared/network filesystem is outside the supported local
+storage boundary. Public responses must not expose SQL, storage paths or raw
+database errors. Unknown future schema versions fail explicitly; consult the
+current store implementation before any migration or recovery operation.
+
 ## Verification
 
 Targeted Rust gates:

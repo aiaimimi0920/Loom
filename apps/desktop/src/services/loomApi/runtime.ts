@@ -1,6 +1,5 @@
-// Shared-memory, settings, application-path, and Python authoring clients.
+// Settings, application-path, and Python authoring clients.
 import { DEFAULT_LOOM_SETTINGS } from "./defaults.ts";
-import type { SharedMemoryBufferResponse } from "./mcpTypes.ts";
 import type {
   LoomPythonArtJsonResponse,
   LoomPythonNearbyArtJsonResponse,
@@ -8,38 +7,7 @@ import type {
   LoomPythonSourceReadResponse,
 } from "./pythonTypes.ts";
 import type { LoomAppPaths, LoomSettings, LoomShortcutConfig } from "./settingsTypes.ts";
-import { deleteJson, getJson, postJson, putJson } from "./transport.ts";
-
-export async function createSharedMemoryBuffer(
-  baseUrl: string,
-  request: { width: number; height: number; channels?: number },
-): Promise<SharedMemoryBufferResponse> {
-  return await postJson<SharedMemoryBufferResponse>(baseUrl, "/v1/shared-memory/buffers", request);
-}
-
-export async function listSharedMemoryBuffers(baseUrl: string): Promise<SharedMemoryBufferResponse> {
-  return await getJson<SharedMemoryBufferResponse>(baseUrl, "/v1/shared-memory/buffers");
-}
-
-export async function getSharedMemoryBufferInfo(
-  baseUrl: string,
-  handle: string,
-): Promise<SharedMemoryBufferResponse> {
-  return await getJson<SharedMemoryBufferResponse>(
-    baseUrl,
-    `/v1/shared-memory/buffers/${encodeURIComponent(handle)}`,
-  );
-}
-
-export async function releaseSharedMemoryBuffer(
-  baseUrl: string,
-  handle: string,
-): Promise<SharedMemoryBufferResponse> {
-  return await deleteJson<SharedMemoryBufferResponse>(
-    baseUrl,
-    `/v1/shared-memory/buffers/${encodeURIComponent(handle)}`,
-  );
-}
+import { getJson, postJson, putJson } from "./transport.ts";
 
 export async function getLoomSettings(baseUrl: string): Promise<LoomSettings> {
   const response = await getJson<{ settings?: LoomSettings }>(baseUrl, "/v1/settings");
