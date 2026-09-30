@@ -8,6 +8,36 @@ const test = require("node:test");
 const publication = require("../../.github/scripts/release-publication.cjs");
 const recovery = require("../../.github/scripts/release-recovery.cjs");
 
+test("automatic release trigger accepts only canonical numeric version tags", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "../../.github/workflows/release-tag.yml"), "utf8");
+  const pushTags = workflow.match(/^  push:\r?\n    tags:\r?\n((?:      .*\r?\n)+)/m);
+  assert.ok(pushTags, "Release workflow must declare its automatic tag filter");
+  const patterns = [...pushTags[1].matchAll(/^      - '([^']+)'\r?$/gm)].map((match) => match[1]);
+  // GitHub's filter syntax supports [0-9]+ as one or more digits, not shell glob syntax.
+  assert.deepEqual(patterns, ["V[0-9]+.[0-9]+.[0-9]+"]);
+  const numericTag = new RegExp(`^${patterns[0].replaceAll(".", "\\.")}$`);
+  for (const tag of ["V0.2.0", "V1.2.3", "V12.34.567"]) {
+    assert.equal(numericTag.test(tag), true, tag);
+  }
+  for (const tag of ["V0.2.0-public", "V0.2.0-sdk", "V1.2.3-rc.1", "V1.2.3+build", "Vx.y.z", "V1.2", "v1.2.3", "V1/2/3"]) {
+    assert.equal(numericTag.test(tag), false, tag);
+  }
+});
+
+test("publication still rejects noncanonical tags before any GitHub request", async () => {
+  let requests = 0;
+  const github = {
+    paginate: async () => { requests += 1; return []; },
+    rest: { repos: { listReleases() {} } },
+  };
+  for (const tag of ["V0.2.0-public", "V0.2.0-sdk", "V1.2.3-rc.1", "v1.2.3"]) {
+    await assert.rejects(publication.assertReleaseAbsent({ github, owner: "owner", repo: "repo", tag }), /Release tag must match/);
+  }
+  assert.equal(requests, 0);
+  await publication.assertReleaseAbsent({ github, owner: "owner", repo: "repo", tag: "V12.34.567" });
+  assert.equal(requests, 1);
+});
+
 function makePackage(tag) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-release-"));
   for (const directory of ["packages", "sbom", "provenance"]) {

@@ -106,6 +106,14 @@ high/critical vulnerability gate.
 
 ## Draft, verification, and publication
 
+Automatic publication accepts only canonical uppercase numeric tags such as
+`V0.2.1`. The push filter uses GitHub's `[0-9]+` syntax for each version component,
+matching the existing publication validator. Suffix tags such as
+`V0.2.0-public`, `V0.2.0-sdk`, and prerelease labels do not start this workflow;
+they are not separate channels supported by the release pipeline. Manual
+dispatch remains available, but its tag must pass the same strict validation.
+See the [GitHub filter pattern syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#filter-pattern-cheat-sheet).
+
 GitHub publication is draft-first. After all source, dependency, build, smoke,
 and attestation gates pass, the commit-pinned `softprops/action-gh-release`
 uploads the complete asset set into one draft. Trusted repository code then
@@ -143,6 +151,12 @@ gh run rerun <run-id> --failed
 Do not use a re-run to bypass a reproducible defect or security finding. Fix the
 cause, rerun the affected local/CI gates, and create a new version tag when the
 source commit must change.
+
+The historical `V0.2.0-public` and `V0.2.0-sdk` failures (#40 and #41) stopped at
+tag validation because the old broad trigger also matched suffix tags. Do not
+rerun or move those tags: a corrected trigger on `main` does not alter their
+historical commits or certify any assets uploaded separately. A future automated
+release must use a new canonical tag on reviewed source and pass every gate.
 
 ## Joint release acceptance
 
