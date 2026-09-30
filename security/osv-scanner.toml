@@ -7,56 +7,6 @@ ignoreUntil = 2026-10-31
 reason = "Transitive Tauri dependency is unmaintained and has no patched release; replace it through the owning upstream dependency before expiry."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2024-0411"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0412"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0413"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0414"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0415"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0416"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0417"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0418"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0419"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0420"
-ignoreUntil = 2026-10-31
-reason = "Unmaintained GTK3 binding is Linux-only and absent from the formal Windows release; reassess or replace it before any Linux desktop release."
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0429"
 ignoreUntil = 2026-10-31
 reason = "Affected glib code is Linux-only and absent from the formal Windows release; block Linux desktop publication until upgraded or reassessed."
