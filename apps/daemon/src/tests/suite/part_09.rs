@@ -171,6 +171,7 @@ fn test_daemon_runtime_from_config(
         shutdown_observer: None,
         #[cfg(test)]
         connection_accept_observer: None,
+        maintenance_observer: None,
     }
 }
 

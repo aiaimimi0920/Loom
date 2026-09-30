@@ -79,6 +79,13 @@ fn main() {
         let request = String::from_utf8(bytes).unwrap();
         let id = field(&request, "requestId");
         let method = field(&request, "method");
+        if mode == "slow-init" && method == "initialize" {
+            let trigger = std::path::PathBuf::from(std::env::args().nth(2).unwrap());
+            if trigger.exists() {
+                std::fs::write(trigger.with_extension("started"), b"ready").unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+            }
+        }
         if (mode == "tree" || mode == "crash-tree") && method == "command" {
             let pid_file = std::env::args().nth(2).unwrap();
             std::process::Command::new(std::env::current_exe().unwrap())

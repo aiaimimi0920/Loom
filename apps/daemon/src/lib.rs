@@ -102,6 +102,7 @@ mod brain_plan;
 mod capability_resources;
 mod hook_canvas;
 mod http_request;
+mod periodic_maintenance;
 mod projection_settings;
 mod request_executor;
 mod surface_actions;
@@ -239,6 +240,7 @@ mod tests {
     include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");
     include!("tests/connection_read_admission.rs");
+    include!("tests/maintenance_isolation.rs");
     include!("tests/suite/part_02.rs");
     include!("tests/suite/part_03.rs");
     include!("tests/suite/part_04.rs");
