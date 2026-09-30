@@ -14,7 +14,7 @@ Loom combines controls that cover different boundaries:
   pull requests are cooled down, grouped where the review boundary is coherent,
   and capped per ecosystem by `.github/dependabot.yml`; security updates remain
   prompt and are not hidden by those version-update limits.
-- OSV-Scanner 2.5.0 scans the exact committed lockfiles on pull requests,
+- OSV-Scanner 2.5.1 scans the exact committed lockfiles on pull requests,
   pushes to `main`, a weekly schedule, manual dispatch, and tag publication.
 - GitHub receives a SARIF artifact and publishes the results to the repository
   Code Scanning dashboard with the required `security-events: write` permission.

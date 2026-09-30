@@ -133,7 +133,7 @@ Assert-Workflow -Name "dependency-security.yml" -RequiredText @(
     'actions: read',
     'contents: read',
     'security-events: write',
-    'google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@0c58c542420dfd23fcac08dd9c8ca3cca9c36f1a',
+    'google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@ffa0a5f39214d80778c9b494822d94d0d9668458',
     'ref: ${{ inputs.checkout-ref || github.ref }}',
     '--config=./security/osv-scanner.toml',
     '--lockfile=./Cargo.lock',
