@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "capability",
+  "id": "text-tools",
+  "name": "Text Tools",
+  "description": "Adds bounded text commands.",
+  "version": "1.0.0",
+  "publisher": {
+    "id": "publisher.example",
+    "keyId": "release-1"
+  },
+  "hostCompatibility": {
+    "loomCapabilityApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1"]
+    },
+    "hookExtensionApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1"]
+    }
+  },
+  "entrypoints": {
+    "service": {
+      "targets": {
+        "windows-x64": {
+          "command": "runtime/text-tools.exe"
+        }
+      },
+      "processModel": "on_demand"
+    }
+  },
+  "activationEvents": [
+    "onCommand:publisher.example/text-tools.transform"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "publisher.example/text-tools.transform",
+        "title": "Transform text",
+        "permissions": []
+      }
+    ]
+  },
+  "permissions": [],
+  "resources": {
+    "memoryMiB": 128,
+    "maxProcesses": 1,
+    "timeoutSeconds": 30
+  },
+  "dependencies": [],
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "release-1",
+    "file": "signature.json"
+  }
+}

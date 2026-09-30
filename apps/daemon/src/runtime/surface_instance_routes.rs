@@ -230,6 +230,7 @@ fn delete_surface_instance(
     hook_bridge: &SharedHookBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
+    walls: &SharedWallStore,
 ) -> Result<(u16, String)> {
     let mut store = surface_instances
         .lock()
@@ -255,6 +256,7 @@ fn delete_surface_instance(
                     surface_instances,
                     surface_resources,
                     "instance deleted",
+                    walls,
                 );
                 for attachment in existing.attachments.values() {
                     broadcast_hook_bridge_json(

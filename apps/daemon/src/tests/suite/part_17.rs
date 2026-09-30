@@ -1,23 +1,27 @@
 // Loom daemon tests fragment 17; included into the shared crate test module.
 #[test]
 fn daemon_hook_bridge_runtime_start_status_stop() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-bridge-runtime");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
     let stopped = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(stopped["running"], false);
     assert_eq!(stopped["connectedClients"], 0);
+    assert_eq!(stopped["extensionCapableClients"], 0);
 
     let started = expect_json_result_response(
         start_hook_bridge(
             r#"{"port":0}"#,
             &runtime.hook_bridge,
+            &runtime.capability_runtime,
+            &runtime.capability_resources,
+            &runtime.surface_resources,
             &runtime.mcp_servers,
             &runtime.tool_registry,
             &runtime.workflow_store,
             &runtime.settings,
             &runtime.shared_images,
-            &runtime.ocr_provider,
             &runtime.framework_registry,
             &runtime.control_plane_root,
             &runtime.run_store,
@@ -30,6 +34,10 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
     assert!(started["port"].as_u64().expect("assigned bridge port") > 0);
     assert_eq!(started["connectedClients"], 0);
     assert_eq!(started["protocol"], loom_protocol::HOOK_PROTOCOL_VERSION);
+    assert_eq!(
+        started["extension"]["protocol"],
+        loom_protocol::EXTENSION_PROTOCOL
+    );
 
     let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(running["running"], true);
@@ -39,12 +47,14 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
         start_hook_bridge(
             r#"{"port":0}"#,
             &runtime.hook_bridge,
+            &runtime.capability_runtime,
+            &runtime.capability_resources,
+            &runtime.surface_resources,
             &runtime.mcp_servers,
             &runtime.tool_registry,
             &runtime.workflow_store,
             &runtime.settings,
             &runtime.shared_images,
-            &runtime.ocr_provider,
             &runtime.framework_registry,
             &runtime.control_plane_root,
             &runtime.run_store,
@@ -73,6 +83,7 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
 
 #[test]
 fn daemon_hook_bridge_accepts_websocket_handshake_request() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-bridge-handshake");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
@@ -80,12 +91,14 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         start_hook_bridge(
             r#"{"port":0}"#,
             &runtime.hook_bridge,
+            &runtime.capability_runtime,
+            &runtime.capability_resources,
+            &runtime.surface_resources,
             &runtime.mcp_servers,
             &runtime.tool_registry,
             &runtime.workflow_store,
             &runtime.settings,
             &runtime.shared_images,
-            &runtime.ocr_provider,
             &runtime.framework_registry,
             &runtime.control_plane_root,
             &runtime.run_store,
@@ -131,6 +144,36 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
     );
     assert_eq!(response["serverVersion"], "0.2.0");
     assert!(response["sessionId"].as_str().is_some());
+    let hook_session_id = response["sessionId"].as_str().unwrap().to_owned();
+    socket
+        .send(tungstenite::Message::Text(
+            json!({
+                "method": loom_protocol::EXTENSION_METHOD_HANDSHAKE,
+                "params": {
+                    "requestId": "extension-handshake",
+                    "hookSessionId": hook_session_id,
+                    "protocol": loom_protocol::EXTENSION_PROTOCOL,
+                    "apiVersion": "1.0",
+                    "requiredFeatures": [loom_protocol::EXTENSION_FEATURE_SNAPSHOT],
+                    "optionalFeatures": [loom_protocol::EXTENSION_FEATURE_MENUS],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("send extension handshake");
+    let extension_response = read_hook_bridge_json(&mut socket);
+    assert_eq!(extension_response["status"], "succeeded");
+    assert!(extension_response["data"]["sessionId"]
+        .as_str()
+        .is_some_and(|session| session.starts_with("extension:")));
+    assert_eq!(extension_response["data"]["snapshot"]["generation"], 0);
+    assert_eq!(
+        extension_response["data"]["features"],
+        json!([
+            loom_protocol::EXTENSION_FEATURE_SNAPSHOT,
+            loom_protocol::EXTENSION_FEATURE_MENUS,
+        ])
+    );
 
     let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(running["running"], true);
@@ -140,16 +183,58 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
             .expect("connected clients")
             >= 1
     );
+    assert_eq!(running["extensionCapableClients"], 1);
 
-    drop(socket);
     let stopped = expect_json_result_response(
         stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
         200,
     );
     assert_eq!(stopped["running"], false);
+    assert_eq!(stopped["connectedClients"], 0);
+    assert_eq!(stopped["extensionCapableClients"], 0);
+    drop(socket);
+
+    let restarted = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    assert_eq!(restarted["connectedClients"], 0);
+    assert_eq!(restarted["extensionCapableClients"], 0);
+    stop_test_hook_bridge(&runtime);
 
     drop(runtime);
     fs::remove_dir_all(root).expect("cleanup hook bridge root");
+}
+
+#[test]
+fn daemon_extension_bridge_rejects_a_socket_without_hook_handshake() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
+    let root = unique_temp_dir("extension-bridge-auth-order");
+    let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
+    let mut socket = connect_hook_bridge_websocket(bridge_port);
+
+    socket
+        .send(tungstenite::Message::Text(
+            json!({
+                "method": loom_protocol::EXTENSION_METHOD_HANDSHAKE,
+                "params": {
+                    "requestId": "extension-before-hook",
+                    "hookSessionId": "hook:spoofed",
+                    "protocol": loom_protocol::EXTENSION_PROTOCOL,
+                    "apiVersion": "1.0",
+                    "requiredFeatures": [loom_protocol::EXTENSION_FEATURE_SNAPSHOT],
+                }
+            })
+            .to_string(),
+        ))
+        .expect("send unauthenticated extension handshake");
+    let response = read_hook_bridge_json(&mut socket);
+    assert_eq!(response["status"], "failed");
+    assert_eq!(response["error"]["code"], "hook_session_required");
+
+    drop(socket);
+    stop_test_hook_bridge(&runtime);
+    drop(runtime);
+    fs::remove_dir_all(root).expect("cleanup extension bridge root");
 }
 
 #[test]

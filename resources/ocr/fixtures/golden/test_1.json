@@ -1,0 +1,26 @@
+{
+  "fixture": "test_1.png",
+  "sourceWidth": 678,
+  "sourceHeight": 108,
+  "expectedFullText": "paddle-ocr-rs\n使用 Rust 通过 ONNX Runtime 调用 Paddle OCR 模型进行图片文字识别。",
+  "expectedBlocks": [
+    {
+      "text": "paddle-ocr-rs",
+      "boxPoints": [
+        { "x": 0, "y": 4 },
+        { "x": 200, "y": 1 },
+        { "x": 201, "y": 40 },
+        { "x": 0, "y": 43 }
+      ]
+    },
+    {
+      "text": "使用 Rust 通过 ONNX Runtime 调用 Paddle OCR 模型进行图片文字识别。",
+      "boxPoints": [
+        { "x": 0, "y": 78 },
+        { "x": 673, "y": 76 },
+        { "x": 674, "y": 103 },
+        { "x": 0, "y": 104 }
+      ]
+    }
+  ]
+}

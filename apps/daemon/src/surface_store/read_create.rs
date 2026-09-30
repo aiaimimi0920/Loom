@@ -71,6 +71,7 @@ impl SurfaceInstanceStore {
             .map(|instance| instance.descriptor.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn event_ack(&self, instance_id: &str, event_id: &str) -> Option<SurfaceActionAck> {
         self.instances
             .get(instance_id)
@@ -134,6 +135,7 @@ impl SurfaceInstanceStore {
             last_failure: None,
             pending_events: Vec::new(),
             event_acks: BTreeMap::new(),
+            ephemeral_events: BTreeMap::new(),
             pending_confirmations: BTreeMap::new(),
             migration_history: Vec::new(),
             created_at_ms: now,

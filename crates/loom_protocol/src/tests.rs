@@ -151,3 +151,66 @@ fn surface_stream_schema_pins_the_protocol_version_constant() {
         assert!(required.contains(&field), "`{field}` must stay required");
     }
 }
+
+#[test]
+fn hook_message_schema_omits_removed_fixed_enhancement_methods() {
+    let schema: Value = serde_json::from_str(schemas::HOOK_MESSAGE_V1).expect("schema JSON");
+    let definitions = schema["$defs"].as_object().expect("schema definitions");
+    let request_variants = definitions["request"]["oneOf"]
+        .as_array()
+        .expect("request variants");
+    let validator = jsonschema::validator_for(&schema).expect("valid hook message schema");
+
+    for variant in request_variants {
+        let reference = variant["$ref"]
+            .as_str()
+            .expect("request definition reference");
+        let definition = reference
+            .strip_prefix("#/$defs/")
+            .expect("local request definition reference");
+        assert!(
+            definitions.contains_key(definition),
+            "missing `{definition}`"
+        );
+    }
+
+    for envelope in [
+        "enhancementsGetEnvelope",
+        "ocrExecuteEnvelope",
+        "translationExecuteEnvelope",
+    ] {
+        assert!(!definitions.contains_key(envelope));
+        let removed_reference = format!("#/$defs/{envelope}");
+        assert!(request_variants
+            .iter()
+            .all(|variant| variant["$ref"].as_str() != Some(removed_reference.as_str())));
+    }
+
+    let supported_request =
+        serde_json::to_value(HookRequest::SettingsGet(HookSettingsGetRequest {
+            request_id: "request-1".to_owned(),
+        }))
+        .expect("serialize supported request");
+    assert!(validator.is_valid(&supported_request));
+
+    for removed_request in [
+        serde_json::json!({
+            "method": "loom.hook.enhancements.get",
+            "params": { "requestId": "request-1" }
+        }),
+        serde_json::json!({
+            "method": "loom.hook.ocr.execute",
+            "params": { "requestId": "request-1", "imageBase64": "AA==" }
+        }),
+        serde_json::json!({
+            "method": "loom.hook.translation.execute",
+            "params": {
+                "requestId": "request-1",
+                "text": "hello",
+                "targetLanguage": "zh-CN"
+            }
+        }),
+    ] {
+        assert!(!validator.is_valid(&removed_request));
+    }
+}

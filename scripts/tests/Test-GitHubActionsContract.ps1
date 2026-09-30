@@ -51,6 +51,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'actions/checkout@v5',
     'fetch-depth: 0',
     'actions/setup-node@v6',
+    'actions/setup-python@v6',
     'actions/upload-artifact@v6',
     'node-version: "22.22.2"',
     'node --test .\scripts\tests\effective-code-lines.test.mjs',
@@ -81,9 +82,20 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     '.\scripts\tests\Test-DependencySecurityContract.ps1',
     '.\scripts\tests\Test-CiCommandDiagnostics.ps1',
     '.\scripts\tests\Test-GitHubActionsContract.ps1',
+    '.\scripts\tests\Test-CapabilityPluginConformanceContract.ps1',
     '.\scripts\tests\Test-MaliciousPluginPackages.ps1',
-    'Clean-host plugin SDK and schema validation',
-    'cli_sign_trust_pack_install_conformance_and_revoke_e2e'
+    'Clean-host plugin SDK, schema, and capability validation',
+    'cli_sign_trust_pack_install_conformance_and_revoke_e2e',
+    'cargo build --locked -p loom-daemon -p loom-plugin-cli',
+    '.\scripts\Invoke-LoomCapabilityPluginConformance.ps1',
+    '-PackageId unknown-capability',
+    '-EvidenceRoot .\target\capability-plugin-conformance-ci',
+    'Exercise capability SDK templates without source imports',
+    'capability\Test-Templates.ps1',
+    'Build and verify non-OCR reference capability',
+    '.\scripts\Build-LoomCapabilityPackage.ps1',
+    '.\scripts\Build-LoomCapabilityCatalog.ps1',
+    '.\scripts\tests\Test-TextTranslationCapabilityPackage.ps1'
 )
 
 $ciPath = Join-Path $workflowRoot "ci.yml"
@@ -279,8 +291,8 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
     'security-events: write',
     'runs-on: ubuntu-latest',
     'actions/checkout@v5',
-    'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f',
-    'docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8',
+    'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
+    'docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a',
     '.github/workflows/docker.yml',
     'examples/**',
     'provenance: false',

@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/loom/live-control.v1.schema.json",
+  "title": "Loom Live Control v1",
+  "description": "Strict JSON control plane for live screenshot sessions. Binary video frames use the separate NLLV v1 framing contract.",
+  "type": "object",
+  "required": ["protocolVersion", "sessionId", "epoch", "sequence", "messageType", "payload"],
+  "properties": {
+    "protocolVersion": { "const": "loom.live.v1" },
+    "sessionId": { "$ref": "#/$defs/id" },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "messageType": {
+      "enum": [
+        "session_start",
+        "session_ack",
+        "session_state",
+        "frame_notice",
+        "input_event",
+        "observation",
+        "trigger_condition",
+        "trigger_event",
+        "control_transfer",
+        "resume_request",
+        "session_end"
+      ]
+    },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    { "$ref": "#/$defs/sessionStartBranch" },
+    { "$ref": "#/$defs/sessionAckBranch" },
+    { "$ref": "#/$defs/sessionStateBranch" },
+    { "$ref": "#/$defs/frameNoticeBranch" },
+    { "$ref": "#/$defs/inputEventBranch" },
+    { "$ref": "#/$defs/observationBranch" },
+    { "$ref": "#/$defs/triggerConditionBranch" },
+    { "$ref": "#/$defs/triggerEventBranch" },
+    { "$ref": "#/$defs/controlTransferBranch" },
+    { "$ref": "#/$defs/resumeRequestBranch" },
+    { "$ref": "#/$defs/sessionEndBranch" }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_.:/-]+$"
+    },
+    "boundedReason": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 16384 }
+      },
+      "additionalProperties": false
+    },
+    "windowIdentity": {
+      "type": "object",
+      "required": ["windowId", "processId"],
+      "properties": {
+        "windowId": { "$ref": "#/$defs/id" },
+        "processId": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "processStartedAtMs": { "type": "integer", "minimum": 0 },
+        "title": { "type": "string", "maxLength": 512 }
+      },
+      "additionalProperties": false
+    },
+    "frameStream": {
+      "type": "object",
+      "required": ["streamId", "transport", "codec", "colorSpace", "width", "height", "targetFps", "maxBufferedFrames", "keyframeInterval"],
+      "properties": {
+        "streamId": { "$ref": "#/$defs/id" },
+        "transport": { "enum": ["websocket_binary", "shared_memory", "cloud_relay"] },
+        "endpoint": { "type": "string", "maxLength": 2048 },
+        "codec": { "enum": ["raw_bgra", "h264"] },
+        "colorSpace": { "enum": ["srgb", "hdr10"] },
+        "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "targetFps": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "maxBufferedFrames": { "type": "integer", "minimum": 2, "maximum": 3 },
+        "keyframeInterval": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      },
+      "additionalProperties": false
+    },
+    "triggerBinding": {
+      "type": "object",
+      "required": ["bindingId", "observationId", "conditionRevision", "authorizedBy", "enabled"],
+      "properties": {
+        "bindingId": { "$ref": "#/$defs/id" },
+        "observationId": { "$ref": "#/$defs/id" },
+        "conditionRevision": { "type": "integer", "minimum": 0 },
+        "authorizedBy": { "$ref": "#/$defs/id" },
+        "enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "required": ["protocolVersion", "sessionId", "sourceDeviceId", "sourceHookId", "sourceKind", "sourceWindowIdentity", "sourceRegion", "regionAnchor", "frameStream", "interactionCapabilities", "observationCapabilities", "triggerBindings", "viewerDevices", "visibilityState", "captureStrategy", "renderPreservationStrategy", "revision", "createdAtMs", "lastSeenAtMs"],
+      "properties": {
+        "protocolVersion": { "const": "loom.live.v1" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "sourceDeviceId": { "$ref": "#/$defs/id" },
+        "sourceHookId": { "$ref": "#/$defs/id" },
+        "sourceKind": { "enum": ["window", "display", "region"] },
+        "sourceWindowIdentity": { "$ref": "#/$defs/windowIdentity" },
+        "sourceRegion": { "$ref": "#/$defs/rect" },
+        "regionAnchor": { "enum": ["window", "control", "screen"] },
+        "frameStream": { "$ref": "#/$defs/frameStream" },
+        "interactionCapabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["pointer_move", "pointer_button", "double_click", "drag", "wheel", "keyboard", "text", "focus", "cancel"] }
+        },
+        "observationCapabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["uia_tree", "invoke", "range_value", "value", "toggle", "scroll", "adapter", "vision"] }
+        },
+        "triggerBindings": { "type": "array", "items": { "$ref": "#/$defs/triggerBinding" } },
+        "viewerDevices": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/id" } },
+        "controllerDevice": { "$ref": "#/$defs/id" },
+        "visibilityState": { "enum": ["visible", "unfocused", "logical_minimized", "logical_hidden", "restoring", "capture_recovering", "capture_failed", "closed"] },
+        "captureStrategy": { "enum": ["persistent_window_wgc", "persistent_display_wgc", "adapter"] },
+        "renderPreservationStrategy": { "enum": ["visible", "visible_offscreen", "hidden_workspace", "application_adapter", "unsupported"] },
+        "revision": { "type": "integer", "minimum": 0 },
+        "createdAtMs": { "type": "integer", "minimum": 0 },
+        "lastSeenAtMs": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "frameMetadata": {
+      "type": "object",
+      "required": ["frameId", "captureTimestampMs", "encodeTimestampMs", "width", "height", "keyframe", "droppedFrames", "colorSpace", "codec"],
+      "properties": {
+        "frameId": { "type": "integer", "minimum": 1 },
+        "captureTimestampMs": { "type": "integer", "minimum": 0 },
+        "encodeTimestampMs": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "keyframe": { "type": "boolean" },
+        "droppedFrames": { "type": "integer", "minimum": 0 },
+        "colorSpace": { "enum": ["srgb", "hdr10"] },
+        "codec": { "enum": ["raw_bgra", "h264"] }
+      },
+      "additionalProperties": false
+    },
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+        "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 }
+      },
+      "additionalProperties": false
+    },
+    "inputKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "mouse_move" },
+            "data": { "$ref": "#/$defs/point" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "mouse_button" },
+            "data": {
+              "type": "object",
+              "required": ["button", "state", "x", "y", "clickCount"],
+              "properties": {
+                "button": { "enum": ["left", "middle", "right", "x1", "x2"] },
+                "state": { "enum": ["pressed", "released"] },
+                "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                "clickCount": { "type": "integer", "minimum": 1, "maximum": 2 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "wheel" },
+            "data": {
+              "type": "object",
+              "required": ["deltaX", "deltaY", "x", "y"],
+              "properties": {
+                "deltaX": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+                "deltaY": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+                "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "key" },
+            "data": {
+              "type": "object",
+              "required": ["code", "state", "modifiers"],
+              "properties": {
+                "code": { "type": "string", "minLength": 1, "maxLength": 80 },
+                "state": { "enum": ["pressed", "released"] },
+                "modifiers": { "type": "integer", "minimum": 0, "maximum": 255 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "text" },
+            "data": {
+              "type": "object",
+              "required": ["text"],
+              "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 4096 } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "focus" },
+            "data": {
+              "type": "object",
+              "required": ["focused"],
+              "properties": { "focused": { "type": "boolean" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": { "kind": { "const": "cancel" } },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "inputEvent": {
+      "type": "object",
+      "required": ["inputSequence", "issuedAtMs", "sourceDeviceId", "kind"],
+      "properties": {
+        "inputSequence": { "type": "integer", "minimum": 1 },
+        "issuedAtMs": { "type": "integer", "minimum": 0 },
+        "sourceDeviceId": { "$ref": "#/$defs/id" },
+        "kind": { "$ref": "#/$defs/inputKind" }
+      },
+      "additionalProperties": false
+    },
+    "elementLocator": {
+      "type": "object",
+      "required": ["controlType", "ancestorPath"],
+      "properties": {
+        "automationId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "controlType": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "ancestorPath": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "runtimeId": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "observation": {
+      "type": "object",
+      "required": ["observationId", "sequence", "state", "source", "confidence", "observedAtMs"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/id" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "state": { "enum": ["unknown", "detected", "observing", "stable", "triggered", "stale", "error"] },
+        "source": { "enum": ["ui_automation", "app_adapter", "vision", "unknown"] },
+        "confidence": { "enum": ["exact", "high", "medium", "low"] },
+        "observedAtMs": { "type": "integer", "minimum": 1 },
+        "stableSinceMs": { "type": "integer", "minimum": 0 },
+        "locator": { "$ref": "#/$defs/elementLocator" },
+        "value": true,
+        "reason": { "$ref": "#/$defs/boundedReason" }
+      },
+      "additionalProperties": false
+    },
+    "triggerAudit": {
+      "type": "object",
+      "required": ["triggerId", "bindingId", "conditionRevision", "observationId", "observationSequence", "sourceDeviceId", "observationSource", "idempotencyKey", "outcome", "evaluatedAtMs", "authorizedBy"],
+      "properties": {
+        "triggerId": { "$ref": "#/$defs/id" },
+        "bindingId": { "$ref": "#/$defs/id" },
+        "conditionRevision": { "type": "integer", "minimum": 1 },
+        "observationId": { "$ref": "#/$defs/id" },
+        "observationSequence": { "type": "integer", "minimum": 1 },
+        "sourceDeviceId": { "$ref": "#/$defs/id" },
+        "observationSource": { "enum": ["ui_automation", "app_adapter", "vision", "unknown"] },
+        "idempotencyKey": { "$ref": "#/$defs/id" },
+        "outcome": { "enum": ["fired", "skipped", "failed"] },
+        "evaluatedAtMs": { "type": "integer", "minimum": 1 },
+        "authorizedBy": { "$ref": "#/$defs/id" },
+        "actionRequestId": { "$ref": "#/$defs/id" },
+        "reason": { "$ref": "#/$defs/boundedReason" }
+      },
+      "additionalProperties": false
+    },
+    "triggerCondition": {
+      "type": "object",
+      "required": ["conditionId", "revision", "observationId", "operator", "operand", "stableForMs", "risingEdge", "rearm", "minimumConfidence"],
+      "properties": {
+        "conditionId": { "$ref": "#/$defs/id" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "observationId": { "$ref": "#/$defs/id" },
+        "operator": { "enum": ["equals", "not_equals", "greater_than", "greater_or_equal", "less_than", "less_or_equal", "contains"] },
+        "operand": true,
+        "stableForMs": { "type": "integer", "minimum": 0, "maximum": 86400000 },
+        "risingEdge": { "type": "boolean" },
+        "rearm": { "type": "boolean" },
+        "minimumConfidence": { "enum": ["exact", "high", "medium", "low"] }
+      },
+      "additionalProperties": false
+    },
+    "sessionStartBranch": {
+      "if": { "properties": { "messageType": { "const": "session_start" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/sessionStart" } } }
+    },
+    "sessionStart": {
+      "type": "object",
+      "required": ["session", "requestedByDeviceId", "requestNonce"],
+      "properties": {
+        "session": { "$ref": "#/$defs/session" },
+        "requestedByDeviceId": { "$ref": "#/$defs/id" },
+        "requestNonce": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "sessionAckBranch": {
+      "if": { "properties": { "messageType": { "const": "session_ack" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/sessionAck" } } }
+    },
+    "sessionAck": {
+      "type": "object",
+      "required": ["accepted", "responderDeviceId"],
+      "properties": {
+        "accepted": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/boundedReason" },
+        "responderDeviceId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "sessionStateBranch": {
+      "if": { "properties": { "messageType": { "const": "session_state" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/sessionState" } } }
+    },
+    "sessionState": {
+      "type": "object",
+      "required": ["revision", "visibility", "viewers"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "visibility": { "enum": ["visible", "unfocused", "logical_minimized", "logical_hidden", "restoring", "capture_recovering", "capture_failed", "closed"] },
+        "viewers": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/id" } },
+        "controllerDeviceId": { "$ref": "#/$defs/id" },
+        "reason": { "$ref": "#/$defs/boundedReason" }
+      },
+      "additionalProperties": false
+    },
+    "frameNoticeBranch": {
+      "if": { "properties": { "messageType": { "const": "frame_notice" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "type": "object", "required": ["metadata"], "properties": { "metadata": { "$ref": "#/$defs/frameMetadata" } }, "additionalProperties": false } } }
+    },
+    "inputEventBranch": {
+      "if": { "properties": { "messageType": { "const": "input_event" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/inputEvent" } } }
+    },
+    "observationBranch": {
+      "if": { "properties": { "messageType": { "const": "observation" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/observation" } } }
+    },
+    "triggerConditionBranch": {
+      "if": { "properties": { "messageType": { "const": "trigger_condition" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/triggerCondition" } } }
+    },
+    "triggerEventBranch": {
+      "if": { "properties": { "messageType": { "const": "trigger_event" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/triggerAudit" } } }
+    },
+    "controlTransferBranch": {
+      "if": { "properties": { "messageType": { "const": "control_transfer" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/controlTransfer" } } }
+    },
+    "controlTransfer": {
+      "type": "object",
+      "required": ["authorityRevision", "expiresAtMs", "reason"],
+      "properties": {
+        "previousControllerDeviceId": { "$ref": "#/$defs/id" },
+        "controllerDeviceId": { "$ref": "#/$defs/id" },
+        "authorityRevision": { "type": "integer", "minimum": 0 },
+        "expiresAtMs": { "type": "integer", "minimum": 0 },
+        "reason": { "$ref": "#/$defs/boundedReason" }
+      },
+      "additionalProperties": false
+    },
+    "resumeRequestBranch": {
+      "if": { "properties": { "messageType": { "const": "resume_request" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/resumeRequest" } } }
+    },
+    "resumeRequest": {
+      "type": "object",
+      "required": ["lastControlSequence", "lastFrameId", "lastInputSequence", "requesterDeviceId"],
+      "properties": {
+        "lastControlSequence": { "type": "integer", "minimum": 0 },
+        "lastFrameId": { "type": "integer", "minimum": 0 },
+        "lastInputSequence": { "type": "integer", "minimum": 0 },
+        "requesterDeviceId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "sessionEndBranch": {
+      "if": { "properties": { "messageType": { "const": "session_end" } }, "required": ["messageType"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/sessionEnd" } } }
+    },
+    "sessionEnd": {
+      "type": "object",
+      "required": ["reason", "endedByDeviceId"],
+      "properties": {
+        "reason": { "enum": ["closed", "revoked", "source_closed", "permission_denied", "timed_out", "error"] },
+        "endedByDeviceId": { "$ref": "#/$defs/id" },
+        "detail": { "$ref": "#/$defs/boundedReason" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

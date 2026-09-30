@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/schemas/capabilities/ocr-result.v1.schema.json",
+  "title": "OCR result attachment v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "visible",
+    "sourceWidth",
+    "sourceHeight",
+    "fullText",
+    "textBlocks",
+    "surfaceScene"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "visible": { "type": "boolean" },
+    "showTranslated": { "type": "boolean", "default": false },
+    "sourceWidth": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "sourceHeight": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "coordinateScale": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+    "fullText": { "type": "string", "maxLength": 98304 },
+    "selectedBlockIndices": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 0, "maximum": 127 }
+    },
+    "textBlocks": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "required": ["text", "left", "top", "width", "height", "textColor", "backgroundColor"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "translatedText": { "type": "string", "maxLength": 1024 },
+          "normalizedText": { "type": "string", "maxLength": 1024 },
+          "translating": { "type": "boolean" },
+          "rawText": { "type": "string", "maxLength": 1024 },
+          "left": { "type": "number", "minimum": 0 },
+          "top": { "type": "number", "minimum": 0 },
+          "width": { "type": "number", "exclusiveMinimum": 0 },
+          "height": { "type": "number", "exclusiveMinimum": 0 },
+          "boxScore": { "type": "number", "minimum": 0, "maximum": 1 },
+          "textScore": { "type": "number", "minimum": 0, "maximum": 1 },
+          "confidenceSource": {
+            "type": "string",
+            "enum": ["modelTextScoreMean"]
+          },
+          "confidence": { "$ref": "#/$defs/textConfidence" },
+          "textColor": { "$ref": "#/$defs/color" },
+          "backgroundColor": { "$ref": "#/$defs/color" },
+          "colorHex": { "$ref": "#/$defs/color" },
+          "bgColorHex": { "$ref": "#/$defs/color" },
+          "boxPoints": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": { "$ref": "#/$defs/point" }
+          },
+          "lineGeometry": { "$ref": "#/$defs/lineGeometry" },
+          "characterSpans": {
+            "type": "array",
+            "maxItems": 2048,
+            "items": { "$ref": "#/$defs/textSpan" }
+          },
+          "wordSpans": {
+            "type": "array",
+            "maxItems": 2048,
+            "items": { "$ref": "#/$defs/textSpan" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "surfaceScene": { "type": "object" },
+    "migration": {
+      "type": "object",
+      "required": ["source", "version"],
+      "properties": {
+        "source": { "const": "hook.unitData.ocrResult" },
+        "version": { "const": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "lineGeometry": {
+      "type": "object",
+      "required": ["baseline", "angleDegrees", "source"],
+      "properties": {
+        "baseline": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "angleDegrees": { "type": "number" },
+        "source": { "const": "estimatedFromRapidOcrLineQuad" }
+      },
+      "additionalProperties": false
+    },
+    "textSpan": {
+      "type": "object",
+      "required": ["text", "boxPoints", "score", "source"],
+      "properties": {
+        "text": { "type": "string", "maxLength": 1024 },
+        "boxPoints": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source": { "const": "ctcAlignedFromRecognitionTimesteps" }
+      },
+      "additionalProperties": false
+    },
+    "textConfidence": {
+      "type": "object",
+      "required": [
+        "meanSymbolScore",
+        "minimumSymbolScore",
+        "symbolCount",
+        "recoveredSymbolCount",
+        "source"
+      ],
+      "properties": {
+        "meanSymbolScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minimumSymbolScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "symbolCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "recoveredSymbolCount": { "type": "integer", "minimum": 0, "maximum": 4096 },
+        "source": { "const": "ctcDecodedSymbolScores" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

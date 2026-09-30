@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "capability",
+  "id": "text-translation",
+  "name": "Text Translation",
+  "description": "Translate OCR text through the host-configured local or Loom Gateway model.",
+  "version": "0.2.37",
+  "publisher": {
+    "id": "neuro.official",
+    "keyId": "neuro-official-capability-2"
+  },
+  "hostCompatibility": {
+    "loomCapabilityApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1", "attachments.v1", "model-broker.v1"]
+    },
+    "hookExtensionApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1", "unit-overlays.v1", "ocr-text.v1"]
+    }
+  },
+  "entrypoints": {
+    "service": {
+      "targets": {
+        "windows-x64": {
+          "command": "runtime/loom-text-translation-host.exe",
+          "args": []
+        }
+      },
+      "processModel": "on_demand"
+    }
+  },
+  "activationEvents": [
+    "onCommand:neuro.official/text-translation.toggle",
+    "onCommand:neuro.official/text-translation.toggle-overlay",
+    "onCommand:neuro.official/text-translation.translate"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "neuro.official/text-translation.toggle",
+        "title": "Translate OCR text",
+        "description": "Run translation using cached OCR, recognizing the selected image first when needed.",
+        "inputSchema": "schemas/translate-input.v1.schema.json",
+        "outputSchema": "schemas/translate-output.v1.schema.json",
+        "inputContext": "ocr-text.v1",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 65000,
+        "permissions": ["hook.unit.attachments.read", "hook.unit.attachments.write", "loom.network.brokered"]
+      },
+      {
+        "id": "neuro.official/text-translation.toggle-overlay",
+        "title": "显示或隐藏翻译结果",
+        "description": "Toggle the translated OCR overlay without deleting the translation.",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "requiresUserGesture": false,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.unit.attachments.write"]
+      },
+      {
+        "id": "neuro.official/text-translation.translate",
+        "title": "Translate OCR text",
+        "description": "Translate bounded OCR text using the configured target language.",
+        "inputSchema": "schemas/translate-input.v1.schema.json",
+        "outputSchema": "schemas/translate-output.v1.schema.json",
+        "inputContext": "ocr-text.v1",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 65000,
+        "permissions": ["hook.unit.attachments.read", "hook.unit.attachments.write", "loom.network.brokered"]
+      }
+    ],
+    "shortcuts": [
+      {
+        "id": "neuro.official/text-translation.shortcut.toggle",
+        "command": "neuro.official/text-translation.toggle",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "order": 30,
+        "payload": { "keys": "ctrl+5", "global": true }
+      },
+      {
+        "id": "neuro.official/text-translation.shortcut.toggle-overlay",
+        "command": "neuro.official/text-translation.toggle-overlay",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "order": 31,
+        "payload": { "keys": "alt+5" }
+      }
+    ],
+    "settings": [
+      {
+        "id": "neuro.official/text-translation.target-language",
+        "title": "Translation target language",
+        "payload": {
+          "description": "Used for Ctrl+5. Empty uses Hook's display language.",
+          "type": "string",
+          "default": "",
+          "enum": ["", "zh-CN", "en"]
+        }
+      }
+    ],
+    "renderers": [
+      {
+        "id": "neuro.official/text-translation.renderer",
+        "schema": "renderer.v1",
+        "payload": {
+          "typeId": "neuro.official/text-translation.result.v1",
+          "bounds": { "x": 0, "y": 0, "width": 8192, "height": 8192 },
+          "attachmentScenePath": "/surfaceScene",
+          "sourceContext": "ocr-text.v1",
+          "replacesSource": true
+        }
+      }
+    ],
+    "dataTypes": [
+      {
+        "id": "neuro.official/text-translation.result.v1",
+        "schema": "schemas/translate-output.v1.schema.json",
+        "payload": { "version": "1", "sourceType": "neuro.official/ocr.result.v1" }
+      }
+    ]
+  },
+  "permissions": [
+    "hook.unit.attachments.read",
+    "hook.unit.attachments.write",
+    "loom.network.brokered"
+  ],
+  "resources": {
+    "memoryMiB": 64,
+    "maxProcesses": 1,
+    "timeoutSeconds": 70,
+    "diskMiB": 32,
+    "stderrKiBPerMinute": 16
+  },
+  "dependencies": [],
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "neuro-official-capability-2",
+    "file": "signature.json"
+  }
+}

@@ -21,6 +21,8 @@ $buildModuleNames = @(
 )
 $buildModulePaths = @($buildModuleNames | ForEach-Object { Join-Path $buildModuleRoot $_ })
 $buildContractPaths = @($buildPath) + $buildModulePaths
+$ocrCapabilityBuildPath = Join-Path $repoRoot "scripts\Build-LoomOcrCapabilityPackage.ps1"
+$extensionCompatibilityPath = Join-Path $repoRoot "scripts\ExtensionCompatibility.ps1"
 $verifyModuleRoot = Join-Path $repoRoot "scripts\verify-release"
 $verifyModuleNames = @(
     "Common.ps1",
@@ -179,6 +181,7 @@ Assert-ScriptContract `
         '[string]$OutputRoot = ".\release\Loom"',
         '[switch]$DryRun',
         '[switch]$RequireCleanSource',
+        '[string]$ExtensionCompatibilityPath',
         'New-ExeSpec -Name "Loom.exe"',
         '-DestinationRelativePath "runtime\loom-daemon.exe"',
         'Loom-CLI-',
@@ -199,11 +202,11 @@ Assert-ScriptContract `
         'sampleArtCatalog',
         'New-LoomSbom.ps1',
         'build-provenance.json',
-        'runtime\resources\ocr',
         'expectedIds = @(',
         'sourcePaths = @(".")',
         'checksums.sha256',
         'manifest.json',
+        'extension-compatibility.json',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'
     ) `
@@ -211,7 +214,25 @@ Assert-ScriptContract `
         $commonForbidden
         'New-ExeSpec -Name "loom.exe"'
         'New-ExeSpec -Name "loom-desktop.exe"'
+        'runtime\resources\ocr'
     )
+
+Assert-ScriptContract `
+    -Path @($ocrCapabilityBuildPath) `
+    -RequiredText @(
+        'loom-ocr-host.exe',
+        'capability.manifest.json',
+        'Invoke-LoomPackageSigning',
+        'trust=Trusted',
+        'ocr.zip.sha256',
+        'ocr.cdx.json',
+        'ocr.provenance.json',
+        'deterministic = $true',
+        'runtime\resources\ocr'
+    ) `
+    -ForbiddenText @('fixtures\test_1.png')
+
+. (Join-Path $PSScriptRoot "standalone-release\ExtensionCompatibility.ps1")
 
 Assert-ScriptContract `
     -Path $verifyContractPaths `
@@ -253,6 +274,7 @@ Assert-ScriptContract `
         'manifest.json',
         '[switch]$RunSmoke',
         '[switch]$RequireCleanSource',
+        'extension-compatibility.json',
         'function Invoke-CapturedPowerShell',
         'Invoke-LoomHookErrorPreviewSmoke.ps1',
         'hookErrorPreviewSmoke',
@@ -263,6 +285,7 @@ Assert-ScriptContract `
         'Invoke-LoomSurfacePrototypeSmoke.ps1',
         'surfacePrototypeSmoke',
         'runtime/python/Arts/',
+        'runtime/resources/ocr/',
         '-PackageDir',
         '$previousErrorActionPreference = $ErrorActionPreference',
         '$ErrorActionPreference = "Continue"'
@@ -490,7 +513,7 @@ Assert-Equal -Expected "loom.exe" -Actual ([string]$defaultPlan.cliArtifact.entr
 Assert-True -Condition ([string]$defaultPlan.cliArtifact.zipNamePattern -eq "Loom-CLI-{versionId}-windows-x64.zip") -Message "Dry-run CLI ZIP naming contract mismatch."
 Assert-Equal -Expected "loom-plugin.exe" -Actual ([string]$defaultPlan.pluginSdkArtifact.pluginCliEntryName) -Message "Dry-run must catalog the plugin developer CLI."
 Assert-True -Condition ([string]$defaultPlan.pluginSdkArtifact.zipNamePattern -eq "Loom-Plugin-SDK-{versionId}-windows-x64.zip") -Message "Dry-run plugin SDK ZIP naming contract mismatch."
-Assert-Equal -Expected 20 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain protocol schemas, Surface SDK, and developer documentation."
+Assert-Equal -Expected 32 -Actual @($defaultPlan.pluginSdkArtifact.files).Count -Message "Dry-run plugin SDK must contain schemas, capability templates, Surface SDK, conformance scripts, and developer documentation."
 Assert-Equal -Expected 1 -Actual @($defaultPlan.pluginSdkArtifact.files | Where-Object { [string]$_.destinationRelativePath -eq "protocol\schemas\surface-stream.v1.schema.json" }).Count -Message "Dry-run plugin SDK must include the Surface stream protocol schema."
 Assert-Equal -Expected "process,cloud_api,mcp,workflow" -Actual (@($defaultPlan.frameworkPackageCatalog.expectedIds) -join ",") -Message "Dry-run must catalog all four independent framework packages."
 Assert-Equal -Expected (Join-Path $defaultPlan.destination "packages\frameworks") -Actual ([string]$defaultPlan.frameworkPackageCatalog.outputRoot) -Message "Dry-run framework catalog output must stay inside the candidate."

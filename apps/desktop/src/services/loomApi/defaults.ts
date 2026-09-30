@@ -60,10 +60,13 @@ export const DEFAULT_LOOM_SETTINGS: LoomSettings = {
   shortcuts: {
     cancel: { id: "cancel", label: "Cancel / Deselect", keys: "Escape", enabled: true },
     capture: { id: "capture", label: "Screenshot", keys: "Ctrl+1", enabled: true },
+    live_capture: { id: "live_capture", label: "Live Screenshot", keys: "Ctrl+2", enabled: true },
+    long_capture: { id: "long_capture", label: "Long Screenshot", keys: "Ctrl+3", enabled: true },
     copy_unit: { id: "copy_unit", label: "Copy Unit", keys: "Ctrl+C", enabled: true },
     paste_unit: { id: "paste_unit", label: "Paste Unit", keys: "Ctrl+V", enabled: true },
     save_image: { id: "save_image", label: "Save Image", keys: "Ctrl+S", enabled: true },
-    toggle_ocr: { id: "toggle_ocr", label: "Toggle OCR", keys: "Alt+2", enabled: true },
+    toggle_clean_view: { id: "toggle_clean_view", label: "Clean View", keys: "Ctrl+Shift+4", enabled: true },
+    toggle_ocr: { id: "toggle_ocr", label: "Toggle OCR", keys: "Alt+4", enabled: true },
     toggle_translation: { id: "toggle_translation", label: "Toggle Translation", keys: "Alt+3", enabled: true },
   },
 };

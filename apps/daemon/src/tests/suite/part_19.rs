@@ -1,34 +1,27 @@
 // Loom daemon tests fragment 19; included into the shared crate test module.
 #[test]
-fn daemon_hook_bridge_ocr_image_unavailable_by_default() {
-    let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let previous_fixture = std::env::var("LOOM_OCR_FIXTURE_TEXT").ok();
-    let previous_model_dir = std::env::var("LOOM_OCR_MODEL_DIR").ok();
-    std::env::remove_var("LOOM_OCR_FIXTURE_TEXT");
-    let root = unique_temp_dir("ocr-unavailable");
-    let empty_model_dir = root.join("empty-ocr-models");
-    fs::create_dir_all(&empty_model_dir).expect("create empty model dir");
-    std::env::set_var("LOOM_OCR_MODEL_DIR", &empty_model_dir);
+fn daemon_hook_bridge_rejects_removed_fixed_enhancement_methods() {
+    let root = unique_temp_dir("removed-fixed-enhancements");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-    let response = run_hook_bridge_text(
-        &runtime,
-        &serde_json::json!({
-            "method": loom_protocol::HOOK_METHOD_OCR_EXECUTE,
-            "params": {
-                "requestId": "unavailable-ocr",
-                "imageBase64": test_png_base64()
-            }
-        })
-        .to_string(),
-    );
-
-    assert_eq!(response["status"], "failed");
-    assert_eq!(response["error"]["message"], "OCR enhancement unavailable");
+    for method in [
+        "loom.hook.enhancements.get",
+        "loom.hook.ocr.execute",
+        "loom.hook.translation.execute",
+    ] {
+        let response = run_hook_bridge_text(
+            &runtime,
+            &serde_json::json!({
+                "method": method,
+                "params": { "requestId": "removed-fixed-method" }
+            })
+            .to_string(),
+        );
+        assert_eq!(response["status"], "failed", "method={method} response={response}");
+        assert_eq!(response["error"]["code"], "invalid_hook_request");
+    }
 
     drop(runtime);
-    restore_env("LOOM_OCR_MODEL_DIR", previous_model_dir);
-    restore_env("LOOM_OCR_FIXTURE_TEXT", previous_fixture);
-    fs::remove_dir_all(root).expect("cleanup ocr unavailable root");
+    fs::remove_dir_all(root).expect("cleanup removed fixed enhancements root");
 }
 
 #[test]

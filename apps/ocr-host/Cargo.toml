@@ -1,0 +1,24 @@
+[package]
+name = "loom-ocr-host"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Official out-of-process OCR Capability Plugin runtime"
+
+[[bin]]
+name = "loom-ocr-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+loom_ocr.workspace = true
+loom_protocol.workspace = true
+rxing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+base64.workspace = true

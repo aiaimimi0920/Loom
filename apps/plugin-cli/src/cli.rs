@@ -36,6 +36,10 @@ where
             let report = pack_directory(Path::new(source), Path::new(output))?;
             writeln!(writer, "{report}")?;
         }
+        ["install", "capability", archive, "--control-plane", root] => {
+            let report = install_local_capability(Path::new(archive), Path::new(root))?;
+            writeln!(writer, "{report}")?;
+        }
         ["schema", name] => {
             writer.write_all(schema(name)?.as_bytes())?;
             writer.write_all(b"\n")?;
@@ -48,6 +52,21 @@ where
         ["sign", directory, key_path, publisher_id] => {
             let status =
                 sign_plugin_package(Path::new(directory), Path::new(key_path), publisher_id)?;
+            writeln!(writer, "{status}")?;
+        }
+        ["catalog", "sign", payload, key_path, output] => {
+            let status = sign_capability_catalog(
+                Path::new(payload),
+                Path::new(key_path),
+                Path::new(output),
+            )?;
+            writeln!(writer, "{status}")?;
+        }
+        ["catalog", "validate", catalog, trust_store] => {
+            let status = validate_capability_catalog(
+                Path::new(catalog),
+                Path::new(trust_store),
+            )?;
             writeln!(writer, "{status}")?;
         }
         ["trust", "add", store_path, publisher_id, key_path] => {
@@ -68,6 +87,13 @@ where
         ["init", "art", directory, id, framework, publisher] => {
             init_art(Path::new(directory), id, framework, publisher)?;
             writeln!(writer, "initialized Art `{publisher}/{id}` at {directory}")?;
+        }
+        ["init", "capability", directory, id, publisher] => {
+            init_capability(Path::new(directory), id, publisher)?;
+            writeln!(
+                writer,
+                "initialized capability `{publisher}/{id}` at {directory}"
+            )?;
         }
         ["conformance", executable, framework_id, art_dir] => {
             let report = run_conformance(Path::new(executable), framework_id, Path::new(art_dir))?;
@@ -93,16 +119,20 @@ fn help_text() -> &'static str {
         "Commands:\n",
         "  init framework <DIR> <ID> <PUBLISHER>  Create a framework package skeleton\n",
         "  init art <DIR> <ID> <FRAMEWORK> <PUBLISHER> Create an Art package skeleton\n",
+        "  init capability <DIR> <ID> <PUBLISHER> Create a Capability Plugin skeleton\n",
         "  validate <PATH> [--trust-store <STORE>] Validate a package directory or manifest\n",
         "  pack <SOURCE_DIR> <OUTPUT_ZIP>          Validate and build a deterministic package ZIP\n",
+        "  install capability <ZIP> --control-plane <ROOT> Install disabled into an explicit local registry\n",
         "  conformance <EXE> <FRAMEWORK> <ART_DIR> Run the v1 process contract against a runtime\n",
         "  schema <NAME>                           Print an embedded public JSON Schema\n",
         "  keygen <KEY_FILE> <KEY_ID>              Generate an Ed25519 signing key\n",
         "  sign <PACKAGE_DIR> <KEY_FILE> <PUBLISHER> Sign a framework or Art package\n",
+        "  catalog sign <PAYLOAD> <KEY_FILE> <OUTPUT> Sign an official Capability catalog\n",
+        "  catalog validate <CATALOG> <TRUST_STORE> Validate a signed Capability catalog\n",
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",
-        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, hook-message\n",
+        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, hook-message, capability-package, capability-runtime, extension\n",
     )
 }
 
@@ -119,6 +149,9 @@ fn schema(name: &str) -> Result<&'static str> {
         "surface-stream" => Ok(schemas::SURFACE_STREAM_V1),
         "device-session" => Ok(schemas::DEVICE_SESSION_V1),
         "hook-message" => Ok(schemas::HOOK_MESSAGE_V1),
+        "capability-package" => Ok(schemas::CAPABILITY_PACKAGE_V1),
+        "capability-runtime" => Ok(schemas::CAPABILITY_RUNTIME_V1),
+        "extension" => Ok(schemas::EXTENSION_V1),
         _ => bail!("unknown schema `{name}`"),
     }
 }

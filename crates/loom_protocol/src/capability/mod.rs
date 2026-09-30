@@ -1,0 +1,22 @@
+//! Contracts shared by Capability Plugin packages, runtimes, and hosts.
+
+mod bridge;
+mod command_context;
+mod extension;
+mod external_url;
+mod package;
+mod runtime;
+mod validation;
+
+pub use bridge::*;
+pub use extension::*;
+pub use external_url::*;
+pub use package::*;
+pub use runtime::*;
+pub use validation::*;
+
+pub const CAPABILITY_SCHEMA_VERSION: u32 = 1;
+pub const CAPABILITY_API_VERSION: &str = "1.0";
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "kind": "capability",
+  "id": "ocr",
+  "name": "OCR 识别能力",
+  "description": "按需为 Hook 贴图提供本地 OCR、二维码/条码识别、文本复制和可交互覆盖层。",
+  "version": "1.3.1",
+  "publisher": {
+    "id": "neuro.official",
+    "keyId": "neuro-official-capability-2"
+  },
+  "hostCompatibility": {
+    "loomCapabilityApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1", "attachments.v1"]
+    },
+    "hookExtensionApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["commands.v1", "unit-overlays.v1"]
+    },
+    "surfaceApi": {
+      "minimum": "1.0",
+      "requiredFeatures": ["declarative.v1"]
+    }
+  },
+  "entrypoints": {
+    "service": {
+      "targets": {
+        "windows-x64": {
+          "command": "runtime/loom-ocr-host.exe",
+          "args": []
+        }
+      },
+      "processModel": "persistent"
+    }
+  },
+  "activationEvents": [
+    "onCommand:neuro.official/ocr.recognize-selected-unit",
+    "onCommand:neuro.official/ocr.scan-codes",
+    "onOverlay:neuro.official/ocr.result.v1",
+    "onOverlay:neuro.official/ocr.codes.v1"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "neuro.official/ocr.recognize-selected-unit",
+        "title": "重新识别并复制 OCR 全文",
+        "description": "重新识别当前贴图，复制完整文本，并同时标记二维码或条码。",
+        "inputSchema": "schemas/recognize-input.v1.schema.json",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "requiresUserGesture": true,
+        "cancellable": true,
+        "timeoutMs": 60000,
+        "permissions": [
+          "hook.unit.image.read",
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.clipboard.write",
+          "hook.notice.show"
+        ]
+      },
+      {
+        "id": "neuro.official/ocr.toggle-overlay",
+        "title": "显示或隐藏 OCR 结果",
+        "when": "unit.kind == 'sticker'",
+        "requiresUserGesture": false,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.unit.attachments.write"]
+      },
+      {
+        "id": "neuro.official/ocr.copy-full-text",
+        "title": "复制全文",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
+      },
+      {
+        "id": "neuro.official/ocr.copy-layout-text",
+        "title": "保留版式复制",
+        "description": "从缓存的 OCR 坐标恢复相对缩进、块间空格和段落间距后复制。",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
+      },
+      {
+        "id": "neuro.official/ocr.copy-selected-text",
+        "title": "复制已选文本块",
+        "description": "复制通过 Shift+点击选择的 OCR 文本块。",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": ["hook.unit.attachments.read", "hook.clipboard.write", "hook.notice.show"]
+      },
+      {
+        "id": "neuro.official/ocr.copy-block",
+        "title": "复制 OCR 文本块",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": [
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.clipboard.write",
+          "hook.notice.show"
+        ]
+      },
+      {
+        "id": "neuro.official/ocr.scan-codes",
+        "title": "识别二维码/条码",
+        "description": "在当前贴图中本地识别二维码和常见条码，并显示可复制标记。",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "requiresUserGesture": true,
+        "cancellable": true,
+        "timeoutMs": 30000,
+        "permissions": [
+          "hook.unit.image.read",
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.notice.show"
+        ]
+      },
+      {
+        "id": "neuro.official/ocr.copy-code",
+        "title": "操作二维码/条码结果",
+        "when": "attachment.has('neuro.official/ocr.codes.v1')",
+        "requiresUserGesture": true,
+        "cancellable": false,
+        "timeoutMs": 5000,
+        "permissions": [
+          "hook.unit.attachments.read",
+          "hook.unit.attachments.write",
+          "hook.clipboard.write",
+          "hook.notice.show",
+          "hook.external.open"
+        ]
+      }
+    ],
+    "shortcuts": [
+      {
+        "id": "neuro.official/ocr.shortcut.recognize",
+        "command": "neuro.official/ocr.recognize-selected-unit",
+        "when": "unit.kind == 'sticker' && unit.hasImage",
+        "order": 20,
+        "payload": { "keys": "ctrl+4", "global": true }
+      },
+      {
+        "id": "neuro.official/ocr.shortcut.toggle-overlay",
+        "command": "neuro.official/ocr.toggle-overlay",
+        "when": "unit.kind == 'sticker'",
+        "order": 21,
+        "payload": { "keys": "alt+4" }
+      }
+    ],
+    "menus": [
+      {
+        "id": "neuro.official/ocr.menu.copy-full-text",
+        "command": "neuro.official/ocr.copy-full-text",
+        "title": "复制全文",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "placement": "hook.unit.toolbar",
+        "order": 20,
+        "payload": {
+          "groupId": "neuro.official/ocr.menu",
+          "groupTitle": "OCR",
+          "disabledTitle": "请先按 Ctrl+4 重新识别当前贴图"
+        }
+      },
+      {
+        "id": "neuro.official/ocr.menu.copy-layout-text",
+        "command": "neuro.official/ocr.copy-layout-text",
+        "title": "保留版式复制",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "placement": "hook.unit.toolbar",
+        "order": 21,
+        "payload": {
+          "groupId": "neuro.official/ocr.menu",
+          "groupTitle": "OCR",
+          "disabledTitle": "请先按 Ctrl+4 重新识别当前贴图"
+        }
+      },
+      {
+        "id": "neuro.official/ocr.menu.copy-selected-text",
+        "command": "neuro.official/ocr.copy-selected-text",
+        "title": "复制已选文本块",
+        "when": "attachment.has('neuro.official/ocr.result.v1')",
+        "placement": "hook.unit.toolbar",
+        "order": 22,
+        "payload": {
+          "groupId": "neuro.official/ocr.menu",
+          "groupTitle": "OCR",
+          "disabledTitle": "请先 Shift+点击选择 OCR 文本块"
+        }
+      }
+    ],
+    "dataTypes": [
+      {
+        "id": "neuro.official/ocr.result.v1",
+        "schema": "schemas/ocr-result.v1.schema.json",
+        "payload": { "version": "1" }
+      },
+      {
+        "id": "neuro.official/ocr.codes.v1",
+        "schema": "schemas/ocr-codes.v1.schema.json",
+        "payload": { "version": "1" }
+      }
+    ],
+    "renderers": [
+      {
+        "id": "neuro.official/ocr.result-overlay",
+        "command": "neuro.official/ocr.copy-block",
+        "schema": "renderer.v1",
+        "payload": {
+          "typeId": "neuro.official/ocr.result.v1",
+          "bounds": { "x": 0, "y": 0, "width": 8192, "height": 8192 },
+          "attachmentScenePath": "/surfaceScene"
+        }
+      },
+      {
+        "id": "neuro.official/ocr.codes-overlay",
+        "command": "neuro.official/ocr.copy-code",
+        "schema": "renderer.v1",
+        "payload": {
+          "typeId": "neuro.official/ocr.codes.v1",
+          "bounds": { "x": 0, "y": 0, "width": 8192, "height": 8192 },
+          "attachmentScenePath": "/surfaceScene"
+        }
+      }
+    ],
+    "unitOverlays": [],
+    "settings": [],
+    "backgroundTasks": [],
+    "resourceProviders": [],
+    "diagnostics": [],
+    "eventSubscriptions": []
+  },
+  "permissions": [
+    "hook.unit.image.read",
+    "hook.unit.attachments.read",
+    "hook.unit.attachments.write",
+    "hook.overlay.render",
+    "hook.notice.show",
+    "hook.clipboard.write",
+    "hook.external.open"
+  ],
+  "resources": {
+    "memoryMiB": 1024,
+    "maxProcesses": 1,
+    "timeoutSeconds": 60,
+    "diskMiB": 1024,
+    "stderrKiBPerMinute": 64
+  },
+  "dependencies": [],
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "neuro-official-capability-2",
+    "file": "signature.json"
+  }
+}

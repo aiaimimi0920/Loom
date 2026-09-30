@@ -1,8 +1,7 @@
-// Hook bridge, device, session, and canvas workflow daemon clients.
+// Hook bridge, device, and canvas workflow daemon clients.
 import { DEFAULT_LOOM_DAEMON_URL } from "./defaults.ts";
 import type { LoomWorkflowMetadata } from "./coreTypes.ts";
 import type {
-  HookSessionSnapshot,
   HookWorkflowInstantiateResponse,
   LoomDeviceKind,
   LoomDevicesResponse,
@@ -18,8 +17,10 @@ export async function startHookBridge(
   return await postJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/start", body);
 }
 
-export async function stopHookBridge(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise<LoomHookBridgeStatus> {
-  return await postJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/stop", {});
+export async function getHookBridgeStatus(
+  baseUrl = DEFAULT_LOOM_DAEMON_URL,
+): Promise<LoomHookBridgeStatus> {
+  return await getJson<LoomHookBridgeStatus>(baseUrl, "/v1/hook-bridge/status");
 }
 
 export async function listManagedDevices(
@@ -66,10 +67,6 @@ export async function removeManagedDevice(
     baseUrl,
     `/v1/devices/${encodeURIComponent(deviceId)}`,
   );
-}
-
-export async function readHookSession(baseUrl = DEFAULT_LOOM_DAEMON_URL): Promise<HookSessionSnapshot> {
-  return await getJson<HookSessionSnapshot>(baseUrl, "/v1/hook-bridge/session");
 }
 
 export async function instantiateHookWorkflow(

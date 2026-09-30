@@ -1,6 +1,5 @@
 // Shared shell models, safe helpers, and compact visual primitives.
 import { artPublisherIconSource, type ArtPublisherIdentity, officialFrameworkDisplayName } from "../../services/artHubUi";
-import { keepNewestHookCanvasSnapshot } from "../../services/hookCanvas";
 import { DEFAULT_LOOM_DAEMON_URL, LoomPythonPortDefinition, LoomSnapshot } from "../../services/loomApi";
 import { type PythonArtPort } from "../../services/pythonArtSource";
 import { useEffect, useState } from "react";
@@ -82,11 +81,6 @@ export const DEFAULT_HOOK_BRIDGE_URL = "ws://127.0.0.1:19820";
 // it, so a poll that finds no change does not re-render the canvas.
 export const HOOK_CANVAS_POLL_INTERVAL_MS = 1500;
 
-export const firstWords = (value: string | undefined, fallback: string) => {
-  if (!value) return fallback;
-  return value.length > 96 ? `${value.slice(0, 96)}...` : value;
-};
-
 export const defaultCurlCommand = `curl -X POST http://127.0.0.1:8765/v1/tools/fixture-cloud/execute -H "Content-Type: application/json" -d '{"prompt":"hello loom","strength":0.75}'`;
 
 export const defaultResponseSample = `{
@@ -140,18 +134,6 @@ export const parseListText = (value: string) =>
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-
-export const parseEnvText = (value: string) =>
-  value.split(/\r?\n/).reduce<Record<string, string>>((env, line) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) return env;
-    const separatorIndex = trimmed.indexOf("=");
-    if (separatorIndex <= 0) return env;
-    const key = trimmed.slice(0, separatorIndex).trim();
-    const envValue = trimmed.slice(separatorIndex + 1).trim();
-    if (key) env[key] = envValue;
-    return env;
-  }, {});
 
 export const basenameWithoutExtension = (path: string) => {
   const fileName = path.trim().split(/[\\/]/).filter(Boolean).pop() || "python-source";
@@ -253,10 +235,6 @@ export function ShellIcon({ kind }: { kind: ShellIconKind }) {
     default:
       return null;
   }
-}
-
-export function EnabledChip({ enabled }: { enabled?: boolean }) {
-  return <span className="mini-chip">{enabled === false ? "已禁用" : "已启用"}</span>;
 }
 
 export type ArtIconKind =

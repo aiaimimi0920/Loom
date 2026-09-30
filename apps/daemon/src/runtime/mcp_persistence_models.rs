@@ -179,6 +179,8 @@ struct StatusResponse {
     run_store: RunStoreStatus,
     #[serde(rename = "requestExecutor")]
     request_executor: RequestExecutorStatus,
+    #[serde(rename = "liveSessions")]
+    live_sessions: LiveRelayStatus,
 }
 
 #[derive(Serialize)]
@@ -206,13 +208,27 @@ struct RunActionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InvokeCapabilityRequest {
-    #[serde(rename = "requestId")]
     request_id: String,
     caller: String,
     capability: String,
     #[serde(default)]
     input: Value,
+    #[serde(default)]
+    target: Option<ExtensionTarget>,
+    #[serde(default)]
+    resource_refs: Vec<ExtensionResourceRef>,
+    #[serde(default)]
+    user_gesture_token: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelCapabilityInvocationRequest {
+    request_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,7 +407,6 @@ type SharedRunStore = Arc<Mutex<Box<dyn RunEvidenceStore>>>;
 type SharedMcpServerStore = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 type SharedHookBridgeRuntime = Arc<Mutex<HookBridgeRuntime>>;
 type SharedImageStoreHandle = Arc<Mutex<SharedImageStore>>;
-type OcrProviderHandle = Arc<Mutex<OcrProvider>>;
 type SharedLoomSettingsStore = Arc<Mutex<LoomSettingsStore>>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

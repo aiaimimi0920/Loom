@@ -2,6 +2,8 @@
 param(
     [string]$VersionId = "",
     [string]$OutputRoot = ".\release\Loom",
+    [string]$ExtensionCompatibilityPath = "",
+    [string]$PreparedPayloadRoot = "",
     [switch]$NoZip,
     [switch]$DryRun,
     [switch]$RequireCleanSource
@@ -14,6 +16,7 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $targetName = "windows-x64"
 $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 . $layoutPath
+. (Join-Path $PSScriptRoot "ExtensionCompatibility.ps1")
 
 $moduleRoot = Join-Path $PSScriptRoot "build-release"
 . (Join-Path $moduleRoot "Common.ps1")
@@ -34,13 +37,80 @@ $catalog = Get-LoomCatalog `
     -FrameworkPackageOutputRoot (Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "packages\frameworks") `
     -McpServerPackageOutputRoot (Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "packages\mcp-servers") `
     -SampleArtPackageOutputRoot (Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "packages\arts")
+$extensionCompatibility = $null
+if (-not [string]::IsNullOrWhiteSpace($ExtensionCompatibilityPath)) {
+    $extensionCompatibility = Read-LoomExtensionCompatibility -Path $ExtensionCompatibilityPath
+    $catalog.supportFiles = @($catalog.supportFiles) + @(
+        New-SupportSpec `
+            -Source ([System.IO.Path]::GetFullPath($ExtensionCompatibilityPath)) `
+            -DestinationRelativePath "extension-compatibility.json"
+    )
+}
+$preparedPayload = $null
+if (-not [string]::IsNullOrWhiteSpace($PreparedPayloadRoot)) {
+    $preparedPayload = [System.IO.Path]::GetFullPath($PreparedPayloadRoot)
+    if (-not (Test-Path -LiteralPath $preparedPayload -PathType Container)) {
+        throw "Prepared Loom payload directory is missing: $preparedPayload"
+    }
+    Assert-LoomPathHasNoReparsePoints -RootPath $preparedPayload -Path $preparedPayload
+    $preparedManifest = Read-LoomBoundedJsonFile `
+        -Path (Resolve-LoomPackageRelativePath -PackageDir $preparedPayload -RelativePath "manifest.json") `
+        -MaxBytes 4MB
+    $preparedGitHead = Get-GitText -Arguments @("rev-parse", "HEAD")
+    if ([string]$preparedManifest.app -cne "Loom" -or
+        [string]$preparedManifest.target -cne $targetName -or
+        [string]$preparedManifest.gitHead -cne $preparedGitHead) {
+        throw "Prepared Loom payload does not match the current Loom source commit and target."
+    }
+    $catalog.exes = @(
+        New-ExeSpec -Name "Loom.exe" `
+            -Source (Resolve-LoomPackageRelativePath -PackageDir $preparedPayload -RelativePath "Loom.exe") `
+            -DestinationRelativePath "Loom.exe"
+        New-ExeSpec -Name "loom-daemon.exe" `
+            -Source (Resolve-LoomPackageRelativePath -PackageDir $preparedPayload -RelativePath "runtime\loom-daemon.exe") `
+            -DestinationRelativePath "runtime\loom-daemon.exe"
+    )
+    foreach ($exe in $catalog.exes) {
+        if (-not (Test-Path -LiteralPath $exe.source -PathType Leaf)) {
+            throw "Prepared Loom executable is missing: $($exe.source)"
+        }
+        Assert-LoomPathHasNoReparsePoints -RootPath $preparedPayload -Path $exe.source
+        $relative = ([string]$exe.destinationRelativePath).Replace("/", "\")
+        $record = @($preparedManifest.exes | Where-Object {
+            ([string]$_.path).Replace("/", "\") -ceq $relative
+        })
+        if ($record.Count -ne 1) {
+            throw "Prepared Loom manifest must contain one executable record for $relative."
+        }
+        $digest = Get-LoomFileDigest -Path $exe.source
+        if ([int64]$record[0].bytes -ne [int64]$digest.bytes -or
+            [string]$record[0].sha256 -cne [string]$digest.sha256) {
+            throw "Prepared Loom executable does not match its manifest record: $relative"
+        }
+    }
+    $catalog.commands = @($catalog.commands | Select-Object -Skip 3)
+}
 $sourceGitDirty = Get-GitDirty
+if ($null -eq $sourceGitDirty) {
+    throw "Loom release build requires a readable Git worktree state."
+}
+if ($null -ne $preparedPayload) {
+    if (-not ($preparedManifest.PSObject.Properties.Name -contains "sourceGitDirty") -or
+        $null -eq $preparedManifest.sourceGitDirty) {
+        throw "Prepared Loom manifest must record a definite sourceGitDirty value."
+    }
+    if ([bool]$preparedManifest.sourceGitDirty -ne [bool]$sourceGitDirty) {
+        throw "Prepared Loom manifest does not match the current worktree state."
+    }
+    $sourceGitDirty = [bool]$preparedManifest.sourceGitDirty
+}
 if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
     throw "Formal Loom release requires a clean, readable Git worktree. gitDirty=$sourceGitDirty"
 }
 
 if ($DryRun) {
     $plan = New-Plan -Catalog $catalog -ResolvedVersionId $resolvedVersionId -ResolvedOutputRoot $resolvedOutputRoot -Destination $destination
+    $plan.preparedPayload = $null -ne $preparedPayload
     Write-Output ($plan | ConvertTo-Json -Depth 20)
     exit 0
 }
@@ -119,6 +189,18 @@ if ([string]::IsNullOrWhiteSpace($gitShortSha)) {
     $gitShortSha = "nogit"
 }
 $gitDirty = $sourceGitDirty
+$extensionCompatibilityRecord = @($supportRecords | Where-Object {
+    ([string]$_.path).Replace("\", "/") -ceq "extension-compatibility.json"
+})
+if ($null -ne $extensionCompatibility) {
+    if ($extensionCompatibilityRecord.Count -ne 1) {
+        throw "The Loom release must contain one extension compatibility record."
+    }
+    Assert-LoomExtensionCompatibility `
+        -Document $extensionCompatibility `
+        -GitHead $gitHead `
+        -ExecutableRecords $exeRecords
+}
 
 $buildInfoPath = Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "BUILD_INFO.txt"
 Write-Utf8NoBom -Path $buildInfoPath -Value (New-BuildInfo `
@@ -201,6 +283,16 @@ $sbomRecords = @(Get-LoomSafeDescendantFiles -RootPath $sbomDir | Sort-Object Na
 
 $provenanceDir = Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "provenance"
 $provenancePath = Resolve-LoomPackageRelativePath -PackageDir $provenanceDir -RelativePath "build-provenance.json"
+$provenanceSubjects = @($artifactRecords | Where-Object { ([string]$_.kind).EndsWith("-zip") } | ForEach-Object {
+    [ordered]@{ name = $_.name; sha256 = $_.sha256; bytes = $_.bytes }
+})
+if ($extensionCompatibilityRecord.Count -eq 1) {
+    $provenanceSubjects += [ordered]@{
+        name = "extension-compatibility.json"
+        sha256 = $extensionCompatibilityRecord[0].sha256
+        bytes = $extensionCompatibilityRecord[0].bytes
+    }
+}
 $provenance = [ordered]@{
     schemaVersion = 1
     builder = "Loom scripts/build-release.ps1"
@@ -210,9 +302,7 @@ $provenance = [ordered]@{
     gitDirty = $gitDirty
     sourcePaths = @(".")
     commands = @($commandRecords)
-    subjects = @($artifactRecords | Where-Object { ([string]$_.kind).EndsWith("-zip") } | ForEach-Object {
-        [ordered]@{ name = $_.name; sha256 = $_.sha256; bytes = $_.bytes }
-    })
+    subjects = $provenanceSubjects
 }
 Write-Utf8NoBom -Path $provenancePath -Value (($provenance | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
 $provenanceDigest = Get-LoomFileDigest -Path $provenancePath
@@ -241,6 +331,7 @@ $manifest = [ordered]@{
     commands = $commandRecords
     exes = $exeRecords
     supportFiles = $supportRecords
+    extensionCompatibility = if ($extensionCompatibilityRecord.Count -eq 1) { $extensionCompatibilityRecord[0] } else { $null }
     cliArtifact = $cliArtifactManifest
     pluginSdkArtifact = $pluginSdkArtifactManifest
     frameworkPackages = $frameworkPackageRecords

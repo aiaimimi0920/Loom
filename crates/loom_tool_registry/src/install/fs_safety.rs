@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn metadata_has_link_semantics(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn metadata_has_link_semantics(metadata: &std::fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }
@@ -22,7 +22,7 @@ fn is_directory_without_links(path: &Path) -> Result<bool, ArtInstallError> {
     }
 }
 
-pub(super) fn set_tree_readonly(path: &Path, readonly: bool) -> Result<(), ArtInstallError> {
+pub(crate) fn set_tree_readonly(path: &Path, readonly: bool) -> Result<(), ArtInstallError> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -81,7 +81,7 @@ pub(super) fn uninstall_tombstone_original_name(path: &Path, prefix: &str) -> Op
     .then(|| original.to_owned())
 }
 
-pub(super) fn remove_tree(path: &Path) -> Result<(), ArtInstallError> {
+pub(crate) fn remove_tree(path: &Path) -> Result<(), ArtInstallError> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),

@@ -147,7 +147,18 @@ impl LoomDaemon {
         // every lease minted by the previous process is either persisted or gone, and no request has
         // been accepted yet. Objects whose carrying instance was deleted while the daemon was down
         // are collected here; a running daemon collects on delete instead.
-        collect_surface_resource_garbage_logged(&surface_instances, &surface_resources, "startup");
+        let walls = Arc::new(
+            WallStore::open(&control_plane_root.join("walls")).context("open wall store")?,
+        );
+        collect_surface_resource_garbage_logged(
+            &surface_instances,
+            &surface_resources,
+            "startup",
+            &walls,
+        );
+        let capability_resources =
+            CapabilityResourceBroker::open(control_plane_root.join("capability-resources"))
+                .context("open Capability Plugin resource broker")?;
         let surface_actions = Arc::new(
             SurfaceActionExecutor::new(
                 Arc::clone(&mcp_servers),
@@ -162,7 +173,13 @@ impl LoomDaemon {
             .context("start Surface action executor")?,
         );
         surface_actions.recover_pending();
+        let capability_runtime = build_capability_runtime(&control_plane_root)?;
+        let capability_dispatch = Arc::new(CapabilityDispatchRegistry::with_core_commands(
+            Arc::clone(&capability_runtime),
+        ));
         let runtime = DaemonRuntime {
+            offline_peers: offline_peers::OfflinePeers::new(&control_plane_root)?,
+            projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())?,
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
             auth_token,
@@ -183,15 +200,19 @@ impl LoomDaemon {
                 )
                 .context("open device registry")?,
             )),
+            live_sessions: Arc::new(LiveSessionStore::new()),
+            walls,
             surface_instances,
             surface_actions,
             surface_resources,
+            capability_resources,
             settings: Arc::new(Mutex::new(settings_store)),
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
-            ocr_provider: Arc::new(Mutex::new(OcrProvider::from_env())),
             settings_base_url,
             mcp_registry_endpoint: config.mcp_registry_endpoint,
             brain_planner,
+            capability_runtime,
+            capability_dispatch,
             run_store_status,
             request_executor_status: request_executor.status(),
             serialized_route_lock: Mutex::new(()),
@@ -249,13 +270,16 @@ impl LoomDaemon {
             move |job: ConnectionReadJob| read_connection(job, &reader_draining),
         )?;
         let peer_read_admission = PeerReadAdmission::new(CONNECTION_READ_PER_PEER_LIMIT);
+        let mut pending_reads = ConnectionReadBacklog::default();
 
         let mut read_stage_result: std::io::Result<()> = Ok(());
+        let capability_maintenance_interval = Duration::from_secs(1);
+        let mut next_capability_maintenance = Instant::now() + capability_maintenance_interval;
         let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
                 // Read the backlog before the listener goes away: shutdown can be observed before
                 // the first accept, and dropping a queued connection resets it.
-                let drained = drain_accept_backlog(&self.listener);
+                let drained = drain_accept_backlog(&self.listener, &mut pending_reads);
                 begin_shutdown(
                     &self.runtime,
                     &mut executor,
@@ -286,31 +310,50 @@ impl LoomDaemon {
                 break Ok(());
             }
 
+            if let Some(admission) = pending_reads.poll(&peer_read_admission, Instant::now()) {
+                submit_connection_read(admission, &ready_tx, &read_stage, &self.runtime);
+            }
+
+            if Instant::now() >= next_capability_maintenance {
+                prune_wall_surfaces(
+                    &self.runtime.walls,
+                    &self.runtime.device_registry,
+                    &self.runtime.surface_instances,
+                    &self.runtime.surface_resources,
+                    &self.runtime.shared_images,
+                );
+                self.runtime
+                    .live_sessions
+                    .prune_wall_controllers(&self.runtime.walls, &self.runtime.device_registry);
+                if let Err(error) = self.runtime.capability_runtime.prune_idle() {
+                    runtime_log_warn(format!(
+                        "Capability Plugin idle maintenance failed: {error}"
+                    ));
+                }
+                next_capability_maintenance = Instant::now() + capability_maintenance_interval;
+            }
+
             let mut accepted = false;
             match self.listener.accept() {
                 Ok((stream, peer)) => {
                     accepted = true;
                     if let Some(stream) = prepare_connection(stream) {
-                        if let Some(peer_permit) = peer_read_admission.try_acquire(peer.ip()) {
-                            let job = ConnectionReadJob {
-                                stream,
-                                ready: ready_tx.clone(),
-                                _peer_permit: peer_permit,
+                        let admission =
+                            if let Some(permit) = peer_read_admission.try_acquire(peer.ip()) {
+                                Some(ConnectionReadAdmission::Ready { stream, permit })
+                            } else {
+                                pending_reads
+                                    .defer(stream, peer.ip(), Instant::now())
+                                    .err()
+                                    .map(ConnectionReadAdmission::Refused)
                             };
-                            match read_stage.try_submit(job) {
-                                Ok(()) => record_connection_accepted(&self.runtime),
-                                Err(SubmitError::Full(job)) => {
-                                    let (status, body) = daemon_busy_response();
-                                    drain_and_write_refusal(job.stream, status, &body);
-                                }
-                                Err(SubmitError::Closed(job)) => {
-                                    let (status, body) = daemon_shutting_down_response();
-                                    drain_and_write_refusal(job.stream, status, &body);
-                                }
-                            }
-                        } else {
-                            let (status, body) = daemon_busy_response();
-                            drain_and_write_refusal(stream, status, &body);
+                        if let Some(admission) = admission {
+                            submit_connection_read(
+                                admission,
+                                &ready_tx,
+                                &read_stage,
+                                &self.runtime,
+                            );
                         }
                     }
                 }
@@ -346,7 +389,7 @@ impl LoomDaemon {
                 if matches!(outcome, DispatchOutcome::Stop) {
                     // The listener is about to go away here too, so the backlog gets the same
                     // treatment it gets at the top of the loop.
-                    let drained = drain_accept_backlog(&self.listener);
+                    let drained = drain_accept_backlog(&self.listener, &mut pending_reads);
                     read_stage_result = read_stage.shutdown();
                     for ready in drained {
                         dispatch_connection(
@@ -377,12 +420,16 @@ impl LoomDaemon {
             let _ = surface_stream_shutdown_result;
             let _ = read_stage_shutdown_result;
             let _ = read_stage_result;
+            self.runtime.live_sessions.shutdown_media_workers();
+            self.runtime.capability_runtime.deactivate_all();
             return Err(error);
         }
         shutdown_result.context("shutdown Loom request executor")?;
         surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
+        self.runtime.live_sessions.shutdown_media_workers();
+        self.runtime.capability_runtime.deactivate_all();
         Ok(())
     }
 }

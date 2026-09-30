@@ -1,0 +1,528 @@
+// Stateful loom.extension.v1 dispatch layered on an authenticated Hook WebSocket.
+struct ExtensionBridgeTextResult {
+    response: String,
+    subscribe_to_snapshots: bool,
+}
+
+const MAX_EXTENSION_BRIDGE_TEXT_BYTES: usize = 24 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct ExtensionMethodProbe<'a> {
+    #[serde(borrow)]
+    method: std::borrow::Cow<'a, str>,
+}
+
+fn is_extension_bridge_request(text: &str) -> bool {
+    serde_json::from_str::<ExtensionMethodProbe<'_>>(text)
+        .ok()
+        .is_some_and(|request| request.method.starts_with("loom.extension."))
+}
+
+fn handle_extension_bridge_text(
+    text: &str,
+    state: &mut ExtensionConnectionState,
+    runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> ExtensionBridgeTextResult {
+    if text.len() > MAX_EXTENSION_BRIDGE_TEXT_BYTES {
+        return extension_bridge_failure(
+            "invalid-request",
+            "extension_request_too_large",
+            "extension request exceeds the bridge byte limit",
+            false,
+        );
+    }
+    let request = match serde_json::from_str::<ExtensionBridgeRequest>(text) {
+        Ok(request) => request,
+        Err(error) => {
+            return extension_bridge_failure(
+                "invalid-request",
+                "invalid_extension_request",
+                error.to_string(),
+                false,
+            )
+        }
+    };
+    match request {
+        ExtensionBridgeRequest::Handshake(request) => {
+            handle_extension_handshake(request, state, runtime)
+        }
+        ExtensionBridgeRequest::SnapshotGet(request) => {
+            if !state.extension_session_matches(&request.session_id) {
+                return extension_bridge_failure(
+                    &request.request_id,
+                    "stale_extension_session",
+                    "extension session is stale or disconnected",
+                    true,
+                );
+            }
+            if !state.has_feature(loom_protocol::EXTENSION_FEATURE_SNAPSHOT) {
+                return extension_feature_failure(&request.request_id, "contribution.snapshot");
+            }
+            match runtime.contribution_snapshot() {
+                Ok(snapshot) => extension_bridge_success(
+                    &request.request_id,
+                    json!({ "snapshot": snapshot }),
+                    false,
+                ),
+                Err(error) => extension_runtime_failure(&request.request_id, error),
+            }
+        }
+        ExtensionBridgeRequest::CommandInvoke(request) => {
+            handle_extension_invocation(request, state, runtime, resources, surface_resources)
+        }
+    }
+}
+
+fn handle_extension_handshake(
+    request: ExtensionHandshakeRequest,
+    state: &mut ExtensionConnectionState,
+    runtime: &SharedCapabilityRuntime,
+) -> ExtensionBridgeTextResult {
+    if state.hook_session_id.as_deref() != Some(request.hook_session_id.as_str()) {
+        return extension_bridge_failure(
+            &request.request_id,
+            "hook_session_required",
+            "the same WebSocket must complete Hook authentication first",
+            false,
+        );
+    }
+    let features = match negotiate_extension_features(&request) {
+        Ok(features) => features,
+        Err(error) => {
+            return extension_bridge_failure(
+                &request.request_id,
+                "extension_negotiation_failed",
+                error.to_string(),
+                false,
+            )
+        }
+    };
+    let session_id = format!("extension:{}", Uuid::new_v4());
+    let subscribe_to_snapshots = features
+        .iter()
+        .any(|feature| feature == loom_protocol::EXTENSION_FEATURE_SNAPSHOT);
+    let snapshot = if subscribe_to_snapshots {
+        match runtime.contribution_snapshot() {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => return extension_runtime_failure(&request.request_id, error),
+        }
+    } else {
+        None
+    };
+    state.begin_extension_session(session_id.clone(), &features);
+    runtime.invalidate_user_gestures();
+    let data = match snapshot {
+        Some(snapshot) => json!({
+            "sessionId": session_id,
+            "features": features,
+            "snapshot": snapshot,
+        }),
+        None => json!({
+            "sessionId": session_id,
+            "features": features,
+        }),
+    };
+    extension_bridge_success(&request.request_id, data, subscribe_to_snapshots)
+}
+
+fn handle_extension_invocation(
+    request: ExtensionCommandInvokeRequest,
+    state: &mut ExtensionConnectionState,
+    runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> ExtensionBridgeTextResult {
+    let mut invocation = request.invocation;
+    let request_id = invocation.request_id.clone();
+    if !state.extension_session_matches(&request.session_id) {
+        return extension_bridge_failure(
+            &request_id,
+            "stale_extension_session",
+            "extension session is stale or disconnected",
+            true,
+        );
+    }
+    if !state.has_feature(loom_protocol::EXTENSION_FEATURE_COMMANDS) {
+        return extension_feature_failure(&request_id, "command.invoke");
+    }
+    // Validated by reference: an invocation may approach the 24 MiB bridge
+    // budget, and this path validates twice (before and after upload staging).
+    if let Err(error) = loom_protocol::validate_extension_invocation(&invocation) {
+        return extension_bridge_failure(
+            &request_id,
+            "invalid_extension_invocation",
+            error.to_string(),
+            false,
+        );
+    }
+    let snapshot = match runtime.contribution_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return extension_runtime_failure(&request_id, error),
+    };
+    if invocation.snapshot_generation != snapshot.generation {
+        return extension_result_failure(
+            &request_id,
+            CapabilityErrorCode::StaleGeneration,
+            "extension contribution generation is stale",
+        );
+    }
+    let owner = match runtime.command_owner(&invocation.command_id) {
+        Ok(Some(owner)) if owner == invocation.plugin_id => owner,
+        Ok(_) => {
+            return extension_result_failure(
+                &request_id,
+                CapabilityErrorCode::PluginNotActive,
+                "extension command owner is unavailable",
+            )
+        }
+        Err(error) => return extension_runtime_failure(&request_id, error),
+    };
+    let scope_id = match runtime.plugin_scope(&owner) {
+        Ok(Some(scope_id)) => scope_id,
+        Ok(None) => {
+            return extension_result_failure(
+                &request_id,
+                CapabilityErrorCode::PluginNotActive,
+                "extension command scope is unavailable",
+            )
+        }
+        Err(error) => return extension_runtime_failure(&request_id, error),
+    };
+    let needs_ocr_context = snapshot.contributions.commands.iter().any(|command| {
+        command.id == invocation.command_id
+            && command.payload.pointer("/payload/inputContext").and_then(Value::as_str) == Some("ocr-text.v1")
+    });
+    if needs_ocr_context && !state.has_feature(loom_protocol::EXTENSION_FEATURE_OCR_TEXT) {
+        return extension_feature_failure(&request_id, loom_protocol::EXTENSION_FEATURE_OCR_TEXT);
+    }
+    let _upload_lease = match stage_extension_resource_uploads(
+        request.resource_uploads,
+        &mut invocation,
+        &snapshot,
+        surface_resources,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => return extension_upload_failure(&request_id, error),
+    };
+    if let Err(error) = loom_protocol::validate_extension_invocation(&invocation) {
+        return extension_bridge_failure(
+            &request_id,
+            "invalid_extension_invocation",
+            error.to_string(),
+            false,
+        );
+    }
+    let resource_lease = match resources.stage(
+        surface_resources,
+        &owner,
+        &scope_id,
+        &request_id,
+        &invocation.resource_refs,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => return extension_resource_failure(&request_id, error),
+    };
+    let staged_resources = resource_lease.resources().to_vec();
+    if runtime.generation() != invocation.snapshot_generation {
+        return extension_result_failure(
+            &request_id,
+            CapabilityErrorCode::StaleGeneration,
+            "extension contribution generation changed while staging resources",
+        );
+    }
+    let snapshot_generation = invocation.snapshot_generation;
+    let gesture = match invocation.user_gesture_token.as_deref() {
+        Some(token) if state.record_client_gesture(token) => {
+            let gesture = match runtime.issue_user_gesture(
+                &invocation.command_id,
+                Some(loom_capability_runtime::UserGestureTarget {
+                    unit_id: invocation.target.unit_id.clone(),
+                    revision: invocation.target.revision,
+                }),
+            ) {
+                Ok(gesture) => gesture,
+                Err(error) => return extension_runtime_failure(&request_id, error),
+            };
+            Some(gesture)
+        }
+        Some(_) => {
+            return extension_result_failure(
+                &request_id,
+                CapabilityErrorCode::PermissionDenied,
+                "user gesture token is invalid, consumed, or the session gesture budget is exhausted",
+            )
+        }
+        None => None,
+    };
+    let output = runtime.invoke(CapabilityInvocation {
+        request_id: request_id.clone(),
+        command_id: invocation.command_id,
+        input: invocation.input,
+        target: Some(invocation.target),
+        resource_refs: invocation.resource_refs,
+        unit_attachments: invocation.unit_attachments,
+        staged_resources,
+        user_gesture_token: gesture,
+        timeout: None,
+    });
+    if runtime.generation() != snapshot_generation {
+        return extension_result_failure(
+            &request_id,
+            CapabilityErrorCode::StaleGeneration,
+            "extension contribution generation changed during invocation",
+        );
+    }
+    match output {
+        Ok(output) if output.plugin_id == owner => {
+            if let Some(failure) = extension_runtime_status_failure(&request_id, &output) {
+                return failure;
+            }
+            let mut payload = output.payload.unwrap_or(Value::Null);
+            // Deserialize the effects by reference. `from_value` needs an owned `Value`, so the
+            // previous `effects.clone()` deep-copied the whole effect list — the runtime allows up
+            // to 256 effects of 256 KiB each — on every successful invocation, only to drop the
+            // copy again once the typed values had been built.
+            let mut effects: Vec<loom_protocol::ExtensionEffect> = match payload.get("effects") {
+                Some(effects) => match Vec::deserialize(effects) {
+                    Ok(effects) => effects,
+                    Err(_) => {
+                        return extension_result_failure(
+                            &request_id,
+                            CapabilityErrorCode::InvalidInput,
+                            "extension runtime returned invalid effects",
+                        )
+                    }
+                },
+                None => Vec::new(),
+            };
+            if !state.has_feature(loom_protocol::EXTENSION_FEATURE_NOTICES) {
+                effects.retain(|effect: &loom_protocol::ExtensionEffect| {
+                    effect.effect_type != loom_protocol::ExtensionEffectType::NoticeShow
+                });
+            }
+            // The payload is not read after this, so the `output` member is taken by value. The
+            // fallback argument of `unwrap_or` is evaluated eagerly, so cloning it here deep-copied
+            // the entire payload — up to the whole bridge text budget — on every invocation,
+            // including the common one where the copy was dropped unused.
+            let taken_output = payload.get_mut("output").map(Value::take);
+            let result = ExtensionResult {
+                protocol: EXTENSION_PROTOCOL.to_owned(),
+                api_version: CAPABILITY_API_VERSION.to_owned(),
+                request_id: request_id.clone(),
+                status: ExtensionResultStatus::Succeeded,
+                output: taken_output.unwrap_or(payload),
+                effects,
+                error: None,
+            };
+            // Validating through the owned message rather than a clone keeps the payload out of a
+            // second deep copy. `ExtensionMessage` is an untagged enum, so serializing the message
+            // emits exactly the result the client expects on the wire.
+            let message = ExtensionMessage::Result(result);
+            if validate_extension_message(&message).is_err() {
+                return extension_result_failure(
+                    &request_id,
+                    CapabilityErrorCode::InvalidInput,
+                    "extension runtime returned invalid effects",
+                );
+            }
+            extension_bridge_success(
+                &request_id,
+                serde_json::to_value(&message).unwrap_or_default(),
+                false,
+            )
+        }
+        Ok(_) => extension_result_failure(
+            &request_id,
+            CapabilityErrorCode::PluginNotActive,
+            "extension command owner changed during invocation",
+        ),
+        Err(error) => extension_runtime_failure(&request_id, error),
+    }
+}
+
+fn extension_runtime_status_failure(
+    request_id: &str,
+    output: &loom_capability_runtime::CapabilityInvocationOutput,
+) -> Option<ExtensionBridgeTextResult> {
+    use loom_protocol::CapabilityRuntimeStatus;
+    if output.status == CapabilityRuntimeStatus::Succeeded {
+        return None;
+    }
+    // Ok means the runtime transport completed, not that the command succeeded.
+    // Never publish effects or arbitrary runtime error text from a failed command.
+    let code = if output.status == CapabilityRuntimeStatus::Cancelled {
+        CapabilityErrorCode::Cancelled
+    } else {
+        output.error.as_ref().map_or(CapabilityErrorCode::RuntimeFault, |error| error.code)
+    };
+    Some(extension_result_failure(request_id, code, "capability runtime command did not succeed"))
+}
+
+fn extension_upload_failure(
+    request_id: &str,
+    error: ExtensionResourceUploadError,
+) -> ExtensionBridgeTextResult {
+    let (code, message) = match error {
+        ExtensionResourceUploadError::Invalid => (
+            CapabilityErrorCode::InvalidInput,
+            "extension resource upload is invalid",
+        ),
+        ExtensionResourceUploadError::PermissionDenied => (
+            CapabilityErrorCode::PermissionDenied,
+            "extension image upload requires hook.unit.image.read",
+        ),
+        ExtensionResourceUploadError::Busy => (
+            CapabilityErrorCode::Busy,
+            "extension resource upload store is busy",
+        ),
+        ExtensionResourceUploadError::Store => (
+            CapabilityErrorCode::RuntimeFault,
+            "extension resource upload store is unavailable",
+        ),
+    };
+    extension_result_failure(request_id, code, message)
+}
+
+fn extension_resource_failure(
+    request_id: &str,
+    error: CapabilityResourceError,
+) -> ExtensionBridgeTextResult {
+    let (code, message) = match error {
+        CapabilityResourceError::Invalid => (
+            CapabilityErrorCode::InvalidInput,
+            "extension resource reference is invalid",
+        ),
+        CapabilityResourceError::LeaseRejected => (
+            CapabilityErrorCode::ResourceNotFound,
+            "extension resource lease was rejected",
+        ),
+        CapabilityResourceError::Busy => (
+            CapabilityErrorCode::Busy,
+            "extension resource broker is busy",
+        ),
+        CapabilityResourceError::Io(_) | CapabilityResourceError::Json(_) => (
+            CapabilityErrorCode::RuntimeFault,
+            "extension resource broker is unavailable",
+        ),
+    };
+    extension_result_failure(request_id, code, message)
+}
+
+fn extension_feature_failure(request_id: &str, feature: &str) -> ExtensionBridgeTextResult {
+    extension_bridge_failure(
+        request_id,
+        "extension_feature_not_negotiated",
+        format!("extension feature was not negotiated: {feature}"),
+        false,
+    )
+}
+
+fn extension_result_failure(
+    request_id: &str,
+    code: CapabilityErrorCode,
+    message: &str,
+) -> ExtensionBridgeTextResult {
+    let result = ExtensionResult {
+        protocol: EXTENSION_PROTOCOL.to_owned(),
+        api_version: CAPABILITY_API_VERSION.to_owned(),
+        request_id: request_id.to_owned(),
+        status: ExtensionResultStatus::Failed,
+        output: Value::Null,
+        effects: Vec::new(),
+        error: Some(ExtensionError {
+            code,
+            message: message.to_owned(),
+        }),
+    };
+    extension_bridge_success(
+        request_id,
+        serde_json::to_value(result).unwrap_or_default(),
+        false,
+    )
+}
+
+fn extension_runtime_failure(
+    request_id: &str,
+    error: loom_capability_runtime::CapabilityHostError,
+) -> ExtensionBridgeTextResult {
+    use loom_capability_runtime::CapabilityHostError as Error;
+    let (code, retryable) = match error {
+        Error::NotFound(_) => ("extension_command_not_found", false),
+        Error::InvalidPackage(_) | Error::Protocol(_) => ("extension_request_rejected", false),
+        Error::Busy | Error::Timeout => ("extension_runtime_busy", true),
+        Error::Unavailable(_) | Error::Io(_) | Error::Process(_) | Error::Json(_) => {
+            ("extension_runtime_unavailable", true)
+        }
+    };
+    extension_bridge_failure(
+        request_id,
+        code,
+        "extension runtime request failed",
+        retryable,
+    )
+}
+
+fn extension_bridge_success(
+    request_id: &str,
+    data: Value,
+    subscribe_to_snapshots: bool,
+) -> ExtensionBridgeTextResult {
+    extension_bridge_response(
+        request_id,
+        ExtensionBridgeStatus::Succeeded,
+        data,
+        None,
+        subscribe_to_snapshots,
+    )
+}
+
+fn extension_bridge_failure(
+    request_id: &str,
+    code: &str,
+    message: impl Into<String>,
+    retryable: bool,
+) -> ExtensionBridgeTextResult {
+    extension_bridge_response(
+        request_id,
+        ExtensionBridgeStatus::Failed,
+        Value::Null,
+        Some(ExtensionBridgeError {
+            code: code.to_owned(),
+            message: message.into(),
+            retryable,
+        }),
+        false,
+    )
+}
+
+fn extension_bridge_response(
+    request_id: &str,
+    status: ExtensionBridgeStatus,
+    data: Value,
+    error: Option<ExtensionBridgeError>,
+    subscribe_to_snapshots: bool,
+) -> ExtensionBridgeTextResult {
+    let response = ExtensionBridgeResponse {
+        protocol: EXTENSION_PROTOCOL.to_owned(),
+        api_version: CAPABILITY_API_VERSION.to_owned(),
+        request_id: request_id.to_owned(),
+        status,
+        data,
+        error,
+    };
+    ExtensionBridgeTextResult {
+        response: serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_owned()),
+        subscribe_to_snapshots,
+    }
+}
+
+fn extension_snapshot_event(snapshot: ContributionSnapshot) -> ExtensionSnapshotEvent {
+    ExtensionSnapshotEvent {
+        protocol: EXTENSION_PROTOCOL.to_owned(),
+        api_version: CAPABILITY_API_VERSION.to_owned(),
+        method: EXTENSION_EVENT_SNAPSHOT_UPDATED.to_owned(),
+        params: ExtensionSnapshotEventParams { snapshot },
+    }
+}

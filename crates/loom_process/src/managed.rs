@@ -57,10 +57,10 @@ impl ManagedChild {
     }
 
     pub fn terminate(&mut self) {
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            self.isolation.kill_tree(&mut self.child);
-            let _ = self.child.wait();
-        }
+        // The leader may have exited while descendants still hold inherited pipes. Always tear
+        // down the isolation group before protocol hosts join their pipe threads.
+        self.isolation.kill_tree(&mut self.child);
+        let _ = self.child.wait();
     }
 
     #[must_use]

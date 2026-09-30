@@ -23,6 +23,28 @@ fn sign_plugin_package(directory: &Path, key_path: &Path, publisher_id: &str) ->
         );
         object.insert("signature".to_owned(), signature);
         write_pretty_json(path, &manifest)?;
+    } else if contained_regular_file_exists(directory, Path::new("capability.manifest.json"))? {
+        let path = directory.join("capability.manifest.json");
+        let mut manifest: Value = read_json(&path)?;
+        let object = manifest
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("capability manifest must be an object"))?;
+        let publisher = object
+            .get_mut("publisher")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| anyhow!("capability publisher metadata is required"))?;
+        let declared_publisher = publisher
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if declared_publisher != publisher_id {
+            bail!(
+                "capability publisher id `{declared_publisher}` does not match signer `{publisher_id}`"
+            );
+        }
+        publisher.insert("keyId".to_owned(), json!(key.key_id.clone()));
+        object.insert("signature".to_owned(), signature);
+        write_pretty_json(path, &manifest)?;
     } else if contained_regular_file_exists(directory, Path::new("manifest.json"))? {
         let path = directory.join("manifest.json");
         let mut manifest: Value = read_json(&path)?;
@@ -78,7 +100,7 @@ fn sign_plugin_package(directory: &Path, key_path: &Path, publisher_id: &str) ->
         write_pretty_json(path, &manifest)?;
     } else {
         bail!(
-            "package directory has no framework.manifest.json, manifest.json, or mcp.server.json"
+            "package directory has no framework, capability, Art, or MCP manifest"
         );
     }
     ensure_safe_destination(&directory.join("signature.json"))?;

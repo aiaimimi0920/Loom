@@ -8,14 +8,20 @@ mod package;
 mod runtime;
 mod validation;
 
+pub mod capability;
 pub mod device;
 pub mod hook;
+pub mod live;
+pub mod projection;
 pub mod schemas;
 pub mod surface;
+pub mod wall;
 
+pub use capability::*;
 pub use device::*;
 pub use execution::*;
 pub use hook::*;
+pub use live::*;
 pub use package::*;
 pub use runtime::*;
 pub use surface::*;
@@ -27,6 +33,9 @@ pub const ART_EXECUTION_RESPONSE_SCHEMA: &str = "loom.art.result.v1";
 pub const ART_RUNTIME_PROTOCOL_VERSION: &str = "loom.art.runtime.v1";
 pub const FRAMEWORK_AUTHORING_SCHEMA_VERSION: u32 = 1;
 pub const PLUGIN_LOCKFILE_SCHEMA_VERSION: u32 = 1;
+pub const CAPABILITY_PACKAGE_PROTOCOL: &str = "loom.capability.package.v1";
+pub const CAPABILITY_RUNTIME_PROTOCOL: &str = "loom.capability.runtime.v1";
+pub const EXTENSION_PROTOCOL: &str = "loom.extension.v1";
 
 #[cfg(test)]
 mod tests;

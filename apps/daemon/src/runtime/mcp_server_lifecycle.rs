@@ -178,15 +178,53 @@ fn delete_mcp_server(
         }
         removed
     };
+    // A cached MCP framework host owns a live stdio/HTTP session. Drain the invalidated generation
+    // before removing package files; if a managed process cannot stop, preserve the server instead
+    // of racing a recursive Windows package deletion against a live session.
+    let invalidation =
+        loom_tool_registry::framework_process::invalidate_persistent_mcp_framework_hosts();
+    if !invalidation.drained {
+        if let Err(error) = restore_removed_mcp_server(
+            path_id,
+            mcp_servers,
+            store_path,
+            removed.clone(),
+        ) {
+            return structured_error(
+                500,
+                json!({
+                    "code": "mcp_server_rollback_failed",
+                    "message": format!("MCP server remained busy and its persisted configuration could not be restored: {error}"),
+                }),
+            );
+        }
+        return structured_error(
+            409,
+            json!({
+                "code": "mcp_server_busy",
+                "message": "MCP server is still in use by an execution that could not be stopped",
+            }),
+        );
+    }
     if let Err(error) = uninstall_server_package(control_plane_root, &removed) {
-        let mut guard = mcp_servers
-            .lock()
-            .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
-        guard.insert(path_id.to_owned(), removed.clone());
-        let _ = persist_mcp_servers_snapshot(store_path, &guard);
+        let uninstall_error = error.to_string();
+        if let Err(rollback_error) = restore_removed_mcp_server(
+            path_id,
+            mcp_servers,
+            store_path,
+            removed.clone(),
+        ) {
+            return structured_error(
+                500,
+                json!({
+                    "code": "mcp_server_rollback_failed",
+                    "message": format!("MCP server package uninstall failed ({uninstall_error}) and its persisted configuration could not be restored: {rollback_error}"),
+                }),
+            );
+        }
         return structured_error(
             500,
-            json!({ "code": "mcp_uninstall_failed", "message": error.to_string() }),
+            json!({ "code": "mcp_uninstall_failed", "message": uninstall_error }),
         );
     }
     let credential_store = CredentialStore::new(control_plane_root);
@@ -203,6 +241,20 @@ fn delete_mcp_server(
         200,
         serde_json::to_string(&json!({ "serverId": path_id, "deleted": true }))?,
     ))
+}
+
+fn restore_removed_mcp_server(
+    path_id: &str,
+    mcp_servers: &SharedMcpServerStore,
+    store_path: &Path,
+    removed: McpServerConfig,
+) -> Result<()> {
+    let mut guard = mcp_servers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
+    guard.insert(path_id.to_owned(), removed);
+    persist_mcp_servers_snapshot(store_path, &guard)
+        .context("restore MCP server snapshot after failed deletion")
 }
 
 fn fetch_mcp_registry(path: &str, endpoint: &str, cache_path: &Path) -> Result<(u16, String)> {

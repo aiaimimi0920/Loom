@@ -9,5 +9,8 @@
 //! Nothing here may depend on another `loom_*` crate.
 
 pub mod archive;
+mod filesystem;
 pub mod json;
 pub mod network;
+
+pub use filesystem::metadata_has_link_semantics;
