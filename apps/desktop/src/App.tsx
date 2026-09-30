@@ -28,6 +28,7 @@ import {
   readHookCanvasSnapshot,
 } from "./services/hookCanvas";
 import { createLatestRequestGate, createSingleFlightGate } from "./services/latestRequest";
+import { refreshSharedSnapshot } from "./services/snapshotRefresh";
 import {
   bootstrapPackagedArts,
   DEFAULT_LOOM_DAEMON_URL,
@@ -76,17 +77,12 @@ export default function App() {
 
   const refreshSnapshot = useCallback(async (abortSignal?: AbortSignal): Promise<LoomSnapshot> => {
     if (!appMountedRef.current) return fallbackSnapshot;
-    return await snapshotSingleFlight.current.run(async () => {
-      const requestToken = snapshotRequestGate.current.begin();
-      const abortRequest = () => {
-        if (snapshotRequestGate.current.isCurrent(requestToken)) {
-          snapshotRequestGate.current.invalidate();
-          setLoading(false);
-        }
-      };
-      abortSignal?.addEventListener("abort", abortRequest, { once: true });
-      setLoading(true);
-      try {
+    const result = await refreshSharedSnapshot({
+      latest: snapshotRequestGate.current,
+      flight: snapshotSingleFlight.current,
+      signal: abortSignal,
+      loading: setLoading,
+      read: async () => {
         let baseUrl = DEFAULT_LOOM_DAEMON_URL;
         let nextHookBridgeUrl = DEFAULT_HOOK_BRIDGE_URL;
         try {
@@ -97,18 +93,14 @@ export default function App() {
           baseUrl = DEFAULT_LOOM_DAEMON_URL;
         }
         const next = await readLoomSnapshot(baseUrl);
-        if (!abortSignal?.aborted && snapshotRequestGate.current.isCurrent(requestToken)) {
-          setHookBridgeUrl(nextHookBridgeUrl);
-          setSnapshot((previous) => retainAvailableSnapshotData(previous, next));
-        }
-        return next;
-      } finally {
-        abortSignal?.removeEventListener("abort", abortRequest);
-        if (snapshotRequestGate.current.isCurrent(requestToken)) {
-          setLoading(false);
-        }
-      }
+        return { next, nextHookBridgeUrl };
+      },
+      apply: ({ next, nextHookBridgeUrl }) => {
+        setHookBridgeUrl(nextHookBridgeUrl);
+        setSnapshot((previous) => retainAvailableSnapshotData(previous, next));
+      },
     });
+    return result.next;
   }, []);
 
   const refresh = useCallback(async (): Promise<void> => {
