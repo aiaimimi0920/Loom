@@ -225,6 +225,7 @@ include!("runtime/capability_extension_state.rs");
 include!("runtime/capability_extension_bridge.rs");
 include!("runtime/hook_bridge_server.rs");
 include!("runtime/hook_bridge_websocket.rs");
+include!("runtime/hook_canvas_cache.rs");
 include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
 include!("runtime/hook_art_results_broadcast.rs");
@@ -241,6 +242,7 @@ mod tests {
     include!("tests/suite/part_01.rs");
     include!("tests/connection_read_admission.rs");
     include!("tests/maintenance_isolation.rs");
+    include!("tests/hook_canvas_cache.rs");
     include!("tests/suite/part_02.rs");
     include!("tests/suite/part_03.rs");
     include!("tests/suite/part_04.rs");

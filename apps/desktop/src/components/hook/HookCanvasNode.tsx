@@ -37,7 +37,8 @@ export function HookCanvasNode({
       return;
     }
     let cancelled = false;
-    void loadHookCanvasPreview(baseUrl, previewPath)
+    const controller = new AbortController();
+    void loadHookCanvasPreview(baseUrl, previewPath, controller.signal)
       .then((src) => {
         if (!cancelled) setPreviewSrc(src);
       })
@@ -46,6 +47,7 @@ export function HookCanvasNode({
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [baseUrl, previewPath]);
 

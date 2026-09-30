@@ -1,97 +1,4 @@
-// Hook overlay files, bridge lifecycle, and WebSocket connection ownership.
-fn load_hook_live_workflow_document() -> Option<hook_canvas::HookCanvasDocument> {
-    let snapshots = hook_live_workflow_snapshots().lock().ok()?;
-    let snapshot = snapshots.get(HOOK_LIVE_WORKFLOW_ID)?;
-    Some(hook_canvas::HookCanvasDocument::from_serialized_root(
-        &snapshot.source_path,
-        snapshot.bytes.clone(),
-        snapshot.root.clone(),
-        snapshot.updated_at.clone(),
-    ))
-}
-
-fn hook_canvas_overlay_revision(snapshot: &hook_canvas::HookCanvasSnapshot) -> Option<String> {
-    let statuses = hook_canvas_runtime_statuses().lock().ok()?;
-    let mut tokens = snapshot
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            statuses.get(&node.id).map(|state| {
-                format!(
-                    "{}:{}:{:?}:{:?}:{:?}:{:?}",
-                    node.id,
-                    state.status,
-                    state.error_message,
-                    state.preview_cache_token,
-                    state.selected_result_index,
-                    state
-                        .result_candidates
-                        .iter()
-                        .map(|candidate| (&candidate.index, &candidate.image_url))
-                        .collect::<Vec<_>>()
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    if tokens.is_empty() {
-        return None;
-    }
-    tokens.sort();
-    let mut hasher = DefaultHasher::new();
-    for token in tokens {
-        token.hash(&mut hasher);
-    }
-    Some(format!("{:016x}", hasher.finish()))
-}
-
-fn apply_hook_canvas_runtime_overlays(document: &mut hook_canvas::HookCanvasDocument) {
-    let Some(statuses) = hook_canvas_runtime_statuses().lock().ok() else {
-        return;
-    };
-    for node in &mut document.snapshot.nodes {
-        let Some(state) = statuses.get(&node.id) else {
-            continue;
-        };
-        node.status = state.status.clone();
-        node.error_message = state.error_message.clone();
-        node.result_candidates = state.result_candidates.clone();
-        node.selected_result_index = state.selected_result_index;
-    }
-    let preview_overrides = statuses
-        .iter()
-        .filter_map(|(node_id, state)| {
-            state.preview_data_url.as_ref().map(|data_url| {
-                (
-                    node_id.clone(),
-                    data_url.clone(),
-                    state.preview_cache_token.clone(),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    drop(statuses);
-    for (node_id, data_url, cache_token) in preview_overrides {
-        document.override_preview_source(
-            &node_id,
-            hook_canvas::HookCanvasPreviewSource::DataUrl(data_url),
-            cache_token.as_deref(),
-        );
-    }
-    if let Some(overlay_revision) = hook_canvas_overlay_revision(&document.snapshot) {
-        document.snapshot.revision =
-            format!("{}-rt-{overlay_revision}", document.snapshot.revision);
-    }
-}
-
-fn load_active_hook_canvas_document() -> Result<hook_canvas::HookCanvasDocument> {
-    let mut document = match load_hook_live_workflow_document() {
-        Some(document) => document,
-        None => hook_canvas::HookCanvasDocument::read(&hook_session_path())?,
-    };
-    apply_hook_canvas_runtime_overlays(&mut document);
-    Ok(document)
-}
-
+// Hook session paths, bridge lifecycle, and WebSocket connection ownership.
 fn hook_session_path() -> PathBuf {
     // An explicit full-path override wins so isolated smokes and advanced setups
     // can point Loom at a specific session file.
@@ -360,7 +267,12 @@ fn handle_hook_bridge_websocket_connection(
                         &capability_resources,
                         &surface_resources,
                     );
-                    track_extension_client(&mut _extension_client_guard, &extension_state, &extension_clients, &ocr_text_clients);
+                    track_extension_client(
+                        &mut _extension_client_guard,
+                        &extension_state,
+                        &extension_clients,
+                        &ocr_text_clients,
+                    );
                     if result.subscribe_to_snapshots && extension_subscription_rx.is_none() {
                         let (rx, guard) = register_hook_bridge_subscription(
                             &broadcast_hub,
@@ -403,7 +315,12 @@ fn handle_hook_bridge_websocket_connection(
                 }
                 if serde_json::from_str::<Value>(&text)
                     .ok()
-                    .and_then(|value| value.get("method").and_then(Value::as_str).map(str::to_owned))
+                    .and_then(|value| {
+                        value
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
                     .as_deref()
                     == Some(loom_protocol::HOOK_METHOD_HANDSHAKE)
                 {
