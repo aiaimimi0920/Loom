@@ -197,7 +197,7 @@ Assert-Workflow -Name "build-windows.yml" -RequiredText @(
 Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     'name: Release Tag',
     "tags:",
-    "- 'V*.*.*'",
+    "- 'V[0-9]+.[0-9]+.[0-9]+'",
     'workflow_dispatch:',
     'group: release-tag-${{ github.event_name == ''workflow_dispatch'' && inputs.tag || github.ref_name }}',
     'cancel-in-progress: false',
