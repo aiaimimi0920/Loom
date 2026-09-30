@@ -22,6 +22,14 @@ authors must not depend on private Loom or Hook source code.
 - `loom.surface.v1` describes distributed Art Surface manifests, snapshots,
   patches, typed events, content-addressed resources, previews, and atomic
   formal result commits. It is independent of Hook's frontend framework.
+- `loom.wall.v1` describes physical endpoints, wall layouts and source placement.
+  Its strict field and coordinate rules are defined in
+  [WALL_PROTOCOL.md](WALL_PROTOCOL.md); geometry alone does not authorize input.
+  [WALL_SURFACE_API.md](WALL_SURFACE_API.md) defines ephemeral Art views,
+  scoped resources, host confirmation and cancellation for wall terminals.
+  [WALL_PRESENTATION_API.md](WALL_PRESENTATION_API.md) defines freeze/black/resume;
+  [WALL_IDENTIFICATION_API.md](WALL_IDENTIFICATION_API.md) defines physical display
+  metadata and identification. Their optional fields retain Wall's strict rules.
 - Unknown optional fields must be ignored. Missing optional fields use the
   secure defaults defined by `loom_protocol`.
 - Streaming or persistent workers require a separately named protocol and
@@ -29,7 +37,7 @@ authors must not depend on private Loom or Hook source code.
 
 ### Loom<->Hook Art contract and legacy retirement
 
-Phase 71 canonical-only cleanup is the current production baseline. Obsolete
+The canonical-only contract is the current production baseline. Obsolete
 wire aliases, persisted forms, package layouts, provider/process fields, and
 app-data identities are rejected rather than discovered or migrated.
 
@@ -146,6 +154,13 @@ invent a content digest, lease ID, expiry, or transport descriptor: every
 descriptor must match a verified object in the Surface resource store and every
 lease must exactly match a live host-issued lease.
 
+Capability results may request the generic `external.openUrl` effect only for a
+bounded, credential-free HTTPS URL. The package and command must declare
+`hook.external.open`, the capability runtime must consume a user gesture, and
+the host must revalidate the URL at its native browser boundary. This effect is
+never an instruction to execute a file or silently navigate without a direct
+user action.
+
 ## Canonical identities
 
 Package-local IDs use ASCII letters, digits, `.`, `_`, and `-`. Signed or
@@ -160,7 +175,30 @@ publisher-owned packages have the canonical identity `publisher/id`.
 - A package from one publisher cannot upgrade or replace another publisher's
   package with the same local ID.
 
-## Normative v1 process ABI
+## Capability runtime ABI
+
+The experimental Browser Live document-pinning consumer has been retired from
+Hook; browser windows use native window capture. Its package-specific command
+description is archived at
+`cleanup-base-20260928:protocol/BROWSER_DOCUMENT_PROVIDER.md` and is not an active
+host contract. The generic capability ABI below remains the extension boundary.
+
+Capability services use `loom.capability.runtime.v1`. Each message is one
+UTF-8 JSON document prefixed by a four-byte unsigned big-endian length. A frame
+larger than 4 MiB is rejected. The host and runtime keep stdin/stdout open for a
+bounded sequence of `initialize`, `activate`, `command`, `cancel`, `health`, and
+`deactivate` requests. Every response repeats the request ID and uses
+`accepted`, `progress`, `succeeded`, `failed`, or `cancelled`. Runtime logs are
+written to stderr; stdout contains framed protocol messages only.
+
+The signed package declares command input/output schemas, permissions, resource
+limits, and process model. Loom validates those boundaries again before
+dispatch and before applying returned effects. See
+`schemas/capability-package.v1.schema.json`,
+`schemas/capability-runtime.v1.schema.json`, and
+`schemas/extension.v1.schema.json`.
+
+## Normative framework process ABI
 
 1. Loom resolves the framework entry inside the immutable framework package.
 2. Loom starts one process for the execution.
@@ -270,8 +308,9 @@ The manifest permission policy declares network, filesystem, process, GPU,
 clipboard, and named credential requirements. Loom currently enforces process
 tree/resource limits, package path containment, writable-directory separation,
 credential scoping, and host-brokered HTTP/download policy. Raw credential
-values are encrypted/protected at rest and are never returned by list,
-diagnostic, or support-bundle APIs.
+values are never returned by list, diagnostic, or support-bundle APIs. Windows
+uses current-user DPAPI and owner-only ACLs; Unix uses owner-only files with a
+reversible local-file fallback, not an OS keyring or at-rest encryption guarantee.
 
 Windows Job Objects and Unix process groups are resource/process boundaries;
 they are not a complete AppContainer/namespace sandbox. Direct network,
@@ -300,25 +339,41 @@ credential values, URL credentials/query/fragment, and oversized strings.
 
 ## Schemas and tools
 
+- `schemas/capability-package.v1.schema.json`
+- `schemas/capability-runtime.v1.schema.json`
+- `schemas/extension.v1.schema.json`
 - `schemas/framework-manifest.v1.schema.json`
 - `schemas/framework-execute-request.v1.schema.json`
 - `schemas/framework-execute-response.v1.schema.json`
 - `schemas/framework-authoring.v1.schema.json`
 - `schemas/art-runtime.v1.schema.json`
+- `schemas/surface-manifest.v1.schema.json`
+- `schemas/surface-message.v1.schema.json`
+- `schemas/surface-scene.v1.schema.json`
+- `schemas/surface-stream.v1.schema.json`
+- `schemas/device-session.v1.schema.json`
+- `schemas/hook-message.v1.schema.json`
+- `schemas/wall.v1.schema.json`
+- `schemas/wall-presentation.v1.schema.json`
+- `schemas/wall-identification.v1.schema.json`
 
 Use the independently released `loom-plugin.exe`:
 
 ```text
 loom-plugin init framework <DIR> <ID> <PUBLISHER>
 loom-plugin init art <DIR> <ID> <FRAMEWORK> <PUBLISHER>
+loom-plugin init capability <DIR> <ID> <PUBLISHER>
 loom-plugin validate <PATH> [--trust-store <STORE>]
 loom-plugin pack <SOURCE_DIR> <OUTPUT_ZIP>
 loom-plugin conformance <EXE> <FRAMEWORK> <ART_DIR>
 loom-plugin keygen <KEY_FILE> <KEY_ID>
 loom-plugin sign <PACKAGE_DIR> <KEY_FILE> <PUBLISHER>
+loom-plugin catalog sign <PAYLOAD_JSON> <KEY_FILE> <OUTPUT_JSON>
+loom-plugin catalog validate <CATALOG_JSON> <TRUST_STORE>
 loom-plugin trust add <STORE> <PUBLISHER> <KEY_FILE>
 loom-plugin trust revoke <STORE> <PUBLISHER> <KEY_ID>
 ```
 
-The Plugin SDK ZIP contains this CLI, all schemas, and the developer/security
-documents. It does not contain Loom or Hook source.
+The Plugin SDK ZIP contains this CLI, plugin schemas, capability runtime
+templates and fake host, and the developer/security documents. It does not
+contain Loom or Hook source.

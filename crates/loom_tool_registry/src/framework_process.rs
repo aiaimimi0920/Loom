@@ -1,14 +1,13 @@
 //! Generic stdin/stdout bridge for externally packaged Art frameworks.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ChildStdin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +47,7 @@ mod candidates;
 mod execute;
 mod host;
 mod image;
+mod lifecycle;
 mod package;
 mod redaction;
 
@@ -56,6 +56,7 @@ use candidates::*;
 use execute::execute_framework_art_in_root_with_timeout;
 use host::*;
 use image::*;
+use lifecycle::*;
 use package::*;
 use redaction::*;
 
@@ -63,6 +64,8 @@ pub use execute::{
     execute_framework_art, execute_framework_art_with_timeout,
     execute_framework_art_with_timeout_and_cancellation,
 };
+pub use host::invalidate_persistent_mcp_framework_hosts;
+pub use lifecycle::PersistentMcpHostInvalidationOutcome;
 
 #[cfg(test)]
 mod tests;

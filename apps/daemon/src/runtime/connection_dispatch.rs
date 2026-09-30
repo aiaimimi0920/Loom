@@ -136,20 +136,33 @@ fn prepare_connection(stream: TcpStream) -> Option<TcpStream> {
 /// shutdown, and one shared deadline bounds the whole drain no matter how many sockets are queued.
 ///
 /// The returned connections still have to be dispatched; this only gets them read.
-fn drain_accept_backlog(listener: &TcpListener) -> Vec<ReadyConnection> {
+fn drain_accept_backlog(
+    listener: &TcpListener,
+    waiting: &mut ConnectionReadBacklog,
+) -> Vec<ReadyConnection> {
     let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_READ_GRACE_MILLIS);
     let abort = AtomicBool::new(false);
     let mut drained = Vec::new();
-    while drained.len() < CONNECTION_READ_QUEUE_CAPACITY {
+    for _ in 0..CONNECTION_READ_QUEUE_CAPACITY {
         // The listener is non-blocking, so an empty backlog ends the loop instead of waiting on one.
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(_) => break,
+        let stream = match waiting.pop_stream() {
+            Some(stream) => stream,
+            None => match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(_) => break,
+            },
         };
         let mut stream = match prepare_connection(stream) {
             Some(stream) => stream,
             None => continue,
         };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if stream.set_read_timeout(Some(remaining)).is_err() {
+            continue;
+        }
         match read_http_request_until(&mut stream, deadline, &abort) {
             Ok(outcome) => drained.push(ReadyConnection { stream, outcome }),
             Err(error) => eprintln!("loom shutdown drain read failed: {error:#}"),
@@ -242,6 +255,15 @@ fn dispatch_connection(
         }
         HttpReadOutcome::Request(request) => {
             let request = ParsedHttpRequest::from_raw(request);
+            if is_live_media_websocket_request(&request) {
+                if shutdown_after_read {
+                    let (status, body) = daemon_shutting_down_response();
+                    write_response_safely(stream, status, &body);
+                    return DispatchOutcome::Stop;
+                }
+                handle_live_media_websocket_upgrade(stream, request, runtime);
+                return DispatchOutcome::Continue;
+            }
             let job = RequestJob { stream, request };
             if shutdown_after_read && (executor.is_none() || is_reserved_probe(&job.request)) {
                 let (status, body) = daemon_shutting_down_response();
@@ -282,41 +304,6 @@ fn begin_shutdown(
     }
     surface_stream_executor.close();
     read_draining.store(true, Ordering::SeqCst);
-}
-
-fn route_with_runtime(
-    runtime: &DaemonRuntime,
-    request: &ParsedHttpRequest,
-) -> Result<(u16, String)> {
-    runtime_log_debug(format!("{} {}", request.method, request.path));
-    route(
-        request,
-        &runtime.hook_settings,
-        &runtime.run_store,
-        runtime.run_store_status,
-        &runtime.brain_planner,
-        &runtime.auth_token,
-        runtime.config_registry.as_ref(),
-        &runtime.config_store,
-        &runtime.mcp_servers,
-        &runtime.tool_registry,
-        &runtime.workflow_store,
-        &runtime.hook_bridge,
-        &runtime.device_registry,
-        &runtime.surface_instances,
-        &runtime.surface_actions,
-        &runtime.surface_resources,
-        &runtime.settings,
-        &runtime.shared_images,
-        &runtime.ocr_provider,
-        &runtime.settings_base_url,
-        &runtime.mcp_registry_endpoint,
-        runtime.request_executor_status,
-        &runtime.canvas_workflow_root,
-        &runtime.framework_registry,
-        &runtime.control_plane_root,
-        &runtime.bundled_art_sha256_allowlist,
-    )
 }
 
 struct RequestJob {
@@ -578,6 +565,11 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         // release it. The poll reads no state a serialized route is part-way through mutating: it
         // observes the instance store under that store's own lock and returns.
         ("GET", "/v1/surfaces/stream") => RequestConcurrencyClass::Concurrent,
+        // Live polls wait on their own store's condvar. Holding the global route lock
+        // would delay the input/control writes that must wake the source immediately.
+        ("GET", path) if live_session_suffix_id(path, "/events").is_some() => {
+            RequestConcurrencyClass::Concurrent
+        }
         ("GET", path) if hook_canvas_preview_node_id("GET", path).is_some() => {
             RequestConcurrencyClass::Concurrent
         }
@@ -589,6 +581,10 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
             if run_action_path_id(path, "stop").is_some()
                 || run_action_path_id(path, "retry").is_some() =>
         {
+            RequestConcurrencyClass::Concurrent
+        }
+        ("POST", "/v1/invoke/cancel") => RequestConcurrencyClass::Concurrent,
+        ("POST", path) if PROJECTION_V2_ROUTES.contains(&path) => {
             RequestConcurrencyClass::Concurrent
         }
         ("POST", "/v1/invoke") => {

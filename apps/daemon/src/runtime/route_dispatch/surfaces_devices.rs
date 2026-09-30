@@ -12,13 +12,15 @@ fn route_surfaces_devices(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     hook_bridge: &SharedHookBridgeRuntime,
+    capability_runtime: &SharedCapabilityRuntime,
+    capability_resources: &SharedCapabilityResourceBroker,
     device_registry: &SharedDeviceRegistryStore,
+    live_sessions: &SharedLiveSessionStore,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_actions: &SharedSurfaceActionExecutor,
     surface_resources: &SharedSurfaceResourceStore,
     settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
-    ocr_provider: &OcrProviderHandle,
     settings_base_url: &str,
     mcp_registry_endpoint: &str,
     request_executor: RequestExecutorStatus,
@@ -28,8 +30,12 @@ fn route_surfaces_devices(
     bundled_art_sha256_allowlist: &BTreeSet<String>,
     authenticated_device_id: &Option<String>,
     route_path: &str,
+    walls: &SharedWallStore,
 ) -> Result<(u16, String)> {
     match (request.method.as_str(), route_path) {
+        ("POST", path) if PROJECTION_ROUTES.contains(&path) => handle_projection_route(
+            path, &request.body, authenticated_device_id.as_deref(), device_registry,
+        ),
         ("POST", "/v1/surfaces/resources") => {
             create_surface_resource(&request.body, surface_resources, shared_images)
         }
@@ -60,6 +66,7 @@ fn route_surfaces_devices(
                 brain_planner: brain_planner.status(),
                 run_store: run_store_status,
                 request_executor,
+                live_sessions: live_sessions.status(),
             })?,
         )),
         ("GET", "/v1/configuration/claims") if configuration_claim_app(&request.path).is_some() => {
@@ -105,12 +112,14 @@ fn route_surfaces_devices(
             &request.body,
             surface_actions,
             device_registry,
+            surface_instances,
             authenticated_device_id.as_deref(),
         ),
         ("POST", "/v1/surfaces/confirmations/decision") => decide_surface_confirmation(
             &request.body,
             surface_actions,
             device_registry,
+            surface_instances,
             authenticated_device_id.as_deref(),
         ),
         ("GET", "/v1/surfaces/instances") => list_surface_instances(surface_instances),
@@ -125,6 +134,7 @@ fn route_surfaces_devices(
             surface_resources,
             shared_images,
             authenticated_device_id.as_deref(),
+            walls,
         ),
         ("POST", "/v1/surfaces/instances") => create_surface_instance(
             &request.body,
@@ -283,6 +293,7 @@ fn route_surfaces_devices(
                 hook_bridge,
                 surface_resources,
                 shared_images,
+                walls,
             )
         }
         _ => route_mcp_art(
@@ -297,13 +308,14 @@ fn route_surfaces_devices(
             tool_registry,
             workflow_store,
             hook_bridge,
+            capability_runtime,
+            capability_resources,
             device_registry,
             surface_instances,
             surface_actions,
             surface_resources,
             settings,
             shared_images,
-            ocr_provider,
             settings_base_url,
             mcp_registry_endpoint,
             request_executor,

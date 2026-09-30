@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Write};
@@ -17,6 +17,9 @@ use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BAS
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use fs2::FileExt;
+use loom_capability_runtime::{
+    CapabilityInvocation, CapabilityRuntimeHost, CapabilityRuntimePackage, RuntimeHostLimits,
+};
 #[cfg(not(test))]
 use loom_configuration::default_configuration_root;
 use loom_configuration::{
@@ -38,20 +41,32 @@ use loom_mcp::package::{
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
-    device_session_signature_message, is_safe_package_id, is_safe_publisher_id, ArtRuntimeManifest,
-    DeviceSessionChallengeRequest, DeviceSessionChallengeResponse, DeviceSessionIssueRequest,
-    DeviceSessionIssueResponse, HookArtAck, HookArtCancelRequest, HookArtCapability,
-    HookArtExecuteRequest, HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
+    device_session_signature_message, is_safe_package_id, is_safe_publisher_id,
+    negotiate_extension_features, validate_extension_message, ArtRuntimeManifest,
+    CapabilityErrorCode, ContributionSnapshot, DeviceSessionChallengeRequest,
+    DeviceSessionChallengeResponse, DeviceSessionIssueRequest, DeviceSessionIssueResponse,
+    ExtensionBridgeError, ExtensionBridgeRequest, ExtensionBridgeResponse, ExtensionBridgeStatus,
+    ExtensionCommandInvokeRequest, ExtensionError, ExtensionHandshakeRequest, ExtensionInvocation,
+    ExtensionMessage, ExtensionResourceKind, ExtensionResourceRef, ExtensionResourceUpload,
+    ExtensionResult, ExtensionResultStatus, ExtensionSnapshotEvent, ExtensionSnapshotEventParams,
+    ExtensionTarget, HookArtAck, HookArtCancelRequest, HookArtCapability, HookArtExecuteRequest,
+    HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
     HookArtResourcesReleaseRequest, HookArtResultCommit, HookCapabilities, HookEvent,
     HookHandshakeResponse, HookRequest, HookRequestStatus, HookResponse, HookTransportMode,
-    PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceConfirmationDecision, SurfaceEvent,
-    SurfaceExecutionFailure, SurfaceHostCapabilities, SurfaceInstanceMode,
-    SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode, SurfacePatch, SurfacePortValue,
-    SurfacePreviewCommit, SurfaceResourceDescriptor, SurfaceResourceKind, SurfaceResourceTransport,
-    SurfaceResourceTransportKind, SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot,
-    DEVICE_SESSION_PROTOCOL_VERSION, HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED,
-    SURFACE_EVENT_CONFIRMATION_REQUEST, SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION,
-    SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH, SURFACE_EVENT_SNAPSHOT,
+    LiveBinaryFrame, LiveConditionOperator, LiveControlEnvelope, LiveControlMessage,
+    LiveDeviceRole, LiveObservation, LiveObservationCapability, LiveObservationConfidence,
+    LiveObservationSource, LiveObservationState, LiveScreenshotSession, LiveSessionState,
+    LiveTriggerAudit, LiveTriggerBinding, LiveTriggerCondition, LiveTriggerOutcome,
+    LiveVisibilityState, PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceActionStatus,
+    SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure, SurfaceHostCapabilities,
+    SurfaceInstanceMode, SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode,
+    SurfacePatch, SurfacePortValue, SurfacePreviewCommit, SurfaceResourceDescriptor,
+    SurfaceResourceKind, SurfaceResourceTransport, SurfaceResourceTransportKind,
+    SurfaceResultCommit, SurfaceRuntimeKind, SurfaceSnapshot, CAPABILITY_API_VERSION,
+    DEVICE_SESSION_PROTOCOL_VERSION, EXTENSION_EVENT_SNAPSHOT_UPDATED, EXTENSION_PROTOCOL,
+    HOOK_EVENT_CACHE_CONTROL, HOOK_EVENT_SETTINGS_UPDATED, SURFACE_EVENT_CONFIRMATION_REQUEST,
+    SURFACE_EVENT_DISPOSE, SURFACE_EVENT_GENERATION, SURFACE_EVENT_LIFECYCLE, SURFACE_EVENT_PATCH,
+    SURFACE_EVENT_SNAPSHOT,
 };
 use loom_shared_image::{SharedImageError, SharedImageFormat, SharedImageInfo, SharedImageStore};
 use loom_tool_registry::art_settings::{
@@ -82,19 +97,29 @@ use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
+mod account_login;
 mod brain_plan;
+mod capability_resources;
 mod hook_canvas;
 mod http_request;
+mod projection_settings;
 mod request_executor;
 mod surface_actions;
 mod surface_resources;
 mod surface_store;
+mod wall_store;
+
+use wall_store::{SharedWallStore, WallStore, WallStoreError};
 
 use brain_plan::{
     build_brain_planner, BrainPlanRequest, BrainPlannerConfig, BrainPlannerStatus,
     SharedBrainPlanner,
 };
+use capability_resources::{
+    CapabilityResourceBroker, CapabilityResourceError, SharedCapabilityResourceBroker,
+};
 use http_request::*;
+mod offline_peers;
 use request_executor::{
     BoundedRequestExecutor, RequestExecutorConfig, RequestExecutorStatus, SubmitError,
 };
@@ -110,15 +135,54 @@ use surface_store::{
 
 // Responsibility-focused daemon implementation slices share the crate root to preserve the public API.
 include!("runtime/daemon_config.rs");
+include!("runtime/capability_runtime_state.rs");
+include!("runtime/capability_dispatch_registry.rs");
 include!("runtime/daemon_lifecycle.rs");
 include!("runtime/connection_dispatch.rs");
+include!("runtime/connection_read_admission.rs");
 include!("runtime/http_routing.rs");
+include!("runtime/capability_plugin_api.rs");
+include!("runtime/capability_plugin_settings.rs");
+include!("runtime/capability_plugin_catalog_api.rs");
+include!("runtime/capability_plugin_runtime_api.rs");
 include!("runtime/secure_persistence.rs");
 include!("runtime/mcp_persistence_models.rs");
 include!("runtime/settings_ocr_runtime.rs");
+include!("runtime/hook_bridge_connections.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
+mod projection_edit;
+include!("runtime/projection_snapshot.rs");
+include!("runtime/projection_store.rs");
+include!("runtime/projection_routes.rs");
+include!("runtime/projection_settings_routes.rs");
+include!("runtime/projection_v2_owner.rs");
+include!("runtime/projection_v2_api.rs");
 include!("runtime/device_auth.rs");
+include!("runtime/wall_routes.rs");
+include!("runtime/wall_image_routes.rs");
+include!("runtime/wall_surface_models.rs");
+include!("runtime/wall_surface_views.rs");
+include!("runtime/wall_surface_routes.rs");
+include!("runtime/wall_input_models.rs");
+include!("runtime/wall_input_control.rs");
+include!("runtime/wall_input_routes.rs");
+include!("runtime/live_session_state.rs");
+include!("runtime/live_session_state_helpers.rs");
+include!("runtime/live_session_events.rs");
+include!("runtime/live_session_media.rs");
+include!("runtime/live_session_control.rs");
+include!("runtime/live_session_input.rs");
+include!("runtime/live_session_observation.rs");
+include!("runtime/live_session_triggers.rs");
+include!("runtime/live_session_trigger_dispatch.rs");
+include!("runtime/live_session_routes.rs");
+
+include!("runtime/live_source_binding.rs");
+include!("runtime/live_session_route_support.rs");
+include!("runtime/live_media_websocket.rs");
+include!("runtime/wall_media_encoding.rs");
+include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");
@@ -155,17 +219,26 @@ include!("runtime/canvas_bridge_routes.rs");
 include!("runtime/hook_canvas_preview_session.rs");
 include!("runtime/hook_art_request_lifecycle.rs");
 include!("runtime/hook_canvas_live_persistence.rs");
+include!("runtime/capability_extension_resources.rs");
+include!("runtime/capability_extension_state.rs");
+include!("runtime/capability_extension_bridge.rs");
+include!("runtime/hook_bridge_server.rs");
 include!("runtime/hook_bridge_websocket.rs");
 include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
 include!("runtime/hook_art_results_broadcast.rs");
 include!("runtime/surface_recovery_errors.rs");
+include!("runtime/workflow_error_responses.rs");
+include!("runtime/capability_command_dispatch.rs");
 include!("runtime/capability_invocation.rs");
 include!("runtime/run_http_responses.rs");
 
 #[cfg(test)]
 mod tests {
+    include!("tests/projection_http.rs");
+    include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");
+    include!("tests/connection_read_admission.rs");
     include!("tests/suite/part_02.rs");
     include!("tests/suite/part_03.rs");
     include!("tests/suite/part_04.rs");
@@ -196,4 +269,14 @@ mod tests {
     include!("tests/suite/part_29.rs");
     include!("tests/suite/part_30.rs");
     include!("tests/suite/part_31.rs");
+    include!("tests/suite/part_32.rs");
+    include!("tests/suite/part_33.rs");
+    include!("tests/suite/part_34.rs");
+    include!("tests/suite/part_35.rs");
+    include!("tests/suite/part_36.rs");
+    include!("tests/suite/part_37.rs");
+    include!("tests/suite/part_38.rs");
+    include!("tests/suite/part_39.rs");
+    include!("tests/suite/part_40.rs");
+    include!("tests/suite/part_41.rs");
 }

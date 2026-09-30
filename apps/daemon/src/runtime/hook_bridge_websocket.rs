@@ -122,12 +122,14 @@ fn resolve_hook_session_path(appdata: &Path) -> PathBuf {
 fn start_hook_bridge(
     body: &str,
     hook_bridge: &SharedHookBridgeRuntime,
+    capability_runtime: &SharedCapabilityRuntime,
+    capability_resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     settings: &SharedLoomSettingsStore,
     shared_images: &SharedImageStoreHandle,
-    ocr_provider: &OcrProviderHandle,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
     run_store: &SharedRunStore,
@@ -175,16 +177,24 @@ fn start_hook_bridge(
         .set_nonblocking(true)
         .context("set hook bridge listener nonblocking")?;
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    runtime.connections.prepare_start();
+    let connections = runtime.connections.clone();
     let connected_clients = Arc::clone(&runtime.connected_clients);
     connected_clients.store(0, Ordering::SeqCst);
+    let extension_clients = Arc::clone(&runtime.extension_capable_clients);
+    extension_clients.store(0, Ordering::SeqCst);
+    let ocr_text_clients = Arc::clone(&runtime.ocr_text_capable_clients);
+    ocr_text_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     let broadcast_hub = runtime.broadcast_hub.clone();
+    let worker_capability_runtime = Arc::clone(capability_runtime);
+    let worker_capability_resources = Arc::clone(capability_resources);
+    let worker_surface_resources = Arc::clone(surface_resources);
     let worker_mcp_servers = Arc::clone(mcp_servers);
     let worker_tool_registry = tool_registry.clone();
     let worker_workflow_store = workflow_store.clone();
     let worker_settings = Arc::clone(settings);
     let worker_shared_images = Arc::clone(shared_images);
-    let worker_ocr_provider = Arc::clone(ocr_provider);
     let worker_framework_registry = framework_registry.clone();
     let worker_control_plane_root = control_plane_root.to_path_buf();
     let worker_run_store = Arc::clone(run_store);
@@ -196,13 +206,18 @@ fn start_hook_bridge(
             listener,
             shutdown_rx,
             connected_clients,
+            extension_clients,
+            ocr_text_clients,
+            connections,
             broadcast_hub,
+            worker_capability_runtime,
+            worker_capability_resources,
+            worker_surface_resources,
             worker_mcp_servers,
             worker_tool_registry,
             worker_workflow_store,
             worker_settings,
             worker_shared_images,
-            worker_ocr_provider,
             worker_framework_registry,
             worker_control_plane_root,
             workflow_root,
@@ -231,10 +246,14 @@ fn stop_hook_bridge(
     if let Some(shutdown_tx) = runtime.shutdown_tx.take() {
         let _ = shutdown_tx.send(());
     }
+    runtime.connections.cancelled.store(true, Ordering::SeqCst);
     if let Some(worker) = runtime.worker.take() {
         let _ = worker.join();
     }
+    runtime.connections.cancel_and_join();
     runtime.connected_clients.store(0, Ordering::SeqCst);
+    runtime.extension_capable_clients.store(0, Ordering::SeqCst);
+    runtime.ocr_text_capable_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
     clear_hook_canvas_runtime_state(Some(shared_images));
@@ -256,90 +275,35 @@ fn hook_bridge_status_json(runtime: &HookBridgeRuntime) -> Value {
         "running": running,
         "port": runtime.port.unwrap_or(HOOK_BRIDGE_PORT),
         "connectedClients": runtime.connected_clients.load(Ordering::SeqCst),
+        "extensionCapableClients": runtime.extension_capable_clients.load(Ordering::SeqCst),
         "subscribedClients": runtime.broadcast_hub.subscriber_count(),
         "protocol": loom_protocol::HOOK_PROTOCOL_VERSION,
         "methods": loom_protocol::HOOK_REQUEST_METHODS,
         "events": events,
+        "extension": {
+            "protocol": loom_protocol::EXTENSION_PROTOCOL,
+            "methods": loom_protocol::EXTENSION_REQUEST_METHODS,
+            "events": loom_protocol::EXTENSION_EVENT_METHODS,
+            "features": loom_protocol::EXTENSION_FEATURES,
+        },
     })
-}
-
-fn run_hook_bridge_websocket_server(
-    listener: TcpListener,
-    shutdown_rx: Receiver<()>,
-    connected_clients: Arc<AtomicUsize>,
-    broadcast_hub: HookBridgeBroadcastHub,
-    mcp_servers: SharedMcpServerStore,
-    tool_registry: ToolRegistry,
-    workflow_store: WorkflowStore,
-    settings: SharedLoomSettingsStore,
-    shared_images: SharedImageStoreHandle,
-    ocr_provider: OcrProviderHandle,
-    framework_registry: FrameworkRegistry,
-    control_plane_root: PathBuf,
-    workflow_root: PathBuf,
-    run_store: SharedRunStore,
-    surface_instances: SharedSurfaceInstanceStore,
-    surface_actions: SharedSurfaceActionExecutor,
-) {
-    loop {
-        if shutdown_rx.try_recv().is_ok() {
-            return;
-        }
-
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let connected_clients = Arc::clone(&connected_clients);
-                let broadcast_hub = broadcast_hub.clone();
-                let mcp_servers = Arc::clone(&mcp_servers);
-                let tool_registry = tool_registry.clone();
-                let workflow_store = workflow_store.clone();
-                let settings = Arc::clone(&settings);
-                let shared_images = Arc::clone(&shared_images);
-                let ocr_provider = Arc::clone(&ocr_provider);
-                let framework_registry = framework_registry.clone();
-                let control_plane_root = control_plane_root.clone();
-                let workflow_root = workflow_root.clone();
-                let run_store = Arc::clone(&run_store);
-                let surface_instances = Arc::clone(&surface_instances);
-                let surface_actions = Arc::clone(&surface_actions);
-                thread::spawn(move || {
-                    handle_hook_bridge_websocket_connection(
-                        stream,
-                        connected_clients,
-                        broadcast_hub,
-                        mcp_servers,
-                        tool_registry,
-                        workflow_store,
-                        settings,
-                        shared_images,
-                        ocr_provider,
-                        framework_registry,
-                        control_plane_root,
-                        workflow_root,
-                        run_store,
-                        surface_instances,
-                        surface_actions,
-                    );
-                });
-            }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return,
-        }
-    }
 }
 
 fn handle_hook_bridge_websocket_connection(
     stream: std::net::TcpStream,
+    cancelled: Arc<AtomicBool>,
     connected_clients: Arc<AtomicUsize>,
+    extension_clients: Arc<AtomicUsize>,
+    ocr_text_clients: Arc<AtomicUsize>,
     broadcast_hub: HookBridgeBroadcastHub,
+    capability_runtime: SharedCapabilityRuntime,
+    capability_resources: SharedCapabilityResourceBroker,
+    surface_resources: SharedSurfaceResourceStore,
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
     settings: SharedLoomSettingsStore,
     shared_images: SharedImageStoreHandle,
-    ocr_provider: OcrProviderHandle,
     framework_registry: FrameworkRegistry,
     control_plane_root: PathBuf,
     workflow_root: PathBuf,
@@ -348,6 +312,8 @@ fn handle_hook_bridge_websocket_connection(
     surface_actions: SharedSurfaceActionExecutor,
 ) {
     let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
     let Ok(mut websocket) = tungstenite::accept(stream) else {
         return;
     };
@@ -358,9 +324,22 @@ fn handle_hook_bridge_websocket_connection(
     let _guard = ConnectedClientGuard { connected_clients };
     let mut subscription_rx: Option<Receiver<String>> = None;
     let mut _subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
+    let mut extension_subscription_rx: Option<Receiver<String>> = None;
+    let mut _extension_subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
+    let mut _extension_client_guard: Option<ExtensionClientGuard> = None;
+    let mut extension_state = ExtensionConnectionState::default();
 
     loop {
+        if cancelled.load(Ordering::SeqCst) {
+            let _ = websocket.close(None);
+            break;
+        }
         if let Some(rx) = &subscription_rx {
+            if !drain_hook_bridge_broadcasts(&mut websocket, rx) {
+                break;
+            }
+        }
+        if let Some(rx) = &extension_subscription_rx {
             if !drain_hook_bridge_broadcasts(&mut websocket, rx) {
                 break;
             }
@@ -373,6 +352,31 @@ fn handle_hook_bridge_websocket_connection(
         };
         match message {
             tungstenite::Message::Text(text) => {
+                if is_extension_bridge_request(&text) {
+                    let result = handle_extension_bridge_text(
+                        &text,
+                        &mut extension_state,
+                        &capability_runtime,
+                        &capability_resources,
+                        &surface_resources,
+                    );
+                    track_extension_client(&mut _extension_client_guard, &extension_state, &extension_clients, &ocr_text_clients);
+                    if result.subscribe_to_snapshots && extension_subscription_rx.is_none() {
+                        let (rx, guard) = register_hook_bridge_subscription(
+                            &broadcast_hub,
+                            vec![EXTENSION_EVENT_SNAPSHOT_UPDATED.to_owned()],
+                        );
+                        extension_subscription_rx = Some(rx);
+                        _extension_subscription_guard = Some(guard);
+                    }
+                    if websocket
+                        .send(tungstenite::Message::Text(result.response))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
                 let mut intermediate_send_failed = false;
                 let mut recovery_channels: Option<Vec<String>> = None;
                 let mut emit_intermediate = |message: String| {
@@ -387,7 +391,6 @@ fn handle_hook_bridge_websocket_connection(
                     &workflow_store,
                     &settings,
                     &shared_images,
-                    &ocr_provider,
                     &framework_registry,
                     &control_plane_root,
                     &workflow_root,
@@ -397,6 +400,15 @@ fn handle_hook_bridge_websocket_connection(
                 );
                 if intermediate_send_failed {
                     break;
+                }
+                if serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|value| value.get("method").and_then(Value::as_str).map(str::to_owned))
+                    .as_deref()
+                    == Some(loom_protocol::HOOK_METHOD_HANDSHAKE)
+                {
+                    extension_state.record_hook_handshake(&result.response);
+                    _extension_client_guard = None;
                 }
                 if result.subscription_channels.is_some() && subscription_rx.is_none() {
                     recovery_channels = result.subscription_channels.clone();

@@ -1,0 +1,9 @@
+.projection-settings > section { display: grid; gap: 12px; min-width: 0; }
+.projection-settings label { display: grid; gap: 6px; min-width: 0; }
+.projection-settings .studio-input { width: 100%; min-width: 0; box-sizing: border-box; }
+.projection-settings details { min-width: 0; }
+.projection-settings details > label { margin: 12px 0; }
+.projection-device-checklist { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--loom-theme-line); }
+.projection-device-checklist > div { display: grid; gap: 8px; max-height: 224px; overflow: auto; }
+.projection-device-checklist label { display: flex; align-items: start; gap: 8px; overflow-wrap: anywhere; }
+.projection-device-checklist input { flex: 0 0 auto; }

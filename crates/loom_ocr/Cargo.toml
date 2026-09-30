@@ -16,3 +16,6 @@ rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

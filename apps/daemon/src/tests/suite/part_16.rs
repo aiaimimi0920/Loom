@@ -147,6 +147,7 @@ fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
     expect_binary_route_response(authorized, 200, "image/png");
 
     fs::write(session_dir.join("session.json"), "{not-json").expect("corrupt session");
+    drop(runtime);
     let malformed_runtime = test_daemon_runtime(&control_plane_root, None);
     let response = route_request(
         &malformed_runtime,
@@ -159,6 +160,7 @@ fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
         "hook_canvas_error"
     );
 
+    drop(malformed_runtime);
     restore_env("APPDATA", previous);
     fs::remove_dir_all(appdata).expect("cleanup");
     fs::remove_dir_all(control_plane_root).expect("cleanup control plane");
@@ -219,7 +221,11 @@ fn settings_persist_mcp_limits_and_global_art_update_policy() {
         put_settings(&body, &settings_store, &hook_bridge).expect("save runtime settings");
 
     assert_eq!(status, 200);
-    let saved_settings = settings_store.lock().expect("settings store").settings.clone();
+    let saved_settings = settings_store
+        .lock()
+        .expect("settings store")
+        .settings
+        .clone();
     assert_eq!(saved_settings.mcp.request_timeout_seconds, 120);
     assert_eq!(saved_settings.mcp.memory_limit_bytes, 1024 * 1024 * 1024);
     assert_eq!(saved_settings.network.loom.mode, "disabled");
@@ -397,6 +403,77 @@ fn hook_receives_full_settings_after_settings_or_shortcut_updates() {
         shortcut_event["params"]["settings"]["general"]["theme"],
         "dark"
     );
+
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn settings_store_migrates_reserved_defaults_without_overwriting_unrelated_custom_keys() {
+    let root = unique_temp_dir("settings-shortcut-migration");
+    let path = root.join("settings.json");
+    let mut settings = LoomSettings::default();
+    settings.shortcuts.remove("live_capture");
+    settings.shortcuts.remove("long_capture");
+    settings.shortcuts.insert(
+        "toggle_clean_view".to_owned(),
+        LoomShortcutConfig {
+            id: "toggle_clean_view".to_owned(),
+            label: "Clean View".to_owned(),
+            keys: "Ctrl+4".to_owned(),
+            enabled: true,
+        },
+    );
+    settings.shortcuts.insert(
+        "toggle_ocr".to_owned(),
+        LoomShortcutConfig {
+            id: "toggle_ocr".to_owned(),
+            label: "Toggle OCR".to_owned(),
+            keys: "Alt+2".to_owned(),
+            enabled: true,
+        },
+    );
+    settings.shortcuts.insert(
+        "capture".to_owned(),
+        LoomShortcutConfig {
+            id: "capture".to_owned(),
+            label: "Screenshot".to_owned(),
+            keys: "Alt+9".to_owned(),
+            enabled: true,
+        },
+    );
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&settings).expect("serialize settings"),
+    )
+    .expect("write settings");
+
+    let store = LoomSettingsStore::new(path);
+    assert_eq!(store.settings.shortcuts["live_capture"].keys, "Ctrl+2");
+    assert_eq!(store.settings.shortcuts["long_capture"].keys, "Ctrl+3");
+    assert_eq!(
+        store.settings.shortcuts["toggle_clean_view"].keys,
+        "Ctrl+Shift+4"
+    );
+    assert_eq!(store.settings.shortcuts["toggle_ocr"].keys, "Alt+4");
+    assert_eq!(store.settings.shortcuts["capture"].keys, "Alt+9");
+
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn settings_store_injects_missing_ocr_shortcut_default() {
+    let root = unique_temp_dir("settings-missing-ocr-shortcut");
+    let path = root.join("settings.json");
+    let mut settings = LoomSettings::default();
+    settings.shortcuts.remove("toggle_ocr");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&settings).expect("serialize settings"),
+    )
+    .expect("write settings");
+
+    let store = LoomSettingsStore::new(path);
+    assert_eq!(store.settings.shortcuts["toggle_ocr"].keys, "Alt+4");
 
     fs::remove_dir_all(root).expect("cleanup");
 }

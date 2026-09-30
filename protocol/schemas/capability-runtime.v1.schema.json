@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/schemas/capability-runtime.v1.schema.json",
+  "title": "Loom Capability Plugin runtime message v1",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/event" }
+  ],
+  "$defs": {
+    "apiVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "payload": {
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    },
+    "request": {
+      "type": "object",
+      "required": ["protocol", "apiVersion", "type", "requestId", "method", "payload"],
+      "properties": {
+        "protocol": { "const": "loom.capability.runtime.v1" },
+        "apiVersion": { "$ref": "#/$defs/apiVersion" },
+        "type": { "const": "request" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "method": {
+          "enum": ["initialize", "activate", "deactivate", "command", "cancel", "health"]
+        },
+        "payload": { "$ref": "#/$defs/payload" }
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["protocol", "apiVersion", "type", "requestId", "status"],
+      "properties": {
+        "protocol": { "const": "loom.capability.runtime.v1" },
+        "apiVersion": { "$ref": "#/$defs/apiVersion" },
+        "type": { "const": "response" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "status": { "enum": ["accepted", "progress", "succeeded", "failed", "cancelled"] },
+        "payload": { "$ref": "#/$defs/payload" },
+        "error": { "$ref": "#/$defs/error" }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["protocol", "apiVersion", "type", "event", "payload"],
+      "properties": {
+        "protocol": { "const": "loom.capability.runtime.v1" },
+        "apiVersion": { "$ref": "#/$defs/apiVersion" },
+        "type": { "const": "event" },
+        "event": { "enum": ["contributions", "diagnostic", "health_changed"] },
+        "payload": { "$ref": "#/$defs/payload" }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "unsupported_api",
+            "plugin_not_active",
+            "contribution_conflict",
+            "permission_denied",
+            "stale_generation",
+            "stale_target",
+            "invalid_input",
+            "resource_not_found",
+            "busy",
+            "cancelled",
+            "runtime_fault"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 4096 },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

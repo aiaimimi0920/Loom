@@ -1,11 +1,9 @@
-// MCP server lifecycle, registry, test, call, and package-plan clients.
+// MCP server lifecycle, registry, test, and call clients.
 import type { McpRegistryResponse } from "../mcpMarketplace.ts";
 import type {
   LoomMcpCallToolResponse,
   LoomMcpServer,
   LoomMcpTestResult,
-  McpPackageCheckResult,
-  McpPackageInstallPlan,
 } from "./mcpTypes.ts";
 import { deleteJson, getJson, postJson, putJson } from "./transport.ts";
 
@@ -119,18 +117,4 @@ export async function callMcpTool(
     toolName,
     toolArgs,
   });
-}
-
-export async function checkMcpPackageInstalled(
-  baseUrl: string,
-  moduleName: string,
-): Promise<McpPackageCheckResult> {
-  return await postJson<McpPackageCheckResult>(baseUrl, "/v1/mcp/package/check", { moduleName });
-}
-
-export async function buildMcpPackageInstallPlan(
-  baseUrl: string,
-  packageName: string,
-): Promise<McpPackageInstallPlan> {
-  return await postJson<McpPackageInstallPlan>(baseUrl, "/v1/mcp/package/install-plan", { packageName });
 }

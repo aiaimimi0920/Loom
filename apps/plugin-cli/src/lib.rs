@@ -12,13 +12,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use loom_plugin_security::{
-    generate_signing_key, restrict_private_path_permissions, sign_package,
+    generate_signing_key, restrict_private_path_permissions, sign_message, sign_package,
     verify_package_signature, SigningKeyDocument, TrustStore,
 };
 use loom_protocol::{
-    is_safe_package_id, is_safe_publisher_id, is_safe_surface_identifier, schemas,
-    validate_framework_manifest_contract, validate_surface_node_tree, validate_surface_protocol,
-    ArtRuntimeManifest, FrameworkExecuteRequest, FrameworkExecuteResponse,
+    is_safe_package_id, is_safe_publisher_id, is_safe_surface_identifier,
+    parse_capability_manifest, schemas, validate_framework_manifest_contract,
+    validate_surface_node_tree, validate_surface_protocol, ArtRuntimeManifest,
+    CapabilityPackageManifest, FrameworkExecuteRequest, FrameworkExecuteResponse,
     FrameworkExecutionContext, FrameworkPackageManifest, PackageSignature, PackageTrustStatus,
     PublisherIdentity, PublisherTrustRecord, SurfaceNode, SurfacePackageManifest,
     SurfaceRuntimeKind, ART_RUNTIME_PROTOCOL_VERSION, DECLARATIVE_SURFACE_NODE_TYPES,
@@ -38,9 +39,11 @@ static CONFORMANCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 include!("cli.rs");
+include!("capability_install_cli.rs");
 include!("filesystem.rs");
 include!("validation.rs");
 include!("signing.rs");
+include!("catalog_cli.rs");
 include!("package.rs");
 include!("scaffold.rs");
 include!("conformance.rs");

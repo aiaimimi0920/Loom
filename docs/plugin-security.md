@@ -35,8 +35,9 @@ revoked version, credential disclosure, or source-tree modification.
 
 ## Trust policy
 
-The default `allow-unsigned` policy exists only for compatibility with old local
-packages. Production deployments should set:
+The current default is `allow-unsigned` for local/development packages. This is
+an active trust-policy choice, not permission to accept retired package layouts
+or protocol aliases. Production deployments should set:
 
 ```text
 LOOM_PLUGIN_TRUST_POLICY=require-trusted

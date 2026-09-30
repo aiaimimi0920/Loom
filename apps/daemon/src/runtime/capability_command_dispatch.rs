@@ -1,0 +1,289 @@
+// Resolves core and plugin commands through one registry-backed invoke boundary.
+fn invoke_capability(
+    body: &str,
+    run_store: &SharedRunStore,
+    brain_planner: &SharedBrainPlanner,
+    registry: &SharedCapabilityDispatchRegistry,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    let Ok(request) = serde_json::from_str::<InvokeCapabilityRequest>(body) else {
+        return bad_request("invalid invoke request");
+    };
+    if request.request_id.trim().is_empty() {
+        return bad_request("invalid invoke request: requestId is required");
+    }
+    if request.caller.trim().is_empty() {
+        return invoke_error(
+            400,
+            Some(&request.request_id),
+            "invalid_request",
+            "caller is required",
+            json!({}),
+        );
+    }
+    let owner = match registry.resolve(&request.capability) {
+        Ok(Some(owner)) => owner,
+        Ok(None) => {
+            return invoke_error(
+                404,
+                Some(&request.request_id),
+                "unknown_capability",
+                &format!("unknown capability `{}`", request.capability),
+                json!({
+                    "capability": request.capability,
+                }),
+            )
+        }
+        Err(error) => return capability_runtime_error_response(error),
+    };
+    match owner {
+        CapabilityCommandOwner::Core(CoreCapabilityHandler::BrainPlan) => {
+            invoke_brain_plan(request, run_store, brain_planner)
+        }
+        CapabilityCommandOwner::Core(CoreCapabilityHandler::TeaTicketDecompose) => {
+            invoke_tea_ticket_decompose(request, run_store)
+        }
+        CapabilityCommandOwner::Plugin(plugin_id) => {
+            invoke_plugin_command(
+                request,
+                &plugin_id,
+                registry.plugin_runtime(),
+                resources,
+                surface_resources,
+                control_plane_root,
+            )
+        }
+    }
+}
+
+fn invoke_plugin_command(
+    request: InvokeCapabilityRequest,
+    plugin_id: &str,
+    runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
+    control_plane_root: &Path,
+) -> Result<(u16, String)> {
+    if request.resource_refs.len() > 128 {
+        return invoke_error(
+            400,
+            Some(&request.request_id),
+            "invalid_input",
+            "resourceRefs exceeds the command limit",
+            json!({ "capability": request.capability }),
+        );
+    }
+    let timeout = request.timeout_ms.map(Duration::from_millis);
+    let request_id = request.request_id.clone();
+    let capability = request.capability.clone();
+    let scope_id = match runtime.plugin_scope(plugin_id) {
+        Ok(Some(scope_id)) => scope_id,
+        Ok(None) => {
+            return invoke_error(
+                503,
+                Some(&request_id),
+                "capability_runtime_unavailable",
+                "capability runtime is unavailable",
+                json!({ "capability": capability, "retryable": true }),
+            )
+        }
+        Err(error) => {
+            record_capability_runtime_failure(
+                control_plane_root,
+                plugin_id,
+                runtime,
+                resources,
+                &error,
+            );
+            return capability_runtime_invoke_error(&request_id, &capability, error);
+        }
+    };
+    let resource_lease = match resources.stage(
+        surface_resources,
+        plugin_id,
+        &scope_id,
+        &request_id,
+        &request.resource_refs,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => return capability_resource_error_response(&request_id, &capability, error),
+    };
+    let staged_resources = resource_lease.resources().to_vec();
+    let output = match runtime.invoke(CapabilityInvocation {
+        request_id: request_id.clone(),
+        command_id: request.capability,
+        input: request.input,
+        target: request.target,
+        resource_refs: request.resource_refs,
+        // The HTTP invoke surface carries no unit context: `InvokeCapabilityRequest`
+        // has no `unitAttachments` field by design. Attachment-bearing commands are
+        // reached through the Hook extension bridge instead, which forwards the
+        // caller's attachments after `validate_extension_invocation`.
+        unit_attachments: Vec::new(),
+        staged_resources,
+        user_gesture_token: request.user_gesture_token,
+        timeout,
+    }) {
+        Ok(output) => output,
+        Err(error) => {
+            record_capability_runtime_failure(
+                control_plane_root,
+                plugin_id,
+                runtime,
+                resources,
+                &error,
+            );
+            return capability_runtime_invoke_error(&request_id, &capability, error);
+        }
+    };
+    clear_capability_runtime_failures(control_plane_root, plugin_id);
+    if output.plugin_id != plugin_id {
+        return invoke_error(
+            500,
+            Some(&request_id),
+            "capability_owner_mismatch",
+            "capability runtime ownership changed during dispatch",
+            json!({ "capability": capability }),
+        );
+    }
+    let status = serde_json::to_value(output.status)?;
+    Ok((
+        200,
+        serde_json::to_string(&json!({
+            "requestId": request_id,
+            "status": status,
+            "output": output.payload,
+            "error": output.error,
+            "pluginId": output.plugin_id,
+            "packageDigest": output.package_digest,
+        }))?,
+    ))
+}
+
+fn record_capability_runtime_failure(
+    control_plane_root: &Path,
+    plugin_id: &str,
+    runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    error: &loom_capability_runtime::CapabilityHostError,
+) {
+    use loom_capability_runtime::CapabilityHostError as Error;
+    if matches!(error, Error::NotFound(_) | Error::Busy) {
+        return;
+    }
+    let registry = loom_tool_registry::capability::CapabilityPluginRegistry::new(control_plane_root);
+    match registry.record_runtime_failure(plugin_id) {
+        Ok(record)
+            if record.status
+                == loom_tool_registry::capability::CapabilityLifecycleStatus::Faulted =>
+        {
+            let _ = runtime.deactivate(plugin_id);
+            resources.release_plugin(plugin_id);
+        }
+        Ok(_) => {}
+        Err(registry_error) => runtime_log_warn(format!(
+            "Capability Plugin runtime failure persistence failed for {plugin_id}: {registry_error}"
+        )),
+    }
+}
+
+fn clear_capability_runtime_failures(control_plane_root: &Path, plugin_id: &str) {
+    let registry = loom_tool_registry::capability::CapabilityPluginRegistry::new(control_plane_root);
+    if let Err(error) = registry.clear_runtime_failures(plugin_id) {
+        runtime_log_warn(format!(
+            "Capability Plugin runtime recovery persistence failed for {plugin_id}: {error}"
+        ));
+    }
+}
+
+fn capability_resource_error_response(
+    request_id: &str,
+    capability: &str,
+    error: CapabilityResourceError,
+) -> Result<(u16, String)> {
+    let (status, code, retryable) = match error {
+        CapabilityResourceError::Invalid => (400, "invalid_resource_ref", false),
+        CapabilityResourceError::LeaseRejected => (403, "resource_lease_rejected", false),
+        CapabilityResourceError::Busy => (503, "capability_resource_busy", true),
+        CapabilityResourceError::Io(_) | CapabilityResourceError::Json(_) => {
+            (503, "capability_resource_unavailable", true)
+        }
+    };
+    invoke_error(
+        status,
+        Some(request_id),
+        code,
+        "capability resource could not be staged",
+        json!({ "capability": capability, "retryable": retryable }),
+    )
+}
+
+fn cancel_capability_invocation(
+    body: &str,
+    runtime: &SharedCapabilityRuntime,
+) -> Result<(u16, String)> {
+    let request = match serde_json::from_str::<CancelCapabilityInvocationRequest>(body) {
+        Ok(request) if !request.request_id.trim().is_empty() => request,
+        Ok(_) => return bad_request("cancel requestId is required"),
+        Err(_) => return bad_request("invalid cancel request"),
+    };
+    match runtime.cancel_request(&request.request_id) {
+        Ok(true) => Ok((
+            200,
+            serde_json::to_string(&json!({
+                "requestId": request.request_id,
+                "status": "cancelled",
+            }))?,
+        )),
+        Ok(false) => invoke_error(
+            404,
+            Some(&request.request_id),
+            "capability_request_not_found",
+            "capability invocation is not active",
+            json!({}),
+        ),
+        Err(error) => {
+            capability_runtime_invoke_error(&request.request_id, "runtime.cancel", error)
+        }
+    }
+}
+
+fn capability_runtime_invoke_error(
+    request_id: &str,
+    capability: &str,
+    error: loom_capability_runtime::CapabilityHostError,
+) -> Result<(u16, String)> {
+    use loom_capability_runtime::CapabilityHostError as Error;
+    let (status, code, retryable) = match &error {
+        Error::NotFound(_) => (404, "capability_command_not_found", false),
+        Error::Busy => (503, "capability_busy", true),
+        Error::Timeout => (504, "capability_timeout", true),
+        Error::InvalidPackage(_) | Error::Protocol(_) => {
+            (400, "capability_runtime_rejected", false)
+        }
+        Error::Unavailable(_) | Error::Io(_) | Error::Process(_) | Error::Json(_) => {
+            (503, "capability_runtime_unavailable", true)
+        }
+    };
+    let public_message = match &error {
+        Error::NotFound(_) => "capability command was not found",
+        Error::Busy => "capability runtime is busy",
+        Error::Timeout => "capability runtime timed out",
+        Error::InvalidPackage(_) | Error::Protocol(_) => "capability runtime rejected the request",
+        Error::Unavailable(_) | Error::Io(_) | Error::Process(_) | Error::Json(_) => {
+            "capability runtime is unavailable"
+        }
+    };
+    invoke_error(
+        status,
+        Some(request_id),
+        code,
+        public_message,
+        json!({
+            "capability": capability,
+            "retryable": retryable,
+        }),
+    )
+}

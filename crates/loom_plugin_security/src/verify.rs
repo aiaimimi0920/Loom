@@ -16,14 +16,42 @@ use crate::{
     PluginSecurityError, TrustStore, MAX_SIGNATURE_DOCUMENT_BYTES, PACKAGE_SIGNATURE_SCHEMA_VERSION,
 };
 
+/// A trust classification together with the canonical digest it was established against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedPackageSignature {
+    pub trust_status: PackageTrustStatus,
+    /// `None` only for an unsigned package, where no digest is computed.
+    pub canonical_digest: Option<String>,
+}
+
 pub fn verify_package_signature(
     package_dir: &Path,
     publisher: Option<&PublisherIdentity>,
     signature: Option<&PackageSignature>,
     trust_store: &TrustStore,
 ) -> Result<PackageTrustStatus, PluginSecurityError> {
+    verify_package_signature_with_digest(package_dir, publisher, signature, trust_store)
+        .map(|verified| verified.trust_status)
+}
+
+/// Verifies a package signature and hands back the canonical digest it checked.
+///
+/// Establishing the trust status requires hashing every byte of the package, and callers that also
+/// have to confirm the package still matches a digest they recorded elsewhere — the registry record,
+/// the activated runtime package — were hashing the whole tree a second time to learn a value this
+/// function already computed. That doubling landed on the hot paths: a runtime reverifies before
+/// every spawn, including every lazy restart after an idle session is pruned.
+pub fn verify_package_signature_with_digest(
+    package_dir: &Path,
+    publisher: Option<&PublisherIdentity>,
+    signature: Option<&PackageSignature>,
+    trust_store: &TrustStore,
+) -> Result<VerifiedPackageSignature, PluginSecurityError> {
     let Some(signature) = signature else {
-        return Ok(PackageTrustStatus::Unsigned);
+        return Ok(VerifiedPackageSignature {
+            trust_status: PackageTrustStatus::Unsigned,
+            canonical_digest: None,
+        });
     };
     if signature.algorithm != "ed25519" {
         return Err(PluginSecurityError::UnsupportedAlgorithm(
@@ -60,22 +88,51 @@ pub fn verify_package_signature(
     verifying_key
         .verify(actual_digest.as_bytes(), &signature)
         .map_err(|_| PluginSecurityError::VerificationFailed)?;
-
-    let Some(publisher) = publisher else {
-        return Ok(PackageTrustStatus::Verified);
+    let verified = |trust_status| VerifiedPackageSignature {
+        trust_status,
+        canonical_digest: Some(actual_digest.clone()),
     };
-    let Some(record) = trust_store
+
+    // Revocation is a statement about key material, not about the label a package prints next
+    // to it. `key_id` is attacker-controlled data inside the signature document, so keying the
+    // lookup on `(publisher_id, key_id)` alone let the holder of a revoked private key re-sign
+    // under a fresh label, miss the record, and downgrade `Revoked` to `Verified` - a status
+    // both `allow-unsigned` and `require-signed` accept. Matching the public key itself, before
+    // the unknown-publisher shortcut, keeps a revoked key revoked no matter what the package
+    // calls it or whether it names a publisher at all.
+    if trust_store
         .publishers
         .iter()
-        .find(|record| record.publisher_id == publisher.id && record.key_id == document.key_id)
-    else {
-        return Ok(PackageTrustStatus::Verified);
-    };
-    if record.revoked {
-        return Ok(PackageTrustStatus::Revoked);
+        .any(|record| record.revoked && record.public_key == document.public_key)
+    {
+        return Ok(verified(PackageTrustStatus::Revoked));
     }
+
+    let Some(publisher) = publisher else {
+        return Ok(verified(PackageTrustStatus::Verified));
+    };
+    // A valid signature only proves the package is signed, not that the publisher it names
+    // signed it. Once this machine records any key for that publisher, a signature under some
+    // other key is impersonation rather than an unknown publisher, and reporting it as
+    // `Verified` would let it install under `require-signed` while presenting the pinned
+    // publisher's name. A publisher with no records at all is left alone: there is no pinned
+    // key to contradict, so the policy alone decides whether `Verified` is enough.
+    let mut recorded = trust_store
+        .publishers
+        .iter()
+        .filter(|record| record.publisher_id == publisher.id)
+        .peekable();
+    if recorded.peek().is_none() {
+        return Ok(verified(PackageTrustStatus::Verified));
+    }
+    let Some(record) = recorded.find(|record| record.key_id == document.key_id) else {
+        return Err(PluginSecurityError::PublisherKeyMismatch {
+            publisher_id: publisher.id.clone(),
+            key_id: document.key_id,
+        });
+    };
     if record.public_key != document.public_key {
         return Err(PluginSecurityError::VerificationFailed);
     }
-    Ok(PackageTrustStatus::Trusted)
+    Ok(verified(PackageTrustStatus::Trusted))
 }

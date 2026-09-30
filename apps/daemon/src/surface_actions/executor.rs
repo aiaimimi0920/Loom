@@ -262,6 +262,22 @@ impl SurfaceActionExecutor {
         Ok((tool, action))
     }
 
+    /// Resolves one declared action without exposing the locked package internals.
+    pub(crate) fn action_definition(
+        &self,
+        instance_id: &str,
+        action_id: &str,
+    ) -> Result<SurfaceActionDefinition, SurfaceStoreError> {
+        let descriptor = self
+            .surface_instances
+            .lock()
+            .map_err(|_| SurfaceStoreError::Conflict("Surface store is unavailable".into()))?
+            .descriptor(instance_id)
+            .ok_or_else(|| SurfaceStoreError::NotFound(instance_id.to_owned()))?;
+        self.resolve_action(&descriptor, action_id)
+            .map(|(_, action)| action)
+    }
+
     /// Returns the Surface manifest of a resolved package, parsing it at most once per locked package
     /// identity.
     ///
@@ -320,7 +336,7 @@ impl SurfaceActionExecutor {
                 let store = self.surface_instances.lock().map_err(|_| {
                     SurfaceStoreError::Conflict("Surface store is unavailable".into())
                 })?;
-                let previous_ack = store.event_ack(instance_id, &event.event_id);
+                let previous_ack = store.event_ack_for_event(instance_id, &event)?;
                 if let Some(ack) = settled_ack(previous_ack.as_ref(), recovering) {
                     return Ok(ack);
                 }
@@ -353,7 +369,7 @@ impl SurfaceActionExecutor {
             }
             // Re-read the ack under the second lock: another submit of the same event may have been
             // accepted while the package was resolving, and that ack is the one the caller must see.
-            let previous_ack = store.event_ack(instance_id, &event.event_id);
+            let previous_ack = store.event_ack_for_event(instance_id, &event)?;
             if let Some(ack) = settled_ack(previous_ack.as_ref(), recovering) {
                 return Ok(ack);
             }

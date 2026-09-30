@@ -7,23 +7,14 @@ function Get-LoomCatalog {
         [string]$SampleArtPackageOutputRoot
     )
 
-    $ocrRoot = Join-Path $repoRoot "resources\ocr"
-
     $exes = @(
         New-ExeSpec -Name "Loom.exe" -Source (Join-Path $repoRoot "apps\desktop\src-tauri\target\release\loom-desktop.exe")
         New-ExeSpec -Name "loom-daemon.exe" -Source (Join-Path $repoRoot "target\release\loom-daemon.exe") -DestinationRelativePath "runtime\loom-daemon.exe"
     )
 
-    $support = @(
-        New-SupportSpec -Source (Join-Path $ocrRoot "README.txt") -DestinationRelativePath "runtime\resources\ocr\README.txt"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_det_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv4_det_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_ppocr_mobile_v2.0_cls_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_ppocr_mobile_v2.0_cls_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv4_rec_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv4_rec_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "ch_PP-OCRv5_rec_mobile_infer.onnx") -DestinationRelativePath "runtime\resources\ocr\ch_PP-OCRv5_rec_mobile_infer.onnx"
-        New-SupportSpec -Source (Join-Path $ocrRoot "fixtures\test_1.png") -DestinationRelativePath "runtime\resources\ocr\fixtures\test_1.png"
-        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime.dll"
-        New-SupportSpec -Source (Join-Path $ocrRoot "onnxruntime_providers_shared.dll") -DestinationRelativePath "runtime\resources\ocr\onnxruntime_providers_shared.dll"
-    )
+    # Capability payloads are distributed through the signed capability catalog,
+    # never embedded in the minimal desktop archive.
+    $support = @()
 
     $cliArtifact = [ordered]@{
         name = "loom-cli"
@@ -39,6 +30,9 @@ function Get-LoomCatalog {
         zipNamePattern = "Loom-Plugin-SDK-{versionId}-windows-x64.zip"
         files = @(
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\README.md") -DestinationRelativePath "protocol\README.md"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\capability-package.v1.schema.json") -DestinationRelativePath "protocol\schemas\capability-package.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\capability-runtime.v1.schema.json") -DestinationRelativePath "protocol\schemas\capability-runtime.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\extension.v1.schema.json") -DestinationRelativePath "protocol\schemas\extension.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\framework-manifest.v1.schema.json") -DestinationRelativePath "protocol\schemas\framework-manifest.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\framework-execute-request.v1.schema.json") -DestinationRelativePath "protocol\schemas\framework-execute-request.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\framework-execute-response.v1.schema.json") -DestinationRelativePath "protocol\schemas\framework-execute-response.v1.schema.json"
@@ -52,6 +46,15 @@ function Get-LoomCatalog {
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\hook-message.v1.schema.json") -DestinationRelativePath "protocol\schemas\hook-message.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\README.md") -DestinationRelativePath "sdk\surface\README.md"
             New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\neuro-surface.d.ts") -DestinationRelativePath "sdk\surface\neuro-surface.d.ts"
+            New-SupportSpec -Source (Join-Path $repoRoot "scripts\Invoke-LoomCapabilityPluginConformance.ps1") -DestinationRelativePath "scripts\Invoke-LoomCapabilityPluginConformance.ps1"
+            New-SupportSpec -Source (Join-Path $repoRoot "scripts\LoomSmokePorts.ps1") -DestinationRelativePath "scripts\LoomSmokePorts.ps1"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\README.md") -DestinationRelativePath "sdk\capability\README.md"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\fake_host.py") -DestinationRelativePath "sdk\capability\fake_host.py"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\Test-Templates.ps1") -DestinationRelativePath "sdk\capability\Test-Templates.ps1"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\templates\rust\Cargo.toml") -DestinationRelativePath "sdk\capability\templates\rust\Cargo.toml"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\templates\rust\src\main.rs") -DestinationRelativePath "sdk\capability\templates\rust\src\main.rs"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\templates\typescript\runtime.ts") -DestinationRelativePath "sdk\capability\templates\typescript\runtime.ts"
+            New-SupportSpec -Source (Join-Path $repoRoot "sdk\capability\templates\python\runtime.py") -DestinationRelativePath "sdk\capability\templates\python\runtime.py"
             New-SupportSpec -Source (Join-Path $repoRoot "docs\plugin-development.md") -DestinationRelativePath "docs\plugin-development.md"
             New-SupportSpec -Source (Join-Path $repoRoot "docs\plugin-security.md") -DestinationRelativePath "docs\plugin-security.md"
             New-SupportSpec -Source (Join-Path $repoRoot "docs\plugin-permissions.md") -DestinationRelativePath "docs\plugin-permissions.md"

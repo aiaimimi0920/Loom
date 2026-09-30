@@ -5,6 +5,8 @@ members = [
     "apps/cli",
     "apps/art-store",
     "apps/plugin-cli",
+    "apps/ocr-host",
+    "apps/text-translation-host",
     "crates/loom_core",
     "crates/loom_durable",
     "crates/loom_agent",
@@ -24,10 +26,12 @@ members = [
     "crates/loom_image_io",
     "crates/loom_ocr",
     "crates/loom_protocol",
+    "crates/loom_projection",
     "crates/loom_plugin_security",
     "crates/loom_process",
     "crates/loom_security",
     "crates/loom_perf",
+    "crates/loom_capability_runtime",
 ]
 
 [workspace.package]
@@ -44,6 +48,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 fs2 = "0.4"
+jsonschema = { version = "0.52.0", default-features = false }
 libc = "0.2"
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 num_cpus = "1.17"
@@ -52,6 +57,7 @@ paddle-ocr-rs = { version = "=0.6.1", default-features = false }
 rayon = "1.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
+rxing = { version = "0.9.2", default-features = false, features = ["client_support", "encoding_rs", "decoders", "full_barcode_format_support", "multi_barcode_readers"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -85,7 +91,9 @@ loom_shared_image = { path = "crates/loom_shared_image" }
 loom_image_io = { path = "crates/loom_image_io" }
 loom_ocr = { path = "crates/loom_ocr" }
 loom_protocol = { path = "crates/loom_protocol" }
+loom_projection = { path = "crates/loom_projection" }
 loom_plugin_security = { path = "crates/loom_plugin_security" }
 loom_process = { path = "crates/loom_process" }
 loom_security = { path = "crates/loom_security" }
 loom_perf = { path = "crates/loom_perf" }
+loom_capability_runtime = { path = "crates/loom_capability_runtime" }

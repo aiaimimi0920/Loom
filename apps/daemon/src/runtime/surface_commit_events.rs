@@ -105,12 +105,16 @@ fn decide_surface_confirmation(
     body: &str,
     surface_actions: &SharedSurfaceActionExecutor,
     device_registry: &SharedDeviceRegistryStore,
+    surface_instances: &SharedSurfaceInstanceStore,
     authenticated_device_id: Option<&str>,
 ) -> Result<(u16, String)> {
     let decision = match serde_json::from_str::<SurfaceConfirmationDecision>(body) {
         Ok(decision) => decision,
         Err(error) => return invalid_surface_payload(error),
     };
+    if let Err(error) = validate_authenticated_surface_attachment(authenticated_device_id,
+        &decision.instance_id, &decision.attachment_id, surface_instances)
+    { return device_auth_error_response(error); }
     if let Err(error) =
         validate_authenticated_device_identity(authenticated_device_id, &decision.device_id)
     {
@@ -141,12 +145,16 @@ fn cancel_surface_action(
     body: &str,
     surface_actions: &SharedSurfaceActionExecutor,
     device_registry: &SharedDeviceRegistryStore,
+    surface_instances: &SharedSurfaceInstanceStore,
     authenticated_device_id: Option<&str>,
 ) -> Result<(u16, String)> {
     let request = match serde_json::from_str::<SurfaceActionCancelRequest>(body) {
         Ok(request) => request,
         Err(error) => return invalid_surface_payload(error),
     };
+    if let Err(error) = validate_authenticated_surface_cancellation(authenticated_device_id,
+        &request.instance_id, &request.request_id, surface_instances)
+    { return device_auth_error_response(error); }
     if let Err(error) =
         validate_authenticated_device_identity(authenticated_device_id, &request.device_id)
     {

@@ -16,3 +16,4 @@ export * from "./loomApi/arts.ts";
 export * from "./loomApi/workflows.ts";
 export * from "./loomApi/mcp.ts";
 export * from "./loomApi/runtime.ts";
+export * from "./loomApi/capabilities.ts";

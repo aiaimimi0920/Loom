@@ -141,6 +141,35 @@ fn daemon_manages_independent_mcp_server_package_lifecycle() {
 }
 
 #[test]
+fn failed_mcp_delete_rollback_is_reported_and_keeps_the_in_memory_server() {
+    let root = unique_temp_dir("mcp-delete-rollback-failure");
+    let blocked_parent = root.join("blocked-parent");
+    fs::write(&blocked_parent, b"not-a-directory").expect("create blocked store parent");
+    let store_path = blocked_parent.join("servers.json");
+    let removed: McpServerConfig = serde_json::from_value(
+        current_test_binary_mcp_fixture_config(),
+    )
+    .expect("parse MCP fixture");
+    let servers: SharedMcpServerStore = Arc::new(Mutex::new(HashMap::new()));
+
+    let error = restore_removed_mcp_server(
+        &removed.id,
+        &servers,
+        &store_path,
+        removed.clone(),
+    )
+    .expect_err("blocked rollback persistence must fail");
+
+    assert!(error.to_string().contains("restore MCP server snapshot"));
+    let guard = servers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(guard.get(&removed.id).map(|server| &server.id), Some(&removed.id));
+    drop(guard);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn mcp_package_base64_decode_enforces_the_decoded_size_limit() {
     const TEST_LIMIT: usize = 4;
     let below_limit = BASE64.encode([1_u8, 2, 3]);

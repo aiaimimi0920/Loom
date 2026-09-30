@@ -8,6 +8,7 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../.."))
 $verifyPath = Join-Path $repoRoot "scripts/verify-release.ps1"
 $layoutPath = Join-Path $repoRoot "scripts/LoomReleaseLayout.ps1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-release-integrity-" + [Guid]::NewGuid().ToString("N"))
+. (Join-Path $PSScriptRoot "ReleaseIntegrityProcess.ps1")
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -197,7 +198,10 @@ function New-IntegrityFixture {
         @{ path = "protocol/schemas/framework-execute-response.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/framework-authoring.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/art-runtime.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/capability-package.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/capability-runtime.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/device-session.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/extension.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/hook-message.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-manifest.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-message.v1.schema.json"; content = "{}" },
@@ -205,6 +209,15 @@ function New-IntegrityFixture {
         @{ path = "protocol/schemas/surface-stream.v1.schema.json"; content = "{}" },
         @{ path = "sdk/surface/README.md"; content = "surface sdk" },
         @{ path = "sdk/surface/neuro-surface.d.ts"; content = "export {};" },
+        @{ path = "scripts/Invoke-LoomCapabilityPluginConformance.ps1"; content = "conformance" },
+        @{ path = "scripts/LoomSmokePorts.ps1"; content = "ports" },
+        @{ path = "sdk/capability/README.md"; content = "capability sdk" },
+        @{ path = "sdk/capability/Test-Templates.ps1"; content = "templates" },
+        @{ path = "sdk/capability/fake_host.py"; content = "fake host" },
+        @{ path = "sdk/capability/templates/python/runtime.py"; content = "python" },
+        @{ path = "sdk/capability/templates/rust/Cargo.toml"; content = "[package]" },
+        @{ path = "sdk/capability/templates/rust/src/main.rs"; content = "fn main() {}" },
+        @{ path = "sdk/capability/templates/typescript/runtime.ts"; content = "export {};" },
         @{ path = "docs/plugin-development.md"; content = "development" },
         @{ path = "docs/plugin-security.md"; content = "security" },
         @{ path = "docs/plugin-permissions.md"; content = "permissions" },
@@ -277,7 +290,7 @@ function New-IntegrityFixture {
         bytes = $pluginSdkRecord.bytes
         sha256 = $pluginSdkRecord.sha256
         protocolVersion = "loom.framework.v1"
-        schemaCount = 11
+        schemaCount = 14
     }
 
     $manifest = [ordered]@{
@@ -330,42 +343,15 @@ function New-IntegrityFixture {
     return $packageDir
 }
 
-function Invoke-VerifierProcess {
-    param([string]$PackageDir)
-
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = "powershell.exe"
-    $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$verifyPath`" -PackageDir `"$PackageDir`""
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    try {
-        [void]$process.Start()
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        return [pscustomobject]@{
-            exitCode = $process.ExitCode
-            output = ($stdout + $stderr).Trim()
-        }
-    }
-    finally {
-        $process.Dispose()
-    }
-}
-
 function Invoke-VerifierSuccess {
     param([string]$PackageDir)
-    $result = Invoke-VerifierProcess -PackageDir $PackageDir
+    $result = Invoke-LoomReleaseVerifierProcess -VerifierPath $verifyPath -PackageDir $PackageDir
     Assert-Equal 0 $result.exitCode "Valid integrity fixture must pass: $($result.output)"
 }
 
 function Invoke-VerifierFailure {
     param([string]$PackageDir, [string]$ExpectedMessage)
-    $result = Invoke-VerifierProcess -PackageDir $PackageDir
+    $result = Invoke-LoomReleaseVerifierProcess -VerifierPath $verifyPath -PackageDir $PackageDir
     Assert-True ($result.exitCode -ne 0) "Tampered fixture unexpectedly passed."
     Assert-True ($result.output.Contains($ExpectedMessage)) "Expected failure text was not reported: $ExpectedMessage$([Environment]::NewLine)$($result.output)"
 }

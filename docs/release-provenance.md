@@ -25,6 +25,51 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-Depende
 The clean-source gate runs before build output is created. Formal manifests
 must record `gitDirty=false` and `sourceGitDirty=false`.
 
+Loom is an independent repository, including when checked out as a Neuro
+submodule. The manifest's `sourcePaths` must be exactly `["."]`, relative to
+that repository. The retired monorepo scope of `Loom` plus a parent build script
+is not accepted. Parent or sibling changes do not redefine Loom's source identity.
+
+## Package layout and integrity
+
+The desktop package has exactly one root executable, `Loom.exe`, and the daemon
+at `runtime/loom-daemon.exe`. Daemon-owned support files remain under `runtime`;
+optional OCR/package payloads follow the current catalog rather than an old
+design's bundled-resource list. Docker remains daemon-first, without the desktop.
+The separate CLI ZIP contains exactly one `loom.exe`. CLI artifacts remain local
+or workflow evidence under the public-asset policy below.
+
+The verifier binds artifact names, package-relative paths, byte counts and
+SHA-256 values to the manifest. ZIP contents must match their declared payload;
+extra root executables are rejected even when generic checksums are consistent.
+Each ZIP sidecar must match the expected ASCII line containing its lowercase
+SHA-256 and filename. CLI extraction refuses stale nonempty destinations.
+
+`scripts/tests/Test-ReleaseIntegrityTamper.ps1` exercises valid synthetic packages
+and targeted corruptions; `Test-StandaloneReleaseContract.ps1` and
+`Test-StandaloneLayout.ps1` protect the repository and package boundaries. Keep
+these contracts passing when changing packaging. A synthetic tamper test does
+not replace verification and smoke of the actual release package.
+
+## Packaged QR smoke
+
+`-RunSmoke` includes a QR projection check against the packaged daemon, using
+three temporary Ed25519 device identities and an isolated loopback listener.
+It verifies invitation confirmation, two image updates, retries, process-loss
+recovery, persistent unlink, and source/receiver revocation. The script checks
+the executable against the package manifest before starting it, removes its
+temporary credentials and state, and retains a bounded JSON result. It requires
+Node.js 22.18 or newer; the release workflow pins Node.js 22.22.2.
+
+The same check can run independently:
+
+```powershell
+.\scripts\Invoke-LoomQrProjectionSmoke.ps1 -PackageDir .\release\Loom\Vx.y.z
+```
+
+This is packaged-daemon protocol evidence. Native Hook windows and cross-machine
+HTTPS still require separate acceptance on the actual devices.
+
 `.github/workflows/release-tag.yml` calls the reusable dependency security
 workflow first and makes publication depend on that job. For manual dispatch it
 passes the requested tag, not the workflow's default branch. The scan produces
@@ -98,6 +143,53 @@ gh run rerun <run-id> --failed
 Do not use a re-run to bypass a reproducible defect or security finding. Fix the
 cause, rerun the affected local/CI gates, and create a new version tag when the
 source commit must change.
+
+## Joint release acceptance
+
+The former Phase 77-79 records mixed implementation history with joint acceptance.
+Their cleanup does not complete the remaining exact-package Hook/Loom release
+gate. Old shared-dirty-worktree descriptions and reserved candidate IDs are not
+current instructions; inspect both repositories and choose unused output paths.
+
+For a joint release, retain evidence for all of the following:
+
+- Reviewed coherent commits in both repositories, with each untracked path
+  assigned or preserved deliberately. Formal builds require clean source;
+  never bulk-stage or remove unrelated work to manufacture that condition.
+- Tested effective-line tooling and strict enforcement: no handwritten file
+  above 700 effective lines, no hard-cap waiver, and exact current justification
+  for each 501-700 exception. Use the registries rather than old phase counts.
+- Composition boundaries, meaningful purpose/invariant comments and coverage of
+  public protocol, HTTP, IPC, events, serialization, package and release contracts.
+- Security, resource lifetime and performance review of changed modules, regression
+  evidence for fixed high/critical issues and leaks, and measurements for sensitive
+  paths without unexplained regressions.
+- Loom's full Rust, desktop, smoke and release gates from the reviewed source,
+  followed by `verify-release.ps1 -RunSmoke -RequireCleanSource` on the exact package.
+- Hook's full frontend, browser, Rust, native/runtime and release gates from its
+  reviewed source, with the executable and ZIP digests matching provenance.
+- New verified artifacts under the required release roots, final commit identity,
+  `gitDirty=false` and `sourceGitDirty=false`, plus recorded commands, results,
+  current exceptions and actual package paths.
+
+The old Phase 79 RC1 package failed its exact-package verifier even though the
+build completed; it remains diagnostic evidence, not an accepted release. A
+resolver fix or a later package build does not retroactively validate RC1.
+Package existence, headless self-check and an independently passing QR smoke do
+not replace full verification or [wall joint acceptance](TILE_WALL.md).
+
+Historical phase records and detailed candidate evidence can be recovered from
+Git tag `cleanup-base-20260928`. Keep future verification results with the exact
+release artifacts rather than extending a completed implementation diary.
+
+For Art Surface native acceptance, bind the exact Hook/daemon paths and SHA-256
+values to startup, pairing/approval, attachment, action/resource/formal result,
+600-second resource sampling, same-instance restart recovery and final teardown.
+Historical passing pairs cannot validate later source or package bytes. Record
+whether `HOOK_NATIVE_ACCEPTANCE=1` isolates native global Delete input; such
+test-mode evidence must not be presented as an ungated production-input run.
+Do not stop unknown user processes or weaken protocol dispose/cancellation to
+make an acceptance run pass.
 
 ## Evidence versus publication
 

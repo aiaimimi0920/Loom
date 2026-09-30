@@ -28,9 +28,6 @@ pub const HOOK_METHOD_ART_EXECUTE: &str = "loom.hook.art.execute";
 pub const HOOK_METHOD_ART_CANCEL: &str = "loom.hook.art.cancel";
 pub const HOOK_METHOD_ART_RESOURCES_RELEASE: &str = "loom.hook.art.resources.release";
 pub const HOOK_METHOD_SETTINGS_GET: &str = "loom.hook.settings.get";
-pub const HOOK_METHOD_ENHANCEMENTS_GET: &str = "loom.hook.enhancements.get";
-pub const HOOK_METHOD_OCR_EXECUTE: &str = "loom.hook.ocr.execute";
-pub const HOOK_METHOD_TRANSLATION_EXECUTE: &str = "loom.hook.translation.execute";
 
 pub const HOOK_EVENT_WORKFLOW_INSTANTIATED: &str = "loom.hook.workflow.instantiated";
 pub const HOOK_EVENT_WORKFLOW_UPDATED: &str = "loom.hook.workflow.updated";
@@ -54,9 +51,6 @@ pub const HOOK_REQUEST_METHODS: &[&str] = &[
     HOOK_METHOD_ART_CANCEL,
     HOOK_METHOD_ART_RESOURCES_RELEASE,
     HOOK_METHOD_SETTINGS_GET,
-    HOOK_METHOD_ENHANCEMENTS_GET,
-    HOOK_METHOD_OCR_EXECUTE,
-    HOOK_METHOD_TRANSLATION_EXECUTE,
 ];
 
 pub const HOOK_EVENT_METHODS: &[&str] = &[
@@ -197,12 +191,6 @@ pub enum HookRequest {
     ArtResourcesRelease(HookArtResourcesReleaseRequest),
     #[serde(rename = "loom.hook.settings.get")]
     SettingsGet(HookSettingsGetRequest),
-    #[serde(rename = "loom.hook.enhancements.get")]
-    EnhancementsGet(HookEnhancementsGetRequest),
-    #[serde(rename = "loom.hook.ocr.execute")]
-    OcrExecute(HookOcrExecuteRequest),
-    #[serde(rename = "loom.hook.translation.execute")]
-    TranslationExecute(HookTranslationExecuteRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,27 +316,6 @@ pub struct HookArtResourcesReleaseRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HookSettingsGetRequest {
     pub request_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HookEnhancementsGetRequest {
-    pub request_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HookOcrExecuteRequest {
-    pub request_id: String,
-    pub image_base64: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HookTranslationExecuteRequest {
-    pub request_id: String,
-    pub text: String,
-    pub target_language: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -16,39 +16,31 @@ import {
   toggleGestureShortcutModifier,
 } from "./settingsModel";
 import {
-  ArtStoreSettingsPanel,
   GeneralSettingsPanel,
   HookCacheSettingsPanel,
-  LoomCacheSettingsPanel,
-  McpSettingsPanel,
   NetworkSettingsPanel,
 } from "./SettingsPanels";
 import { createPortal } from "react-dom";
+import { LoomSettingsSections } from "./LoomSettingsSections";
 import { useSettingsPanelController } from "./useSettingsPanelController";
 
 export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
+  const controller = useSettingsPanelController({ snapshot });
   const {
     activeSettingsApp,
     appDiagnostics,
-    appPaths,
     applyQuickBindingEditor,
     applyShortcutEditor,
-    artStoreTrustPolicy,
-    artStoreTrustPolicyBusy,
     availableArtToolById,
     availableArtTools,
     checkApplicationUpdate,
     clearHookCache,
-    clearLoomCache,
     draft,
     handleQuickBindingCapture,
     handleShortcutCapture,
     hookCacheBusyKind,
     hookCacheLoading,
     hookCacheSnapshot,
-    loomCacheBusyKind,
-    loomCacheLoading,
-    loomCacheSnapshot,
     openApplicationLog,
     openQuickBindingEditor,
     openRepository,
@@ -65,17 +57,12 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     shortcutEditor,
     shortcutEditorConflict,
     shortcuts,
-    toggleMinimizeToTray,
     toggleSettingsSection,
     toggleShortcutGroup,
-    updateArtStoreDraft,
-    updateArtStoreTrustPolicy,
     updateHookCacheDraft,
     updateHookGeneralDraft,
-    updateLoomCacheDraft,
-    updateMcpDraft,
     updateNetworkDraft,
-  } = useSettingsPanelController({ snapshot });
+  } = controller;
 
   return (
     <section className="settings-page" aria-labelledby="settings-page-title">
@@ -112,83 +99,7 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
         aria-label={`${activeSettingsApp === "loom" ? "Loom" : "Hook"} 设置`}
       >
       {activeSettingsApp === "loom" ? (
-        <div className="settings-accordion">
-        <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
-          <GeneralSettingsPanel
-            appName="loom"
-            value={{
-              language: draft.general.language,
-              theme: draft.general.theme,
-              closeToTray: draft.general.minimize_to_tray,
-            }}
-            onChange={(patch) => {
-              if (patch.closeToTray !== undefined) {
-                toggleMinimizeToTray(patch.closeToTray);
-                return;
-              }
-              setDraft((current) => ({
-                ...current,
-                general: {
-                  ...current.general,
-                  ...(patch.language === undefined ? {} : { language: patch.language }),
-                  ...(patch.theme === undefined ? {} : { theme: patch.theme }),
-                },
-              }));
-            }}
-          />
-        </SettingsAccordionSection>
-
-        <SettingsAccordionSection id="mcp" label="MCP" open={openSettingsSection === "mcp"} onToggle={() => toggleSettingsSection("mcp")}>
-          <McpSettingsPanel value={draft.mcp} onChange={updateMcpDraft} />
-        </SettingsAccordionSection>
-
-        <SettingsAccordionSection id="art-store" label="Art" open={openSettingsSection === "art-store"} onToggle={() => toggleSettingsSection("art-store")}>
-          <ArtStoreSettingsPanel
-            value={draft.art_store}
-            trustPolicy={artStoreTrustPolicy}
-            trustPolicyBusy={artStoreTrustPolicyBusy}
-            onChange={updateArtStoreDraft}
-            onTrustPolicyChange={(policy) => void updateArtStoreTrustPolicy(policy)}
-          />
-        </SettingsAccordionSection>
-
-        <SettingsAccordionSection id="cache" label="缓存" open={openSettingsSection === "cache"} onToggle={() => toggleSettingsSection("cache")}>
-          <LoomCacheSettingsPanel
-            settings={draft.loom_cache}
-            snapshot={loomCacheSnapshot}
-            loading={loomCacheLoading}
-            busyKind={loomCacheBusyKind}
-            onSettingsChange={updateLoomCacheDraft}
-            onClear={(kind) => void clearLoomCache(kind)}
-          />
-        </SettingsAccordionSection>
-
-        <SettingsAccordionSection id="network" label="网络" open={openSettingsSection === "network"} onToggle={() => toggleSettingsSection("network")}>
-          <NetworkSettingsPanel
-            appName="Loom"
-            value={draft.network.loom}
-            onChange={(patch) => updateNetworkDraft("loom", patch)}
-          />
-        </SettingsAccordionSection>
-
-        <SettingsAccordionSection id="about" label="关于" open={openSettingsSection === "about"} onToggle={() => toggleSettingsSection("about")}>
-          <AboutPanel
-            app="loom"
-            diagnostics={{
-              ...appDiagnostics.loom,
-              logDir: appDiagnostics.loom.logDir || appPaths?.logDir || "",
-            }}
-            logLevel={draft.system.loom_log_level}
-            onLogLevelChange={(logLevel) => setDraft((current) => ({
-              ...current,
-              system: { ...current.system, loom_log_level: logLevel },
-            }))}
-            onCheckUpdate={() => checkApplicationUpdate("loom")}
-            onOpenLog={(target) => void openApplicationLog("loom", target)}
-            onOpenRepository={(url) => void openRepository(url)}
-          />
-        </SettingsAccordionSection>
-        </div>
+        <LoomSettingsSections baseUrl={snapshot.baseUrl} controller={controller} />
       ) : (
         <div className="settings-accordion">
           <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
