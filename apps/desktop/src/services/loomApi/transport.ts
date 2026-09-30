@@ -1,6 +1,7 @@
 // Shared Tauri/HTTP transport selection, response normalization, and daemon preview access.
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { LoomDaemonStartResult } from "./snapshotTypes.ts";
+import { createHookCanvasPreviewLoader } from "../hookCanvasPreviewLoader.ts";
 
 const MAX_DAEMON_JSON_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_DAEMON_ERROR_DETAIL_CHARS = 2_048;
@@ -161,7 +162,13 @@ export async function getLoomDaemonJson<T>(baseUrl: string, path: string): Promi
 // images through a direct `http://127.0.0.1` `<img src>`, so prefer the native
 // Tauri command that returns a base64 `data:` URL. Fall back to the direct
 // daemon URL only for browser previews where the Tauri command is unavailable.
-export async function loadHookCanvasPreview(baseUrl: string, path: string): Promise<string> {
+const previewLoader = createHookCanvasPreviewLoader(readHookCanvasPreview);
+
+export function loadHookCanvasPreview(baseUrl: string, path: string, signal?: AbortSignal): Promise<string> {
+  return previewLoader.load(baseUrl, path, signal);
+}
+
+async function readHookCanvasPreview(baseUrl: string, path: string): Promise<string> {
   if (isTauri()) {
     return await invoke<string>("read_hook_canvas_preview", { baseUrl, path });
   }

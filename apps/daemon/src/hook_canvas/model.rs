@@ -192,7 +192,7 @@ struct HookCanvasResolvedPreview {
     depth_limited: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct HookCanvasDocument {
     pub snapshot: HookCanvasSnapshot,
     preview_sources: HashMap<String, HookCanvasPreviewSource>,

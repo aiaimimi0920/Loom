@@ -37,7 +37,7 @@ impl HookCanvasPersistError {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct HookCanvasRuntimeNodeState {
     status: String,
     error_message: Option<String>,
@@ -97,6 +97,11 @@ fn clear_hook_canvas_runtime_state(shared_images: Option<&SharedImageStoreHandle
     }
     if let Ok(mut statuses) = hook_canvas_runtime_statuses().lock() {
         statuses.clear();
+    }
+    if let Some(cache) = ACTIVE_HOOK_CANVAS_CACHE.get() {
+        if let Ok(mut cache) = cache.lock() {
+            *cache = ActiveHookCanvasCache::default();
+        }
     }
     let mut resource_handles = BTreeSet::new();
     if let Ok(mut requests) = hook_art_requests().lock() {
