@@ -224,6 +224,8 @@ impl LoomDaemon {
             shutdown_observer: None,
             #[cfg(test)]
             connection_accept_observer: None,
+            #[cfg(test)]
+            maintenance_observer: None,
         };
         Ok(Self {
             listener,
@@ -273,8 +275,30 @@ impl LoomDaemon {
         let mut pending_reads = ConnectionReadBacklog::default();
 
         let mut read_stage_result: std::io::Result<()> = Ok(());
-        let capability_maintenance_interval = Duration::from_secs(1);
-        let mut next_capability_maintenance = Instant::now() + capability_maintenance_interval;
+        let maintenance_runtime = Arc::clone(&self.runtime);
+        let mut maintenance = periodic_maintenance::PeriodicMaintenance::start(
+            Duration::from_secs(1),
+            move || {
+                #[cfg(test)]
+                if let Some(observer) = maintenance_runtime.maintenance_observer.as_ref() {
+                    observer.record();
+                }
+                prune_wall_surfaces(
+                    &maintenance_runtime.walls,
+                    &maintenance_runtime.device_registry,
+                    &maintenance_runtime.surface_instances,
+                    &maintenance_runtime.surface_resources,
+                    &maintenance_runtime.shared_images,
+                );
+                maintenance_runtime.live_sessions.prune_wall_controllers(
+                    &maintenance_runtime.walls,
+                    &maintenance_runtime.device_registry,
+                );
+                if let Err(error) = maintenance_runtime.capability_runtime.prune_idle() {
+                    runtime_log_warn(format!("Capability Plugin idle maintenance failed: {error}"));
+                }
+            },
+        )?;
         let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
                 // Read the backlog before the listener goes away: shutdown can be observed before
@@ -312,25 +336,6 @@ impl LoomDaemon {
 
             if let Some(admission) = pending_reads.poll(&peer_read_admission, Instant::now()) {
                 submit_connection_read(admission, &ready_tx, &read_stage, &self.runtime);
-            }
-
-            if Instant::now() >= next_capability_maintenance {
-                prune_wall_surfaces(
-                    &self.runtime.walls,
-                    &self.runtime.device_registry,
-                    &self.runtime.surface_instances,
-                    &self.runtime.surface_resources,
-                    &self.runtime.shared_images,
-                );
-                self.runtime
-                    .live_sessions
-                    .prune_wall_controllers(&self.runtime.walls, &self.runtime.device_registry);
-                if let Err(error) = self.runtime.capability_runtime.prune_idle() {
-                    runtime_log_warn(format!(
-                        "Capability Plugin idle maintenance failed: {error}"
-                    ));
-                }
-                next_capability_maintenance = Instant::now() + capability_maintenance_interval;
             }
 
             let mut accepted = false;
@@ -415,11 +420,13 @@ impl LoomDaemon {
             .transpose();
         let surface_stream_shutdown_result = surface_stream_executor.shutdown();
         let read_stage_shutdown_result = read_stage.shutdown();
+        let maintenance_result = maintenance.shutdown();
         if let Err(error) = serve_result {
             let _ = shutdown_result;
             let _ = surface_stream_shutdown_result;
             let _ = read_stage_shutdown_result;
             let _ = read_stage_result;
+            let _ = maintenance_result;
             self.runtime.live_sessions.shutdown_media_workers();
             self.runtime.capability_runtime.deactivate_all();
             return Err(error);
@@ -428,6 +435,7 @@ impl LoomDaemon {
         surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
+        maintenance_result.context("shutdown Loom maintenance worker")?;
         self.runtime.live_sessions.shutdown_media_workers();
         self.runtime.capability_runtime.deactivate_all();
         Ok(())

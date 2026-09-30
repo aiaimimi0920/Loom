@@ -359,18 +359,32 @@ impl CapabilityRuntimeHost {
         // budget is as long as the idle timeout itself. The in-flight snapshot is taken and
         // released before any package lock: `invoke` acquires them the other way round, so
         // holding both here would close a deadlock cycle.
-        let busy = lock(&self.inflight)?
-            .values()
-            .map(|inflight| inflight.plugin_id.clone())
-            .collect::<HashSet<_>>();
-        let active = lock(&self.packages)?
-            .iter()
-            .filter(|(plugin_id, _)| !busy.contains(plugin_id.as_str()))
-            .map(|(_, active)| Arc::clone(active))
-            .collect::<Vec<_>>();
+        let busy = {
+            let Some(inflight) = try_maintenance_lock(&self.inflight)? else {
+                return Ok(0);
+            };
+            inflight
+                .values()
+                .map(|entry| entry.plugin_id.clone())
+                .collect::<HashSet<_>>()
+        };
+        let active = {
+            let Some(packages) = try_maintenance_lock(&self.packages)? else {
+                return Ok(0);
+            };
+            packages
+                .iter()
+                .filter(|(id, _)| !busy.contains(id.as_str()))
+                .map(|(_, active)| Arc::clone(active))
+                .collect::<Vec<_>>()
+        };
         let mut pruned = 0usize;
         for active in active {
-            let mut active = lock(&active)?;
+            // Lazy startup holds this lock before it can register an in-flight request.
+            // Skip it this pass rather than waiting through initialize/activate.
+            let Some(mut active) = try_maintenance_lock(&active)? else {
+                continue;
+            };
             if active.process.is_some() && active.last_used.elapsed() >= self.limits.idle_timeout {
                 if let Some(mut process) = active.process.take() {
                     process.terminate();
@@ -461,6 +475,16 @@ fn lock<T>(mutex: &Mutex<T>) -> HostResult<std::sync::MutexGuard<'_, T>> {
     mutex
         .lock()
         .map_err(|_| CapabilityHostError::Unavailable("runtime host lock poisoned".to_owned()))
+}
+
+fn try_maintenance_lock<T>(mutex: &Mutex<T>) -> HostResult<Option<std::sync::MutexGuard<'_, T>>> {
+    match mutex.try_lock() {
+        Ok(guard) => Ok(Some(guard)),
+        Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err(CapabilityHostError::Unavailable(
+            "runtime host lock poisoned".to_owned(),
+        )),
+    }
 }
 
 fn validate_command_conflicts(

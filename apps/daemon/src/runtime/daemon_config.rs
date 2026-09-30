@@ -401,4 +401,6 @@ struct DaemonRuntime {
     shutdown_observer: Option<Arc<DaemonShutdownObserver>>,
     #[cfg(test)]
     connection_accept_observer: Option<Arc<ConnectionAcceptObserver>>,
+    #[cfg(test)]
+    maintenance_observer: Option<Arc<DaemonShutdownObserver>>,
 }
