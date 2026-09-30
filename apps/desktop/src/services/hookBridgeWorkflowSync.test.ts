@@ -123,3 +123,31 @@ test("dispose cancels pending debounce work", async () => {
   assert.deepEqual(events, []);
   assert.equal(client.disposed, true);
 });
+
+for (const outcome of ["resolve", "reject"] as const) {
+  test(`dispose ignores an in-flight refresh that later ${outcome}s`, async () => {
+    const client = new FakeHookBridgeClient();
+    const events: string[] = [];
+    let finish!: () => void;
+    const handle = startHookBridgeWorkflowSync({
+      client,
+      debounceMs: 1,
+      refresh: () => {
+        events.push("refresh");
+        return new Promise<void>((resolve, reject) => {
+          finish = outcome === "resolve" ? resolve : () => reject(new Error("offline"));
+        });
+      },
+      invalidateHookCanvas: () => events.push("invalidate"),
+    });
+    client.emit("loom.hook.workflow.updated", { workflowId: HOOK_LIVE_WORKFLOW_ID });
+    await waitForDebounce();
+    assert.deepEqual(events, ["refresh"]);
+
+    handle.dispose();
+    finish();
+    await waitForDebounce();
+
+    assert.deepEqual(events, ["refresh"]);
+  });
+}

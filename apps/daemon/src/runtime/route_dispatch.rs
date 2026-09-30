@@ -44,10 +44,21 @@ fn route_with_runtime(
         &runtime.control_plane_root,
         &runtime.bundled_art_sha256_allowlist,
         &runtime.projection_owner,
+        &runtime.offline_peers,
     )?;
-    if request.method == "POST" && path == "/v1/projections/targets" && status == 200 {
+    if status == 200 && ((request.method == "POST" && path == "/v1/projections/targets")
+        || (request.method == "GET" && path == "/v1/projection-settings")) {
         let mut value: Value = serde_json::from_str(&body)?;
         runtime.offline_peers.append_targets(&mut value);
+        if path == "/v1/projections/targets" {
+            // Peer I/O has finished before taking the registry lock. Directory membership
+            // is advisory; create/offer still recheck live device and recipient authority.
+            let registry = runtime.device_registry.lock().map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?;
+            match registry.projection_settings.view() {
+                Ok(document) => projection_settings::append_groups(&mut value, document),
+                Err(error) => return structured_error(error.status, json!({"code": error.code, "message": error.code})),
+            }
+        }
         return Ok((status, serde_json::to_string(&value)?));
     }
     Ok((status, body))
@@ -85,6 +96,7 @@ fn route(
     control_plane_root: &Path,
     bundled_art_sha256_allowlist: &BTreeSet<String>,
     projection_owner: &ProjectionOwner,
+    offline_peers: &offline_peers::OfflinePeers,
 ) -> Result<(u16, String)> {
     let route_path = request
         .path
@@ -125,6 +137,16 @@ fn route(
         );
     }
 
+    if request.method == "POST" && route_path == "/v1/projections/edit"
+        && authenticated_device_id.is_some() && projection_edit::needs_prune(&request.body) {
+        if let Err(error) = offline_peers.prune_edit_sessions(device_registry) {
+            return structured_error(error.status, json!({"code": error.code, "message": error.code}));
+        }
+    }
+    if route_path == "/v1/projection-settings" {
+        if !admin_authenticated { return structured_error(403, json!({"code":"projection_settings_admin_required"})); }
+        return route_projection_settings(request, device_registry);
+    }
     // Account credentials remain admin-only; Hook device sessions cannot operate this API.
     if request.method == "POST" && route_path.starts_with("/v1/account/") {
         return match projection_owner.account(control_plane_root, &route_path[12..], &request.body) {

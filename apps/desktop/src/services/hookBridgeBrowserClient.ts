@@ -103,13 +103,17 @@ export function createHookBridgeBrowserClient(
 
     const nextSocket = websocketFactory(hookBridgeUrl);
     socket = nextSocket;
+    // A closed connection may still have callbacks queued after its replacement starts.
+    const isCurrent = () => !disposed && socket === nextSocket;
 
     nextSocket.onopen = () => {
+      if (!isCurrent()) return;
       clearReconnect();
       sendSubscription();
     };
 
     nextSocket.onmessage = (event) => {
+      if (!isCurrent()) return;
       try {
         const parsed = JSON.parse(String(event.data));
         const method = typeof parsed?.method === "string" ? parsed.method : null;
@@ -124,13 +128,13 @@ export function createHookBridgeBrowserClient(
     };
 
     nextSocket.onclose = () => {
-      if (socket === nextSocket) {
-        socket = null;
-      }
+      if (!isCurrent()) return;
+      socket = null;
       scheduleReconnectIfNeeded();
     };
 
     nextSocket.onerror = () => {
+      if (!isCurrent()) return;
       nextSocket.close();
     };
   };
@@ -138,7 +142,7 @@ export function createHookBridgeBrowserClient(
   return {
     subscribe(channel: string, handler: HookBridgeHandler) {
       const normalized = channel.trim();
-      if (!normalized) {
+      if (disposed || !normalized) {
         return () => undefined;
       }
 
@@ -146,9 +150,6 @@ export function createHookBridgeBrowserClient(
       channelHandlers.add(handler);
       handlers.set(normalized, channelHandlers);
       ensureSocket();
-      if (socket && socket.readyState === SOCKET_OPEN) {
-        sendSubscription();
-      }
 
       return () => {
         const existing = handlers.get(normalized);

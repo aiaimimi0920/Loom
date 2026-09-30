@@ -10,10 +10,6 @@ export interface LoomPythonArt {
   definition?: unknown;
 }
 
-export interface LoomPythonArtsResponse {
-  arts?: LoomPythonArt[];
-}
-
 export interface LoomPythonSourceReadResponse {
   path: string;
   content: string;

@@ -6,8 +6,8 @@ Display controls are specified in [WALL_PRESENTATION_API.md](WALL_PRESENTATION_A
 Physical screen metadata and identification are specified in
 [WALL_IDENTIFICATION_API.md](WALL_IDENTIFICATION_API.md).
 Scene scheduling, media profiles and source recovery are specified in
-[WALL_TIMING_MEDIA.md](WALL_TIMING_MEDIA.md); their new runtime tests are deferred.
-Final multi-terminal acceptance remains in [the plan](../docs/TILE_WALL_IMPLEMENTATION_PLAN.md).
+[WALL_TIMING_MEDIA.md](WALL_TIMING_MEDIA.md). Local logic tests do not complete
+the joint runtime acceptance tracked in [the wall guide](../docs/TILE_WALL.md).
 The [geometry contract](WALL_PROTOCOL.md) defines endpoint and layout objects.
 
 ## Authentication and operations

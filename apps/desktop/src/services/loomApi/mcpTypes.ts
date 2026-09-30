@@ -1,4 +1,4 @@
-// MCP server, call, package, and shared-memory transport contracts.
+// MCP server and call contracts.
 
 export interface LoomMcpServer {
   id: string;
@@ -28,10 +28,6 @@ export interface LoomMcpServer {
   usedByArtIds?: string[];
 }
 
-export interface LoomMcpServersResponse {
-  servers?: LoomMcpServer[];
-}
-
 export interface LoomMcpTestResult {
   success?: boolean;
   tools?: unknown[];
@@ -46,40 +42,4 @@ export interface LoomMcpCallToolResponse {
   id?: number;
   result?: unknown;
   error?: unknown;
-}
-
-export interface McpPackageCheckResult {
-  installed?: boolean;
-  module?: string;
-  python?: string;
-  stdout?: string;
-  stderr?: string;
-  error?: string;
-}
-
-export interface McpPackageInstallPlan {
-  package?: string;
-  sideEffect?: boolean;
-  mode?: string;
-  command?: string[];
-  message?: string;
-}
-
-export interface SharedMemoryBufferInfo {
-  handle?: string;
-  handle_name?: string;
-  size?: number;
-  width?: number;
-  height?: number;
-  format?: string;
-  ref_count?: number;
-}
-
-export interface SharedMemoryBufferResponse {
-  handle?: string;
-  handle_name?: string;
-  buffer?: SharedMemoryBufferInfo;
-  buffers?: SharedMemoryBufferInfo[];
-  released?: boolean;
-  deleted?: boolean;
 }

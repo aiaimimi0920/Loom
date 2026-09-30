@@ -47,7 +47,6 @@ use diagnostics::*;
 use http_response::*;
 use spawn_windows::*;
 
-const MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 pub const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2026-07-28", "2025-06-18", "2024-11-05"];
 pub const MCP_PREFERRED_PROTOCOL_VERSION: &str = MCP_SUPPORTED_PROTOCOL_VERSIONS[0];
 

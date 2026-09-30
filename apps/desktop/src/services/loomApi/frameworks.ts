@@ -165,34 +165,6 @@ export async function uninstallFramework(baseUrl: string, id: string): Promise<L
   return response.framework ?? null;
 }
 
-export async function enableFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {
-  const response = await postJson<LoomFrameworkResponse>(
-    baseUrl,
-    `/v1/frameworks/${encodeURIComponent(id)}/enable`,
-    {},
-  );
-  return response.framework ?? null;
-}
-
-export async function disableFramework(baseUrl: string, id: string): Promise<LoomFramework | null> {
-  const response = await postJson<LoomFrameworkResponse>(
-    baseUrl,
-    `/v1/frameworks/${encodeURIComponent(id)}/disable`,
-    {},
-  );
-  return response.framework ?? null;
-}
-
-export async function installFrameworkPackage(
-  baseUrl: string,
-  zipBase64: string,
-): Promise<LoomFramework | null> {
-  const response = await postJson<LoomFrameworkResponse>(baseUrl, "/v1/frameworks/install", {
-    zipBase64,
-  });
-  return response.framework ?? null;
-}
-
 export async function upgradeFrameworkPackage(
   baseUrl: string,
   id: string,
