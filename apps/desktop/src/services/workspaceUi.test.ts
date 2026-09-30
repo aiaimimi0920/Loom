@@ -54,7 +54,10 @@ test("keeps Hook zoom controls readable while preserving the fixed dark canvas",
 
 test("serializes desktop snapshot refreshes and does not subscribe an offline instance to Hook Bridge", () => {
   assert.match(appSource, /const snapshotSingleFlight = useRef\(createSingleFlightGate\(\)\);/);
-  assert.match(appSource, /return await snapshotSingleFlight\.current\.run\(async \(\) => \{/);
+  assert.match(appSource, /await refreshSharedSnapshot\(\{/);
+  assert.match(appSource, /flight: snapshotSingleFlight\.current,/);
+  assert.match(appSource, /latest: snapshotRequestGate\.current,/);
+  assert.match(appSource, /signal: abortSignal,/);
   assert.match(
     appSource,
     /snapshot\.connectionState !== "online"[\s\S]*?startHookBridgeWorkflowSync\(\{[\s\S]*?snapshot\.connectionState\]\);/,
