@@ -1,4 +1,4 @@
-# Owns runtime envelopes, Surface patches, error projection, and formal quote output.
+﻿# Owns runtime envelopes, Surface patches, error projection, and formal quote output.
 
 function Format-Price {
     param([AllowNull()][object]$Value)

@@ -1,4 +1,4 @@
-# Owns immutable runtime limits and process-local Stock Monitor state.
+﻿# Owns immutable runtime limits and process-local Stock Monitor state.
 
 $script:SurfaceAction = $null
 $script:SurfaceActionBudgets = $null

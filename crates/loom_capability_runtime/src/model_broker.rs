@@ -143,6 +143,8 @@ impl ModelBroker {
 }
 
 fn read_request(stream: &mut TcpStream) -> std::io::Result<ModelRequest> {
+    // Winsock inherits the listener's nonblocking mode; framed I/O uses bounded blocking reads.
+    stream.set_nonblocking(false)?;
     // One deadline covers the entire frame, including clients that trickle bytes.
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut header = [0; 4];
@@ -295,6 +297,68 @@ mod tests {
         let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
         assert_eq!(response["error"], "model broker provider mode is invalid");
     }
+
+    #[test]
+    fn fragmented_request_waits_on_an_inherited_nonblocking_socket() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        // Winsock inherits this flag from the listener; emulate it on other hosts too.
+        server.set_nonblocking(true).unwrap();
+        let bytes = serde_json::to_vec(&json!({
+            "token": "x".repeat(64), "system": "system", "user": "fragmented"
+        }))
+        .unwrap();
+        let header = (bytes.len() as u32).to_be_bytes();
+        client.write_all(&header[..2]).unwrap();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            client.write_all(&header[2..]).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            client.write_all(&bytes).unwrap();
+        });
+
+        let result = read_request(&mut server);
+        writer.join().unwrap();
+        assert_eq!(result.unwrap().user, "fragmented");
+    }
+
+    #[test]
+    fn incomplete_request_on_an_inherited_nonblocking_socket_keeps_its_deadline() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        client.write_all(&100_u32.to_be_bytes()).unwrap();
+
+        let start = Instant::now();
+        let error = read_request(&mut server).err().unwrap();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+        assert!(start.elapsed() >= Duration::from_secs(2));
+        assert!(start.elapsed() < Duration::from_secs(8));
+    }
+
+    #[test]
+    fn broker_shutdown_is_bounded_with_an_incomplete_request() {
+        let broker = ModelBroker::with_handler(|_, _| panic!("incomplete request")).unwrap();
+        let address = broker.address.clone();
+        let mut client = TcpStream::connect(&address).unwrap();
+        client.write_all(&100_u32.to_be_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let (finished, completion) = mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            drop(broker);
+            finished.send(()).unwrap();
+        });
+        completion.recv_timeout(Duration::from_secs(8)).unwrap();
+        closer.join().unwrap();
+        assert!(TcpStream::connect(address).is_err());
+    }
+
     #[test]
     fn oversized_frame_is_rejected_before_allocation() {
         let broker = ModelBroker::with_handler(|_, _| panic!("must not invoke Gateway")).unwrap();

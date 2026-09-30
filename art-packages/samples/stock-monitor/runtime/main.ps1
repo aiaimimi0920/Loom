@@ -1,5 +1,8 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+# The JSON ABI is UTF-8 regardless of the Windows console/OEM code page.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 # Keep package-root resolution anchored to the public entry. Dot-sourced modules have their own
 # $PSScriptRoot value, which points at runtime/lib rather than the runtime directory.

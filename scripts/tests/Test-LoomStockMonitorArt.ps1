@@ -35,6 +35,8 @@ try {
         Expand-Archive -LiteralPath $zipPath -DestinationPath $artDirectory -Force
     }
 
+    & (Join-Path $scriptRoot "Test-LoomStockMonitorProcess.ps1") -ArtDirectory $artDirectory
+
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $artDirectory "manifest.json") | ConvertFrom-Json
     Assert-Equal "1.6.0" ([string]$manifest.metadata.packageSecurity.version) "Stock Monitor package version must force the multi-view migration."
     Assert-Equal "neuro.official/custom-stock-monitor" ([string]$manifest.metadata.art.qualifiedId) "Stock Monitor qualified Art identity mismatch."

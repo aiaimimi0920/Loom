@@ -291,8 +291,8 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
     'security-events: write',
     'runs-on: ubuntu-latest',
     'actions/checkout@v5',
-    'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f',
-    'docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8',
+    'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
+    'docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a',
     '.github/workflows/docker.yml',
     'examples/**',
     'provenance: false',
@@ -307,7 +307,7 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
 )
 
 $dockerfile = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "Dockerfile")
-Assert-True -Condition $dockerfile.Contains('FROM rust:1.95.0-slim-bookworm AS builder') -Message "Dockerfile must use the pinned Rust 1.95.0 builder."
+Assert-True -Condition $dockerfile.Contains('FROM rust:1.98.1-slim-bookworm AS builder') -Message "Dockerfile must use the pinned Rust 1.98.1 builder."
 Assert-True -Condition (-not $dockerfile.Contains('rust:1.91.1')) -Message "Dockerfile must not use the obsolete Rust 1.91.1 builder."
 
 $dockerIgnore = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot ".dockerignore")

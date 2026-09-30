@@ -1,4 +1,4 @@
-# Owns stock, number, period, timestamp, and market-session normalization.
+﻿# Owns stock, number, period, timestamp, and market-session normalization.
 
 function ConvertTo-StrictBoolean {
     param(

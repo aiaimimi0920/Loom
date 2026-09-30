@@ -1,5 +1,5 @@
 # Shared assertion, fixture, Surface assembly and child-process helpers.
-$script:StockRuntimeInvocationSequence = 0
+. (Join-Path $PSScriptRoot "RuntimeProcess.ps1")
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -46,46 +46,6 @@ function Read-JavaScriptSurfaceSource {
         Get-Content -Raw -Encoding UTF8 -LiteralPath $path
     }
     return "(() => {`n`"use strict`";`n" + ($sources -join "`n;`n") + "`n;`n`n})();`n"
-}
-
-function ConvertTo-ProcessArgument {
-    param([AllowEmptyString()][string]$Argument)
-    if (($Argument.Length -gt 0) -and ($Argument -notmatch '[\s"]')) { return $Argument }
-    $escaped = [regex]::Replace($Argument, '(\\*)"', '$1$1\"')
-    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
-    return '"' + $escaped + '"'
-}
-
-function Stop-StockRuntimeProcess {
-    param([Diagnostics.Process]$Process)
-
-    try {
-        if (-not $Process.HasExited) { $Process.Kill() }
-    }
-    catch {
-        if (-not $Process.HasExited) { throw }
-    }
-    try {
-        $Process.WaitForExit()
-    }
-    catch {
-        if (-not $Process.HasExited) { throw }
-    }
-}
-
-function Complete-StockRuntimeReadTasks {
-    param([AllowNull()][object[]]$Tasks)
-
-    foreach ($task in @($Tasks)) {
-        if ($null -eq $task) { continue }
-        try {
-            if ($task.Wait(5000)) { $null = $task.GetAwaiter().GetResult() }
-        }
-        catch {
-            # Observing a failed drain prevents an unobserved task from masking
-            # the original process failure during test teardown.
-        }
-    }
 }
 
 function New-McpData {
@@ -280,66 +240,6 @@ function New-McpData {
             serverId = "stock-api"
             results = $results
         }
-    }
-}
-
-function Invoke-StockRuntimeRequest {
-    param(
-        [string]$ArtDirectory,
-        [object]$Request
-    )
-
-    $invocation = ++$script:StockRuntimeInvocationSequence
-    $requestJson = $Request | ConvertTo-Json -Depth 40 -Compress
-    $requestBytes = [Text.Encoding]::UTF8.GetByteCount($requestJson + "`n")
-    $runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $ArtDirectory "art.runtime.json") | ConvertFrom-Json
-    $psi = [Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = [string]$runtime.entry.command
-    $psi.Arguments = @($runtime.entry.args | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join " "
-    $psi.WorkingDirectory = $ArtDirectory
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $psi
-    $started = $false
-    $stdoutTask = $null
-    $stderrTask = $null
-    $stdinTask = $null
-    try {
-        Assert-True $process.Start() "Failed to start Stock Monitor runtime."
-        $started = $true
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        $stdinTask = $process.StandardInput.WriteLineAsync($requestJson)
-        # Windows PowerShell cold starts can exceed five seconds on constrained
-        # CI hosts; keep this bounded without conflating startup with action time.
-        if (-not $stdinTask.Wait(20000)) {
-            $childExited = $process.HasExited
-            $childExitCode = if ($childExited) { [string]$process.ExitCode } else { "pending" }
-            $stderrState = if ($stderrTask.IsCompleted) { "ready" } else { "pending" }
-            Stop-StockRuntimeProcess -Process $process
-            throw "Stock Monitor runtime stdin write timed out. Invocation=$invocation RequestBytes=$requestBytes ChildExited=$childExited ChildExitCode=$childExitCode StderrState=$stderrState"
-        }
-        $null = $stdinTask.GetAwaiter().GetResult()
-        $process.StandardInput.Close()
-        if (-not $process.WaitForExit(20000)) {
-            Stop-StockRuntimeProcess -Process $process
-            throw "Stock Monitor runtime timed out."
-        }
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
-        $stderrBytes = [Text.Encoding]::UTF8.GetByteCount([string]$stderr)
-        Assert-Equal 0 $process.ExitCode "Stock Monitor runtime exited with an error. StderrBytes=$stderrBytes"
-        Assert-True (-not [string]::IsNullOrWhiteSpace($stdout)) "Stock Monitor runtime returned no stdout. StderrBytes=$stderrBytes"
-        return $stdout.Trim() | ConvertFrom-Json
-    }
-    finally {
-        if ($started) { Stop-StockRuntimeProcess -Process $process }
-        Complete-StockRuntimeReadTasks -Tasks @($stdinTask, $stdoutTask, $stderrTask)
-        $process.Dispose()
     }
 }
 
