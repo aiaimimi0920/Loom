@@ -25,6 +25,9 @@ jobs:
   analyze:
     name: Analyze ${{ matrix.language }}
     runs-on: ubuntu-latest
+    env:
+      # Inventory the full branch, including findings in unchanged source paths.
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +44,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test bounded CodeQL inventory
+        run: node --test scripts/tests/codeql-summary.test.mjs
+
       # CodeQL recommends the supported major tag so its server-managed bundle stays current.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -53,3 +59,8 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
+          output: .tmp/codeql-results
+
+      - name: Report bounded CodeQL finding inventory
+        if: ${{ !cancelled() }}
+        run: python3 scripts/summarize_codeql_results.py .tmp/codeql-results
