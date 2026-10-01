@@ -142,7 +142,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         response["protocolVersion"],
         loom_protocol::HOOK_PROTOCOL_VERSION
     );
-    assert_eq!(response["serverVersion"], "0.2.0");
+    assert_eq!(response["serverVersion"], env!("CARGO_PKG_VERSION"));
     assert!(response["sessionId"].as_str().is_some());
     let hook_session_id = response["sessionId"].as_str().unwrap().to_owned();
     socket
