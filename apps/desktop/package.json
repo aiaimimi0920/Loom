@@ -1,6 +1,6 @@
 {
   "name": "loom-desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Loom desktop shell for the local Loom daemon",
   "type": "module",
   "private": true,

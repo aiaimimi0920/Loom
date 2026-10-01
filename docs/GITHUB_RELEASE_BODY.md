@@ -1,26 +1,27 @@
-## Loom V0.2.0
+## Loom V0.2.1
 
-This is the first refactored Loom release. It publishes the desktop workbench and
-Plugin SDK with aligned `V0.2.0` metadata and the existing provenance, SBOM,
-checksum, and smoke-verification gates.
+本版本统一桌面入口与产品版本，汇总设备投送、跨 Loom 协作和运行时生命周期改进。
 
-### Highlights
+### 主要更新
 
-- Keeps the daemon-first runtime, desktop shell, and Plugin SDK version-aligned at
-  `0.2.0`.
-- Preserves the framework-first Art bridge and the hardened plugin/security
-  boundaries from the refactored codebase.
-- Uses the reproducible tagged-release workflow with draft-first publication and
-  exact asset verification.
+- 以 `Loom.exe` 作为桌面入口，由桌面程序管理内部 daemon，简化启动与退出流程。
+- 完善设备图片投送与受信任跨 Loom 投射，保留设备身份、授权和协议校验。
+- 改善启动快照、同步生命周期、空闲维护和画布预览，减少不必要的后台工作。
+- 桌面程序、工作区产品 crates 和本次 Plugin SDK 发布包统一为 `0.2.1`。
+- 继续使用 tag 驱动构建、冒烟检查、来源证明及附件精确核验，先创建草稿，
+  通过发布门禁后再公开。
 
-### Package notes
+### 下载与兼容性
 
-The public Release intentionally keeps the download surface focused. Desktop users
-should download `Loom-V0.2.0-windows-x64.zip`; Plugin and Art node developers should
-download `Loom-Plugin-SDK-V0.2.0-windows-x64.zip`. Each ZIP has a matching `.zip.sha256`
-sidecar for integrity verification. The CLI remains built and verified by the
-pipeline for maintainers, but is not uploaded to the public Release. SBOMs,
-provenance, manifests, and full checksum inventories remain maintainer-side
-evidence. GitHub also provides automatic source ZIP and tarball links for the tag.
+桌面用户下载 `Loom-V0.2.1-windows-x64.zip`，解压后运行 `Loom.exe`；Plugin 和
+Art 节点开发者下载 `Loom-Plugin-SDK-V0.2.1-windows-x64.zip`。每个 ZIP 均提供对应
+的 `.zip.sha256` 校验文件。
 
-**Full Changelog**: [V0.1.0...V0.2.0](https://github.com/aiaimimi0920/Loom/compare/V0.1.0...V0.2.0)
+本版本沿用当前 canonical-only 格式与协议，不恢复已移除的旧别名。旧集成应按
+仓库中的现行协议和 SDK 更新。本次发布不代表所有跨机器、公网或 wall 场景均
+已完成验收。
+
+CLI 继续在流水线中构建和验证，但不作为公开附件。SBOM、构建来源、manifest
+和完整校验清单作为维护侧证据保留；GitHub 同时提供 tag 对应的源码归档。
+
+**完整更新记录**：[V0.2.0-sdk...V0.2.1](https://github.com/aiaimimi0920/Loom/compare/V0.2.0-sdk...V0.2.1)
