@@ -34,7 +34,7 @@ fn runtime_mcp_session_pool_fixture_server() {
                 call_count += 1;
                 json!({ "content": [{ "type": "text", "text": call_count.to_string() }] })
             }
-            _ => panic!("unexpected fixture method {method}"),
+            _ => panic!("unexpected fixture method (raw input withheld)"),
         };
         // This is the JSON-RPC transport, not a diagnostic/log sink.
         serde_json::to_writer(
@@ -77,7 +77,7 @@ fn repeated_runtime_executions_reuse_initialized_mcp_session() {
             .as_str()
             .expect("fixture count text")
             .to_owned(),
-        McpCallOutcome::Failure(error) => panic!("fixture call failed: {error}"),
+        McpCallOutcome::Failure(_) => panic!("fixture call failed (raw diagnostic withheld)"),
     };
     assert_eq!(count(&first), "1");
     assert_eq!(count(&second), "2");
@@ -112,7 +112,7 @@ fn changing_server_config_evicts_the_old_session_before_connecting() {
             .as_str()
             .expect("fixture count text")
             .to_owned(),
-        McpCallOutcome::Failure(error) => panic!("fixture call failed: {error}"),
+        McpCallOutcome::Failure(_) => panic!("fixture call failed (raw diagnostic withheld)"),
     };
 
     let first_a =
