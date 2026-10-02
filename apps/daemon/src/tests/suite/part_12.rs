@@ -28,8 +28,14 @@ fn a_serialized_route_completes_while_a_surface_stream_long_poll_is_parked() {
     shutdown_tx.send(()).expect("request shutdown");
     server.join().expect("server thread").expect("serve daemon");
 
-    assert!(serialized.starts_with("HTTP/1.1 200 OK"), "{serialized}");
-    assert!(polled.starts_with("HTTP/1.1 200 OK"), "{polled}");
+    assert!(
+        serialized.starts_with("HTTP/1.1 200 OK"),
+        "response did not satisfy the expected contract (raw output withheld)"
+    );
+    assert!(
+        polled.starts_with("HTTP/1.1 200 OK"),
+        "response did not satisfy the expected contract (raw output withheld)"
+    );
     assert!(
         waited < Duration::from_millis(1_500),
         "a serialized route waited {waited:?} behind an idle Surface stream long-poll"
@@ -73,7 +79,10 @@ fn a_trickling_request_does_not_block_the_accept_loop() {
     shutdown_tx.send(()).expect("request shutdown");
     server.join().expect("server thread").expect("serve daemon");
 
-    assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
+    assert!(
+        health.starts_with("HTTP/1.1 200 OK"),
+        "response did not satisfy the expected contract (raw output withheld)"
+    );
     assert!(
         waited < Duration::from_millis(1_500),
         "/health waited {waited:?} behind a client that had sent only a partial head"

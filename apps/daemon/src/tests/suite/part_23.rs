@@ -246,7 +246,7 @@ fn daemon_records_failed_gateway_brain_plan_with_run_evidence() {
 
     assert!(
         response.starts_with("HTTP/1.1 502 Bad Gateway"),
-        "response={response}"
+        "response=[omitted]"
     );
     let body = response_json_body(&response);
     assert_eq!(body["status"], "failed");

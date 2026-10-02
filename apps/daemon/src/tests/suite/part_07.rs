@@ -82,7 +82,7 @@ fn art_management_enforces_ownership_defaults_and_global_secret_references() {
         .unwrap();
     assert!(secret_parameter.get("default").is_none());
 
-    let (status, secret_default) = put_art_management_settings(
+    let (status, _secret_default) = put_art_management_settings(
             "local-art",
             r#"{"autoUpdate":false,"defaults":{"api_token":"plaintext"},"credentialBindings":{"api_token":"cloudflare_key"}}"#,
             &runtime.tool_registry,
@@ -90,7 +90,7 @@ fn art_management_enforces_ownership_defaults_and_global_secret_references() {
             &runtime.hook_bridge,
         )
         .expect("reject secret default");
-    assert_eq!(status, 400, "body={secret_default}");
+    assert_eq!(status, 400, "body=[omitted]");
 
     let (status, missing_required) = put_art_management_settings(
         "local-art",
@@ -353,7 +353,7 @@ fn diagnostics_and_support_bundle_redact_secrets_and_require_existing_runs() {
     ] {
         assert!(
             !body.contains(secret),
-            "support bundle leaked {secret}: {body}"
+            "support bundle exposed a synthetic credential (raw output withheld)"
         );
     }
     assert!(body.contains("[REDACTED]"));

@@ -92,7 +92,7 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
     let mut server = ConcurrencyTestFixture::new(tx, worker);
     let (owner, token) = pair(port, "Live output");
     let (_, outsider) = pair(port, "Unassigned Live output");
-    let mut start = live_start_envelope("live-1", "wall-live-test");
+    let mut start = live_start_envelope("live-1");
     let LiveControlMessage::SessionStart(message) = &mut start.message else {
         panic!("start fixture")
     };

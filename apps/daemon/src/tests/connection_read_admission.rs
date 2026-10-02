@@ -72,13 +72,19 @@ fn short_same_peer_read_burst_waits_for_existing_readers() {
         client
             .read_to_string(&mut earlier)
             .expect("read earlier response");
-        assert!(earlier.starts_with("HTTP/1.1 200 OK"), "{earlier}");
+        assert!(
+            earlier.starts_with("HTTP/1.1 200 OK"),
+            "response did not satisfy the expected contract (raw output withheld)"
+        );
     }
     next.set_read_timeout(Some(Duration::from_secs(2)))
         .expect("bound final burst read");
     next.read_to_string(&mut response)
         .expect("read burst response");
-    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "response did not satisfy the expected contract (raw output withheld)"
+    );
 }
 
 #[test]
@@ -94,7 +100,7 @@ fn stalled_same_peer_read_burst_is_refused_within_its_wait_budget() {
         .expect("bounded overload response");
     assert!(
         response.starts_with("HTTP/1.1 503 Service Unavailable"),
-        "{response}"
+        "response did not satisfy the expected contract (raw output withheld)"
     );
     assert!(started.elapsed() < Duration::from_millis(1500));
     drop(active);
@@ -125,7 +131,7 @@ fn queued_same_peer_read_receives_shutdown_without_a_connection_reset() {
         .expect("read queued shutdown response");
     assert!(
         response.starts_with("HTTP/1.1 503 Service Unavailable"),
-        "{response}"
+        "response did not satisfy the expected contract (raw output withheld)"
     );
     assert_eq!(
         response_json_body(&response)["error"]["code"],

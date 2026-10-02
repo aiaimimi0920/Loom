@@ -101,3 +101,35 @@ fn transport_clients_validate_tool_names_before_sending() {
 
     assert!(matches!(error, McpError::InvalidConfig(_)));
 }
+
+#[test]
+fn stderr_fixture_does_not_reflect_inherited_credentials() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "mcp::tests::fixture_server::mcp_fixture_server",
+            "--exact",
+            "--nocapture",
+        ])
+        .env("LOOM_MCP_FIXTURE_SERVER", "1")
+        .env("LOOM_MCP_FIXTURE_MODE", "stderr-secret")
+        .env("FIXTURE_SECRET", "unrelated-inherited-credential")
+        .output()
+        .expect("run isolated stderr fixture");
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("fixture-stdio-secret"));
+    assert!(!stderr.contains("unrelated-inherited-credential"));
+}
+
+#[test]
+fn stdio_redaction_negative_control_keeps_unconfigured_fixture_marker() {
+    let _guard = ProcessConfigTestGuard::capture();
+    let config = current_test_binary_fixture_config()
+        .env("LOOM_MCP_FIXTURE_MODE", "stderr-secret")
+        .env("FIXTURE_SECRET", "different-configured-value");
+    let mut client = StdioMcpClient::spawn(&config).expect("spawn negative control");
+    let error = client.initialize().expect_err("fixture must exit");
+    // The positive test must depend on matching the configured credential,
+    // rather than removing every stderr message or special-casing the marker.
+    assert!(error.to_string().contains("fixture-stdio-secret"));
+}

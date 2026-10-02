@@ -1,5 +1,5 @@
 // Phase 4 live relay state, authority, recovery, and bounded-media contracts.
-fn live_start_envelope(session_id: &str, nonce: &str) -> LiveControlEnvelope {
+fn live_start_envelope(session_id: &str) -> LiveControlEnvelope {
     let now = unix_time_millis();
     LiveControlEnvelope {
         protocol_version: loom_protocol::LIVE_PROTOCOL_VERSION.to_owned(),
@@ -52,7 +52,7 @@ fn live_start_envelope(session_id: &str, nonce: &str) -> LiveControlEnvelope {
                 last_seen_at_ms: now,
             },
             requested_by_device_id: "device-source".to_owned(),
-            request_nonce: nonce.to_owned(),
+            request_nonce: Uuid::new_v4().to_string(),
         }),
     }
 }
@@ -92,9 +92,27 @@ fn encoded_live_frame(id: u64) -> Vec<u8> {
 }
 
 #[test]
+fn live_fixture_nonce_is_fresh_and_replay_preserves_it() {
+    let first = live_start_envelope("live:nonce-regression");
+    let second = live_start_envelope("live:nonce-regression");
+    let LiveControlMessage::SessionStart(first_start) = &first.message else {
+        panic!("expected session start");
+    };
+    let LiveControlMessage::SessionStart(second_start) = &second.message else {
+        panic!("expected session start");
+    };
+    assert!(Uuid::parse_str(&first_start.request_nonce).is_ok());
+    assert!(first_start.request_nonce != second_start.request_nonce);
+    let store = LiveSessionStore::new();
+    assert!(store.create("device-source", first.clone()).unwrap().0);
+    assert!(!store.create("device-source", first).unwrap().0);
+    assert!(store.create("device-source", second).is_err());
+}
+
+#[test]
 fn live_session_creation_is_idempotent_and_media_ring_is_bounded() {
     let store = LiveSessionStore::new();
-    let start = live_start_envelope("live:fixture", "nonce:fixture");
+    let start = live_start_envelope("live:fixture");
     let (created, first) = store
         .create("device-source", start.clone())
         .expect("create live session");
@@ -132,7 +150,7 @@ fn live_session_creation_is_idempotent_and_media_ring_is_bounded() {
 #[test]
 fn live_media_rejects_an_invalid_internal_buffer_capacity_without_mutation() {
     let store = LiveSessionStore::new();
-    let mut start = live_start_envelope("live:invalid-buffer", "nonce:invalid-buffer");
+    let mut start = live_start_envelope("live:invalid-buffer");
     let LiveControlMessage::SessionStart(message) = &mut start.message else {
         panic!("fixture must contain session_start");
     };
@@ -161,10 +179,7 @@ fn live_media_rejects_an_invalid_internal_buffer_capacity_without_mutation() {
 fn live_viewer_resume_does_not_duplicate_session_and_controller_is_single() {
     let store = LiveSessionStore::new();
     store
-        .create(
-            "device-source",
-            live_start_envelope("live:authority", "nonce:authority"),
-        )
+        .create("device-source", live_start_envelope("live:authority"))
         .expect("create live session");
     for viewer in ["device-viewer-a", "device-viewer-b"] {
         store
@@ -221,10 +236,7 @@ fn live_viewer_resume_does_not_duplicate_session_and_controller_is_single() {
 fn live_control_events_are_separate_from_surface_stream_media() {
     let store = LiveSessionStore::new();
     store
-        .create(
-            "device-source",
-            live_start_envelope("live:events", "nonce:events"),
-        )
+        .create("device-source", live_start_envelope("live:events"))
         .expect("create live session");
     store
         .attach_viewer(
@@ -272,10 +284,7 @@ fn live_media_websocket_fans_out_and_resumes_without_duplicate_frames() {
     daemon
         .runtime
         .live_sessions
-        .create(
-            "device-source",
-            live_start_envelope("live:websocket", "nonce:websocket"),
-        )
+        .create("device-source", live_start_envelope("live:websocket"))
         .expect("create WebSocket session");
     for viewer in ["device-viewer-a", "device-viewer-b"] {
         daemon

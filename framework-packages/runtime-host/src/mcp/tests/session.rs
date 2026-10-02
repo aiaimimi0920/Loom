@@ -36,12 +36,13 @@ fn runtime_mcp_session_pool_fixture_server() {
             }
             _ => panic!("unexpected fixture method {method}"),
         };
-        writeln!(
-            stdout,
-            "{}",
-            json!({ "jsonrpc": "2.0", "id": request["id"], "result": result })
+        // This is the JSON-RPC transport, not a diagnostic/log sink.
+        serde_json::to_writer(
+            &mut stdout,
+            &json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }),
         )
         .expect("write fixture response");
+        stdout.write_all(b"\n").expect("terminate fixture response");
         stdout.flush().expect("flush fixture response");
     }
     std::process::exit(0);

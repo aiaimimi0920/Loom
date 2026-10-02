@@ -67,7 +67,7 @@ fn http_json_get(base_url: &str, path: &str, bearer_token: &str) -> serde_json::
         .expect("read daemon status response");
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected daemon status response: {response}"
+        "unexpected daemon status response: [omitted]"
     );
     let body = response.split_once("\r\n\r\n").expect("status body").1;
     serde_json::from_str(body).expect("valid status JSON")
