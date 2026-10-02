@@ -46,6 +46,7 @@ $smokeModuleNames = @(
     "Process.ps1",
     "CloudFixture.ps1",
     "McpRegistryFixture.ps1",
+    "McpDiagnostics.ps1",
     "ReleasePhases.ps1",
     "Release.ps1",
     "Focused.ps1"
@@ -135,20 +136,6 @@ function Assert-ScriptContract {
     foreach ($needle in $ForbiddenText) {
         Assert-True -Condition (-not $raw.Contains($needle)) -Message "Forbidden release contract text in ${pathLabel}: $needle"
     }
-}
-
-function Get-ScriptFunctionDefinition {
-    param(
-        [System.Management.Automation.Language.ScriptBlockAst]$Ast,
-        [string]$Name
-    )
-
-    $definition = $Ast.Find({
-        param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
-    }, $true)
-    Assert-True -Condition ($null -ne $definition) -Message "Missing script function for runtime contract: $Name"
-    return [scriptblock]::Create($definition.Extent.Text)
 }
 
 . $releaseContractHelperPath
@@ -374,6 +361,7 @@ Assert-ScriptContract `
         'Process.ps1',
         'CloudFixture.ps1',
         'McpRegistryFixture.ps1',
+        'McpDiagnostics.ps1',
         'ReleasePhases.ps1',
         'Release.ps1',
         'Focused.ps1',

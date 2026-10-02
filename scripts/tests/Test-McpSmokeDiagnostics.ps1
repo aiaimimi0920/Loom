@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 . (Join-Path $repoRoot "scripts\smoke-release\Evidence.ps1")
+. (Join-Path $repoRoot "scripts\smoke-release\McpDiagnostics.ps1")
 . (Join-Path $repoRoot "scripts\smoke-release\ReleasePhases.ps1")
 $root = Join-Path ([IO.Path]::GetTempPath()) "loom-mcp-diagnostics-$PID-$([Guid]::NewGuid().ToString('N'))"
 $EvidenceRoot = Join-Path $root "evidence"

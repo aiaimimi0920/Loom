@@ -1,4 +1,4 @@
-<# Exports only bounded, schema-checked MCP fixture phase metadata; never payloads or logs. #>
+<# Owns bounded, schema-checked MCP fixture phase exports; never payloads or logs. #>
 function Save-LoomMcpSmokeDiagnostic {
     param(
         [Parameter(Mandatory = $true)][string]$TempRoot,

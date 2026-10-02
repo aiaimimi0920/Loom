@@ -7,9 +7,12 @@ on:
   pull_request:
     paths:
       - ".github/workflows/build-windows.yml"
+      - "scripts/smoke-release.ps1"
       - "scripts/smoke-release/**"
       - "scripts/tests/Test-McpSmokeDiagnostics.ps1"
       - "scripts/tests/Test-SmokeReleaseModules.ps1"
+      - "scripts/tests/Test-StandaloneReleaseContract.ps1"
+      - "scripts/tests/standalone-release/**"
       - "crates/loom_mcp/**"
       - "crates/loom_process/**"
       - "apps/daemon/src/runtime/mcp*.rs"

@@ -33,6 +33,7 @@ foreach ($moduleName in @(
     "Process.ps1",
     "CloudFixture.ps1",
     "McpRegistryFixture.ps1",
+    "McpDiagnostics.ps1",
     "ReleasePhases.ps1",
     "Release.ps1",
     "Focused.ps1"

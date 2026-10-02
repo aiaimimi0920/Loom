@@ -1,7 +1,5 @@
 <# Owns isolated release-smoke phases that create fixture files or short-lived daemon instances. #>
 
-. (Join-Path $PSScriptRoot "McpDiagnostics.ps1")
-
 function New-LoomFixtureMcpServerScript {
     param([Parameter(Mandatory = $true)][string]$TempRoot)
 
