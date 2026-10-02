@@ -48,29 +48,29 @@ fn daemon_requires_tls_and_bearer_auth_for_non_loopback_routes() {
     let unauthorized_status = http_get_without_auth(address.port(), "/status");
     assert!(
         unauthorized_status.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_status={unauthorized_status}"
+        "unauthorized_status=[omitted]"
     );
     let unauthorized_capabilities = http_get_without_auth(address.port(), "/v1/capabilities");
     assert!(
         unauthorized_capabilities.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_capabilities={unauthorized_capabilities}"
+        "unauthorized_capabilities=[omitted]"
     );
     let unauthorized_run = http_get_without_auth(address.port(), &format!("/v1/runs/{run_id}"));
     assert!(
         unauthorized_run.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_run={unauthorized_run}"
+        "unauthorized_run=[omitted]"
     );
     let unauthorized_events =
         http_get_without_auth(address.port(), &format!("/v1/runs/{run_id}/events"));
     assert!(
         unauthorized_events.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_events={unauthorized_events}"
+        "unauthorized_events=[omitted]"
     );
 
     let public_health = http_get(address.port(), "/health");
     assert!(
         public_health.starts_with("HTTP/1.1 200 OK"),
-        "public_health={public_health}"
+        "public_health=[omitted]"
     );
     let authorized_events = http_request_with_bearer(
         address.port(),
@@ -81,7 +81,7 @@ fn daemon_requires_tls_and_bearer_auth_for_non_loopback_routes() {
     );
     assert!(
         authorized_events.starts_with("HTTP/1.1 200 OK"),
-        "authorized_events={authorized_events}"
+        "authorized_events=[omitted]"
     );
 
     shutdown_tx.send(()).expect("shutdown");
@@ -109,7 +109,7 @@ fn daemon_rejects_oversized_declared_request_body() {
     );
     assert!(
         response.starts_with("HTTP/1.1 413 Payload Too Large"),
-        "response={response}"
+        "response=[omitted]"
     );
 
     shutdown_tx.send(()).expect("shutdown");
@@ -158,10 +158,10 @@ fn package_install_routes_have_a_larger_but_bounded_body_limit() {
 fn assert_http_request_rejected(raw: &[u8], expected_status: u16) {
     let mut reader = std::io::Cursor::new(raw);
     let outcome = read_http_request(&mut reader).expect("read malformed request");
-    let HttpReadOutcome::Rejected { status, body } = outcome else {
+    let HttpReadOutcome::Rejected { status, .. } = outcome else {
         panic!("expected malformed request to be rejected");
     };
-    assert_eq!(status, expected_status, "body={body}");
+    assert_eq!(status, expected_status, "body=[omitted]");
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn http_post(port: u16, path: &str, body: &str) -> String {
     let response = http_request(port, "POST", path, Some(body));
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected response: {response}"
+        "unexpected response: [omitted]"
     );
     response
         .split_once("\r\n\r\n")
@@ -395,7 +395,7 @@ fn http_json_get(port: u16, path: &str) -> serde_json::Value {
     let response = http_get(port, path);
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected response: {response}"
+        "unexpected response: [omitted]"
     );
     response_json_body(&response)
 }
@@ -404,7 +404,7 @@ fn http_json_post(port: u16, path: &str, body: &str) -> serde_json::Value {
     let response = http_request(port, "POST", path, Some(body));
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected response: {response}"
+        "unexpected response: [omitted]"
     );
     response_json_body(&response)
 }
@@ -413,7 +413,7 @@ fn http_json_put(port: u16, path: &str, body: &str) -> serde_json::Value {
     let response = http_request(port, "PUT", path, Some(body));
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected response: {response}"
+        "unexpected response: [omitted]"
     );
     response_json_body(&response)
 }

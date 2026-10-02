@@ -1,7 +1,7 @@
 // Phase 6 observation authority, capability, ordering, and snapshot contracts.
 fn phase_six_store(session_id: &str) -> LiveSessionStore {
     let store = LiveSessionStore::new();
-    let mut start = live_start_envelope(session_id, &format!("nonce:{session_id}"));
+    let mut start = live_start_envelope(session_id);
     let LiveControlMessage::SessionStart(message) = &mut start.message else {
         panic!("fixture must contain session_start");
     };

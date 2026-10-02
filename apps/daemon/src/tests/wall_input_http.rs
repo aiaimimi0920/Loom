@@ -30,7 +30,7 @@ impl WallInputFixture {
         let (tx, rx) = mpsc::channel();
         let server = ConcurrencyTestFixture::new(tx, thread::spawn(move || daemon.serve_until(rx)));
         let (device_id, token) = pair(port, "Wall input source and two outputs");
-        let mut start = live_start_envelope("live-1", "wall-input-test");
+        let mut start = live_start_envelope("live-1");
         let LiveControlMessage::SessionStart(message) = &mut start.message else {
             panic!("fixture")
         };

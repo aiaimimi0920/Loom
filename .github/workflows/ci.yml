@@ -33,6 +33,9 @@ jobs:
       - name: Test effective-code-line checker
         run: node --test .\scripts\tests\effective-code-lines.test.mjs
 
+      - name: Test packaged QR candidate verification
+        run: node --experimental-strip-types --experimental-default-type=module --test .\scripts\tests\qr-projection-candidate.test.ts
+
       - name: Test GitHub release and dependency triage automation
         run: node --test .\scripts\tests\dependabot-triage.test.cjs .\scripts\tests\github-release-automation.test.cjs
 

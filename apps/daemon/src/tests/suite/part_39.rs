@@ -1,7 +1,7 @@
 // Phase 5 live input authority, ordering, capability, and revocation contracts.
 fn phase_five_store(session_id: &str) -> LiveSessionStore {
     let store = LiveSessionStore::new();
-    let mut start = live_start_envelope(session_id, &format!("nonce:{session_id}"));
+    let mut start = live_start_envelope(session_id);
     let LiveControlMessage::SessionStart(message) = &mut start.message else {
         panic!("fixture must contain session_start");
     };

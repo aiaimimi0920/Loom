@@ -64,7 +64,7 @@ fn daemon_accepts_root_contract_local_capability_invoke_fixture() {
 
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected response: {response}"
+        "unexpected response: [omitted]"
     );
     let invoke = response_json_body(&response);
     assert_eq!(invoke["requestId"], "loom-request-1");

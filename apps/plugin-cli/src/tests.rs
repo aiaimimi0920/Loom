@@ -357,7 +357,10 @@ mod tests {
         sign_plugin_package(&mcp_dir, &key_path, "publisher.example").expect("sign MCP");
 
         let signed: Value = read_json(&mcp_dir.join("mcp.server.json")).expect("read MCP manifest");
-        assert_eq!(signed["packageSecurity"]["signature"]["keyId"], "release-key-1");
+        assert_eq!(
+            signed["packageSecurity"]["signature"]["keyId"],
+            "release-key-1"
+        );
         assert!(mcp_dir.join("signature.json").is_file());
         fs::remove_dir_all(root).ok();
     }
@@ -411,7 +414,7 @@ mod tests {
             framework_dir.to_string_lossy().into_owned(),
         ])
         .expect("validate verified framework");
-        assert!(verified.contains("trust=Verified"), "{verified}");
+        assert!(verified.contains("trust=Verified"));
         run_cli(&[
             "loom-plugin".to_owned(),
             "trust".to_owned(),
@@ -429,7 +432,7 @@ mod tests {
             trust_path.to_string_lossy().into_owned(),
         ])
         .expect("validate trusted framework");
-        assert!(trusted.contains("trust=Trusted"), "{trusted}");
+        assert!(trusted.contains("trust=Trusted"));
         run_cli(&[
             "loom-plugin".to_owned(),
             "pack".to_owned(),
@@ -474,7 +477,7 @@ mod tests {
             trust_path.to_string_lossy().into_owned(),
         ])
         .expect("validate trusted Art");
-        assert!(trusted_art.contains("trust=Trusted"), "{trusted_art}");
+        assert!(trusted_art.contains("trust=Trusted"));
         run_cli(&[
             "loom-plugin".to_owned(),
             "pack".to_owned(),
@@ -503,7 +506,7 @@ mod tests {
             art_dir.to_string_lossy().into_owned(),
         ])
         .expect("run conformance");
-        assert!(conformance.contains("conformance passed"), "{conformance}");
+        assert!(conformance.contains("conformance passed"));
 
         run_cli(&[
             "loom-plugin".to_owned(),

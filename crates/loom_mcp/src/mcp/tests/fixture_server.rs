@@ -38,8 +38,9 @@ pub(super) fn run_mcp_fixture_server() {
             stderr.flush().expect("flush stderr fixture");
         }
         Some("stderr-secret") => {
-            let secret = std::env::var("FIXTURE_SECRET").expect("fixture secret");
-            eprintln!("fixture failed with credential {secret}");
+            // Deliberately emit only this synthetic marker to exercise stderr redaction.
+            // Never read an inherited credential into fixture diagnostics.
+            eprintln!("fixture failed with credential fixture-stdio-secret");
             std::thread::sleep(Duration::from_millis(50));
             return;
         }

@@ -174,7 +174,7 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
     let public_health = http_get(address.port(), "/health");
     assert!(
         public_health.starts_with("HTTP/1.1 200 OK"),
-        "public_health={public_health}"
+        "public_health=[omitted]"
     );
     let public_health_body = response_json_body(&public_health);
     assert!(public_health_body.get("pid").is_none());
@@ -183,13 +183,13 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
     let unauthorized_status = http_get_without_auth(address.port(), "/status");
     assert!(
         unauthorized_status.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_status={unauthorized_status}"
+        "unauthorized_status=[omitted]"
     );
     let authorized_status =
         http_request_with_bearer(address.port(), "GET", "/status", None, "local-token");
     assert!(
         authorized_status.starts_with("HTTP/1.1 200 OK"),
-        "authorized_status={authorized_status}"
+        "authorized_status did not satisfy the expected HTTP status (raw output withheld)"
     );
     let authorized_status_body = response_json_body(&authorized_status);
     assert_eq!(authorized_status_body["pid"], std::process::id());
@@ -200,7 +200,7 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
     let unauthorized_capabilities = http_get_without_auth(address.port(), "/v1/capabilities");
     assert!(
         unauthorized_capabilities.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_capabilities={unauthorized_capabilities}"
+        "unauthorized_capabilities=[omitted]"
     );
 
     let invoke_body = r#"{
@@ -213,7 +213,7 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
         http_request_without_auth(address.port(), "POST", "/v1/invoke", Some(invoke_body));
     assert!(
         unauthorized_invoke.starts_with("HTTP/1.1 401 Unauthorized"),
-        "unauthorized_invoke={unauthorized_invoke}"
+        "unauthorized_invoke did not satisfy the expected HTTP status (raw output withheld)"
     );
 
     let authorized_invoke = http_request_with_bearer(
@@ -225,7 +225,7 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
     );
     assert!(
         authorized_invoke.starts_with("HTTP/1.1 200 OK"),
-        "authorized_invoke={authorized_invoke}"
+        "authorized_invoke did not satisfy the expected HTTP status (raw output withheld)"
     );
     let authorized_body = response_json_body(&authorized_invoke);
     assert_eq!(authorized_body["requestId"], "loom-bearer-manifest-1");
