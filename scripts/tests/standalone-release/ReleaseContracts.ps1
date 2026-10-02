@@ -1,5 +1,19 @@
 <# Owns modular release-script structure and security contract checks. #>
 
+function Get-ScriptFunctionDefinition {
+    param(
+        [System.Management.Automation.Language.ScriptBlockAst]$Ast,
+        [string]$Name
+    )
+
+    $definition = $Ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+    }, $true)
+    Assert-True -Condition ($null -ne $definition) -Message "Missing script function for runtime contract: $Name"
+    return [scriptblock]::Create($definition.Extent.Text)
+}
+
 function Assert-ReleaseModuleContracts {
     param(
         [object[]]$ReleaseModules,

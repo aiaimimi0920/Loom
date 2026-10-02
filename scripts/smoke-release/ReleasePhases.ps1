@@ -6,12 +6,24 @@ function New-LoomFixtureMcpServerScript {
     $fixtureMcpScript = Join-Path $TempRoot "fixture-mcp-server.ps1"
     $fixtureMcpSource = @'
 $ErrorActionPreference = "Stop"
+$phaseCount = 0
+$phasePath = Join-Path $PSScriptRoot "fixture-mcp-phase-$PID.jsonl"
+function Write-FixturePhase([string]$Phase) {
+    if ($script:phaseCount -ge 32) { return }
+    $script:phaseCount++
+    try {
+        $event = [ordered]@{ pid = $PID; phase = $Phase; utc = [DateTime]::UtcNow.ToString("o") }
+        [System.IO.File]::AppendAllText($script:phasePath, (($event | ConvertTo-Json -Compress) + "`n"), [System.Text.UTF8Encoding]::new($false))
+    } catch { } # Diagnostic I/O never changes protocol stdout or response behavior.
+}
+Write-FixturePhase "started"
 while ($null -ne ($line = [Console]::In.ReadLine())) {
     if ([string]::IsNullOrWhiteSpace($line)) {
         continue
     }
     $request = $line | ConvertFrom-Json
     if ($request.method -eq "initialize") {
+        Write-FixturePhase "initialize-received"
         $response = [ordered]@{
             jsonrpc = "2.0"
             id = $request.id
@@ -26,12 +38,15 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         }
         [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
         [Console]::Out.Flush()
+        Write-FixturePhase "initialize-written"
         continue
     }
     if ($request.method -eq "notifications/initialized") {
+        Write-FixturePhase "initialized-received"
         continue
     }
     if ($request.method -eq "tools/list") {
+        Write-FixturePhase "tools-list-received"
         $response = [ordered]@{
             jsonrpc = "2.0"
             id = $request.id
@@ -52,9 +67,11 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         }
         [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
         [Console]::Out.Flush()
+        Write-FixturePhase "tools-list-written"
         continue
     }
     if ($request.method -eq "tools/call") {
+        Write-FixturePhase "tools-call-received"
         $response = [ordered]@{
             jsonrpc = "2.0"
             id = $request.id
@@ -69,8 +86,10 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         }
         [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 20 -Compress))
         [Console]::Out.Flush()
+        Write-FixturePhase "tools-call-written"
         continue
     }
+    Write-FixturePhase "unknown-method"
     $errorResponse = [ordered]@{
         jsonrpc = "2.0"
         id = $request.id
@@ -82,6 +101,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     [Console]::Out.WriteLine(($errorResponse | ConvertTo-Json -Depth 20 -Compress))
     [Console]::Out.Flush()
 }
+Write-FixturePhase "eof"
 '@
     [System.IO.File]::WriteAllText($fixtureMcpScript, $fixtureMcpSource, [System.Text.UTF8Encoding]::new($false))
     return $fixtureMcpScript

@@ -4,6 +4,19 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    paths:
+      - ".github/workflows/build-windows.yml"
+      - "scripts/smoke-release.ps1"
+      - "scripts/smoke-release/**"
+      - "scripts/tests/Test-McpSmokeDiagnostics.ps1"
+      - "scripts/tests/Test-SmokeReleaseModules.ps1"
+      - "scripts/tests/Test-StandaloneReleaseContract.ps1"
+      - "scripts/tests/standalone-release/**"
+      - "crates/loom_mcp/**"
+      - "crates/loom_process/**"
+      - "apps/daemon/src/runtime/mcp*.rs"
+      - "apps/daemon/src/runtime/route_dispatch/mcp_art.rs"
   workflow_dispatch:
 
 concurrency:
@@ -45,6 +58,10 @@ jobs:
           $shortSha = $env:GITHUB_SHA.Substring(0, 8)
           "LOOM_VERSION=ci-$env:GITHUB_RUN_NUMBER-$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Test bounded MCP smoke diagnostics
+        shell: powershell
+        run: .\scripts\tests\Test-McpSmokeDiagnostics.ps1
+
       - name: Build standalone Loom release
         shell: powershell
         run: |
@@ -68,6 +85,15 @@ jobs:
               "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\scripts\verify-release.ps1",
               "-PackageDir", ".\release\Loom\$env:LOOM_VERSION", "-RunSmoke", "-RequireCleanSource"
             )
+
+      - name: Upload bounded smoke phase diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: loom-windows-smoke-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/runtime-smoke/latest/mcp-smoke-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v6

@@ -33,6 +33,7 @@ foreach ($moduleName in @(
     "Process.ps1",
     "CloudFixture.ps1",
     "McpRegistryFixture.ps1",
+    "McpDiagnostics.ps1",
     "ReleasePhases.ps1",
     "Release.ps1",
     "Focused.ps1"
@@ -162,4 +163,5 @@ Assert-True $httpStatusSource.Contains('-MaximumRedirection 0') "HTTP status hel
         Remove-Item -LiteralPath $EvidenceRoot -Recurse -Force
     }
 }
+& (Join-Path $PSScriptRoot "Test-McpSmokeDiagnostics.ps1")
 Write-Output "Loom smoke release module contract passed."

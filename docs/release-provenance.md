@@ -132,6 +132,16 @@ sequence is compatible with repository-level immutable releases.
 
 ## Failure recovery
 
+Windows candidate builds also run for pull requests touching the MCP smoke,
+transport/process owners, or their build workflow. A failed Loom smoke exports
+only a bounded `mcp-smoke-diagnostic.json` artifact: fixed phase names, UTC
+timestamps, process IDs and truncation/rejection counters. At most eight fixture
+files, 16 KiB per file and 32 records per file are accepted. Unknown fields,
+payloads and reparse-point files are rejected. The broader local failure bundle,
+raw logs, command lines and control-plane files are not uploaded by this step.
+Phase metadata is diagnostic evidence, not a passing package verification; the
+existing protocol assertions and timeouts remain authoritative.
+
 `.github/workflows/release-recovery.yml` observes completed Release Tag runs
 from the trusted default branch. An unsuccessful run creates or updates one
 issue containing the run, attempt, commit, ref, failed jobs, and failed steps.
