@@ -162,4 +162,5 @@ Assert-True $httpStatusSource.Contains('-MaximumRedirection 0') "HTTP status hel
         Remove-Item -LiteralPath $EvidenceRoot -Recurse -Force
     }
 }
+& (Join-Path $PSScriptRoot "Test-McpSmokeDiagnostics.ps1")
 Write-Output "Loom smoke release module contract passed."

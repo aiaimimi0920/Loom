@@ -7,6 +7,8 @@ function Test-LoomRelease {
     $process = $null
     $cloudJob = $null
     $mcpRegistryJob = $null
+    $mcpDiagnosticPhase = "not-started"
+    $mcpDiagnosticOutcome = "not-received"
     $tempRoot = New-SmokeTempRoot -Prefix "loom-release-smoke"
     try {
         $cliExtractRoot = Join-Path $tempRoot "cli"
@@ -124,6 +126,7 @@ function Test-LoomRelease {
         Assert-Contains "GET /v0/servers?limit=100&search=fixture&cursor=cursor-1" $mcpRegistryRequest "Loom MCP Registry request URL mismatch."
 
         # POST /v1/mcp/test; its PowerShell fixture may cold-start under endpoint protection.
+        $mcpDiagnosticPhase = "connection-test"
         $mcpConnectionTest = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/test" -TimeoutSec 60 -Body @{
             id = "fixture-test"
             name = "Fixture Test MCP"
@@ -133,9 +136,12 @@ function Test-LoomRelease {
             env = @{}
             enabled = $true
         }
+        $mcpDiagnosticOutcome = if ([bool]$mcpConnectionTest.success) { "success" } else { "failure" }
         Assert-Equal $true ([bool]$mcpConnectionTest.success) "Loom MCP connection test success mismatch."
         Assert-Equal "echo" ([string]$mcpConnectionTest.tools[0].name) "Loom MCP connection test tool name mismatch."
         Assert-Equal "release-fixture" ([string]$mcpConnectionTest.server_info.serverInfo.name) "Loom MCP connection test server info mismatch."
+
+        $mcpDiagnosticPhase = "connection-complete"
 
         # POST /v1/mcp/package/check and POST /v1/mcp/package/install-plan
         $mcpPackageCheck = Invoke-JsonPost -Uri "$baseUrl/v1/mcp/package/check" -Body @{
@@ -453,6 +459,11 @@ nodes:
         }
     } catch {
         $smokeFailure = $_
+        try {
+            Save-LoomMcpSmokeDiagnostic -TempRoot $tempRoot -Phase $mcpDiagnosticPhase -Outcome $mcpDiagnosticOutcome | Out-Null
+        } catch {
+            Write-Warning "Could not save bounded MCP phase diagnostics."
+        }
         try {
             Save-SmokeFailureEvidence -TempRoot $tempRoot -Label "loom-release" | Out-Null
         } catch {
