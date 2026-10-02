@@ -14,6 +14,7 @@ $script:SmokeEvidenceRunId = ""
 $script:SmokeEvidenceRunDir = ""
 $process = $null
 $started = $false
+$stderr = $null
 New-Item -ItemType Directory -Path $root | Out-Null
 function Assert-Diagnostic([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -61,8 +62,14 @@ try {
     $start.RedirectStandardError = $true
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
-    $started = $process.Start()
+    # Framework Process.Start autoflushes the inherited encoding preamble before BaseStream writes.
+    $inputEncoding = [Console]::InputEncoding
+    try {
+        [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+        $started = $process.Start()
+    } finally { [Console]::InputEncoding = $inputEncoding }
     Assert-Diagnostic $started "Could not start the isolated MCP fixture."
+    Assert-Diagnostic ($process.StandardInput.Encoding.GetPreamble().Length -eq 0) "Framework emitted a protocol preamble during process start."
     $stderr = $process.StandardError.ReadToEndAsync()
     Write-Output ("MCP test writer encoding={0}; preambleBytes={1}; transport=UTF8-no-BOM" -f
         $process.StandardInput.Encoding.WebName, $process.StandardInput.Encoding.GetPreamble().Length)
@@ -95,6 +102,16 @@ try {
     $phases = @($protocol.events | ForEach-Object { $_.phase })
     Assert-Diagnostic (($phases -join ",") -eq "started,initialize-received,initialize-written,initialized-received,tools-list-received,tools-list-written,tools-call-received,tools-call-written,eof") "Fixture phase ordering or protocol changed."
     Assert-Diagnostic (-not ($protocol | ConvertTo-Json -Depth 8).Contains("fixture-payload-must-stay-out")) "Fixture body entered the phase artifact."
+} catch {
+    # Only this closed-schema phase projection and a fixed category may reach CI logs.
+    try { Write-Output ("MCP fixture failure phases: " + ((Read-Diagnostic) | ConvertTo-Json -Depth 8 -Compress)) } catch { }
+    $category = "unavailable"
+    if ($null -ne $stderr -and $stderr.IsCompleted) {
+        $category = if ($stderr.Result -match 'ConvertFrom-Json') { "json-parse" }
+            elseif ($stderr.Result -match 'ParserError') { "script-parse" } else { "unclassified" }
+    }
+    Write-Output "MCP fixture stderr category=$category"
+    throw
 } finally {
     if ($null -ne $process) {
         if ($started -and -not $process.HasExited) { $process.Kill(); $null = $process.WaitForExit(5000) }
