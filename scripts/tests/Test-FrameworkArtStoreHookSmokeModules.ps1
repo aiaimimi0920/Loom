@@ -35,6 +35,8 @@ function Assert-ThrowsWithText {
     throw "Expected action to throw text [$ExpectedText]."
 }
 
+& (Join-Path $PSScriptRoot "Test-FrameworkSmokeCleanup.ps1")
+
 $tempRoot = Resolve-SmokeRealDirectory -Path $env:TEMP -Label "test temporary directory"
 $testRoot = Initialize-SmokeRealDirectory `
     -Path (Join-Path $tempRoot ("loom-framework-smoke-modules-" + [Guid]::NewGuid().ToString("N"))) `
@@ -107,6 +109,8 @@ $child = Start-Process `
 Start-Sleep -Seconds 60
 '@
     $treeProcess = $null
+    $treeParentObserver = $null
+    $treeChildObserver = $null
     try {
         $treeProcess = Start-SmokeProcess `
             -FilePath (Join-Path $PSHOME "powershell.exe") `
@@ -128,15 +132,51 @@ Start-Sleep -Seconds 60
         }
         Assert-True (Test-Path -LiteralPath $childPidPath -PathType Leaf) "Process-tree fixture did not publish its child PID."
         $treeChildId = [int][System.IO.File]::ReadAllText($childPidPath)
+        $treeParentObserver = [Diagnostics.Process]::GetProcessById($treeParentId)
+        $null = $treeParentObserver.Handle
+        $treeChildObserver = [Diagnostics.Process]::GetProcessById($treeChildId)
+        $null = $treeChildObserver.Handle
         $treeCleanupErrors = @(Stop-SpawnedProcess -Process $treeProcess)
         $treeProcess = $null
         Assert-Equal 0 $treeCleanupErrors.Count "Process-tree cleanup reported failures."
-        Assert-True ($null -eq (Get-Process -Id $treeParentId -ErrorAction SilentlyContinue)) "Spawned parent process leaked."
-        Assert-True ($null -eq (Get-Process -Id $treeChildId -ErrorAction SilentlyContinue)) "Spawned child process leaked."
+        Assert-True ($treeParentObserver.WaitForExit(0)) "Spawned parent process leaked."
+        Assert-True ($treeChildObserver.WaitForExit(0)) "Spawned child process leaked."
     } finally {
         if ($null -ne $treeProcess) {
             [void](Stop-SpawnedProcess -Process $treeProcess)
         }
+        $fixtureCleanupClock = [Diagnostics.Stopwatch]::StartNew()
+        $fixtureCleanupErrors = @()
+        foreach ($observer in @($treeChildObserver, $treeParentObserver)) {
+            if ($null -eq $observer) { continue }
+            try {
+                if (-not $observer.WaitForExit(0)) { $observer.Kill() }
+                if (-not (Wait-SmokeOwnedProcessExit $observer $fixtureCleanupClock 5000)) {
+                    $fixtureCleanupErrors += "Fixture observer did not observe process exit."
+                }
+            } catch { $fixtureCleanupErrors += "Fixture observer cleanup failed." }
+            finally { $observer.Dispose() }
+        }
+        $fixtureCleanupClock.Stop()
+        Assert-Equal 0 $fixtureCleanupErrors.Count "Exact-identity fixture cleanup failed."
+    }
+
+    $exitedRoot = $null
+    try {
+        $exitedRoot = Start-SmokeProcess `
+            -FilePath (Join-Path $PSHOME "powershell.exe") `
+            -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 7") `
+            -WorkingDirectory $testRoot `
+            -StdoutPath (Join-Path $testRoot "exited.stdout.log") `
+            -StderrPath (Join-Path $testRoot "exited.stderr.log")
+        Assert-True ($exitedRoot.WaitForExit(10000)) "Immediate-exit fixture did not terminate."
+        Assert-True ($null -ne $exitedRoot.ExitCode) "Spawned process lost its exit state after termination."
+        Assert-Equal 7 $exitedRoot.ExitCode "Immediate-exit fixture exit code changed."
+        $exitedErrors = @(Stop-SpawnedProcess -Process $exitedRoot)
+        $exitedRoot = $null
+        Assert-Equal 0 $exitedErrors.Count "Already-exited root cleanup failed."
+    } finally {
+        if ($null -ne $exitedRoot) { [void](Stop-SpawnedProcess -Process $exitedRoot) }
     }
 
     $copySource = Join-Path $testRoot "copy-source.txt"

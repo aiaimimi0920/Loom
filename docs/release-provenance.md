@@ -221,3 +221,24 @@ A dirty candidate may be retained as runtime evidence, but it is not a formal
 publication claim and must not replace an immutable clean release. Any change
 to production source, resources, dependencies, packaging, or release tooling
 requires a new release ID and regenerated checksums/SBOM/provenance.
+
+
+## Smoke-process teardown
+
+Framework/Art Store/Hook smoke pins the root handle at launch and retains verified
+child process handles before requesting termination. A child must still report the pinned parent's PID and must not predate
+that parent. Termination is requested once per retained identity, and all parent
+and child exit waits consume one monotonic five-second budget. A real timeout,
+failed identity check, enumeration error, or termination/access error remains a
+failure; fixed sleeps and PID disappearance do not establish successful teardown.
+The existing synchronous CIM/WMI provider calls can outlast that wait budget, so
+this is not a hard five-second wall-clock limit on a stalled provider.
+
+`Test-FrameworkSmokeCleanup.ps1` covers delayed exit signaling, genuine timeout,
+identity mismatch, access/enumeration failure even during concurrent exit, handle
+disposal, and the shared
+remaining budget with synthetic process boundaries. The Windows module contract
+also retains independent observation handles for its real parent/child fixture,
+checks their exit signals and cleans those exact processes even when an assertion
+fails. These checks concern temporary smoke processes; they do not establish the
+cause of an unrelated MCP connection timeout.

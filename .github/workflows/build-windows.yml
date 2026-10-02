@@ -9,6 +9,9 @@ on:
       - ".github/workflows/build-windows.yml"
       - "scripts/smoke-release.ps1"
       - "scripts/smoke-release/**"
+      - "scripts/framework-art-store-hook-smoke/**"
+      - "scripts/tests/Test-FrameworkArtStoreHookSmokeModules.ps1"
+      - "scripts/tests/Test-FrameworkSmokeCleanup.ps1"
       - "scripts/tests/Test-McpSmokeDiagnostics.ps1"
       - "scripts/tests/Test-SmokeReleaseModules.ps1"
       - "scripts/tests/Test-StandaloneReleaseContract.ps1"
@@ -61,6 +64,10 @@ jobs:
       - name: Test bounded MCP smoke diagnostics
         shell: powershell
         run: .\scripts\tests\Test-McpSmokeDiagnostics.ps1
+
+      - name: Test framework process cleanup
+        shell: powershell
+        run: .\scripts\tests\Test-FrameworkSmokeCleanup.ps1
 
       - name: Build standalone Loom release
         shell: powershell

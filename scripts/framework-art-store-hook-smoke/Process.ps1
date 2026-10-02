@@ -84,80 +84,149 @@ function Start-SmokeProcess {
         $parameters.RedirectStandardError = $StderrPath
     }
 
-    return Start-Process @parameters
+    $process = Start-Process @parameters
+    try {
+        # Windows PowerShell can return a PID-only wrapper when streams are redirected.
+        $handle = $process.Handle
+        if ($null -eq $handle -or $handle -eq [IntPtr]::Zero) { throw "No retained handle for spawned process." }
+        return $process
+    } catch {
+        if ($null -ne $process) { $process.Dispose() }
+        throw
+    }
+}
+
+# Retain a real kernel handle before trusting a PID discovered in a process snapshot.
+function Get-SmokeOwnedChildProcess {
+    param([int]$ProcessId, [object]$Parent)
+
+    $child = $null
+    $retained = $false
+    try {
+        try { $child = Get-Process -Id $ProcessId -ErrorAction Stop }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') { return $null }
+            throw
+        }
+        try {
+            $handle = $child.Handle
+            if ($null -eq $handle -or $handle -eq [IntPtr]::Zero) { throw "No retained handle for descendant $ProcessId." }
+        } catch {
+            $acquisitionError = $_
+            try { if ($child.WaitForExit(0)) { return $null } } catch { }
+            throw $acquisitionError
+        }
+        # Query/access failures remain failures even if the process exits concurrently.
+        $records = @(Get-SmokeProcessRecords -Filter "ProcessId=$ProcessId")
+        if ($records.Count -eq 0 -and $child.WaitForExit(0)) { return $null }
+        if ($records.Count -ne 1 -or [int]$records[0].ParentProcessId -ne $Parent.Id -or
+            $child.StartTime.ToUniversalTime() -lt $Parent.StartTime.ToUniversalTime()) {
+            throw "Cannot verify descendant $ProcessId belongs to process $($Parent.Id)."
+        }
+        $retained = $true
+        return $child
+    } finally {
+        if ($null -ne $child -and -not $retained) { $child.Dispose() }
+    }
+}
+
+function Wait-SmokeOwnedProcessExit {
+    param([object]$Process, [object]$Clock, [int]$TimeoutMilliseconds)
+
+    $remaining = [int][Math]::Max(0L, [long]$TimeoutMilliseconds - [long]$Clock.ElapsedMilliseconds)
+    # HasExited can precede the final handle signal on Framework; always wait on that signal.
+    return $Process.WaitForExit($remaining)
 }
 
 function Stop-SpawnedProcess {
     param(
         [System.Diagnostics.Process]$Process,
-        [int]$TimeoutMilliseconds = 5000
+        [ValidateRange(1, 2147483647)][int]$TimeoutMilliseconds = 5000
     )
 
-    if ($null -eq $Process) {
-        return @()
-    }
-
-    $processId = $Process.Id
-    $knownDescendantIds = [System.Collections.Generic.HashSet[int]]::new()
+    if ($null -eq $Process) { return @() }
+    $owned = New-Object System.Collections.ArrayList
+    [void]$owned.Add($Process)
+    $knownIds = [System.Collections.Generic.HashSet[int]]::new()
+    [void]$knownIds.Add($Process.Id)
+    $terminationRequested = [System.Collections.Generic.HashSet[int]]::new()
     $failures = New-Object System.Collections.ArrayList
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
     try {
+        $rootHandle = $Process.Handle
+        if ($null -eq $rootHandle -or $rootHandle -eq [IntPtr]::Zero) { throw "No retained root process handle." }
+        $null = $Process.StartTime
         for ($wave = 0; $wave -lt 3; $wave++) {
-            $enumerationFailed = $false
-            try {
-                $descendantProcessIds = @(Get-SmokeDescendantProcessIds -ProcessId $processId)
-                foreach ($descendantProcessId in $descendantProcessIds) {
-                    [void]$knownDescendantIds.Add($descendantProcessId)
+            $discoveryExpired = $false
+            # Revisit retained parents even after they exit; their children may outlive them.
+            for ($parentIndex = 0; $parentIndex -lt $owned.Count; $parentIndex++) {
+                if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                    $discoveryExpired = $true
+                    break
                 }
-                for ($index = $descendantProcessIds.Count - 1; $index -ge 0; $index--) {
-                    Stop-Process -Id $descendantProcessIds[$index] -Force -ErrorAction SilentlyContinue
+                $parent = $owned[$parentIndex]
+                try {
+                    foreach ($childId in @(Get-SmokeChildProcessIds -ParentProcessId $parent.Id)) {
+                        if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { $discoveryExpired = $true; break }
+                        if ($knownIds.Contains($childId)) { continue }
+                        try {
+                            $child = Get-SmokeOwnedChildProcess -ProcessId $childId -Parent $parent
+                            if ($null -ne $child) {
+                                [void]$knownIds.Add($childId)
+                                [void]$owned.Add($child)
+                            }
+                        } catch {
+                            [void]$failures.Add("Failed to retain descendant ${childId}: $($_.Exception.Message)")
+                        }
+                    }
+                } catch {
+                    [void]$failures.Add("Failed to enumerate descendants for process $($parent.Id): $($_.Exception.Message)")
                 }
-            } catch {
-                [void]$failures.Add(
-                    "Failed to enumerate descendants for process ${processId}: $($_.Exception.Message)"
-                )
-                $enumerationFailed = $true
             }
-
-            if ($wave -eq 0) {
-                if (-not $Process.HasExited) {
-                    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-                }
-                if (-not $Process.WaitForExit($TimeoutMilliseconds)) {
-                    [void]$failures.Add(
-                        "Timed out waiting for process $processId to exit after Stop-Process."
-                    )
+            # Request every known termination before spending the single exit-wait budget.
+            for ($index = $owned.Count - 1; $index -ge 0; $index--) {
+                $member = $owned[$index]
+                if (-not $terminationRequested.Add($member.Id)) { continue }
+                try { if (-not $member.HasExited) { $member.Kill() } }
+                catch {
+                    $stopError = $_
+                    $exited = $false
+                    try { $exited = $member.WaitForExit(0) } catch { }
+                    if (-not $exited) {
+                        [void]$failures.Add("Failed to stop owned process $($member.Id): $($stopError.Exception.Message)")
+                    }
                 }
             }
-            if ($enumerationFailed) {
+            if ($discoveryExpired) {
+                [void]$failures.Add("Process-tree discovery exceeded the cleanup budget.")
                 break
             }
-            Start-Sleep -Milliseconds 100
+            if ($wave -lt 2) {
+                $pause = [int][Math]::Max(0L, [Math]::Min(100L, $TimeoutMilliseconds - $clock.ElapsedMilliseconds))
+                if ($pause -gt 0) { Start-Sleep -Milliseconds $pause }
+            }
         }
-
-        if (-not $Process.HasExited) {
-            [void]$failures.Add("Spawned process $processId was still running after cleanup.")
-        }
-        foreach ($descendantProcessId in $knownDescendantIds) {
-            if ($null -ne (Get-Process -Id $descendantProcessId -ErrorAction SilentlyContinue)) {
-                Stop-Process -Id $descendantProcessId -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 50
-                if ($null -ne (Get-Process -Id $descendantProcessId -ErrorAction SilentlyContinue)) {
-                    [void]$failures.Add(
-                        "Descendant process $descendantProcessId was still running after cleanup."
-                    )
+        foreach ($member in $owned) {
+            try {
+                if (-not (Wait-SmokeOwnedProcessExit -Process $member -Clock $clock -TimeoutMilliseconds $TimeoutMilliseconds)) {
+                    [void]$failures.Add("Timed out waiting for owned process $($member.Id) to exit after termination.")
                 }
+            } catch {
+                [void]$failures.Add("Failed to wait for owned process $($member.Id): $($_.Exception.Message)")
             }
         }
     } catch {
-        [void]$failures.Add("Failed to stop spawned process ${processId}: $($_.Exception.Message)")
+        [void]$failures.Add("Failed to stop spawned process $($Process.Id): $($_.Exception.Message)")
     } finally {
-        $Process.Dispose()
+        foreach ($member in $owned) {
+            try { $member.Dispose() }
+            catch { [void]$failures.Add("Failed to dispose an owned process handle.") }
+        }
+        $clock.Stop()
     }
-
+    # CIM/WMI discovery is synchronous; this deadline bounds waits, not a stalled provider call.
     $uniqueFailures = @($failures | ForEach-Object { [string]$_ } | Select-Object -Unique)
-    foreach ($failure in $uniqueFailures) {
-        Write-Warning $failure
-    }
+    foreach ($failure in $uniqueFailures) { Write-Warning $failure }
     return $uniqueFailures
 }
 
@@ -189,21 +258,17 @@ function Get-SmokeDescendantProcessIds {
 function Get-SmokeChildProcessIds {
     param([int]$ParentProcessId)
 
-    $filter = "ParentProcessId=$ParentProcessId"
+    return @(Get-SmokeProcessRecords -Filter "ParentProcessId=$ParentProcessId" | ForEach-Object { [int]$_.ProcessId })
+}
+
+function Get-SmokeProcessRecords {
+    param([string]$Filter)
+
     try {
-        return @(
-            Get-CimInstance -ClassName Win32_Process -Filter $filter -ErrorAction Stop |
-                ForEach-Object { [int]$_.ProcessId }
-        )
+        return @(Get-CimInstance -ClassName Win32_Process -Filter $Filter -ErrorAction Stop)
     } catch {
-        try {
-            return @(
-                Get-WmiObject -Class Win32_Process -Filter $filter -ErrorAction Stop |
-                    ForEach-Object { [int]$_.ProcessId }
-            )
-        } catch {
-            throw "Unable to query child processes for ${ParentProcessId}: $($_.Exception.Message)"
-        }
+        try { return @(Get-WmiObject -Class Win32_Process -Filter $Filter -ErrorAction Stop) }
+        catch { throw "Unable to query the smoke process tree: $($_.Exception.Message)" }
     }
 }
 
