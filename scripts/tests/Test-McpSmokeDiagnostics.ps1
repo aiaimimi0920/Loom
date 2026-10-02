@@ -64,24 +64,30 @@ try {
     $started = $process.Start()
     Assert-Diagnostic $started "Could not start the isolated MCP fixture."
     $stderr = $process.StandardError.ReadToEndAsync()
+    Write-Output ("MCP test writer encoding={0}; preambleBytes={1}; transport=UTF8-no-BOM" -f
+        $process.StandardInput.Encoding.WebName, $process.StandardInput.Encoding.GetPreamble().Length)
     foreach ($request in @(
         @{ jsonrpc = "2.0"; id = 1; method = "initialize"; params = @{} },
         @{ jsonrpc = "2.0"; method = "notifications/initialized" },
         @{ jsonrpc = "2.0"; id = 2; method = "tools/list" },
         @{ jsonrpc = "2.0"; id = 3; method = "tools/call"; params = @{ arguments = @{ text = "fixture-payload-must-stay-out" } } }
     )) {
-        $process.StandardInput.WriteLine(($request | ConvertTo-Json -Depth 8 -Compress))
-        $process.StandardInput.Flush()
+        # Match Rust MCP and the existing Windows MCP contracts, not the Framework text writer.
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($request | ConvertTo-Json -Depth 8 -Compress) + "`n")
+        Assert-Diagnostic ($bytes[0] -eq 123) "Fixture request has an unexpected preamble."
+        $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $process.StandardInput.BaseStream.Flush()
         if (-not $request.ContainsKey("id")) { continue }
         $line = $process.StandardOutput.ReadLineAsync()
         Assert-Diagnostic ($line.Wait(10000)) "Fixture protocol response timed out."
+        Assert-Diagnostic (-not [string]::IsNullOrWhiteSpace($line.Result)) "Fixture exited before a JSON response."
         $response = $line.Result | ConvertFrom-Json
         Assert-Diagnostic ($response.id -eq $request.id -and $response.jsonrpc -eq "2.0") "Fixture protocol response identity changed."
         if ($request.id -eq 1) { Assert-Diagnostic ($response.result.serverInfo.name -eq "release-fixture") "Fixture initialize response changed." }
         if ($request.id -eq 2) { Assert-Diagnostic ($response.result.tools[0].name -eq "echo") "Fixture tools list changed." }
         if ($request.id -eq 3) { Assert-Diagnostic ($response.result.content[0].text -eq "fixture-payload-must-stay-out") "Fixture echo response changed." }
     }
-    $process.StandardInput.Close()
+    $process.StandardInput.BaseStream.Close()
     Assert-Diagnostic ($process.WaitForExit(10000) -and $process.ExitCode -eq 0) "Fixture did not close cleanly."
     Assert-Diagnostic ($stderr.Wait(1000) -and [string]::IsNullOrWhiteSpace($stderr.Result)) "Fixture wrote unexpected stderr."
     $protocol = Read-Diagnostic
