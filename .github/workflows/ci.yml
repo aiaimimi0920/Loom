@@ -43,7 +43,7 @@ jobs:
         run: node --test .\scripts\tests\ci-contract-fail-fast.test.cjs
 
       - name: Enforce effective-code-line migration ratchet
-        run: node .\scripts\effective-code-lines.mjs --mode ratchet --json artifacts/effective-code-lines.json
+        run: python scripts/development_quality.py loom-lines --output artifacts/quality/lines --report artifacts/effective-code-lines.json -- node .\scripts\effective-code-lines.mjs --mode ratchet --json artifacts/effective-code-lines.json
 
       - name: Upload effective-code-line report
         if: always()
@@ -51,7 +51,7 @@ jobs:
         with:
           name: loom-effective-code-lines
           path: artifacts/effective-code-lines.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
@@ -98,7 +98,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Format Rust workspace
-        run: cargo fmt --all -- --check
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-1 -- cargo fmt --all -- --check
 
       - name: Check Rust workspace
         run: cargo check --locked --workspace --all-targets
@@ -130,7 +130,7 @@ jobs:
         run: cargo check --locked --all-targets --manifest-path .\apps\desktop\src-tauri\Cargo.toml
 
       - name: Format Tauri wrapper
-        run: cargo fmt --manifest-path .\apps\desktop\src-tauri\Cargo.toml -- --check
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-2 -- cargo fmt --manifest-path .\apps\desktop\src-tauri\Cargo.toml -- --check
 
       - name: Test Tauri wrapper
         run: cargo test --locked --manifest-path .\apps\desktop\src-tauri\Cargo.toml
@@ -139,7 +139,7 @@ jobs:
       # the MCP bridge, the Surface binding root check and the bounded-recursion guard, none of
       # which any other job compiles.
       - name: Format framework runtime host
-        run: cargo fmt --manifest-path .\framework-packages\runtime-host\Cargo.toml -- --check
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-3 -- cargo fmt --manifest-path .\framework-packages\runtime-host\Cargo.toml -- --check
 
       - name: Check framework runtime host
         run: cargo check --locked --all-targets --manifest-path .\framework-packages\runtime-host\Cargo.toml
@@ -160,6 +160,14 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-LoomSampleArtInstallExecutionContract.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Retain windows quality evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-windows-${{ github.run_id }}
+          path: artifacts/quality
+          if-no-files-found: error
+
   linux:
     name: Linux Rust validation
     runs-on: ubuntu-latest
@@ -179,13 +187,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pkg-config libssl-dev
 
       - name: Format Rust workspace
-        run: cargo fmt --all -- --check
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-4 -- cargo fmt --all -- --check
 
       - name: Check Rust workspace
         run: cargo check --locked --workspace --all-targets
 
       - name: Test Rust workspace
         run: cargo test --locked --workspace
+
+      - name: Retain linux quality evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-linux-${{ github.run_id }}
+          path: artifacts/quality
+          if-no-files-found: error
 
   plugin-security:
     name: Clean-host plugin security (${{ matrix.case }})
