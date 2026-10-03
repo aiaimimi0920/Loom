@@ -107,6 +107,47 @@ payloads, length mismatches, invalid dimensions, stale epochs, and stale frame
 IDs. H.264 is the LAN candidate; raw BGRA is a local/diagnostic candidate. HEVC
 and AV1 are not v1 codecs.
 
+The enum alone does not establish a negotiated or usable H.264 path. The current
+Hook LiveRelay viewer supports sRGB/raw BGRA and rejects other presentation
+profiles. Codec changes require compatible decoders, dependency-safe dropping,
+late-join recovery and old-client fallback; they are not enabled by diagnostics.
+
+### Bounded LiveRelay stage diagnostics
+
+The existing authorized session snapshot adds `mediaDiagnostics`; the NLLV wire
+frame, permissions and screen-wall protocol remain unchanged. These in-memory
+counters are cumulative for the session, not persisted telemetry:
+
+Discovery omits `mediaDiagnostics`; only existing member/administrator session
+access returns the sample. It does not grant observation, controller or edit rights.
+
+- `receivedBinaryBytes`: accepted NLLV bytes including its 64-byte header;
+- `sourceSequenceGaps`: source frame-ID gaps; `bufferEvictions`: ring removals;
+- `forwardedFrames` and `forwardedBinaryBytes`: successful viewer socket writes,
+  summed across viewers (not unique source frames or receiver acknowledgements);
+- `viewerSkippedFrames`: frame-ID positions skipped after an established viewer
+  cursor in the same epoch. Initial/late joins and epoch changes are not counted;
+- `failedWrites`: write failures; partial failed writes are not counted as successful bytes.
+
+The legacy `relayDroppedFrames` combines source sequence gaps and ring eviction
+counts. Neither ring eviction nor a cursor gap establishes network packet loss;
+a fully consumed retained frame can be evicted normally.
+
+Only one `lastForward` sample is retained across viewers, with the viewer device
+ID, epoch, frame ID, binary size, skipped count, `queueAgeMs`, `socketWriteMs` and
+`writeSucceeded`. Queue age starts at Loom's accepted-frame retention timestamp;
+socket write time includes the connection's payload copy and synchronous write.
+Both use Loom's monotonic clock. Failed samples replace the previous sample but
+do not advance success counters; late results from a closed/old epoch are ignored.
+
+These fields neither prove receiver decoding/presentation nor compute
+cross-device latency from uncalibrated clocks. There is no per-frame history,
+pixel dump, token, private key or authorization URL. The latest sample is not
+a p50/p95 distribution. An external bounded sampler and actual receiver evidence
+are required for the [#67 A baseline](https://github.com/aiaimimi0920/Loom/issues/67).
+The focused `live_media_diagnostics_tests` include real loopback WebSocket writes;
+this is not a physical two-device, WAN or multi-screen acceptance result.
+
 ## Observation and trigger trust
 
 Observations always carry `source`, `confidence`, `observedAtMs`, and `sequence`.

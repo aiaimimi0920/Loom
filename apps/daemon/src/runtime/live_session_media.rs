@@ -37,12 +37,22 @@ impl LiveSessionStore {
             .frame_id
             .saturating_sub(record.last_frame_id.saturating_add(1));
         record.relay_dropped_frames = record.relay_dropped_frames.saturating_add(gap);
+        record.media_diagnostics.source_sequence_gaps = record
+            .media_diagnostics
+            .source_sequence_gaps
+            .saturating_add(gap);
+        record.media_diagnostics.received_binary_bytes = record
+            .media_diagnostics
+            .received_binary_bytes
+            .saturating_add(bytes.len() as u64);
         record.last_frame_id = frame.metadata.frame_id;
         record.published_frames = record.published_frames.saturating_add(1);
         record.session.last_seen_at_ms = unix_time_millis();
         if record.frames.len() == capacity {
             record.frames.pop_front();
             record.relay_dropped_frames = record.relay_dropped_frames.saturating_add(1);
+            record.media_diagnostics.buffer_evictions =
+                record.media_diagnostics.buffer_evictions.saturating_add(1);
         }
         record.frames.push_back(StoredLiveFrame {
             received_at: Instant::now(),

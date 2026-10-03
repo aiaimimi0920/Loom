@@ -48,6 +48,7 @@ fn snapshot(record: &LiveSessionRecord) -> LiveSessionRuntimeSnapshot {
         last_frame_id: record.last_frame_id,
         published_frames: record.published_frames,
         relay_dropped_frames: record.relay_dropped_frames,
+        media_diagnostics: Some(record.media_diagnostics.clone()),
         buffered_frames: record.frames.len(),
         source_connected: record.source_connected,
         viewer_connections: record.viewer_connections.clone(),
@@ -119,7 +120,11 @@ fn ensure_viewer(
 }
 
 fn expire_controller(record: &mut LiveSessionRecord) {
-    if record.wall_controller.as_ref().is_some_and(|owner| owner.deadline <= Instant::now()) {
+    if record
+        .wall_controller
+        .as_ref()
+        .is_some_and(|owner| owner.deadline <= Instant::now())
+    {
         clear_wall_controller(record, "wall_controller_expired");
     }
     if record

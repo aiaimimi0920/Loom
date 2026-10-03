@@ -40,6 +40,7 @@ struct LiveSessionRecord {
     last_frame_id: u64,
     published_frames: u64,
     relay_dropped_frames: u64,
+    media_diagnostics: LiveMediaDiagnostics,
     source_connected: bool,
     viewer_connections: BTreeMap<String, usize>,
     controller_expires_at_ms: Option<u64>,
@@ -67,6 +68,8 @@ struct LiveSessionRuntimeSnapshot {
     last_frame_id: u64,
     published_frames: u64,
     relay_dropped_frames: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_diagnostics: Option<LiveMediaDiagnostics>,
     buffered_frames: usize,
     source_connected: bool,
     viewer_connections: BTreeMap<String, usize>,
@@ -186,6 +189,7 @@ impl LiveSessionStore {
             last_frame_id: 0,
             published_frames: 0,
             relay_dropped_frames: 0,
+            media_diagnostics: LiveMediaDiagnostics::default(),
             source_connected: false,
             viewer_connections: BTreeMap::new(),
             controller_expires_at_ms: None,
@@ -366,6 +370,7 @@ impl LiveSessionStore {
                 discovery.observations.clear();
                 discovery.triggers.clear();
                 discovery.trigger_audits.clear();
+                discovery.media_diagnostics = None;
                 discovery
             })
             .collect())

@@ -231,6 +231,7 @@ fn run_live_media_socket(
             &mut socket,
             &sessions,
             &session_id,
+            &device_id,
             after_epoch,
             after_frame_id,
         ),
@@ -276,6 +277,7 @@ fn run_live_viewer_socket(
     socket: &mut tungstenite::WebSocket<TcpStream>,
     sessions: &SharedLiveSessionStore,
     session_id: &str,
+    device_id: &str,
     mut after_epoch: u64,
     mut after_frame_id: u64,
 ) {
@@ -291,10 +293,21 @@ fn run_live_viewer_socket(
             LIVE_MEDIA_SOCKET_TIMEOUT,
         ) {
             Ok(Some(frame)) => {
-                if socket
+                let mut sample = LiveMediaForwardSample::selected(
+                    device_id,
+                    &frame,
+                    after_epoch,
+                    after_frame_id,
+                );
+                let write_started = Instant::now();
+                let sent = socket
                     .send(tungstenite::Message::Binary(frame.bytes.as_ref().clone()))
-                    .is_err()
-                {
+                    .is_ok();
+                sample.socket_write_ms = bounded_media_millis(write_started.elapsed());
+                sample.write_succeeded = sent;
+                // socket 写入不是对端接收或呈现回执；计时仅使用本机单调时钟。
+                sessions.record_media_forward(session_id, sample);
+                if !sent {
                     break;
                 }
                 after_epoch = frame.epoch;
