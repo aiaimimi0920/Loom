@@ -161,7 +161,15 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
         .publish_frame("live-1", &owner, encoded_live_frame(2))
         .unwrap();
     let raw = assert_wall_raw(&wall_binary(&mut viewer), 2);
+    let retained = sessions
+        .wait_for_frame("live-1", 0, 0, Duration::ZERO)
+        .unwrap()
+        .unwrap();
+    let busy = retained.wall_png.lock().unwrap();
     let mut compressed = wall_socket_profile(port, &authorization, lease, 2, "png").unwrap();
+    // Force at least one bounded busy interval. Releasing it must deliver the same frame without publication.
+    thread::sleep(Duration::from_millis(250));
+    drop(busy);
     let bytes = wall_binary(&mut compressed);
     let png = WallMediaFrame::decode(&bytes).unwrap();
     assert_eq!(png.metadata.codec, WallMediaCodec::Png);
@@ -176,7 +184,15 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
         (decoded.width(), decoded.height()),
         (png.metadata.width, png.metadata.height)
     );
-    let _ = compressed.close(None);
+    let mut compressed_peer = wall_socket_profile(port, &authorization, lease, 2, "png").unwrap();
+    let peer_bytes = wall_binary(&mut compressed_peer);
+    let peer = WallMediaFrame::decode(&peer_bytes).unwrap();
+    assert_eq!(peer.payload, png.payload);
+    assert_eq!(
+        peer.metadata.received_timestamp_ms,
+        png.metadata.received_timestamp_ms
+    );
+    assert_eq!(retained.wall_png.lock().unwrap().slots.len(), 1);
     let state = sessions.get("live-1").unwrap();
     assert!(state.session.viewer_devices.is_empty());
     assert!(state.session.controller_device.is_none());
@@ -197,6 +213,8 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
         200
     );
     wall_closed(&mut viewer);
+    wall_closed(&mut compressed);
+    wall_closed(&mut compressed_peer);
     assert!(wall_socket(port, &authorization, lease, 3).is_err());
     layout["revision"] = json!(4);
     layout["placements"][0]["rect"]["x"] = json!(-100);

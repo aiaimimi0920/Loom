@@ -63,6 +63,7 @@ impl LiveSessionStore {
             frame_id: metadata.frame_id,
             bytes: Arc::new(bytes),
             legacy: Arc::new(Mutex::new(None)),
+            wall_png: Arc::new(Mutex::new(WallPngFrameCache::default())),
         });
         self.changed.notify_all();
         Ok(())

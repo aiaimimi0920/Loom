@@ -185,6 +185,7 @@ include!("runtime/live_source_binding.rs");
 include!("runtime/live_session_route_support.rs");
 include!("runtime/live_media_websocket.rs");
 include!("runtime/wall_media_encoding.rs");
+include!("runtime/wall_png_cache.rs");
 include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
@@ -284,6 +285,8 @@ mod tests {
     include!("tests/suite/part_38.rs");
     include!("tests/live_media_diagnostics.rs");
     include!("tests/live_jpeg.rs");
+    include!("tests/wall_png_benchmark.rs");
+    include!("tests/wall_png_cache.rs");
     include!("tests/suite/part_39.rs");
     include!("tests/suite/part_40.rs");
     include!("tests/suite/part_41.rs");

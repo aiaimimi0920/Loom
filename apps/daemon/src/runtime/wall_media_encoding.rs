@@ -111,34 +111,19 @@ fn encode_wall_media_frame(
         dropped_frames: u32_at(48),
         codec: profile.codec,
     };
-    let mut encoded = Vec::new();
-    let payload = if profile.codec == WallMediaCodec::Png {
-        if WALL_IMAGE_ENCODERS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                (count < 2).then_some(count + 1)
-            })
-            .is_err()
-        {
+    let image = if profile.codec == WallMediaCodec::Png {
+        let Some(image) = frame.wall_png_image(bytes, metadata.width, metadata.height, profile)?
+        else {
             return Ok(None);
-        }
-        let _permit = WallImageEncodePermit;
-        let (width, height, pixels) = scale_wall_bgra(
-            &bytes[64..],
-            metadata.width,
-            metadata.height,
-            profile.width,
-            profile.height,
-        )?;
-        use image::{
-            codecs::png::{CompressionType, FilterType, PngEncoder},
-            ImageEncoder,
         };
-        PngEncoder::new_with_quality(&mut encoded, CompressionType::Fast, FilterType::NoFilter)
-            .write_image(&pixels, width, height, image::ExtendedColorType::Rgb8)
-            .map_err(|_| "wall_png_encode_failed")?;
-        metadata.width = width;
-        metadata.height = height;
-        encoded.as_slice()
+        Some(image)
+    } else {
+        None
+    };
+    let payload = if let Some(image) = image.as_ref() {
+        metadata.width = image.width;
+        metadata.height = image.height;
+        image.bytes.as_slice()
     } else {
         &bytes[64..]
     };

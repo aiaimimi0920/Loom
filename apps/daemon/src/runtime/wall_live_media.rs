@@ -11,10 +11,15 @@ struct WallLiveGrant {
 
 impl LiveSessionStore {
     fn wall_source_active(&self, session_id: &str) -> bool {
+        self.wall_source_active_at_epoch(session_id, None)
+    }
+
+    fn wall_source_active_at_epoch(&self, session_id: &str, epoch: Option<u64>) -> bool {
         self.state.lock().ok().is_some_and(|sessions| {
             sessions.get(session_id).is_some_and(|record| {
                 !record.closed
                     && record.source_connected
+                    && epoch.is_none_or(|epoch| record.epoch == epoch)
                     && record
                         .frames
                         .back()
@@ -235,23 +240,28 @@ fn run_wall_live_socket(
         }
         match frame {
             Ok(Some(frame)) => {
-                epoch = frame.epoch;
-                frame_id = frame.frame_id;
                 next_frame_at =
                     Instant::now() + Duration::from_micros(1_000_000 / grant.profile.fps);
                 match encode_wall_media_frame(&frame, walls, grant.profile) {
                     Ok(Some(bytes)) => {
                         // Encoding holds no registry lock; revoke before sending if ownership changed.
-                        if grant.authorize(walls, devices).is_err()
-                            || !sessions.wall_source_active(&grant.session_id)
-                        {
+                        if grant.authorize(walls, devices).is_err() {
                             break;
+                        }
+                        // A superseded epoch drops only this candidate; the current owner can fetch its new frame.
+                        if !sessions
+                            .wall_source_active_at_epoch(&grant.session_id, Some(frame.epoch))
+                        {
+                            continue;
                         }
                         if socket.send(tungstenite::Message::Binary(bytes)).is_err() {
                             break;
                         }
+                        epoch = frame.epoch;
+                        frame_id = frame.frame_id;
                         last_ping = Instant::now();
                     }
+                    // Busy adapters retry the newest frame at the negotiated rate, without consuming its cursor.
                     Ok(None) => {}
                     Err(code) => {
                         let _ = socket.close(Some(tungstenite::protocol::CloseFrame {

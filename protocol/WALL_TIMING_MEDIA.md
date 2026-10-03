@@ -113,12 +113,44 @@ PNG maxima above. Scaling preserves aspect ratio and never upscales. Raw rejects
 scaling parameters. Unsupported/absent format or invalid limits return 400;
 missing endpoint capability returns 409 `wall_live_codec_unavailable`.
 
-The source remains its existing raw BGRA/sRGB Live capture. PNG uses Loom's existing
-PNG dependency and at most two simultaneous encoders across the daemon. Admission
-does not wait for another encoder. Each viewer coalesces to the latest source frame
+The source uses raw BGRA/sRGB or the negotiated JPEG LiveRelay representation;
+JPEG sources share the existing bounded legacy adapter before wall PNG encoding.
+PNG uses Loom's existing PNG dependency and at most two simultaneous encoders across
+the daemon. Admission does not wait for another encoder. Each viewer coalesces to the latest source frame
 at its negotiated rate; it has no unbounded encode or network queue. A slow socket
 keeps the existing 250 ms write deadline. Wall viewers share the 65-media-worker
 budget and accept only bounded WebSocket liveness control messages in return.
+
+### 同规格 PNG 编码共享
+
+每个不可变源帧最多保留四个输出规格的 PNG payload。帧对象自身限定 source、
+epoch、frame ID 及原始像素；规格键包含最大输出宽高。RGB8、Fast compression 和
+NoFilter 当前是固定编码设置；若未来允许配置，设置也必须进入键。maxFps 只影响
+各观看端发送调度，不影响 payload，因此不进入编码键。
+
+同规格命中共享编码对象；不同规格拥有独立非等待编码锁。全局仍最多两个编码，
+缓存 payload 按 Vec 实际容量预算最多 32 MiB，不把 payload 长度当作分配量。
+超出帧规格数或缓存预算时仍可有界地即时编码发送，不建立额外排队或丢弃既有缓存。
+预算随 payload 最后一个在途引用释放，帧及其缓存随既有 2–3 帧 ring 和连接引用释放。
+这不是整个进程内存上限；缩放临时像素、发送副本及协议元数据仍有各自既有边界。
+
+只共享像素 payload，不共享授权、lease、header 或发送状态。每个终端独立检查
+device、endpoint、layout revision、源新鲜度及当前 epoch；编码完成后再次授权，
+然后生成自己的 NLWM sent timestamp。公共 receive timestamp、80ms 选帧时间轴、
+PNG 内容和 raw 路径保持不变。忙时不推进已发送游标，在协商帧率内重取最新帧，
+并继续处理取消、撤销及 WebSocket liveness；慢编码／慢 socket 不持有会话或授权锁。
+
+本地聚焦测试覆盖共享对象、规格／内存边界、释放、不同规格与 raw/JPEG 隔离、
+busy 后无新帧恢复、真实 loopback 混合连接及授权撤销。以下显式 probe 比较相同
+1280×720 合成输入、640×360 输出下的 1／2／4 观看端处理成本：
+
+```powershell
+cargo test --locked -p loom-daemon wall_png_same_profile_encode_cost -- --ignored --nocapture --test-threads=1
+```
+
+probe 是本地编码／封包测量，不是物理显示、两台设备、网络吞吐或 CPU 百分比验收；
+不会把合成耗时当作端到端帧龄，也不改变 [#67](https://github.com/aiaimimi0920/Loom/issues/67)
+真实负载及多终端采用门槛。
 
 Missing, explicitly closed and disconnected/stalled sources are distinguished as
 `wall_live_source_missing` (404), `wall_live_source_closed` (410), and
