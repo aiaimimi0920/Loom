@@ -234,3 +234,25 @@ This scheme does not prove source code safety, runtime reachability, absence of
 zero-days, or safety of untracked/vendored inputs. It also does not replace Rust
 tests, frontend tests, plugin trust enforcement, secret scanning, container
 scanning, SBOM verification, or clean-source release requirements.
+
+## Development scan reports and release enforcement
+
+Ordinary pull requests and main scans report validated findings as advisory.
+Execution errors, unsupported raw exits, missing lock inventory, invalid SARIF,
+and scanner diagnostics remain failures. Every selected lock and package/advisory
+identity must agree between the JSON inventory and complete SARIF report.
+
+CI uses the digest-pinned OSV 2.5.1 release image in the machine policy, invoking
+the /osv-scanner binary explicitly for JSON and SARIF reports. Both scans
+use identical explicit inputs and their raw exits must agree. The upstream workflow pin remains provenance; the container digest is
+the CI executable pin. Read-only source mounts and bounded scan processes do not
+execute product builds. Existing reviewed exceptions remain unchanged.
+
+The reusable workflow's `fail-on-vuln` input defaults to `true`, so existing
+release callers retain enforcement. Tags also enforce findings. A validated
+development finding does not grant release clearance. Complete JSON and SARIF
+are retained and SARIF processing is awaited before the release finding gate.
+Enforcement uses the validated raw scanner status after evidence uploads.
+
+The job summary is a bounded report, not proof that native GitHub security
+settings or deduplicated Issue/PR reporting are enabled.

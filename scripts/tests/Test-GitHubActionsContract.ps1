@@ -133,15 +133,15 @@ Assert-Workflow -Name "dependency-security.yml" -RequiredText @(
     'actions: read',
     'contents: read',
     'security-events: write',
-    'google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@ffa0a5f39214d80778c9b494822d94d0d9668458',
+    'ghcr.io/google/osv-scanner@sha256:8108ae94eadea5a02c9bec6e646909d5b790b44bd62d7f5b7f0b1d6d0ffc7734',
     'ref: ${{ inputs.checkout-ref || github.ref }}',
-    '--config=./security/osv-scanner.toml',
-    '--lockfile=./Cargo.lock',
-    '--lockfile=./apps/desktop/src-tauri/Cargo.lock',
-    '--lockfile=./framework-packages/runtime-host/Cargo.lock',
-    '--lockfile=./apps/desktop/package-lock.json',
-    'upload-sarif: true',
-    'fail-on-vuln: true'
+    '--config=/github/workspace/security/osv-scanner.toml',
+    '--lockfile=/github/workspace/Cargo.lock',
+    '--lockfile=/github/workspace/apps/desktop/src-tauri/Cargo.lock',
+    '--lockfile=/github/workspace/framework-packages/runtime-host/Cargo.lock',
+    '--lockfile=/github/workspace/apps/desktop/package-lock.json',
+    'wait-for-processing: true',
+    'default: true'
 )
 
 Assert-Workflow -Name "codeql.yml" -RequiredText @(
@@ -154,18 +154,17 @@ Assert-Workflow -Name "codeql.yml" -RequiredText @(
     'cancel-in-progress: ${{ github.event_name == ''pull_request'' }}',
     'actions: read',
     'contents: read',
-    'packages: read',
     'security-events: write',
     'runs-on: ubuntu-latest',
-    'actions/checkout@v5',
+    'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
     'persist-credentials: false',
     'language: javascript-typescript',
     'language: rust',
     'language: actions',
     'build-mode: none',
-    'github/codeql-action/init@v4',
+    'github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2',
     'queries: security-extended',
-    'github/codeql-action/analyze@v4'
+    'github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2'
 )
 
 Assert-Workflow -Name "build-windows.yml" -RequiredText @(

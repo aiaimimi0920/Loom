@@ -20,7 +20,8 @@ $policy = Read-RepoText "security\dependency-security-policy.json" | ConvertFrom
 Assert-True ([int]$policy.schemaVersion -eq 1) "Unsupported dependency security policy schema."
 Assert-True ($policy.scanner.name -eq "osv-scanner") "Dependency scanner identity changed."
 Assert-True ($policy.scanner.version -eq "2.5.1") "Dependency scanner version is not pinned."
-Assert-True ($policy.scanner.reusableWorkflow -eq "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@ffa0a5f39214d80778c9b494822d94d0d9668458") "OSV reusable workflow pin changed without contract review."
+Assert-True ($policy.scanner.upstreamWorkflow -eq "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@ffa0a5f39214d80778c9b494822d94d0d9668458") "OSV reusable workflow pin changed without contract review."
+Assert-True ($policy.scanner.containerImage -eq "ghcr.io/google/osv-scanner@sha256:8108ae94eadea5a02c9bec6e646909d5b790b44bd62d7f5b7f0b1d6d0ffc7734") "OSV container integrity pin changed without review."
 Assert-True ($policy.scanner.actionCommit -eq "baa4139e56d6312335d899e6ba045fa16d1d3d0b") "OSV scanner Action pin changed without contract review."
 Assert-True ($policy.scanner.windowsX64Url -eq "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_windows_amd64.exe") "OSV Windows download URL changed without contract review."
 Assert-True ($policy.scanner.windowsX64Sha256 -eq "25e42f5ef6711fd8c0fb45390972205891dd44c6bd02ac93f0f63e8e98d9bfb6") "OSV Windows binary hash changed without contract review."
@@ -61,7 +62,7 @@ foreach ($match in $blocks) {
 }
 
 $workflow = Read-RepoText ".github\workflows\dependency-security.yml"
-foreach ($required in @($policy.scanner.reusableWorkflow, "fail-on-vuln: true", "upload-sarif: true", "security-events: write", "checkout-ref", "security/osv-scanner.toml") + $expectedLockfiles) {
+foreach ($required in @($policy.scanner.containerImage, "fail-on-vuln:", "default: true", "wait-for-processing: true", "security-events: write", "checkout-ref", "security/osv-scanner.toml", "--entrypoint=/osv-scanner", "scripts/osv_scan_summary.py") + $expectedLockfiles) {
     Assert-True $workflow.Contains($required) "Dependency security workflow lost required contract: $required"
 }
 $dependabot = Read-RepoText ".github\dependabot.yml"
