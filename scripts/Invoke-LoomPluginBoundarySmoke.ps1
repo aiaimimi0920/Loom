@@ -14,6 +14,7 @@ $script:LoomAuthorizationHeader = ""
 . (Join-Path $PSScriptRoot "plugin-boundary-smoke\SourceIntegrity.ps1")
 . (Join-Path $PSScriptRoot "plugin-boundary-smoke\Diagnostics.ps1")
 . (Join-Path $PSScriptRoot "plugin-boundary-smoke\WebSocket.ps1")
+. (Join-Path $PSScriptRoot "plugin-boundary-smoke\Cleanup.ps1")
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -236,6 +237,7 @@ $daemon = $null
 $hookBridgeClient = $null
 $hookBridgeRunning = $false
 $succeeded = $false
+$primaryFailure = $null
 Reset-LoomPluginBoundaryDiagnostic
 $oldEnvironment = @{}
 
@@ -496,33 +498,38 @@ $response = [ordered]@{
     Write-Host "Plugin Art boundary smoke passed."
 }
 catch {
+    $primaryFailure = $_
     Save-LoomPluginBoundaryDiagnostic -EvidencePath $evidencePath -Failure $_
     throw
 }
 finally {
-    Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
-    if ($hookBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
-        try {
+    Complete-LoomPluginBoundaryCleanup -PrimaryFailure $primaryFailure -EvidencePath $evidencePath -Actions @({
+        Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
+    }, {
+        if ($hookBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
             Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
         }
-        catch {
+    }, {
+        Stop-TestDaemon -Process $daemon
+    }, {
+        if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+            Copy-Item -LiteralPath $stdoutPath -Destination (Join-Path $evidencePath "daemon.stdout.log") -Force
         }
-    }
-    Stop-TestDaemon -Process $daemon
-    if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
-        Copy-Item -LiteralPath $stdoutPath -Destination (Join-Path $evidencePath "daemon.stdout.log") -Force
-    }
-    if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-        Copy-Item -LiteralPath $stderrPath -Destination (Join-Path $evidencePath "daemon.stderr.log") -Force
-    }
-    foreach ($name in $oldEnvironment.Keys) {
-        [System.Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name])
-    }
-    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-    $controlFull = [System.IO.Path]::GetFullPath($controlPlane)
-    if ($controlFull.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $controlPlane)) {
-        Remove-Item -LiteralPath $controlPlane -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    }, {
+        if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            Copy-Item -LiteralPath $stderrPath -Destination (Join-Path $evidencePath "daemon.stderr.log") -Force
+        }
+    }, {
+        foreach ($name in $oldEnvironment.Keys) {
+            [System.Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name])
+        }
+    }, {
+        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        $controlFull = [System.IO.Path]::GetFullPath($controlPlane)
+        if ($controlFull.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $controlPlane)) {
+            Remove-Item -LiteralPath $controlPlane -Recurse -Force
+        }
+    })
 }
 
 if (-not $succeeded) {

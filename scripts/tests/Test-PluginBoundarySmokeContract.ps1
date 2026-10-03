@@ -8,7 +8,7 @@ function Assert-Contract([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 $entry = [IO.File]::ReadAllText((Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1"))
-foreach ($module in @('Packages', 'SourceIntegrity', 'Diagnostics', 'WebSocket')) {
+foreach ($module in @('Packages', 'SourceIntegrity', 'Diagnostics', 'WebSocket', 'Cleanup')) {
     $relative = "plugin-boundary-smoke\$module.ps1"
     Assert-Contract ($entry.Contains('. (Join-Path $PSScriptRoot "' + $relative + '")')) "Module is not loaded by the smoke: $module"
     $tokens = $null
@@ -19,7 +19,7 @@ foreach ($module in @('Packages', 'SourceIntegrity', 'Diagnostics', 'WebSocket')
 foreach ($phase in @('connect', 'subscribe-send', 'subscribe-receive', 'instantiation-receive', 'execute-send', 'execute-receive')) {
     Assert-Contract ($entry.Contains('Set-LoomPluginBoundaryPhase -Phase "' + $phase + '"')) "Missing diagnostic phase: $phase"
 }
-Assert-Contract ($entry -match '(?s)catch\s*\{\s*Save-LoomPluginBoundaryDiagnostic[^}]+\bthrow\s*\}\s*finally\s*\{\s*Close-LoomHookBridgeWebSocket') "Diagnostic must be saved before cleanup and preserve the original failure."
+Assert-Contract ($entry -match '(?s)catch\s*\{\s*\$primaryFailure = \$_\s*Save-LoomPluginBoundaryDiagnostic[^}]+\bthrow\s*\}\s*finally\s*\{\s*Complete-LoomPluginBoundaryCleanup') "Diagnostic must be saved before cleanup and preserve the original failure."
 Assert-Contract ($entry.Contains('Remove-Item -LiteralPath (Join-Path $evidencePath "plugin-boundary-diagnostic.json")')) "New smoke run must clear stale diagnostic evidence."
 $workflow = [IO.File]::ReadAllText((Join-Path $repoRoot ".github\workflows\build-windows.yml"))
 $upload = [regex]::Match($workflow, '(?ms)^      - name: Upload bounded smoke phase diagnostics\r?\n(?<body>.*?)(?=^      - name:|\z)').Groups['body'].Value

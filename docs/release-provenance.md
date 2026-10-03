@@ -59,7 +59,10 @@ The latter is capped at 4 KiB and records the active WebSocket phase, fixed smok
 request identity, operation budget, phase elapsed time, socket state, received
 fragment/message counts, completion flag, exception types, and source line.
 It excludes response payloads, exception messages, full paths, and daemon logs.
-The original smoke failure is rethrown even if diagnostic writing fails.
+The original smoke failure is rethrown even if diagnostic writing or cleanup
+fails. Cleanup actions continue after an earlier cleanup error; the same bounded
+JSON separately records their count and first exception type/source line.
+A cleanup-only failure still fails the smoke. No raw cleanup error text is stored.
 
 The six phases are connect, subscribe send/receive, instantiation receive, and
 execute send/receive. The existing 10-second cancellation budget applies to each
@@ -70,7 +73,10 @@ Art execution, increase timeouts, or establish the cause of an older failure.
 Run `scripts/tests/Test-PluginBoundaryDiagnostics.ps1` in Windows PowerShell 5.1
 for real loopback cancellation, fragmentation, close, malformed JSON, unrelated
 event, and successful-response coverage. `Test-PluginBoundarySmokeContract.ps1`
-checks module wiring and the exact bounded upload paths. The dedicated Plugin
+checks module wiring and the exact bounded upload paths.
+`Test-PluginBoundaryCleanup.ps1` executes the real main catch/finally with process
+and file-copy failures, checking original exception identity and remaining cleanup.
+The dedicated Plugin
 Boundary Diagnostics workflow runs these tests without building, signing, or
 publishing a release. They do not replace a packaged-daemon smoke run.
 

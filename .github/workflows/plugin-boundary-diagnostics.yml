@@ -42,3 +42,6 @@ jobs:
       - name: Exercise real loopback WebSocket failures
         shell: powershell
         run: .\scripts\tests\Test-PluginBoundaryDiagnostics.ps1
+      - name: Preserve primary failures through real main cleanup
+        shell: powershell
+        run: .\scripts\tests\Test-PluginBoundaryCleanup.ps1

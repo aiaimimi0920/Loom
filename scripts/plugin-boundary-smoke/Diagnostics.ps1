@@ -21,20 +21,32 @@ function Set-LoomPluginBoundaryPhase {
     }
 }
 
+function Get-LoomPluginBoundaryFailureSummary {
+    param([System.Management.Automation.ErrorRecord]$Failure)
+    $types = @()
+    $exception = $Failure.Exception
+    for ($index = 0; $null -ne $exception -and $index -lt 4; $index++) {
+        $name = $exception.GetType().FullName
+        if ($name -match '^[A-Za-z0-9_.+`]{1,160}$') { $types += $name }
+        $exception = $exception.InnerException
+    }
+    $source = [IO.Path]::GetFileName($Failure.InvocationInfo.ScriptName)
+    if ($source -notin @("Invoke-LoomPluginBoundarySmoke.ps1", "WebSocket.ps1")) { $source = "unknown" }
+    return [ordered]@{ exceptionTypes = $types; sourceFile = $source; sourceLine = $Failure.InvocationInfo.ScriptLineNumber }
+}
+
 function Save-LoomPluginBoundaryDiagnostic {
-    param([string]$EvidencePath, [System.Management.Automation.ErrorRecord]$Failure)
+    param(
+        [string]$EvidencePath,
+        [System.Management.Automation.ErrorRecord]$Failure,
+        [AllowNull()][System.Management.Automation.ErrorRecord]$CleanupFailure = $null,
+        [int]$CleanupFailureCount = 0
+    )
     # Diagnostic failure must never replace the original smoke exception.
     try {
         $state = $script:PluginBoundaryDiagnostic
-        $types = @()
-        $exception = $Failure.Exception
-        for ($index = 0; $null -ne $exception -and $index -lt 4; $index++) {
-            $name = $exception.GetType().FullName
-            if ($name -match '^[A-Za-z0-9_.+`]{1,160}$') { $types += $name }
-            $exception = $exception.InnerException
-        }
-        $source = [IO.Path]::GetFileName($Failure.InvocationInfo.ScriptName)
-        if ($source -notin @("Invoke-LoomPluginBoundarySmoke.ps1", "WebSocket.ps1")) { $source = "unknown" }
+        $state.elapsed.Stop()
+        $summary = Get-LoomPluginBoundaryFailureSummary -Failure $Failure
         $record = [ordered]@{
             schemaVersion = 1
             phase = $state.phase
@@ -46,14 +58,16 @@ function Save-LoomPluginBoundaryDiagnostic {
             fragments = $state.fragments
             messages = $state.messages
             operationCompleted = $state.operationCompleted
-            exceptionTypes = $types
-            sourceFile = $source
-            sourceLine = $Failure.InvocationInfo.ScriptLineNumber
+            exceptionTypes = $summary.exceptionTypes
+            sourceFile = $summary.sourceFile
+            sourceLine = $summary.sourceLine
+            cleanupFailureCount = $CleanupFailureCount
+            firstCleanupFailure = if ($null -ne $CleanupFailure) { Get-LoomPluginBoundaryFailureSummary -Failure $CleanupFailure } else { $null }
         }
         $json = $record | ConvertTo-Json -Depth 4 -Compress
         if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 4096) { throw "Diagnostic size limit exceeded." }
         [IO.File]::WriteAllText((Join-Path $EvidencePath "plugin-boundary-diagnostic.json"), $json, [Text.UTF8Encoding]::new($false))
     } catch {
-        Write-Warning "Plugin boundary diagnostic unavailable."
+        Write-Warning "Plugin boundary diagnostic unavailable." -WarningAction Continue
     }
 }
