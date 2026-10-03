@@ -147,7 +147,7 @@
         "keyframe": { "type": "boolean" },
         "droppedFrames": { "type": "integer", "minimum": 0 },
         "colorSpace": { "enum": ["srgb", "hdr10"] },
-        "codec": { "enum": ["raw_bgra", "h264"] }
+        "codec": { "enum": ["raw_bgra", "h264", "jpeg"] }
       },
       "additionalProperties": false
     },

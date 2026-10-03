@@ -224,6 +224,7 @@ mod live_media_diagnostics_tests {
                     LiveDeviceRole::Viewer,
                     0,
                     0,
+                    LiveMediaProfile::Legacy,
                     permit,
                 );
                 let _ = done.send(());

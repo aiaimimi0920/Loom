@@ -22,6 +22,8 @@ struct LiveMediaForwardSample {
     skipped_frames: u64,
     queue_age_ms: u64,
     socket_write_ms: u64,
+    wire_codec: &'static str,
+    adaptation_ms: u64,
     write_succeeded: bool,
 }
 
@@ -47,6 +49,8 @@ impl LiveMediaForwardSample {
             },
             queue_age_ms: bounded_media_millis(frame.received_at.elapsed()),
             socket_write_ms: 0,
+            wire_codec: live_media_wire_codec(&frame.bytes),
+            adaptation_ms: 0,
             write_succeeded: false,
         }
     }

@@ -47,6 +47,10 @@ pub fn validate_live_identifier(value: &str, field: &'static str) -> Result<(), 
 }
 
 pub fn validate_live_session(session: &LiveScreenshotSession) -> Result<(), LiveProtocolError> {
+    // JPEG is an opt-in connection representation, never the legacy discovery descriptor.
+    if session.frame_stream.codec == super::LiveCodec::Jpeg {
+        return Err(LiveProtocolError::InvalidField("frame_stream_codec"));
+    }
     if session.protocol_version != LIVE_PROTOCOL_VERSION {
         return Err(LiveProtocolError::UnsupportedProtocolVersion(
             session.protocol_version.clone(),

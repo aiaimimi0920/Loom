@@ -86,7 +86,10 @@ fn encode_wall_media_frame(
     walls: &SharedWallStore,
     profile: WallMediaProfile,
 ) -> std::result::Result<Option<Vec<u8>>, &'static str> {
-    let bytes = frame.bytes.as_slice();
+    let Some(representation) = frame.representation(LiveMediaProfile::Legacy)? else {
+        return Ok(None);
+    };
+    let bytes = representation.as_slice();
     if bytes.len() < 64 || bytes.get(56..58) != Some(&[1, 1]) {
         return Err("wall_source_codec_unsupported");
     }

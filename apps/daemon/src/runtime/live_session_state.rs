@@ -31,6 +31,7 @@ struct StoredLiveFrame {
     epoch: u64,
     frame_id: u64,
     bytes: Arc<Vec<u8>>,
+    legacy: Arc<Mutex<LiveLegacyFrameCache>>,
 }
 
 struct LiveSessionRecord {

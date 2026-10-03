@@ -37,6 +37,7 @@ pub enum LiveMediaTransport {
 pub enum LiveCodec {
     RawBgra,
     H264,
+    Jpeg,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

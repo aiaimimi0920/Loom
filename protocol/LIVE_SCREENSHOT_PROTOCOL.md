@@ -99,7 +99,7 @@ followed by 1 to 67,108,864 payload bytes:
 | 48 | 4 | Cumulative dropped-frame count |
 | 52 | 4 | Payload length |
 | 56 | 1 | Color: `1=srgb`, `2=hdr10` |
-| 57 | 1 | Codec: `1=raw_bgra`, `2=h264` |
+| 57 | 1 | Codec: `1=raw_bgra`, `2=h264`, `3=jpeg` (explicit media profile only) |
 | 58 | 6 | Reserved, all zero |
 
 The decoder rejects bad magic/version, non-zero reserved bytes, zero/oversized
@@ -108,14 +108,49 @@ IDs. H.264 is the LAN candidate; raw BGRA is a local/diagnostic candidate. HEVC
 and AV1 are not v1 codecs.
 
 The enum alone does not establish a negotiated or usable H.264 path. The current
-Hook LiveRelay viewer supports sRGB/raw BGRA and rejects other presentation
-profiles. Codec changes require compatible decoders, dependency-safe dropping,
-late-join recovery and old-client fallback; they are not enabled by diagnostics.
+Hook LiveRelay viewer supports sRGB/raw BGRA and the explicitly negotiated JPEG
+profile below. H.264 still lacks a functioning end-to-end decoder path; its
+enum is not enabled by diagnostics or by JPEG negotiation.
+
+### JPEG 连接级媒体 profile
+
+`loom.live.jpeg.v1` 是可选 WebSocket 子协议，不替换 `loom.live.v1` 控制协议。
+只有请求明确提供它时，Loom 才返回它；旧客户端仍选 v1。新 Hook 提供
+`loom.live.jpeg.v1,loom.live.v1`，旧 Loom 可选择第二项，因此无需额外探测请求。
+鉴权、Host/Origin 检查、source/viewer 分权、连接上限和 epoch 门禁不变。
+
+| 源/观看端 | 新 Loom 的处理 |
+| --- | --- |
+| 旧源 → 新或旧观看端 | 原 raw BGRA，不强行重新编码 |
+| 新 JPEG 源 → 新 JPEG 观看端 | 原始 NLLV/JPEG 字节直通 |
+| 新 JPEG 源 → 旧观看端 | 有界懒解码，生成同 epoch/frame ID 的 raw NLLV |
+| 新 JPEG 源 → 屏幕墙 | 共用 raw adapter，再走既有 NLWM raw/PNG 路径 |
+
+JPEG codec `3` 的约束：独立关键帧、sRGB、压缩载荷不超过 16 MiB、单边不超过
+16384、BGRA 像素总量不超过 64 MiB。协议头在复制载荷前校验；daemon 复核
+JPEG 头中的真实尺寸与声明一致，完整解码由实际消费者完成。JPEG 解码器设有
+`image::Limits.max_alloc=128 MiB` 的尽力分配限制，并以显式像素/输入上限及
+两路 admission 约束工作量；该配置不代表进程总内存硬上限。头校验不是呈现成功证据。
+不允许 JPEG 成为旧控制/发现对象的 `frameStream.codec`；它只描述本次媒体
+连接的表示。所有新观看端也必须接受 raw，以保留源端超大压缩帧的兼容回退。
+
+原始 wire frame 继续保留在 2–3 帧 ring 中，不建立第二条媒体队列。每个不可变
+帧最多缓存一个 raw 结果（成功或失败），共享给旧观看端和屏幕墙；缓存随帧及
+其在途引用释放，不保留历史。仅旧消费者请求转换时解码，全局最多两个转换，
+`try_lock`/非等待 admission 不阻塞 JPEG 直通。忙时旧消费者不推进已发送游标，
+让出后重新取最新帧，同时继续处理控制消息。缓存锁、会话锁不跨 socket 写入。
+转换后发送前再次检查观看权限、当前 epoch 和停止状态，不能用慢转换延续旧权限。
+每次媒体循环亦重查成员资格；空闲连接通过既有 250ms 等待边界观察撤销。
+
+该候选只启用 daemon 已有 `image` 依赖的 JPEG feature，不引入新服务、视频栈或
+传输路由。Hook 与 Loom 可独立回退到旧版本并自动恢复 raw，无持久格式迁移。
+`protocol/fixtures/live-jpeg-v1.nllv` 与 Hook 同路径字节一致；Rust 混合版本
+loopback WebSocket、旧端像素和墙 adapter 测试不能冒充跨设备性能验收。
 
 ### Bounded LiveRelay stage diagnostics
 
 The existing authorized session snapshot adds `mediaDiagnostics`; the NLLV wire
-frame, permissions and screen-wall protocol remain unchanged. These in-memory
+header layout, permissions and screen-wall protocol remain unchanged. These in-memory
 counters are cumulative for the session, not persisted telemetry:
 
 Discovery omits `mediaDiagnostics`; only existing member/administrator session
@@ -134,10 +169,13 @@ counts. Neither ring eviction nor a cursor gap establishes network packet loss;
 a fully consumed retained frame can be evicted normally.
 
 Only one `lastForward` sample is retained across viewers, with the viewer device
-ID, epoch, frame ID, binary size, skipped count, `queueAgeMs`, `socketWriteMs` and
+ID, epoch, frame ID, actual output `wireCodec`, binary size, skipped count,
+`adaptationMs`, `queueAgeMs`, `socketWriteMs` and
 `writeSucceeded`. Queue age starts at Loom's accepted-frame retention timestamp;
 socket write time includes the connection's payload copy and synchronous write.
-Both use Loom's monotonic clock. Failed samples replace the previous sample but
+`adaptationMs` measures selection of the connection representation, including a
+legacy cache miss's decode; output bytes count raw fallback bytes rather than
+the smaller source JPEG. All durations use Loom's monotonic clock. Failed samples replace the previous sample but
 do not advance success counters; late results from a closed/old epoch are ignored.
 
 These fields neither prove receiver decoding/presentation nor compute

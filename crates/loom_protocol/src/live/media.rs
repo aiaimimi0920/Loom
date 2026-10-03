@@ -7,6 +7,8 @@ use super::{
 
 pub const LIVE_BINARY_MAGIC: [u8; 4] = *b"NLLV";
 pub const LIVE_BINARY_HEADER_LEN: usize = 64;
+pub const LIVE_JPEG_PROTOCOL_VERSION: &str = "loom.live.jpeg.v1";
+pub const LIVE_MAX_JPEG_PAYLOAD: usize = 16 * 1024 * 1024;
 const KEYFRAME_FLAG: u8 = 1;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -34,6 +36,7 @@ impl LiveBinaryFrame {
     pub fn encode(&self) -> Result<Vec<u8>, LiveProtocolError> {
         validate_binary_identity(self.epoch, &self.metadata)?;
         validate_payload_len(self.payload.len())?;
+        validate_codec_payload(&self.metadata, self.payload.len())?;
         let mut output = vec![0u8; LIVE_BINARY_HEADER_LEN + self.payload.len()];
         output[0..4].copy_from_slice(&LIVE_BINARY_MAGIC);
         output[4] = LIVE_BINARY_VERSION;
@@ -54,6 +57,16 @@ impl LiveBinaryFrame {
     }
 
     pub fn decode(input: &[u8]) -> Result<Self, LiveProtocolError> {
+        let (epoch, metadata) = Self::decode_header(input)?;
+        Ok(Self {
+            epoch,
+            metadata,
+            payload: input[LIVE_BINARY_HEADER_LEN..].to_vec(),
+        })
+    }
+
+    /// Validate before copying payloads; relays can retain the original wire allocation.
+    pub fn decode_header(input: &[u8]) -> Result<(u64, LiveFrameMetadata), LiveProtocolError> {
         if input.len() < LIVE_BINARY_HEADER_LEN {
             return Err(LiveProtocolError::TruncatedFrame);
         }
@@ -77,24 +90,41 @@ impl LiveBinaryFrame {
         if input.len() != LIVE_BINARY_HEADER_LEN + payload_len {
             return Err(LiveProtocolError::PayloadLengthMismatch);
         }
-        let frame = Self {
-            epoch: u64_at(input, 8),
-            metadata: LiveFrameMetadata {
-                frame_id: u64_at(input, 16),
-                capture_timestamp_ms: u64_at(input, 24),
-                encode_timestamp_ms: u64_at(input, 32),
-                width: u32_at(input, 40),
-                height: u32_at(input, 44),
-                keyframe: input[5] & KEYFRAME_FLAG != 0,
-                dropped_frames: u32_at(input, 48),
-                color_space: color_from_code(input[56])?,
-                codec: codec_from_code(input[57])?,
-            },
-            payload: input[LIVE_BINARY_HEADER_LEN..].to_vec(),
+        let epoch = u64_at(input, 8);
+        let metadata = LiveFrameMetadata {
+            frame_id: u64_at(input, 16),
+            capture_timestamp_ms: u64_at(input, 24),
+            encode_timestamp_ms: u64_at(input, 32),
+            width: u32_at(input, 40),
+            height: u32_at(input, 44),
+            keyframe: input[5] & KEYFRAME_FLAG != 0,
+            dropped_frames: u32_at(input, 48),
+            color_space: color_from_code(input[56])?,
+            codec: codec_from_code(input[57])?,
         };
-        validate_binary_identity(frame.epoch, &frame.metadata)?;
-        Ok(frame)
+        validate_binary_identity(epoch, &metadata)?;
+        validate_codec_payload(&metadata, payload_len)?;
+        Ok((epoch, metadata))
     }
+}
+
+fn validate_codec_payload(
+    metadata: &LiveFrameMetadata,
+    len: usize,
+) -> Result<(), LiveProtocolError> {
+    let raw_len = u64::from(metadata.width) * u64::from(metadata.height) * 4;
+    if metadata.codec == LiveCodec::RawBgra && raw_len != len as u64 {
+        return Err(LiveProtocolError::InvalidFrame("raw_payload_length"));
+    }
+    if metadata.codec == LiveCodec::Jpeg
+        && (!metadata.keyframe
+            || metadata.color_space != super::LiveColorSpace::Srgb
+            || len > LIVE_MAX_JPEG_PAYLOAD
+            || raw_len > LIVE_MAX_FRAME_PAYLOAD as u64)
+    {
+        return Err(LiveProtocolError::InvalidFrame("jpeg_profile"));
+    }
+    Ok(())
 }
 
 fn validate_binary_identity(
@@ -141,6 +171,7 @@ fn codec_code(value: LiveCodec) -> u8 {
     match value {
         LiveCodec::RawBgra => 1,
         LiveCodec::H264 => 2,
+        LiveCodec::Jpeg => 3,
     }
 }
 
@@ -148,6 +179,58 @@ fn codec_from_code(value: u8) -> Result<LiveCodec, LiveProtocolError> {
     match value {
         1 => Ok(LiveCodec::RawBgra),
         2 => Ok(LiveCodec::H264),
+        3 => Ok(LiveCodec::Jpeg),
         _ => Err(LiveProtocolError::InvalidFrame("codec")),
+    }
+}
+
+#[cfg(test)]
+mod jpeg_tests {
+    use super::*;
+    const FIXTURE: &[u8] = include_bytes!("../../../../protocol/fixtures/live-jpeg-v1.nllv");
+
+    #[test]
+    fn live_jpeg_wire_fixture_round_trips_without_reencoding() {
+        let frame = LiveBinaryFrame::decode(FIXTURE).unwrap();
+        assert_eq!((frame.epoch, frame.metadata.frame_id), (1, 9));
+        assert_eq!(frame.metadata.codec, LiveCodec::Jpeg);
+        assert_eq!((frame.metadata.width, frame.metadata.height), (64, 32));
+        assert_eq!(frame.encode().unwrap(), FIXTURE);
+        assert_eq!(
+            serde_json::to_value(&frame.metadata).unwrap()["codec"],
+            "jpeg"
+        );
+    }
+
+    #[test]
+    fn live_jpeg_header_enforces_independent_srgb_and_bounded_decoded_size() {
+        let frame = LiveBinaryFrame::decode(FIXTURE).unwrap();
+        assert!(validate_codec_payload(&frame.metadata, LIVE_MAX_JPEG_PAYLOAD + 1).is_err());
+        for metadata in [
+            LiveFrameMetadata {
+                keyframe: false,
+                ..frame.metadata.clone()
+            },
+            LiveFrameMetadata {
+                color_space: super::super::LiveColorSpace::Hdr10,
+                ..frame.metadata.clone()
+            },
+            LiveFrameMetadata {
+                width: 16_384,
+                height: 16_384,
+                ..frame.metadata.clone()
+            },
+        ] {
+            assert!(LiveBinaryFrame {
+                metadata,
+                ..frame.clone()
+            }
+            .encode()
+            .is_err());
+        }
+        let mut unknown = FIXTURE.to_vec();
+        unknown[57] = 4;
+        assert!(LiveBinaryFrame::decode_header(&unknown).is_err());
+        assert!(LiveBinaryFrame::decode_header(&FIXTURE[..63]).is_err());
     }
 }

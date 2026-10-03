@@ -173,6 +173,7 @@ include!("runtime/live_session_state_helpers.rs");
 include!("runtime/live_session_events.rs");
 include!("runtime/live_session_media.rs");
 include!("runtime/live_media_diagnostics.rs");
+include!("runtime/live_media_representation.rs");
 include!("runtime/live_session_control.rs");
 include!("runtime/live_session_input.rs");
 include!("runtime/live_session_observation.rs");
@@ -282,6 +283,7 @@ mod tests {
     include!("tests/suite/part_37.rs");
     include!("tests/suite/part_38.rs");
     include!("tests/live_media_diagnostics.rs");
+    include!("tests/live_jpeg.rs");
     include!("tests/suite/part_39.rs");
     include!("tests/suite/part_40.rs");
     include!("tests/suite/part_41.rs");

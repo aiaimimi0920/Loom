@@ -56,7 +56,7 @@ fn handle_live_media_websocket_upgrade(
     };
     let response = format!(
         "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept_key}\r\nSec-WebSocket-Protocol: {}\r\n\r\n",
-        loom_protocol::LIVE_PROTOCOL_VERSION
+        LiveMediaProfile::offered(&request).protocol()
     );
     if stream.write_all(response.as_bytes()).is_err() || stream.flush().is_err() {
         return;
@@ -64,6 +64,7 @@ fn handle_live_media_websocket_upgrade(
     let _ = stream.set_read_timeout(Some(LIVE_MEDIA_SOCKET_TIMEOUT));
     let _ = stream.set_write_timeout(Some(LIVE_MEDIA_SOCKET_TIMEOUT));
     let sessions = Arc::clone(&runtime.live_sessions);
+    let profile = LiveMediaProfile::offered(&request);
     let worker = thread::Builder::new()
         .name(format!("loom-live-media-{role:?}"))
         .spawn(move || {
@@ -80,6 +81,7 @@ fn handle_live_media_websocket_upgrade(
                 role,
                 after_epoch,
                 after_frame_id,
+                profile,
                 connection_permit,
             );
         });
@@ -105,7 +107,7 @@ fn prepare_live_media_upgrade(
             .unwrap_or_else(|| "live media request security validation failed".to_owned());
         LiveRuntimeError::new(status, "live_media_request_denied", message)
     })?;
-    validate_live_websocket_headers(request, loom_protocol::LIVE_PROTOCOL_VERSION)?;
+    validate_live_websocket_headers(request, LiveMediaProfile::offered(request).protocol())?;
     let session_id = request
         .query_parameter("sessionId")
         .ok_or_else(|| invalid_live_upgrade("sessionId is required"))?;
@@ -208,6 +210,7 @@ fn run_live_media_socket(
     role: LiveDeviceRole,
     after_epoch: u64,
     after_frame_id: u64,
+    profile: LiveMediaProfile,
     _connection_permit: LiveMediaConnectionPermit,
 ) {
     if sessions
@@ -225,7 +228,7 @@ fn run_live_media_socket(
     };
     match role {
         LiveDeviceRole::Source => {
-            run_live_source_socket(&mut socket, &sessions, &session_id, &device_id)
+            run_live_source_socket(&mut socket, &sessions, &session_id, &device_id, profile)
         }
         LiveDeviceRole::Viewer => run_live_viewer_socket(
             &mut socket,
@@ -234,6 +237,7 @@ fn run_live_media_socket(
             &device_id,
             after_epoch,
             after_frame_id,
+            profile,
         ),
         LiveDeviceRole::Controller => {}
     }
@@ -245,13 +249,21 @@ fn run_live_source_socket(
     sessions: &SharedLiveSessionStore,
     session_id: &str,
     device_id: &str,
+    profile: LiveMediaProfile,
 ) {
     while !sessions.media_cancelled.load(Ordering::SeqCst) {
+        if sessions
+            .authorize_media(session_id, device_id, LiveDeviceRole::Source)
+            .is_err()
+        {
+            break;
+        }
         match socket.read() {
             Ok(tungstenite::Message::Binary(bytes)) => {
-                if sessions
-                    .publish_frame(session_id, device_id, bytes)
-                    .is_err()
+                if !profile.accepts(&bytes)
+                    || sessions
+                        .publish_frame(session_id, device_id, bytes)
+                        .is_err()
                 {
                     break;
                 }
@@ -280,12 +292,19 @@ fn run_live_viewer_socket(
     device_id: &str,
     mut after_epoch: u64,
     mut after_frame_id: u64,
+    profile: LiveMediaProfile,
 ) {
     let _ = socket
         .get_mut()
         .set_read_timeout(Some(LIVE_VIEWER_CONTROL_TIMEOUT));
     let mut last_ping = Instant::now();
     while !sessions.media_cancelled.load(Ordering::SeqCst) {
+        if sessions
+            .authorize_media(session_id, device_id, LiveDeviceRole::Viewer)
+            .is_err()
+        {
+            break;
+        }
         match sessions.wait_for_frame(
             session_id,
             after_epoch,
@@ -293,15 +312,35 @@ fn run_live_viewer_socket(
             LIVE_MEDIA_SOCKET_TIMEOUT,
         ) {
             Ok(Some(frame)) => {
+                let adaptation_started = Instant::now();
+                let bytes = match frame.representation(profile) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => {
+                        if !service_live_viewer_control_messages(socket) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                if sessions.media_cancelled.load(Ordering::SeqCst)
+                    || !sessions.viewer_frame_authorized(session_id, device_id, frame.epoch)
+                {
+                    break;
+                }
                 let mut sample = LiveMediaForwardSample::selected(
                     device_id,
                     &frame,
                     after_epoch,
                     after_frame_id,
                 );
+                sample.binary_bytes = bytes.len() as u64;
+                sample.wire_codec = live_media_wire_codec(&bytes);
+                sample.adaptation_ms = bounded_media_millis(adaptation_started.elapsed());
                 let write_started = Instant::now();
                 let sent = socket
-                    .send(tungstenite::Message::Binary(frame.bytes.as_ref().clone()))
+                    .send(tungstenite::Message::Binary(bytes.as_ref().clone()))
                     .is_ok();
                 sample.socket_write_ms = bounded_media_millis(write_started.elapsed());
                 sample.write_succeeded = sent;

@@ -6,8 +6,12 @@ impl LiveSessionStore {
         source_device_id: &str,
         bytes: Vec<u8>,
     ) -> std::result::Result<(), LiveRuntimeError> {
-        let frame = LiveBinaryFrame::decode(&bytes)
+        let (epoch, metadata) = LiveBinaryFrame::decode_header(&bytes)
             .map_err(|error| LiveRuntimeError::new(400, "live_frame_invalid", error.to_string()))?;
+        if metadata.codec == loom_protocol::LiveCodec::Jpeg {
+            live_jpeg_decoder(&bytes[64..], metadata.width, metadata.height)
+                .map_err(|code| LiveRuntimeError::new(400, code, "invalid live JPEG"))?;
+        }
         let mut sessions = self.lock_state()?;
         let record = active_record_mut(&mut sessions, session_id)?;
         if record.session.source_device_id != source_device_id {
@@ -25,15 +29,14 @@ impl LiveSessionStore {
                 "live session frame buffer capacity must stay between 2 and 3",
             ));
         }
-        if frame.epoch != record.epoch || frame.metadata.frame_id <= record.last_frame_id {
+        if epoch != record.epoch || metadata.frame_id <= record.last_frame_id {
             return Err(LiveRuntimeError::new(
                 409,
                 "live_frame_sequence_invalid",
                 "the live frame epoch or sequence is stale",
             ));
         }
-        let gap = frame
-            .metadata
+        let gap = metadata
             .frame_id
             .saturating_sub(record.last_frame_id.saturating_add(1));
         record.relay_dropped_frames = record.relay_dropped_frames.saturating_add(gap);
@@ -45,7 +48,7 @@ impl LiveSessionStore {
             .media_diagnostics
             .received_binary_bytes
             .saturating_add(bytes.len() as u64);
-        record.last_frame_id = frame.metadata.frame_id;
+        record.last_frame_id = metadata.frame_id;
         record.published_frames = record.published_frames.saturating_add(1);
         record.session.last_seen_at_ms = unix_time_millis();
         if record.frames.len() == capacity {
@@ -56,9 +59,10 @@ impl LiveSessionStore {
         }
         record.frames.push_back(StoredLiveFrame {
             received_at: Instant::now(),
-            epoch: frame.epoch,
-            frame_id: frame.metadata.frame_id,
+            epoch,
+            frame_id: metadata.frame_id,
             bytes: Arc::new(bytes),
+            legacy: Arc::new(Mutex::new(None)),
         });
         self.changed.notify_all();
         Ok(())
