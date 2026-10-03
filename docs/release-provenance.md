@@ -51,6 +51,29 @@ and targeted corruptions; `Test-StandaloneReleaseContract.ps1` and
 these contracts passing when changing packaging. A synthetic tamper test does
 not replace verification and smoke of the actual release package.
 
+## Plugin boundary failure diagnostics
+
+The Windows candidate failure artifact includes the existing bounded MCP JSON
+and `target/runtime-smoke/plugin-boundary/plugin-boundary-diagnostic.json`.
+The latter is capped at 4 KiB and records the active WebSocket phase, fixed smoke
+request identity, operation budget, phase elapsed time, socket state, received
+fragment/message counts, completion flag, exception types, and source line.
+It excludes response payloads, exception messages, full paths, and daemon logs.
+The original smoke failure is rethrown even if diagnostic writing fails.
+
+The six phases are connect, subscribe send/receive, instantiation receive, and
+execute send/receive. The existing 10-second cancellation budget applies to each
+operation or received fragment, not to the entire phase or smoke run. Execution
+events may therefore span multiple operations. These diagnostics do not retry
+Art execution, increase timeouts, or establish the cause of an older failure.
+
+Run `scripts/tests/Test-PluginBoundaryDiagnostics.ps1` in Windows PowerShell 5.1
+for real loopback cancellation, fragmentation, close, malformed JSON, unrelated
+event, and successful-response coverage. `Test-PluginBoundarySmokeContract.ps1`
+checks module wiring and the exact bounded upload paths. The dedicated Plugin
+Boundary Diagnostics workflow runs these tests without building, signing, or
+publishing a release. They do not replace a packaged-daemon smoke run.
+
 ## Packaged QR smoke
 
 `-RunSmoke` includes a QR projection check against the packaged daemon, using

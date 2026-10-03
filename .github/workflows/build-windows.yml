@@ -98,7 +98,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: loom-windows-smoke-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
-          path: target/runtime-smoke/latest/mcp-smoke-diagnostic.json
+          path: |
+            target/runtime-smoke/latest/mcp-smoke-diagnostic.json
+            target/runtime-smoke/plugin-boundary/plugin-boundary-diagnostic.json
           if-no-files-found: warn
           retention-days: 14
 

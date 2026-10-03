@@ -1,0 +1,44 @@
+name: Plugin Boundary Diagnostics
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/plugin-boundary-diagnostics.yml"
+      - ".github/workflows/build-windows.yml"
+      - "scripts/Invoke-LoomPluginBoundarySmoke.ps1"
+      - "scripts/plugin-boundary-smoke/**"
+      - "scripts/tests/Test-PluginBoundary*.ps1"
+      - "scripts/tests/plugin-boundary/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/plugin-boundary-diagnostics.yml"
+      - ".github/workflows/build-windows.yml"
+      - "scripts/Invoke-LoomPluginBoundarySmoke.ps1"
+      - "scripts/plugin-boundary-smoke/**"
+      - "scripts/tests/Test-PluginBoundary*.ps1"
+      - "scripts/tests/plugin-boundary/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-boundary-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostics:
+    name: PowerShell 5.1 loopback diagnostics
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Verify diagnostic artifact contract
+        shell: powershell
+        run: .\scripts\tests\Test-PluginBoundarySmokeContract.ps1
+      - name: Exercise real loopback WebSocket failures
+        shell: powershell
+        run: .\scripts\tests\Test-PluginBoundaryDiagnostics.ps1

@@ -34,6 +34,7 @@ $releaseVerifierPaths += @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "scri
 $releaseVerifier = @($releaseVerifierPaths | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath $_ }) -join [Environment]::NewLine
 Assert-True ($releaseVerifier.Contains("runtime/python/Arts/")) "Release verification must reject packaged optional Python Arts."
 $pluginSmoke = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1")
+$pluginSmoke += Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "scripts\plugin-boundary-smoke\Packages.ps1")
 foreach ($requiredText in @(
     "Build-ExternalFrameworkRuntime",
     "rustc.exe",
