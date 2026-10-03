@@ -10,6 +10,11 @@ Set-StrictMode -Version Latest
 $script:LoomAuthorizationHeader = ""
 
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
+. (Join-Path $PSScriptRoot "plugin-boundary-smoke\Packages.ps1")
+. (Join-Path $PSScriptRoot "plugin-boundary-smoke\SourceIntegrity.ps1")
+. (Join-Path $PSScriptRoot "plugin-boundary-smoke\Diagnostics.ps1")
+. (Join-Path $PSScriptRoot "plugin-boundary-smoke\WebSocket.ps1")
+. (Join-Path $PSScriptRoot "plugin-boundary-smoke\Cleanup.ps1")
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -76,29 +81,6 @@ function Write-Utf8NoBomFile {
     $parent = Split-Path -Parent $Path
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
-}
-
-function Get-GitStateFingerprint {
-    param([string]$Repository)
-    $head = (& git -C $Repository rev-parse HEAD 2>$null | Out-String).Trim()
-    $status = (& git -C $Repository status --porcelain=v1 --untracked-files=all 2>$null | Out-String).Trim()
-    $sourcePatterns = @("*.rs", "*.toml", "*.ps1", "*.ts", "*.tsx", "*.json", "*.yaml", "*.yml")
-    $trackedSources = @(& git -C $Repository ls-files -- $sourcePatterns 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $sourceHashes = foreach ($relativePath in $trackedSources) {
-        $sourcePath = Join-Path $Repository $relativePath
-        if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
-            "$relativePath|$((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant())"
-        }
-    }
-    $sourceBytes = [System.Text.Encoding]::UTF8.GetBytes(($sourceHashes -join "`n"))
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $sourceHash = ([BitConverter]::ToString($sha256.ComputeHash($sourceBytes))).Replace("-", "").ToLowerInvariant()
-    }
-    finally {
-        $sha256.Dispose()
-    }
-    return "$head|$status|$sourceHash"
 }
 
 function Invoke-LoomRaw {
@@ -183,204 +165,6 @@ function Install-Zip {
     }
 }
 
-function Build-ExternalFrameworkRuntime {
-    param(
-        [string]$Version,
-        [string]$SourcePath,
-        [string]$Destination
-    )
-
-    $runtimeSource = @'
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-
-fn extract_json_string(input: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":\"");
-    let start = input.find(&needle)? + needle.len();
-    let mut value = String::new();
-    let mut escaped = false;
-    for ch in input[start..].chars() {
-        if escaped {
-            match ch {
-                '\\' => value.push('\\'),
-                '"' => value.push('"'),
-                '/' => value.push('/'),
-                'n' => value.push('\n'),
-                'r' => value.push('\r'),
-                't' => value.push('\t'),
-                other => {
-                    value.push('\\');
-                    value.push(other);
-                }
-            }
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == '"' {
-            return Some(value);
-        } else {
-            value.push(ch);
-        }
-    }
-    None
-}
-
-fn main() {
-    let mut request = String::new();
-    std::io::stdin()
-        .read_to_string(&mut request)
-        .expect("read Loom framework request");
-    let art_dir = extract_json_string(&request, "artDir").expect("request artDir");
-    let script = PathBuf::from(art_dir).join("runtime").join("main.ps1");
-    let mut child = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(script)
-        .env("THIRD_PARTY_FRAMEWORK_VERSION", "__FRAMEWORK_VERSION__")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("start Art package runtime");
-    child
-        .stdin
-        .take()
-        .expect("Art runtime stdin")
-        .write_all(request.as_bytes())
-        .expect("write Art runtime request");
-    let output = child.wait_with_output().expect("wait for Art runtime");
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
-    }
-    std::io::stdout()
-        .write_all(&output.stdout)
-        .expect("relay Art runtime response");
-}
-'@
-    $runtimeSource = $runtimeSource.Replace("__FRAMEWORK_VERSION__", $Version)
-    Write-Utf8NoBomFile -Path $SourcePath -Content $runtimeSource
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
-    $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
-    if ($null -eq $rustc) {
-        $rustc = Get-Command rustc -ErrorAction Stop
-    }
-    & $rustc.Path --edition=2021 -C opt-level=1 -C debuginfo=0 -o $Destination $SourcePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "Independent third-party framework compilation failed for version $Version."
-    }
-    Assert-True (Test-Path -LiteralPath $Destination -PathType Leaf) "Independent framework runtime was not created: $Destination"
-}
-
-function New-ThirdPartyFrameworkPackage {
-    param(
-        [string]$Version,
-        [string]$StageRoot,
-        [string]$SourcePath,
-        [string]$ZipPath,
-        [string]$FrameworkId,
-        [string]$PublisherId
-    )
-
-    New-Item -ItemType Directory -Force -Path $StageRoot | Out-Null
-    $frameworkRuntime = Join-Path $StageRoot "runtime\loom-framework-third-party.exe"
-    Build-ExternalFrameworkRuntime -Version $Version -SourcePath $SourcePath -Destination $frameworkRuntime
-    $frameworkManifest = [ordered]@{
-        id = $FrameworkId
-        name = "Third-party Echo Framework"
-        description = "Framework package compiled outside the Loom source tree."
-        version = $Version
-        publisher = [ordered]@{ id = $PublisherId; name = "Third Party" }
-        protocolVersion = "loom.framework.v1"
-        platforms = @("windows-x64")
-        entry = [ordered]@{
-            kind = "process"
-            command = "runtime/loom-framework-third-party.exe"
-            args = @()
-            processModel = "per_execution"
-        }
-        permissions = @("process.spawn", "file.read")
-        artExecution = [ordered]@{
-            requestSchema = "loom.art.execute.v1"
-            responseSchema = "loom.art.result.v1"
-        }
-    }
-    Write-Utf8NoBomFile -Path (Join-Path $StageRoot "framework.manifest.json") -Content (($frameworkManifest | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
-    Compress-Archive -Path (Join-Path $StageRoot "*") -DestinationPath $ZipPath -CompressionLevel Optimal -Force
-}
-
-function New-LoomHookBridgeWebSocket {
-    param([int]$Port)
-
-    $client = [System.Net.WebSockets.ClientWebSocket]::new()
-    $uri = [Uri]::new("ws://127.0.0.1:$Port")
-    $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    try {
-        [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
-    }
-    finally {
-        $connectCts.Dispose()
-    }
-    return $client
-}
-
-function Send-LoomHookBridgeWebSocketJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
-        [string]$Json
-    )
-
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
-    $sendCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    try {
-        [void]$Client.SendAsync(
-            [ArraySegment[byte]]::new($bytes),
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            $sendCts.Token
-        ).GetAwaiter().GetResult()
-    }
-    finally {
-        $sendCts.Dispose()
-    }
-}
-
-function Receive-LoomHookBridgeWebSocketJson {
-    param([System.Net.WebSockets.ClientWebSocket]$Client)
-
-    $buffer = New-Object byte[] 4096
-    $builder = [System.Text.StringBuilder]::new()
-    do {
-        $receiveCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-        try {
-            $result = $Client.ReceiveAsync(
-                [ArraySegment[byte]]::new($buffer),
-                $receiveCts.Token
-            ).GetAwaiter().GetResult()
-        }
-        finally {
-            $receiveCts.Dispose()
-        }
-        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-            throw "Hook Bridge WebSocket closed before sending a JSON response."
-        }
-        [void]$builder.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count))
-    } while (-not $result.EndOfMessage)
-    return $builder.ToString() | ConvertFrom-Json
-}
-
-function Close-LoomHookBridgeWebSocket {
-    param([AllowNull()][System.Net.WebSockets.ClientWebSocket]$Client)
-
-    if ($null -eq $Client) {
-        return
-    }
-    try {
-        $Client.Dispose()
-    }
-    catch {
-    }
-}
-
 function Start-TestDaemon {
     param(
         [string]$Executable,
@@ -453,6 +237,8 @@ $daemon = $null
 $hookBridgeClient = $null
 $hookBridgeRunning = $false
 $succeeded = $false
+$primaryFailure = $null
+Reset-LoomPluginBoundaryDiagnostic
 $oldEnvironment = @{}
 
 foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_DAEMON_TOKEN", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
@@ -460,6 +246,9 @@ foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_DAEMON_TOKEN",
 }
 
 New-Item -ItemType Directory -Force -Path $evidencePath, $configuration, $frameworkSourceRoot, $frameworkStageV1, $frameworkStageV2, $artStage | Out-Null
+if (Test-Path -LiteralPath (Join-Path $evidencePath "plugin-boundary-diagnostic.json")) {
+    Remove-Item -LiteralPath (Join-Path $evidencePath "plugin-boundary-diagnostic.json") -Force
+}
 Assert-True (Test-Path -LiteralPath $daemonPath -PathType Leaf) "Loom daemon executable not found: $daemonPath"
 
 try {
@@ -586,10 +375,14 @@ $response = [ordered]@{
     $hookBridgeStarted = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/start" -Body @{ port = 0 }
     Assert-True ([bool]$hookBridgeStarted.running) "Hook Bridge did not start for the third-party Art."
     $hookBridgeRunning = $true
+    Set-LoomPluginBoundaryPhase -Phase "connect"
     $hookBridgeClient = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
+    Set-LoomPluginBoundaryPhase -Phase "subscribe-send"
     Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:third-party-plugin","events":["loom.hook.workflow.instantiated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.result","loom.hook.art.failure"]}}'
+    Set-LoomPluginBoundaryPhase -Phase "subscribe-receive"
     $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
     Assert-True ([string]$subscribed.protocolVersion -eq "loom.hook.v1" -and [string]$subscribed.status -eq "succeeded") "Hook Bridge did not subscribe to Art node events."
+    Reset-LoomPluginBoundaryDiagnostic
     $instantiated = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/workflows/instantiate" -Body @{
         workflowId = "third-party-plugin-smoke"
         mode = "reference"
@@ -599,6 +392,7 @@ $response = [ordered]@{
         edges = @()
     }
     Assert-True ([string]$instantiated.status -eq "succeeded") "Third-party Hook node instantiation failed."
+    Set-LoomPluginBoundaryPhase -Phase "instantiation-receive"
     $instantiatedBroadcast = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
     Assert-True ([string]$instantiatedBroadcast.method -eq "loom.hook.workflow.instantiated") "Third-party Hook node broadcast was not emitted."
     Assert-True ([string]$instantiatedBroadcast.params.nodes[0].data.artId -eq $qualifiedArtId) "Hook node broadcast lost the dynamic Art id."
@@ -617,24 +411,15 @@ $response = [ordered]@{
             disabledParameters = @()
         }
     }
+    Set-LoomPluginBoundaryPhase -Phase "execute-send"
     Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json ($hookExecutionRequest | ConvertTo-Json -Depth 20 -Compress)
-    do {
-        $hookExecution = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
-        $protocolVersionProperty = $hookExecution.PSObject.Properties["protocolVersion"]
-        $requestIdProperty = $hookExecution.PSObject.Properties["requestId"]
-        $statusProperty = $hookExecution.PSObject.Properties["status"]
-    } while (
-        $null -eq $protocolVersionProperty -or
-        $null -eq $requestIdProperty -or
-        $null -eq $statusProperty -or
-        [string]$protocolVersionProperty.Value -ne "loom.hook.v1" -or
-        [string]$requestIdProperty.Value -ne "execute:third-party-plugin" -or
-        [string]::IsNullOrWhiteSpace([string]$statusProperty.Value)
-    )
+    Set-LoomPluginBoundaryPhase -Phase "execute-receive"
+    $hookExecution = Receive-LoomHookBridgeExecutionResult -Client $hookBridgeClient
     Assert-True ([string]$hookExecution.status -eq "succeeded") "Third-party Art failed through the Hook Bridge."
     $hookOutput = @($hookExecution.data.outputs.PSObject.Properties | ForEach-Object { $_.Value })[0]
     Assert-True ([string]$hookOutput.kind -eq "value") "Hook Bridge did not return the formal value output kind."
     Assert-True (($hookOutput.value | ConvertTo-Json -Depth 20 -Compress) -like '*hook:hello:2.0.0*') "Hook Bridge did not execute the upgraded third-party framework and Art content."
+    Reset-LoomPluginBoundaryDiagnostic
     Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
     $hookBridgeClient = $null
     Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
@@ -712,30 +497,39 @@ $response = [ordered]@{
     Write-Utf8NoBomFile -Path (Join-Path $evidencePath "plugin-boundary-evidence.json") -Content (($evidence | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
     Write-Host "Plugin Art boundary smoke passed."
 }
+catch {
+    $primaryFailure = $_
+    Save-LoomPluginBoundaryDiagnostic -EvidencePath $evidencePath -Failure $_
+    throw
+}
 finally {
-    Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
-    if ($hookBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
-        try {
+    Complete-LoomPluginBoundaryCleanup -PrimaryFailure $primaryFailure -EvidencePath $evidencePath -Actions @({
+        Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
+    }, {
+        if ($hookBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
             Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
         }
-        catch {
+    }, {
+        Stop-TestDaemon -Process $daemon
+    }, {
+        if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+            Copy-Item -LiteralPath $stdoutPath -Destination (Join-Path $evidencePath "daemon.stdout.log") -Force
         }
-    }
-    Stop-TestDaemon -Process $daemon
-    if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
-        Copy-Item -LiteralPath $stdoutPath -Destination (Join-Path $evidencePath "daemon.stdout.log") -Force
-    }
-    if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-        Copy-Item -LiteralPath $stderrPath -Destination (Join-Path $evidencePath "daemon.stderr.log") -Force
-    }
-    foreach ($name in $oldEnvironment.Keys) {
-        [System.Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name])
-    }
-    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-    $controlFull = [System.IO.Path]::GetFullPath($controlPlane)
-    if ($controlFull.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $controlPlane)) {
-        Remove-Item -LiteralPath $controlPlane -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    }, {
+        if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            Copy-Item -LiteralPath $stderrPath -Destination (Join-Path $evidencePath "daemon.stderr.log") -Force
+        }
+    }, {
+        foreach ($name in $oldEnvironment.Keys) {
+            [System.Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name])
+        }
+    }, {
+        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        $controlFull = [System.IO.Path]::GetFullPath($controlPlane)
+        if ($controlFull.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $controlPlane)) {
+            Remove-Item -LiteralPath $controlPlane -Recurse -Force
+        }
+    })
 }
 
 if (-not $succeeded) {
