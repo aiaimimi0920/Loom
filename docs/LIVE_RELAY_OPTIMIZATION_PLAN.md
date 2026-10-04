@@ -39,7 +39,8 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | --- | --- | --- | --- |
 | A0 | 已完成 | Loom：本计划、文档索引 | 实际源码对照 Issue；先提交计划再开发 |
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
-| A2 | 待办 | Hook/Loom：正常发布和受权加入入口 + 收端证据采集 | 核对当前 UI/连接设置，绑定 source/epoch/frame 与包 SHA；收端记录真实 decoded-submitted 和缺口，不把 daemon 采样当显示 FPS；按需补最小接线 |
+| A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
+| A2.2 | 待办 | Hook/Loom：收端证据采集与包绑定 | 绑定 source/epoch/frame 与包 SHA；记录真实 decoded-submitted 和缺口，不把 daemon 采样当显示 FPS |
 | A3 | 待办 | 两机原生基线与对照报告 | 静态文字/滚动/运动，1/2/4 viewer、慢 viewer、断线恢复、停止撤销；记录网络/包/CPU/内存/阶段耗时/字节；硬件 GPU 或物理显示无法测时明确缺失 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
@@ -105,9 +106,28 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 
 - A0：已完成并推送计划提交 `047d6e52a9c9d6ed2b8b8b18429a2c54d76150e8`。
 - A1：工具/用法/21 项聚焦测试已完成；本状态更新随 A1 实现一同提交，使用上述 git log 定位其源码锚点。
-- 下一动作 **A2**：从 Hook 正常发布/加入入口核对当前调用链与身份/包绑定；先检查
-  `src/services/liveRelayController.ts`、`liveRelayPresentation.ts`、`src-tauri/src/native/live_relay_commands.rs`。
-  在既有 decoded-submitted 合同上补收端证据/接线，若入口已有闭环就复用，不重新建功能。
-  A1 的 synthetic loopback 测试只能证明采样器可用，不能替代 A2/A3 的原生两机验收。
+- A2.1：Hook `5857e77c79f7ab6f24d1a214a3001e512bc5a2fa`，内部迭代 `v0.2.32.13`。
+  Live Unit 中的发布入口改称“实时投射”；支持 Surface 的 Art 参数面板可刷新/选择/加入。
+  当前必须复用已挂载的 Surface，不生成伪造 attachment，不把配对直接等同于观看/输入授权。
+- 下一动作 **A2.2**：复用 `liveRelayPresentation` 的 decoded-submitted 字段，补有界只读
+  收端证据及实际包 SHA 绑定，然后产出内部手测包。A1/A2.1 测试不替代 A3 原生两机验收。
 - 仍未验收：正常产品入口两机闭环、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳。
 - 本轮辅助子代理因上游 503 未得到有效结果；直接源码核查不标为独立交叉评审。
+
+## A2.1 验证与逐文件复核（2026-10-04 UTC）
+
+- `UnitLiveViewer.test.tsx`、`LiveRelayPresentation.test.ts`、`LiveRelayPollCadence.test.ts`：43/43 通过。
+  新入口覆盖显式加入、真实绑定、无自动控制、缺失/已销毁 Surface、面板关闭、generation/
+  attachment 换代、owner 销毁、错误重试、关闭/离线/本地源过滤、跨面板去重及在途上限。
+- `npm run typecheck`、`typecheck:test`、`lint`、`git diff --check` 通过；checker 测试 16/16；
+  strict 行数门禁 1371 文件、全部不超过 500。未新增依赖或修改 Rust。
+- Chromium 实际渲染产品组件，模拟 IPC：30 个长标题会话、键盘选择、加入状态及 250px
+  组件在窄/宽视口下无横向溢出；不是完整桌面、真实网络或显示性能证据。
+  首次临时 Vite harness 扫描了旧产物而超时，改用 linshi 内隔离 root/cache；第二次发现
+  harness 的 poll 返回了不同 session ID，修正测试夹具后通过，未为测试错误改产品代码。
+- 前端没有独立 formatter 配置；遵循相邻格式，运行 ESLint/类型检查，不声称执行不存在的 formatter。
+- 有效行数：`UnitParamsPanel.tsx` 384→389（只接线）、`liveRelayController.ts` 342→359
+  （加入在途生命周期）、`UnitLivePublication.tsx` 71→71；新组件 74、CSS 16、测试 138、fixture 27。
+- 逐文件复核：UI 字段按文本输出；鉴权仍由 native/Loom 执行；没有新增 timer、持久历史、凭证
+  或媒体复制；关闭面板不 dispose 全局 owner。在途响应以单独新 relay ID 清理，已有 viewer 不受影响。
+- 本地证据在 `GameEditor/linshi/issue67-a2-20261004`；未对其他运行实例做停止/重置。
