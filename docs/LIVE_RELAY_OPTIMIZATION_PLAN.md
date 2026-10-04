@@ -440,3 +440,53 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   ETL/pcapng/完整诊断仅在 PC3 独立 linshi；本机保留脱敏摘要和 owner 清理回执。
   下一步保持当前网络，继续区分正向数据/反向 ACK 路径和抓取点之前的责任，避免盲目
   重传 EXE 或改产品 codec。A3 的完整候选、正常原生发布/观看及性能验收仍未完成。
+
+#### A3 接续：方向性对照与精确差分传输（2026-10-04 UTC）
+
+恢复 Session `01a1052c-f657-75d3-93fe-987fbedf59cc` 后，fresh 专用 SSH 认证成功，
+Hook/Loom 仍为上述已发布提交、工作区干净；PC3 旧 EXE partial 的长度和 SHA 未变化。
+本节记录新的诊断，不关闭 A3，也不改变“保持当前网络”的授权边界。
+
+- **观察到明显方向性差异**：PC3 向本机发送 524,288-byte 合成数据，接收端完整 SHA-256
+  匹配；PC3 从开始发送到收到校验确认约 0.060s。本机计时约 2.046s，包含等待 PC3
+  构造数据的时间；两者不是跨机时间相减，也不是 LiveRelay FPS 或端到端媒体延迟。
+- 相反方向，普通 NAS/Linux `.201` 发送相同合成数据，PC3 约 30.894s 只收到
+  97,820 bytes；PC1 经现有 IPv6 link-local 路径发送，约 30.888s 只收到
+  224,640 bytes，均触发有界失败。没有修改网络、创建映射或部署常驻服务。
+  这些对照削弱了“仅 PC1 Windows 发送端”或“仅 IPv4 路径”的单一解释，但不能
+  单独定位 AP、驱动、接收路径或反向 ACK 的责任。
+- PC1 临时 TLS socket 的默认接口与显式物理接口对照，分别在 49,152 bytes 超时、
+  收完 131,072 bytes 但耗时约 24.922s；后者服务端未及时收到摘要确认，不能标为
+  稳定恢复。随后 1 KiB 单在途应用确认探测在 60s 服务端期限内仅传完 208,896 bytes。
+  所有参数仅作用于自有 socket，没有把这些管理传输实验写入 Hook/Loom 媒体协议。
+- 本机 `pktmon` 只读状态/过滤器查询返回“无法与 PktMon 驱动程序通信。拒绝访问。”，
+  因此没有源端网卡级抓包，不能声称已完成双端序列对账。未尝试提升权限或更改抓包驱动。
+
+为减少管理传输量，另行验证了 **Windows 系统 `msdelta.dll` 的二进制差分**：
+
+- PC3 和本机已有完整 `.10` 的 8,976,384 bytes / SHA-256
+  `fb4ae2050e12552a58034eaf658b66f7afcf8244e948406b6b685c1b4c7e93d3` 均已实查。
+- `.10 → .15` 补丁为 974,475 bytes，SHA-256
+  `6fff3a2b35238c609df81b623dcaec0bf67a51339fc01d82604dd1c9881df482`。
+  本机重建后与目标 `.15` 完整字节及 SHA 一致，损坏补丁拒绝测试通过。
+  仅加载系统绝对路径 DLL；输入 SHA 固定、输出缓冲区固定 8,990,208 bytes，旧包不写入。
+- 基于这个更小且已验证的产物做了一次有界 TLS 传输，约 103.593s 后读取超时。
+  PC3 停写后的 `hook.10-to-15.delta.part` 为 **415,744 bytes**，SHA-256
+  `ee471e1597c0195a3aadeeaa0e629109e52eae654446259d82e0beaf3c0e688d`，与本机
+  补丁同长度前缀一致。剩余 558,731 bytes；不能把补丁 partial 当作完整补丁或 EXE。
+- 原 407,218-byte EXE partial 和完整 `.10` 均保留。PC3 没有最终 `.15.exe`、
+  Hook 进程、下载 helper 或 Issue67 交互任务；未执行差分应用、原生启动、自检或 CDP。
+  本机临时监听和 helper 已退出，NAS 的一次性合成数据服务也已退出。
+- 详细证据和差分工具只在 `GameEditor/linshi/issue67-a3-resume-20261004`，包括
+  `delta-metadata.json`、`ack-delta-receipt.json`、`pc3-final-stable-state.json`、
+  `pc3-nas-path-probe.json`、`pc3-ipv6-path-probe.json`、`reverse-path-probe.json`。
+  补丁及秘密不提交仓库；本次没有产品代码、依赖或构建变化。
+- 文档门禁：checker tests 15/15、strict checker 1180 文件 / 0 违规、development
+  manual contract、UTF-8 无 BOM 和 `git diff --check` 通过；11 个既有软例外未改。
+  临时 Python/PowerShell 工具语法检查及本机差分重建/损坏拒绝通过；没有独立子代理
+  审查结果（启动返回 503），不把主线程核查称为独立审查。
+
+下一步先解决/定位 PC3 下行持续传输，优先补源端受限抓包与收端对账，而非重复上述
+对照或放宽 TLS。网络具备新证据后，可从已校验补丁前缀做一次受控续传；当前 helper
+故意拒绝覆盖已有 partial，续传必须显式加入稳定前缀检查。只有完整补丁校验、重建 `.15`
+并核目标 SHA 后，才进入正常配对、Surface、原生进程/CDP 和发布/受权观看验证。
