@@ -490,3 +490,51 @@ Hook/Loom 仍为上述已发布提交、工作区干净；PC3 旧 EXE partial �
 对照或放宽 TLS。网络具备新证据后，可从已校验补丁前缀做一次受控续传；当前 helper
 故意拒绝覆盖已有 partial，续传必须显式加入稳定前缀检查。只有完整补丁校验、重建 `.15`
 并核目标 SHA 后，才进入正常配对、Surface、原生进程/CDP 和发布/受权观看验证。
+
+#### A3 接续：双端抓包对账与 RSC 生效边界（2026-10-04 UTC）
+
+恢复 Session `01a10693-5783-7163-8ba1-2f67730e0b36` 后，发现其最后一次执行因
+上游配额错误中断，而不是抓包已完成。旧 Source 服务先于 Receiver 连接超时；旧
+Receiver 的过滤器名称被系统显示截断，清理保护拒绝批量移除。fresh 检查确认监视器
+未运行、仅有该任务的唯一过滤器；核对端点/端口后已清理，不影响其他抓包。
+
+- 将 Source ready、测试 listener 和 Receiver 启动放入同一有界编排后，取得两端
+  `TCP 49877` / `.20 ↔ .136` 合成流抓包。仍仅记录 80-byte prefix、8 MiB circular
+  log，Source 150s watchdog 未超期；没有媒体、产品 token 或其他应用流量。
+- 同一 131,072-byte 输入：burst 收到 114,688 bytes 后失败，Source 报
+  `The write operation timed out`；paced 完整 SHA 匹配，两端约 1.984s，Source 收到
+  摘要确认。这是管理链路诊断，不是 LiveRelay 吞吐、显示 FPS 或稳定恢复证明。
+- Source NIC/TCPIP 各解析 412 条，Receiver NIC/TCPIP 各解析 269 条；每台主机两个
+  抓取点的 TCP 指纹 multiset 相同。两流中 Receiver 已记录的 ACK 指纹均能在 Source
+  找到，且没有零窗口 ACK；burst 的 Receiver 数据间隔最高约 10.243s。
+- Receiver NIC 原始记录为 Native 802.11，但 PktMon pcapng IDB 标成 Ethernet；仅在
+  明确标注的派生副本修正 link type，校验帧控制/LLC/SNAP 后解析，原始 ETL/pcapng 保留。
+  burst 的 Receiver 缺少 SYN，且聚合/分段和抓取覆盖会改变记录数，不能将差额直接当成
+  物理丢包率。两端日志 `EventsLost=0` / `BuffersLost=0`；Source 唯一 stack drop 是
+  paced 结束时的 `INET: FIN-WAIT2`，不能用它解释此前 burst 失败。
+- 这些证据继续将调查重点放在到达 Receiver 网络接收点之前或其附近的路径，但尚不能
+  确定 AP、驱动、RSC 或其他环节为唯一原因；未根据诊断修改 Hook/Loom 产品代码。
+- 基于配对诊断做一次保持 TLS 校验的有界差分续传，先核旧 415,744-byte 前缀，另建
+  `hook.10-to-15.resume.part`，保留旧 partial。24.422s 后再次读取超时；最新稳定长度
+  **624,640 bytes**，SHA-256
+  `2c6196d60e75f3d1f6f573aeb7d327b794533264c535040e24632aec164edf8c`，与本机
+  补丁同长度前缀一致，剩余 349,835 bytes。没有完整补丁/`.15.exe`，未应用补丁或启动 Hook。
+- 用户明确允许仅对 PC3 WLAN 的 IPv4 RSC 做一次限时关闭/恢复对照。先注册 180s 独立
+  恢复保险，再用 `-NoRestart` 关闭；`IPv4Enabled=false`，但
+  `IPv4OperationalState=true`，故在流量测试前 fail closed，不能记为有效 RSC A/B。
+  已恢复 IPv4 原值，IPv6 始终保留；独立 fresh 检查四项 Enabled/Operational 均为 true，
+  WLAN Up、恢复任务为空。需要明确允许适配器短暂重启后，才继续实际生效的 RSC 对照；
+  未重启适配器/电脑，未改驱动、防火墙、路由、系统信任或全局 TCP。
+- 两端 capture/filter、所有本轮 listener/helper 已退出，PC3 无 Hook/Issue67 交互任务。
+  专用 SSH 授权未续期，验收仍未完成，没有把本机 expiry 当作授权失效或自动撤销依据。
+- 证据目录：`GameEditor/linshi/issue67-a3-dual-capture-20261004T1200Z`，关键回执为
+  `paired/paired-sequence-comparison.json`、`final-prefix-proof.json`、`pc3-final-state.json`、
+  `rsc-control/pc3-receipt.json`、`rsc-control/fresh-restoration-check.json`。
+  临时工具的摘要/长度拒绝、元数据有界、跨机时钟独立性、NIC/stack 解析对账测试 4/4 通过。
+- 本次 Loom 仅有本计划变更：checker tests 15/15、strict checker 1180 文件 / 0 违规、
+  development manual contract、UTF-8 无 BOM 和 `git diff --check` 通过；11 个既有软例外
+  未改。临时新增/修改工具 11–112 有效行，Python 编译与 PowerShell 语法检查通过；未
+  修改依赖或构建相同二进制。独立子代理启动返回 503，无可用独立审查结论。
+
+A3 仍未完成：下一实际产品步骤仍以完整 `.15` SHA 验证为前提，不能用上述配对抓包或
+RSC 配置状态代替正常发布、受权观看、原生进程绑定和性能验收。
