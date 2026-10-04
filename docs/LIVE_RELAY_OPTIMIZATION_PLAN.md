@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | 本机原生 Surface 前置通过，第二台 Windows 观看端待授权；仍须静态文字/滚动/运动、1/2/4 viewer、慢端、恢复/撤销；记录网络/包/CPU/内存/阶段耗时/字节，GPU/物理显示缺失须明示；详见下方 A3 回执 |
+| A3 | 进行中 | 两机原生基线与对照报告 | 本机原生 Surface 前置通过，PC3 fresh SSH 已认证；候选传输未完整校验，共同 HTTPS Loom 未配置；仍须静态文字/滚动/运动、1/2/4 viewer、慢端、恢复/撤销；记录网络/包/CPU/内存/阶段耗时/字节，GPU/物理显示缺失须明示；详见下方 A3 回执 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -115,8 +115,9 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - 下一动作 **A3**：用本轮不可变候选从正常入口完成一个源/一个受权观看端的原生两机闭环，
   先核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
   夹具不能冒充新包的原生显示；之后按需扩大多 viewer、慢端、恢复/撤销和负载矩阵。
-  本机原生 Surface 前置已通过；两机下一步需要恢复 PC3 专用测试授权的明确同意，或另一台
-  已授权 Windows 测试机。不得自行重新启用先前明确撤销的访问权限。
+  本机原生 Surface 前置已通过；用户确认 PC3 地址后，专用 key 的 fresh SSH 认证已实证通过。
+  当前不再等待 PC3 授权或 IP。先核精确候选的远端完整性和共同 HTTPS Loom 入口，条件齐备
+  后绑定桌面/CDP；管理传输、旧 bridge 和各机独立 loopback 服务不等于原生两机媒体链路。
 - 仍未验收：正常产品入口两机闭环、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
@@ -228,3 +229,77 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   和 `git diff --check` 通过；strict checker 扫描 1180 个文件、0 违规，11 个既有软上限
   例外未改动。仅修改本计划，Markdown 不计源代码有效行数；未重复前端/Rust 全量测试、
   原生验收或构建。门禁回执见该证据目录的 `documentation-validation.json`。
+
+### PC3 已授权后的连接复核（2026-10-04 05:44–05:46 UTC）
+
+本节保留当时的失败证据；当前连接结论已由下面的 fresh 认证成功更新。
+
+- 用户明确表示“我现在给了你pc3的权限”；不再将本轮状态记为等待用户授权。
+  访问权限范围仍仅限本轮测试，不扩展到其他 key、防火墙、现有应用实例或主机重启。
+- 复用既有专用 SSH 配置，`BatchMode=yes`、`StrictHostKeyChecking=yes`，禁止连接复用。
+  旧入口直连 TCP 已建立，但返回 `kex_exchange_identification: Connection closed by remote host`
+  和 exit 255；尚未收到服务端 SSH banner，未进入认证，也未实际验证主机密钥。
+  这不是 `Permission denied`，不能判断新授权无效或专用 key 是否已恢复。
+- 通过现有、严格认证的 NAS 管理通道做一次 SSH TCP 转发对照，返回
+  `channel 0: open failed: connect failed: No route to host`；NAS 对旧目标的只读 route 查询
+  成功，但邻居状态为 `FAILED`。只证明该路径不可达，不断言目标关机、IP 改变或唯一故障原因。
+- 本轮证据：`GameEditor/linshi/issue67-a3-pc3-20261003-224314` 内的
+  `fresh-ssh-diagnostic.{json,log}`、`fresh-ssh-via-nas.{json,log}` 和 `nas-cached-route.log`。
+  receipt 区分配置中的严格主机校验与尚未执行到的实际校验；用户授权与独立连接结果分记。
+- 已询问 PC3 当前地址/SSH 端口或新的连接方式，获得有效入口后再做一次固定主机密钥的
+  fresh preflight，然后直接接续两机小闭环。没有修改远端、恢复 key、创建监听/转发常驻实例，
+  没有启动测试应用或重复已通过的本机验收；不把连接失败当产品 LiveRelay 回归。
+
+### PC3 地址确认后的 fresh 认证与时钟口径（2026-10-04 UTC）
+
+- 用户再次确认地址为 `192.168.15.136`。物理以太网绑定探测收到
+  `SSH-2.0-OpenSSH_for_Windows_9.5`；fresh 专用 SSH exit 0，实际核对固定 ED25519 主机密钥，
+  并以 `publickey` 认证成功。没有恢复或续期 key，没有更改路由、代理或防火墙。
+- 远端为 `CODE / mjc`。WTS API 确认 Active Console Session 1，explorer 属于该 session；
+  复核时无 Hook、LockApp 或 Issue67 测试任务。PC3 没有 `Z:`，其 `nas_home/AI/GameEditor/linshi`
+  是普通本地目录；本轮使用新的独立目录，不创建网络盘映射或替换历史候选。
+- 首次认证回执的本机 UTC 约 `06:30:21Z`，同次远端返回约前一日 `21:03:00Z`。
+  这是明显时钟差异的观察，不是时钟校准。没有修改系统时间，不以跨机时间戳相减计算延迟。
+- 旧 expiry 为 `2026-10-04T06:21:39Z`。旧回执字段 `dedicatedAuthorizationExpired` /
+  `dedicatedAuthorizationKnownExpired` 仅表示本机时钟超过配置值，不是远端授权已失效的结论；
+  服务端实际接受了该专用 key。保留原回执，以新 `authorization-clock-basis-correction.json`
+  补充字段口径，不能因本机时间而自动续期或重新要求授权。
+- 认证/桌面证据在 `GameEditor/linshi/issue67-a3-pc3-retry-20261003-232903`；后续管理传输和
+  时钟口径修正在 `GameEditor/linshi/issue67-a3-pc3-native-20261003-234741`。小文件校验落盘和
+  SSH 认证不能替代完整 EXE 校验，更不能标为 `native-viewer-observed`。
+- 两端现有默认 manifest 都指向各自 `http://127.0.0.1:8765`，并非共同服务入口。
+  原生跨机路径仍需正常受信任的 HTTPS Loom、合法设备会话和真实 Surface attachment。
+  不把 `LOOM_TLS_TERMINATED=1` 当作已有 TLS，不关闭证书校验，也不假定 Windows 私有根证书
+  会被 Hook 的 Rustls/WebPKI 客户端接受。用户已确认目前没有共同 HTTPS 地址；这不是已获
+  公网部署、全局信任或防火墙扩权授权，不请求发送凭证。
+
+### A3 PC3 候选传输停点与下一块（2026-10-04 UTC）
+
+- 本轮只尝试传输上述精确 `v0.2.32.14` 候选。provenance 和有 SHA 门禁的临时 launcher
+  小文件已校验落盘，但 8,980,480-byte EXE 尚未完整传输，**没有启动 launcher 或 Hook**，
+  没有注册原生测试任务、启动 CDP listener、绑定观看进程或采到原生 viewer 诊断。
+- fresh SSH 小命令可用，但大块 SCP/SFTP 出现连接重置；直接 artifact HTTP 和私有 CA
+  校验的 HTTPS 文件下载也出现读取超时。这些只是管理传输，未承载 LiveRelay 媒体或凭证；
+  临时 TLS 信任仅限该 Python 客户端的证书文件，没有安装系统根证书、扩大防火墙或改全局路由。
+- 物理网卡绑定、4096-byte buffer / 单在途请求的 SCP 在 90 秒上限前取得约 2.86 MB。
+  最初目录快照的长度与哈希读取存在在途写入竞态，不能据其宣称数据损坏。停止写入后另存
+  `pc3-scp-stable-partial.json`：长度前后均为 2,863,104，SHA-256 为
+  `f2a07a8007594923dc470aa1ff6a434f503722691cb7bf14547f5beed86270a4`，与本机候选的同长度前缀一致。
+- 因该新证据只沿已验证路径做了一次有界续传，未重头反复上传。最终约 26.6 秒后返回
+  exit 255 / `Timeout, server 192.168.15.136 not responding.`，见 `verified-prefix-resume.json`。
+  这说明当前管理链路尚不足以可靠完成传包；没有证据将唯一原因归给 Wi-Fi、代理、Defender 或产品。
+- 续传后的稳定只读回执 `pc3-final-after-resume.json` 记录 3,665,920-byte partial；未达到完整
+  EXE 大小，不能安装或启动。没有活动 SFTP、Hook 或测试任务；后续恢复必须重新核稳定长度、
+  同长度前缀 SHA 和最终完整 SHA，不能只看“续传退出”或复用在途目录快照。
+- 最后只读复核仍为 Active Console Session 1，无 Hook/LockApp/Issue67 测试任务。
+  本机临时 artifact listener 和管理 helper 已按有界生命周期退出，见 `local-final-readiness.json`；
+  没有停止既有 Loom 或其他应用。一次合并清理命令被执行策略拒绝，未执行；未完成产物保留在
+  本轮独立 linshi 目录，不能手动运行或标为已安装。临时传输私钥保留受限 ACL，不纳入 Git。
+  本轮专用 SSH 授权未续期、未提前撤销；验收尚未结束，接续完成后仍仅撤销该专用 key 行并
+  实测 fresh SSH 拒绝，保留其他 key/ACL。不能用本机 expiry 标志冒充已完成撤销。
+- 当前阶段不是 PC3 `artifact-verified`、viewer `process-bound` 或 `native-viewer-observed`。
+  本轮没有新的两机媒体、性能、长稳或输入结论，不重跑已通过的本机 Surface 前置，也不改调度/codec。
+- 下一小块先闭合共同 HTTPS Loom 的安全部署合同及入口：复用正常鉴权/配对、明确客户端证书
+  信任、请求与媒体 WebSocket origin、TLS terminator 和回滚边界；不得只改 manifest URL 或
+  `LOOM_TLS_TERMINATED` 凑通过。与此同时仅在管理链路恢复后续传并核完整 EXE SHA，之后才做
+  Active Console 进程/CDP 父链绑定，再沿真实发布与受权加入入口采 A1/A2.2。A3 整体继续进行中。
