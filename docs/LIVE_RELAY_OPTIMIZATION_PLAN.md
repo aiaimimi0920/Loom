@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 待办 | 两机原生基线与对照报告 | 静态文字/滚动/运动，1/2/4 viewer、慢 viewer、断线恢复、停止撤销；记录网络/包/CPU/内存/阶段耗时/字节；硬件 GPU 或物理显示无法测时明确缺失 |
+| A3 | 进行中 | 两机原生基线与对照报告 | 本机原生 Surface 前置通过，第二台 Windows 观看端待授权；仍须静态文字/滚动/运动、1/2/4 viewer、慢端、恢复/撤销；记录网络/包/CPU/内存/阶段耗时/字节，GPU/物理显示缺失须明示；详见下方 A3 回执 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -115,6 +115,8 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - 下一动作 **A3**：用本轮不可变候选从正常入口完成一个源/一个受权观看端的原生两机闭环，
   先核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
   夹具不能冒充新包的原生显示；之后按需扩大多 viewer、慢端、恢复/撤销和负载矩阵。
+  本机原生 Surface 前置已通过；两机下一步需要恢复 PC3 专用测试授权的明确同意，或另一台
+  已授权 Windows 测试机。不得自行重新启用先前明确撤销的访问权限。
 - 仍未验收：正常产品入口两机闭环、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
@@ -171,3 +173,58 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - 证据状态为 **artifact-verified**；`process-bound` / `native-viewer-observed` 未验证。
   预检不会启动原生界面，自检也不证明 LiveRelay。没有跑新包的两机、600 秒 soak 或输入验收。
 - 本轮 Loom 只有两份测量/计划文档变化，不重建相同 runtime，也不将 Hook 检查冒充 Loom 验收。
+
+## A3 本机原生前置与授权边界（2026-10-04 UTC）
+
+本小块只验证精确候选的原生启动、正式 Surface 操作和清理。A3 整体仍为进行中，
+没有源端实时投射或另一台设备的原生 LiveRelay 观看证据；不把 Surface dashboard 当 viewer。
+
+### 候选与已通过的观察
+
+- Hook 使用上述 `v0.2.32.14` 不可变候选；实际 EXE SHA-256 与 A2.2 绑定一致。
+- Loom 使用 `Neuro/release/Loom/local-20261004T022015Z-e754f66c`，包来源为
+  `e754f66ca5ad0caf1d1307168803918671a6e6f6`，不是当前文档提交的 SHA。
+  `runtime/loom-daemon.exe` SHA-256 为
+  `b2f1c3edaeeae5c853f9c9096f0236a31d23289aa8781a13166c107027d93478`。
+  仅验证既有包，没有改生产代码、分配新版本或重复构建。
+- 调用现有 `Hook/scripts/Invoke-HookLoomSurfaceCandidateAcceptance.ps1`，显式传入两个
+  候选路径及期望 SHA，`-DurationSeconds 60 -WarmupSeconds 0`，隔离控制面和应用数据。
+  外层回执时间 `05:22:46.2970888Z` 至 `05:24:14.0255469Z`，内外 `summary.json`
+  均为 `status=passed`、`passed=true`；执行工具最终 exit code 为 0。没有重复运行本次验收。
+- 真实 Tauri/WebView2 启动通过。初次主进程 PID `40228`，开始于 `05:22:51.4526850Z`；
+  重启主进程 PID `49396`，开始于 `05:24:04.3759690Z`。回执记录的两次实际路径均为
+  该不可变 Hook EXE；第二实例 exit code 为 0，原主进程仍存活，未绕过单实例 mutex。
+- 正式 Surface 刷新和交互 probe 通过，revision `1→4`，重启后 `5→8`；设置持久化通过。
+  60 秒本机观察记录 33 个内存样本、增长门禁无违规；不据此推断 LiveRelay CPU/GPU 收益。
+- 两次退出均为 0，退出后的 Hook 进程和 debug listener 列表为空，强制清理 PID 列表为空。
+  外层 cleanup 通过：隔离 daemon、Art Store 已停止，store/daemon/bridge listener 均为空；
+  收取最终回执后再次查询，本机没有残留 `hook.exe`。没有停止其他既有实例。
+
+### 证据边界与接手动作
+
+- 本机证据目录：`GameEditor/linshi/issue67-a3-20261003-222017`。包绑定见
+  `package-bindings.json`，原生回执见 `native-surface/summary.json` 与
+  `native-surface/hook-native/summary.json`，详细输出见 `native-surface.log`。
+  `native-precondition-review.json` 是固定白名单复核摘要，不复制原始 Surface/配对数据入仓库。
+- 尚未核验 CDP listener 到 Hook 主进程的父链；尚未采到原生观看端
+  `data-live-relay-diagnostic`。不能将本次结果标为 `native-viewer-observed`，也不以包路径/PID
+  替代完整的 viewer `process-bound` 合同。两机 FPS、帧龄、带宽、CPU/GPU、600 秒长稳、
+  慢 viewer、恢复/撤销和返回输入仍未验收，原有 A3 实验矩阵不缩减。
+- PC3 历史专用授权撤销回执确认 `dedicatedKeyPresent=false`、其他 key/ACL 保留；
+  当时 fresh pinned-key SSH 返回 255/Permission denied。本次没有尝试该撤销 key、恢复授权
+  或修改远端。旧配对及 mTLS/NLWM PNG bridge 显示证据不能作为当前授权或原生 LAN 基线。
+- 现有 PC2 管理通道本轮只读查询成功，`uname -s` 返回 `Linux`（见 `pc2-os.log`）；
+  它不能直接充当本轮 Windows Hook/WebView2 观看端，未安排 Wine 等替代路线。
+- 已向用户请求：仅本轮临时恢复 PC3 专用 SSH 授权、结束后再次撤销，或指定另一台
+  已授权 Windows 测试机。获得明确答复前不做远端权限变更，也不重复消耗本机已通过证据。
+- 授权齐备后先完成一个源/一个受权 viewer：源端真实 `Ctrl+2` 后从参数面板发布到 Loom；
+  收端使用真实已挂载的 Surface-capable Art 刷新/选择/加入，分别绑定 EXE/SHA/PID/开始时间
+  和 CDP owner，联合采集 A1 发送采样及 A2.2 收端单槽，再验证更新与停止。不能绕过鉴权
+  或使用旧 bridge/PNG tile adapter。证明瓶颈后才进入 B/C 条件优化。
+- 现有 `Hook/scripts/tests/Invoke-LiveUnitNativeProbe.ps1` 强制输出位于 `Hook/artifacts`；
+  不要将 joint runner 的 `-LiveUnitProbe` 与本节 linshi `ArtifactRoot` 直接组合。后续选择
+  已满足输出门禁的调用方案，不能为方便测试擅自放宽门禁。
+- 本小块交接门禁：checker 测试 15/15、Loom development manual contract、UTF-8 无 BOM
+  和 `git diff --check` 通过；strict checker 扫描 1180 个文件、0 违规，11 个既有软上限
+  例外未改动。仅修改本计划，Markdown 不计源代码有效行数；未重复前端/Rust 全量测试、
+  原生验收或构建。门禁回执见该证据目录的 `documentation-validation.json`。
