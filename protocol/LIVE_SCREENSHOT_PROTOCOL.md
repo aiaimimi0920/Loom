@@ -186,6 +186,11 @@ are required for the [#67 A baseline](https://github.com/aiaimimi0920/Loom/issue
 The focused `live_media_diagnostics_tests` include real loopback WebSocket writes;
 this is not a physical two-device, WAN or multi-screen acceptance result.
 
+The read-only [bounded sampler](../docs/LIVE_RELAY_MEASUREMENT.md) collects these
+existing snapshots without changing the daemon protocol. Its observed-sample
+percentiles are not all-frame distributions. Current `queueAgeMs` is sampled
+after representation adaptation and already includes that adaptation duration.
+
 ## Observation and trigger trust
 
 Observations always carry `source`, `confidence`, `observedAtMs`, and `sequence`.
