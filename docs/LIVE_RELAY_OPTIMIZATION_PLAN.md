@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | 本机原生 Surface 前置通过，PC3 fresh SSH 已认证；候选传输未完整校验，共同 HTTPS Loom 未配置；仍须静态文字/滚动/运动、1/2/4 viewer、慢端、恢复/撤销；记录网络/包/CPU/内存/阶段耗时/字节，GPU/物理显示缺失须明示；详见下方 A3 回执 |
+| A3 | 进行中 | 两机原生基线与对照报告 | 本机原生 Surface 前置通过，PC3 fresh SSH 已认证；origin-scoped CA 与两机临时共同 HTTPS 安全边界已验证，但不是常驻部署或原生媒体验收；新候选完整性及原生进程绑定见最新回执。仍须静态文字/滚动/运动、1/2/4 viewer、慢端、恢复/撤销；记录网络/包/CPU/内存/阶段耗时/字节，GPU/物理显示缺失须明示 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -116,8 +116,9 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   先核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
   夹具不能冒充新包的原生显示；之后按需扩大多 viewer、慢端、恢复/撤销和负载矩阵。
   本机原生 Surface 前置已通过；用户确认 PC3 地址后，专用 key 的 fresh SSH 认证已实证通过。
-  当前不再等待 PC3 授权或 IP。先核精确候选的远端完整性和共同 HTTPS Loom 入口，条件齐备
-  后绑定桌面/CDP；管理传输、旧 bridge 和各机独立 loopback 服务不等于原生两机媒体链路。
+  当前不再等待 PC3 授权或 IP。共同 HTTPS 的客户端信任合同及两机临时安全边界已验证，
+  详见末尾最新回执；它不是常驻入口。先闭合新候选远端完整性，再绑定桌面/CDP 和真实
+  Surface/合法会话；管理传输、旧 bridge 和各机独立 loopback 服务不等于原生两机媒体链路。
 - 仍未验收：正常产品入口两机闭环、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
@@ -303,3 +304,97 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   信任、请求与媒体 WebSocket origin、TLS terminator 和回滚边界；不得只改 manifest URL 或
   `LOOM_TLS_TERMINATED` 凑通过。与此同时仅在管理链路恢复后续传并核完整 EXE SHA，之后才做
   Active Console 进程/CDP 父链绑定，再沿真实发布与受权加入入口采 A1/A2.2。A3 整体继续进行中。
+
+### A3 最新回执：origin-scoped CA 与共同 HTTPS 安全边界（2026-10-04 UTC）
+
+本节更新此前“共同 HTTPS 尚未闭合”的停点；上述 `.14` 原生前置及失败传输记录保持
+原样，不用新包冒用旧 EXE 的运行证据。A3 整体仍为进行中。
+
+- Hook 实现提交 `d8cee86bdaaf8d3d858f7fc970d7487c78cc50f7` 已普通推送到 `main`，
+  fresh `ls-remote` 于 `10:00:37Z` 核对同一 SHA。先前 Git TLS 传输失败确实未发布；
+  显式使用现有本机代理和单命令 HTTP/1.1 后成功，未修改全局 Git/代理或关闭 TLS 校验。
+- [Hook 信任合同](https://github.com/aiaimimi0920/Hook/blob/d8cee86bdaaf8d3d858f7fc970d7487c78cc50f7/docs/SECURITY_BOUNDARIES.md#origin-scoped-loom-https-trust)：
+  进程同时设置 `HOOK_LOOM_TLS_ORIGIN` 和绝对路径 `HOOK_LOOM_TLS_CA_FILE`，仅指定
+  canonical HTTPS origin 及对应 WSS origin 获得额外 CA，其他 origin 沿用 WebPKI。
+  HTTP/WSS 共用标准 Rustls 校验，scoped HTTP 禁止重定向；没有 dangerous verifier、
+  系统根证书安装或远程明文放行。CA 为本地 regular certificate-only PEM，最多
+  32768 bytes / 8 张证书，缓存身份包含 origin 和 CA digest。
+- 配置错误会阻断**全部 trust-aware client construction，包括 loopback**，不是仅阻断
+  配置目标；进程 `OnceLock` 固定成功或失败状态，修正/轮换必须重启 Hook。proxy-only
+  remote-image/Tea/voice 调用及 `--no-default-features` loopback manifest gate 未放宽。
+- 与该源码对应的 TLS 10/10、network proxy 7/7、device session 19/19、Loom connector
+  5/5、wall live 1/1 通过；另有 `--no-default-features` connector 5/5、all-targets
+  compile、formatter、strict 行数门禁和 dependency contract 通过。真实联网 OSV Enforce
+  为 4 lockfiles / 1654 packages / 0 未豁免 ID，沿用 19 项既有例外，未新增豁免。
+  `talk_connector::` filter 为 0 tests，仅有编译覆盖；本轮未重跑全量前端或 native suite。
+- 首次 TLS 夹具失败已实查为 Windows accepted socket 继承 listener nonblocking 状态，
+  服务端报告 `Interrupted handshake (WouldBlock)` / `os error 10035`。仅修正夹具 socket
+  模式和有界 shutdown/join 后通过，没有放宽产品证书校验或用重试掩盖。
+
+#### 新不可变候选
+
+- Hook 内部版本 `v0.2.32.15`；目录
+  `Neuro/release/Hook/v0.2.32.15/issue67-scoped-https-20261004`。
+  fresh Tauri production/release build 已完成，公开 SemVer 仍为 `0.2.32`。
+- `hook.exe`：8,990,208 bytes，SHA-256
+  `02fcca8dc75a486500ae6cb928d5e8de9c3df079cc21928ca36d3c0043c467b0`；
+  provenance 为上述 `d8cee86...`、`gitDirty=false`、`channel=internal`。
+  本机 headless `--self-check` exit 0、`status=ok`；不把自检当原生观看证明。
+- 新包未发布 public Release/tag；不重复构建，不替换 `.14` 包或旧 PC3 partial。
+  本轮 PC3 新候选仍未完整校验，未启动 EXE 或注册测试任务；详见下面的有界传输回执。
+
+#### 两机真实 HTTPS 探测及清理
+
+- 临时普通 Caddy TLS terminator 监听 `https://192.168.15.20:49874`，反向代理到独立
+  loopback daemon `127.0.0.1:49873`；仅允许 `.20/.136` 来源，拒绝外部 browser Origin，
+  后端 Host 固定为 loopback。没有开发 NeuroServer、使用旧 mTLS/NLWM 媒体桥接，或用
+  `LOOM_TLS_TERMINATED=1` 冒充 TLS；管理员 token 只在本机 daemon 进程环境，未发给 PC3。
+- 使用已校验的既有 Loom runtime，daemon SHA-256 仍为
+  `b2f1c3edaeeae5c853f9c9096f0236a31d23289aa8781a13166c107027d93478`。
+  Caddy `v2.11.7` 来源和官方摘要已联网核实，工具只留 linshi，不引入源码依赖。
+- 两端诊断客户端均实测 `/health=200`、未授权 `/status=401`、带正确升级头及
+  `loom.live.jpeg.v1` 子协议但未授权的 media WSS 请求 `401`、外部 Origin `403`，
+  默认不信任该 CA 的客户端拒绝证书。回执 `local.passed=true`、`remote.passed=true`。
+  全部是 Python 诊断客户端，没有实际 `101`、媒体、Hook viewer 或性能结论。
+- 公共 CA 经 pinned SSH 和 SHA 校验落盘 PC3；CA 私钥未持久化，leaf key 仅留本机受限 ACL
+  目录。证书约 `2026-10-05T09:24:42Z` 到期，复用前核 metadata，不修改两机系统时间。
+  已观察到两机时钟差，禁止跨机时间戳相减计算延迟。
+- 临时 daemon/terminator 已按路径、PID、creation time 绑定清理，回执
+  `remainingListeners=[]`、`remainingOwned=[]`；该 URL **不是常驻可用服务**。
+  未改防火墙、系统信任、全局网络或用户既有运行实例。
+
+本轮详细证据：`GameEditor/linshi/issue67-scoped-https-20261004`，关键文件为
+`hook-published-receipt.json`、`focused-test-results.json`、`package-binding.json`、
+`isolated-lan-https-receipt.json`。下一步仍是新包 PC3 完整性、真实 Surface attachment/
+合法设备会话、原生进程/CDP 父链绑定，再从正常发布/受权加入入口采 A1/A2.2。源端、
+观看端、更新/停止、性能、多 viewer、长稳和返回输入均不能由上述诊断替代。
+
+#### PC3 新候选有界传输与当前网络事实（2026-10-04 10:03 UTC 起）
+
+- 沿已验证的普通 Caddy HTTPS 路径临时开放精确 `/candidate/hook.exe`，只限 `.20/.136`，
+  不开放目录、其他路径或 browser Origin；CA 校验、大小/SHA 门禁和拒绝重定向保持。
+  独立 `.part` 只有完整校验成功才原子改名为 EXE，没有传输管理员凭证或 LiveRelay 媒体。
+- 整文件读取超时，留下 14,471-byte partial；停止写入后本地同长度前缀 SHA 完全一致。
+  随后做一次有区分力的 1024/8192/16384/65536-byte 标准 HTTP Range 对照，四项均为
+  `206`、完整长度和匹配前缀 SHA；这仅证明这些小响应，不能推断大传输已恢复。
+- 单连接、单在途 8192-byte Range 传输在第二请求读取 headers 时超时，仅留下
+  8192 bytes。沿“小响应新连接已通过”的证据只做一次有界 fresh-connection 续传，
+  先校验该稳定前缀，没有重头重传或覆盖旧 `.14`；13 个新请求后 body 读取再次超时。
+- 最终稳定 `hook.v0.2.32.15.ranges.part` 为 110,258 bytes；长度前后相同，SHA-256
+  `5ae93ecaa00e9c05c4f309cc8206ad367b5ada8de2c7b88095941f6588741547`，
+  与新候选的同长度前缀一致。远端无 downloader 残留、无最终 `.15.exe`，故不是 PC3
+  `artifact-verified`、`process-bound` 或 `native-viewer-observed`，不运行不完整文件。
+- fresh 只读网络实查：`.136` 属于 interface 4 / Intel Wi-Fi 6 AX200 WLAN，状态 `Up`、
+  link rate `433.3 Mbps`；Realtek PCIe GbE interface 11 为 `Disconnected / 0 bps`，
+  仅有 link-local IPv4。适配器累计 packet error/discard 字段均为 0；这些事实不证明
+  Wi-Fi、网线、驱动、TCP 或 Defender 中任何一个是唯一原因，不能把管理超时当产品回归。
+- 三轮临时 artifact server 都按 owner 身份清理，`remainingListeners=[]` /
+  `remainingOwned=[]`。没有改系统网络、信任或防火墙，没有创建共享/临时网络盘。
+  本轮不再盲重试；优先定位持续传输路径或在用户报告新的网络状态后做 fresh 有界对照，
+  再核完整新候选。专用 SSH 授权仍保留用于接续，未续期/提前撤销，任务结束仍只撤销专用行。
+- 新证据：`verified-candidate-transfer-receipt.json`、`candidate-range-probe-receipt.json`、
+  `verified-range-candidate-transfer-receipt.json`、`fresh-range-candidate-transfer-receipt.json`、
+  `final-candidate-prefix-proof.json`、`pc3-actual-lan-interfaces.json`。失败回执和 partial 保留。
+- 本次 Loom 仅更新本计划；checker tests 15/15、development manual contract、strict
+  checker（1180 文件、0 违规、11 项既有软上限例外未改）、UTF-8 无 BOM 和 diff 检查通过。
+  无 Loom 代码或依赖变化，不重复编译、扫描或构建相同 runtime，不把 Hook 的检查外推给 Loom。
