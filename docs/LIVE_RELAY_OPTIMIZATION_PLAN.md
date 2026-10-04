@@ -398,3 +398,45 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - 本次 Loom 仅更新本计划；checker tests 15/15、development manual contract、strict
   checker（1180 文件、0 违规、11 项既有软上限例外未改）、UTF-8 无 BOM 和 diff 检查通过。
   无 Loom 代码或依赖变化，不重复编译、扫描或构建相同 runtime，不把 Hook 的检查外推给 Loom。
+
+#### 保持现有网络的 TCP 层定位与更新停点（2026-10-04 UTC）
+
+用户明确选择“保持当前网络继续定位”。本节替代前述 110,258-byte 当前停点，保留那些
+历史失败回执，不把有线切换当唯一前提，也不扩展为网卡/路由/防火墙调整授权。
+
+- 用本地 Windows SDK `mstcpip.h` 的 `SIO_TCP_INFO / TCP_INFO_v0` 只读采集自有 socket
+  状态；88-byte 结构及 loopback 收字节计数夹具通过。没有全局 TCP/offload 变更。
+  第一次同内容 131,072-byte TLS 对照，两端完整 SHA 匹配；burst 接收为 13.641s，
+  paced 为 2.344s。发送端分别观察到累计 12 / 1 次 timeout episode。这是有限诊断，
+  不是稳定吞吐、媒体时延或性能优化收益证明。
+- 基于该新证据仅做一次 paced artifact 续传：先核稳定的 110,258-byte 前缀，单请求、
+  1 KiB / 10ms 发送节奏、20s socket / 500s 总 deadline、严格 TLS、Range/ETag/大小/
+  SHA 门禁；不改 Hook/Loom 媒体协议或调度。约 104.062s 后 body 再次读取超时。
+- 最新稳定 `hook.v0.2.32.15.ranges.part` 为 **407,218 bytes**，SHA-256
+  `d144faba9ca856e93f988623a86fb378cee642120f6389c9acb83b2796081067`；
+  独立停写复核的长度前后相同，与新候选同长度前缀匹配，远端无 downloader 残留。
+  仍无完整 `.15.exe`，没有启动 Hook、自检、交互任务、CDP 或原生观看。
+- 该 artifact 连接发送端累计 `BytesRetrans=394574`、`TimeoutEpisodes=49`，
+  `Cwnd=1460`、`SndWnd=65280`；收端最后可读 `RcvWnd=65535`。实证存在 TCP 重传/
+  停顿，不是 CA 拒绝或 Hook 解码错误，也没有证据归因为接收应用不读取导致零窗口。
+  底层责任点仍未确定，不能直接宣称网卡、AP、网线、Defender 或 Npcap 有缺陷。
+- 在 PC3 做一次只覆盖 `.20/.136`、TCP `49877` 的 packet monitor 对照：开始前 monitor
+  未运行且无 filter，限定 80-byte packet prefix、8 MiB circular log，只使用上述合成
+  校验数据，不记录其他应用流量、媒体或管理员凭证。第二轮 burst 在 16,384 bytes
+  读取超时，paced 131,072 bytes 完整 SHA 匹配、4.953s；再次说明小成功不等于长流恢复。
+- PC3 TCP/IP 组件记录包含重复累计 ACK、序列缺口和约 9.409s 的数据间隔：例如 ACK
+  offset 3921 重复六次，同时观察到后续 offset 5381 的 segment。抓取未报告 stack drop，
+  `EventsLost=0`、`BuffersLost=0`；这不排除抓取点之前或反向 ACK 路径的问题。
+  component/SYN 覆盖有限，分析器不把未解码 NIC layout 或缺少 SYN 的流伪装成无包/无丢失。
+- capture 和唯一自建 filter 已清理；fresh final status 为“数据包监视器没有运行”、
+  filters 为“无”，所有自有 TLS listener/process 已退出。第一次 capture runner 因
+  PowerShell 5.1 默认按 ANSI 读取 UTF-8 无 BOM 文件而误判中文 gate，未开始 capture；
+  改为显式 UTF-8 读取并创建 ScriptBlock 后正常执行，未改中文源码为问号或 Unicode 转义。
+- 两档 ICMP（32 bytes / DF 1472 bytes）都无回复，只能记录 ICMP 探测不可用，不能据此
+  宣称 MTU blackhole。没有为使 ping 成功修改防火墙，也未更新驱动或关闭 offload。
+- 新证据：`tls-transport-diagnosis-receipt.json`、`paced-candidate-transfer-receipt.json`、
+  `paced-candidate-server.json`、`paced-final-prefix-proof.json`、
+  `tls-transport-receiver-capture-receipt.json`、`pc3-packet-capture-evidence-excerpt.log`。
+  ETL/pcapng/完整诊断仅在 PC3 独立 linshi；本机保留脱敏摘要和 owner 清理回执。
+  下一步保持当前网络，继续区分正向数据/反向 ACK 路径和抓取点之前的责任，避免盲目
+  重传 EXE 或改产品 codec。A3 的完整候选、正常原生发布/观看及性能验收仍未完成。
