@@ -40,7 +40,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A0 | 已完成 | Loom：本计划、文档索引 | 实际源码对照 Issue；先提交计划再开发 |
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
-| A2.2 | 待办 | Hook/Loom：收端证据采集与包绑定 | 绑定 source/epoch/frame 与包 SHA；记录真实 decoded-submitted 和缺口，不把 daemon 采样当显示 FPS |
+| A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
 | A3 | 待办 | 两机原生基线与对照报告 | 静态文字/滚动/运动，1/2/4 viewer、慢 viewer、断线恢复、停止撤销；记录网络/包/CPU/内存/阶段耗时/字节；硬件 GPU 或物理显示无法测时明确缺失 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
@@ -109,8 +109,12 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - A2.1：Hook `5857e77c79f7ab6f24d1a214a3001e512bc5a2fa`，内部迭代 `v0.2.32.13`。
   Live Unit 中的发布入口改称“实时投射”；支持 Surface 的 Art 参数面板可刷新/选择/加入。
   当前必须复用已挂载的 Surface，不生成伪造 attachment，不把配对直接等同于观看/输入授权。
-- 下一动作 **A2.2**：复用 `liveRelayPresentation` 的 decoded-submitted 字段，补有界只读
-  收端证据及实际包 SHA 绑定，然后产出内部手测包。A1/A2.1 测试不替代 A3 原生两机验收。
+- A2.2：Hook `db029ef244ca2b945dddfb90c4a66f59a359452e`，内部迭代 `v0.2.32.14`。
+  [收端诊断合同](https://github.com/aiaimimi0920/Hook/blob/db029ef244ca2b945dddfb90c4a66f59a359452e/docs/LIVE_RELAY_DIAGNOSTICS.md)
+  明确有界读取、时钟口径、源/帧关联和 EXE/实际进程身份检查；DOM 不伪造包 SHA。
+- 下一动作 **A3**：用本轮不可变候选从正常入口完成一个源/一个受权观看端的原生两机闭环，
+  先核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
+  夹具不能冒充新包的原生显示；之后按需扩大多 viewer、慢端、恢复/撤销和负载矩阵。
 - 仍未验收：正常产品入口两机闭环、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳。
 - 本轮辅助子代理因上游 503 未得到有效结果；直接源码核查不标为独立交叉评审。
 
@@ -131,3 +135,38 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - 逐文件复核：UI 字段按文本输出；鉴权仍由 native/Loom 执行；没有新增 timer、持久历史、凭证
   或媒体复制；关闭面板不 dispose 全局 owner。在途响应以单独新 relay ID 清理，已有 viewer 不受影响。
 - 本地证据在 `GameEditor/linshi/issue67-a2-20261004`；未对其他运行实例做停止/重置。
+
+## A2.2 验证与逐文件复核（2026-10-04 UTC）
+
+- 最终四组聚焦回归 54/54：白名单、非法数值/ID、relay/session/epoch/frame 一致性、
+  旧帧保留、真实 controller stop、Surface 加入与解码/轮询邻近路径。
+- 应用/测试 TypeScript 检查、ESLint、Rust formatter、strict 行数门禁与 diff 检查通过。
+  checker 测试 16/16，1373 个文件全部不超过 500 有效行；新诊断模块 44、测试 91。
+- 完整串行前端测试 442 文件/2047 项通过（946.87 秒，主要为环境初始化）；之后最后的
+  ID 字符限制/relay 校验增量以 54 项聚焦回归及重新执行的 typecheck/lint 覆盖。
+  初步怀疑长时间无结果后尝试有身份保护的停止时，进程已自行退出；没有实际终止它。
+- Chromium 运行真实组件与 decoder：JPEG/raw 实际像素读回、epoch 变化、解码失败保留
+  旧像素、closed 失效与 stop 移除槽通过。IPC 为夹具；不是原生网络、进程绑定或物理 FPS。
+  首轮临时 harness 的 250px root 截断了全局窗口；修正夹具容器和依赖 alias 后复核通过，
+  没有为夹具错误修改产品布局。
+- 依赖安全合同及联网 Enforce OSV 通过：4 lockfiles、1651 packages、0 未抑制 ID，
+  扫描器过滤 19 个现有受控例外；不是宣称依赖完全没有 advisory。未新增依赖/修改锁文件。
+- 逐文件复核：诊断固定字段、ASCII ID/安全数值有界，禁止像素/标题/URL/错误正文/凭证；
+  单槽覆盖，无新 timer/媒体复制/持久历史。generation 仍由原 controller 在读帧和解码后
+  复核；sourceIdentity 仅沿合法加入传递。window/store/types/controller 只做 1–6 行接线，
+  所有相关文件不超过 401 有效行。独立只读审查未发现确认缺陷，指出的 stop 测试缺口已补。
+- 本地详细证据放在 `GameEditor/linshi/issue67-a22-continuation-*`。构建/产物回执见下方；
+  不发布内部 tag/公开 Release，不停止或替换既有 Loom，保留 Neuro 根仓库所有原有改动。
+
+### A2.2 内部候选产物回执
+
+- Hook `v0.2.32.14`，源码 `db029ef244ca2b945dddfb90c4a66f59a359452e`，provenance 为
+  `channel=internal`、`gitDirty=false`；沿用该轮已分配版本，没有为重建再次增加 revision。
+- Neuro 内不可变目录：`release/Hook/v0.2.32.14/issue67-a22-20261004T045412Z-db029ef`。
+- `hook.exe`：8,980,480 bytes，SHA-256
+  `bf8b7c678158a8f98d17297e3da7ce966cfe66833824bc77d22fb2c0548d45a7`。
+- 本轮 fresh Tauri production/release build、实际 SHA/provenance 核对、绑定该 SHA 的
+  headless self-check 及 `PreflightOnly` 均通过。既有大 JS chunk warning 未在本任务改写。
+- 证据状态为 **artifact-verified**；`process-bound` / `native-viewer-observed` 未验证。
+  预检不会启动原生界面，自检也不证明 LiveRelay。没有跑新包的两机、600 秒 soak 或输入验收。
+- 本轮 Loom 只有两份测量/计划文档变化，不重建相同 runtime，也不将 Hook 检查冒充 Loom 验收。

@@ -65,7 +65,9 @@ Ctrl+C、样本不足或写文件失败返回非零。能保留的部分报告�
 - `forwardedFrames` 汇总所有 viewer，不能当唯一源帧数；ring eviction / viewer skip 不是网络丢包。
 - 成功 socket write 不等于接收、解码或显示；失败写入的部分字节没有计入成功字节。
 
-下一步 A2/A3 必须另行绑定收端 decoded-submitted、正常产品入口、包 SHA、设备/网络/负载，
+Hook A2.2 已提供[收端单槽与实际进程包绑定合同](https://github.com/aiaimimi0920/Hook/blob/db029ef244ca2b945dddfb90c4a66f59a359452e/docs/LIVE_RELAY_DIAGNOSTICS.md)。
+使用相同 session/source 和 epoch/frame 对齐；两端都可能漏掉中间帧，不能拼成全帧统计。
+下一步 A3 必须另行绑定收端 decoded-submitted、正常产品入口、实际进程包 SHA、设备/网络/负载，
 并采集 CPU/GPU、卡顿、恢复、撤销等证据。没有这些数据，不宣传“更流畅”、帧龄下降或 CPU 降幅。
 
 ## 验证与复现
