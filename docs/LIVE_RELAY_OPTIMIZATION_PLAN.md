@@ -1051,3 +1051,62 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 
 下一步先区分独立 Surface 错误与 A3 剩余基线矩阵，再选择一个有界闭环；默认 GPU 的本次
 发布/观看/停止门禁不再重复。反方向、多 viewer、慢端、恢复/撤销、长稳和性能对照仍未验收。
+
+## 独立 Surface 事件收敛修复及原生验收（2026-10-05 UTC，当前停点）
+
+续接会话 `01a10a16-ce4d-79a0-b117-aa94ada174e6` 因 402 中断后的最后任务。本轮关闭上述
+可复现的独立 `Surface event dispatch failed` 小任务，不重复 `.17` 的默认 GPU 双机门禁，
+也不将 A3 总矩阵或 Issue #67 标为完成。
+
+- 旧实机日志同时存在两个问题：事件型 Surface 被普通 `execute_art` 执行，报
+  `surfaceAction invocation is required`；真实刷新事件已在 daemon 中 `succeeded`，但 Hook
+  使用 Device 凭据 GET 管理员 full-instance endpoint 做收敛，与 Loom 权限合同不匹配。
+  UI 又将 native 字符串错误换成笼统文案。旧 `.17` 失败截图、日志及 ack/revision 证据保留。
+- Hook `3fe321ccca36a2eab080cb8b7c070ec7371f0df6` 对 Device 会话复用已有的设备过滤
+  `/v1/surfaces/stream`；必须等本事件 terminal succeeded ack，再恢复最终 snapshot。
+  instance/attachment/event/request/generation 精确绑定；其他事件、旧 generation 不完成
+  本动作，新 generation、失败、历史丢失和 25 秒总超时均 fail closed。body/message 有界。
+  loopback/admin 原路径保留，没有放宽 Loom 权限、协议或系统信任。
+- 参数持久化保留；event-only Surface 不再通过参数/上游/手动路径触发普通 Art 执行，明确
+  声明 formal execution 的 hybrid/workflow Art 仍按原路径运行。UI 保留经 native sanitization
+  的字符串错误，异步 Unit/generation 归属保护不变。Loom 产品源码没有修改。
+- routing 回归修改前 7 项中实际 5 失败；修改后前端聚焦及相邻 7 文件 / 30 tests、Rust
+  default `--lib loom_hook_listener_subscription_tests` 37 项、no-default `--lib surface_device_stream`
+  6 项通过。两种 feature 的 all-target check/clippy、两套 TS typecheck、严格 ESLint、Rust
+  格式、53 项 checker/相邻脚本测试与 diff check 通过；clippy 仍有存量警告，不称零警告。
+  首次未限定 `--lib` 的 Rust 测试因 E0463 / required rlib formats unavailable 失败，失败记录
+  保留；聚焦测试、all-target 编译和 release 链接通过，不宣称完整 Rust suite 已通过。
+- 所有新增/实质修改源码不超过 500 有效行：Device session 277、loom_hook 接线 42、事件
+  owner 279、新 stream owner 200、新 Rust 测试 120、Surface UI 181、参数 owner 327、
+  新错误显示测试 50、新 execution routing 测试 69。Hook strict 扫描 1385 文件，无 >500 文件。
+- `.18` 官方 clean-source fresh build 已完成（612.66 秒，exit 0），不重复构建或覆盖旧包：
+  `release/Hook/v0.2.32.18/issue67-surface-device-convergence-20261005/hook.exe`，9003520 bytes，
+  SHA `c6e88dcfcc955f07f9dd99020024eb6670ef34dc71e7f193a2a84c36fb0e6c0b`。
+  provenance 绑定上述 commit、gitDirty=false、internal；exact-hash/product-version self-check
+  通过。fresh 联网 OSV Enforce 为 4 lockfiles / 1654 packages / 0 未豁免漏洞 ID，19 项
+  既有受控例外未改；不是 public release。
+- 原生验收只在本机进行：独立 appdata/daemon/store、私有 CA 的真实 HTTPS Device 授权，
+  正式截图菜单 + OS 框选 → Actions → 设备仪表板 → 两次真实刷新，无 IPC mock 或状态注入。
+  snapshot/DOM revision 1→4→7、result revision 1→2，两次精确事件 ack 均 succeeded，
+  native 均记录 `transport=device_stream`，resource leases 为 1/2；无普通 execute_art、
+  Surface 错误文案或原 invocation 错误。截图人工复核确认真实 fixture、设备列表和刷新按钮可见。
+- 验收后重新核对 `.18` EXE/hash/creation/Session 1/CDP 父链：Hook 27624 / creation
+  06:57:58.7678240Z，CDP 3456 → 27624，监听仅 loopback。首次托盘驱动未读到菜单、另一轮
+  验证器额外 full-instance HTTP 查询未成功，均保留失败、不算通过；后一查询未记录 status，
+  不臆断根因。修正临时驱动有界等待与验证器只读隔离 daemon 持久状态后，新 one-shot 目录
+  完整通过；观察精确 event/request/attachment/generation，不降低产品授权门槛。
+- 夹具和候选经正常产品生命周期关闭；服务与审批循环结束、测试监听为空。原日常 `.15`
+  按原路径/hash 恢复为 55804 / creation 06:58:36.9317910Z，watchdog 52900 存在。未强杀
+  日常程序、绕过 mutex、操作 PC3、修改防火墙/系统证书信任/网络驱动或持久访问。
+- 源码/构建证据根为 `GameEditor/linshi/issue67-surface-dispatch-20261005`；最终原生证据根为
+  `GameEditor/linshi/issue67-surface-native-20261005T0650Z`。关键文件为 source-validation.json、
+  build-result.json、headless-summary.json，以及 native-surface-receipt.json、source-direct/binding.json、
+  surface-verified.png、visual-review.json、services-final.json、cleanup-final.json、original-restored.json
+  和 final-native-receipt.json（packagedSurfaceDeviceEventsVerified=true、a3Complete=false）。
+  私有身份、凭据、截图及原始日志不提交。
+- Loom 仅更新本交接文档：15 项 checker tests、strict 1180 文件、development-manual 与
+  Neuro 通用开发契约、两仓 diff check 通过；11 项既有软上限例外未变。不重编译无产品代码
+  变化的 Loom，也不以本次单机 Surface 验收替代双机/A3 剩余门禁。
+
+下一步从 A3 尚未验收的反方向、多 viewer、慢端、恢复/撤销、长稳和性能对照中选择一个
+有界闭环。本轮 `.18` 仅证明独立 Surface 修复，不把 `.17` 的双机结果移植为 `.18` 全矩阵通过。
