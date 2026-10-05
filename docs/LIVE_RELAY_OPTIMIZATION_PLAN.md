@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小后的 capture/session epoch 协调、原生控制授权/释放和停止清帧均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；device loss、显式 reconnect、原生多/慢 viewer、两机撤销、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放和停止清帧均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；真实网络中断恢复、device loss、原生多/慢 viewer、两机撤销、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -1607,6 +1607,50 @@ Loom 产品源码及 daemon 包没有变化；没有重跑 `.20` 内容矩阵或
   bytes/hash、样本、epoch、控制转换、socket 及清理。本次接续复核同一包/source 身份，
   不重复启动已通过的原生 gate。私有身份、原始图像、TLS key 和 PC3 密钥不进产品 Git。
 
-下一 bounded 块为真实显式 reconnect/device loss 或多/慢 viewer，分别保留恢复/撤销与
-生命周期门禁；两机撤销、资源预算、内存长稳、物理 FPS、GPU 使用率及 CPU/GPU 收益仍待验。
-本次 resize 成功不等设备丢失或网络/source 显式 reconnect 已通过，整体 A3 保持 partial。
+此 resize 停点的 source/viewer 显式 reconnect 已由下一节同包验收补齐；真实网络中断恢复、
+device loss、多/慢 viewer、两机撤销、资源预算、内存长稳、物理 FPS、GPU 使用率及 CPU/GPU
+收益仍待验。本节 resize 本身不证明这些场景，整体 A3 保持 partial。
+
+### A3 接续：同 `.21` 包完成双机 source/viewer 显式重连（2026-10-05 UTC）
+
+本小块仅推进尚未验收的显式重连，没有修改 Hook/Loom 产品代码、依赖或协议；复用 Hook
+`20892a704a9570e7e52cef95e2cccaaf920cdf8a` 对应的 clean `.21` 包与既有 daemon 候选。
+PC3 本机复制已核完整 SHA/大小的 `.21` EXE 和相同 helper，只新传 **574 bytes** 的 fresh
+测试 CA；管理准备 **6.654s**，不是媒体吞吐量或重连性能结果。没有新授权包或扩大系统配置。
+
+- 正常原生菜单/OS 选区采集真实 WinForms HWND，正常发布及 PC3 Actions/Surface 显式加入；
+  双端默认 GPU、独立包/PID/creation/Session/CDP 绑定与实际 JPEG 像素读取通过。
+  原生加入时 `.136 → .20:49874` 的 Hook-owned HTTPS/WSS socket tuple 实查匹配；SSH
+  仅管理 CDP/Art bridge，没有媒体 tunnel。socket 回执记录的是重连前加入阶段，未冒称
+  采集了每次重连后的新 socket tuple。
+- 观看端调用真实 `reconnect_live_relay_session`，走 authenticated Loom resume 和媒体重连；
+  reconnectCount **0→1**。源端直接点击产品“重新连接”按钮，生产路径重新授权、stop/join
+  旧 source worker，再以同一 capture/relay/session 身份替换 worker；source 的新连接时间
+  实际推进。没有 mock IPC、synthetic source、进程重启或远程键鼠输入。
+
+| 场景 | 本机观察到的恢复耗时 | 恢复后观察 | 样本 / 像素 digest | PC3 提交 frame |
+| --- | ---: | ---: | ---: | --- |
+| 观看端 native command 重连 | 696.523ms | 15.854s | 15 / 14 | 287→590 |
+| 源端产品按钮重连 | 1128.562ms | 15.934s | 15 / 15 | 646→942 |
+
+- 恢复后所有离散样本 capture epoch=1、网络 epoch=1、source/viewer connected、error=null，
+  HWND、capture/session/relay 身份及 **658×407** JPEG 固定，frame 非递减并持续推进、像素
+  digest 改变，daemon ring 不超过三帧。恢复耗时包含本机发起命令/按钮点击及离散轮询，
+  不是纯网络延迟、全帧分位数、物理 FPS，也没有相减跨设备时间戳。
+- 源端重连前实际授予 **60 秒**控制租约，source/viewer 控制状态与 daemon owner 均确认；
+  重连约 1.129 秒后，viewer controllerOwned=false、source remoteControlActive=false、
+  daemon controllerDevice=null。严格早于租约到期，不能把自动到期冒充恢复时撤权。
+  每次重连后再次 grant/release 均经过真实 Tauri → authenticated Loom → source 可靠事件，
+  两轮通过；没有测试远程键鼠、旧输入回放或控制按钮 UI。
+- 正常“停止发布”后 daemon closed/sourceConnected=false；PC3 native closed/error=null，
+  presentation=null、remainingImages=0。独立 audit 核 test GUI/services/tunnel/workers 和
+  监听零残留、PC3 task Ready；日常 `.19` 原路径/SHA/Session 1 恢复且 watchdog 存在。
+  用户 LAN 免认证管理入口和凭据资料保留，不自动升级日用包。
+- 证据根：`GameEditor/linshi/issue67-a3-explicit-reconnect-v21-20261005T2025Z`。
+  `final-independent-verification.json` 在 **2026-10-05 20:31:39.053 UTC** 为 passed，status
+  `packaged_two_host_explicit_reconnect_verified`、a3Complete=false；独立重核包 hash、逐样本
+  身份/帧号、重连变化、控制转换、停止清帧及清理。22 个临时源码 UTF-8 无 BOM、
+  语法/语言行数复核通过，最大 **137** 有效行。纯验收/文档，不递增版本或重建 daemon。
+
+下一块推进真实网络中断恢复或原生多/慢 viewer；device loss、两机撤销、资源预算、内存长稳、
+物理呈现和 CPU/GPU 收益仍待验。显式按钮/command 重连不替代真实链路中断，A3 保持 partial。
