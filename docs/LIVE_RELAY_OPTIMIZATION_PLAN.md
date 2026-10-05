@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放和停止清帧均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；真实网络中断恢复、device loss、原生多/慢 viewer、两机撤销、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、两机撤销、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -1654,3 +1654,49 @@ PC3 本机复制已核完整 SHA/大小的 `.21` EXE 和相同 helper，只新�
 
 下一块推进真实网络中断恢复或原生多/慢 viewer；device loss、两机撤销、资源预算、内存长稳、
 物理呈现和 CPU/GPU 收益仍待验。显式按钮/command 重连不替代真实链路中断，A3 保持 partial。
+### A3 接续：同 `.21` 包完成测试专用代理中断后的自动恢复（2026-10-05 UTC）
+
+本小块补齐 **本机真实 WGC source → Loom → PC3 原生 viewer 的真实连接中断/自动恢复**。
+复用 Hook `20892a704a9570e7e52cef95e2cccaaf920cdf8a` 对应 `.21` / `e4ce0ba0...` 与既有
+terminal daemon / `8e36846d...`，没有修改产品代码、协议、依赖、版本或重新构建。
+PC3 本机复用已核完整 SHA 的 EXE/helper，仅新传 **574 bytes** fresh 测试 CA；准备 **1.623s**。
+
+- 通过正常原生菜单/OS 选区、源端发布、PC3 Actions/Surface 的刷新/选择/显式加入；两端
+  默认 GPU，真实 WinForms HWND、包/PID/path/creation/Session/CDP 与 source/capture/relay
+  身份绑定。加入和恢复后均实采 `.136 → .20:49874` Hook-owned HTTPS/WSS tuple，匹配
+  本机代理 PID；SSH 仅管理 CDP/Art bridge，没有媒体 tunnel 或 mock IPC。
+- 只停止本轮已绑定 PID/path/creation 的 TLS 代理，再恢复同一配置；原 daemon、两端 Hook
+  进程及真实窗口持续存活，恢复后独立重新绑定的进程身份未变。没有修改网卡、路由、
+  防火墙、RSC、系统信任、Windows 时间或持久接入设置，没有手动点击/调用 reconnect。
+  产品自己的 source 自动恢复调度与 viewer resume/media worker 正常执行。
+- listener 不可用回执区间 **7.897s**，包含有界 5 秒暂停与进程/监听 readiness 采样开销；
+  从测试发起中断到观测恢复 **10.798s**。恢复回执出现后再次采样约 **81.166ms**，不能
+  将这部分当作真实总恢复时延、纯网络延迟、SLA 或跨机校准结果。
+- 27 个故障阶段样本中，19 个确认 daemon `sourceConnected=false`，session 未关闭；
+  source/viewer native 实际进入 recovering，WGC frame 继续推进，而 PC3 最后的旧帧冻结。
+  代理恢复后双方 connected/error=null，viewer reconnectCount **0→1**；源端 worker 被
+  产品自动重新授权并替换，`lastConnectedAtMs` 推进，因此源端新 worker 计数允许从 0 开始。
+- 恢复后观察 **15.728s / 15 样本 / 15 不同像素 digest**，PC3 decoded-submitted frame
+  **507→805**；JPEG **658×407**，capture epoch=1、网络 epoch=1、HWND 和会话身份不变，
+  帧非递减且持续前进，daemon ring≤3。不是物理显示 FPS、GPU 使用率或 CPU/GPU 收益。
+- 中断前实际授予 **60 秒控制租约**。故障期间 daemon 撤权；恢复时及全部恢复后样本的
+  viewer controllerOwned/source remoteControlActive 均 false，远早于租约到期，无旧权复活。
+  恢复后真实 Tauri → authenticated Loom → source 可靠事件的 grant/release 再次通过；
+  未测试控制按钮 UI、远程键鼠输入或旧输入重放。
+- 正常“停止发布”后 daemon closed/sourceConnected=false；PC3 native closed/error=null、
+  presentation=null、remainingImages=0。独立回执 verifier 和 owner audit 确认 test GUI、
+  服务、tunnel、workers/listener 零残留、PC3 task Ready；日常 `.19` 按原路径/SHA/Session 1
+  恢复且 watchdog 存在，用户免认证管理通道/私有凭据资料保留，不替换日用版本。
+- 首轮 `issue67-a3-transport-interruption-v21-20261005T2045Z` 实际已恢复并清权，但 harness
+  错误要求 source reconnectCount 增长，超时失败。经生产 source 自动调度和新 worker 状态
+  初始化代码确认，只改断言为连接时间推进、原身份和真实像素恢复；旧失败结果/清理回执
+  保留，未改产品以迎合测试，也未重置 marker。最终在 fresh one-shot root 通过。
+- 成功证据根 `GameEditor/linshi/issue67-a3-transport-fixed-contract-v21-20261005T2050Z`；
+  `final-independent-verification.json` status 为
+  `packaged_two_host_transport_interruption_automatic_recovery_verified`、passed=true、
+  a3Complete=false。23 个临时源码 UTF-8 无 BOM、语法/语言行数检查通过，最大 **122**
+  有效行；独立核包 hash、故障/恢复状态、控制转换、双阶段 socket、进程身份和清理。
+
+此门禁严格对应 **测试专用 TLS 代理停启造成的 TCP/HTTPS/WSS 连接中断**，不是实际拔网线、
+断开 WLAN、静默丢包 blackhole、网络切换或 daemon 重启验收。下一步仍从原生多/慢 viewer、
+两机撤销、device loss、资源预算/内存长稳和性能对照选一个有界小块；整体 A3/Issue #67 仍 open。
