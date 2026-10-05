@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | 本机原生 Surface 前置通过，PC3 fresh SSH 已认证；origin-scoped CA 与两机临时共同 HTTPS 安全边界已验证，但不是常驻部署或原生媒体验收；新候选完整性及原生进程绑定见最新回执。仍须静态文字/滚动/运动、1/2/4 viewer、慢端、恢复/撤销；记录网络/包/CPU/内存/阶段耗时/字节，GPU/物理显示缺失须明示 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 已通过 PC3 默认 GPU 源 → 本机 Loom → 本机 viewer 的正常发布、晚加入、持续 JPEG 解码和停止清帧；包、实际进程和直连媒体已绑定。不是常驻部署或完整矩阵；仍须反方向、静态文字/滚动/运动对照、1/2/4 viewer、慢端、恢复/撤销及长稳。CPU/GPU 收益、阶段耗时和物理显示缺失须明示 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -967,7 +967,7 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
   和 Neuro development-standard contract 通过。既有 11 项 501–700 行例外未变；不伪造 Loom
   新编译，也不拿 Hook 检查结果冒充 Loom 产品全量验收。
 
-## A3 默认 GPU 下的编码需求修复（2026-10-05 UTC，当前停点）
+## A3 默认 GPU 下的编码需求修复（2026-10-05 UTC，源码与候选包）
 
 - 恢复会话 `01a109ca-d630-7f32-8ff4-8ed276ba86f7` 最后的下一步。原会话因预算 402
   中断，留下 `.17` 版本分配和预算回归的局部修改；本轮接续同一迭代，不再次增加 revision。
@@ -1002,3 +1002,52 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
   既有受控例外不变，依赖安全契约通过。本轮未改依赖、例外或公开版本，也未发布公共 release。
 - Loom 仅更新本交接文档：15 项 checker tests、strict 1180 文件、development-manual
   契约和 Neuro 通用开发契约通过；11 项既有软上限例外未变，不重编译无代码变化的 Loom。
+
+## A3 新包默认 GPU 双机最小闭环通过（2026-10-05 UTC，当前停点）
+
+本轮完成上节留下的 **新候选默认 GPU 正常发布、观看、停止清帧**，不将整个 A3 或 Issue #67
+标为完成。复用已构建的 `.17`，没有修改 Hook 源码、分配版本或重复构建。
+
+- 两端均运行上述 `.17` / SHA `ff1f37fa7f7a457cfe3651e6db562ac0fdbf3f6dc76b4538685c9926a3845f9d`。
+  PC3 单次有界传输约 49 秒，完整 8996864 bytes 和 SHA 校验通过后才执行。传输包装的
+  PowerShell Process.ExitCode 为空，保留原脚本失败，不用它判定网络失败或重传；独立远端
+  全量校验及 rename 回执确认完整性。两端 GPU 环境开关均显式清空，走 unset/default。
+- 拓扑为 PC3 `.17` 源 → 本机既有 Loom daemon/private-CA HTTPS → 本机 `.17` viewer。
+  证书启动时仍有效，NotAfter 为 09:24:42Z；没有修改系统信任、防火墙或网络驱动。
+  源端实际 socket 为 192.168.15.136 → 192.168.15.20:49874；SSH 仅用于管理 CDP 和 Art bridge。
+- 正式实时截图菜单和 OS 框选绑定自有 window/window_message fixture，656×406，正常发布。
+  本机正常区域截图 Unit → Actions → 设备仪表板真实 Surface → 参数面板刷新/选择/加入；
+  没有 IPC mock、graphStore/attachment 注入或输入权。加入前 15 项 observations，最大
+  sequence=170、累计 2550；viewer 接续至 173，无 control_history_reset/control_event_rejected。
+- 源端通过生产 DOM 的 data-live-gpu-preview/submitted/error 与同一 capture/relay 状态交叉
+  采样，没有包装 invoke 或主动 configure GPU。16 次、约 8247ms 的观察内始终 gpu-mirror，
+  GPU submitted 6389→6583、capture JPEG frameId 4374→4523、source relay receivedFrames
+  4368→4518、viewer decoded-submitted JPEG frameId 4372→4521。capture/relay/viewer 均为
+  同源 epoch 1；viewer complete、656×406、private_https、errorCode=null、reconnectCount=0。
+  这些是原生状态与解码提交推进，不是物理显示 FPS、CPU/GPU 收益或跨机端到端延迟。
+- 媒体期间重新核对两端 EXE/SHA/creation/Session 1/CDP 父链：源 Hook 3672、CDP owner
+  见 pc3-media-binding.json；本机 Hook 53932，CDP 37012 → 53932。正常“停止发布”后
+  daemon closed=true/sourceConnected=false；viewer native closed/errorCode=null，
+  presentation=null、remainingImages=0、controllerOwned=false，累计接收 1103 帧。
+- 截图复核确认观看窗口未越出 viewport、真实 fixture 可见，正常 UIA 摘要会遮挡部分画面。
+  关闭后旧 JPEG 已移除，保留明确标为关闭的 UIA 摘要/框线；独立 dashboard 再次出现
+  Surface event dispatch failed，仍未确诊，不扩张为整个 Art 无错误。
+- 本机首次截图等待窗口枚举超时，随后被非本轮物理点击取消，失败日志保留。恢复使用正常
+  区域截图已激活的输入链与 OS 拖选；仅临时 harness 的普通区域模式不再等待窗口枚举，
+  Live/window 模式仍保留该门禁。没有把这次恢复称为窗口枚举缺陷已修复。
+- 两端 fixture 和测试 Hook 正常关闭；临时计划任务按精确 action/root 和账户 SID 核对后
+  移除，远端清理失败不会阻断本机恢复。服务、审批循环、管理 tunnel 均结束；两端测试
+  listeners 为空，PC3 无 Hook 残留，RSC 四项 true 与运行前一致，持久 SSH 授权未改。
+  原日常 `.15` 按原路径/SHA 恢复为 59252 / creation 04:21:43.3228180Z，WebView2 和
+  watchdog 子进程存在，未覆盖原包或日常数据。
+- 证据根：`GameEditor/linshi/issue67-a3-gpu-native-20261005T0411Z`。核心为
+  default-gpu-measure.json、reversed-join/stop/closed-receipt.json、两端 binding、
+  pc3-direct-media-sockets.json、visual-review.json 和清理/恢复回执。机器交叉验证产出
+  final-native-receipt.json：packagedDefaultGpuTwoHostVerified=true、a3Complete=false。
+  22 个临时脚本经语言感知计数最高 140 有效行，UTF-8 无 BOM；私有身份、图像和原始日志不提交。
+- Loom 只更新本文：15 项 checker tests、strict 1180 文件、development-manual 和 Neuro
+  通用规范契约、全部临时 PowerShell/Node 语法检查及 diff check 通过；11 项既有软上限例外
+  未变。Hook main 保持原提交且 clean，不冒称重跑无改动的编译、OSV 或完整发布矩阵。
+
+下一步先区分独立 Surface 错误与 A3 剩余基线矩阵，再选择一个有界闭环；默认 GPU 的本次
+发布/观看/停止门禁不再重复。反方向、多 viewer、慢端、恢复/撤销、长稳和性能对照仍未验收。
