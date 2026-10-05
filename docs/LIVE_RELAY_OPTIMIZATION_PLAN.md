@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧、双机观看端设备禁用后的 terminal 停流/清图/清权及重新启用不复活旧 relay 均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、双机源端禁用/删除与观看端删除、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧、双机观看端设备禁用后的 terminal 停流/清图/清权及重新启用不复活旧 relay、双机源端设备禁用后的停流/清权及重新启用不复活旧 relay 均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、双机源端删除与观看端删除、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -1745,3 +1745,52 @@ PC3 直接本机复制既有完整 EXE/helper，仅传 fresh 测试 CA，不再�
 的继续呈现、token-only/自然到期矩阵、控制按钮 UI 或远程键鼠输入。原生多/慢 viewer、
 物理网络切换/device loss、资源预算/内存长稳与 CPU/GPU/物理显示对照仍待验，A3/Issue #67
 保持进行中；下一小块优先补双机源端撤销或活动观看端删除，不重跑本节已通过门禁。
+
+### A3 接续：同 .21 包完成双机源端禁用、保留观看与不可复活验收（2026-10-05 UTC）
+
+本小块只补 **本机真实 WGC source → Loom → PC3 原生 viewer** 的 source disable / registry
+reenable 场景。复用 Hook commit 20892a704a9570e7e52cef95e2cccaaf920cdf8a 对应 clean
+v0.2.32.21 / e4ce0ba0...，以及既有 terminal daemon / 8e36846d...；产品源码、协议、依赖、
+版本和二进制均未改变，没有重跑内容矩阵、resize、代理中断恢复或 600 秒观察。
+
+- 正常原生菜单/OS 选区启动同一 WinForms HWND 的 WGC，源端正常发布，PC3 正常
+  Actions/Surface 刷新、选择并明确加入；默认 GPU，JPEG 658×407。两端完整 EXE SHA、
+  PID/path/creation/Session/CDP owner 与媒体 socket tuple 均绑定；媒体为直连 HTTPS/WSS，
+  SSH 仅承载 CDP/Art 管理。PC3 复用本地已有 EXE/helper，仅传 fresh CA 和三个更新的测试脚本。
+- 先通过真实 native command 授予 **60 秒控制租约**，确认 source/viewer/daemon 三端状态，
+  再用公开 PUT /v1/devices/{sourceId} 将隔离源设备 enabled=false。约 **212.871ms** 后
+  采样到 source native closed/live_media_device_revoked、sourceConnected=false、双方控制权
+  清除、controllerDevice 无值及 controllerExpiresAtMs=null；严格早于租约到期。该时间包含
+  管理请求与离散轮询，不是纯网络延迟、跨机时钟结果或 SLA。
+- 源端撤销不等于整个 LiveSession 关闭。未撤销的 PC3 viewer 仍 connected/error=null，
+  daemon 保留其媒体连接和未关闭会话；最后一帧冻结且图片仍在，未错误要求 viewer terminal
+  清图。这与 daemon 源端撤销测试的合同一致，不把健康观看身份一同撤销。
+- 禁用期间 source 显式 reconnect 被拒绝；公开 PUT 重新 enabled=true 后，旧 relay 的
+  reconnect 仍精确返回 source_recovery_unavailable: Device media authorization was revoked。
+  **10.323 秒 / 13 样本**内 source 接收计数/reconnectCount、daemon frame、viewer frame/接收
+  计数均不增长，source 未恢复发布、控制权不复活。WGC 保持 streaming，同一 HWND/capture
+  epoch 的本地 gpu-mirror 提交计数增加 **206**；这是提交计数，不是物理 FPS 或资源预算验收。
+- 最后由隔离测试管理员经公开 POST /v1/live/sessions/{sessionId}/close 做权威清理。
+  首个重复 sequence=1 被 409/live_control_sequence_invalid 拒绝，读取其精确 expected
+  sequence=54 后才发送合法 session_end；不猜大序号、不跳过顺序校验，不称撤销源凭旧 token
+  正常停止成功。权威关闭后 PC3 native closed/error=null、presentation=null、图片元素为零。
+- 撤销前后进程身份未变。独立 owner audit 核 test GUI/services/tunnel/workers 和监听零残留，
+  PC3 task Ready；日常 .19 按原路径/SHA/Session 1 恢复，watchdog 存在，未升级日用包。
+  用户的 LAN 免认证入口及本地访问/密钥资料保留，未生成授权包或修改系统账号、SSH/RSC/路由。
+- 失败记录保留：第一轮误调用 source 不提供的 viewer 读帧接口；第二轮在准备采集时遇到
+  正在写入的日志被 ReadAllText 独占读共享方式拒绝；第三轮错误地把 Playwright 的异常包装
+  前缀当成原生错误。仅修临时 harness：FileShare.ReadWrite/Delete + finally 关闭 reader，
+  以及在原生调用所在 document 内收集原始拒绝值，仍精确校验错误；未改产品迎合测试。
+  源端帧缓存未直接读取，不声称此缓存或编码消费者/资源预算已独立验收。
+- 成功证据根：GameEditor/linshi/issue67-a3-source-disable-native-error-v21-20261005T215122Z。
+  final-independent-verification.json 在 **2026-10-05 21:55:20.023 UTC** 为 passed，status
+  packaged_two_host_source_disable_sticky_revocation_verified，a3Complete=false。独立 verifier
+  重核包/进程、控制租约、逐样本身份/计数、直连 socket、冻结与权威清帧合同及清理。
+  保存了实际 viewer 截图；本轮未逐图视觉复核，不当作物理显示或画质验收。
+- 24 个临时源码 UTF-8 无 BOM、语法/语言行数检查通过，最大 **143 有效行**，无新软例外。
+  Loom checker tests 15/15、strict 1183 文件/0 违规、Loom 开发手册和 Neuro 通用规范合同及
+  diff check 通过；11 项既有软例外未修改。纯验收/文档，不重跑无关编译或伪造新构建。
+
+本节只关闭双机 source disable / registry reenable 不复活旧 publication 场景。source DELETE、
+活动 viewer DELETE、新 token/重新配对、其他独立原生 viewer、多/慢 viewer、device loss、物理
+网络断连/切换、资源预算/内存长稳和 CPU/GPU/物理呈现对照仍未验证；A3/Issue #67 保持进行中。
