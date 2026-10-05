@@ -125,9 +125,9 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   UIA snapshot 初始化遗漏已补修，未放宽序号或身份检查，详见末尾回执。
   两端测试实例/fixture、服务、管理 tunnel 和本轮 2 个临时任务已清理，持久 SSH/RSC 保留；
   原 `.15` 正常退出后已按原路径恢复为 PID 49900 / creation 03:03:22.1020330Z。
-- A3 整体仍未完成：默认 GPU 采集到 relay 的 JPEG 停滞、独立 Art 的 Surface event dispatch
-  failed 尚未确诊；反方向、完整恢复/撤销矩阵、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络
-  和长稳未验。本次仅关闭 late-join bootstrap / authoritative terminal closure 修复块，不扩范围。
+- A3 整体仍未完成：默认 GPU 到 relay 的 JPEG 停滞已完成采集预算修复及真实 WGC/GPU/JPEG
+  源链回归，新候选的两机正式入口复核仍待执行；独立 Art 的 Surface event dispatch failed
+  尚未确诊。反方向、完整恢复/撤销矩阵、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳未验。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
 
@@ -966,3 +966,39 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 - Loom 本轮仅更新交接文档，保留并接续既有历史修改；15 项 checker tests、strict 1180 文件
   和 Neuro development-standard contract 通过。既有 11 项 501–700 行例外未变；不伪造 Loom
   新编译，也不拿 Hook 检查结果冒充 Loom 产品全量验收。
+
+## A3 默认 GPU 下的编码需求修复（2026-10-05 UTC，当前停点）
+
+- 恢复会话 `01a109ca-d630-7f32-8ff4-8ed276ba86f7` 最后的下一步。原会话因预算 402
+  中断，留下 `.17` 版本分配和预算回归的局部修改；本轮接续同一迭代，不再次增加 revision。
+- 根因为正常 GPU 呈现抑制 JPEG，而 relay 仅读取不可变 JPEG 最新帧快照，未声明自己仍需
+  编码帧。Hook `4afe4bd17d1f86ab1fbc1250e0c0f93d9496b4a7` 让源发布 worker 持有
+  `EncodedFrameConsumer`；断线恢复期间保留，worker 退出或 spawn 失败释放。多发布者按引用
+  持有需求，旧采集注册的释放不影响新注册；预算先于采集线程启动注册，避免立即发布竞态。
+- GPU 预览没有关闭。编码需求只取消 GPU-only 的 JPEG 抑制，并独立于本地可见性参与
+  既有采集/CPU 预算；单 CPU permit、像素量、帧率上限、公平调度和编码耗时冷却不放宽。
+  没有协议、权限、队列容量或网络策略变更。
+- 修改前的 hidden-encoded-consumer 回归实际失败于仍返回 1 秒采集间隔。最终源码
+  `live_gpu::` 26 项、`live_capture_` 13 项、`live_relay_` 21 项通过；各组未执行的原生/外部
+  测试分别 6/1/3 项仍明确忽略，不合并成全量通过。`cargo check --all-targets`、Rust 格式
+  及 include 文件格式、53 项 checker/相邻脚本测试、strict 1381 文件和 diff check 通过。
+- 额外显式执行 production capture worker 的原生回归，未设置 JPEG 兼容开关：WGC 自有窗口
+  → GPU 预览保持 presenting → relay 所读最新 JPEG 可解码且画面变化。两份需求时 1 秒新增
+  17 帧，释放一份后 1 秒新增 17 帧，两阶段均出现两种解码画面；释放最后一份后新增 0 帧。
+  关闭 native plane 后，静态 JPEG 回退 frame 35 → 36，epoch 保持 1。此数据不是监视器 FPS
+  或跨机帧龄，也不是新 EXE 的两机端到端验收。
+- 源码有效行数：预算 255、预算测试 185、GPU worker 498（未增长）、relay WebSocket worker
+  400、capture worker 440、原生测试 owner 435、新编码需求原生测试 104；全部不超过 500。
+- 本轮原生测试只创建并销毁自有窗口/采集线程，不退出日常 Hook，不连接 PC3，也未改变
+  持久 SSH/RSC、系统信任或防火墙。前轮两机 JPEG 兼容通过的证据保留，不拿它认证本次新包。
+- 当前仍需新候选两机默认 GPU 正式发布/观看/停止复核；A3 总体验收与独立 Surface 错误不关闭。
+  本地源码、原生回归和构建回执位于 `GameEditor/linshi/issue67-gpu-encoded-demand-20261005`。
+- `.17` 独立候选已 fresh 构建（505.12 秒，exit 0），未覆盖旧包：
+  `release/Hook/v0.2.32.17/issue67-gpu-encoded-demand-20261005/hook.exe`，8996864 bytes，
+  SHA `ff1f37fa7f7a457cfe3651e6db562ac0fdbf3f6dc76b4538685c9926a3845f9d`。
+  provenance 绑定上述 Hook commit、gitDirty=false、internal；exact-hash/product-version
+  `--self-check` 通过。仅保留既有 frontend chunk >500 kB 警告，不冒称全套发布验收。
+- 发布前 fresh 联网 OSV Enforce 验证 4 lockfiles / 1654 packages / 0 未豁免漏洞 ID；19 项
+  既有受控例外不变，依赖安全契约通过。本轮未改依赖、例外或公开版本，也未发布公共 release。
+- Loom 仅更新本交接文档：15 项 checker tests、strict 1180 文件、development-manual
+  契约和 Neuro 通用开发契约通过；11 项既有软上限例外未变，不重编译无代码变化的 Loom。
