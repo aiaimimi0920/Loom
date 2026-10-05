@@ -124,9 +124,13 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   anti-resurrection，源为显式 synthetic raw fixture，不当成两机截图性能或完整 A3 矩阵。
 - daemon 候选已补齐独立 Device 的 1/2/4 JPEG 媒体连接、真实不读取慢端写失败隔离及
   同 epoch 源/观看端媒体重连；见末尾 socket 回执，不等于四个原生 Hook 窗口或两机性能。
+- `.19` 原生 viewer 已补齐单机、明确 synthetic JPEG 源的 601.995 秒持续解码提交和正常
+  UI 关闭；独立 daemon 四连接也完成 600.015 秒完整 payload 验证。原 runner 的 PowerShell
+  资源汇总失败保留；仅 native 保存的资源样本已独立重算通过，不称所有 runner/资源门禁通过。
 - 反方向 `.18` 单次 SCP 仅到 partial，未执行；失败日志保留，不盲重传。新候选的原生
   两机撤销、反方向、多观看窗口/慢端/恢复、600 秒长稳和静态文字/滚动/运动对照仍待
-  验收。B/C/D 仍是证据触发的有条件后续，不能以新 codec/POC 代替 A3 真正基线。
+  实际截图与两机验收。PC3 专用私钥已被用户随临时目录删除，新持久连接材料已重建，
+  但新公钥尚未授权，反方向不能标为通过。B/C/D 仍是证据触发的有条件后续。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
 
@@ -1337,3 +1341,70 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 下一步仍从 **原生两机反方向、原生多观看端/慢端与恢复、600 秒长稳、三类内容对照**
 选择一个有界闭环；先复用已验证的候选和安全入口。此 socket 小块不取代这些原生门禁，
 不以 B/C 新编码方案扩大范围。文档检查及提交回执保存在同一证据根。
+
+### A3 接续：原生 JPEG viewer 与四连接协议长稳（2026-10-05 UTC）
+
+本小块完成 **精确 `.19` 原生 viewer、单机 synthetic JPEG 源的持续观察**，以及独立
+daemon 四连接的 600 秒协议观察。不是两台原生 Hook 的真实截图长稳，也不关闭 A3。
+复用 `.19` / `80188baf...` 和 terminal daemon / `8e36846d...` 的原 EXE，未修改产品
+源码、版本或依赖，没有重复构建、部署常驻或发布 public Release。
+
+- Native 使用 fresh 隔离 appdata/config/manifest、process/dashboard package、Device 配对、
+  真实 HTTPS 及 origin-scoped CA。普通截图菜单与 OS 框选创建 Unit，再正常选择、Actions
+  创建并挂载 Surface、刷新、参数面板发现/选择/明确加入。没有 mock IPC、graphStore 或
+  attachment 注入，没有输入权；source 是明确的 1024×768、目标 12 帧/秒 synthetic JPEG
+  协议夹具，不是另一台 Hook/WGC capture。新 TLS leaf 到期 `2026-10-05T15:50:34Z`，
+  CA 私钥不持久化；leaf key 和 token 只在受限 ACL 的隔离证据目录，不进入 Git。
+- 原生 Hook 路径/SHA/creation/Session 1/CDP 父链实际绑定，daemon 候选与服务 owner 绑定；
+  资源采样期间另按 PID/path/creation 复核。30 秒预热后观察 **601994.851ms / 298 样本**，
+  JPEG `decoded_submitted` frame ID **344→7131**，1024×768 natural image 及 start/end
+  截图通过；全部采样 native connected/errorCode=null/reconnectCount=0/controllerOwned=false，
+  ring≤2、failedWrites=0。源全程 7135 帧，socketErrors/backpressureTicks=0。采样会漏掉
+  中间帧，不把帧号、UI 计数或截图换算为物理显示 FPS、全帧延迟或跨机帧龄。
+- 真实 viewer “关闭”后 slot detached，native relay 不再活跃，source socket 关闭后实际
+  `/v1/live/status.mediaConnections=0`。fixture/candidate/services/worker/listener 已按
+  owner 实查清理。经本轮用户明确许可，日常 `.19` 通过正式菜单正常退出后，已按原路径/
+  SHA/Session 1 恢复为 PID 14976 / creation `14:12:17.4721410Z`，watchdog 存在；未强杀
+  日常实例、改原数据、绕过 mutex 或修改 RSC、防火墙、系统信任、系统时间。
+- 独立 daemon 协议实验：30 秒预热后 **600015ms**；四个独立 Device 的实际 WS reader 各
+  收到 **7472 帧 / 5270976696 bytes**。逐帧复核 NLLV header、epoch、严格递增 ID、尺寸、
+  长度与完整 JPEG payload；最终每端 count/last ID 等于源总数，无重复/缺失/reader error。
+  failedWrites=0、viewerSkippedFrames=0、sourceSequenceGaps=0；累计转发 29888 帧。
+  socket/thread 与媒体连接收敛、候选进程/listener 清理通过；不是四个原生观看窗口。
+- **原始 runner 不报全绿**：两次长稳的 PowerShell 5.1 资源汇总对 Hashtable 使用
+  `Measure-Object <property>`，均在已完成主测量后失败；原 `runner-receipt.json.passed=false`
+  和报错保留。daemon 的资源数组未落盘，**daemon 独立长稳的资源预算未验证**。
+  Native sampler 在 finally 保存 111 个真实样本，覆盖 **605529ms**；独立 verifier 只允许
+  精确的已知聚合错误，校验有限非负数值、时序、覆盖、源文件 SHA、容量和增长预算，
+  另写回执，不覆盖旧失败。首尾各三样本平均 Private Bytes 增长：Hook 进程树约
+  **42.12 MiB**、daemon 约 **1.56 MiB**；handles 平均增量为负，低于 256 MiB/128 的
+  预声明增长门禁。峰值仅记录，不能据此证明无泄漏、无瞬时资源尖峰或总体 CPU/GPU 收益。
+- 夹具失败分别保存：旧 `1303Z` 在未选中 Unit 时断言失败、没有开始 600 秒；第一 fresh
+  目录的 worker 唯一子进程绑定门禁拒绝，未启动 native。第二 fresh 目录按 executable
+  精确选择 child 后完成上述观察，不将首次绑定拒绝武断归为产品故障。正常 UI 选择、fixture 启动即登记、
+  exclusive-create 的 one-shot claim、只有取得 ownership 才 cleanup 和 retained handle
+  退出等待已补齐；不是为夹具假设改产品代码。资源 verifier 6 项边界回归通过。
+- 原生成功证据根 `GameEditor/linshi/issue67-a3-native-jpeg-soak-fix2-20261005T1402Z`：
+  native-soak-result、resource-result、resource-independent-verification、viewer-direct/binding、
+  final-owner-audit、original-restored 及 final-continuation-receipt。daemon 证据根
+  `GameEditor/linshi/issue67-a3-daemon-jpeg-soak-20261005/run1`；其原 runner 失败不能被
+  `daemon-soak-result.passed=true` 掩盖。最终交叉回执分别标注 native/协议通过、原 runner
+  失败、daemon 独立资源未验、a3Complete=false；私有身份、图像和凭据不提交。
+- 独立只读审查核对完整字节/帧连续性和范围，指出资源 verifier 不能接受任意 sampler
+  失败；已加精确错误白名单与数值反例回归。新增/复制临时源码均低于 500 有效行，
+  UTF-8 无 BOM，语法与真实执行检查通过；产品文档-only 门禁另行记录，不伪称重跑编译。
+- 收尾复核 22 个临时源码：最大 209 有效行，UTF-8 无 BOM，Node/Python/PowerShell
+  语法检查通过。Loom checker 测试 15/15、strict 1183 文件/0 违规（11 项既有软上限
+  记录未修改）、Loom 开发手册合同、Neuro 通用规范合同及两个 child 的 diff check 通过。
+  命令日志与补充回执在 `GameEditor/linshi/issue67-a3-soak-documentation-close-20261005`；
+  没有产品/依赖变化，未重跑无关编译、OSV 或已完成的 600 秒主测量。
+
+**PC3 管理材料恢复边界**：用户确认旧临时目录已清理，原专用私钥也不存在。已从尚存
+的历史 pinned host key 重建严格配置，并用现有本机身份做一次只读连接，实际返回 SSH
+255 / permission denied，未执行远端命令或改授权。新专用密钥和配置存入持久
+`%USERPROFILE%/.ssh/neuro-pc3`，不再依赖 linshi；私钥仅本机受保护 ACL，不进仓库。
+这不是原私钥恢复或 PC3 新授权成功；PC3 的原 30 天续期仍绑定旧钥匙，需要安全轮换，
+不能反复执行旧授权包或关闭 host verification 来凑通过。
+
+下一块先恢复 PC3 对新公钥的合法授权，再做实际两机反方向、截图源 600 秒与
+静态文字/滚动/运动对照，以及原生多观看端/慢端/恢复。上述合成长稳不替代这些门禁。
