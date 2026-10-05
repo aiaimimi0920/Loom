@@ -122,8 +122,10 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   清帧/authority 并拒绝迟到 source recovery。expiry/nonce eviction 不冒充终态。源码、
   fresh 候选和实际验收边界见末尾最新回执；`.19` 已补齐单机原生 viewer disable/清图及
   anti-resurrection，源为显式 synthetic raw fixture，不当成两机截图性能或完整 A3 矩阵。
+- daemon 候选已补齐独立 Device 的 1/2/4 JPEG 媒体连接、真实不读取慢端写失败隔离及
+  同 epoch 源/观看端媒体重连；见末尾 socket 回执，不等于四个原生 Hook 窗口或两机性能。
 - 反方向 `.18` 单次 SCP 仅到 partial，未执行；失败日志保留，不盲重传。新候选的原生
-  两机撤销、反方向、1/2/4 viewer、慢端、恢复、600 秒长稳和静态文字/滚动/运动对照仍待
+  两机撤销、反方向、多观看窗口/慢端/恢复、600 秒长稳和静态文字/滚动/运动对照仍待
   验收。B/C/D 仍是证据触发的有条件后续，不能以新 codec/POC 代替 A3 真正基线。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
@@ -1281,3 +1283,57 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 此小块关闭的是 **精确 `.19` 原生观看端 disable → 停流/清图/拒复活**；delete/token-only 的
 原生、多机撤销、反方向、1/2/4 viewer、慢端、恢复、600 秒及三类内容对照仍未完成。
 源码无新增改动，文档-only 检查和 scoped push 后继续 A3，不为本回执再构建同一二进制。
+
+### A3 多媒体连接、真实慢端隔离与媒体重连（2026-10-05 UTC）
+
+接续 Session `01a10bc2-7618-7cf0-ba2b-169336b67144` 最后选定的小任务。该会话因上游
+额度/速率错误中断，未落地新的产品改动。本节完成 **daemon component 的协议级验收**，
+不将 A3 或 Issue #67 标为完成，也不复测已关闭的 `.19` 原生撤销门禁。
+
+- 复用 source `a82e8cdad4bb8ff9eaf06da3d6acecf1a59f66c9` 的原 daemon 候选，
+  36955648 bytes / SHA-256
+  `8e36846df26cd7df7539bfe1c56942da735e8f0bf02a45e5cac28595e1b24d84`。
+  实际进程 PID 31592、creation `12:26:34.4137190Z`、路径/摘要及 loopback listener owner
+  均绑定；全程独立 control/config/appdata，不重建或覆盖任何候选。
+- 真实 HTTP/Ed25519 配对一个 source 和四个独立 Device；安装既有 process/dashboard
+  package，通过正式 API 创建/复用真实 Surface 并 attach，再请求 LiveSession viewer admission。
+  没有直接写 registry/LiveSession、伪造 attachment 或请求输入控制；Surface attachment 是
+  API 夹具，不是实际 Hook 窗口，也不声称执行了原生 mount/用户加入入口。
+- 媒体明确协商 `loom.live.jpeg.v1`，两幅有种子的 1024×768 synthetic JPEG 交替发送，
+  payload 分别 705166 / 705567 bytes，目标发送节奏 12 帧/秒。夹具实际解码两幅 JPEG，
+  每个收到的 NLLV 复核 header、epoch、严格递增 frame ID、长度及完整 payload 字节。
+  1/2/4 连接阶段各发送 36 帧，每个正常连接均接收 36 帧，`failedWrites=0`。
+- 慢端设置自身 `SO_RCVBUF=1024`，完成真实 101 后完全不读取，没有后台收包器。四连接
+  均已登记后，在发送 4 帧、约 375ms 的观测内 `failedWrites` 增加 1，唯独慢端的连接记录
+  消失；未通过主动关闭慢 socket 来制造失败。该耗时含采样，不是 socket timeout SLA。
+  随后再发送 36 帧，三个正常端各接收本阶段全部 40 帧（109–148），没有额外写失败。
+  接收最大间隔为 375–391ms，夹具在 HTTP 状态/退出收敛期间会暂停发送，不能据此宣称
+  无延迟影响、真实负载吞吐收益或将该间隔直接归因于 daemon。
+- 慢端以 `afterEpoch=1 / afterFrameId=148` 新建媒体连接，收到 149–184 共 36 帧，未重复
+  旧帧。再断开 source 媒体连接，确认 `sourceConnected=false` 且 LiveSession 未关闭；
+  同身份/同 epoch 重连后，四个正常端继续收到 185–220 共 36 帧。仅证明媒体 socket
+  重连，不等于 Hook 控制恢复、epoch 切换、网络切换或原生 UX 验收。
+- 全程 accepted source 帧 220，`receivedBinaryBytes=155194710`、`sourceSequenceGaps=0`、
+  `viewerSkippedFrames=0`、`failedWrites=1`，各状态采样点 ring 不超过 2 帧。成功写入计数 661，
+  包含慢端可能已进入内核缓冲的写入，不把它当作 661 个接收/显示回执；ring eviction
+  218 也不当作网络丢帧。关闭夹具连接后 `/v1/live/status.mediaConnections=0`。
+- 最终运行 `12:26:33.7543225Z`–`12:27:00.1672164Z`，所有自有进程按 retained native
+  handle 清理、两个测试 listener 为空。没有停止/替换日常 Hook，未操作 PC3、网络/RSC、
+  系统信任、防火墙或持久 SSH 授权；凭据及私有状态限于受 ACL 保护的本地隔离环境，
+  公开摘要不包含凭据，原始私有状态不提交。
+- 两次先行夹具失败保留：shared Surface 的再次 create 合法返回 200/reused，而夹具只
+  接受 201；无 controller 的 Option 字段按协议省略，而夹具直接索引导致 KeyError。
+  两项均经实际 owner 源码确认，仅修夹具；两次均未进入媒体矩阵，自有进程/监听已清理。
+  定向只读子代理启动返回 503，无独立审查结论，不把主线程核查冒充独立评审。
+- 证据根：`GameEditor/linshi/issue67-a3-fanout-20261005`，成功回执为
+  `run3/fanout-result.json`、`run3/runner-receipt.json`；失败 `run1/run2` 保留。四个临时
+  Python/PowerShell 文件均低于 250 有效行，实际运行、语法、UTF-8 无 BOM 检查完成；
+  无产品源码、版本、依赖变化，不伪造新的 Rust/前端编译、OSV 或二进制构建。
+- 文档门禁：checker tests 15/15、strict 1183 文件、Loom development-manual 与 Neuro
+  通用规范契约、两仓 `git diff --check` 通过；11 项既有软上限例外未变。临时文件有效
+  行数为 cases 209、control 86、transport 77、runner 128；新增前均为 0。机器回执交叉
+  校验和源码摘要见 `verification.json`，不以无变更 Hook 的干净状态冒充重跑产品测试。
+
+下一步仍从 **原生两机反方向、原生多观看端/慢端与恢复、600 秒长稳、三类内容对照**
+选择一个有界闭环；先复用已验证的候选和安全入口。此 socket 小块不取代这些原生门禁，
+不以 B/C 新编码方案扩大范围。文档检查及提交回执保存在同一证据根。
