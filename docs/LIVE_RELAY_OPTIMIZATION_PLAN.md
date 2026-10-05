@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 已通过 PC3 默认 GPU 源 → 本机 Loom → 本机 viewer 的正常发布、晚加入、持续 JPEG 解码和停止清帧；包、实际进程和直连媒体已绑定。不是常驻部署或完整矩阵；仍须反方向、静态文字/滚动/运动对照、1/2/4 viewer、慢端、恢复/撤销及长稳。CPU/GPU 收益、阶段耗时和物理显示缺失须明示 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环已通过；`.19` 已补齐本机真实 WGC 源 → 本机 Loom → PC3 原生 viewer 的正式发布/加入、601.829 秒观察和停止清帧，包、进程和直连媒体已绑定。不是常驻部署或完整矩阵；仍须静态文字/滚动/运动对照、原生多 viewer、慢端、恢复/两机撤销与资源/性能对照。CPU/GPU 收益、全帧阶段耗时和物理显示缺失须明示 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -127,10 +127,12 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - `.19` 原生 viewer 已补齐单机、明确 synthetic JPEG 源的 601.995 秒持续解码提交和正常
   UI 关闭；独立 daemon 四连接也完成 600.015 秒完整 payload 验证。原 runner 的 PowerShell
   资源汇总失败保留；仅 native 保存的资源样本已独立重算通过，不称所有 runner/资源门禁通过。
-- 反方向 `.18` 单次 SCP 仅到 partial，未执行；失败日志保留，不盲重传。新候选的原生
-  两机撤销、反方向、多观看窗口/慢端/恢复、600 秒长稳和静态文字/滚动/运动对照仍待
-  实际截图与两机验收。PC3 专用私钥已被用户随临时目录删除，新持久连接材料已重建，
-  但新公钥尚未授权，反方向不能标为通过。B/C/D 仍是证据触发的有条件后续。
+- 反方向 `.18` 的 partial 和失败日志保留；不冒充新候选。PC3 接入现已恢复，应急 SSH
+  与用户明确要求的 LAN 免认证管理入口实际可用，访问材料另存用户指定的凭据库。
+  `.19` 已通过本机真实 WGC 源 → PC3 原生观看的正式入口、601.829 秒观察和停止清帧；
+  实际 native source/window、Surface attachment、两端包/进程/CDP owner 与直连媒体已绑定。
+  原生多观看窗口/慢端/恢复、两机撤销、静态文字/滚动/运动对照、资源预算与性能收益
+  仍待验；不把 297 个离散样本当成物理 FPS 或全帧连续性。B/C/D 仍是有条件后续。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
 
@@ -1399,12 +1401,68 @@ daemon 四连接的 600 秒协议观察。不是两台原生 Hook 的真实截�
   命令日志与补充回执在 `GameEditor/linshi/issue67-a3-soak-documentation-close-20261005`；
   没有产品/依赖变化，未重跑无关编译、OSV 或已完成的 600 秒主测量。
 
-**PC3 管理材料恢复边界**：用户确认旧临时目录已清理，原专用私钥也不存在。已从尚存
+**PC3 管理材料恢复的历史边界（已由下文接入恢复替代）**：用户确认旧临时目录已清理，原专用私钥也不存在。已从尚存
 的历史 pinned host key 重建严格配置，并用现有本机身份做一次只读连接，实际返回 SSH
 255 / permission denied，未执行远端命令或改授权。新专用密钥和配置存入持久
 `%USERPROFILE%/.ssh/neuro-pc3`，不再依赖 linshi；私钥仅本机受保护 ACL，不进仓库。
 这不是原私钥恢复或 PC3 新授权成功；PC3 的原 30 天续期仍绑定旧钥匙，需要安全轮换，
 不能反复执行旧授权包或关闭 host verification 来凑通过。
 
-下一块先恢复 PC3 对新公钥的合法授权，再做实际两机反方向、截图源 600 秒与
-静态文字/滚动/运动对照，以及原生多观看端/慢端/恢复。上述合成长稳不替代这些门禁。
+该阶段留下的 PC3 接入、实际两机反方向和真实截图源 600 秒门禁现已由下文补齐。
+上述合成长稳仍不替代静态文字/滚动/运动对照、原生多观看端/慢端/恢复与资源对照。
+
+### A3 接续：真实 WGC 反方向与原生单观看端 600 秒（2026-10-05 UTC）
+
+本小块完成 **本机真实 Hook/WGC 窗口源 → 本机 Loom → PC3 原生 Hook viewer** 的
+正常发布、受权加入、持续 JPEG 解码提交、停止和清帧。复用精确 `.19` / `80188baf...`
+及 terminal daemon / `8e36846d...` 的原 EXE，没有修改产品源码、版本或依赖，没有重复
+构建、公开 Release 或常驻产品部署。整体 `A3` 仍为进行中。
+
+- PC3 访问恢复已实际验证；新管理入口无账号/密码/key/token，执行身份为 SYSTEM
+  Session 0。原生 runner 单独在 `CODE/mjc` 的交互 Session 1、普通权限启动；不把后台
+  命令成功当成 GUI 验收，也没有清空 Windows 密码、旧 SSH key 或旧续期任务。
+- PC3 `.19` 通过既有 `.17` 加已验证 delta 重建，最终 **9,005,056 bytes / 完整 SHA**
+  与本机候选一致。首轮管理面 HTTP 小块传输约 102.989 秒；后续只在 PC3 本机复用
+  完整候选并传小脚本。旧 `.18` partial、`.17` 和失败目录均保留；不是媒体传输优化。
+- 两端 fresh 隔离数据、精确 PID/path/creation/Session/CDP 父链和 SHA 绑定通过；GPU
+  override 为 null/default。正式实时截图菜单加 OS 框选得到真实 WinForms HWND，native
+  `sourceKind=window`、`window_message` 与 fixture HWND 对齐。不是 synthetic raw/JPEG
+  producer，也没有注入 graph/store/mock IPC。PC3 先普通截图，再正常选择、Actions
+  创建并挂载真实 Surface、刷新 revision、参数面板发现/选择并明确加入，不授予输入权。
+- 媒体使用 private-CA HTTPS/WSS；实际 PC3 Hook-owned sockets 为 `.136 → .20:49874`，
+  本机 Caddy 有对应入站连接。SSH 仅承载 loopback CDP 与 Art 管理桥，没有媒体转发。
+  Fresh CA/leaf 只用于进程作用域，未安装系统根证书、修改系统时间或 RSC。
+- 30 秒预热后观察 **601828.871ms / 297 样本**：WGC capture frame **684→10650**，
+  PC3 JPEG `decoded_submitted` frame **684→10649**，natural image **658×407**。
+  全部样本 source/viewer connected、errorCode=null、reconnectCount=0、controllerOwned=false，
+  epoch/generation 固定、frame 持续推进；daemon ring 不超过原生声明的 **3 帧**，
+  failedWrites=0。原生开始/结束截图实际保存并复核，非四个 native viewer 的结果。
+- 同一观看 document 的离散提交样本：read median **2.8ms** / observed p95 **4.0ms**，
+  decode median **2.9ms** / observed p95 **4.2ms** / max **10.0ms**。这些不是全帧分位数，
+  不把帧号增量换算成物理 FPS，也不相减未经校准的跨机时间戳。capture `droppedFrames`
+  **227→3424**，sourceSequenceGaps **3→3**，viewerSkippedFrames **0→0**；不宣称全帧
+  连续或零丢帧，也不把 capture 计数武断归为网络丢包。**本轮资源预算/CPU/GPU 收益未验**。
+- 正常 source “停止发布”后服务端 closed/sourceConnected=false；PC3 native closed、
+  errorCode=null、presentation=null、remainingImages=0。测试 candidate/fixture/services、
+  SSH tunnel、workers 和监听端口按 owner 实查清理，PC3 没有产品残留；日常 `.19` 按
+  原路径/SHA/Session 1 恢复为 PID **22996** / creation **17:51:12.5798000Z**，watchdog 存在。
+- 失败回执保留：最初两个 elevated PC3 runner 的 WebView2 未带调试参数/无 CDP listener，
+  30 秒等待仍失败；改普通交互权限后实际通过，不归为产品回归或仅称启动竞态。
+  首轮隐藏 fixture 的 normal close 失败，经 HWND/PID 验证后 WM_CLOSE 正常关闭，没有强杀。
+  后一轮已通过真实采集/发布，但 fresh Caddy 路径有 Windows 自动入站 Block 规则，PC3
+  pairing/Surface attach 超时；复用原已有 Allow 的 Caddy 路径及相同 SHA 后，先真实验证
+  PC3 HTTPS health 200，再通过原生 Surface/观看。未手动增删媒体防火墙；OS 自动 Block
+  规则保留，不以旧 receipt 的 `firewallChanged=false` 声称 OS 未产生规则。
+- 第一实际源 observer 错把 synthetic 的两帧 ring 门禁用于 native Hook，预热后失败、
+  600 秒未完成；实际源码 `LIVE_RELAY_FRAME_BUFFER=3` 和正式 session 声明一致。
+  修正为校验声明容量且严格保持三帧上限，fresh `fix4` 才完成上述 600 秒；旧失败不覆盖。
+- 成功证据根：`GameEditor/linshi/issue67-a3-real-reverse-fix4-20261005T1736Z`，包含 native
+  binding、Surface/publish/join/stop/closed、real-soak-result、实际双端 sockets、owner/worker
+  audit 与独立样本/SHA/清理 verifier。私有身份、原始图像、TLS leaf key 和凭据不进 Git。
+- 收尾：19 个 PowerShell/Node/Python 临时源码 UTF-8 无 BOM、语法通过，语言 checker
+  最大 103 有效行；复制的 C# probe 为 133 物理行上界，未修改或重编。Loom checker
+  测试 15/15、strict 1183 文件/0 违规、11 项既有软上限未修改，Loom 开发手册合同、
+  Neuro 通用规范合同及两个 child 的 diff check 通过。无产品/依赖变更，未重跑无关编译。
+
+下一块优先静态文字/滚动/运动内容对照，再推进原生多观看端、慢端/恢复及两机撤销。
+当前已完成的单观看端真实截图长稳不代替这些实验，资源/物理呈现和 CPU/GPU 收益仍缺。
