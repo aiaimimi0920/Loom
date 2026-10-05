@@ -120,9 +120,10 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
   Loom `a82e8cdad4bb8ff9eaf06da3d6acecf1a59f66c9` 已普通推送。有效 admitted session 的
   显式 revoke 使用 sticky provenance 和精确 Policy Close；Hook 收到后停止本地 relay、
   清帧/authority 并拒绝迟到 source recovery。expiry/nonce eviction 不冒充终态。源码、
-  fresh 候选和实际验收边界见末尾最新回执；不能将服务端 Close 或 Rust 测试当原生清图。
+  fresh 候选和实际验收边界见末尾最新回执；`.19` 已补齐单机原生 viewer disable/清图及
+  anti-resurrection，源为显式 synthetic raw fixture，不当成两机截图性能或完整 A3 矩阵。
 - 反方向 `.18` 单次 SCP 仅到 partial，未执行；失败日志保留，不盲重传。新候选的原生
-  撤销/清图、反方向、1/2/4 viewer、慢端、恢复、600 秒长稳和静态文字/滚动/运动对照仍待
+  两机撤销、反方向、1/2/4 viewer、慢端、恢复、600 秒长稳和静态文字/滚动/运动对照仍待
   验收。B/C/D 仍是证据触发的有条件后续，不能以新 codec/POC 代替 A3 真正基线。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
@@ -1239,3 +1240,44 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 下一小块：旧 scoped TLS leaf 已过期；生成 fresh 隔离 leaf，不改系统时间/信任/防火墙，再
 用精确 `.19` + 新 daemon 做有界原生 viewer revoke/清图。随后推进反方向、多 viewer/慢端、
 恢复、600 秒和静态文字/滚动/运动对照；B/C/D 仍按实际瓶颈或负载证据决定，不凭空做 POC。
+
+### A3 `.19` 原生观看端撤销回执（2026-10-05 UTC）
+
+- 使用上述 `.19` 和新 daemon 同一 EXE bytes，没有重复构建或增加内部版本。新隔离 TLS
+  leaf 有效至 `2026-10-05T14:09:19Z`，仅指定 HTTPS origin 追加 CA，未改系统信任/时间/
+  防火墙；服务 root 使用当前用户/System/Administrators ACL，PC3 本轮未触碰。
+- 原生 Hook main PID 41232 / creation `10:25:50.1054950Z`、Session 1、实际 EXE SHA、CDP
+  listener PID 43000 的父链均已绑定。daemon 使用同一组件候选，隔离服务/管理桥 owner 记录
+  留在 services-ready；管理桥只用于 Art/Surface，不转发 LiveRelay 媒体。
+- 在实际 Hook 从截图 Unit 的 ActionsMenu 创建并挂载真实 Surface，执行 refresh 后使用
+  参数面板“刷新列表 / 选择实时投射 / 加入观看”，没有替换 IPC 或绕过入口。媒体连接
+  `networkScope=private_https`；A2.2 单槽绑定 `.19`、source/relay/session，raw 64×48 实际解码
+  提交、图像 naturalWidth/Height 和帧推进通过；加入未取得输入控制。
+- 源是明确的 synthetic raw protocol fixture，经真实 HTTP/Ed25519/Device session/source WS
+  admission 持续发送；不是另一台原生 Hook capture，也不是 GPU/JPEG/物理显示性能基线。
+  正常 Surface/UI 与产品 native viewer 是真实组件，不将协议夹具包装成完整两机验收。
+- 通过管理 PUT disable 原生 viewer 的 admitted Device 后，native status 为 closed +
+  `live_media_device_revoked`，`poll_live_relay_frame(afterFrameId=0).frame=null`，前端 presentation
+  为 null、`img` 数量为 0；撤销前后截图已人工检查。显式 reconnect 返回 stopping，被拒绝；
+  继续观察 4 秒，receivedFrames/reconnectCount 不增长、sticky error 保留。独立源继续前进
+  47 帧、sourceConnected=true、LiveSession.closed=false，不把 viewer revoke 当 source end。
+  单次“请求开始到观测 native closed”约 166ms，包含请求/持久化/轮询，非严格 SLA/分位数。
+- 三次先行失败记录保留，均未到 terminal gate：首轮 viewer 管理桥沿用不存在的 49882，
+  日志确认地址与服务 49875 错配，修正后实际 Surface mount 成功；第二轮辅助 Surface GET
+  使用 `%3A` 路径得到 404，实际 `path_id` 返回 raw suffix，改用校验过的 raw instance UUID
+  与当前 native 合同一致；第三轮菜单 helper 报 `Expected one owned menu popup`。复核已有
+  helper 源码后改用现存的 3 秒有界 readiness/2 秒 query 版本，再在 fresh one-shot root 通过，
+  不武断确诊第三轮失败的唯一原因。没有重置旧 marker 或为这些 harness 问题改产品代码。
+- Windows Computer Use native pipe 两次返回 `系统找不到指定的文件。 (os error 2)`，未执行其
+  app input；复用既有 scoped product acceptance helper 与原生 WebView2 CDP。只读预检确认
+  input desktop 为 Default、可见 LockApp 窗口为 0；仅进程存在不冒充锁屏，也没有操作认证屏。
+- 所有自有 candidate、fixture、服务正常退出/按已绑定 owner 清理，五个测试 listener 为空。
+  日常 `.15` 经身份绑定的正常菜单退出后按原路径/hash恢复；最终 main PID 952 / watchdog
+  23436，creation `10:26:33.8739080Z`。不能再声称日常旧 PID 始终未退出；其原 bytes 未变。
+- 成功证据根 `GameEditor/linshi/issue67-a3-native-revoke-fix3-20261005T1030Z`：
+  native-revoke-result、native-continuation-receipt、viewer-direct/binding、cleanup-final、
+  original-restored 和 before/revoked 截图。原失败根均保留，凭据/截图/原始数据不提交仓库。
+
+此小块关闭的是 **精确 `.19` 原生观看端 disable → 停流/清图/拒复活**；delete/token-only 的
+原生、多机撤销、反方向、1/2/4 viewer、慢端、恢复、600 秒及三类内容对照仍未完成。
+源码无新增改动，文档-only 检查和 scoped push 后继续 A3，不为本回执再构建同一二进制。
