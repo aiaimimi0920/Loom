@@ -1466,3 +1466,81 @@ daemon 四连接的 600 秒协议观察。不是两台原生 Hook 的真实截�
 
 下一块优先静态文字/滚动/运动内容对照，再推进原生多观看端、慢端/恢复及两机撤销。
 当前已完成的单观看端真实截图长稳不代替这些实验，资源/物理呈现和 CPU/GPU 收益仍缺。
+
+### A3 接续：修复健康静态 WGC 误恢复，完成三类内容双机矩阵（2026-10-05 UTC）
+
+本小块先用 `.19` 复现静态窗口的真实失败，再完成 Hook 最小修复和 `.20` 新包的
+**静态文字 → 滚动文字 → 运动图形** 原生单观看端矩阵。不是重复上一节 600 秒测试，
+也不是关闭整个 A3。Loom 产品源码和 daemon 候选没有变化。
+
+#### 缺陷与修复边界
+
+- `.19` 的固定 HWND/geometry 静态夹具停止 timer，ticks=0；随后 capture/sender epoch=2，
+  daemon epoch=1，sender reconnectCount=1，报 `control_event_rejected`，原文为
+  `Loom live control event identity or ordering is invalid`。保留失败原始快照，没有忽略错误。
+- WGC 可以只提供变化帧。原 capture owner 把五秒无 callback 无条件当成失效并重建、
+  增加 epoch；健康静态窗口也因此进入该恢复分支，可靠控制事件的严格 epoch 检查拒绝它。
+- Hook `live_capture_idle.rs` 提取纯决策：没有成功编码图像，或 callback_errors 非零时
+  才允许 idle recovery。已有成功图像且没有错误时保留 producer、最新图像和 epoch；
+  `live_capture.rs` 只增加七行接线。没有放宽 Loom/Hook 协议身份、顺序或授权校验。
+- 首帧超时和 callback failure 恢复仍保留，item closed、250ms HWND/source identity 与
+  stop 响应、尺寸检查仍继续。四项新单测是决策真值表，不冒充 WGC 生命周期测试。
+- **仍须处理真实 device loss/resize 等恢复后的 capture/session epoch 协调**；已有首帧后，
+  没有 error/closed 信号的 producer 静默停滞不能仅靠本决策与健康静态区分。
+
+#### 新候选与原生结果
+
+- Hook commit `a366a0b6314dfc6b47ac24fe55ec5ea8077886df`，内部 `v0.2.32.20`，
+  clean provenance，EXE **9,005,056 bytes**，SHA256
+  `e89c0cce1746792af405425df06482051e7c428422d78a46583dcf32592e3b66`。
+  前端构建、Rust release 编译及 `--self-check` status=ok；不是 public Release。
+- PC3 由精确 `.19` 加 442,471-byte delta 新增重建 `.20`，本机重建和损坏 patch 拒绝已验，
+  PC3 完整 bytes/SHA 与本机相同。旧文件保留，delta 仅缩小管理面传输，不算媒体性能优化。
+- 同一真实 WinForms HWND/client 680×430、capture/session/crop/包/传输保持固定，正常 OS
+  F6/F7/F8 切模式；静态真停 timer，不加时钟/caret/帧号动画。每模式预热八秒后观察至少
+  45 秒。正式采集/发布菜单与 PC3 Actions/Surface/明确加入路径通过，无 mock IPC/store。
+- 两端默认 GPU，无 controller 权限；PC3 Hook-owned `.136 → .20:49874` 与本机入站 tuple
+  实查通过，媒体为 private-CA HTTPS/WSS。SSH 只承载 loopback CDP/Art 管理桥，无媒体 tunnel。
+
+| 内容 | 实测观察时长 | 离散样本 | 独立像素 digest | PC3 提交 frame | fixture ticks |
+| --- | ---: | ---: | ---: | --- | --- |
+| 静态文字 | 47.660s | 22 | 1 | 339→339 | 0→0 |
+| 滚动文字 | 45.155s | 21 | 20 | 504→1405 | 165→1125 |
+| 运动图形 | 46.469s | 21 | 21 | 1646→2569 | 165→1155 |
+
+- 全部样本 capture epoch=1，source/viewer connected、errorCode=null、reconnectCount=0；
+  viewer generation/658×407/JPEG 固定，daemon ring 不超过三帧、failedWrites=0。
+  静态停帧仍保留同一图像且连接健康，切到动态后继续推进，不以重复读取伪造解码样本。
+- 按 distinct generation/frameId 去重后：静态仅一个 presentation；滚动/运动各 21 个。
+  payload median 分别 **80,836 / 106,592 / 37,161 bytes**，decode median 分别
+  **3.2 / 3.6 / 2.7ms**，动态 observed p95 为 **4.6 / 4.5ms**。
+  capture→relay packet preparation median 为 **57 / 19 / 16ms**，不是纯 JPEG 编码耗时。
+  diagnostic 与 `<img>` 解码 RGBA digest 独立读取，不声称精确同帧绑定。
+- 原生起止截图已实查：静态文字保持、滚动行号改变、运动圆位置改变；截图含 viewer/UIA
+  面板遮挡，不声称全画面视觉质量验收。像素 digest 读取实际图像元素，不含这些 UI 遮挡。
+- capture droppedFrames：静态 **145→145**，滚动 **212→600**，运动 **702→1099**；
+  sourceSequenceGaps 各模式 **3→3**，viewerSkippedFrames **0→0**。不宣称全帧连续或零丢帧。
+- 按 PID/creation、每机 Stopwatch 分开测 source Hook tree、viewer Hook tree、daemon、
+  fixture，三模式各组完整资源区间数 **8 / 7 / 7**，无不完整区间。Hook tree 单核等价 CPU
+  median：source **15.26% / 32.06% / 27.08%**，viewer **18.92% / 38.15% / 39.51%**；
+  按逻辑核归一化分别 **1.27% / 2.67% / 2.26%**、**1.18% / 2.38% / 2.47%**。
+  private bytes 有短窗口增长，原始快照和组别统计保留；没有证明泄漏、预算通过或优化收益。
+  没测物理 FPS、全帧分布、GPU engine usage 或校准的跨机延迟，不相减两机时钟。
+- 正常 source 停止后 daemon closed/sourceConnected=false；PC3 native closed、error=null、
+  presentation=null、remainingImages=0。独立 owner audit 实查 test GUI/services/tunnel/workers
+  和监听均无残留，PC3 task Ready。日常 `.19` 按原路径/SHA/Session 1 恢复，watchdog 存在；
+  不自动升级日用包。用户的独立 LAN 免认证管理入口保持可用，访问资料留在指定凭据库。
+- 前三轮焦点干扰先分别正常取消已确认的 Caddy 防火墙提示，再识别 own Hook input shield。
+  FocusProbe 仅临时 AttachThreadInput 激活 own fixture/source Hook，在 finally detach，核实
+  foreground 后发送 OS 按键；未允许新防火墙、注入媒体或取得 remote controller 权限。
+- 成功证据根：`GameEditor/linshi/issue67-a3-content-matrix-v20-20261005T1900Z`，包含原始矩阵、
+  六张模式起止截图、content-summary、stop/closed、双端 sockets、fresh owner audit 及独立 verifier。
+  `.19` 精确故障证据根为 `issue67-a3-content-matrix-fixed-focus-20261005T1850Z`；其余失败根保留。
+  私有数据、原始图像、TLS key 和 SSH 凭据不进产品 Git。
+- 源码门禁：Hook live_capture 聚焦测试 **22 passed / 2 既有 ignored**，rustfmt、strict
+  **1389 文件 / 0 违规 / 0 soft exceptions** 通过；Loom checker tests **15/15**、strict
+  **1183 文件 / 0 违规 / 11 既有软例外** 和开发手册/通用规范合同通过。临时源码 UTF-8
+  无 BOM，语言 checker 最大 163 有效行；两个 C# probe 仅用 161/70 物理行上界，不冒充语言门禁。
+
+下一块优先真实恢复时的 epoch 协调和恢复验收，再推进原生多观看端、慢端与两机撤销。
+资源预算、内存长稳、物理呈现和 CPU/GPU 收益仍未完成；整体 A3 保持 partial。
