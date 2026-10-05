@@ -112,22 +112,18 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - A2.2：Hook `db029ef244ca2b945dddfb90c4a66f59a359452e`，内部迭代 `v0.2.32.14`。
   [收端诊断合同](https://github.com/aiaimimi0920/Hook/blob/db029ef244ca2b945dddfb90c4a66f59a359452e/docs/LIVE_RELAY_DIAGNOSTICS.md)
   明确有界读取、时钟口径、源/帧关联和 EXE/实际进程身份检查；DOM 不伪造包 SHA。
-- **A3**：一个源/一个受权观看端的原生两机闭环，要求从正常入口启动不可变候选，
-  核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
-  夹具不能冒充新包的原生显示；之后按需扩大多 viewer、慢端、恢复/撤销和负载矩阵。
-  PC3 同钥访问已恢复，完整 .15 无需续传。2026-10-05 UTC 已在 fresh 进程上取得原生
-  媒体证据：**PC3 源 → 本机 Loom → 本机观看端**，正式窗口内框选、发布、Surface 参数
-  面板显式加入、JPEG decoded-submitted 推进通过。没有媒体管理 tunnel，也没有输入权。
-  本机作源被实际内存门禁拒绝，未终止别人的 rustc 或放宽策略；反方向尚未验证。
-  **晚加入与停止清帧的小闭环已通过**：Hook `a40f0f20cc8c423fcbe9948dbe91e7e2a80831c3`
-  / `.16` 新候选在 PC3 `.15` JPEG 兼容路径下正常晚加入，UIA 序号连续、媒体推进且没有
-  control 错误；正常停止后 native closed、presentation=null、旧 JPEG 清除。第一候选发现的
-  UIA snapshot 初始化遗漏已补修，未放宽序号或身份检查，详见末尾回执。
-  两端测试实例/fixture、服务、管理 tunnel 和本轮 2 个临时任务已清理，持久 SSH/RSC 保留；
-  原 `.15` 正常退出后已按原路径恢复为 PID 49900 / creation 03:03:22.1020330Z。
-- A3 整体仍未完成：默认 GPU 到 relay 的 JPEG 停滞已完成采集预算修复及真实 WGC/GPU/JPEG
-  源链回归，新候选的两机正式入口复核仍待执行；独立 Art 的 Surface event dispatch failed
-  尚未确诊。反方向、完整恢复/撤销矩阵、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳未验。
+- **A3 当前停点（2026-10-05 UTC）**：仍须正常入口、精确包/实际进程/CDP owner 绑定，
+  再对齐 A1/A2.2；浏览器夹具和旧 EXE 不能认证新 bytes。`.17` 已通过 PC3 默认 GPU 源 →
+  本机 Loom → 本机 viewer 的正式发布、晚加入、持续 JPEG 和正常停止清帧；`.18` 已关闭
+  独立 Surface 事件收敛缺陷并通过单机原生刷新验收。两项都不等于后续候选的完整矩阵。
+- 最新 Device 终态小块：Hook `284cbeec6c2f5b067b011ebd4a61934a5c0d088b` / `.19` 与
+  Loom `a82e8cdad4bb8ff9eaf06da3d6acecf1a59f66c9` 已普通推送。有效 admitted session 的
+  显式 revoke 使用 sticky provenance 和精确 Policy Close；Hook 收到后停止本地 relay、
+  清帧/authority 并拒绝迟到 source recovery。expiry/nonce eviction 不冒充终态。源码、
+  fresh 候选和实际验收边界见末尾最新回执；不能将服务端 Close 或 Rust 测试当原生清图。
+- 反方向 `.18` 单次 SCP 仅到 partial，未执行；失败日志保留，不盲重传。新候选的原生
+  撤销/清图、反方向、1/2/4 viewer、慢端、恢复、600 秒长稳和静态文字/滚动/运动对照仍待
+  验收。B/C/D 仍是证据触发的有条件后续，不能以新 codec/POC 代替 A3 真正基线。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
 
@@ -1182,3 +1178,64 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 尚未关闭：Hook Device 撤销后清旧画面的终态 UX、真实两机撤销、反方向、多 viewer/慢端、
 恢复、600 秒长稳、静态文字/滚动/运动及性能对照。服务端关闭 socket 不能作为 Hook 清帧
 证据；B/C 优化仍须真实瓶颈，不猜测 codec 收益。
+
+## A3 接续：Device 终态停流与清帧（2026-10-05 UTC，跨仓库源码及候选完成）
+
+- Hook `284cbeec6c2f5b067b011ebd4a61934a5c0d088b` 与 Loom
+  `a82e8cdad4bb8ff9eaf06da3d6acecf1a59f66c9` 已分别普通推送到 main，远端 SHA 一致。
+  本节为源码/产物回执，不把 A3 或完整开发计划标为完成。
+- Loom admitted Device session 新增共享的内存 revoke marker；显式 revoke、成功持久化的
+  disable/delete 才置位，expiry/nonce eviction 不置位。grant 只持有 digest、registry 和
+  marker，不保留明文 token，不重复消费 nonce，也不增加永久 tombstone 或持久 schema。
+  disable/delete 在同一 registry 锁内先持久化成功再撤销；失败回滚不再误删原 session。
+- 精确终态信号为 WebSocket Policy (1008) / `live_media_device_revoked`。Hook 仅在
+  Device-authenticated 原媒体 socket 收到该组合时停止本地 relay、清 authority/native frames、
+  保留 sticky revoked error；source recovery 在进入、join 后和 replace 前拒绝迟到复活。
+  普通 Close、expiry、网络异常及 HTTP 401/403/404 不猜成永久 revoke。source 先读控制消息再
+  选择/编码/发送；send/Ping 失败后只做一次受现有 socket deadlines 约束的控制读取。
+- terminal helper 不在 worker 内 self-join，显式 disposal 回收 JoinHandle。前端沿已有 closed
+  snapshot 清图、释放 URL、停止 poll，已知 closed/generation 不提交迟到 decode；decode await
+  会暂停该 relay poll，因此不承诺 native terminal 到 JS 清图的零延迟，也不增加每帧 IPC。
+  local relay closed 不伪造 Loom LiveSession closed，本地 capture 不冒充 source-session end。
+- 协议边界已同步两仓库：已被 expiry/nonce 删除的 session 无法取得后来新置的 marker，仍
+  fail closed 但可能普通 Close；网络可能丢 Close。在途帧不与 revoke 线性化，不宣称严格毫秒
+  SLA。epoch bump/approve 仍是可恢复失效；坏 Device credential + 好 admin cookie 不降级。
+- Hook 修改前真实 viewer socket 回归失败 `authoritative Device revocation did not stop viewer`；
+  修改后邻近 native LiveRelay 26 passed / 3 explicitly ignored，最后行为增量 owner 14 passed，
+  no-default lifecycle 9 passed。包含真实 viewer 清帧/不恢复、普通 Policy expiry 保留旧帧与
+  recovery，以及完整生产 source worker：真实 socket 收到至少两帧、synthetic JPEG producer
+  仍在持续生产时 revoke 后 stop/sticky error/单连接成立。不是 WGC capture 或完整 Rust suite。
+- Hook 两种 feature 配置的 all-target check/clippy、Cargo/include formatter、前端四组 46 项
+  聚焦测试、两套 TS typecheck、行数 checker 53 项及 strict 1388 文件通过。Loom media 17 项、
+  Wall grant 2 项、all-target check/clippy、formatter、checker 15 项及 strict 1183 文件通过；
+  两仓库/Neuro 开发契约与 diff check 通过。所有新/改源码不超过 500 有效行，最高为测试
+  `part_38.rs` 490；存量 warnings 保留。fixture callback ABI 的大错误类型仅有说明性的 scoped
+  lint allow，之后最终 clippy 通过。一次中间 viewer fixture 未接受首帧的失败原日志保留；
+  后续诊断单测、邻近 26 项与最终 14 项通过，不将未确诊的单次失败归因为环境。
+- 真联网 OSV：Hook 4 locks / 1654 packages、Loom 4 locks / 1341 records，均 0 未豁免 ID；
+  原有 19/9 项配置例外不改，不声称依赖零 advisory。独立只读审查未发现新增认证绕过、
+  expiry 误终态、确定锁序死锁或 self-join；审查指出的 send-first 与 producer 已结束覆盖缺口
+  已修复并纳入最后 owner 回归。
+- Loom clean source fresh `cargo build --locked --release -p loom-daemon`：约 466 秒、exit 0。
+  独立组件候选 `release/Loom/issue67-a3-terminal-device-revocation-20261005-daemon/runtime/loom-daemon.exe`，
+  36955648 bytes，SHA-256 `8e36846df26cd7df7539bfe1c56942da735e8f0bf02a45e5cac28595e1b24d84`。
+  该 EXE 的真实 loopback listener/process 绑定、HTTP/Ed25519/Device/source WS smoke 通过：
+  disable/delete 后原 socket 1008/exact reason、lastFrameId 固定 1、sourceConnected=false、旧
+  token 新握手被拒，admin admission 和坏 Device 不降级保留，LiveSession 不伪 closed。
+  明确使用 2×2 synthetic raw fixture，不是截图/native viewer/两机；自有进程已退出，listeners
+  为空。构建 manifest 保留当时 pending，新增 component-verification 提供最终包级结论。
+- Hook 本轮只分配一次内部版本 `.19`，公开 SemVer 仍 0.2.32。fresh 官方 production/release
+  build 约 538 秒、exit 0，clean provenance/source SHA 与以上 Hook main 匹配。不可变候选
+  `release/Hook/v0.2.32.19/issue67-a3-terminal-device-revocation-20261005/hook.exe`：9005056 bytes，
+  SHA-256 `80188bafb585a0927084704ed5637f5b28cfa676deb4f2c4ab7b153e5ff0adb7`；官方
+  `Invoke-HookHeadlessReleaseSmoke.ps1` 绑定同一 SHA、status=passed。既有 JS chunk warning 保留。
+  这是内部 Hook EXE + daemon component candidate，不是完整 joint/official release，未部署
+  常驻或发布公共 GitHub Release，旧 `.17/.18` 原生结果不认证新 bytes。
+- 本轮证据根 `GameEditor/linshi/issue67-a3-terminal-revocation-20261005`：两 source-gates、
+  final-owner-tests、after-lines、daemon-candidate-binding、packaged-terminal-socket-receipt、
+  hook-build-result、hook-headless/headless-summary；凭据和原始私有数据不提交。构建期间未
+  停止其他 owner 的 Gateway build，日常 `.15` main/watchdog 未退出或被替换。
+
+下一小块：旧 scoped TLS leaf 已过期；生成 fresh 隔离 leaf，不改系统时间/信任/防火墙，再
+用精确 `.19` + 新 daemon 做有界原生 viewer revoke/清图。随后推进反方向、多 viewer/慢端、
+恢复、600 秒和静态文字/滚动/运动对照；B/C/D 仍按实际瓶颈或负载证据决定，不凭空做 POC。
