@@ -112,14 +112,22 @@ MIT 通知、第三方许可、固定版本、校验和与依赖安全门禁。
 - A2.2：Hook `db029ef244ca2b945dddfb90c4a66f59a359452e`，内部迭代 `v0.2.32.14`。
   [收端诊断合同](https://github.com/aiaimimi0920/Hook/blob/db029ef244ca2b945dddfb90c4a66f59a359452e/docs/LIVE_RELAY_DIAGNOSTICS.md)
   明确有界读取、时钟口径、源/帧关联和 EXE/实际进程身份检查；DOM 不伪造包 SHA。
-- 下一动作 **A3**：用本轮不可变候选从正常入口完成一个源/一个受权观看端的原生两机闭环，
-  先核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
+- **A3**：一个源/一个受权观看端的原生两机闭环，要求从正常入口启动不可变候选，
+  核实际进程路径/PID/开始时间/SHA 与 CDP owner，再对齐 A1/A2.2 证据。未绑定的浏览器
   夹具不能冒充新包的原生显示；之后按需扩大多 viewer、慢端、恢复/撤销和负载矩阵。
-  本机原生 Surface 前置已通过；用户确认 PC3 地址后，专用 key 的 fresh SSH 认证已实证通过。
-  当前不再等待 PC3 授权或 IP。共同 HTTPS 的客户端信任合同及两机临时安全边界已验证，
-  详见末尾最新回执；它不是常驻入口。先闭合新候选远端完整性，再绑定桌面/CDP 和真实
-  Surface/合法会话；管理传输、旧 bridge 和各机独立 loopback 服务不等于原生两机媒体链路。
-- 仍未验收：正常产品入口两机闭环、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络和长稳。
+  PC3 同钥访问已恢复，完整 .15 无需续传。2026-10-05 UTC 已在 fresh 进程上取得原生
+  媒体证据：**PC3 源 → 本机 Loom → 本机观看端**，正式窗口内框选、发布、Surface 参数
+  面板显式加入、JPEG decoded-submitted 推进通过。没有媒体管理 tunnel，也没有输入权。
+  本机作源被实际内存门禁拒绝，未终止别人的 rustc 或放宽策略；反方向尚未验证。
+  **晚加入与停止清帧的小闭环已通过**：Hook `a40f0f20cc8c423fcbe9948dbe91e7e2a80831c3`
+  / `.16` 新候选在 PC3 `.15` JPEG 兼容路径下正常晚加入，UIA 序号连续、媒体推进且没有
+  control 错误；正常停止后 native closed、presentation=null、旧 JPEG 清除。第一候选发现的
+  UIA snapshot 初始化遗漏已补修，未放宽序号或身份检查，详见末尾回执。
+  两端测试实例/fixture、服务、管理 tunnel 和本轮 2 个临时任务已清理，持久 SSH/RSC 保留；
+  原 `.15` 正常退出后已按原路径恢复为 PID 49900 / creation 03:03:22.1020330Z。
+- A3 整体仍未完成：默认 GPU 采集到 relay 的 JPEG 停滞、独立 Art 的 Surface event dispatch
+  failed 尚未确诊；反方向、完整恢复/撤销矩阵、真实观看 FPS/帧龄、CPU/GPU 收益、受限网络
+  和长稳未验。本次仅关闭 late-join bootstrap / authoritative terminal closure 修复块，不扩范围。
 - 前期 A0/A2.1 辅助子代理因上游 503 没有有效结果；A2.2 已完成独立只读审查和最终增量
   复核。两者分开记录，不把前期直接核查冒充独立评审。
 
@@ -538,3 +546,423 @@ Receiver 的过滤器名称被系统显示截断，清理保护拒绝批量移�
 
 A3 仍未完成：下一实际产品步骤仍以完整 `.15` SHA 验证为前提，不能用上述配对抓包或
 RSC 配置状态代替正常发布、受权观看、原生进程绑定和性能验收。
+
+#### A3 接续：实际 RSC 对照及限时原生准备（2026-10-04 UTC）
+
+恢复 Session `01a106d6-143a-7f40-b9ea-acacd10204f4` 时，发现其后半轮实际已取得新的
+RSC 对照，但最后的原生准备因上游 `402 Payment Required` 中断，未进入限时验收。
+
+- 前轮用户明确允许 WLAN 短暂重启后，IPv4 RSC 的 enabled / operational 均为 false，
+  IPv6 两项仍为 true。131,072-byte 合成 burst / paced 都完整 SHA 匹配，收端分别约
+  0.437s / 1.610s；恢复四项 true 后，burst 在 32,768 bytes 读取超时，paced 完整
+  接收但约 18.203s。恢复和旧控制任务清理有独立回执。该有限 A/B 不是长流稳定、媒体
+  性能或“RSC 是唯一原因”的证明，不能外推到完整候选或实际 JPEG 观看。
+- 用户又明确允许最多 20 分钟临时关闭 IPv4 RSC，以补候选并执行一源一观看端，结束
+  恢复。本次先准备本地私有 CA HTTPS 服务、正规 process framework / dashboard Art
+  安装、无管理员 token 的共享 HTTPS manifest、远端小脚本 SHA 校验及测试夹具。
+  LiveRelay 媒体计划直接走 LAN WSS；loopback Art handshake/control 的管理 tunnel
+  与二进制媒体是独立路径。实际未启动 tunnel 或使用旧 mTLS/NLWM/PNG adapter。
+- fresh PC3 专用 SSH 认证成功；稳定差分前缀仍为 624,640 bytes / 上节 SHA，WLAN Up，
+  RSC 四项 true。随后先登记独立 SYSTEM 恢复保险，再关闭 IPv4 并重启 WLAN；查询确认
+  IPv4 两项 false、IPv6 两项 true，holding task Running、restore task Ready。
+  恢复脚本在 PC3 本地，启用电池运行，不依赖 SSH；主路径另用 monotonic 1170s 进入
+  finally 恢复，独立任务目标为 1200s。调度、休眠、系统时间或驱动阻塞仍可能影响实际
+  完成时间，静态保险不等于已经实查恢复成功。
+- 从该稳定前缀做一次保持 TLS 校验的 349,835-byte 差分续传，发送端约 22.672s 报
+  `The write operation timed out`。管理 SSH 同轮超时，随后 fresh pinned-host 连接明确
+  返回 `Permission denied (publickey,password,keyboard-interactive)`；debug 确认固定
+  ED25519 host key、正确专用 public key 已 offered，但服务端未接受。配置 expiry 已
+  过本机时间，但两机旧时钟明显不同，不能据此断言失权原因；未自行续期或更换 key。
+- 未取得远端最新 partial / 重建成功回执，不能确认完整 `.15` 已落盘；旧稳定前缀与
+  新 attempt 区分，未重传、覆盖历史 partial 或执行未核候选。尚未启动本轮原生 Hook、
+  注册 viewer task、调用 Ctrl+2 发布或加入观看，故 A3 仍未完成。
+- 本机发现用户由 Explorer 启动的 `.15` Hook。用户允许临时正常退出后重启，但窗口
+  close 仅收进托盘，退出菜单未能自动定位。未强制终止既有 main/watchdog，也未修改
+  原应用数据；该现有进程不是本轮 `process-bound` 或原生验收证据。
+- 本地 isolated daemon / Art Store / Caddy / transfer helper 已退出，服务 owner 与
+  listener fresh 查询均为空。没有更改防火墙、系统信任、驱动、路由、全局 TCP 或创建
+  新网络盘。PC3 本轮 RSC 恢复、task 清理和新 partial 核对因 SSH 失权仍待实际回执，
+  不把本地清理或独立 watchdog 登记冒充远端恢复已完成。
+- 本轮证据与临时工具：`GameEditor/linshi/issue67-a3-native-rsc-20261004T1330Z`；关键
+  文件为 `pc3-rsc-effective.json`、`transfer-server.json`、`pc3-fresh-auth-debug.log`、
+  `local-rsc-launch-clock.json`、`local-cleanup-audit.json`。临时脚本仅在 linshi；没有
+  产品代码、依赖、版本或相同二进制重建。本次文档未提交或推送。
+- 本机记录的 holding launch receipt 为 `13:53:05.6600168Z`；等到设定的 20 分钟
+  期限之后，于 `14:14:52.3221691Z` 再做一次只读核验，仍为 SSH exit 255 / 上述
+  `Permission denied`。因此实际恢复状态和远端自有任务清理仍是 **未验证**，不是
+  “保险登记即恢复成功”。恢复脚本保留在 PC3 本地，不依赖已清理的本机服务。
+- 临时传输边界测试 4/4、checker tests 15/15、strict checker 1180 文件 / 0 违规、
+  development manual contract、PowerShell/Python/Node 语法、UTF-8 无 BOM、两仓库
+  diff check 均通过。临时工具由语言感知 lexer 计数为 16–139 有效行，无软上限例外；
+  一次只读独立审查确认恢复保险及其调度/休眠/驱动阻塞边界，没有实际恢复通过结论。
+
+下一个闭环先恢复同一专用管理访问并实查 RSC / restore receipt / 自有任务状态，按
+owner 清理；然后核新 partial / 完整候选 SHA。只有这些完成后才重新安排明确授权的
+限时原生发布/观看，不凭本次管理诊断宣称产品、性能或原生 LAN 验收通过。
+
+#### A3 接续：同钥续授权工具与 fresh 认证停点（2026-10-04 UTC）
+
+用户报告 PC3 应已给予访问权限后，重新通过固定 host key、同一专用 key、源地址
+`192.168.15.20` 的物理 SSH 入口验证；最新 `14:52:16.5374821Z` 仍为 exit 255 /
+`Permission denied (publickey,password,keyboard-interactive)`。debug 确认原 ED25519
+host key、专用公钥已 offered，服务端未接受；远端只读检查没有执行。
+
+- 检查旧授权 ZIP 发现其授权行固定 `expiry-time="20261004062139Z"`，脚本既不拒绝
+  过期条目，也不在重复授权时延长 expiry，却仍显示成功。这是已确认的工具缺陷，
+  可解释一种“已操作授权但仍被拒绝”的情形；没有远端时钟/授权文件/sshd 日志，
+  不能将其确认为本次拒绝的唯一原因。
+- 仅在 linshi 制作同一专用公钥的续授权包，从 PC3 实际执行时的 UTC 起算两小时。
+  保留原源地址、禁 agent / X11 / PTY、CODE/mjc 与固定 host identity 边界；不换 key，
+  不修改 SSH 配置、防火墙、网络、系统时间、RSC 或 Hook。
+- 新工具原子替换符合原工具 ownership/options 的同钥行，保留其他文本、owner /
+  group / DACL，并留 rollback。只接受已有受保护 DACL；未保护的继承 ACL 在任何
+  staging/内容写入前拒绝，绝不通过自动改变目标权限来让测试通过。
+- 源码和 ZIP 解压后的自测均 12/12 通过，覆盖过期同钥替换、其他授权保留、保护
+  DACL/备份、幂等 grant/revoke、异常选项及 tab 分隔同钥拒绝、锁定失败保留和
+  执行时两小时 expiry。源码/解压脚本 parser、UTF-8 无 BOM、白名单与 SHA 核对通过。
+  临时源码有效行数均低于 100，无软例外；包只含七个公开文件，不含私钥、测试
+  夹具、运行回执或 rollback。该自测不是 PC3 授权、UAC 或 SSH 恢复通过。
+- 新包为 `GameEditor/linshi/issue67-pc3-access-renewal-20261004/` 下的
+  `PC3-SameKey-Renewal-20261004T145112Z.zip`，SHA-256
+  `1bf1c10f08bec38ee06eaae67d70d15869671bfda898c3aab4cf927fdc64e8cf`。
+  尚未在 PC3 执行；需要在 PC3 本地解压并运行 `PC3-Authorize.cmd` 后 fresh 验证。
+- 本机原 Hook main/watchdog 仍为 PID 62792 / 37328，未强制结束、未重启、未动原
+  数据。本次没有启动测试 Hook 或发送 LiveRelay 媒体。按原 PID/creation owner 与
+  实际 49873-49877 端口 fresh 核对，本机上一轮服务/transfer helper/listener 均为空。
+- 证据保留在同一 renewal linshi 目录：`PACKAGE-20261004T145112Z.json`、两份 selftest
+  回执、`temporary-code-lines.json`、`pc3-fresh-readonly-20261004T145215Z.log`、
+  `local-final-owner-audit.json`。产品代码、版本、依赖和包没有变化，文档未提交/推送。
+
+A3 仍未完成。访问恢复后必须先核 PC3 实际 RSC 恢复、自有 restore/holding 任务与
+最新 partial/完整候选 SHA，再进入受授权的原生配对、发布、受权观看及性能验收。
+
+#### A3 管理入口：用户授权 30 天及开机自动续期（2026-10-04 UTC）
+
+用户明确要求取消每天手动续授权，改为至少 30 天且每次开机自动配置。本次仅制作
+同一 PC3 公钥的独立授权包；没有扩大到其他主机、其他来源、其他公钥或网络配置。
+
+- 一次本地 UAC 安装后立即由 SYSTEM 任务授权，后续每次开机延迟一分钟刷新为
+  PC3 执行 UTC 加 30 天和一分钟舍入缓冲。属于持续滚动续期，不是安装满 30 天撤销；
+  只设开机触发，没有每日触发，连续运行超过期限未重启时仍会到期。
+- 可见任务 `Neuro-PC3-DedicatedKey-30DayRenewal` 固定执行
+  `C:\ProgramData\NeuroPc3Access` 的受保护脚本；代码、manifest、控制状态和结果
+  仅 SYSTEM/Administrators 可写，拒绝 reparse 路径和未知同名任务。不保存密码或私钥。
+- 安装器核对 mjc 的直接管理员成员身份及既有 `sshd.exe -T -C` 有效授权文件配置。
+  通过当前 generation 的新 SYSTEM 回执确认实际授权操作，不拿旧结果冒充本轮成功。
+  撤销先在共享 key mutex 下发布 false；已排队 worker 之后只能撤销，成功后才禁用、
+  注销自有任务。控制/结果 JSON 原子发布，固定 initial/previous/pending 备份有界。
+- 源码和 ZIP 解压后的自测均 **32/32** 通过；Windows Task Scheduler COM 原生
+  `NewTask(0)/XmlText` 解析通过，未注册任务。本机错误主机实际安装入口拒绝，未请求
+  UAC、未创建 ProgramData 安装目录或任务。parser、UTF-8 无 BOM、白名单及摘要通过；
+  临时源码有效行数均不超过 125，无软例外。静态独立审查不等于 SYSTEM/重启验收。
+- 包为 `GameEditor/linshi/issue67-pc3-access-autostart-20261004/` 下的
+  `PC3-30Day-AutoAccess-20261004T153933Z.zip`，SHA-256
+  `8fbc118302f2e6f155fb82ac4d2d9b79ab227d2e5a4ec5f853aa0e958e7af23e`。
+  15 个公开文件，安装/撤销/状态入口随包提供；不含测试产物或 rollback。
+- 最新 `15:46:00.4790707Z` 只读 PC3 预检仍为 SSH exit 255 / permission denied；
+  尚未在 PC3 安装，不能宣称任务、30 天授权、真实开机续期、撤销或 SSH 已通过。
+  第一次需 PC3 本地解压运行 `PC3-Install-30Day.cmd`，之后不需每日手动配置。
+- 本次不改产品代码、版本、依赖或发布包，不启停原 Hook，不改 RSC/SSH 服务/防火墙，
+  没有提交或推送。访问恢复后仍按上一停点实查 RSC、自有任务及候选，再续原生 A3。
+
+#### A3 管理入口 Fix1：首次安装任务缺席错误（2026-10-04 UTC）
+
+用户报告运行 `PC3-Install-30Day.cmd` 时 `StartupTask.ps1` 报错，尚未提供具体错误
+原文。已复现旧版在根任务目录为空时将 CIM `ObjectNotFound` 当作安装失败；这是
+已确认的缺陷，但是否就是用户遇到的错误仍待核对，不能把本地复现当作唯一确诊。
+
+- Fix1 直接查询固定 TaskName / TaskPath，只吞确切的 CIM NotFound；权限不足、
+  Scheduler 不可用等错误仍上抛。只读原生不存在任务查询及三类错误夹具均通过。
+- 保持原公钥、来源、30 天开机续期与安全边界。只接纳原交付 v1 的固定 manifest
+  及逐文件 hash / ACL，更新 `StartupTask.ps1` 和 manifest，其他 runtime 不变；
+  在受保护 `state/query-repair-v1` 留原文件快照，不需删除旧安装目录。
+  两文件分别原子替换；精确的新脚本 / 旧 manifest 状态只有在旧快照仍匹配时才可
+  重跑恢复，不宣称两文件整体事务原子。未知编辑或快照拒绝覆盖。
+- 安装失败回执增加 FQID、category、position、stack trace，供核对用户实际错误。
+  源码和 ZIP 解压后的公开自测均 **36/36**；另以原交付 ZIP 为真实字节夹具完成
+  已知旧版升级、owner/group/DACL 保留、幂等、半提交恢复、未知编辑保护及其他
+  runtime 不变的 **6/6** 验证。测试均在 linshi，不注册真实任务，不修改本机安装。
+- 新包为 `GameEditor/linshi/issue67-pc3-access-autostart-fix-20261004/` 下的
+  `PC3-30Day-AutoAccess-Fix1-20261004T162741Z.zip`，SHA-256
+  `5935ce05b4ee726895ad080664f133551ea6be6bef5978ae133513eabf971615`。
+  18 个公开文件，不含私钥、旧 ZIP 夹具、修复专项测试或运行产物。parser、UTF-8
+  无 BOM、解压逐文件摘要和 ZIP 白名单验证通过，临时源码均不超过 128 有效行。
+- 最新 `16:29:18.7786044Z` 固定 host key / 同钥 / 来源的只读连接仍为 SSH exit 255：
+  `Permission denied (publickey,password,keyboard-interactive)`。远端安装错误回执未能
+  读取，真实 PC3 安装、SYSTEM 操作、开机续期、撤销和 SSH 恢复仍未验收。
+- 本次不修改产品源码、依赖、版本或二进制，不启停原 Hook，不改 RSC/SSH 配置/
+  防火墙，不提交或推送。原 A3 原生及性能验收仍以实际访问恢复后核查为前提。
+
+#### A3 管理入口 Fix2：中文 ANSI 解码的语法错误（2026-10-04 UTC）
+
+用户再次报告 Fix1 的 `StartupTask.ps1` 为符号报错。此次按真实字节复现编码路径：
+Fix1 的 UTF-8 无 BOM 源码按 GBK 936 解码后有 **7 个 parser 错误**，包括
+`Unexpected token '}'` / `Missing closing '}'`。原 117 个按 LF 分割的片段变成 114 个；
+中文单行注释尾部未配对字节吞掉 LF，下一行 `if` / `while` 并入注释，破坏括号结构。
+开发机默认 UTF-8，旧自测漏掉这一 Windows PowerShell 5.1 中文区域读取路径。
+
+- 保留中文和 UTF-8 无 BOM，将所有脚本的中文单行注释改成有 ASCII 闭合边界的
+  `<# ... #>` 块注释；没有把中文改成问号或转义，没有要求修改系统区域或系统编码。
+  `StartupTask.ps1` 的 here-string 闭合、命令参数引号及任务业务代码保持不变。
+- 新增 UTF-8 / GBK 936 / Windows-1252 逐脚本 parser 与非注释 token 等价验证；
+  实际加载 GBK 解码的 StartupTask 并调用函数生成、验证任务 XML。原生 PowerShell
+  5.1 的 `-File StartupTask.ps1` 也正常退出；这不是 PC3 注册或 SYSTEM 操作证明。
+- 安装支持摘要固定的原交付 v1 和 Fix1 runtime 升级，公钥及任务执行路径不变。
+  全部文件、ACL 和快照先预检；逐文件原子替换，最后提交 manifest；已更新子集
+  只有具备原始快照才可续跑。快照按原 manifest 摘要分目录，保留旧 Fix1 快照。
+  未知文件、未知快照或缺少快照的新文件拒绝，测试确认拒绝前不修改 runtime。
+- 源码及 ZIP 解压公开自测 **40/40**，两原交付 ZIP 字节夹具的升级专项 **9/9**，
+  覆盖两版本升级、全部 owner/group/DACL 与快照保留、幂等、多文件已更新子集恢复、
+  未知编辑/快照/缺快照保护、runtime 可执行代码及公钥保留。无真实任务注册。
+- 新包为 `GameEditor/linshi/issue67-pc3-access-autostart-fix2-20261004/` 下的
+  `PC3-30Day-AutoAccess-Fix2-20261004T165439Z.zip`，SHA-256
+  `ad0132462adde5aacc8e528bf81ad7a7f7586ab3a34ce1073f0f1c2b2d75dcbe`。
+  20 个公开文件，不含私钥、两个旧 ZIP 夹具或运行产物。parser、UTF-8 无 BOM、
+  解压逐文件摘要及白名单均通过；临时源码均不超过 128 有效行，无软例外。
+- 未收到用户具体错误原文或 PC3 回执，故能确认此编码缺陷及本地修复，不能确认
+  用户错误唯一归因、真实中文区域 PC3 安装、SYSTEM 授权、开机续期或 SSH 已通过。
+  本次仍不修改产品源码/依赖/二进制、SSH/RSC/防火墙或原 Hook，不提交或推送。
+
+#### A3 管理入口 Fix3：任务语义误判及 worker 失败回执（2026-10-04 UTC）
+
+用户确认 Fix2 语法错误已解决，但运行时仍无法授权，提到错误含 `/t...`，没有完整
+报错或回执。本轮固定 host key / 同钥的只读 SSH 仍为 permission denied，未能读取
+PC3 的实际任务或授权结果。历史文件中也没有可用于本轮归因的目标 ACL / effective
+sshd 配置回执；未通过猜测重设 ACL、放宽来源或修改 SSH 配置。
+
+- 旧 `Assert-OwnedAccessTaskXml` 逐字比较会输出 `/t:Task/...`。原生 Task Scheduler
+  未注册定义证实：SYSTEM 名称与 SID、XML 布尔 `0` 与 `false`、ISO duration `PT60S`
+  与 `PT1M`、省略默认 false 的 Hidden 均为合法等价表示，但旧 guard 会误拒绝。
+  这是已复现的代码缺陷，不等于已取得 PC3 的具体失败字段或唯一根因。
+- Fix3 原生解析/规范化任务定义，按真实 SID、布尔值、duration 和固定 Windows
+  绝对路径语义校验；保留精确参数、SYSTEM、最高权限、单一开机触发、retry/time
+  limit 和 marker 边界。改变安全值、非SYSTEM、额外 action、非法 schema、DTD
+  均拒绝。定向只读复审指出 BootTrigger 内额外重复/日期约束的覆盖缺口；主线程
+  用原生定义复现带 PT1M Repetition 的触发器被旧 guard 接受，已补拒绝重复、日期
+  边界和额外非零 per-trigger limit 的校验及反例。COM 定义只读且释放，不注册任务。
+- 安装窗口/回执显示 stage 与简短字段名；worker 在可信 runtime / 状态通过后，
+  在共享锁下先读取 generation，再验证主机/SYSTEM/SSH/目标权限，前置失败可写
+  属于本轮请求的失败回执。新增 stage/FQID/position/stack trace；没有新成功回执
+  绝不报告已授权。无回执超时另报告实际 LastTaskResult，不跳过保护条件。
+- 源码与 ZIP 解压后的公开自测 **48/48**，原交付 v1/Fix1/Fix2 的升级专项 **10/10**。
+  已实际在独立受保护夹具执行生产 worker：只适配测试路径/owner，不模拟 SYSTEM，
+  错误主机拒绝前能保存本轮 generation、真实身份、阶段与调用栈，授权 staging
+  为空。这验证失败链路，不是 SYSTEM 成功授权或真实开机验收。
+- 最终包为 `GameEditor/linshi/issue67-pc3-access-autostart-fix3-20261004/` 下的
+  `PC3-30Day-AutoAccess-Fix3-20261004T175356Z.zip`，SHA-256
+  `b0711355b95ab1fa0dd6f0cc1d796a3f08ff347f6ee5c02bcb460593ea80875c`。
+  23 个公开文件，不含私钥、三个旧 ZIP 夹具或运行产物。支持确切旧版本保留快照
+  升级，无需清空安装目录；未知改动仍拒绝。parser、三种解码、UTF-8 无 BOM、
+  解压摘要及白名单均通过；临时源码最高 162 有效行，无软例外。
+- 未在真实 PC3 注册任务、SYSTEM 授权、重启或独立 SSH 验收。不改产品源码/依赖/
+  二进制，不启停原 Hook，不修改 RSC/防火墙/SSH 配置，不提交或推送。
+
+#### A3 回到原生验收：候选完整性关闭，正常入口仍未通过（2026-10-04 UTC）
+
+用户要求回到 Hook / Loom 核心测试。本节是新的实机证据，不改写上面授权失效时的历史状态。
+
+- fresh 固定主机/同钥 SSH 已成功；PC3 的 Fix3 安装及 SYSTEM 授权回执成功，开机续期任务
+  Ready / LastTaskResult=0。真实重启续期尚未测试，用户要求的滚动授权保留，不在验收后撤销。
+- PC3 WLAN Up，IPv4/IPv6 RSC 的 enabled/operational 四项均 true；另读取上一轮本地恢复
+  回执。原 restore task 已移除，按 action 精确核对后清理剩余的旧 holding task。本轮不改 RSC。
+- 远端旧差分已稳定到 870,400 bytes，SHA 与本机同长度前缀匹配。保留旧 partial，在新目录
+  一次续传剩余 104,075 bytes，38.782s 完成；974,475-byte 差分完整 SHA 匹配。仅调用系统
+  msdelta 重建并再次核验完整 .15：8,990,208 bytes / 上节 02fcca8d... SHA。未重新传整个 EXE。
+- 用户既有 Hook PID 62792 通过正式原生托盘菜单“退出”正常退出：本轮读取实际菜单文本与
+  动态 numeric ID 后走 muda / Hook app.exit，不猜 ID、不 force kill。两端隔离 .15 实际启动，
+  Active Console Session 1，EXE SHA、PID/creation/path 和 WebView CDP 父链均核对；源端重启后
+  另核新父链。其他既有 Loom 实例不动。
+- 本机测试进程最初继承终端 HTTP_PROXY，LAN 配对请求失败。只为隔离测试进程设置固定
+  LAN 地址的 NO_PROXY 并重启；随后两设备均通过共同 HTTPS 的正常配对。没有修改全局代理、
+  Windows 根信任、防火墙或产品配置。SSH tunnel 只用于 loopback Art 管理和 CDP，不转发媒体。
+- 实际正常入口门禁仍失败：旧 loopback setup 的 workflow instantiate 返回 409
+  no_hook_client，观看端无 Art/Surface。源码确认 remote manifest 选择 Surface poll listener，
+  而不是旧 workflow WS listener；仅有 extension clients 不等于可接收 workflow 的 Hook。
+  不能将这个 setup 路径直接当作远端正常 Art 创建入口，也不以伪造 Surface 绕过。
+- 源端 Hook 被最小化时 viewport 位于负坐标；恢复自有窗口后得到真实 region streaming，
+  但原窗口选择夹具未取得预期 sourceWindowId，另一次正常双击也未建立预期窗口捕获。
+  两次失败均留回执；尚未唯一归因于产品、焦点、DPI 或夹具。未正常发布、加入观看或传送
+  LiveRelay 媒体，因此没有 JPEG viewer、物理显示、FPS、资源或长稳通过结论。
+- 隔离 Hook 按自身有界生命周期退出，fixture、services 和 management tunnel 已清理；fresh
+  两端查询确认测试 listener/PC3 Hook/Issue67 task 均为空，RSC 四项仍 true。按原路径重新启动
+  用户 Hook，main PID 60376 / Session 1，SHA 不变；没有手工改写原应用数据或停止既有 Loom。
+- 证据目录为 GameEditor/linshi/issue67-a3-native-return-20261004T183749Z；关键回执包括
+  delta-continuation.json、pc3-candidate-reconstructed.json、两端 process-binding、
+  source-window-publication.json、pc3-final-state-clean.json、management-cleanup-final.json
+  和 final-native-receipt.json。临时脚本 parser/Node syntax/Python compile 通过，最大 139
+  有效行；本轮没有产品源码、依赖、版本或二进制改动，没有提交或推送。
+
+下一小闭环：先按实际远端产品入口创建并挂载 Surface-capable Art，并隔离原生窗口选择的
+焦点/DPI/geometry 证据；然后只验一个源/一个观看端的发布、加入、帧推进及停止。不再重复
+授权开发、整包传输或已经关闭的完整候选检查。A3 仍为进行中。
+
+定向只读源码核验补充：空画布的 globalAddNodeMenu 只有声明，没有实际 consumer；当前
+正常添加 Art UI 需要先选中一个既有 Unit，使用已配置的 toggle-actions（默认 Shift+1，
+不是 Ctrl+E）打开 Actions Menu，选择“设备仪表板”。spawnConnectedNode 从真实 Unit
+创建 Art，unitSurfaceController 对支持 Surface 的 Art 自动调用 attachSurface；dashboard
+inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入语义要求。下一夹具复用这条
+现有入口，不新增“测试专用 Surface”或伪造 attachment。该核验为源码结果，尚未实际跑通。
+
+#### A3 PC3 正常观看入口实测通过；源端退出停点（2026-10-04 UTC）
+
+- 复用完整 .15，不重新授权、传包或构建。PC3 fresh SHA 一致，隔离 main PID 2092 /
+  creation 19:27:07.2195620Z / Session 1；19:30 左右实际核过 49880 WebView listener
+  PID 14772 到 Hook 2092 的父链。末次 fresh 绑定查询时 1800s 生命周期已结束，不能
+  把那次失败写成仍运行；先前父链来自本轮实际工具输出，不是上一实例的绑定。
+- PC3 正式托盘截图菜单与 OS 指针框选创建真实 656×406 Unit；Shift+1 打开 Actions，
+  选择 canonical 设备仪表板，真实 Art 自动挂载 Surface。无 Mock IPC、graphStore 注入
+  或伪造 attachment。正常“刷新”使 Surface revision 1→4，参数面板的“实时投射观看”可见。
+- 本机只读 GET 对照实际 daemon 的 instance、attachment、hookNodeId 和 deviceId 成功
+  （HTTP 200）。夹具先前两处失败已区分：Art 按钮名包含 ❖ 图标，exact-name selector
+  不适用；对 instance: ID 使用 encodeURIComponent 使当前 path_id 查找 404。只修临时
+  locator 和经严格 ID 校验的 URL，没有修改产品或放宽权限。revision 推进不是媒体帧推进。
+- 本机原 Hook 60376 的日志已记录 tray_quit、tauri_exit_requested 和
+  hook_process_exit_cleanup，但未记录 tauri_exit / tauri_run_returned，进程仍在。
+  已证自身 relay/capture/input 清理阶段返回，不能把无超时 join 猜成当前根因。正式菜单
+  popup 已关闭，tray WM_NULL 仍响应；实际更深阻点尚未确诊。未强杀原实例，已询问单独许可。
+- 因源端单实例锁未释放，本轮未启动隔离源、未正常发布/加入，也未传送 LiveRelay 媒体。
+  没有 JPEG decoded-submitted、物理显示、FPS、CPU/GPU 或长稳通过结论。A3 仍进行中。
+- 本轮 root 为 GameEditor/linshi/issue67-a3-native-ui-20261004T192234Z，核心回执为
+  viewer-normal-entry.json、viewer-surface-check.json、original-menu-responsiveness.json、
+  management-cleanup.json、pc3-final-state.json。观看实例按生命周期结束，fixture 正常关闭；
+  四个精确核 owner/action 的本轮任务已移除，两端测试 listeners 为空，PC3 RSC 四项仍 true，
+  持久授权保留。原 Hook 60376/专属 watchdog 15600 未终止，不能宣称已完成原程序恢复。
+
+下一动作：取得卡住原实例的处置许可后按原路径恢复并重新绑定新的隔离源/观看端，只跑
+一个源/一个观看端的正常发布、加入、JPEG 帧推进及停止。不要重做授权和候选完整性准备。
+
+#### A3 原生 JPEG 推进通过，停止失效失败（2026-10-05 UTC，修复前历史）
+
+本节更新前面的历史退出停点，**A3 仍进行中，不是无错误的完整闭环验收**。
+
+- Fresh 原 Hook 已换成 PID 59536 / creation 01:03:27.4999930Z。正式托盘菜单归属核对
+  后，键盘尝试因 foreground 转至 Edge 中止，没有盲发 Enter；关闭菜单再发送动态读取的
+  正式 Quit menu event，01:23:05 回执确认正常退出，无强制终止或绕过单实例锁。
+- 复用 Hook v0.2.32.15 / SHA 02fcca8dc75a486500ae6cb928d5e8de9c3df079cc21928ca36d3c0043c467b0
+  及既有 Loom daemon。本机新 Hook 33936 / creation 01:25:02.7745390Z，CDP listener
+  36008 → 33936；PC3 Hook 6712 / creation 01:24:56.0836750Z，CDP listener 2404 → 6712。
+  两端 Session 1、实际路径/SHA/creation/父链均通过并在媒体期间 fresh 复核。
+- 本机正常窗口内框选已绑定自有 fixture，但创建捕获返回 live_resource_memory_pressure。
+  实测本机可用物理内存约 1–1.5 GiB，低于现有总内存 10% 的保留预算；未终止非本轮
+  rustc/其他进程，未放宽门禁。改用 **PC3 源 → 本机 Loom → 本机观看端**，不是原计划的
+  本机源 → PC3 收端。反方向和两端独立服务器拓扑仍未验收。
+- PC3 正式实时截图菜单、OS 指针框选得到 window/window_message 源，HWND 与该轮
+  fixture 一致，656×406；正常“发布到 Loom”通过。本机真实截图 Unit → Actions →
+  canonical dashboard → Surface → 参数面板刷新/选择/明确“加入观看”通过。
+- 实际 PC3 Hook 的已建立 socket 为 192.168.15.136 → 192.168.15.20:49874，收端 native
+  networkScope 为 private_https。SSH 只管理 CDP 和 loopback Art bridge，没有转发媒体，
+  没有 mock IPC、graphStore 注入或 PNG adapter，也没有取得 controller/remoteControl 权。
+- 收端同源/session/epoch、包版本与实际进程绑定匹配；JPEG decoded-submitted 帧号在
+  约 4 秒观察内 3801→3872，实际 img complete 且 natural size 为 656×406。发送 A1
+  指纹 427f9fba445c25ab3b53645904f81bd2 与收端源一致；8 秒/16 样本的可比较窗口 7582ms
+  中 published/forwarded 均增加 126，binary bytes 增加 2670835，failedWrites 和
+  viewerSkippedFrames 差分均为 0。这是 socket-write 采样，不是物理显示 FPS；未校准
+  跨机时钟，不计算端到端帧龄或 CPU/GPU 收益。
+- WebView 截图的人工复核还显示观看内容位于 viewport 边缘且被裁切，dashboard 上出现
+  Surface event dispatch failed。后者的跨 attachment/共享管理上下文原因尚未确诊，
+  前者尚未按当前坐标/布局做归因；不能将已解码和帧推进扩张成完整可见布局或整个 Art
+  运行无错误的通过结论。这两项保留在 visual-review.json，不为此隐藏错误或改产品。
+- **失败 1**：加入后 control_history_reset，媒体仍推进且没有输入权。Hook
+  native/live_relay_commands.rs 的新 viewer event_cursor 固定为 0；Loom
+  runtime/live_session_events.rs 在 after+1 < oldest 时明确返回 reset，Hook control
+  worker 按 reset 失效/撤销。此机制足以解释晚加入后的告警，但尚未完成 bootstrap
+  focused regression，不应简单忽略 reset 或跳过真实缺失的控制事件。
+- **失败 2**：正常停止发布后 daemon 已 closed=true/sourceConnected=false，但收端
+  30 秒内未失效；01:43:53 最终仍 recovering/control_poll_failed，保留 JPEG frame 7130。
+  Hook native/live_relay_websocket.rs 的 viewer resume 失败走重试分支，control poll
+  失败也只报错重试，未区分永久关闭与暂时断线；frontend 对 recovering 仍保留已提交帧。
+  下一修复应识别并传播权威 terminal 状态，不得为了本次测试把所有 recovering 都当 closed。
+- 夹具问题保留独立失败回执：首次 Ctrl+2 在 readiness 期间被非本轮物理输入取消；改用
+  正式菜单及 fresh DOM/log readiness。后续 live: ID 的 colon URL assertion 和包版本
+  v 前缀断言已修，仅重读既有 relay，没有重复发布/加入来制造通过。创建 Art 不会自动
+  选中，正常点击 refresh 后再开参数面板；这些均未修改产品代码。
+- 两端自有 fixture 正常关闭；PC3 测试 Hook 正常退出，5 个核对完整 action/user/root 的
+  临时任务已移除。隔离 Hook/daemon/store/Caddy 和 management tunnel 均已清理，测试
+  listeners 为空；RSC IPv4/IPv6 enabled/operational 仍四项 true，持久 SSH 授权未改。
+  原 Hook 按原 EXE/hash 重启为 53260 / creation 01:49:47.7301850Z，Session 1，WebView2
+  和专属 watchdog 子进程已启动。清理曾发现 RTK wrapper 提前退出而 SSH 子进程仍在，
+  精确复核 parent/creation/完整命令后仅停止本轮 management tunnel，不全局杀 SSH。
+- 证据根：GameEditor/linshi/issue67-a3-native-media-20261005T011121Z。总回执
+  final-native-receipt.json 为 partial_failed_stop_invalidation / a3Complete=false；核心
+  文件为 reversed-observe-receipt.json、sender-measurement.json、stopped-viewer-final-state.json、
+  pc3-native-binding.json、pc3-direct-media-sockets.json、original-restored.json 和
+  pc3-pc3-final-state.json。原始设备/会话身份与截图仅留受信本地证据，不发布到远端。
+
+下一项只修复/验证 **terminal closure 传播和 late-join control bootstrap**，复测同一最小
+闭环后再讨论性能优化、多 viewer 或长稳；不重做授权、候选传输和已完成的独立入口门禁。
+
+#### A3 第一轮修复与 UIA 晚加入遗漏（2026-10-05 UTC）
+
+- Hook `d169be802f6cd60a2ec6cab79b42367dda8d8a4b` 已提交并推送 main，内部迭代
+  `v0.2.32.16`。viewer 使用同次 attach revision 对应的 `viewer_joined` 作为控制游标
+  锚点；只跳过加入前历史，锚点丢失或加入后缺事件仍拒绝。控制轮询失败后仅通过已鉴权、
+  session/epoch/member 匹配且明确 `closed=true` 的快照确认终止，不把断网或普通 404 当关闭。
+  终止清帧与接收帧统一 state → frames 锁序，迟到连接/控制回调不复活已停止 viewer。
+- 聚焦回归先证明停止后回调会把 closed 改回 recovering，再验证修复。该提交 LiveRelay
+  Rust 19 passed / 3 ignored，前端 4 文件 54 tests、类型检查、lint、编译/格式、严格行数通过。
+  本轮真实 OSV Enforce 扫描 4 lockfiles / 1654 packages / 0 未抑制 ID，19 既有受控例外，
+  未新增依赖或豁免。独立只读代理因 503 无结果，不冒称完成独立评审。
+- 第一候选 `release/Hook/v0.2.32.16/issue67-viewer-lifecycle-20261005/hook.exe`，
+  SHA `64f124f49220e1f330baeb6efb68ac696a53869c096970ef92f2003408e5e7ba`，8995328 bytes，
+  clean-source provenance 与 self-check 通过。该候选保留，但不作为晚加入验收通过包。
+- 实机仍为 PC3 `.15` 源 → 既有 Loom → 本机 `.16` viewer。两端 Session 1、路径、SHA、
+  creation 和 CDP 父链已绑定；正式菜单框选、发布、真实 Surface 参数面板加入及首帧 JPEG
+  已解码。没有媒体 SSH 转发，没有输入权。**停止发布后失效通过**：daemon closed，native
+  closed / errorCode=null / controllerOwned=false，presentation=null，remainingImages=0。
+- 晚加入暴露另一遗漏：`control_event_rejected` / `live observation sequence must be exactly 1`。
+  attach 已跳过历史，但 runtime observations 仍为空，而源端 UIA sequence 已达数百。
+  此外 `.15` 源 capture/lastFrameAtMs 与 UIA 继续变化，JPEG frameId 停在 4；GPU 采集路径
+  原因未确诊，不声称已修。下一轮只用既有 `HOOK_LIVE_GPU_PREVIEW=0` 隔离 JPEG 兼容路径。
+- 两端测试实例/fixture、服务、管理 tunnel、临时任务均已清理；PC3 RSC 四项 true，持久
+  SSH 授权保留。本机原 `.15` 恢复为 PID 54132 / creation 02:39:06.3566620Z。
+  原始证据在 `GameEditor/linshi/issue67-a3-native-fixed-20261005`，包括失败的
+  `reversed-join-receipt.json`、`fresh-relay-inspection.json`、通过的 stop/closed 回执及清理回执。
+- Hook 追加提交 `a40f0f20cc8c423fcbe9948dbe91e7e2a80831c3` 已推送 main：启动 worker 前从
+  同一 attach snapshot 初始化观察 map 与摘要。严格拒绝缺失/非法/重复/超过 256 项的快照，
+  复用观察 payload 验证；后续仍要求每个观察的 sequence 连续，不接纳任意高序号。
+  回归覆盖 sequence 501 → 502、后续 gap/重复/new-ID 非 1 拒绝、正常 503，以及非法边界。
+  最新 LiveRelay 21 passed / 3 ignored；cargo check --all-targets、显式 include rustfmt、
+  checker tests 53/53、strict 1380 文件无 >500、UTF-8/BOM 与 diff check 通过。
+  实质源码有效行：viewer_state 179、commands 401、lifecycle tests 253，未触及旧债上限。
+
+#### A3 晚加入与停止清帧最小闭环通过（2026-10-05 UTC，最新停点）
+
+本节仅完成上轮要求修复的两个真实缺陷，不将整个 Issue #67 或 A3 矩阵标为完成。
+
+- 新不可变包：`release/Hook/v0.2.32.16/issue67-observation-bootstrap-20261005/hook.exe`，
+  8994816 bytes，SHA `87656dad5237af0f8d4f7c20816df3edf9f35345836e394d1e5e0f55c1376e73`。
+  fresh production/release 构建完成，provenance 绑定 `a40f0f2`、gitDirty=false、internal 通道；
+  exact SHA/product-version self-check 通过。同一未完成迭代只重建，不再次分配 revision；旧包未覆盖。
+- 拓扑为 PC3 `.15` 源 → 既有 Loom daemon/private-CA HTTPS → 本机 `.16` viewer。证书到期
+  09:24:42Z，启动时 fresh 确认仍有效；未修改系统信任、防火墙、网络驱动或持久 SSH 授权。
+  PC3 隔离进程显式 `HOOK_LIVE_GPU_PREVIEW=0`；这是既有 JPEG 兼容路径，不是默认 GPU 路径验收。
+- 两端路径/SHA/creation/Session 1/CDP 父链在媒体期间复核：PC3 Hook 13932 / creation
+  02:53:23.6226520Z，CDP listener 16740 → 13932；本机 53596 / creation
+  02:58:11.6585240Z，CDP listener 39588 → 53596。PC3 实际已建立连接为
+  192.168.15.136 → 192.168.15.20:49874；SSH 仅管理 CDP/Art bridge，不转发媒体。
+- 正式菜单与 OS 框选绑定自有 window/window_message fixture，656×406，正常发布。
+  本机正常截图 Unit → Actions → 设备仪表板真实 Surface → 参数面板显式加入。
+  加入前 15 项 observations，最大 sequence=185、累计 sequence=2775，超过 256 条控制历史。
+  viewer 接续 UIA 至 188，无 control_history_reset / control_event_rejected；没有取得输入权。
+- 同一次 join 的 JPEG decoded-submitted 在约 4 秒内 frameId 5486 → 5557，img complete、
+  natural size 656×406；native connected / errorCode=null / reconnectCount=0 / private_https。
+  本轮截图可见完整观看区域；这只是原生显示及推进证据，不换算物理 FPS 或跨机端到端帧龄。
+- 同一会话正常“停止发布”后，daemon closed=true/sourceConnected=false；viewer native closed，
+  errorCode=null、controllerOwned=false、observationState=closed、presentation=null、
+  remainingImages=0。至停止共 receivedFrames=1050，无重连；截图确认旧 JPEG 已移除。
+  关闭态仍显示已标记关闭的 UIA 摘要/框线，不把它们称为实时数据。
+- 独立 Surface 在结束截图再次出现 `Surface event dispatch failed`，原始失败保留，
+  未因 LiveRelay gate 通过就声称整个 Art 无错误。默认 GPU JPEG 停滞也仍是独立待定位项。
+- 清理夹具曾因远端 `Close-Fixture.ps1` 默认 source、调用遗漏 `-Role viewer` 中断；已定位
+  并用精确路径/创建时间归属的交互清理任务正常关闭两端 fixture 与 Hook，不强杀原程序。
+  原验收任务与补救清理任务按 action/user/root 核对后均移除；两端测试监听为空，PC3 无残留
+  Hook，RSC 四项 true。本机原 `.15` 已恢复为 49900 / creation 03:03:22.1020330Z。
+- 证据根：`GameEditor/linshi/issue67-a3-observation-fixed-20261005`。核心文件是
+  `reversed-join-receipt.json`、`reversed-stop-receipt.json`、`reversed-closed-receipt.json`、
+  `source-direct/binding.json`、`pc3-final-binding.json`、`pc3-direct-media-sockets.json`、
+  `headless-smoke/headless-summary.json`、`original-restored.json` 与两端清理回执。
+  `final-native-receipt.json` 为 late_join_and_terminal_closure_verified / a3Complete=false。
+  设备/会话身份、凭据和截图仍只存受信本地证据，不提交远端。
+- Loom 本轮仅更新交接文档，保留并接续既有历史修改；15 项 checker tests、strict 1180 文件
+  和 Neuro development-standard contract 通过。既有 11 项 501–700 行例外未变；不伪造 Loom
+  新编译，也不拿 Hook 检查结果冒充 Loom 产品全量验收。
