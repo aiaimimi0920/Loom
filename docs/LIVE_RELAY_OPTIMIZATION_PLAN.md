@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、两机撤销、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧、双机观看端设备禁用后的 terminal 停流/清图/清权及重新启用不复活旧 relay 均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、双机源端禁用/删除与观看端删除、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -1700,3 +1700,48 @@ PC3 本机复用已核完整 SHA 的 EXE/helper，仅新传 **574 bytes** fresh 
 此门禁严格对应 **测试专用 TLS 代理停启造成的 TCP/HTTPS/WSS 连接中断**，不是实际拔网线、
 断开 WLAN、静默丢包 blackhole、网络切换或 daemon 重启验收。下一步仍从原生多/慢 viewer、
 两机撤销、device loss、资源预算/内存长稳和性能对照选一个有界小块；整体 A3/Issue #67 仍 open。
+
+### A3 接续：同 `.21` 包完成双机观看端设备禁用与不可复活验收（2026-10-05 UTC）
+
+本小块只验证 **本机真实 WGC source → Loom → PC3 原生 viewer** 中观看设备被管理员禁用的
+生命周期。复用 Hook `20892a704a9570e7e52cef95e2cccaaf920cdf8a` 对应 clean `.21` / `e4ce0ba0...`
+及既有 terminal daemon / `8e36846d...`；未修改产品代码、依赖、协议或版本，没有重新构建。
+PC3 直接本机复制既有完整 EXE/helper，仅传 fresh 测试 CA，不再生成授权包或传输整个 EXE。
+
+- 正常原生菜单/OS 选区启动真实 WinForms HWND 的 WGC，源端正常发布，PC3 使用正常
+  Actions/Surface 刷新、选择并显式加入；默认 GPU，JPEG **658×407**。双方包/PID/path/
+  creation/Session/CDP 绑定通过，加入阶段 `.136 → .20:49874` Hook-owned HTTPS/WSS tuple
+  与本机代理匹配。SSH 只用于 CDP/Art bridge 管理，没有媒体 tunnel 或 mock IPC。
+- 先经真实 native command 授予 **60 秒控制租约**，源端 remoteControlActive、观看端
+  controllerOwned 及 daemon controllerDevice 均实际确认；再通过公开的
+  `PUT /v1/devices/{id}` 将本轮隔离设备 enabled=false。没有调用内部 revoke 函数、发明
+  token-only API，也没有修改 PC3 系统授权、SSH key、旧续期任务、网卡、路由、防火墙或信任库。
+- 从本机发起禁用到采样确认完整清理为 **295.572ms**：观看端 native closed，错误码
+  `live_media_device_revoked`，帧缓存为空；presentation=null、图片元素为 0；viewer socket
+  从 daemon 移除，controllerExpiresAtMs=null、controllerDevice 无值，双方控制状态清除。
+  此时间包含管理 HTTP 与离散轮询开销，不是纯网络延迟、跨机时钟结果或 SLA；严格早于租约到期。
+- 禁用期间显式 reconnect 被拒绝；再经公开 PUT 重新 enabled=true，旧 relay 的显式 reconnect
+  仍被拒绝。之后 **10.683 秒 / 13 样本**均保持 closed/revoked、接收计数和 reconnectCount
+  不增长、无缓存/图像/旧权复活。源端保持 connected/error=null、真实采集 streaming，
+  daemon session 未被误关；期间 source frame 增加 **203**、capture frame 增加 **204**，ring≤3。
+- 最后正常“停止发布”使 daemon closed/sourceConnected=false；撤销观看端保留其既有 terminal
+  revocation 状态，而不是被伪装成普通无错误关闭。两端进程身份在撤销前后独立重绑定且未变。
+  owner audit 确认 test GUI/services/tunnel/workers/listener 零残留、PC3 task Ready；日常 `.19`
+  按原路径/SHA/Session 1 恢复且 watchdog 存在，用户免认证管理入口和本地密钥资料均保留。
+- 首轮 `issue67-a3-two-host-viewer-revoke-v21-20261005T210549Z` 实际已停流/清图/清权，但
+  harness 错误要求 controllerDevice 必须显式为 null；生产 `loom_protocol/src/live/domain.rs`
+  使用 `skip_serializing_if = "Option::is_none"`，无权时省略字段。仅在 fresh root 修正 nullish
+  断言，失败回执和清理证据保留；未改产品迎合测试、未重用或重置一次性 marker。
+- 成功证据根：`GameEditor/linshi/issue67-a3-viewer-revoke-fixed-contract-v21-20261005T211225Z`。
+  `final-independent-verification.json` 在 **2026-10-05 21:14:17.237 UTC** 为 passed，status
+  `packaged_two_host_viewer_disable_sticky_revocation_verified`、a3Complete=false。独立回执 verifier
+  重核 hash、包/进程、控制租约、逐样本身份/计数/清图、直连 socket、正常源端停止与清理。
+  23 个临时源码 UTF-8 无 BOM、语法/语言行数复核通过，最大 **122** 有效行；无新软例外。
+  Loom checker tests **15/15**、strict **1183 文件 / 0 违规**、Loom 开发手册及 Neuro 通用规范
+  合同、`git diff --check` 均通过；11 项既有软例外未改。纯验收/文档，不重跑无关编译或重建包。
+
+本节只关闭双机 **viewer disable / registry reenable 不复活旧 relay** 子场景。不证明 source
+禁用/删除、在活动连接时删除 viewer、重新配对与新 token 的重新加入、其他独立原生 viewer
+的继续呈现、token-only/自然到期矩阵、控制按钮 UI 或远程键鼠输入。原生多/慢 viewer、
+物理网络切换/device loss、资源预算/内存长稳与 CPU/GPU/物理显示对照仍待验，A3/Issue #67
+保持进行中；下一小块优先补双机源端撤销或活动观看端删除，不重跑本节已通过门禁。
