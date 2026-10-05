@@ -1111,7 +1111,7 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 下一步从 A3 尚未验收的反方向、多 viewer、慢端、恢复/撤销、长稳和性能对照中选择一个
 有界闭环。本轮 `.18` 仅证明独立 Surface 修复，不把 `.17` 的双机结果移植为 `.18` 全矩阵通过。
 
-## A3 接续：Device 媒体撤销安全修复（2026-10-05 UTC，源码停点）
+## A3 接续：Device 媒体撤销安全修复（2026-10-05 UTC，服务端小块完成）
 
 用户要求提交推送并继续剩余开发。Hook `.18` 与上一节 Loom 文档已在各自 main 发布；
 本小块修复 Loom 已建立媒体连接的授权脱节，不将 A3 或 Issue #67 标为完成。
@@ -1153,10 +1153,31 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
   **失效复核后停止继续处理媒体并退出连接**，不是与在途 decode/publish/send 线性化的
   零字节撤销。250ms socket timeout 不等于无条件 SLA，mutex/encoding/调度仍依赖系统推进。
   source 断开不会伪造 session closed，暂时断网仍允许保留最后画面。
-- 构建停点：聚焦源码门禁已完成，接着从 clean commit fresh 构建不可变 daemon component
-  candidate，并在精确 EXE/hash 上跑真实 HTTP/WebSocket smoke；不是完整桌面 official release，
-  不复用旧 daemon 冒充本次修复，也不重建无改动的 Hook 或覆盖旧包。源码/门禁证据根为
-  `GameEditor/linshi/issue67-a3-media-revocation-20261005`。
+- 源码提交 `39808e19723f589206385339a6b4a35f6384cbd7` 已普通推送到 Loom main，
+  `ls-remote` 一致。从该 clean commit fresh 执行
+  `cargo build --locked --release -p loom-daemon`，263.22 秒 / exit 0。新独立组件候选为
+  `release/Loom/issue67-a3-device-media-revocation-20261005T0820Z-daemon/runtime/loom-daemon.exe`，
+  36954112 bytes，SHA `3addc3af7925fc7edc1e35d64493c1f31439cd2e74c5c5084bf29c90c53e336e`。
+  component manifest 绑定 sourceGitDirty=false、实际 toolchain/命令、4 个 lockfile hashes；
+  该 manifest 的 smoke pending 是构建时状态，完成后的独立 component-verification 提供
+  包级结论。不改写已构建 payload 或旧发布包。
+- 精确候选的实际进程 PID 17144 / creation `08:27:57.5063330Z`、路径/hash 与独立 loopback
+  listener owner 均已绑定。真实 HTTP/Ed25519 配对/Device session/WebSocket 检查通过：
+  管理 PUT disable 与 DELETE 后旧 source 显式 Close、sourceConnected=false、lastFrameId
+  固定在 1、旧 credential 新 handshake 被拒绝，session 不伪 closed；管理员 cookie admission
+  正常，坏 Device token + 有效管理员 cookie 仍被拒绝。帧是明确标记的 2×2 synthetic raw
+  fixture，不是截图或 native viewer；没有 packaged viewer、多机、物理显示或性能结论。
+- 首次包级 harness 在隔离 APPDATA 后找不到用户 site 的 cryptography，未进入协议断言，
+  是工具环境失败、不是产品失败；原失败回执和清理状态保留。确认原因后显式绑定原已安装
+  dependency site，在 fresh one-shot root 复核同一 EXE，通过；未重编译、安装项目依赖、
+  重置旧 marker 或共享日常数据。两次自有测试进程均退出、测试 listeners 为空；服务 root
+  使用 current user/System/Administrators 限定 ACL。日常 `.15` main/watchdog 未停止。
+- 交付范围是 **daemon component candidate**，不是完整桌面 official release：未运行整包
+  `build-release.ps1` / `verify-release.ps1 -RunSmoke`，不包含 Loom.exe、完整桌面/SDK/SBOM，
+  没有部署为常驻服务或发布 GitHub Release。Hook 产品源码/`.18` 不变，不重复构建。
+  源码/构建/包级证据根为 `GameEditor/linshi/issue67-a3-media-revocation-20261005`，关键回执是
+  source-gates.json、after-lines.json、release-build-result.json、candidate-binding.json、
+  packaged-socket-smoke-fix1-receipt.json；原始身份/凭据/数据不提交。
 
 尚未关闭：Hook Device 撤销后清旧画面的终态 UX、真实两机撤销、反方向、多 viewer/慢端、
 恢复、600 秒长稳、静态文字/滚动/运动及性能对照。服务端关闭 socket 不能作为 Hook 清帧
