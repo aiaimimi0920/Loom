@@ -69,6 +69,8 @@ struct ActiveDeviceSession {
     expires_at_ms: u64,
     session_epoch: u64,
     used_nonces: BTreeSet<String>,
+    // Shared with admitted sockets; expiry/nonce eviction never marks a deliberate revoke.
+    revoked: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -156,8 +158,12 @@ impl DeviceRegistryStore {
         );
         let store = Self {
             projections: ProjectionStore::open(path.with_file_name("qr-projections"))?,
-            projection_edits: projection_edit::Store::open(path.with_file_name("projection-edits"))?,
-            projection_settings: projection_settings::ProjectionSettings::open(&path.with_file_name("projection-settings"))?,
+            projection_edits: projection_edit::Store::open(
+                path.with_file_name("projection-edits"),
+            )?,
+            projection_settings: projection_settings::ProjectionSettings::open(
+                &path.with_file_name("projection-settings"),
+            )?,
             path,
             devices,
             challenges: BTreeMap::new(),
@@ -278,6 +284,7 @@ impl DeviceRegistryStore {
                 expires_at_ms,
                 session_epoch: device.session_epoch,
                 used_nonces: BTreeSet::new(),
+                revoked: Arc::new(AtomicBool::new(false)),
             },
         );
         Ok(DeviceSessionIssueResponse {
@@ -374,8 +381,14 @@ impl DeviceRegistryStore {
     }
 
     fn revoke_device_sessions(&mut self, device_id: &str) {
-        self.sessions
-            .retain(|_, session| session.device_id != device_id);
+        self.sessions.retain(|_, session| {
+            if session.device_id == device_id {
+                session.revoked.store(true, Ordering::SeqCst);
+                false
+            } else {
+                true
+            }
+        });
         self.challenges
             .retain(|_, challenge| challenge.device_id != device_id);
     }

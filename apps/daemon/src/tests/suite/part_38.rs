@@ -506,6 +506,7 @@ fn seed_phase_four_device_sessions(runtime: &DaemonRuntime) {
                 expires_at_ms: now.saturating_add(300_000),
                 session_epoch: 1,
                 used_nonces: BTreeSet::new(),
+                revoked: Arc::new(AtomicBool::new(false)),
             },
         );
     }

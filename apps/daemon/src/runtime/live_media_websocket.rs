@@ -227,7 +227,7 @@ fn run_live_media_socket(
             .set_media_connected(&session_id, &grant.device_id, role, true)
             .is_err()
     {
-        let _ = socket.close(None);
+        let _ = socket.close(grant.revocation_close());
         return;
     }
     let _role_guard = LiveMediaRoleGuard {
@@ -251,7 +251,7 @@ fn run_live_media_socket(
         ),
         LiveDeviceRole::Controller => {}
     }
-    let _ = socket.close(None);
+    let _ = socket.close(grant.revocation_close());
 }
 
 fn run_live_source_socket(

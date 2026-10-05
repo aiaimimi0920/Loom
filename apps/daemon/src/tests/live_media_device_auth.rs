@@ -1,6 +1,7 @@
 // Real paired-device sockets: revocation must stop existing media, not just new upgrades.
 mod live_media_device_auth {
     use super::*;
+    include!("live_media_device_revocation.rs");
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
 
     struct Fixture {
@@ -119,7 +120,9 @@ mod live_media_device_auth {
         }
     }
 
-    fn closed(socket: &mut Socket) {
+    fn closed(
+        socket: &mut Socket,
+    ) -> Option<(tungstenite::protocol::frame::coding::CloseCode, String)> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             assert!(
@@ -127,9 +130,10 @@ mod live_media_device_auth {
                 "revoked media socket did not close"
             );
             match socket.read() {
-                Ok(tungstenite::Message::Close(_)) | Err(tungstenite::Error::ConnectionClosed) => {
-                    return
+                Ok(tungstenite::Message::Close(frame)) => {
+                    return frame.map(|frame| (frame.code, frame.reason.into_owned()));
                 }
+                Err(tungstenite::Error::ConnectionClosed) => return None,
                 Ok(tungstenite::Message::Ping(bytes)) => {
                     let _ = socket.send(tungstenite::Message::Pong(bytes));
                 }
@@ -154,7 +158,7 @@ mod live_media_device_auth {
         assert!(f.devices.lock().unwrap().devices[&owner].enabled);
         // send() may succeed into TCP buffering; daemon acceptance and close are the proof.
         let _ = source.send(tungstenite::Message::Binary(encoded_live_frame(2)));
-        closed(&mut source);
+        assert_eq!(closed(&mut source).unwrap().1, "live_media_device_revoked");
         f.wait(|s| !s.source_connected);
         let state = f.sessions.get("live:device-auth").unwrap();
         assert_eq!(state.last_frame_id, 1);
@@ -179,7 +183,10 @@ mod live_media_device_auth {
         assert_eq!(binary(&mut receiver), 1);
         assert_eq!(binary(&mut retained), 1);
         f.devices.lock().unwrap().revoke_device_sessions(&revoked);
-        closed(&mut receiver);
+        assert_eq!(
+            closed(&mut receiver).unwrap().1,
+            "live_media_device_revoked"
+        );
         f.wait(|s| !s.viewer_connections.contains_key(&revoked));
         source
             .send(tungstenite::Message::Binary(encoded_live_frame(2)))
@@ -205,7 +212,13 @@ mod live_media_device_auth {
                 if method == "PUT" { Some(&body) } else { None },
             );
             assert_eq!(response.split_whitespace().nth(1), Some("200"));
-            closed(&mut source);
+            assert_eq!(
+                closed(&mut source),
+                Some((
+                    tungstenite::protocol::frame::coding::CloseCode::Policy,
+                    "live_media_device_revoked".to_owned(),
+                ))
+            );
             f.wait(|s| !s.source_connected);
             assert!(f.connect(&token, "source").is_err());
             assert!(!f.sessions.get("live:device-auth").unwrap().closed);
@@ -219,7 +232,11 @@ mod live_media_device_auth {
         let hash = sha256_bytes(token.as_bytes());
         let grant = LiveMediaDeviceGrant {
             device_id: owner.clone(),
-            device_session: Some((Arc::clone(&f.devices), hash.clone())),
+            device_session: Some((
+                Arc::clone(&f.devices),
+                hash.clone(),
+                Arc::clone(&f.devices.lock().unwrap().sessions[&hash].revoked),
+            )),
         };
         let (original, expiry, epoch, used) = {
             let store = f.devices.lock().unwrap();
@@ -274,6 +291,7 @@ mod live_media_device_auth {
                     expires_at_ms: expiry,
                     session_epoch: epoch,
                     used_nonces: used.clone(),
+                    revoked: Arc::new(AtomicBool::new(false)),
                 },
             );
         }
@@ -292,7 +310,11 @@ mod live_media_device_auth {
         let (owner, token) = wall_http::pair(f.port, "Unavailable registry");
         let grant = LiveMediaDeviceGrant {
             device_id: owner,
-            device_session: Some((Arc::clone(&f.devices), sha256_bytes(token.as_bytes()))),
+            device_session: Some((
+                Arc::clone(&f.devices),
+                sha256_bytes(token.as_bytes()),
+                Arc::new(AtomicBool::new(false)),
+            )),
         };
         let devices = Arc::clone(&f.devices);
         assert!(thread::spawn(move || {

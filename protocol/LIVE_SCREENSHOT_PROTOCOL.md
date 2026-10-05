@@ -73,6 +73,22 @@ carry an authority revision and expiry. Device authentication, attachment
 binding, token expiry, nonce replay prevention, and revocation remain Loom
 runtime responsibilities; a valid JSON envelope is not authorization.
 
+For a live media connection admitted with a Device session, explicit session revocation
+uses WebSocket Close code `1008` (Policy), reason exactly `live_media_device_revoked`.
+The daemon retains an in-memory shared revocation marker for that admitted session, marks
+it before a successful disable/delete removes active sessions, and never clears it when
+the Device is re-enabled. The marker is reclaimed with its session/socket references;
+there is no persistent token tombstone history. Failed management persistence rolls back
+the Device without deleting or marking its sessions. Expiry and nonce-capacity eviction
+invalidate media authorization but do not set this deliberate-revoke marker.
+
+Clients may terminate that local relay and clear its old pixels on receiving this exact
+signal. Other Close reasons or generic HTTP errors do not prove deliberate revocation.
+An already-evicted session cannot acquire later revoke provenance, and network loss can
+prevent delivery of a Close. Authorization checks still fail closed in those cases;
+the signal is not a linearized zero-in-flight-frame guarantee or a declaration that the
+whole LiveSession is closed. Administrator admission retains its separate behavior.
+
 Capture queues retain exactly two or three newest video frames. Producers never
 wait for a slow viewer: the oldest frame is replaced and the next frame notice
 reports the drop count. Input button/key edges, permission changes, lifecycle,
