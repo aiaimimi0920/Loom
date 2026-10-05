@@ -183,6 +183,7 @@ include!("runtime/live_session_routes.rs");
 
 include!("runtime/live_source_binding.rs");
 include!("runtime/live_session_route_support.rs");
+include!("runtime/live_media_device_grant.rs");
 include!("runtime/live_media_websocket.rs");
 include!("runtime/wall_media_encoding.rs");
 include!("runtime/wall_png_cache.rs");
@@ -284,6 +285,7 @@ mod tests {
     include!("tests/suite/part_37.rs");
     include!("tests/suite/part_38.rs");
     include!("tests/live_media_diagnostics.rs");
+    include!("tests/live_media_device_auth.rs");
     include!("tests/live_jpeg.rs");
     include!("tests/wall_png_benchmark.rs");
     include!("tests/wall_png_cache.rs");

@@ -80,7 +80,7 @@ mod wall_http {
         ))
     }
 
-    fn pair(port: u16, name: &str) -> (String, String) {
+    pub(super) fn pair(port: u16, name: &str) -> (String, String) {
         let key = SigningKey::generate(&mut OsRng);
         let (status, pending) = public(
             port,

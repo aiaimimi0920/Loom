@@ -1110,3 +1110,54 @@ inputs 为空，既有 Unit 是当前 UI 入口要求，不是该 Art 的输入�
 
 下一步从 A3 尚未验收的反方向、多 viewer、慢端、恢复/撤销、长稳和性能对照中选择一个
 有界闭环。本轮 `.18` 仅证明独立 Surface 修复，不把 `.17` 的双机结果移植为 `.18` 全矩阵通过。
+
+## A3 接续：Device 媒体撤销安全修复（2026-10-05 UTC，源码停点）
+
+用户要求提交推送并继续剩余开发。Hook `.18` 与上一节 Loom 文档已在各自 main 发布；
+本小块修复 Loom 已建立媒体连接的授权脱节，不将 A3 或 Issue #67 标为完成。
+
+- 反方向原生准备使用 fresh 固定 host key SSH，PC3 Active Session 1、无 Hook/LockApp
+  或测试监听；没有放宽内存准入。但一次 `.18` SCP 仅传到 393216-byte partial，实际报
+  `Timeout, server 192.168.15.136 not responding` / `Couldn't send packet: Broken pipe`。
+  包装 ExitCode 为空，不能当成功；未完整校验、rename 或执行候选，没有启动原生任务、
+  隧道或测试服务。SFTP 子进程和 parent 随后自行退出，partial 可读、监听为空；没有
+  强杀、盲重传或更改持久 SSH/RSC、系统网络/信任。证据根为
+  `GameEditor/linshi/issue67-a3-reverse-native-20261005T0725Z`，失败日志与
+  `pc3-transfer-cleanup.json` 保留。这不是反方向原生通过。
+- 根因来自实际源码：普通 LiveRelay 仅在 handshake 校验 Device token，worker 只保留
+  Device ID 并复核 LiveSession membership；DeviceRegistry 的 token revoke、disable、
+  delete 不会移除该 membership。修改前两个真实 source/viewer socket 回归均失败，
+  撤销后仍未 close，最终 read timeout `10060`；不以握手拒绝冒充旧连接停流。
+- 新私有 `LiveMediaDeviceGrant` 只保留 token digest、Device ID 和 registry Arc，复核
+  session 存在/身份/expiry、Device enabled/approved、epoch；锁失败 fail closed。
+  不保留明文 token，不重复消费 handshake nonce；先释放 registry 锁，再查 membership。
+  worker connected 前、source 阻塞 read 返回后/publish 前、viewer wait/adaptation 后/send
+  前复核。原 membership/epoch/cancellation 和 role/connection permit Drop 清理保留。
+  管理员 admission 仍要求已认证管理员，不将 None grant 暴露为匿名入口。
+- 新 5 项测试全部通过：source 仅 token revoke 后旧 socket close 且 lastFrameId 不推进，
+  正常 viewer 保留；idle viewer revoke 后 close、独立 peer 仍收到下一帧；真实管理 HTTP
+  disable/delete 停止既有 source 并拒绝新握手；7 种过期/身份/设备失效状态与 poisoned
+  registry fail closed。复核 nonce 不增加。测试是 daemon + TCP/WebSocket/Ed25519 配对，
+  registry mutation 仅为回归控制输入，不冒充原生管理 UI。接收总等待有界，正常 fixture
+  shutdown 必须成功；首轮 fixture E0425 和诊断接线 E0308 失败记录保留。
+- 相邻 14 项 LiveRelay（含以上 5 项、管理员 fanout/resume 与独立 viewer diagnostics）、
+  2 项 Wall grant、daemon all-target check/clippy、Cargo/include Rust 格式、15 项行数 checker
+  测试、strict 1182 文件、Loom/Neuro 开发契约和 diff check 通过。首次 clippy 缺少 pinned
+  1.95.0 component，安装后通过；存量 warnings 保留，不称零警告。最后一次测试错误类型
+  收窄后再次运行 5 项聚焦测试和 all-target clippy，通过且未保留该新增 warning。
+- 真实联网 OSV 扫描 4 lockfiles / 1341 package records，0 未豁免漏洞；9 项既有配置
+  exceptions 未改，扫描过滤 10 个 advisory（含 alias）。依赖/manifest/lockfile 无修改。
+  源码有效行数：lib 285→287、WebSocket 421→433、diagnostics 281→284、wall_http
+  371→371、新 grant 49、新测试 291；11 项既有软上限例外未变。
+- 独立只读审查未发现本范围新增认证绕过、锁序死锁或 worker/permit 泄漏。撤销语义是
+  **失效复核后停止继续处理媒体并退出连接**，不是与在途 decode/publish/send 线性化的
+  零字节撤销。250ms socket timeout 不等于无条件 SLA，mutex/encoding/调度仍依赖系统推进。
+  source 断开不会伪造 session closed，暂时断网仍允许保留最后画面。
+- 构建停点：聚焦源码门禁已完成，接着从 clean commit fresh 构建不可变 daemon component
+  candidate，并在精确 EXE/hash 上跑真实 HTTP/WebSocket smoke；不是完整桌面 official release，
+  不复用旧 daemon 冒充本次修复，也不重建无改动的 Hook 或覆盖旧包。源码/门禁证据根为
+  `GameEditor/linshi/issue67-a3-media-revocation-20261005`。
+
+尚未关闭：Hook Device 撤销后清旧画面的终态 UX、真实两机撤销、反方向、多 viewer/慢端、
+恢复、600 秒长稳、静态文字/滚动/运动及性能对照。服务端关闭 socket 不能作为 Hook 清帧
+证据；B/C 优化仍须真实瓶颈，不猜测 codec 收益。
