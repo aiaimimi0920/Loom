@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧、双机观看端设备禁用后的 terminal 停流/清图/清权及重新启用不复活旧 relay、双机源端设备禁用后的停流/清权及重新启用不复活旧 relay、双机源端删除后的停流/清权和旧设备 ID 不复活、最终权威关闭清图均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、活动观看端删除、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小 epoch 协调、观看端 native 显式 reconnect、源端 UI reconnect/旧控制权清除、恢复后控制授权/释放、专用 HTTPS/WSS 代理中断后的自动恢复和停止清帧、双机观看端设备禁用后的 terminal 停流/清图/清权及重新启用不复活旧 relay、双机源端设备禁用后的停流/清权及重新启用不复活旧 relay、双机源端删除后的停流/清权和旧设备 ID 不复活、最终权威关闭清图，以及双机活动观看端删除后的停流/清缓存/清图/清权、旧 ID 不复活和保留源继续发布均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；物理网络断连/切换、device loss、原生多/慢 viewer、新 token/重新配对、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -1840,3 +1840,50 @@ v0.2.32.21 / e4ce0ba0...，以及既有 terminal daemon / 8e36846d...；产品�
 本节只关闭活动 source DELETE 子场景。活动 viewer DELETE、新 token/重新配对、其他独立
 原生 viewer、多/慢 viewer、device loss、物理网络断连/切换、资源预算/内存长稳与 CPU/GPU/
 物理呈现对照仍未验证；A3/Issue #67 保持进行中。下一小块优先活动 viewer DELETE。
+
+### A3 接续：同 .21 包完成双机活动观看端删除、清缓存与保留源继续发布（2026-10-05 UTC）
+
+本小块只补 **本机真实 WGC source → Loom → PC3 原生 viewer** 的活动 viewer DELETE。
+复用 clean Hook 20892a704a9570e7e52cef95e2cccaaf920cdf8a / v0.2.32.21 / e4ce0ba0...，
+以及 terminal daemon / 8e36846d...；产品源码、协议、依赖、版本和二进制未改变。
+不重复此前已通过的 source DELETE、resize、reconnect、代理中断或 600 秒观察矩阵。
+
+- 正常原生菜单/OS 选区启动真实 WinForms HWND 的 WGC；源端正常发布，PC3 经正常
+  Actions/Surface 刷新、选择并明确加入。默认 GPU、JPEG 658×407，两端包/进程/CDP owner
+  及直连 HTTPS/WSS 媒体 socket 绑定。SSH 只承载 CDP/Art 管理，不承载媒体；PC3 免认证
+  HTTP 负责脚本。没有 synthetic capture、mock IPC 或远端键鼠注入。
+- 真实 native command 授予 **60 秒控制租约**，核 viewer.controllerOwned、source.remoteControlActive
+  和 daemon.controllerDevice 后，经公开 DELETE /v1/devices/{viewerId} 删除隔离观看设备。
+  约 **265.813ms** 后采样到 viewer native closed/live_media_device_revoked、帧缓存空、图片元素零、
+  presentation=null；双方控制权清除、controllerDevice 无值、controllerExpiresAtMs=null，早于租约
+  到期。这是管理请求加离散采样耗时，不是纯网络延迟、跨机时钟延迟或 SLA。
+- 删除后及失败的旧 ID 重新启用后，viewer 显式 reconnect 均精确拒绝：live relay session is stopping。
+  重新 acquire 精确拒绝：change Loom live controller: HTTP 401: device session is missing or expired。
+  其 native 调用先发送 HTTP 再检查 stop；临时 harness 按真实源码合同区分两个拒绝路径，
+  没有为测试修改产品，也没有放宽为任意错误。修正后首次运行通过。
+- 再次 DELETE 与对旧 ID PUT enabled=true 均为 **404 / error.code=device_not_found**；删除返回和
+  最终 GET 设备列表均不含旧 ID。本轮没有重新配对或使用新 token，不把旧 ID 拒绝当成新授权证明。
+- **10.578 秒 / 13 样本**中，旧 viewer 持续 terminal、receivedFrames/reconnectCount 不增长、
+  原生 poll_live_relay_frame.frame=null，图片和控制权不复活。保留 source 仍 connected/error=null，
+  daemon sourceConnected=true/closed=false，capture/window/epoch 不变，bufferedFrames≤3。
+  同期 WGC/daemon frame 各增加 **200**，gpu-mirror 本地提交增加 **216**，证明删除观看设备
+  未错误关闭或阻塞源端；不将这些计数当成物理 FPS、全帧连续性或 CPU/GPU 收益。
+- 最后源端正常“停止发布”，daemon closed=true/sourceConnected=false；被删 viewer 仍保留
+  live_media_device_revoked 终态来源，而不是被伪装成普通 error=null 关闭。两端 GUI 身份未变化。
+- 独立 owner audit 核本地/远端 test GUI、services、tunnel、workers 和测试监听零残留，PC3 task Ready；
+  日常 .19 按原路径/SHA/Session 1 恢复、watchdog 存在。未改日常数据、系统账号、SSH/RSC/路由、
+  用户的 LAN 免认证入口或凭据库访问/密钥资料。
+- 证据根：GameEditor/linshi/issue67-a3-viewer-delete-v21-20261005T222033Z。
+  runner-receipt.json、final-owner-audit.json 均 passed；final-independent-verification.json 在
+  **2026-10-05 22:31:41.763 UTC** 为 passed，status
+  packaged_two_host_viewer_delete_sticky_revocation_verified，a3Complete=false。独立 verifier 重核
+  完整包 SHA、实际进程/CDP、媒体 socket、逐样本、精确拒绝、清缓存/清图、正常源停止和清理。
+  截图已保存；本轮图像查看工具不可用，未逐图视觉复核，不声称物理显示或画质验收。
+- 24 个临时源码 UTF-8 无 BOM，23 个 PowerShell/JavaScript 语法检查通过，最大 **144 有效行**；
+  本轮两个断言文件为 144/85 有效行，无新增软例外。Loom checker tests 15/15、strict 1183 文件/
+  0 违规、开发手册和 Neuro 通用规范合同及 diff check 通过；11 项既有软例外不变。
+  纯验收/文档，不重跑无关编译或伪造新产品构建。
+
+本节只关闭活动 viewer DELETE 子场景。新 token/重新配对、其他独立原生 viewer、多/慢 viewer、
+device loss、物理网络断连/切换、资源预算/内存长稳与 CPU/GPU/物理呈现对照仍未验证；
+A3/Issue #67 保持进行中。下一小块优先新 token/重新配对后的正常受权加入，旧 relay 必须仍为终态。
