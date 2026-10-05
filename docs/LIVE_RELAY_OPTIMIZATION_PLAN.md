@@ -41,7 +41,7 @@ Hook `6a334c7bcced65c17ab6a37404768d0d27d8941d`，均为干净 main，与 origin
 | A1 | 已完成 | Loom：[只读诊断采样 CLI](LIVE_RELAY_MEASUREMENT.md) 与 21 项聚焦测试 | 仅 GET 已授权会话；累计差分、重置分段、重复样本去重；时间/响应/样本有界；脱敏、超时、取消、拒绝重定向；真实 loopback HTTP/CLI 通过；不声称完整 A 基线 |
 | A2.1 | 已完成 | Hook：正常发布和受权加入入口 | 真实 mounted Surface 绑定的显式加入、最多 4 个在途请求、同会话去重和迟到清理；不自动申请输入权；组件/控制器与 Chromium 验证通过，原生两机仍属 A3 |
 | A2.2 | 已完成 | Hook：收端单槽证据与外部包绑定合同；Loom：采样对齐/交接 | source/epoch/frame、接收计数、decoded-submitted 固定白名单；编译版本/候选 provenance 与 SHA 复核；实际运行进程及原生观看绑定留 A3，不把 daemon/DOM 采样当显示 FPS |
-| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环已通过；`.19` 已补齐本机真实 WGC 源 → 本机 Loom → PC3 原生 viewer 的正式发布/加入、601.829 秒观察和停止清帧，包、进程和直连媒体已绑定。不是常驻部署或完整矩阵；仍须静态文字/滚动/运动对照、原生多 viewer、慢端、恢复/两机撤销与资源/性能对照。CPU/GPU 收益、全帧阶段耗时和物理显示缺失须明示 |
+| A3 | 进行中 | 两机原生基线与对照报告 | `.17` 正向最小闭环、`.19` 反向真实 WGC 单观看端 601.829 秒观察/停止清帧、`.20` 静态文字/滚动/运动矩阵及 `.21` 窗口扩大/缩小后的 capture/session epoch 协调、原生控制授权/释放和停止清帧均已通过，包、进程与直连媒体已绑定。不是常驻部署或完整矩阵；device loss、显式 reconnect、原生多/慢 viewer、两机撤销、资源预算/内存长稳和性能对照仍待验。控制按钮/键鼠 UI、CPU/GPU 收益、全帧阶段耗时和物理显示不在已验证范围 |
 | B1 | 有条件后续 | Hook：呈现调度/IPC 预算优化 | A2/A3 证明轮询或搬运为瓶颈后，一次只改一个变量；JPEG/raw 同尺寸同内容对照，保留单在途/取消 |
 | B2 | 有条件后续 | Loom：分发/兼容转换优化 | A3 证明瓶颈后处理；慢消费者不拖其他人，旧 epoch/撤销优先；可测收益不足则不采用 |
 | C1 | 有条件后续 | Hook 为主：Windows GPU 视频编码 POC | 仅在 A/B 不足且可测收益成立时设计完整协商、decoder、关键帧依赖、late join、fallback、许可；不只开启枚举 |
@@ -1542,5 +1542,71 @@ daemon 四连接的 600 秒协议观察。不是两台原生 Hook 的真实截�
   **1183 文件 / 0 违规 / 11 既有软例外** 和开发手册/通用规范合同通过。临时源码 UTF-8
   无 BOM，语言 checker 最大 163 有效行；两个 C# probe 仅用 161/70 物理行上界，不冒充语言门禁。
 
-下一块优先真实恢复时的 epoch 协调和恢复验收，再推进原生多观看端、慢端与两机撤销。
-资源预算、内存长稳、物理呈现和 CPU/GPU 收益仍未完成；整体 A3 保持 partial。
+此 `.20` 停点的 resize epoch 协调和恢复验收已由下一节 `.21` 补齐；device loss、显式
+reconnect、原生多/慢观看端和两机撤销仍待验。资源预算、内存长稳、物理呈现和 CPU/GPU
+收益仍未完成；整体 A3 保持 partial。
+
+### A3 接续：分离 capture/session epoch，完成双机 resize 恢复验收（2026-10-05 UTC）
+
+本小块修复实际恢复后的媒体/可靠控制 epoch 错配，使用内部 `.21` 新包完成本机真实
+WGC 源 → 本机 Loom → PC3 原生 viewer 的窗口扩大/缩小、授权/释放和停止清帧。
+Loom 产品源码及 daemon 包没有变化；没有重跑 `.20` 内容矩阵或上一轮 600 秒观察。
+
+#### 最小修复与回归
+
+- Loom session epoch 和本地 WGC capture generation 属于不同 owner。原 Hook 使用
+  `frame.descriptor.epoch` 编码媒体并更新 source relay state；WGC 重建后 capture epoch
+  增加，Loom session epoch 不变，导致严格媒体/可靠控制校验拒绝它。
+- Hook `native/live_relay_protocol.rs` 的 encoder 显式接收 `session_epoch`；
+  `native/live_relay_websocket.rs` 的同一 source worker 固定使用 Loom 已确认的 relay epoch。
+  本地 capture descriptor 原样保留，同一 capture worker 的 frame ID 继续单调递增。
+  没有新增 API/协议、弱化媒体/控制身份顺序或更改观看/输入授权。
+- 新增 `live_relay_source_epoch.rs` 与 fixture，使用生产 source worker 和真实 bounded
+  loopback WebSocket 覆盖 JPEG/Legacy：capture epoch 7→8、frame 100→101 时，网络和
+  source relay epoch 保持 3、本地 descriptor 保持 8；正确 epoch 控制事件可应用，伪造
+  capture epoch 的控制事件继续拒绝，encoder epoch=0 仍拒绝。队列容量 2、截止五秒、
+  正常 stop/join；真实 red 为 `left: 7 / right: 3`，不是只写成功断言。
+- 同源码门禁：`cargo test --lib live_relay -- --nocapture` **27 passed / 3 既有 ignored**，
+  `live_source_recovery` **1 passed**，`npm run test:effective-lines` **53 passed**；rustfmt、
+  diff check、strict **1391 文件 / 0 违规 / 0 soft exceptions** 通过。不是 Rust/前端全量测试。
+  protocol **278→279**、websocket **405→407** 有效行；新回归/fixture **66 / 137** 行。
+
+#### 新包与原生验收
+
+- Hook commit `20892a704a9570e7e52cef95e2cccaaf920cdf8a`，内部 `v0.2.32.21`、
+  clean provenance；前端构建、Rust release 编译及 `--self-check` status=ok。EXE
+  **9,005,056 bytes**，SHA256
+  `e4ce0ba05694d2bd679d41f51b3b0e9a1cdb0a5bbeb18653726189fc8da5f093`。
+  包为 `Neuro/release/Hook/v0.2.32.21/issue67-a3-capture-epoch-recovery-20261005/hook.exe`，
+  不是 public Release。两端真实包/进程/hash/Session/会话和 HWND/crop 身份已独立绑定。
+- 同一 WinForms HWND，正常 OS F9/F10 将 client **680×430 → 840×510 → 680×430**；
+  默认 GPU，没有强制 JPEG compatibility、synthetic capture 或 mock IPC。正常原生菜单
+  发布，PC3 Actions/Surface 显式加入；固定裁剪后的 JPEG 保持 **658×407**。
+
+| 恢复阶段 | capture epoch | 网络 epoch | 观察时长 | 样本 / 像素 digest | PC3 提交 frame |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 扩大 | 2 | 1 | 15.854s | 13 / 13 | 338→639 |
+| 缩小 | 3 | 1 | 15.924s | 13 / 13 | 727→1031 |
+
+- 两阶段 source/viewer connected、error=null、reconnectCount=0；PC3 `.136 → .20:49874`
+  真实 Hook-owned HTTPS/WSS socket tuple 已绑定，SSH 仅管理 CDP/Art bridge，没有媒体 tunnel。
+- 每次恢复后执行真实 **Tauri command → authenticated Loom grant/release → source 可靠事件**：
+  grant 时 viewer controllerOwned=true/source remoteControlActive=true；release 时二者 false、
+  daemon controllerDevice=null。这是原生 command/授权链验收，**不是控制按钮 UI 或远程键鼠
+  输入验收**；没有发送远程键鼠输入。
+- 正常停止后 daemon closed/sourceConnected=false；PC3 native closed/error=null、
+  presentation=null、remainingImages=0。独立 audit 核 test 进程、服务、tunnel、workers 和监听
+  全部清理，日常 `.19` 按原路径/SHA 恢复且 watchdog 存在，不自动替换日用包。
+- 首轮 native 扩大实际已恢复/释放，但 harness 错等不存在的 `controllerDeviceId === null`，
+  误报释放超时。只改断言对齐实际 DTO 的 `session.controllerDevice`，同一产品包在 fresh
+  root 完整重跑扩大/缩小并通过；旧失败根 `issue67-a3-capture-epoch-recovery-20261005T1925Z`
+  保留，包括真实 regression red 和第一次传输漏带 `Snapshot-Resources.ps1` 的记录。
+- 成功证据根：`GameEditor/linshi/issue67-a3-capture-epoch-recovery-fixed-contract-20261005T1957Z`。
+  `final-independent-verification.json` 在 **2026-10-05 20:04:36.459 UTC** 为 passed，status
+  `packaged_capture_resize_session_epoch_coordination_verified`、a3Complete=false；独立复核
+  bytes/hash、样本、epoch、控制转换、socket 及清理。本次接续复核同一包/source 身份，
+  不重复启动已通过的原生 gate。私有身份、原始图像、TLS key 和 PC3 密钥不进产品 Git。
+
+下一 bounded 块为真实显式 reconnect/device loss 或多/慢 viewer，分别保留恢复/撤销与
+生命周期门禁；两机撤销、资源预算、内存长稳、物理 FPS、GPU 使用率及 CPU/GPU 收益仍待验。
+本次 resize 成功不等设备丢失或网络/source 显式 reconnect 已通过，整体 A3 保持 partial。
