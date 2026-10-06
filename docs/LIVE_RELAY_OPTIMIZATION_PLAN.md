@@ -2114,3 +2114,32 @@ Surface attachment 选择、旧 relay 终态保留及诊断文档已作为独立
 后续只推进 raw CDP 的真实双机资源观察：先核两机可用状态和测试所有权，再正常发布/
 加入，结束所有 Playwright setup connection，保留 30 秒预热、600 秒和原资源阈值。
 任何访问或执行策略拒绝都保留原文并停止该操作，不通过替代通道绕过。
+
+### A3 接续：raw CDP 双机资源复测被源端内存门禁阻断（2026-10-06 UTC）
+
+按上述停点准备了两次独立的一次性 `.23` 双机测试根；PC3 候选和本机日常 `.19`
+均按完整 SHA、实际进程身份核对。**两次都未进入 raw CDP 的 600 秒资源观察**，
+因此不得将前述 256.800781 MiB 源端超限结果改为通过，也不关闭 A3/Issue #67。
+
+- 首次根 `GameEditor/linshi/issue67-a3-two-host-raw-v23-20261006T0430Z` 在正常托盘
+  实时截图、真实窗口选择后，Hook 原生日志明确记录
+  `selection-capture-failure :: live_resource_memory_pressure`。随后正常发布步骤等待
+  `.unit-live-input` 超时；后者是捕获失败的下游症状，并非已证实的选择器回归。
+  原 runner 保留 `passed=false`。PC3 清理暴露远端没有 `rtk` 的夹具依赖；在确认
+  PID、创建时间、路径和 Session 1 后，仅对本轮测试 Hook 使用交互会话的正常菜单
+  退出，未强杀。`post-failure-cleanup-audit.json` 核验双机测试进程/监听清空和日常
+  `.19` 原路径、SHA、watchdog 恢复；未覆盖原失败。
+- 第二根 `GameEditor/linshi/issue67-a3-two-host-raw-v23-20261006T0527Z` 只修临时
+  夹具：PC3 正常退出不再依赖缺失的 `rtk`，raw CDP 采样指定有 `WebSocket` 的
+  Node 22，并在窗口捕获前增加**更严格而非放宽**的 15% 可用内存前置门禁。
+  启动服务和双机候选后，该门禁实际采到 **1089.36/32581.27 MiB，3.3435%**，
+  因而在选窗前主动中止。测试前独立三次读取约 19.8–20.0%，退出后回升至约
+  18%；此起伏尚无同时刻逐进程归因，不能擅自结束其他工作负载或据此修改产品
+  内存策略。第二次 runner 仍为 `passed=false`，正常收尾无 cleanup error；独立审计
+  再次确认 PC3 测试进程/监听清空、源端日常 `.19` 和 watchdog 恢复。
+
+本次未修改 Hook/Loom 产品代码或构建新包；原 **256 MiB/128 handles** 门槛、
+30 秒预热、600 秒观察窗口、Playwright setup connection 必须全断开的要求均不变。
+同一内存压力已重现，停止重复启动。下一次只有在共享主机内存余量可持续满足
+产品门禁并能记录测试前/捕获前的逐进程内存快照后，才可用 fresh 根做一次受控
+raw CDP 双机重测；不得杀无关进程、调低资源阈值或把单机 WebView2 对照替代它。
