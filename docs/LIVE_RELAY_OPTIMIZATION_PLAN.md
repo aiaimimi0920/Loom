@@ -1887,3 +1887,230 @@ v0.2.32.21 / e4ce0ba0...，以及既有 terminal daemon / 8e36846d...；产品�
 本节只关闭活动 viewer DELETE 子场景。新 token/重新配对、其他独立原生 viewer、多/慢 viewer、
 device loss、物理网络断连/切换、资源预算/内存长稳与 CPU/GPU/物理呈现对照仍未验证；
 A3/Issue #67 保持进行中。下一小块优先新 token/重新配对后的正常受权加入，旧 relay 必须仍为终态。
+
+### A3 接续：.21 原生重新配对缺口与最小修复计划（2026-10-05 UTC）
+
+在 fresh root `GameEditor/linshi/issue67-a3-viewer-repair-baseline-v21-20261005T224206Z`
+复用同 .21 包，先成功删除活动 PC3 viewer，再在同一原生进程点击刷新列表。
+返回精确 `404 Not Found / device_not_found`；独立 native discovery 得到同一错误，
+观看面板没有“重新配对”入口。旧 relay 仍为 `closed/live_media_device_revoked`，原生
+帧缓存为空。runner 在 `normal explicit re-pair baseline` 失败；最终 owner audit 在
+**2026-10-05 22:48:35.504 UTC** passed，两机测试进程/监听已清理，日常 .19 已恢复。
+这是真实产品缺口，不是新的访问阻塞，也不以清空身份文件或更换 profile 绕过。
+
+源码原因：默认授权只在 deviceId 缺失时注册，删除后仍持有旧 ID；UI 和 controller
+也把同 session 的 closed viewer 算作已加入。此外新 deviceId 必须通过正常 Surface
+重挂载取得新 attachment，不能用旧设备的 attachment 绕过 Loom 身份检查。
+
+下一最小块：
+
+1. 增加显式重新配对按钮，保留 Ed25519 key pair，复用注册和持久化，失效该 origin
+   的 token cache；只提交请求，不自动批准、加入或申请控制权。身份改变时通过既有
+   Surface reset/attach 生命周期刷新绑定；旧 relay 的 immutable authorization 不变。
+2. 仅非 closed 的同 session viewer 阻止新加入；保留活动去重、四个 pending 上限、
+   owner/disposal 和迟到结果清理。补聚焦 frontend/native 回归，执行类型、格式和行数门禁。
+3. 构建 fresh .22 内部候选，复验删除→显式配对→批准→新 Surface→刷新/选择/加入，
+   新 device/relay 持续 JPEG，旧 relay 不复活。测试后正常停止并恢复日常实例。
+
+本节只记录修复前证据与计划，**尚未宣称产品修复或新包验收通过**；A3 仍进行中。
+
+### A3 接续：显式重新配对、新 Surface 所有权与旧 relay 终态验收（2026-10-05 至 10-06 UTC）
+
+本小块接续 .21 的重新配对缺口，不扩展 LAN 访问设施、不改变 Loom 权限或撤销语义。
+.22 的前端显式配对、保留 Ed25519 key、pending 与隔离管理员批准已在真实两机通过，
+但 fresh fixed 根 issue67-a3-viewer-repair-v22-fixed-20261005T2325Z 的新 Surface 等待失败。
+实际 attach 响应所属 shared instance 同时保留旧、新 deviceId 的同 Hook node attachments；
+Hook 只按 hookNodeId 选第一个，随后以新身份激活旧 attachment，Loom 正确返回 403。
+
+- 最小产品修复位于 Hook loom_hook/surface_attachment.rs：同时匹配 hookNodeId 和本次
+  authorization.device_id，再使用同一 attachment 的 snapshot/lifecycleRevision。未改 Loom
+  ownership 校验、未自动批准/加入/控制，也未替换旧 relay 的 immutable authorization。
+  聚焦回归先复现两项失败，再由红变绿；Loom Hook native 46 tests passed，rustfmt 与
+  cargo fmt --check 通过。相关文件有效行数：surface_attachment 147→160、根接线 42→43、
+  新回归文件 53；Hook strict 1393 文件/0 违规，无新增软例外。
+- fresh v0.2.32.23 内部候选已构建、自检 status=ok。bytes=9011712，SHA-256
+  0720cac1a9c8697319b37e1d43bec928fd4faa31c5c3d7c9aa037bec8af5d44b；gitHead=20892a704a9570e7e52cef95e2cccaaf920cdf8a、
+  gitDirty=true、channel=internal，不是正式发布。PC3 经管理面 .22→.23 差分重建，
+  本地/远端完整 SHA 和字节数相同；仅管理包缩小，不改变媒体通道。
+- 首轮 .23 根 issue67-a3-surface-binding-v23-20261005T2345Z 已拿到正确 deviceId 的 active
+  attachment 和新 JPEG，但临时断言误把 session.viewerDevices 当作在线连接，整体失败。
+  源码和删除前/后样本证明它保留 join membership 供 resume；真正在线状态由
+  viewerConnections 表示，且媒体 grant 仍核 token、enabled/approved、epoch 与 sticky revoked。
+  按真实合同改为精确成员集合加新 ID、仅新 ID 有媒体连接；没有修改产品或放宽旧 relay 断言。
+  原失败和两机正常清理回执保留，未重建 .23。
+- 最终 fresh 根：GameEditor/linshi/issue67-a3-surface-binding-contract-v23-20261005T2355Z。
+  真实 WGC source → Loom → PC3 原生 viewer，经正常 Actions/Surface 刷新、选择、显式加入。
+  两端实际包/进程/CDP 与直连 HTTPS/WSS socket 已绑定；SSH 只承载 CDP/Art 管理，
+  无 synthetic capture、mock IPC 或媒体 tunnel。CA 只用于 origin-scoped process trust。
+- 活动 viewer DELETE 后约 **254.237 ms** 采样到 terminal、frame=null、图像清除和双方
+  控制权清除，早于 60 秒租约到期。**10.118 秒/12 样本**旧 viewer 不复活；保留 source
+  WGC/daemon frame 各增加 **196**、默认 GPU submitted 增加 **208**。这是离散采样，
+  不是纯网络延迟、SLA、物理 FPS 或 CPU/GPU 收益。
+- 点击重新配对后保留 public key digest、持久 deviceId 改变，明确保持 pending；测试审批器
+  只完成初始两机就退出，随后由隔离管理员显式批准新 ID。没有自动加入或授予控制。
+  同一 Art Unit/instance 正常取得新 attachment，服务端精确 descriptor 归新 deviceId，
+  lifecycle=active。再经刷新、选择、加入创建新 relay；**10.288 秒/10 样本**中 JPEG
+  frameId 增加 **187**，新 viewer connected/error=null。旧 relay 仍 sticky revoked，计数
+  不增长、frame=null、图像零、无控制权；实际媒体连接仅新 ID。旧设备在 registry 中缺失。
+- 源端正常停止发布后，新 viewer closed/error=null、presentation=null、图像零；旧 viewer
+  保留 live_media_device_revoked 来源。两端测试 GUI 身份未更换。
+- 功能矩阵通过，但原 runner 收尾探针第一次未读取菜单（menuItems=0 menuOwner=0），
+  因此 runner-receipt.passed=false、首次 owner audit 未恢复通过，不能称原 runner 完整一次通过。
+  核对 owner 后再次正常菜单退出成功，runtime 记录 tray_quit、tauri_exit_requested/code=0；
+  没有强杀 Hook。原 runner/cleanup/audit 失败证据保留，另存 cleanup-recovery.json。
+  日常 .19 已按原路径/SHA/Session 1 恢复，watchdog 存在；恢复后独立审计核两机测试进程、
+  workers 与监听零残留，PC3 task Ready，LAN 免认证入口和 aikey 资料仍在，未打印密钥。
+- final-independent-verification.json 在 **2026-10-06T00:05:41.070Z** passed，status=
+  packaged_two_host_explicit_viewer_repair_and_sticky_old_relay_verified；明确记录
+  originalRunnerPassed=false、cleanupRecovered=true、a3Complete=false。独立 verifier 复核
+  所有功能/身份/帧/拒绝/停止记录及恢复后 owner audit，而非把原 runner 改写为成功。
+  27 个临时 harness 源码 UTF-8 无 BOM、语法检查通过，最大 144 有效行；另有 41 行恢复审计。
+  截图已保存；本轮图像查看工具不可用，未视觉复核，不声称物理显示、画质或校准延迟。
+
+本节只关闭显式重新配对→批准→新 Surface→受权加入、旧 relay 保持终态的产品子场景。
+退出探针的首次瞬态失败仍如实记录；没有因此重跑整套功能。其他独立原生 viewer、多/慢
+viewer、device loss、物理网络断连/切换、资源预算/内存长稳和 CPU/GPU/物理呈现对照
+仍未验证；A3/Issue #67 保持进行中。本轮没有 Git 提交、推送或公开发布。
+
+### A3 接续：两机资源门禁失败与 CDP Network 记录干扰定位（2026-10-06 UTC）
+
+本节接续精确 `.23` 资源观察，不修改 Hook/Loom 产品源码、版本、依赖或访问设施，
+不重跑 600 秒、不提高资源阈值，也不将 A3/Issue #67 标为完成。
+
+- 原两机资源根 `GameEditor/linshi/issue67-a3-two-host-resource-v23-20261006T002245Z`：
+  30 秒预热后实际观察 **606902.0923 ms**，122 个媒体样本和 122 个双机资源样本。
+  使用真实 PC1 WGC → Loom → PC3 原生 viewer，HTTPS/WSS 直连，SSH 仅管理。
+  完整进程树首尾各三样本均值保持原口径：源端 Private Bytes **283.808594→540.609375 MiB**，
+  增长 **256.800781 MiB**、handles +12；收端 **262.998698→498.059896 MiB**，
+  增长 **235.061198 MiB**、handles -34.333；daemon 增长 **1.886719 MiB**、handles -3。
+  源端超过原定 256 MiB 门槛约 0.801 MiB，原 `runner-receipt`、资源结果和首次 cleanup
+  失败均保留。恢复-only 审计确认测试进程/监听清理和日常 .19 恢复；它不改写资源失败。
+- 初始 PC3 隔离原生诊断启动命令在执行前被工具策略拒绝；没有创建该诊断任务、远端脚本
+  或 tunnel，也没有换通道绕过。因此下述新测量都是独立 headless Chromium，不是 WebView2
+  或两机性能验收。此前原生资源失败仍成立，其增长原因尚未获得原生反事实确认。
+- `issue67-a3-webview-memory-diagnostic-v23-20261006T005303Z-browser-fix1` 直接转译并执行
+  生产 `decodeLiveFrame`，与仅在成功后清空临时 `Image.src` 的对照各解码 1200 帧。
+  两者停流/释放最后 Blob URL/GC 后 renderer 私有内存约 109.72/113.05 MiB，清 src 无改善，
+  未采用该产品补丁；活动 URL 流中为 1、停止为 0，GC 后 JS heap 约 1.2 MiB。
+- pressure-only 独立浏览器 GC 与浏览器内部 critical pressure 通知未降低该增长。
+  没有制造 Windows 系统压力；`Memory.prepareForLeakDetection` 的失败保留，未等同泄漏证明。
+  trace 中约 393 MiB 的 `cc/image_memory` 与 shared/discardable 存在父子和 ownership 重叠，
+  不能相加、不能当作 Windows Private Bytes，也不能据此宣称缓存有界或产品无泄漏。
+- 已安装 Playwright 的 Chromium session 初始化实际调用 `Network.enable`。新根
+  `GameEditor/linshi/issue67-a3-raw-cdp-memory-v23-20261006T015012Z-memory-only` 手动启动
+  同一 Chromium executable 的两个 fresh profile，只使用单一 raw CDP 连接，未连接 Playwright。
+  同样的生产 decoder、658×407 JPEG、1200 帧/目标 20 FPS：
+
+  | CDP 条件 | baseline renderer Private MiB | 停流/GC 后 | 随后关闭 Network 域 |
+  | --- | ---: | ---: | ---: |
+  | 从未启用 Network | 23.769531 | 32.781250 | 33.902344（仍未启用） |
+  | 启用 Network | 20.953125 | 108.027344 | 31.578125 |
+
+  启用组关闭 Network 后私有内存减少 **76.449219 MiB**。其 64 KiB buffer bucket 的实际
+  allocated size 从 **78643200 bytes = 1200×65536** 降至 0；从未启用组没有该逐帧分配。
+  两组 image allocator 仍为 **412090368 bytes**，不将它与私有内存求和。该单变量对照证明
+  **此 headless 工作负载的 Network 调试记录产生主要额外保留**，不是原生 WebView2 成因证明。
+  两组最终活动 URL=0、JS heap 约 0.49 MiB、DOM nodes=10；浏览器均正常退出。
+- 首个 raw 根保留 `Tracing.tracingComplete event timeout`，未报完成。修正为 browser-scope
+  tracing，并仅保留 memory-infra category 后先跑短 tracing preflight，再完成上述两组；
+  不把这项夹具失败当产品错误。新摘要按 allocator 单独报告，不相加父子节点。
+- 清理复核发现旧 browser sampler 仅凭 ParentProcessId 收集树，可能误纳入 PID 被复用前的
+  旧子进程：首个 raw 失败根误记一个更早启动的 OneDrive service。没有终止该进程；新增
+  父子 creation identity 校验并补 Node/PowerShell 各四项回归。独立复核原生 122 个双机资源
+  样本 **零不合法树成员**，所有有效 renderer 样本也未受影响，因此上述数值和原资源失败不变。
+  首次审计误把同路径 watchdog 算作 main、随后误认旧 Parent PID 的失败回执均另存保留。
+- 最终本地 owner audit：33 个已记录的有效浏览器进程身份全部退出，六个诊断根没有自有
+  活动进程；日常 .19 原路径/完整 SHA/Session 1 及 main 48716、watchdog 34992 fresh 匹配。
+  这些 PID 仅为本次审计快照。没有停止日常 Hook、杀 OneDrive、修改密钥库、网络、信任或
+  防火墙；本轮没有重新启动 PC3，未将旧 PC3 清理回执当作新的远端采样。
+
+新根保留 `diagnostic-summary.json`、两组 memory trace、`process-tree-review.json` 和
+`diagnostic-owner-audit.json`。已准备不启用 Network 的原生双机资源采样器及带 creation
+identity 的 PowerShell sampler，保留 256 MiB/128 handles 门槛；**准备和语法通过不等于原生执行通过**。
+下一小块是有界原生反事实：所有 Playwright setup session 退出后，以唯一 raw CDP session
+观测实际 WebView2。仅在该短诊断排除干扰后再决定是否需要产品改动及新的 600 秒资源门禁。
+其他原生 viewer/慢端、device loss、网络切换和 CPU/GPU/物理呈现对照仍待验；不为本节构建新包。
+
+收尾验证：27 个诊断/采样源码文件均为 UTF-8 无 BOM，最大 **162 有效行**；16 个 MJS
+语法检查和 11 个 PowerShell parser 检查通过。进程身份回归 Node 4/4、PowerShell 4/4，
+既有资源汇总回归 6/6；Loom checker tests 15/15、strict 1183 文件/0 违规（11 项既有软
+例外未改）、Loom/Neuro 开发契约和三个仓库 diff check 通过。最终机器回执
+`final-continuation-receipt.json` 标记 headless 干扰定位通过、cleanupVerified=true，
+但 originalNativeResourceAcceptancePassed=false、nativeMemoryCauseConfirmed=false、
+a3Complete=false。没有提交、推送、更新 memory 或制造新产品构建。
+
+### A3 接续：实际 Hook/WebView2 的 Network 单变量内存对照（2026-10-06 UTC）
+
+本小块完成上一节要求的原生引擎短对照，不启动 PC3，不绕过此前远端执行策略限制。
+使用既有 `.23` 内部候选，完整 EXE SHA 仍为
+`0720cac1a9c8697319b37e1d43bec928fd4faa31c5c3d7c9aa037bec8af5d44b`，没有修改产品
+源码、依赖或版本，也没有重新构建。两次 fresh Hook profile 均由实际
+`msedgewebview2.exe` / `Edg/154.0.4258.53` 承载，PID/creation/path/SHA 和 loopback
+CDP listener 均绑定；每组只有一个 raw CDP session，从未连接 Playwright。
+
+- 生产 `liveCapturePresentation.ts` 经 esbuild 转译，源码 SHA 为
+  `6cf68280241556dfaffeb2fa179fc197a4e2b97c9f755374b020f7092423b5dd`。在实际 Hook
+  WebView2 页面中执行相同受控 658×407 JPEG、1200 帧/约 60 秒工作负载；不是 WGC
+  source、跨机 LiveRelay 或物理呈现验收，不把这项局部结论扩展为整个产品无泄漏。
+- 两组保持相同包、decoder、输入和采样流程，唯一处理变量为 `Network.enable`。
+  每组九个进程/heap/DOM 样本，实际 workload 为 **60000.600 / 60000.200 ms**。
+
+  | CDP 条件 | baseline renderer Private MiB | 停流并 GC 后 | 随后关闭 Network 后 |
+  | --- | ---: | ---: | ---: |
+  | 从未启用 Network | 31.914063 | 37.019531 | 37.058594（仍未启用） |
+  | 启用 Network | 34.460938 | 124.460938 | 42.179688 |
+
+  不启用组增加 **5.105469 MiB**；启用组增加 **90 MiB**，同一 session 关闭 Network
+  后下降 **82.281250 MiB**。两组最终 URL 计数均为零，JS heap 约 2.01 MiB。
+  **Network 调试记录的显著保留已在实际 Hook/WebView2 受控工作负载中确认**，不再
+  仅依赖 headless Chromium 推断；原两机完整进程树增长是否全部由此造成仍未证明。
+- 首次 fresh 根 `GameEditor/linshi/issue67-a3-local-native-memory-v23-20261006T0330Z`
+  在解码前出现 `Native CDP readiness timeout`，未取得内存样本；原失败保留。正常菜单
+  退出候选并恢复日常 .19，没有强杀 Hook。端口 bind 和代理旁路只读检查正常；未把
+  未确诊的 readiness 失败解释为产品内存问题。新 `-ready2` 根补记录实际 WebView2
+  command line、listener 与 readiness；两组正常启动，未改变系统网络或信任设置。
+- 完成根：`GameEditor/linshi/issue67-a3-local-native-memory-v23-20261006T0330Z-ready2`。
+  两组 `result.json`、`runner-receipt.json` 和独立 `native-comparison-summary.json` 通过。
+  两次候选均正常菜单退出。测量及恢复回执完成后，外层 RTK wrapper 仍未返回，疑似
+  继承 pipe 保持打开；核实无活动直接子进程后仅停止该精确 wrapper，未递归终止。外层命令最终 exit 1，
+  不把它改写为 exit 0，也不改写已写出的测量回执。
+- `final-owner-audit.json` 在 **2026-10-06T03:52:30.815Z** 通过：16 个记录的原生
+  进程身份全部退出，两诊断根无测试进程/49931 listener；日常 .19 按原路径、完整
+  SHA、Session 1 恢复，watchdog 存在。未访问 PC3、清空或替换日常数据，也未操作密钥库。
+- Hook 诊断文档补充 raw CDP/Playwright setup session 的隔离要求。准备过的双机
+  raw sampler 仍未执行，不把注释中的隔离前提当作已证明；600 秒必须沿正常真实
+  发布/加入路径，并在所有 setup session 断开后重新采样，保留 256 MiB/128 handles。
+- 十个临时源码均为 UTF-8 无 BOM，最大 **110 有效行**，五个 MJS 语法检查与五个
+  PowerShell parser 检查通过；进程身份回归 4/4、资源汇总回归 6/6、Loom checker tests
+  15/15 通过，strict 1183 文件/0 违规（11 项原有软例外不变）。Loom/Neuro 文档合同、
+  三个仓库 `git diff --check` 通过；仅更新两份诊断/接续文档，不扩大产品源码修改范围。
+
+当前不采用清空临时 `Image.src` 补丁，不修改产品解码器。下一小块仍为消除调试记录
+干扰后的真实两机资源门禁；原 256.800781 MiB 超限结果和 A3 未完成状态保持不变。
+多/慢 viewer、device loss、物理网络切换与 CPU/GPU/物理呈现对照仍未关闭。本轮不提交、
+推送或公开发布，也不把受控引擎对照作为整个 A3 完成。
+
+### A3 接续：按用户要求先提交推送，再开始 raw 双机资源门禁（2026-10-06 UTC）
+
+用户明确要求“首先提交推送代码，然后进行下一步”。Hook 的显式重新配对、当前设备
+Surface attachment 选择、旧 relay 终态保留及诊断文档已作为独立仓库提交并推送到
+`main`：`4131464718114167e08fb557708ec43676ebb64f`；`ls-remote` 已核对同一 SHA。
+保留 `.23` 原包的 dirty provenance，不将新提交号回填旧构建，运行时产品代码未因
+本次提交验证改变；只有测试夹具补一行 socket 模式修复。
+
+- 提交前 fresh 原生回归暴露 Windows accepted socket 继承非阻塞模式，fixture 的
+  request read 返回 `WouldBlock / OS 10035`。在设置读写超时前显式恢复 blocking，
+  不修改产品网络逻辑。原 3/4 失败日志保留，修正后 pairing 4/4、Loom Hook 46/46
+  通过；`cargo check --all-targets`、`cargo fmt --check` 通过。
+- 前端生产/测试 typecheck、UnitLiveViewer 聚焦测试、完整 lint 通过；Hook strict
+  1393 文件/0 违规/0 软例外。19 个精确文件提交，无密钥、临时运行产物或其他仓库改动。
+- 默认 Git 的一次 fetch 出现 `curl 18 / early EOF`，一次远端读取出现
+  `SSL_ERROR_SYSCALL`；失败保留，未 reset/rebase/force push。通过已安装 Git 的限时
+  HTTP/1.1 请求核对两仓库远端基线，正常提交推送完成；没有持久更改 Git 网络配置。
+- Loom 将本计划中此前未推送的重新配对、资源失败和原生 Network 对照记录一并提交。
+  自身提交 SHA 与远端核对放到该轮机器回执，避免为记录自身 SHA 反复 amend。
+  Neuro 根仓库和其他独立子项目的既有修改不纳入这两次提交。
+
+后续只推进 raw CDP 的真实双机资源观察：先核两机可用状态和测试所有权，再正常发布/
+加入，结束所有 Playwright setup connection，保留 30 秒预热、600 秒和原资源阈值。
+任何访问或执行策略拒绝都保留原文并停止该操作，不通过替代通道绕过。
