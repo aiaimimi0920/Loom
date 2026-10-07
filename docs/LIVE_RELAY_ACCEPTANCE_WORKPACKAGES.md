@@ -80,6 +80,14 @@ A3-R 的原资源增长项已关闭，其余工作包未关闭；发现产品缺
   到期，已建立的 source/viewer WebSocket 均关闭、旧 token 重连被拒绝；viewer 到期不拖停
   有效 peer，且不误报显式撤销。`cargo test --locked -p loom-daemon live_media_device_auth
   -- --test-threads=1`：10/10。仅软件层，不替代默认 TTL 双机原生自然到期验收。
+- 2026-10-07 补充同设备签名续签软件回归：`live_media_device_renewal.rs` 经真实
+  challenge/session HTTP 签名签发不同 token；source/viewer 的隔离旧租约到期后，
+  新 token 可恢复相同 device/session/epoch，旧 token 的升级与恢复仍被拒绝。
+  断连清除既有控制租约，续接不自动获输入权、不重置控制序号；关闭会话、非成员
+  和禁用设备保持拒绝。上述同一聚焦命令为 14/14（新增 4 项）。
+  本项不改生产 TTL/协议/Hook，媒体帧为测试夹具；不是默认 15 分钟双机原生证明。
+  PC3 管理 HTTP 与 SSH 本轮均不可达，未启动原生候选；自然到期、原生新 token
+  续接和物理网络/daemon 重启子场景仍待验，不用本软件回归关闭 A3-N。
 - 影响物理网络、共享服务或管理通道的操作另行确认；一项故障场景一个证据 PR，
   专用代理的已有通过记录不能关闭物理网络子项。
 

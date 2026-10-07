@@ -2,6 +2,7 @@
 mod live_media_device_auth {
     use super::*;
     include!("live_media_device_revocation.rs");
+    include!("live_media_device_renewal.rs");
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
 
     struct Fixture {
