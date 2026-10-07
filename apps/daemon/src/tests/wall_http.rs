@@ -60,7 +60,7 @@ mod wall_http {
         ))
     }
 
-    fn device(
+    pub(super) fn device(
         port: u16,
         token: &str,
         method: &str,
@@ -81,7 +81,11 @@ mod wall_http {
     }
 
     pub(super) fn pair(port: u16, name: &str) -> (String, String) {
-        let key = SigningKey::generate(&mut OsRng);
+        pair_with_key(port, name, &SigningKey::generate(&mut OsRng))
+    }
+
+    // Retain the same test identity across a real signed session renewal.
+    pub(super) fn pair_with_key(port: u16, name: &str, key: &SigningKey) -> (String, String) {
         let (status, pending) = public(
             port,
             "POST",
@@ -111,21 +115,29 @@ mod wall_http {
             .0,
             200
         );
+        let (status, session) = issue_session(port, &id, key);
+        assert_eq!(status, 201);
+        (id, session["token"].as_str().unwrap().to_owned())
+    }
+
+    pub(super) fn issue_session(port: u16, id: &str, key: &SigningKey) -> (u16, Value) {
         let (status, challenge) = public(
             port,
             "POST",
             "/v1/device-sessions/challenges",
             Some(json!({"deviceId": id})),
         );
-        assert_eq!(status, 201);
+        if status != 201 {
+            return (status, challenge);
+        }
         let nonce = Uuid::new_v4().to_string();
         let message = device_session_signature_message(
-            &id,
+            id,
             challenge["challengeId"].as_str().unwrap(),
             challenge["challenge"].as_str().unwrap(),
             &nonce,
         );
-        let (status, session) = public(
+        public(
             port,
             "POST",
             "/v1/device-sessions",
@@ -133,9 +145,7 @@ mod wall_http {
                 "deviceId": id, "challengeId": challenge["challengeId"], "clientNonce": nonce,
                 "signature": BASE64.encode(key.sign(message.as_bytes()).to_bytes()),
             })),
-        );
-        assert_eq!(status, 201);
-        (id, session["token"].as_str().unwrap().to_owned())
+        )
     }
 
     #[test]
