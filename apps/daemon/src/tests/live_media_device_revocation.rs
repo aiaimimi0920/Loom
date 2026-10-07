@@ -98,3 +98,63 @@ fn failed_management_persist_preserves_device_sessions_and_revoke_provenance() {
         assert!(grant.revocation_close().is_none());
     }
 }
+
+// Shorten only the isolated registry lease; the media worker observes wall-clock expiry.
+fn expire_soon(f: &Fixture, token: &str) {
+    f.devices
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut(&sha256_bytes(token.as_bytes()))
+        .unwrap()
+        .expires_at_ms = unix_time_millis().saturating_add(500);
+}
+
+#[test]
+fn natural_source_session_expiry_closes_idle_socket_and_rejects_reconnect() {
+    let f = Fixture::new();
+    let (owner, token) = wall_http::pair(f.port, "Expiring source");
+    let (viewer, viewer_token) = wall_http::pair(f.port, "Retained viewer");
+    f.create(&owner, &[&viewer]);
+    let mut source = f.connect(&token, "source").unwrap();
+    let mut receiver = f.connect(&viewer_token, "viewer").unwrap();
+    source
+        .send(tungstenite::Message::Binary(encoded_live_frame(1)))
+        .unwrap();
+    assert_eq!(binary(&mut receiver), 1);
+    expire_soon(&f, &token);
+    assert_eq!(closed(&mut source), None);
+    f.wait(|s| !s.source_connected);
+    let state = f.sessions.get("live:device-auth").unwrap();
+    assert_eq!(state.last_frame_id, 1);
+    assert!(!state.closed);
+    assert_eq!(state.viewer_connections.get(&viewer), Some(&1));
+    assert!(f.devices.lock().unwrap().devices[&owner].enabled);
+    assert!(f.connect(&token, "source").is_err());
+}
+
+#[test]
+fn natural_viewer_session_expiry_closes_idle_socket_without_stalling_peer() {
+    let f = Fixture::new();
+    let (owner, token) = wall_http::pair(f.port, "Retained source");
+    let (viewer, viewer_token) = wall_http::pair(f.port, "Expiring viewer");
+    let (peer, peer_token) = wall_http::pair(f.port, "Retained peer");
+    f.create(&owner, &[&viewer, &peer]);
+    let mut source = f.connect(&token, "source").unwrap();
+    let mut receiver = f.connect(&viewer_token, "viewer").unwrap();
+    let mut retained = f.connect(&peer_token, "viewer").unwrap();
+    source
+        .send(tungstenite::Message::Binary(encoded_live_frame(1)))
+        .unwrap();
+    assert_eq!(binary(&mut receiver), 1);
+    assert_eq!(binary(&mut retained), 1);
+    expire_soon(&f, &viewer_token);
+    assert_eq!(closed(&mut receiver), None);
+    f.wait(|s| !s.viewer_connections.contains_key(&viewer));
+    source
+        .send(tungstenite::Message::Binary(encoded_live_frame(2)))
+        .unwrap();
+    assert_eq!(binary(&mut retained), 2);
+    assert!(f.connect(&viewer_token, "viewer").is_err());
+    assert!(f.sessions.get("live:device-auth").unwrap().source_connected);
+}

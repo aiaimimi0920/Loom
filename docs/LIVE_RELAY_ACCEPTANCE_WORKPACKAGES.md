@@ -76,6 +76,10 @@ A3-R 的原资源增长项已关闭，其余工作包未关闭；发现产品缺
   复用已验证的显式重新配对结论，不把它当作全部 token 场景已覆盖。
 - 关闭条件：当前授权下恢复、源身份不漂移；停止、撤销、租约到期及旧 owner 的
   迟到恢复均 fail closed，不重放旧输入、不自动授予控制。
+- 2026-10-06 补充 daemon 软件层回归：隔离 registry 将租约缩短至 500 ms 后等待真实时钟
+  到期，已建立的 source/viewer WebSocket 均关闭、旧 token 重连被拒绝；viewer 到期不拖停
+  有效 peer，且不误报显式撤销。`cargo test --locked -p loom-daemon live_media_device_auth
+  -- --test-threads=1`：10/10。仅软件层，不替代默认 TTL 双机原生自然到期验收。
 - 影响物理网络、共享服务或管理通道的操作另行确认；一项故障场景一个证据 PR，
   专用代理的已有通过记录不能关闭物理网络子项。
 
