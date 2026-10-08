@@ -61,6 +61,7 @@ fn snapshot(record: &LiveSessionRecord) -> LiveSessionRuntimeSnapshot {
             .collect(),
         trigger_audits: record.trigger_audits.iter().cloned().collect(),
         closed: record.closed,
+        requester_control: None,
     }
 }
 
