@@ -1,4 +1,113 @@
 // Real signed reauthorization never resets live membership, sequence or input authority.
+#[test]
+fn rejoin_at_capacity_preserves_peers_observations_and_atomic_cursors() {
+    let id = "live:rejoin-capacity";
+    let store = phase_six_store(id);
+    store
+        .publish_observation("device-source", id, phase_six_observation(id, 2, 1))
+        .unwrap();
+    for i in 1..loom_protocol::LIVE_MAX_VIEWERS {
+        let viewer = format!("device:peer-{i}");
+        store
+            .attach_viewer(&viewer, live_viewer_envelope(id, &viewer))
+            .unwrap();
+    }
+    let before = store.get(id).unwrap();
+    assert_eq!(
+        store
+            .attach_viewer(
+                "device:overflow",
+                live_viewer_envelope(id, "device:overflow")
+            )
+            .unwrap_err()
+            .code,
+        "live_viewer_limit"
+    );
+    assert!(!store.lock_state().unwrap()[id]
+        .inbound_sequences
+        .contains_key("device:overflow"));
+    assert_eq!(
+        store.get(id).unwrap().session.revision,
+        before.session.revision
+    );
+    let mut ack = live_viewer_envelope(id, "device-viewer");
+    ack.sequence = 2;
+    let after = store.attach_viewer("device-viewer", ack.clone()).unwrap();
+    assert_eq!(after.session.viewer_devices, before.session.viewer_devices);
+    assert_eq!(after.observations[0].sequence, 1);
+    assert_eq!(
+        after.session.controller_device,
+        before.session.controller_device
+    );
+    assert_eq!(
+        store
+            .get_for_member(id, "device-source")
+            .unwrap()
+            .requester_control
+            .unwrap()
+            .control_sequence,
+        2
+    );
+    assert_eq!(
+        store.attach_viewer("device-viewer", ack).unwrap_err().code,
+        "live_control_sequence_invalid"
+    );
+    let source = store.get_for_member(id, "device-source").unwrap();
+    let sequence = source.requester_control.unwrap().control_sequence + 1;
+    store
+        .publish_observation(
+            "device-source",
+            id,
+            phase_six_observation(id, sequence, source.observations[0].sequence + 1),
+        )
+        .unwrap();
+    assert_eq!(store.get(id).unwrap().observations[0].sequence, 2);
+}
+
+#[test]
+fn member_recovery_cursor_retains_input_position_without_reacquiring_authority() {
+    let id = "live:rejoin-input";
+    let store = phase_five_store(id);
+    let actor = "device-viewer-a";
+    store
+        .change_controller(
+            actor,
+            id,
+            &phase_five_lease(LiveControlLeaseAction::Acquire, 2),
+        )
+        .unwrap();
+    store
+        .forward_input(actor, id, phase_five_input(id, actor, 3, 1))
+        .unwrap();
+    store
+        .change_controller(
+            actor,
+            id,
+            &phase_five_lease(LiveControlLeaseAction::Release, 4),
+        )
+        .unwrap();
+    let baseline = store
+        .get_for_member(id, actor)
+        .unwrap()
+        .requester_control
+        .unwrap();
+    assert_eq!((baseline.control_sequence, baseline.input_sequence), (4, 1));
+    let mut ack = live_viewer_envelope(id, actor);
+    ack.sequence = 5;
+    assert!(store
+        .attach_viewer(actor, ack)
+        .unwrap()
+        .session
+        .controller_device
+        .is_none());
+    let peer = store
+        .get_for_member(id, "device-viewer-b")
+        .unwrap()
+        .requester_control
+        .unwrap();
+    assert_eq!((peer.control_sequence, peer.input_sequence), (1, 0));
+}
+
 fn renewed_token(f: &Fixture, id: &str, key: &ed25519_dalek::SigningKey, old: &str) -> String {
     let issued_after = unix_time_millis();
     let (status, session) = wall_http::issue_session(f.port, id, key);
@@ -153,6 +262,73 @@ fn signed_source_renewal_after_expiry_preserves_identity_without_input_authority
 #[test]
 fn signed_viewer_renewal_after_expiry_preserves_membership_without_input_authority() {
     renewal_after_expiry("viewer");
+}
+
+#[test]
+fn signed_viewer_rejoin_reads_only_its_cursor_and_gets_a_fresh_anchor() {
+    let f = Fixture::new();
+    let (owner, source_token) = wall_http::pair(f.port, "Retained source");
+    let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+    let (viewer, old) = wall_http::pair_with_key(f.port, "Rejoining viewer", &key);
+    let (_, outsider) = wall_http::pair(f.port, "Unrelated viewer");
+    f.create(&owner, &[&viewer]);
+    let path = "/v1/live/sessions/live:device-auth";
+    let mut socket = f.connect(&old, "viewer").unwrap();
+    expire_soon(&f, &old);
+    assert_eq!(closed(&mut socket), None);
+    let token = renewed_token(&f, &viewer, &key, &old);
+    assert_eq!(wall_http::device(f.port, &old, "GET", path, None).0, 401);
+    assert_eq!(
+        wall_http::device(f.port, &outsider, "GET", path, None).0,
+        403
+    );
+    let (status, before) = wall_http::device(f.port, &token, "GET", path, None);
+    assert_eq!(status, 200);
+    assert_eq!(before["requesterControl"]["deviceId"], viewer);
+    assert_eq!(before["requesterControl"]["epoch"], 1);
+    assert_eq!(before["requesterControl"]["controlSequence"], 1);
+    assert_eq!(before["requesterControl"]["inputSequence"], 0);
+    let (_, source) = wall_http::device(f.port, &source_token, "GET", path, None);
+    assert_eq!(source["requesterControl"]["deviceId"], owner);
+    assert!(
+        serde_json::to_value(f.sessions.get("live:device-auth").unwrap())
+            .unwrap()
+            .get("requesterControl")
+            .is_none()
+    );
+    assert!(serde_json::to_value(f.sessions.list().unwrap()).unwrap()[0]
+        .get("requesterControl")
+        .is_none());
+
+    let mut ack = live_viewer_envelope("live:device-auth", &viewer);
+    ack.sequence = before["requesterControl"]["controlSequence"]
+        .as_u64()
+        .unwrap()
+        + 1;
+    let attached = f.sessions.attach_viewer(&viewer, ack.clone()).unwrap();
+    assert_eq!(attached.session.viewer_devices, vec![viewer.clone()]);
+    assert!(attached.session.revision > before["session"]["revision"].as_u64().unwrap());
+    assert!(attached.session.controller_device.is_none());
+    let sessions = f.sessions.lock_state().unwrap();
+    let event = sessions["live:device-auth"].events.back().unwrap();
+    let event = serde_json::to_value(event).unwrap();
+    assert_eq!(event["payload"]["reason"], "viewer_joined");
+    assert_eq!(event["payload"]["revision"], attached.session.revision);
+    drop(sessions);
+    assert_eq!(
+        f.sessions.attach_viewer(&viewer, ack).unwrap_err().code,
+        "live_control_sequence_invalid"
+    );
+    let (_, after) = wall_http::device(f.port, &token, "GET", path, None);
+    assert_eq!(after["requesterControl"]["controlSequence"], 2);
+    let input = phase_five_input("live:device-auth", &viewer, 3, 1);
+    assert_eq!(
+        f.sessions
+            .forward_input(&viewer, "live:device-auth", input)
+            .unwrap_err()
+            .code,
+        "live_input_controller_required"
+    );
 }
 
 #[test]

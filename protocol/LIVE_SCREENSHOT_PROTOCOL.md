@@ -61,6 +61,24 @@ skip or repeat. A resume snapshot moves all three sequence baselines into a
 strictly newer epoch. Frame IDs may skip because video is replaceable; stale or
 duplicate frame IDs are rejected and the gap is observable.
 
+Device-token renewal does not reset an existing session's epoch or sequence
+namespaces. The authenticated member `GET /v1/live/sessions/{sessionId}` adds
+`requesterControl: { deviceId, epoch, controlSequence, inputSequence }`, read
+under the same lock as the session and observation snapshot. Only the requesting
+member's accepted positions are returned; discovery, admin snapshots and attach
+responses omit this field. A missing current-epoch position is zero. This read
+is not a reservation: concurrent commands can still make the next request fail
+with 409, and clients must not guess positions from error text or reset identity.
+
+A rejoining viewer sends `session_ack` at its accepted control position plus
+one. Every accepted attachment, including an existing member, emits a new
+`viewer_joined` state event and revision for bootstrap; membership remains
+deduplicated and controller authority is not granted. Source recovery reads
+the member snapshot after stopping its old publishers and continues each
+observation ID at its accepted position plus one. Old stability intervals and
+input edges must not be replayed. Clients requiring safe recovery fail closed
+when a daemon does not provide the actor-scoped cursor.
+
 ## Session and authority
 
 `LiveScreenshotSession` carries source device/Hook/window identity, the physical
