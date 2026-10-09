@@ -61,6 +61,40 @@ skip or repeat. A resume snapshot moves all three sequence baselines into a
 strictly newer epoch. Frame IDs may skip because video is replaceable; stale or
 duplicate frame IDs are rejected and the gap is observable.
 
+Device-token renewal does not reset an existing session's epoch or sequence
+namespaces. The authenticated member `GET /v1/live/sessions/{sessionId}` adds
+`requesterControl: { deviceId, epoch, controlSequence, inputSequence }`, read
+under the same lock as the session and observation snapshot. Only the requesting
+member's accepted positions are returned; discovery, admin snapshots and attach
+responses omit this field. A missing current-epoch position is zero. This read
+is not a reservation: concurrent commands can still make the next request fail
+with 409, and clients must not guess positions from error text or reset identity.
+
+A rejoining viewer sends `session_ack` at its accepted control position plus
+one. Every accepted attachment, including an existing member, emits a new
+`viewer_joined` state event and revision for bootstrap; membership remains
+deduplicated and controller authority is not granted. Source recovery reads
+the member snapshot after stopping its old publishers and continues each
+observation ID at its accepted position plus one. Old stability intervals and
+input edges must not be replayed. Clients requiring safe recovery fail closed
+when a daemon does not provide the actor-scoped cursor.
+
+Automatic credential renewal adds optional boolean `requireExistingMembership` to
+the viewer attachment HTTP request (not the control envelope). It defaults to false
+for explicit joins. When true, the daemon requires an existing viewer member and no
+controller lease owned by that viewer device under the same lock as sequence
+acceptance. Policy rejection is `409 live_viewer_renewal_unavailable`; it does not
+attach a member, consume a sequence, or emit a `viewer_joined` revision. Normal
+lease-expiration maintenance still runs before that check and may clear an expired
+controller and advance the revision, even when renewal is rejected. Existing
+Surface authorization, active-session and epoch checks still apply. Renewal never
+releases another connection's unexpired lease or acquires control. A client must
+not downgrade a rejected renewal to an explicit
+join. Older strict request parsers reject the added field; deploy Loom support first.
+Device credential renewal does not itself revoke a device identity: disabling or
+removing the device prevents fresh signed sessions, whereas invalidating only an
+individual token need not do so.
+
 ## Session and authority
 
 `LiveScreenshotSession` carries source device/Hook/window identity, the physical
