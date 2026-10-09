@@ -17,7 +17,9 @@
   `67399b345e793db0fc6d921b6c1523a9d6f4c1d0`。
 - 新组合续期/停止证据由 [Loom #88](https://github.com/aiaimimi0920/Loom/pull/88)
   合入 `c959288524d2d7368cef46b99e4cefd4bc787359`；其后的 raw 局部证据、失败记录及
-  性能跳过决定由旧 [#89](https://github.com/aiaimimi0920/Loom/pull/89) 单独交付。
+  性能跳过决定由旧 [#89](https://github.com/aiaimimi0920/Loom/pull/89) 合并关闭，
+  主干提交为 `4df6f872b682a38c30dfe126e55bfc4c772d09c2`，与 17 项 CI 全部成功的
+  PR head `5d1a166` 完整树一致。新 #90 以该主干为基线，仅保留本次计划整理差异。
 
 以上不构成正式公共 release，也不宣称全部设备、网络或物理呈现已验收。
 
