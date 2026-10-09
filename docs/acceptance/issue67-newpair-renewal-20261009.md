@@ -4,7 +4,8 @@
 
 2026-10-09，PC1 `DESKTOP-MVG82SN` 与 PC3 `CODE` 的隔离测试身份和会话完成
 默认 900 秒自动续期、原窗口恢复渲染、正常源端停止及双机清理。
-正常停止后的观看端清帧没有获得本轮有效回执，仍待补验。整个 A3 / #67 未完成。
+原续期轮次未取得正常停止后的观看端清帧回执；随后同 SHA 组合的独立短时专项
+已补齐该场景，见文末。两轮证据分别保留，不声称在同一会话重跑全套。整个 A3 / #67 未完成。
 
 - Hook `.32`：`release/Hook/v0.2.32.32-viewer-renewal-20261009/hook.exe`
   - SHA256：`6911eb0a70b02baf19aa1320c36928c4e5d35cf3aae3852f66f227f62433f840`
@@ -67,3 +68,29 @@ runner 在启动服务及两端候选前退出。未降低门槛、终止其他�
 本机清理检查通过；额外远端复核确认无 Hook、无测试端口监听、专用任务未创建。
 此项仍为环境阻塞、未执行，不是产品失败；不改变此前续期通过结论。
 证据：`GameEditor/linshi/issue67-newpair-stop-20261009/final-preflight-receipt.json`。
+
+## 同候选正常停止清帧补验通过（10:08 UTC）
+
+用户再次要求继续后，PC1 前置可用内存恢复至 21.39%，PC3 为 61.19%，两机无
+运行中的 Hook；以新目录和新测试身份启动短时专项，未复用上次运行回执。
+Hook/Loom SHA 与上文一致；未修改产品源码、候选字节、TTL、系统时钟或系统信任。
+
+- 正常发布和 Surface 加入、真实 WGC 经 LAN HTTPS/WSS 观看通过。
+- 可见渲染前置 80 样本、60 个不同绘制帧；这是软件绘制证据，不是物理呈现。
+- 正常 UI 停止发布后，服务端 `closed=true`、`sourceConnected=false`。
+- 随后独立检查观看端：`connectionState=closed`、`errorCode=null`、
+  `controllerOwned=false`，`presentation=null`、`rendering=null`、`remainingImages=0`。
+- `2026-10-09T10:08:30.349Z` 清理复核通过：两机 owned 进程/测试端口无残留，
+  专用任务 `Neuro-Issue67-newpair-stop-20261009-r2` 已禁用。
+- runner 和全部已执行分项通过；没有重跑自然续期、停止竞态、禁用或其余 A3 项。
+
+该结论关闭同候选的正常停止清帧专项；不声称本次会话经历过凭据到期。
+之前观察器失败及内存拦截记录保留，不追改为通过。
+
+证据根：`GameEditor/linshi/issue67-newpair-stop-20261009-r2`。
+`final-acceptance-receipt.json` 包含候选 SHA、分项结论与证据哈希；关键文件：
+
+- `native/reversed-closed-receipt.json`：SHA256
+  `f3403fc0df1ce37e6c7b0b829792f9baa5e159de132402d078cc193a8f86c2d2`。
+- `native/part-cleanup-verified.json`：SHA256
+  `9f392b18aa571badb324b452875ce7baf66c4baddc1e035f7fa11074ae9b8d45`。
