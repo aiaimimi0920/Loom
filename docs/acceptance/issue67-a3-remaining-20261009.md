@@ -145,3 +145,36 @@ SHA256 `d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92`，
 本轮没有启动媒体或替换日常 Hook，尚未证明候选在真实异常中取得断开原因；
 headless 自检也不替代 WebView2 原生启动/加载与业务验收。保留 `.32` 原始性能证据，
 不把 `.33` 当性能修复或正式 release，不关闭 A3-P。
+
+## `.33` 首次限定原生尝试：媒体启动前夹具共享冲突
+
+后续“继续推进”执行了一轮单观看端 raw 取证，不包含 JPEG 或破坏性测试。
+证据根 `linshi/issue67-v33-raw-diagnostic-20261009`；13:23:52Z 前置快照中
+PC1/PC3 均无 Hook，内存余量约 41.03%/61.32%，相关监听为空。
+生成新隔离 TLS 证书（到期 17:24:24Z），未改系统信任，候选 SHA 保持上述 `.33`。
+
+本轮 runner 在 `Start-LocalFixture.ps1 → Assert-ContentMode.ps1:23` 读取
+`source-direct/fixture-state.json` 时遭 Windows 文件共享冲突，停止于 `PC1 real capture`。
+尚未发布/加入媒体、没有性能样本，也没有诊断到新的媒体重连。不能据此认定 `.33`
+的取证功能已原生验收；这次失败不修改原有 `.32` 性能结论。
+
+13:27:25Z 双机清理通过，专用任务 Disabled；13:44:41Z 只读复核两机 Hook 均为 0、
+相关监听为空。未退出日常 Hook，未自动重跑，原始失败与清理回执保留。
+脱敏索引见 [本轮回执](issue67-v33-raw-attempt-20261009.json)。
+
+测试工具修正在 `staged-fix/`，没有改写已执行的 raw-1 脚本：
+
+- 原启动读取只等待文件出现，未处理短暂共享冲突。相同 SHA 的 fixture 使用
+  临时文件加 `File.Replace` 发布完整 JSON；不能把共享冲突解释成产品媒体故障。
+- 新 `Read-FixtureStartupState.ps1` 共用最多 3 秒就绪期限，仅对 Windows sharing/lock
+  violation 重试；缺失文件仍有界，JSON 错误及其他 I/O 错误直接失败。
+- 原有 mode、HWND、revision、timer 和静态内容断言不变，未放宽身份或场景检查。
+- 7 项本地回归通过，包括真实独占文件句柄冲突后释放成功、持续占用到期拒绝、
+  非法 JSON 不重试、其他 I/O 错误不吞掉及大小上限；语法、UTF-8 无 BOM 和文件
+  行数上界检查通过。首次测试的 JSON 错误文案预期与 PowerShell 5.1 不同，修正测试
+  匹配并核验只读一次后通过，没有把非法 JSON 改为可接受。
+
+修正尚未原生复测。恢复时需使用 fresh evidence root 并明确装入 staged 两个脚本，
+重新检查隔离、容量、全部 TCP 状态和证书；不可覆盖本轮失败或绕过门禁。
+本轮还联网核对 Hook #62 exact head 的 16 个 check runs：15 success、1 neutral，
+无 pending/failure；neutral 为 `osv-scanner`，不称全部 success，也不替代原生验收。
