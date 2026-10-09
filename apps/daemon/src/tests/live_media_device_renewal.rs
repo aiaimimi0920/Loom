@@ -402,7 +402,7 @@ fn disabled_device_cannot_issue_a_new_signed_session() {
     assert_eq!(closed(&mut source).unwrap().1, "live_media_device_revoked");
     let (status, denial) = wall_http::issue_session(f.port, &owner, &key);
     assert_eq!(status, 403);
-    assert_eq!(denial["error"]["code"], "device_not_authorized");
+    assert_eq!(denial["error"]["code"], "device_disabled");
     assert!(denial.get("token").is_none());
     denied_upgrade(&f, &token, "source", 401);
 }

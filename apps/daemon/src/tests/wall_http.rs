@@ -42,7 +42,7 @@ mod wall_http {
         (status, response_json_body(&raw))
     }
 
-    fn admin(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    pub(super) fn admin(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         response(http_request(
             port,
             method,
@@ -51,7 +51,7 @@ mod wall_http {
         ))
     }
 
-    fn public(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    pub(super) fn public(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         response(http_request_without_auth(
             port,
             method,

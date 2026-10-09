@@ -355,7 +355,15 @@ impl DeviceRegistryStore {
             .devices
             .get(device_id)
             .ok_or_else(|| DeviceAuthError::new(404, "device_not_found", "device was not found"))?;
-        if device.approval != "approved" || !device.enabled {
+        // 禁用优先于待批准，避免旧客户端把禁用设备放入批准轮询。
+        if !device.enabled {
+            return Err(DeviceAuthError::new(
+                403,
+                "device_disabled",
+                "device is disabled",
+            ));
+        }
+        if device.approval != "approved" {
             return Err(DeviceAuthError::new(
                 403,
                 "device_not_authorized",

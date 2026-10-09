@@ -239,6 +239,15 @@ impl LiveSessionStore {
         actor_device_id: &str,
         envelope: LiveControlEnvelope,
     ) -> std::result::Result<LiveSessionRuntimeSnapshot, LiveRuntimeError> {
+        self.attach_viewer_with_policy(actor_device_id, envelope, false)
+    }
+
+    fn attach_viewer_with_policy(
+        &self,
+        actor_device_id: &str,
+        envelope: LiveControlEnvelope,
+        require_existing_membership: bool,
+    ) -> std::result::Result<LiveSessionRuntimeSnapshot, LiveRuntimeError> {
         let LiveControlMessage::SessionAck(ack) = &envelope.message else {
             return Err(LiveRuntimeError::new(
                 400,
@@ -267,6 +276,17 @@ impl LiveSessionStore {
             .viewer_devices
             .iter()
             .any(|viewer| viewer == actor_device_id);
+        // Check under the sequence/membership lock: a preceding GET is not a reservation.
+        if require_existing_membership
+            && (!already_member
+                || record.session.controller_device.as_deref() == Some(actor_device_id))
+        {
+            return Err(LiveRuntimeError::new(
+                409,
+                "live_viewer_renewal_unavailable",
+                "renewal requires an existing viewer without a controller lease",
+            ));
+        }
         if !already_member && record.session.viewer_devices.len() >= loom_protocol::LIVE_MAX_VIEWERS
         {
             return Err(LiveRuntimeError::new(

@@ -12,6 +12,8 @@ struct LiveSessionCreateRequest {
 struct LiveViewerAttachRequest {
     surface_instance_id: String,
     attachment_id: String,
+    #[serde(default)]
+    require_existing_membership: bool,
     envelope: LiveControlEnvelope,
 }
 
@@ -222,9 +224,12 @@ fn attach_live_viewer(
         None,
         authenticated_device_id,
     )?;
-    live_sessions
-        .attach_viewer(&actor, request.envelope)
-        .and_then(json_snapshot)
+    if request.require_existing_membership {
+        live_sessions.attach_viewer_with_policy(&actor, request.envelope, true)
+    } else {
+        live_sessions.attach_viewer(&actor, request.envelope)
+    }
+    .and_then(json_snapshot)
 }
 
 fn resume_live_session(

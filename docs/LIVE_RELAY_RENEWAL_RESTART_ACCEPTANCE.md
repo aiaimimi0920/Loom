@@ -1,9 +1,9 @@
 # A3-N：自然续期与专用 daemon 重启验收
 
-核对日期：2026-10-07 UTC。本文只记录明确候选、场景和证据，不关闭总 Issue #67。
+核对日期：2026-10-09 UTC。本文只记录明确候选、场景和证据，不关闭总 Issue #67。
 其余工作包见 [执行索引](LIVE_RELAY_ACCEPTANCE_WORKPACKAGES.md)。
 
-## 候选与兼容边界
+## 2026-10-07 候选与兼容边界
 
 本次复用 Hook `v0.2.32.24` 内部 dirty candidate 和配套 Loom daemon：
 
@@ -99,10 +99,71 @@ rtk proxy cargo test --locked --release --lib --manifest-path src-tauri/Cargo.to
 真实设备配对、凭证续签、原生 Hook 启动或旧发行包。此证据限定为恢复基线 GET，
 不覆盖 cursor 读取后 attachment POST 的并发冲突，不代替四种新旧包组合验收。
 
+<a id="viewer-renewal-scoped-acceptance"></a>
+
+## 2026-10-09：观看端续期、在途停止与禁用的限定补验
+
+此节覆盖后续明确授权的 PC1/PC3 隔离测试，不将上文 `.24` 的手动重新加入
+等同于 `.32` 自动续期，也不扩展退出日常 Hook、断网或驱动重置权限。
+
+### 精确候选矩阵
+
+全部三项使用 Hook `v0.2.32.32`，SHA-256：
+`6911eb0a70b02baf19aa1320c36928c4e5d35cf3aae3852f66f227f62433f840`。
+
+| Loom daemon 候选 | SHA-256 | 已有证据 |
+| --- | --- | --- |
+| viewer-renewal | `ca3f89abd8c9ad01f58c8c2ed34f5d8070251c91bb98c7356e8e465c99f42d8d` | 默认 900 秒到期后，原窗口自动续期恢复渲染；复核已有原始采样 |
+| disabled-auth | `8132707e238e9a1e439a0d6a9543e05c58a8927ff9d7a2c3887b8616ec3df806` | 禁用专用设备禁止恢复；在途续期时停止，迟到响应放行后不复活 |
+
+两者均为内部 dirty 协议 daemon，不是完整 Loom 桌面包或正式发布。第二组
+没有 fresh 验证自动续期后恢复渲染；故意停止的竞态场景不能代替该项。
+
+### 默认 TTL 自动续期：原始记录复核通过
+
+证据标识 `issue67-v32-native-20261009-r4`，权威复核为
+`automatic-renewal-reviewed.json`，保留原 `automatic-renewal-observation.json`
+失败记录。无 TTL 覆盖、系统时钟修改或手动关闭重加。真实 HTTP401 后签发
+HTTP201，generation 1→2；保留 relay/session/epoch/source/document/geometry，
+实际清除旧帧，随后约 59 秒出现 132 个不同渲染帧。
+
+原失败来自全应用登记数 2→3，新增登记发生在观看端 401 前约 27 秒，不属于
+观看端续期窗口。结论仅为该窗口无配对，不声称全应用零登记；没有补造最终
+服务端查询。`freshNativeRun=false` 指此次分析复用了原始采样，不是新跑一轮。
+
+### 禁用专用设备：新候选实测通过
+
+证据标识 `issue67-disabled-native-20261009`，`runner-receipt.json` 的 scope 为
+`disabled-device-only`。31 次约 33.7 秒采样均为 `live_media_device_revoked`，
+无图像、渲染或输入权，无成功新 session，设备保持 disabled。
+
+Loom [设备会话错误合同](../protocol/DEVICE_SESSIONS.md) 将禁用优先返回
+`403/device_disabled`，未批准且启用仍返回 `403/device_not_authorized`。
+旧 Hook 可终止此次签发的批准轮询，不需改变客户端运行行为。相同前 30 秒
+窗口 challenge 请求从 187 降为 15；整段仍有 17 个 challenge403 和 2 个登记。
+上层退避探测仍存在，不能宣称所有后台请求已停止。
+
+### 在途停止：新候选实测通过
+
+证据标识 `issue67-stop-gated-20261009`，`stop-race-observation.json` 与
+`runner-receipt.json` 均通过。默认 900 秒自然到期后，只对精确测试身份和
+PC3 peer 暂扣一次成功续期响应；最大 8000ms，实际 250ms，未改变产品代码。
+
+关键时间统一取 PC1 时钟：2026-10-09 05:14:41.452 UTC 暂扣，.576–.581
+点击关闭，.691 确认 native `live relay session not found`，.702 放行响应。
+唯一续期 HTTP201 请求区间覆盖点击区间；放行后 31 次逐秒采样无窗口、无
+native owner。HTTP 请求完成不独立证明客户端内部已解析 token。
+
+源端正常停止。最终隔离审计确认两端无测试 Hook、相关端口无监听、专用任务
+disabled；未退出日常 Hook、断网、重置驱动或修改系统信任。响应门控回归 2/2
+通过，harness 语法、传输依赖、UTF-8 无 BOM 和行数检查通过。验收回执及两个
+EXE SHA 绑定在 `completion-receipt.json` 和 `native-stop-race-acceptance.json`。
+
 ## 剩余边界
 
 A3-N 的物理断连/网络切换仍待明确授权和实测；A3-V 的 2/4 个独立原生观看端
 及慢端、A3-L 的真实 device loss、A3-P 的受控性能对照、A3-D 的物理呈现证明
 均未关闭。Hook 当前 Windows 会话内是应用级单实例，不能把同进程多窗口或
 同设备多个 socket 冒充独立原生观看端。B1/B2/C1/D1 仍按实际瓶颈触发，不自动
-变成必须追加的功能开发项。没有常驻部署、正式发布、Git 提交或推送。
+变成必须追加的功能开发项。以上原生验收执行时没有常驻部署、正式发布、Git 提交
+或推送；后续源码分支交付不改变候选哈希或扩大这些验收结论。
