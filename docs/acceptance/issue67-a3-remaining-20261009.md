@@ -122,3 +122,26 @@ JPEG 专用任务不存在。清理通过与端口暂不可复用是不同结论
 不猜测修复超时、缓冲或编码策略，也不因原生 runner 通过而关闭性能异常。
 后续原生测试应先明确怎样保留断开原因，再在隔离和资源条件满足时执行限定窗口；
 这次离线分析不构成新的原生验收或配对通过。
+
+## 断开原因取证候选 `.33`（未原生复测）
+
+[Hook Draft #62](https://github.com/aiaimimi0920/Hook/pull/62) 在
+`6acc92f17247c9e4dbf8e341b8a5be4ca7017312` 增加 acceptance-only viewer 断开记录。
+只记录固定原因类别、IO kind/可选 OS code、数字 Close code、连接时长及数字计数器；
+不保存原始错误文本、peer Close reason、媒体、URL 或凭据。每 worker 最多 32 条，
+保留既有日志等级与 best-effort 有界队列，不保证每条必定落盘。state 采用 try_lock，
+忙时计数器缺失，不为诊断等待锁。普通读超时、Ping、重连、授权和缓冲策略未改变。
+
+软件验证：live_relay 62 项通过、4 项按原定义 ignored（其中新增 6 项）；格式、
+严格行数及 diff 检查通过。独立审查发现的诊断锁等待已修复并增加锁竞争回归。
+单观看端按专用进程绑定日志；该事件没有 relay identity，不能作多端逐会话归因。
+
+隔离前端构建及 Tauri release 编译成功；候选来自上述干净源码，位置：
+`Neuro/release/Hook/v0.2.32.33-viewer-disconnect-20261009/hook.exe`。
+SHA256 `d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92`，
+大小 9043968 字节，provenance 与 EXE 同目录。headless `--self-check` exit 0、status ok；
+首次 PowerShell 包装未取得 ExitCode，保留原输出后用直接调用确认，未把空退出码视为通过。
+
+本轮没有启动媒体或替换日常 Hook，尚未证明候选在真实异常中取得断开原因；
+headless 自检也不替代 WebView2 原生启动/加载与业务验收。保留 `.32` 原始性能证据，
+不把 `.33` 当性能修复或正式 release，不关闭 A3-P。
