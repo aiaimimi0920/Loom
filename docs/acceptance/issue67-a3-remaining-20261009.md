@@ -5,7 +5,10 @@
 已完成证据见 [新组合验收](issue67-newpair-renewal-20261009.md)。
 
 本文件仅承接未完成项，未执行新原生测试，不代表获得额外设备或破坏性测试授权。
-在 #88 合并前，承接 PR 以其 topic branch 为临时 base；合并后再改为 `main`。
+已完成证据由 [#88](https://github.com/aiaimimi0920/Loom/pull/88) 合入 `main`，
+提交为 `c959288524d2d7368cef46b99e4cefd4bc787359`；合并树与通过检查的 PR head 一致。
+本工作包由独立 [Draft #89](https://github.com/aiaimimi0920/Loom/pull/89) 承接，
+基线已同步上述 `main`，不重复提交 #88 的已完成证据。
 
 ## 待验矩阵
 
@@ -26,11 +29,12 @@
 - [ ] 已完成且可独立成立的证据先单独交付，未完成项继续以独立 PR 承接。
 - [ ] 所有工作包真实满足验收条件后，才考虑关闭整个 A3 / Issue #67。
 
-## 当前交付阻塞
+## 已完成交付的 CI 历史
 
 #88 head `86e7a134769e29c61dde01aa7d7503abeed372ed` 的 Windows CI 首次失败于
 `Test-FrameworkFixtureReadiness.ps1` 的 owned fixture 清理，记录为
 `Owned fixture cleanup failed. Expected=[0] Actual=[2]`。
 同项本地 8 项通过；完整 smoke 模块本地又出现不同的 cleanup budget 超时。
-仅失败 Windows job 已发起一次重跑，原因未完全确定，不绕过 CI 合并或降低清理要求。
-这不回写双机验收为失败，也不代表云端检查已经恢复通过。
+仅失败 Windows job 重跑一次后通过，该 PR head 的 17 项检查均完成且成功，才执行合并。
+首次失败原因尚未完全确定，记录保留，不称首次全绿，不降低清理要求或绕过 CI。
+本地模块的 cleanup budget 超时也不追改为通过；这些记录不回写既有双机验收结论。
