@@ -3,10 +3,21 @@
 enum LiveMediaProfile {
     Legacy,
     Jpeg,
+    H264,
 }
 
 impl LiveMediaProfile {
     fn offered(request: &ParsedHttpRequest) -> Self {
+        if request
+            .header("sec-websocket-protocol")
+            .is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|token| token.trim() == loom_protocol::LIVE_H264_PROTOCOL_VERSION)
+            })
+        {
+            return Self::H264;
+        }
         if request
             .header("sec-websocket-protocol")
             .is_some_and(|value| {
@@ -25,11 +36,17 @@ impl LiveMediaProfile {
         match self {
             Self::Legacy => loom_protocol::LIVE_PROTOCOL_VERSION,
             Self::Jpeg => loom_protocol::LIVE_JPEG_PROTOCOL_VERSION,
+            Self::H264 => loom_protocol::LIVE_H264_PROTOCOL_VERSION,
         }
     }
 
     fn accepts(self, bytes: &[u8]) -> bool {
-        bytes.get(57) == Some(&1) || (self == Self::Jpeg && bytes.get(57) == Some(&3))
+        match bytes.get(57) {
+            Some(1) => true,
+            Some(2) => self == Self::H264,
+            Some(3) => self != Self::Legacy,
+            _ => false,
+        }
     }
 }
 
@@ -87,10 +104,10 @@ impl StoredLiveFrame {
         &self,
         profile: LiveMediaProfile,
     ) -> std::result::Result<Option<Arc<Vec<u8>>>, &'static str> {
-        if self.bytes.get(57) == Some(&2) {
+        if self.bytes.get(57) == Some(&2) && profile != LiveMediaProfile::H264 {
             return Err("live_h264_not_negotiated");
         }
-        if self.bytes.get(57) != Some(&3) || profile == LiveMediaProfile::Jpeg {
+        if self.bytes.get(57) != Some(&3) || profile != LiveMediaProfile::Legacy {
             return Ok(Some(Arc::clone(&self.bytes)));
         }
         // A slow legacy consumer never makes the JPEG path wait. Cache identity is the immutable frame.

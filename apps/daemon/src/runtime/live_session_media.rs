@@ -1,11 +1,22 @@
 // Bounded binary-frame relay and tracked WebSocket worker lifecycle.
 include!("live_media_continuity.rs");
 impl LiveSessionStore {
+    #[cfg(test)]
     fn publish_frame(
         &self,
         session_id: &str,
         source_device_id: &str,
         bytes: Vec<u8>,
+    ) -> std::result::Result<(), LiveRuntimeError> {
+        self.publish_media_frame(session_id, source_device_id, bytes, None)
+    }
+
+    fn publish_media_frame(
+        &self,
+        session_id: &str,
+        source_device_id: &str,
+        bytes: Vec<u8>,
+        profile: Option<LiveMediaProfile>,
     ) -> std::result::Result<(), LiveRuntimeError> {
         let (epoch, metadata) = LiveBinaryFrame::decode_header(&bytes)
             .map_err(|error| LiveRuntimeError::new(400, "live_frame_invalid", error.to_string()))?;
@@ -37,10 +48,29 @@ impl LiveSessionStore {
                 "the live frame epoch or sequence is stale",
             ));
         }
+        if metadata.codec == loom_protocol::LiveCodec::H264 && profile.is_some() {
+            if profile != Some(LiveMediaProfile::H264) {
+                return Err(LiveRuntimeError::new(
+                    400,
+                    "live_h264_not_negotiated",
+                    "H264 profile is required",
+                ));
+            }
+            // Admission and publication share the demand lock. A transient fallback cannot
+            // lose a recovery request or turn a dropped in-flight delta into a source disconnect.
+            if !record.video.h264_allowed() || (record.video.requires_idr && !metadata.keyframe) {
+                record.video.requires_idr = true;
+                record.video.request_keyframe();
+                return Ok(());
+            }
+        }
         let gap = metadata
             .frame_id
             .saturating_sub(record.last_frame_id.saturating_add(1));
         validate_live_media_continuity(record, &metadata)?;
+        if metadata.codec == loom_protocol::LiveCodec::H264 && metadata.keyframe {
+            record.video.requires_idr = false;
+        }
         // A codec/geometry transition or a source gap starts an independent representation.
         if record.frames.back().is_some_and(|previous| {
             previous.bytes.get(57) != bytes.get(57)
