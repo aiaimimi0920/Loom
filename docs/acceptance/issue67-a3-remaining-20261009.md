@@ -92,3 +92,33 @@ JPEG 专用任务不存在。清理通过与端口暂不可复用是不同结论
 本轮仅新增未配对 raw 证据，**不生成 JPEG/raw 收益结论，不关闭 A3-P 或 #67**。
 下一步先离线核查 raw 重连/跳帧与测量工具影响；恢复原生前重新核验端口、隔离、
 内存和证书有效期，不要求用户腾资源，不以物理断网或驱动重置排障。
+
+## 后续离线定位：区分写入慢与窗口末尾重连
+
+本次仅取回已结束试验的 PC3 runtime log 并分析原始回执，没有重启媒体。
+可复核的脱敏分析见 [raw 时间线](issue67-a3p-raw-diagnosis-20261009.json)，
+原始分析脚本位于上述证据根 `offline-diagnosis/Analyze-Raw.mjs`。
+
+- daemon 窗口为 PC1 时间 `11:39:26.644Z–11:40:26.650Z`；Caddy 在同一主机记录的
+  两次 `/resume` 请求开始约为 `11:40:37.566Z`、`11:40:38.598Z`，均返回 200。
+  无需跨机时钟相减即可确认：这两次恢复发生在 daemon 采样结束之后。
+- viewer 在自身采样开始后约 63.977 秒、65.140 秒观察到 reconnectCount 递增。
+  前后离散样本均为 connected/hasError=false，并不证明中间没有瞬态异常；
+  两次恢复也不是各隔 30 秒。不得将其与 daemon 的 60 秒窗口混为同一时间段。
+- daemon 的 119 个不同 lastForward 槽中，socketWriteMs 中位数 94 ms、
+  范围 0–179 ms；queueAgeMs 中位数 25 ms、范围 0–74 ms；adaptationMs 均为 0。
+  这是采到的写入槽分布，不是全部写入的平均或全帧 p95，也不能将整数 0 当成零成本。
+- 源码中 `viewerSkippedFrames` 是同 epoch、非零 cursor 之后，成功写出最新帧时
+  跨过的 frame ID 数；daemon 选择 ring 最新帧而非逐帧排队。因此窗口内的写入慢与
+  skip 相容，但不是网络丢包证明，且不能由窗口之后的这两次重连解释。
+- `LiveRelayRuntimeState::mark_connected()` 在再次成功连接时递增 reconnectCount，
+  同时清除错误。现有 PC3 runtime log 没有断开原因；250 ms 的普通读超时继续循环，
+  10 秒 pending Ping 到期清除 RTT，并不直接触发重连。没有证据支持“30 秒定时重连”。
+- viewer 观察器记录的是 240 次只读 DOM diagnostic evaluate，加上目标连接与末尾截图；
+  未发现显式 reconnect 操作。这不排除采样、截图或主机调度的间接负载影响。
+
+定位边界已缩小，但根因仍未建立：缺少断开瞬间的 socket error/Close reason 和
+代理两端吞吐证据，现有数据不能区分物理链路、代理、接收端及调度背压。
+不猜测修复超时、缓冲或编码策略，也不因原生 runner 通过而关闭性能异常。
+后续原生测试应先明确怎样保留断开原因，再在隔离和资源条件满足时执行限定窗口；
+这次离线分析不构成新的原生验收或配对通过。
