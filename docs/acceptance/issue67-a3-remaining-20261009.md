@@ -220,3 +220,43 @@ PC3 专用任务 Disabled，dailyExitCount 为 0。未退出日常 Hook、物理
 **结论：限定 raw 执行、正常 Close 记录、停止清帧和清理通过；不代表诊断改动修复了
 性能或历史重连。没有 JPEG/raw 配对收益结论，A3-P 与 #67 不结单，剩余项继续由 #89
 承接。** 本轮不为追求异常复现而追加原生循环。
+
+## `.33` 后续 raw → JPEG 配对尝试：JPEG 仍被端口门禁拒绝
+
+后续“很好，继续推进”继续已授权的限定性能对照，使用全新证据根
+`linshi/issue67-v33-paired-preflight-20261009`，固定 raw-1 → jpeg-1，每组预热 30 秒、
+daemon 采样 60 秒；不是 raw → JPEG → JPEG → raw 完整重复顺序。两机候选字节与上一轮
+相同，双方传输身份和 SHA 验证通过。原生执行仍使用无 daily-exit 的单组 runner，
+未运行带历史日常退出/恢复分支的 `Run-NativeCross.ps1`。
+
+14:28:51Z 前置回执通过：PC1/PC3 Hook 均为 0，内存余量约 25.449%/60.829%，全部专用
+端口无现存 TCP 端点、独占绑定探测通过。新 TLS 有效至 18:30:45Z；模板语法、依赖闭包、
+UTF-8 无 BOM、单文件行数上界以及两组 ValidateOnly 均通过。每组启动仍重新执行原门禁。
+
+raw-1 于 14:35:35Z 完成发布/加入、采样、正常停止清帧和 owned cleanup：
+
+- daemon 119 样本、59.906 秒；published/forwarded 均为 516，约 8.613 次/秒；窗口
+  source gaps、viewer skipped、failed writes 增量均为 0。
+- viewer 240 样本、63.122 秒；197 个不同绘制帧，43 次缺绘制证明，reconnect 与
+  overwritten 增量均为 0。仍是离散观察，不是物理显示 FPS。
+- 观察尺寸 658×407，启动回执 439×271；原记录保留。CPU 为另窗、GPU 为前后端点，
+  不声明完整 GPU 平均、跨机帧龄或画质配准。
+
+首组清理通过后留出 180 秒自然冷却，没有清空网络状态或更改系统参数。JPEG 于
+14:38:57Z 的原门禁仍发现本地 49874 一个 `TimeWait` / PID 0 端点，错误为
+`Required isolated ports unavailable`。它尚未 claim run、启动媒体或创建专用任务。
+其他本地专用端口可绑定；没有放宽门禁、停止无关进程或自动重跑 JPEG。
+
+14:40:50Z 双机只读 closeout 通过：Hook 均为 0、相关监听空、raw 专用任务 Disabled，
+JPEG 专用任务不存在，dailyExitCount 为 0。脱敏数值、实际拒绝原因及 22 项证据哈希见
+[本轮索引](issue67-v33-pair-attempt-20261009.json)。离线 `--raw-only` 分析器的通用
+“JPEG 不在单 raw 范围”标签仅是该分析模式的默认文案；本轮实际情况是 JPEG 已计划但
+被端口门禁拒绝，以索引和原始 preflight rejection 为准，不把它改称未获授权。
+
+本轮写入速率低于上一轮同候选约 18.181 次/秒；没有匹配 JPEG 样本或完整受控负载，
+不推断产品性能回归、收益或根因。下一次不得直接假定固定 180 秒冷却足以复用端口，
+必须重新核验全部 TCP 状态及隔离/资源条件；不扩大物理网络操作权限。A3-P 仍未完成。
+
+交付 CI：Hook 合并后 `67399b3` 已联网确认 17 项 success、公共 release 发布任务 skipped。
+Loom 上一证据提交 `bce15b8` 最后检查为 16 项 success，Windows full validation 尚在运行；
+不把这些状态冒充本节后续文档提交的 exact-head 检查。
