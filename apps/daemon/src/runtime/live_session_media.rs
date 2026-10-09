@@ -1,4 +1,5 @@
 // Bounded binary-frame relay and tracked WebSocket worker lifecycle.
+include!("live_media_continuity.rs");
 impl LiveSessionStore {
     fn publish_frame(
         &self,
@@ -39,6 +40,15 @@ impl LiveSessionStore {
         let gap = metadata
             .frame_id
             .saturating_sub(record.last_frame_id.saturating_add(1));
+        validate_live_media_continuity(record, &metadata)?;
+        // A codec/geometry transition or a source gap starts an independent representation.
+        if record.frames.back().is_some_and(|previous| {
+            previous.bytes.get(57) != bytes.get(57)
+                || previous.bytes.get(40..48) != bytes.get(40..48)
+                || (metadata.codec == loom_protocol::LiveCodec::H264 && gap > 0)
+        }) {
+            record.frames.clear();
+        }
         record.relay_dropped_frames = record.relay_dropped_frames.saturating_add(gap);
         record.media_diagnostics.source_sequence_gaps = record
             .media_diagnostics
@@ -93,14 +103,7 @@ impl LiveSessionStore {
         if record.closed {
             return Err(not_found(session_id));
         }
-        Ok(record
-            .frames
-            .back()
-            .filter(|frame| {
-                frame.epoch > after_epoch
-                    || (frame.epoch == after_epoch && frame.frame_id > after_frame_id)
-            })
-            .cloned())
+        Ok(select_live_media_frame(record, after_epoch, after_frame_id).cloned())
     }
 
     fn set_media_connected(
