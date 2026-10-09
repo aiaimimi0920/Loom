@@ -11,6 +11,7 @@ mod media;
 mod observation;
 mod trigger_validation;
 mod validation;
+mod video_control;
 
 pub use control::*;
 pub use domain::*;
@@ -20,6 +21,7 @@ pub use media::*;
 pub use observation::*;
 pub use trigger_validation::validate_trigger_condition;
 pub use validation::*;
+pub use video_control::*;
 
 pub const LIVE_PROTOCOL_VERSION: &str = "loom.live.v1";
 pub const LIVE_BINARY_VERSION: u8 = 1;

@@ -71,7 +71,15 @@ fn handle_live_media_websocket_upgrade(
             let socket = tungstenite::WebSocket::from_raw_socket(
                 stream,
                 tungstenite::protocol::Role::Server,
-                Some(live_media_websocket_config()),
+                Some(if role == LiveDeviceRole::Viewer {
+                    tungstenite::protocol::WebSocketConfig {
+                        max_message_size: Some(loom_protocol::LIVE_VIDEO_CONTROL_MAX_BYTES),
+                        max_frame_size: Some(loom_protocol::LIVE_VIDEO_CONTROL_MAX_BYTES),
+                        ..Default::default()
+                    }
+                } else {
+                    live_media_websocket_config()
+                }),
             );
             run_live_media_socket(
                 socket,
@@ -261,6 +269,7 @@ fn run_live_source_socket(
     grant: &LiveMediaDeviceGrant,
     profile: LiveMediaProfile,
 ) {
+    let mut previous_policy = None;
     while !sessions.media_cancelled.load(Ordering::SeqCst) {
         if grant
             .authorize(sessions, session_id, LiveDeviceRole::Source)
@@ -268,14 +277,20 @@ fn run_live_source_socket(
         {
             break;
         }
+        if profile == LiveMediaProfile::H264
+            && !send_live_video_policy(socket, sessions, session_id, &mut previous_policy)
+        {
+            break;
+        }
         match socket.read() {
             Ok(tungstenite::Message::Binary(bytes)) => {
                 // A revoke can arrive while read() blocks. Check again before accepting media.
-                if !grant.valid()
-                    || !profile.accepts(&bytes)
-                    || sessions
-                        .publish_frame(session_id, &grant.device_id, bytes)
-                        .is_err()
+                if !grant.valid() || !profile.accepts(&bytes) {
+                    break;
+                }
+                if sessions
+                    .publish_media_frame(session_id, &grant.device_id, bytes, Some(profile))
+                    .is_err()
                 {
                     break;
                 }
@@ -306,6 +321,16 @@ fn run_live_viewer_socket(
     mut after_frame_id: u64,
     profile: LiveMediaProfile,
 ) {
+    let Ok(video_lease) =
+        LiveVideoViewerLease::acquire(sessions, session_id, profile == LiveMediaProfile::H264)
+    else {
+        return;
+    };
+    if profile == LiveMediaProfile::H264 {
+        // A fresh decoder never inherits reference state from a reconnect cursor.
+        after_epoch = 0;
+        after_frame_id = 0;
+    }
     let _ = socket
         .get_mut()
         .set_read_timeout(Some(LIVE_VIEWER_CONTROL_TIMEOUT));
@@ -317,6 +342,9 @@ fn run_live_viewer_socket(
         {
             break;
         }
+        if video_lease.accepts_h264() {
+            sessions.request_video_recovery(session_id, after_epoch, after_frame_id);
+        }
         match sessions.wait_for_frame(
             session_id,
             after_epoch,
@@ -324,11 +352,19 @@ fn run_live_viewer_socket(
             LIVE_MEDIA_SOCKET_TIMEOUT,
         ) {
             Ok(Some(frame)) => {
+                if frame.bytes.get(57) == Some(&2) && !video_lease.accepts_h264() {
+                    if !service_live_video_viewer_control(socket, &video_lease, grant, profile) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
                 let adaptation_started = Instant::now();
                 let bytes = match frame.representation(profile) {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => {
-                        if !service_live_viewer_control_messages(socket) {
+                        if !service_live_video_viewer_control(socket, &video_lease, grant, profile)
+                        {
                             break;
                         }
                         thread::sleep(Duration::from_millis(5));
@@ -376,7 +412,7 @@ fn run_live_viewer_socket(
             Ok(None) => {}
             Err(_) => break,
         }
-        if !service_live_viewer_control_messages(socket) {
+        if !service_live_video_viewer_control(socket, &video_lease, grant, profile) {
             break;
         }
     }

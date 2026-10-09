@@ -214,6 +214,12 @@ fn run_wall_live_socket(
     devices: &SharedDeviceRegistryStore,
     grant: &WallLiveGrant,
 ) {
+    if grant.authorize(walls, devices).is_err() {
+        return;
+    }
+    let Ok(_video_lease) = LiveVideoViewerLease::acquire(sessions, &grant.session_id, false) else {
+        return;
+    };
     let (mut epoch, mut frame_id) = (0, 0);
     let mut last_ping = Instant::now();
     let mut next_frame_at = Instant::now();
@@ -242,6 +248,13 @@ fn run_wall_live_socket(
             Ok(Some(frame)) => {
                 next_frame_at =
                     Instant::now() + Duration::from_micros(1_000_000 / grant.profile.fps);
+                // A wall joining H264 requests image fallback and waits without claiming Surface authority.
+                if frame.bytes.get(57) == Some(&2) {
+                    if !service_live_viewer_control_messages(socket) {
+                        break;
+                    }
+                    continue;
+                }
                 match encode_wall_media_frame(&frame, walls, grant.profile) {
                     Ok(Some(bytes)) => {
                         // Encoding holds no registry lock; revoke before sending if ownership changed.

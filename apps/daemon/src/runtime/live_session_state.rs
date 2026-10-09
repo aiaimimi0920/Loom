@@ -45,6 +45,7 @@ struct LiveSessionRecord {
     media_diagnostics: LiveMediaDiagnostics,
     source_connected: bool,
     viewer_connections: BTreeMap<String, usize>,
+    video: LiveVideoNegotiation,
     controller_expires_at_ms: Option<u64>,
     wall_controller: Option<WallController>,
     frames: VecDeque<StoredLiveFrame>,
@@ -129,6 +130,7 @@ struct LiveSessionStore {
     media_cancelled: Arc<AtomicBool>,
     media_connections: Arc<AtomicUsize>,
     media_workers: Mutex<Vec<JoinHandle<()>>>,
+    next_video_lease_id: std::sync::atomic::AtomicU64,
 }
 
 impl LiveSessionStore {
@@ -139,6 +141,7 @@ impl LiveSessionStore {
             media_cancelled: Arc::new(AtomicBool::new(false)),
             media_connections: Arc::new(AtomicUsize::new(0)),
             media_workers: Mutex::new(Vec::new()),
+            next_video_lease_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -205,6 +208,7 @@ impl LiveSessionStore {
             media_diagnostics: LiveMediaDiagnostics::default(),
             source_connected: false,
             viewer_connections: BTreeMap::new(),
+            video: LiveVideoNegotiation::default(),
             controller_expires_at_ms: None,
             wall_controller: None,
             frames: VecDeque::with_capacity(3),

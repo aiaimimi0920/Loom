@@ -18,15 +18,15 @@ mod live_jpeg_tests {
         }
     }
 
-    struct TestDaemon {
+    pub(super) struct TestDaemon {
         port: u16,
-        store: SharedLiveSessionStore,
+        pub(super) store: SharedLiveSessionStore,
         shutdown: mpsc::Sender<()>,
         worker: Option<JoinHandle<()>>,
         root: PathBuf,
     }
     impl TestDaemon {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let root = unique_temp_dir("live-jpeg");
             let daemon = LoomDaemon::bind(
                 DaemonConfig::localhost(0)
@@ -57,7 +57,7 @@ mod live_jpeg_tests {
             }
         }
 
-        fn connect(&self, role: &str, device: &str, offer: &'static str) -> (Socket, String) {
+        pub(super) fn connect(&self, role: &str, device: &str, offer: &'static str) -> (Socket, String) {
             use tungstenite::client::IntoClientRequest;
             use tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
             let mut request = format!("ws://127.0.0.1:{}/v1/live/media?sessionId=live%3Ajpeg&role={role}&deviceId={device}", self.port)
@@ -91,7 +91,7 @@ mod live_jpeg_tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
-    fn read_frame(socket: &mut Socket) -> Vec<u8> {
+    pub(super) fn read_frame(socket: &mut Socket) -> Vec<u8> {
         let started = Instant::now();
         loop {
             assert!(
