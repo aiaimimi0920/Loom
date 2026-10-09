@@ -123,7 +123,7 @@ JPEG 专用任务不存在。清理通过与端口暂不可复用是不同结论
 后续原生测试应先明确怎样保留断开原因，再在隔离和资源条件满足时执行限定窗口；
 这次离线分析不构成新的原生验收或配对通过。
 
-## 断开原因取证候选 `.33`（未原生复测）
+## 断开原因取证候选 `.33`（构建阶段，后续原生结果见末节）
 
 [Hook Draft #62](https://github.com/aiaimimi0920/Hook/pull/62) 在
 `6acc92f17247c9e4dbf8e341b8a5be4ca7017312` 增加 acceptance-only viewer 断开记录。
@@ -178,3 +178,45 @@ PC1/PC3 均无 Hook，内存余量约 41.03%/61.32%，相关监听为空。
 重新检查隔离、容量、全部 TCP 状态和证书；不可覆盖本轮失败或绕过门禁。
 本轮还联网核对 Hook #62 exact head 的 16 个 check runs：15 success、1 neutral，
 无 pending/failure；neutral 为 `osv-scanner`，不称全部 success，也不替代原生验收。
+
+## `.33` 第二次限定 raw：正常 Close 取证与清理通过
+
+使用 fresh evidence root `linshi/issue67-v33-raw-diagnostic-20261009-r2`，不覆盖上述
+失败现场。脱敏指标及 20 项原始文件 SHA256 见 [本轮索引](issue67-v33-raw-r2-20261009.json)，
+交付前已逐项重新核对。此轮只执行单观看端 raw，没有计划或运行 JPEG。
+
+14:11:55Z 前置检查中 PC1/PC3 均无 Hook，内存余量约 32.865%/61.057%，相关监听空；
+隔离 TLS 有效至 18:12:14Z。两机使用上述 `.33` 候选，Loom 候选不变。修正的 fixture
+reader 已装入新模板与 raw-1；启动前 7 项回归及 NativeHarness 检查通过，真实 WGC
+捕获、正常 UI 发布/加入和 diagnostic buildVersion `.33` 已确认。原生启动校验通过，
+但未记录实际 sharing violation 重试次数，不称本轮复现共享冲突后恢复。
+
+| 指标 | 本轮 raw 实测 | 边界 |
+| --- | --- | --- |
+| daemon | 118 样本，59.514 秒；发布/成功写入均 1082，约 18.181 次/秒 | 不是显示 FPS |
+| daemon 窗口差 | source gaps、viewer skipped、failed writes 均 0 | 不外推为完整负载达标 |
+| viewer | 240 样本，62.905 秒；184 个不同绘制帧，56 次缺绘制证明 | 缺证明不补为绘制成功 |
+| viewer 计数差 | reconnect 0，overwritten 2 | 未复现 `.32` 两次重连 |
+| 媒体尺寸 | 观察为 658×407，启动回执为 439×271 | 保留原始回执，不宣称逐帧尺寸均已验证 |
+
+30 秒预热后执行采样；CPU 是另窗，GPU 仅 process-engine 前后端点，不作平均利用率、
+跨 engine 求和或跨机帧龄结论。没有画质配准、跨机时钟校准或物理呈现证据。
+
+PC3 专用进程日志取得一条真实 `live_relay_viewer_disconnect`：
+`reason=PeerClose(None) connected_ms=141734 epoch_frame_reconnect=Some((1, 2714, 0)) stop_requested=false remaining_budget=31`。
+这是正常停止过程中的 Close 记录，证明该记录路径实际执行；没有异常重连，异常分支
+尚未原生复现，`.32` 历史根因仍未知。`stop_requested=false` 是接收 Close 时状态，
+不能单凭此认定故障；PC3 时钟未经校准，不直接与 PC1 UTC 相减。
+
+runner 于 14:16:35Z 通过；正常 source stop 后 viewer closed、presentation/rendering
+为 null、remainingImages 为 0。14:17:39Z closeout 通过：两机 Hook 为 0、相关监听空、
+PC3 专用任务 Disabled，dailyExitCount 为 0。未退出日常 Hook、物理断网或重置驱动。
+
+[Hook #62](https://github.com/aiaimimi0920/Hook/pull/62) 已正常 squash 合入 `main`
+`67399b345e793db0fc6d921b6c1523a9d6f4c1d0`，与已验证 head `6acc92f` 的完整 Git tree
+一致。合并前 exact head 检查为 15 success、1 neutral，无 pending/failure；不绕过门禁。
+内部候选仍归属于原构建 SHA，不重标为合并后构建或正式 release。
+
+**结论：限定 raw 执行、正常 Close 记录、停止清帧和清理通过；不代表诊断改动修复了
+性能或历史重连。没有 JPEG/raw 配对收益结论，A3-P 与 #67 不结单，剩余项继续由 #89
+承接。** 本轮不为追求异常复现而追加原生循环。
