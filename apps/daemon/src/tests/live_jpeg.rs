@@ -4,6 +4,20 @@ mod live_jpeg_tests {
     const SESSION: &str = "live:jpeg";
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
 
+    #[test]
+    fn live_h264_real_socket_rejects_video_on_both_old_profiles_before_storage() {
+        for offer in ["loom.live.v1", "loom.live.jpeg.v1,loom.live.v1"] {
+            let daemon = TestDaemon::new();
+            let (mut source, _) = daemon.connect("source", "device-source", offer);
+            let bytes = super::live_h264_continuity_tests::frame(1, true);
+            // Valid C1 syntax: failure must not depend on malformed payload rejection.
+            assert!(LiveBinaryFrame::decode(&bytes).is_ok());
+            source.send(tungstenite::Message::Binary(bytes)).unwrap();
+            assert!(matches!(source.read(), Ok(tungstenite::Message::Close(_)) | Err(tungstenite::Error::ConnectionClosed)));
+            assert_eq!(daemon.store.lock_state().unwrap()[SESSION].last_frame_id, 0);
+        }
+    }
+
     struct TestDaemon {
         port: u16,
         store: SharedLiveSessionStore,

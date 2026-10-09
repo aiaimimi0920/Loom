@@ -29,7 +29,7 @@ impl LiveMediaProfile {
     }
 
     fn accepts(self, bytes: &[u8]) -> bool {
-        matches!(bytes.get(57), Some(1 | 2)) || (self == Self::Jpeg && bytes.get(57) == Some(&3))
+        bytes.get(57) == Some(&1) || (self == Self::Jpeg && bytes.get(57) == Some(&3))
     }
 }
 
@@ -87,6 +87,9 @@ impl StoredLiveFrame {
         &self,
         profile: LiveMediaProfile,
     ) -> std::result::Result<Option<Arc<Vec<u8>>>, &'static str> {
+        if self.bytes.get(57) == Some(&2) {
+            return Err("live_h264_not_negotiated");
+        }
         if self.bytes.get(57) != Some(&3) || profile == LiveMediaProfile::Jpeg {
             return Ok(Some(Arc::clone(&self.bytes)));
         }

@@ -287,6 +287,7 @@ mod tests {
     include!("tests/live_media_diagnostics.rs");
     include!("tests/live_media_device_auth.rs");
     include!("tests/live_jpeg.rs");
+    include!("tests/live_h264_continuity.rs");
     include!("tests/wall_png_benchmark.rs");
     include!("tests/wall_png_cache.rs");
     include!("tests/suite/part_39.rs");

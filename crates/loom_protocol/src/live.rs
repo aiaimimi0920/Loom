@@ -5,6 +5,7 @@
 
 mod control;
 mod domain;
+mod h264;
 mod input;
 mod media;
 mod observation;
@@ -13,6 +14,7 @@ mod validation;
 
 pub use control::*;
 pub use domain::*;
+pub use h264::LIVE_MAX_H264_PAYLOAD;
 pub use input::*;
 pub use media::*;
 pub use observation::*;
