@@ -56,3 +56,14 @@
 - `native/reversed-stop-receipt.json`、`native/part-cleanup-verified.json`：源端停止与清理。
 
 只提交脱敏结论；测试身份、凭据、私钥、完整运行目录不进入 Git。
+
+## 正常停止专项的后续启动尝试
+
+2026-10-09T09:22Z 已准备不含 900 秒续期的最小专项，改为正常 UI 停止确认后，
+再调用观看端 `closed` 检查，避免把到期终态误认成正常停止。
+脚本语法、UTF-8、传输依赖闭包、ValidateOnly 及 PC3 23 文件传输哈希均通过。
+但 PC1 启动前可用内存仅 8.286%（2699.742 MiB），低于既定 15% 门槛，
+runner 在启动服务及两端候选前退出。未降低门槛、终止其他进程或盲目重试。
+本机清理检查通过；额外远端复核确认无 Hook、无测试端口监听、专用任务未创建。
+此项仍为环境阻塞、未执行，不是产品失败；不改变此前续期通过结论。
+证据：`GameEditor/linshi/issue67-newpair-stop-20261009/final-preflight-receipt.json`。
