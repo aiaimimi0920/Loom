@@ -61,6 +61,12 @@ AppContainer, restricted-token filesystem broker, Linux namespace, or seccomp
 profile. Direct arbitrary executable access to network, filesystem, GPU, or
 clipboard is therefore not claimed as fully OS-denied.
 
+Both Windows process launch paths create the child suspended, configure and
+assign its kill-on-close Job Object, and only then resume its verified primary
+thread. Assignment or resume failure kills and reaps the child without returning
+a usable process. There is no unsupervised fallback. A thread snapshot that does
+not identify exactly one owned primary thread is rejected rather than guessed.
+
 Use brokered Cloud API/MCP paths for mediated network access, keep plugin
 publishers trusted, review declared permissions, and run high-risk plugins in a
 separate OS account/VM until a platform sandbox backend is available. The

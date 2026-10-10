@@ -8,10 +8,9 @@ use std::time::{Duration, Instant};
 
 use loom_protocol::ExecutionDiagnostics;
 
-use crate::command::supervised_command;
 use crate::error::ProcessError;
-use crate::isolation::ProcessIsolation;
 use crate::model::{ProcessSpec, SupervisedOutput};
+use crate::spawn::spawn_isolated;
 
 pub fn run_with_input(spec: &ProcessSpec, input: &[u8]) -> Result<SupervisedOutput, ProcessError> {
     run_with_input_internal(spec, input, None)
@@ -31,14 +30,7 @@ fn run_with_input_internal(
     cancellation: Option<&AtomicBool>,
 ) -> Result<SupervisedOutput, ProcessError> {
     let started = Instant::now();
-    let mut command = supervised_command(spec);
-
-    let mut child = command.spawn().map_err(ProcessError::Spawn)?;
-    let isolation = ProcessIsolation::attach(&child, &spec.limits).map_err(|error| {
-        let _ = child.kill();
-        let _ = child.wait();
-        ProcessError::Isolation(error)
-    })?;
+    let (mut child, isolation) = spawn_isolated(spec)?;
 
     let output_exceeded = Arc::new(AtomicBool::new(false));
     let stdout_reader = child.stdout.take().map(|stdout| {
