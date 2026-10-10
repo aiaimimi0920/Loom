@@ -27,7 +27,7 @@ Framework manifests declare a structured `permissionPolicy`.
 | Boundary | Current enforcement |
 | --- | --- |
 | Package/resource path | Canonical containment and immutable package root |
-| Cloud multipart upload | Author-declared `{{inputs.x.path}}` bindings only, with canonical containment in the Art package, control plane, or staged input root |
+| Cloud multipart upload | Author-declared file bindings accept inline data or remote URL text; local paths must canonically remain inside the resolved Art package. Control-plane state and temp paths grant no upload authority. |
 | Cloud request templating | Endpoint substitutions percent-encoded with a fixed-authority check; header and JSON body substitutions inserted as values into the parsed template |
 | MCP image download | Candidate URLs chosen by the MCP server are fetched under the tool's own `allowLocalhost` / `allowPrivateNetworks` declaration, with the whole candidate loop bounded by one wall-clock budget and an attempt cap |
 | State/cache/output | Dedicated writable directories outside version code |
@@ -41,6 +41,13 @@ Framework manifests declare a structured `permissionPolicy`.
 | Direct plugin network | Declared/audited; not fully OS-denied |
 | Direct arbitrary filesystem | Declared/audited; not fully OS-denied |
 | GPU/clipboard | Declared/audited; not fully OS-denied |
+
+Cloud multipart invocation files must be supplied as data URLs (as Hook's inline
+and shared-memory image materialization already does), not arbitrary local paths.
+This also applies to manifest defaults. Package resources retain path support;
+other Arts, credentials, databases, caches, outputs and `loom-*` temp directories
+are not readable through this boundary. There is no reusable path-based staging
+grant or opaque upload-handle API in this contract.
 
 `LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatibility default. It permits
 launch while reporting requested permissions and the matrix above through the

@@ -24,6 +24,7 @@ pub(super) fn temp_root(name: &str) -> PathBuf {
 mod cloud_exec;
 mod cloud_fixture;
 mod cloud_policy;
+mod cloud_upload_security;
 mod image_budget;
 mod image_exec;
 mod image_fixtures;

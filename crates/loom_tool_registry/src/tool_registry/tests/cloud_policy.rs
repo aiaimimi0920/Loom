@@ -47,10 +47,6 @@ pub(super) fn a_cloud_art_deadline_can_be_raised_by_the_caller_and_by_the_packag
 
 #[test]
 pub(super) fn execute_cloud_api_tool_supports_formal_multipart_template_contract() {
-    let root = temp_root("cloud-multipart-template");
-    let upload_path = root.join("upload.png");
-    fs::write(&upload_path, b"loom-upload").expect("write upload fixture");
-
     let fixture = CloudFixture::start(CloudFixtureMode::MultipartText);
     let tool: ToolDefinition = serde_json::from_value(serde_json::json!({
         "id": "fixture-cloud-multipart",
@@ -76,7 +72,7 @@ pub(super) fn execute_cloud_api_tool_supports_formal_multipart_template_contract
             "route": "image",
             "mode": "fast",
             "trace": "trace-42",
-            "image": upload_path.display().to_string(),
+            "image": format!("data:image/png;base64,{}", BASE64.encode(b"loom-upload")),
             "prompt": "hello multipart",
             "empty": "",
             "disabled": "__DISABLED__"
@@ -94,7 +90,7 @@ pub(super) fn execute_cloud_api_tool_supports_formal_multipart_template_contract
     assert!(request_lower.contains("x-mode: fast"));
     assert!(request_lower.contains("content-type: multipart/form-data; boundary="));
     assert!(request.contains("name=\"file\""));
-    assert!(request.contains("filename=\"upload.png\""));
+    assert!(request.contains("filename=\"loom-cloud-input.png\""));
     assert!(request.contains("loom-upload"));
     assert!(request.contains("name=\"prompt\""));
     assert!(request.contains("\r\nhello multipart\r\n"));
@@ -103,8 +99,6 @@ pub(super) fn execute_cloud_api_tool_supports_formal_multipart_template_contract
     assert!(!request.contains("skipEmpty"));
     assert!(!request.contains("skipDisabled"));
     assert!(!request.contains("{{"));
-
-    fs::remove_dir_all(root).expect("cleanup multipart template root");
 }
 
 #[test]
@@ -229,7 +223,7 @@ pub(super) fn a_multipart_field_named_file_no_longer_uploads_a_caller_named_path
 }
 
 #[test]
-pub(super) fn a_declared_multipart_upload_path_has_to_sit_inside_a_loom_owned_root() {
+pub(super) fn a_declared_multipart_upload_path_requires_its_own_package_root() {
     let root = temp_root("cloud-multipart-containment");
     let inside = root.join("staged-input.png");
     fs::write(&inside, b"staged").expect("write staged input");
@@ -261,10 +255,9 @@ pub(super) fn a_declared_multipart_upload_path_has_to_sit_inside_a_loom_owned_ro
         },
     );
 
-    assert_eq!(
-        cloud_multipart_upload_path(&tool, "file", &inside.display().to_string())
-            .expect("a staged input under a Loom temp root is accepted"),
-        fs::canonicalize(&inside).expect("canonical staged input")
+    assert!(
+        cloud_multipart_upload_path(&tool, "file", &inside.display().to_string()).is_err(),
+        "a loom-prefixed temp path is not an invocation-scoped file grant"
     );
 
     let error = cloud_multipart_upload_path(&tool, "file", &outside.display().to_string())
