@@ -8,6 +8,7 @@ fn approve_managed_device(
         let mut store = device_registry
             .lock()
             .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        store.expire_pending_pairings(unix_time_millis())?;
         let Some(device) = store.devices.get_mut(device_id) else {
             return structured_error(
                 404,

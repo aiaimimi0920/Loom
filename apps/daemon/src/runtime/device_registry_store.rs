@@ -156,7 +156,7 @@ impl DeviceRegistryStore {
                 session_epoch: 1,
             },
         );
-        let store = Self {
+        let mut store = Self {
             projections: ProjectionStore::open(path.with_file_name("qr-projections"))?,
             projection_edits: projection_edit::Store::open(
                 path.with_file_name("projection-edits"),
@@ -169,6 +169,11 @@ impl DeviceRegistryStore {
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
         };
+        if let Err(error) = store.expire_pending_pairings(now) {
+            // The cleanup restores every record; readable authorization state is
+            // still usable. Mutating requests retry cleanup and remain fail-closed.
+            eprintln!("loom device registry could not expire pairing requests: {error:#}");
+        }
         if let Err(error) = store.persist() {
             eprintln!("loom device registry could not persist the local host: {error:#}");
         }

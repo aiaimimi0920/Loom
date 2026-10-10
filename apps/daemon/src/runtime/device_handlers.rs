@@ -8,9 +8,10 @@ fn managed_devices_response(
         .map_err(|_| anyhow::anyhow!("hook bridge state is unavailable"))?
         .connected_clients
         .load(Ordering::SeqCst);
-    let store = device_registry
+    let mut store = device_registry
         .lock()
         .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+    store.expire_pending_pairings(unix_time_millis())?;
     let mut devices = Vec::new();
     let mut pending = Vec::new();
     for device in store.devices.values().cloned() {
@@ -208,6 +209,7 @@ fn add_managed_device(
         let mut store = device_registry
             .lock()
             .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
+        store.expire_pending_pairings(created_at)?;
         if let Some(fingerprint) = key_fingerprint.as_deref() {
             if store.devices.values().any(|device| {
                 device.key_fingerprint.as_deref() == Some(fingerprint)
@@ -226,10 +228,19 @@ fn add_managed_device(
                 );
             }
         }
-        store.devices.insert(
+        if approval == "pending" && !store.pending_pairing_capacity_available() {
+            return structured_error(
+                429,
+                json!({
+                    "code": "device_pairing_capacity",
+                    "message": "pending pairing capacity reached; retry after expiry or administrator cleanup"
+                }),
+            );
+        }
+        let previous = store.devices.insert(
             id.clone(),
             ManagedDevice {
-                id,
+                id: id.clone(),
                 name: name.to_owned(),
                 kind: input.kind,
                 address: address.to_owned(),
@@ -244,9 +255,12 @@ fn add_managed_device(
             },
         );
         if let Err(error) = store.persist() {
-            store
-                .devices
-                .retain(|_, device| device.created_at != created_at);
+            // Roll back this identity only, not other requests from the same millisecond.
+            if let Some(previous) = previous {
+                store.devices.insert(id, previous);
+            } else {
+                store.devices.remove(&id);
+            }
             return Err(error);
         }
     }
