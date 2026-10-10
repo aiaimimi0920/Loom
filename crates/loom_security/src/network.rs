@@ -6,12 +6,14 @@
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::{Component, Path, Prefix};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use reqwest::blocking::{Client, ClientBuilder, Response};
 use reqwest::redirect;
 use reqwest::{Client as AsyncClient, ClientBuilder as AsyncClientBuilder, Proxy, Url};
+
+pub use crate::network_proxy::NativeHttpProxy;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeProxy {
@@ -107,7 +109,9 @@ pub fn secure_client(
     policy: OutboundPolicy,
 ) -> Result<Client, String> {
     let redirect_policy = policy.clone();
+    let proxy = crate::network_proxy::protected_proxy(policy.clone())?;
     let builder = Client::builder()
+        .dns_resolver(Arc::new(crate::network_dns::PolicyResolver::new(policy)))
         .user_agent(user_agent)
         .timeout(timeout)
         .redirect(redirect::Policy::custom(move |attempt| {
@@ -119,9 +123,12 @@ pub fn secure_client(
                 Err(error) => attempt.error(error),
             }
         }));
-    apply_runtime_proxy(builder)?
-        .build()
-        .map_err(|error| error.to_string())
+    let builder = builder.no_proxy();
+    let builder = match proxy {
+        Some(proxy) => builder.proxy(proxy),
+        None => builder,
+    };
+    builder.build().map_err(|error| error.to_string())
 }
 
 pub fn secure_async_client(
@@ -142,9 +149,24 @@ pub fn secure_async_client(
                 Err(error) => attempt.error(error),
             }
         }));
-    apply_runtime_proxy_async(builder)?
+    apply_outbound_policy_async(builder, policy)?
         .build()
         .map_err(|error| error.to_string())
+}
+
+/// Apply the address policy at connection time, including every new DNS lookup.
+pub fn apply_outbound_policy_async(
+    builder: AsyncClientBuilder,
+    policy: OutboundPolicy,
+) -> Result<AsyncClientBuilder, String> {
+    let proxy = crate::network_proxy::protected_proxy(policy.clone())?;
+    let builder = builder
+        .no_proxy()
+        .dns_resolver(Arc::new(crate::network_dns::PolicyResolver::new(policy)));
+    Ok(match proxy {
+        Some(proxy) => builder.proxy(proxy),
+        None => builder,
+    })
 }
 
 pub fn get_bounded(
@@ -196,7 +218,7 @@ pub fn validate_outbound_url(url: &Url, policy: &OutboundPolicy) -> Result<(), S
     let port = url
         .port_or_known_default()
         .ok_or_else(|| "URL port is required".to_owned())?;
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    if let Some(ip) = parse_host_ip(host) {
         return validate_ip(ip, policy);
     }
     let addresses = (host, port)
@@ -250,7 +272,7 @@ fn is_windows_verbatim_drive_path(value: &str) -> bool {
         && matches!(bytes[6], b'\\' | b'/')
 }
 
-fn validate_url_without_dns(url: &Url, policy: &OutboundPolicy) -> Result<(), String> {
+pub(crate) fn validate_url_without_dns(url: &Url, policy: &OutboundPolicy) -> Result<(), String> {
     let host = url
         .host_str()
         .ok_or_else(|| "URL host is required".to_owned())?;
@@ -289,12 +311,30 @@ fn domain_allowed(host: &str, allowed: &[String]) -> bool {
 #[must_use]
 pub fn host_is_loopback_literal(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
+        || parse_host_ip(host).is_some_and(|address| canonical_ip(address).is_loopback())
 }
 
-fn validate_ip(ip: IpAddr, policy: &OutboundPolicy) -> Result<(), String> {
+pub(crate) fn parse_host_ip(host: &str) -> Option<IpAddr> {
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse()
+        .ok()
+}
+
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(ip)),
+        ip => ip,
+    }
+}
+
+pub(crate) fn validate_ip(ip: IpAddr, policy: &OutboundPolicy) -> Result<(), String> {
+    // Mapped IPv6 reaches an IPv4 peer and must use the identical address policy.
+    let ip = canonical_ip(ip);
     if ip.is_loopback() {
         return if policy.allow_http_loopback {
             Ok(())

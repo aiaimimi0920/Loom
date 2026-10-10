@@ -43,8 +43,8 @@ impl StreamableHttpMcpClient {
         // `config.validate()` above rejected the schemes this policy would also reject, without
         // touching the network. The check here is the one that needs a lookup: it resolves the
         // host and refuses loopback, private, link-local and metadata addresses unless the
-        // operator opted in. A hostile DNS answer can still change between this check and the
-        // request, which is why redirects are refused as well.
+        // operator opted in. The connector independently validates the exact DNS
+        // answers it uses, so a later rebinding cannot bypass this admission check.
         let policy = remote_outbound_policy(local_servers_allowed());
         validate_outbound_url(&url, &policy).map_err(|error| {
             McpError::InvalidConfig(format!(
@@ -57,7 +57,7 @@ impl StreamableHttpMcpClient {
             .connect_timeout(request_timeout.min(Duration::from_secs(15)))
             .timeout(request_timeout)
             .redirect(RedirectPolicy::none());
-        let client = apply_runtime_proxy_async(builder)
+        let client = apply_outbound_policy_async(builder, policy)
             .and_then(|builder| builder.build().map_err(|error| error.to_string()))
             .map_err(McpError::Http)?;
         let headers = build_remote_headers(&config.headers)?;
