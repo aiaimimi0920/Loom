@@ -3,7 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 // Standalone development previews have no ambient access to the local manifest.
 let previewToken: string | null = null;
 export function setHookBridgePreviewToken(token: string | null): void {
-  if (token !== null && (!token || token.length > 4096)) throw new Error("Invalid local credential");
+  if (token !== null && (!token.startsWith("hook-v1.") || token.length > 4096)) throw new Error("Invalid scoped Hook credential");
   previewToken = token;
 }
 

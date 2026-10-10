@@ -12,9 +12,11 @@ test("browser preview requires explicit authority and never puts it in the URL",
     setHookBridgePreviewToken(null);
     await assert.rejects(createAuthenticatedHookBridgeSocket("ws://127.0.0.1:19820"), /authentication is required/);
     assert.equal(calls.length, 0);
-    setHookBridgePreviewToken("fixture-token");
+    assert.throws(() => setHookBridgePreviewToken("administrator-secret"), /Invalid scoped/);
+    assert.equal(calls.length, 0);
+    setHookBridgePreviewToken("hook-v1.fixture-token");
     await createAuthenticatedHookBridgeSocket("ws://127.0.0.1:19820");
-    assert.deepEqual(calls, [["ws://127.0.0.1:19820", ["loom.hook.v1", "loom.auth.Zml4dHVyZS10b2tlbg"]]]);
+    assert.deepEqual(calls, [["ws://127.0.0.1:19820", ["loom.hook.v1", `loom.auth.${btoa("hook-v1.fixture-token").replace(/=+$/u, "")}`]]]);
     for (const url of ["ws://evil.example", "ws://user@localhost", "ws://127.0.0.1/?token=x"]) {
       await assert.rejects(createAuthenticatedHookBridgeSocket(url), /loopback endpoint/);
     }
