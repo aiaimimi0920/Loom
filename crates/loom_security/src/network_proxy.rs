@@ -10,12 +10,26 @@ use crate::network::{runtime_proxy, OutboundPolicy, RuntimeProxy};
 pub(crate) struct Routing(Matcher);
 
 impl Routing {
-    pub(crate) fn snapshot(mode: RuntimeProxy) -> Self {
-        Self(match mode {
+    pub(crate) fn snapshot(mode: RuntimeProxy) -> Result<Self, String> {
+        Ok(Self(match mode {
             RuntimeProxy::System => Matcher::from_system(),
             RuntimeProxy::Disabled => Matcher::builder().build(),
-            RuntimeProxy::Custom(url) => Matcher::builder().all(url).build(),
-        })
+            RuntimeProxy::Custom(url) => {
+                let url = Url::parse(&url).map_err(|_| "invalid protected proxy URL".to_owned())?;
+                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                    return Err("protected proxy transport requires HTTP or HTTPS".to_owned());
+                }
+                // URL normalization handles IDNA; a dropped matcher rule must never
+                // turn an explicitly selected proxy into a direct connection.
+                let matcher = Matcher::builder().all(url.as_str()).build();
+                for target in ["http://target.invalid/", "https://target.invalid/"] {
+                    if matcher.intercept(&target.parse().unwrap()).is_none() {
+                        return Err("protected proxy URL cannot be routed".to_owned());
+                    }
+                }
+                matcher
+            }
+        }))
     }
 
     pub(crate) fn select(&self, url: &Url) -> Option<Intercept> {
@@ -34,8 +48,7 @@ pub(crate) fn protected_proxy_with_mode(
     if mode == RuntimeProxy::Disabled {
         return Ok(None);
     }
-    validate_mode(&mode)?;
-    let routing = Arc::new(Routing::snapshot(mode));
+    let routing = Arc::new(Routing::snapshot(mode)?);
     let relay = Arc::new(crate::network_proxy_relay::Lease::start(
         routing.clone(),
         policy,
@@ -49,16 +62,6 @@ pub(crate) fn protected_proxy_with_mode(
     ))
 }
 
-fn validate_mode(mode: &RuntimeProxy) -> Result<(), String> {
-    if let RuntimeProxy::Custom(url) = mode {
-        let url = Url::parse(url).map_err(|_| "invalid protected proxy URL".to_owned())?;
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return Err("protected proxy transport requires HTTP or HTTPS".to_owned());
-        }
-    }
-    Ok(())
-}
-
 /// Client-owned adapter for native HTTP stacks that cannot pin their DNS result.
 /// Callers must force every request through it, including loopback requests, and
 /// keep this guard alive until the native request/process has finished.
@@ -67,8 +70,7 @@ pub struct NativeHttpProxy(crate::network_proxy_relay::Lease);
 impl NativeHttpProxy {
     pub fn new(policy: OutboundPolicy) -> Result<Self, String> {
         let mode = runtime_proxy();
-        validate_mode(&mode)?;
-        let routing = Arc::new(Routing::snapshot(mode));
+        let routing = Arc::new(Routing::snapshot(mode)?);
         crate::network_proxy_relay::Lease::start(routing, policy).map(Self)
     }
 

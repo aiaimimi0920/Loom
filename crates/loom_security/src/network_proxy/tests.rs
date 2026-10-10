@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 async fn headers(stream: &mut (impl AsyncRead + Unpin)) -> String {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") {
-        assert!(bytes.len() < 16384);
+        assert!(bytes.len() < 256 * 1024);
         bytes.push(stream.read_u8().await.unwrap());
     }
     String::from_utf8(bytes).unwrap()
@@ -28,6 +28,83 @@ fn local_policy() -> OutboundPolicy {
     OutboundPolicy {
         allow_http_loopback: true,
         ..OutboundPolicy::default()
+    }
+}
+
+#[test]
+fn custom_proxy_normalizes_idna_without_silently_selecting_direct() {
+    for scheme in ["http", "https"] {
+        let routing = Routing::snapshot(RuntimeProxy::Custom(format!(
+            "{scheme}://bücher.example:8080"
+        )))
+        .unwrap();
+        for target in ["http://target.test/", "https://target.test/"] {
+            let selected = routing.select(&Url::parse(target).unwrap()).unwrap();
+            assert_eq!(selected.uri().host(), Some("xn--bcher-kva.example"));
+            assert_eq!(selected.uri().port_u16(), Some(8080));
+        }
+    }
+    for invalid in ["not a URL", "http://", "socks5://proxy.test:1080"] {
+        assert!(Routing::snapshot(RuntimeProxy::Custom(invalid.into())).is_err());
+    }
+}
+
+#[tokio::test]
+async fn protected_http_client_preserves_mcp_header_budget_and_managed_overhead() {
+    for count in [1, 64] {
+        let configured: Vec<_> = (0..count)
+            .map(|index| {
+                (
+                    format!("x-config-{index}"),
+                    "v".repeat(if index < 7 { 16 * 1024 } else { 250 }),
+                )
+            })
+            .collect();
+        // Match MCP's public 64-field, 16 KiB/value, 128 KiB aggregate budget.
+        assert!(
+            configured
+                .iter()
+                .map(|(name, value)| name.len() + value.len() + 4)
+                .sum::<usize>()
+                <= 128 * 1024
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let expected = configured.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(headers(&mut stream)
+                .await
+                .starts_with("CONNECT 127.0.0.1:45678 "));
+            stream
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .unwrap();
+            let request = headers(&mut stream).await;
+            for (name, value) in expected {
+                assert!(request.contains(&format!("{name}: {value}\r\n")));
+            }
+            assert!(request.contains("mcp-protocol-version: 2025-03-26\r\n"));
+            assert!(!request.to_ascii_lowercase().contains("proxy-authorization"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let client = protected_client(proxy, local_policy()).build().unwrap();
+        let mut request = client
+            .get("http://127.0.0.1:45678/mcp")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("authorization", "Bearer managed")
+            .header("accept", "application/json, text/event-stream");
+        for (name, value) in configured {
+            request = request.header(name, value);
+        }
+        assert!(request.send().await.unwrap().status().is_success());
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
 
@@ -198,10 +275,13 @@ async fn protected_https_client_preserves_original_sni_and_certificate_name() {
 #[tokio::test]
 async fn unauthenticated_local_connection_cannot_reach_upstream() {
     let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let routing = Arc::new(Routing::snapshot(RuntimeProxy::Custom(format!(
-        "http://{}",
-        upstream.local_addr().unwrap()
-    ))));
+    let routing = Arc::new(
+        Routing::snapshot(RuntimeProxy::Custom(format!(
+            "http://{}",
+            upstream.local_addr().unwrap()
+        )))
+        .unwrap(),
+    );
     let relay = crate::network_proxy_relay::Lease::start(routing, local_policy()).unwrap();
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", relay.url.port().unwrap()))
         .await

@@ -6,7 +6,8 @@ async fn stalled_first_proxy_peer_leaves_time_for_second_approved_peer() {
     let routing = Routing::snapshot(crate::network::RuntimeProxy::Custom(format!(
         "http://{}",
         listener.local_addr().unwrap()
-    )));
+    )))
+    .unwrap();
     let proxy = routing
         .select(&Url::parse("https://target.test/").unwrap())
         .unwrap();
@@ -85,4 +86,19 @@ fn rejects_duplicate_credentials_and_non_authority_connect_targets() {
     ] {
         assert!(parse_request(raw.as_bytes(), "token").is_err());
     }
+}
+
+#[tokio::test]
+async fn incoming_header_bytes_and_field_count_remain_bounded() {
+    let bytes = vec![b'x'; MAX_HEADERS + 1];
+    assert!(read_headers(&mut bytes.as_slice())
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("header limit"));
+    let request = format!(
+        "GET http://localhost/ HTTP/1.1\r\nProxy-Authorization: token\r\n{}\r\n",
+        "X-Test: value\r\n".repeat(128)
+    );
+    assert!(parse_request(request.as_bytes(), "token").is_err());
 }

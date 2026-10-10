@@ -48,16 +48,21 @@ numeric endpoint; this is not remote socket attestation. Proxy failure never
 falls back to a direct connection.
 Proxy selection and `NO_PROXY` are snapshotted with each protected client, using
 the same system matcher as reqwest. Ordinary Gateway proxy clients are unchanged.
+Custom proxy URLs are normalized (including IDNA hostnames) before matching;
+an unrepresentable custom route fails client creation rather than selecting direct.
 
 A client-owned loopback adapter preserves reqwest's request/streaming interface.
 It uses an ephemeral 256-bit credential and strips local proxy credentials before
 forwarding HTTP requests. Its process-wide limits are 128 clients and 128 active
-connections, with 16 connections per client, 16 KiB request headers, a 20-second
+connections, with 16 connections per client, 256 KiB/128-field request headers, a 20-second
 connection deadline, a 60-second idle/write deadline, and a 15-minute total tunnel
 limit. Remaining connection time is divided across approved DNS candidates, with
 non-final attempts capped at five seconds so a stalled first address cannot
 consume the entire fallback window. Dropping the client lease cancels its listener
 and active connections.
+The incoming header budget accommodates MCP's 64 configured headers and 128 KiB
+aggregate limit plus protocol-managed headers. Upstream CONNECT response headers
+retain a separate 16 KiB/64-field limit; target HTTPS headers remain end-to-end encrypted.
 No external proxy service or persistent credential is installed.
 
 The Windows native image fallback uses the same adapter for proxy and direct

@@ -16,10 +16,13 @@ async fn headers(stream: &mut TcpStream) -> Vec<u8> {
 async fn dropping_lease_cancels_active_tunnel_and_releases_listener() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let routing = Arc::new(Routing::snapshot(RuntimeProxy::Custom(format!(
-            "http://{}",
-            upstream.local_addr().unwrap()
-        ))));
+        let routing = Arc::new(
+            Routing::snapshot(RuntimeProxy::Custom(format!(
+                "http://{}",
+                upstream.local_addr().unwrap()
+            )))
+            .unwrap(),
+        );
         let lease = Lease::start(routing, OutboundPolicy::default()).unwrap();
         let port = lease.url.port().unwrap();
         let auth =
@@ -60,7 +63,7 @@ async fn dropping_lease_cancels_active_tunnel_and_releases_listener() {
 
 #[tokio::test]
 async fn unauthenticated_idle_connections_have_a_per_client_cap() {
-    let routing = Arc::new(Routing::snapshot(RuntimeProxy::Disabled));
+    let routing = Arc::new(Routing::snapshot(RuntimeProxy::Disabled).unwrap());
     let lease = Lease::start(routing, OutboundPolicy::default()).unwrap();
     let mut readers = JoinSet::new();
     for _ in 0..=MAX_CLIENT_CONNECTIONS {

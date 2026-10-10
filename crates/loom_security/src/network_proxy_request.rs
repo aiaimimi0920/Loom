@@ -11,7 +11,9 @@ use tokio::net::TcpStream;
 use crate::network::OutboundPolicy;
 use crate::network_proxy::Routing;
 
-const MAX_HEADERS: usize = 16 * 1024;
+// MCP permits 128 KiB of configured headers across 64 fields. Reserve bounded
+// space for the request line and protocol-managed headers as well.
+const MAX_HEADERS: usize = 256 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -150,7 +152,7 @@ async fn read_headers(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u
 }
 
 fn parse_request(bytes: &[u8], expected_auth: &str) -> io::Result<Request> {
-    let mut fields = [httparse::EMPTY_HEADER; 64];
+    let mut fields = [httparse::EMPTY_HEADER; 128];
     let mut request = httparse::Request::new(&mut fields);
     if !request
         .parse(bytes)
