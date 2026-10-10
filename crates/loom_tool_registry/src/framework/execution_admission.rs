@@ -20,26 +20,25 @@ impl FrameworkExecutionAdmission {
     ) -> Result<Self, String> {
         let manifest: FrameworkPackageManifest =
             serde_json::from_str(manifest_text).map_err(|error| error.to_string())?;
-        let digest = canonical_package_digest(
-            package_dir,
-            manifest
-                .signature
-                .as_ref()
-                .map(|signature| signature.file.as_str()),
-        )
-        .map_err(|error| error.to_string())?;
-        let admission = Self {
+        let mut admission = Self {
             packages_root: fs::canonicalize(packages_root).map_err(|error| error.to_string())?,
             package_dir: fs::canonicalize(package_dir).map_err(|error| error.to_string())?,
             manifest_text: manifest_text.to_owned(),
             manifest,
-            digest,
+            digest: String::new(),
         };
-        admission.revalidate()?;
+        admission.digest = admission.verified_digest()?;
         Ok(admission)
     }
 
     pub(crate) fn revalidate(&self) -> Result<(), String> {
+        if self.verified_digest()? != self.digest {
+            return Err("framework package changed during execution preparation".to_owned());
+        }
+        Ok(())
+    }
+
+    fn verified_digest(&self) -> Result<String, String> {
         let control_root = self
             .packages_root
             .parent()
@@ -75,21 +74,6 @@ impl FrameworkExecutionAdmission {
         }
         // Re-read current trust/revocation, permissions and dependency lockfiles,
         // even for an already-running MCP host that is about to receive new input.
-        let (ready, detail) = framework_ready_in(&identity, Some(&self.packages_root));
-        if !ready {
-            return Err(detail);
-        }
-        let digest = canonical_package_digest(
-            &active,
-            self.manifest
-                .signature
-                .as_ref()
-                .map(|signature| signature.file.as_str()),
-        )
-        .map_err(|error| error.to_string())?;
-        if digest != self.digest {
-            return Err("framework package changed during execution preparation".to_owned());
-        }
-        Ok(())
+        readiness::verify_framework_package_authority(&self.packages_root, &active, &self.manifest)
     }
 }

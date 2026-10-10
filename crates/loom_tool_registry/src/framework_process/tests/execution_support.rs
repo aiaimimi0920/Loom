@@ -126,6 +126,21 @@ pub(super) fn register_fixture_package(packages_root: &Path, package_dir: &Path)
         serde_json::from_slice(&fs::read(package_dir.join("framework.manifest.json")).unwrap())
             .unwrap();
     let digest = loom_plugin_security::canonical_package_digest(package_dir, None).unwrap();
+    let version_dir = format!("{}-{}", manifest.version, &digest[..12]);
+    let package_root = package_dir.parent().unwrap().parent().unwrap();
+    fs::rename(
+        package_dir,
+        package_root.join("versions").join(&version_dir),
+    )
+    .unwrap();
+    fs::write(
+        package_root.join("active.json"),
+        serde_json::to_vec(&json!({
+            "active": format!("versions/{version_dir}")
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let locks = package_dir
         .parent()
         .unwrap()
