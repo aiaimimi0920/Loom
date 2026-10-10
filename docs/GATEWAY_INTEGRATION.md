@@ -24,6 +24,12 @@ The base URL must be an `http` or `https` origin without credentials, a path,
 query, or fragment. The transport limits a response body to 1 MiB. These
 limits apply before planner output validation.
 
+HTTP redirects are never followed, including same-origin redirects. Configure
+the final serving origin directly. Every 3xx response is a typed HTTP status
+error; neither bearer credentials nor private chat payloads are replayed to a
+`Location` destination. This applies to hosted Gateway and local loopback
+adapter clients alike.
+
 ## Transport contract
 
 `GatewayClient` sends one non-streaming OpenAI-compatible request:
