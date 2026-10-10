@@ -61,6 +61,7 @@ fn snapshot(record: &LiveSessionRecord) -> LiveSessionRuntimeSnapshot {
             .collect(),
         trigger_audits: record.trigger_audits.iter().cloned().collect(),
         closed: record.closed,
+        requester_control: None,
     }
 }
 
@@ -140,9 +141,7 @@ fn expire_controller(record: &mut LiveSessionRecord) {
 }
 
 fn has_newer_frame(record: &LiveSessionRecord, epoch: u64, frame_id: u64) -> bool {
-    record.frames.back().is_some_and(|frame| {
-        frame.epoch > epoch || (frame.epoch == epoch && frame.frame_id > frame_id)
-    })
+    select_live_media_frame(record, epoch, frame_id).is_some()
 }
 
 fn not_found(session_id: &str) -> LiveRuntimeError {
