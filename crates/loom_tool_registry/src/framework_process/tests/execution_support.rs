@@ -162,7 +162,7 @@ pub(super) fn register_fixture_package(packages_root: &Path, package_dir: &Path)
     fs::write(
         control_root.join("frameworks.json"),
         serde_json::to_vec(&json!({
-            (manifest.qualified_id()): { "version": manifest.version, "enabled": true }
+            (manifest.qualified_id()): { "version": manifest.version, "enabled": true, "packageDigest": digest }
         }))
         .unwrap(),
     )

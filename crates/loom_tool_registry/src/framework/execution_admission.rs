@@ -60,6 +60,9 @@ impl FrameworkExecutionAdmission {
         if state.version != self.manifest.version {
             return Err("framework installation version changed".to_owned());
         }
+        let installed_digest = state.package_digest.as_deref().filter(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }).ok_or("framework installation has no valid pinned digest; reinstall the framework package")?;
         let active = resolve_framework_package_dir(&self.packages_root, &identity)
             .and_then(|path| fs::canonicalize(path).map_err(FrameworkError::Io))
             .map_err(|error| error.to_string())?;
@@ -74,6 +77,16 @@ impl FrameworkExecutionAdmission {
         }
         // Re-read current trust/revocation, permissions and dependency lockfiles,
         // even for an already-running MCP host that is about to receive new input.
-        readiness::verify_framework_package_authority(&self.packages_root, &active, &self.manifest)
+        let digest = readiness::verify_framework_package_authority(
+            &self.packages_root,
+            &active,
+            &self.manifest,
+        )?;
+        if !digest.eq_ignore_ascii_case(installed_digest) {
+            return Err(
+                "framework package does not match its pinned installation digest".to_owned(),
+            );
+        }
+        Ok(digest)
     }
 }

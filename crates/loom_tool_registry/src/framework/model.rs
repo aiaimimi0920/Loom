@@ -6,6 +6,10 @@ use super::*;
 pub(super) struct FrameworkInstallationState {
     pub version: String,
     pub enabled: bool,
+    /// Pinned only by an explicit install/upgrade/rollback, never by execution.
+    /// Legacy records remain manageable but require reinstall before execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

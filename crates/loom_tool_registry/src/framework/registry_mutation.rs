@@ -273,6 +273,7 @@ impl FrameworkRegistry {
                 FrameworkInstallationState {
                     version: manifest.version.clone(),
                     enabled: true,
+                    package_digest: Some(digest.clone()),
                 },
             );
             if let Err(error) = self.write_installed(&installed) {
@@ -407,6 +408,7 @@ impl FrameworkRegistry {
         };
         if let Some(state) = installed.get_mut(&key) {
             state.version = manifest.version;
+            state.package_digest = Some(digest);
         }
         if let Err(error) = self.write_installed(&installed) {
             let _ = self.write_activation(&key, &activation);
