@@ -2,7 +2,10 @@ use crate::{websocket_config, BridgeDiscovery, DeadlineStream, HANDSHAKE_TIMEOUT
 use anyhow::{Context, Result};
 use base64::Engine;
 use rand_core::{OsRng, RngCore};
-use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig, ServerConnection, StreamOwned};
+use rustls::{
+    pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    ServerConfig, ServerConnection, StreamOwned,
+};
 use sha2::{Digest, Sha256};
 use std::{
     net::TcpStream,
@@ -16,6 +19,20 @@ use tungstenite::{
 };
 
 pub type ServerSocket = WebSocket<StreamOwned<ServerConnection, DeadlineStream>>;
+
+fn build_server_config(
+    cert: CertificateDer<'static>,
+    key: PrivatePkcs8KeyDer<'static>,
+) -> Result<ServerConfig> {
+    // Errors from key-bearing configuration must not enter HTTP responses, logs,
+    // or assertion output through the daemon's general anyhow error chain.
+    ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|_| anyhow::anyhow!("Bridge TLS 1.3 configuration unavailable"))?
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key.into())
+        .map_err(|_| anyhow::anyhow!("Bridge TLS identity configuration failed"))
+}
 
 fn single_header<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
     let mut values = request.headers().get_all(name).iter();
@@ -36,11 +53,7 @@ impl ServerIdentity {
             rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let der = cert.der().clone();
         let key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
-        let config =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_protocol_versions(&[&rustls::version::TLS13])?
-                .with_no_client_auth()
-                .with_single_cert(vec![der.clone()], key.into())?;
+        let config = build_server_config(der.clone(), key)?;
         let mut random = [0u8; 32];
         OsRng
             .try_fill_bytes(&mut random)
@@ -116,5 +129,37 @@ impl ServerIdentity {
             .sock
             .finish_handshake(Duration::from_millis(100))?;
         Ok(socket)
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_identity_returns_only_a_fixed_error_without_a_source_chain() {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cases = [
+            (
+                CertificateDer::from(b"private-certificate-sentinel".to_vec()),
+                PrivatePkcs8KeyDer::from(signing_key.serialize_der()),
+            ),
+            (
+                cert.der().clone(),
+                PrivatePkcs8KeyDer::from(b"private-key-sentinel".to_vec()),
+            ),
+        ];
+        for (cert, key) in cases {
+            let error = build_server_config(cert, key)
+                .err()
+                .expect("invalid identity must fail");
+            assert_eq!(
+                error.to_string(),
+                "Bridge TLS identity configuration failed"
+            );
+            assert_eq!(error.chain().count(), 1);
+            assert!(!format!("{error:?}").contains("sentinel"));
+        }
     }
 }
