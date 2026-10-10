@@ -54,7 +54,10 @@ It uses an ephemeral 256-bit credential and strips local proxy credentials befor
 forwarding HTTP requests. Its process-wide limits are 128 clients and 128 active
 connections, with 16 connections per client, 16 KiB request headers, a 20-second
 connection deadline, a 60-second idle/write deadline, and a 15-minute total tunnel
-limit. Dropping the client lease cancels its listener and active connections.
+limit. Remaining connection time is divided across approved DNS candidates, with
+non-final attempts capped at five seconds so a stalled first address cannot
+consume the entire fallback window. Dropping the client lease cancels its listener
+and active connections.
 No external proxy service or persistent credential is installed.
 
 The Windows native image fallback uses the same adapter for proxy and direct

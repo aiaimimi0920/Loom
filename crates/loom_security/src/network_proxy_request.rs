@@ -30,7 +30,8 @@ pub(crate) async fn serve(
     auth: &str,
 ) -> io::Result<()> {
     let mut incoming = BufReader::new(stream);
-    let (request, mut tunnel) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+    let (request, mut tunnel) = tokio::time::timeout_at(deadline, async {
         let headers = read_headers(&mut incoming).await?;
         let request = match parse_request(&headers, auth) {
             Ok(request) => request,
@@ -43,25 +44,8 @@ pub(crate) async fn serve(
         };
         let proxy = routing.select(&request.url);
         let addresses = crate::network_dns::resolve_url(&request.url, policy).await?;
-        // All answers were validated together. Only numeric peers are ever sent
-        // to the upstream proxy; retries cannot trigger another target lookup.
-        for peer in addresses {
-            let connected: io::Result<Box<dyn RelayIo>> = match &proxy {
-                Some(proxy) => crate::network_proxy_tunnel::connect_selected(
-                    proxy, peer, policy, CONNECT_TIMEOUT,
-                ).await.map(|stream| Box::new(stream) as Box<dyn RelayIo>),
-                // Native fallback also traverses this adapter for NO_PROXY and
-                // disabled proxy routes. Numeric TCP connect cannot re-resolve.
-                None => TcpStream::connect(peer).await
-                    .map(|stream| Box::new(stream) as Box<dyn RelayIo>),
-            };
-            if let Ok(tunnel) = connected {
-                return Ok((request, tunnel));
-            }
-        }
-        Err(io::Error::other(
-            "no approved outbound proxy peer could be connected",
-        ))
+        let tunnel = connect_peers(&addresses, proxy.as_ref(), policy, deadline).await?;
+        Ok::<_, io::Error>((request, tunnel))
     })
     .await
     .map_err(|_| io::Error::other("protected proxy connection deadline"))??;
@@ -76,6 +60,48 @@ pub(crate) async fn serve(
             .await?;
     }
     relay_streams(incoming, tunnel, IO_TIMEOUT).await
+}
+
+async fn connect_peers(
+    addresses: &[std::net::SocketAddr],
+    proxy: Option<&hyper_util::client::proxy::matcher::Intercept>,
+    policy: &OutboundPolicy,
+    deadline: tokio::time::Instant,
+) -> io::Result<Box<dyn RelayIo>> {
+    // All answers were validated together. Retries use this fixed set, never
+    // another lookup. Reserve time for every remaining approved candidate.
+    for (index, peer) in addresses.iter().copied().enumerate() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let count = u32::try_from(addresses.len() - index).unwrap_or(u32::MAX);
+        let budget = if count == 1 {
+            remaining
+        } else {
+            (remaining / count).min(Duration::from_secs(5))
+        };
+        let connected = tokio::time::timeout(budget, async {
+            match proxy {
+                Some(proxy) => {
+                    crate::network_proxy_tunnel::connect_selected(proxy, peer, policy, budget)
+                        .await
+                        .map(|stream| Box::new(stream) as Box<dyn RelayIo>)
+                }
+                // Native direct routes also share the bounded fallback budget.
+                None => TcpStream::connect(peer)
+                    .await
+                    .map(|stream| Box::new(stream) as Box<dyn RelayIo>),
+            }
+        })
+        .await;
+        if let Ok(Ok(tunnel)) = connected {
+            return Ok(tunnel);
+        }
+    }
+    Err(io::Error::other(
+        "no approved outbound proxy peer could be connected",
+    ))
 }
 
 async fn relay_streams(

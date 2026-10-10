@@ -1,5 +1,59 @@
 use super::*;
 
+#[tokio::test]
+async fn stalled_first_proxy_peer_leaves_time_for_second_approved_peer() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let routing = Routing::snapshot(crate::network::RuntimeProxy::Custom(format!(
+        "http://{}",
+        listener.local_addr().unwrap()
+    )));
+    let proxy = routing
+        .select(&Url::parse("https://target.test/").unwrap())
+        .unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stalled, _) = listener.accept().await.unwrap();
+        assert!(read_headers(&mut stalled)
+            .await
+            .unwrap()
+            .starts_with(b"CONNECT 8.8.8.8:443 "));
+        // Deliberately never respond to the first CONNECT; it must be cancelled.
+        let (mut reachable, _) = listener.accept().await.unwrap();
+        assert!(read_headers(&mut reachable)
+            .await
+            .unwrap()
+            .starts_with(b"CONNECT 1.1.1.1:443 "));
+        reachable
+            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\nOK")
+            .await
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(stalled.read(&mut byte).await.unwrap(), 0);
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let result = tokio::time::timeout_at(
+        deadline,
+        connect_peers(
+            &[
+                "8.8.8.8:443".parse().unwrap(),
+                "1.1.1.1:443".parse().unwrap(),
+            ],
+            Some(&proxy),
+            &OutboundPolicy::default(),
+            deadline,
+        ),
+    )
+    .await
+    .expect("the overall budget must leave time for fallback");
+    let mut tunnel = result.unwrap();
+    let mut body = [0; 2];
+    tunnel.read_exact(&mut body).await.unwrap();
+    assert_eq!(&body, b"OK");
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("cancelled peer and mock server must finish")
+        .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn one_way_transfer_keeps_tunnel_alive_but_total_idle_closes_it() {
     let (mut client, incoming) = tokio::io::duplex(64);
