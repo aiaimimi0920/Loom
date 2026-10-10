@@ -1,3 +1,5 @@
+import { createAuthenticatedHookBridgeSocket } from "./hookBridgeAuthentication.ts";
+
 type HookBridgeHandler = (payload: unknown) => void;
 
 type HookBridgeSocketLike = {
@@ -10,7 +12,7 @@ type HookBridgeSocketLike = {
   close(): void;
 };
 
-type HookBridgeWebSocketFactory = (url: string) => HookBridgeSocketLike;
+type HookBridgeWebSocketFactory = (url: string) => HookBridgeSocketLike | Promise<HookBridgeSocketLike>;
 
 interface HookBridgeBrowserClientOptions {
   url?: string;
@@ -38,9 +40,9 @@ export function createHookBridgeBrowserClient(
   options: HookBridgeBrowserClientOptions = {},
 ): HookBridgeBrowserClient {
   const hookBridgeUrl = options.url ?? DEFAULT_HOOK_BRIDGE_URL;
-  const websocketFactory =
+  const websocketFactory: HookBridgeWebSocketFactory =
     options.websocketFactory ??
-    ((url: string) => new WebSocket(url) as unknown as HookBridgeSocketLike);
+    (async (url: string) => await createAuthenticatedHookBridgeSocket(url) as unknown as HookBridgeSocketLike);
   const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
   const scheduleReconnect =
     options.scheduleReconnect ??
@@ -53,6 +55,8 @@ export function createHookBridgeBrowserClient(
   let socket: HookBridgeSocketLike | null = null;
   let reconnectHandle: number | null = null;
   let disposed = false;
+  let connecting = false;
+  let generation = 0;
 
   const clearReconnect = () => {
     if (reconnectHandle === null) return;
@@ -85,6 +89,8 @@ export function createHookBridgeBrowserClient(
 
   const stopSocketIfUnused = () => {
     if (handlers.size > 0) return;
+    generation += 1;
+    connecting = false;
     clearReconnect();
     if (!socket) return;
     const current = socket;
@@ -93,7 +99,7 @@ export function createHookBridgeBrowserClient(
   };
 
   const ensureSocket = () => {
-    if (disposed || handlers.size === 0) return;
+    if (disposed || handlers.size === 0 || connecting) return;
     if (socket && socket.readyState !== SOCKET_CLOSED) {
       if (socket.readyState === SOCKET_OPEN) {
         sendSubscription();
@@ -101,7 +107,23 @@ export function createHookBridgeBrowserClient(
       return;
     }
 
-    const nextSocket = websocketFactory(hookBridgeUrl);
+    const attempt = ++generation;
+    connecting = true;
+    const failed = () => {
+      if (disposed || generation !== attempt) return;
+      connecting = false;
+      scheduleReconnectIfNeeded();
+    };
+    try {
+      const candidate = websocketFactory(hookBridgeUrl);
+      if ("then" in candidate) void candidate.then((next) => attachSocket(next, attempt), failed);
+      else attachSocket(candidate, attempt);
+    } catch { failed(); }
+  };
+
+  const attachSocket = (nextSocket: HookBridgeSocketLike, attempt: number) => {
+    if (disposed || generation !== attempt || handlers.size === 0) { nextSocket.close(); return; }
+    connecting = false;
     socket = nextSocket;
     // A closed connection may still have callbacks queued after its replacement starts.
     const isCurrent = () => !disposed && socket === nextSocket;
@@ -163,6 +185,8 @@ export function createHookBridgeBrowserClient(
     },
     dispose() {
       disposed = true;
+      generation += 1;
+      connecting = false;
       handlers.clear();
       clearReconnect();
       if (!socketIsClosed(socket)) {

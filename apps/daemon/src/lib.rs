@@ -232,6 +232,7 @@ include!("runtime/capability_extension_bridge.rs");
 include!("runtime/capability_extension_responses.rs");
 include!("runtime/hook_bridge_server.rs");
 include!("runtime/hook_bridge_websocket.rs");
+include!("runtime/hook_bridge_auth.rs");
 include!("runtime/hook_canvas_cache.rs");
 include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
@@ -244,6 +245,7 @@ include!("runtime/run_http_responses.rs");
 
 #[cfg(test)]
 mod tests {
+    include!("tests/hook_transport_auth.rs");
     include!("tests/projection_http.rs");
     include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");

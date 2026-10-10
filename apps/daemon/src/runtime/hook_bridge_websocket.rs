@@ -80,6 +80,14 @@ fn start_hook_bridge(
         .local_addr()
         .context("read hook bridge local address")?
         .port();
+    // A bound listener gets an independent credential, never the daemon admin token.
+    // A restarted listener cannot accept a credential captured from its predecessor.
+    let mut entropy = [0u8; 32];
+    OsRng.fill_bytes(&mut entropy);
+    let auth_token: Arc<str> = Arc::from(format!("hook-v1.{}", BASE64_URL.encode(entropy)));
+    runtime.auth_token = Some(Arc::clone(&auth_token));
+    #[cfg(test)]
+    record_test_bound_daemon_token(assigned_port, &auth_token);
     listener
         .set_nonblocking(true)
         .context("set hook bridge listener nonblocking")?;
@@ -111,6 +119,7 @@ fn start_hook_bridge(
     let worker = thread::spawn(move || {
         run_hook_bridge_websocket_server(
             listener,
+            auth_token,
             shutdown_rx,
             connected_clients,
             extension_clients,
@@ -163,6 +172,7 @@ fn stop_hook_bridge(
     runtime.ocr_text_capable_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
+    runtime.auth_token = None;
     clear_hook_canvas_runtime_state(Some(shared_images));
 
     Ok((
@@ -198,6 +208,7 @@ fn hook_bridge_status_json(runtime: &HookBridgeRuntime) -> Value {
 
 fn handle_hook_bridge_websocket_connection(
     stream: std::net::TcpStream,
+    auth_token: Arc<str>,
     cancelled: Arc<AtomicBool>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
@@ -221,7 +232,7 @@ fn handle_hook_bridge_websocket_connection(
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-    let Ok(mut websocket) = tungstenite::accept(stream) else {
+    let Ok(mut websocket) = accept_authenticated_hook_socket(stream, &auth_token) else {
         return;
     };
     let _ = websocket

@@ -3,6 +3,20 @@ import test from "node:test";
 
 import { createHookBridgeBrowserClient } from "./hookBridgeBrowserClient.ts";
 
+test("disposal closes a late authenticated connection without subscribing", async () => {
+  let resolve!: (socket: FakeWebSocket) => void;
+  const client = createHookBridgeBrowserClient({
+    websocketFactory: () => new Promise<FakeWebSocket>((done) => { resolve = done; }),
+  });
+  client.subscribe("loom.hook.workflow.updated", () => {});
+  client.dispose();
+  const socket = new FakeWebSocket("ws://127.0.0.1:19820");
+  resolve(socket);
+  await Promise.resolve();
+  assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+  assert.deepEqual(socket.sent, []);
+});
+
 class FakeWebSocket {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;

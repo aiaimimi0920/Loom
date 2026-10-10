@@ -25,6 +25,7 @@ mod diagnostics;
 mod file_io;
 mod framework_packages;
 mod hook_cache;
+mod hook_transport_auth;
 mod http_response;
 mod loom_cache;
 mod package_bootstrap;

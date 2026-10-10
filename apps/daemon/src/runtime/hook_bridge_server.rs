@@ -1,6 +1,7 @@
 // Accepts Hook bridge sockets and delegates each connection to a tracked worker.
 fn run_hook_bridge_websocket_server(
     listener: TcpListener,
+    auth_token: Arc<str>,
     shutdown_rx: Receiver<()>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
@@ -31,6 +32,7 @@ fn run_hook_bridge_websocket_server(
             Ok((stream, _)) => {
                 connections.reap_finished();
                 let connection_cancelled = connections.cancellation();
+                let auth_token = Arc::clone(&auth_token);
                 let connected_clients = Arc::clone(&connected_clients);
                 let extension_clients = Arc::clone(&extension_clients);
                 let ocr_text_clients = Arc::clone(&ocr_text_clients);
@@ -52,6 +54,7 @@ fn run_hook_bridge_websocket_server(
                 let worker = thread::spawn(move || {
                     handle_hook_bridge_websocket_connection(
                         stream,
+                        auth_token,
                         connection_cancelled,
                         connected_clients,
                         extension_clients,

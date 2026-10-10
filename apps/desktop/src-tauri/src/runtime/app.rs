@@ -122,6 +122,7 @@ pub fn run() {
             hook_cache::clear_hook_cache,
             daemon::read_loom_snapshot,
             commands::start_loom_daemon,
+            hook_transport_auth::hook_bridge_websocket_protocols,
             commands::get_loom_daemon_json,
             commands::put_loom_daemon_json,
             commands::delete_loom_daemon_json,

@@ -1,5 +1,6 @@
 // Hook bridge process state, broadcast history, and subscriber records.
 struct HookBridgeRuntime {
+    auth_token: Option<Arc<str>>,
     port: Option<u16>,
     shutdown_tx: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
@@ -14,6 +15,7 @@ struct HookBridgeRuntime {
 impl HookBridgeRuntime {
     fn new(workflow_root: PathBuf) -> Self {
         Self {
+            auth_token: None,
             port: None,
             shutdown_tx: None,
             worker: None,

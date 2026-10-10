@@ -1,6 +1,17 @@
 # Loom Hook Bridge WebSocket request, response and cleanup helpers.
 function New-LoomHookBridgeWebSocket {
-    param([int]$Port)
+    param([int]$Port, [string]$Authorization, [string]$DaemonBaseUrl = '')
+
+    if ([string]::IsNullOrWhiteSpace($Authorization)) {
+        if ([string]::IsNullOrWhiteSpace($DaemonBaseUrl)) { $DaemonBaseUrl = $baseUrl }
+        $credential = Invoke-JsonPost -Uri "$DaemonBaseUrl/v1/hook-bridge/credentials" -Body @{}
+        if ([string]$credential.url -ne "ws://127.0.0.1:$Port" -or
+            [string]$credential.token -notmatch '^hook-v1\.[A-Za-z0-9_-]{43}$') {
+            throw 'Hook credential does not match the daemon-owned listener'
+        }
+        $Authorization = "Bearer $($credential.token)"
+    }
+    if ([string]::IsNullOrWhiteSpace($Authorization)) { throw 'Hook authentication is required' }
 
     if ($Port -lt 1 -or $Port -gt 65535) {
         throw "Hook Bridge port is out of range: $Port"
@@ -9,6 +20,7 @@ function New-LoomHookBridgeWebSocket {
     $uri = [Uri]::new("ws://127.0.0.1:$Port")
     $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
     try {
+        $client.Options.SetRequestHeader('Authorization', $Authorization)
         [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
     } catch {
         $client.Dispose()

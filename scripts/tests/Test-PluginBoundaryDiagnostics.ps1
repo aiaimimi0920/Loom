@@ -6,12 +6,38 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 . (Join-Path $repoRoot "scripts\plugin-boundary-smoke\Diagnostics.ps1")
 . (Join-Path $repoRoot "scripts\plugin-boundary-smoke\WebSocket.ps1")
+$script:LoomAuthorizationHeader = 'Bearer fixture'
+$baseUrl = 'http://127.0.0.1:19819'
+$script:BrokerMode = 'normal'
+# Only the HTTP broker receives the administrator header. Both smoke helpers
+# must obtain the scoped token instead of reusing that header on the socket.
+function Invoke-LoomJson {
+    param($Method, $Url, $Body)
+    Assert-Diagnostic ($Method -eq 'Post' -and $Url -eq "$baseUrl/v1/hook-bridge/credentials") 'Wrong credential broker request.'
+    if ($script:BrokerMode -eq 'unavailable') { throw 'Hook broker unavailable' }
+    if ($script:BrokerMode -eq 'mismatch') { return @{ url = 'ws://127.0.0.1:1'; token = 'hook-v1.invalid' } }
+    return @{ url = "ws://127.0.0.1:$($server.Port)"; token = 'hook-v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }
+}
+function Invoke-JsonPost {
+    param($Uri, $Body)
+    return Invoke-LoomJson -Method Post -Url $Uri -Body $Body
+}
 Add-Type -Path (Join-Path $PSScriptRoot "plugin-boundary\WebSocketFixture.cs")
 $root = Join-Path ([IO.Path]::GetTempPath()) "loom-plugin-diagnostic-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
 $diagnosticPath = Join-Path $root "plugin-boundary-diagnostic.json"
 function Assert-Diagnostic([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
+}
+
+function Test-CredentialBrokerFailure {
+    foreach ($mode in @('unavailable', 'mismatch')) {
+        $script:BrokerMode = $mode
+        $caught = $null
+        try { $null = New-LoomHookBridgeWebSocket -Port 19820 -DaemonBaseUrl $baseUrl } catch { $caught = $_ }
+        Assert-Diagnostic ($null -ne $caught -and $caught.Exception.Message -match 'broker|daemon-owned') 'Credential broker failure must reject before connecting.'
+    }
+    $script:BrokerMode = 'normal'
 }
 
 function Test-SocketFailure([string]$Scenario, [string]$Phase, [int]$MinimumFragments = 0) {
@@ -21,9 +47,9 @@ function Test-SocketFailure([string]$Scenario, [string]$Phase, [int]$MinimumFrag
     try {
         Set-LoomPluginBoundaryPhase -Phase "connect"
         if ($Scenario -eq "connect-timeout") {
-            $client = New-LoomHookBridgeWebSocket -Port $server.Port -BudgetMs 100
+            $client = New-LoomHookBridgeWebSocket -Port $server.Port -Authorization 'Bearer fixture' -BudgetMs 100
         } else {
-            $client = New-LoomHookBridgeWebSocket -Port $server.Port
+            $client = New-LoomHookBridgeWebSocket -Port $server.Port -Authorization 'Bearer fixture'
             Set-LoomPluginBoundaryPhase -Phase $Phase
             if ($Scenario -eq "send-timeout") {
                 Send-LoomHookBridgeWebSocketJson -Client $client -Json ('x' * 16777216) -BudgetMs 100
@@ -61,6 +87,7 @@ function Test-SocketFailure([string]$Scenario, [string]$Phase, [int]$MinimumFrag
 }
 
 try {
+    Test-CredentialBrokerFailure
     Test-SocketFailure "connect-timeout" "connect"
     Test-SocketFailure "send-timeout" "subscribe-send"
     Test-SocketFailure "send-timeout" "execute-send"
@@ -77,6 +104,7 @@ try {
         try {
             Set-LoomPluginBoundaryPhase -Phase "connect"
             $client = New-LoomHookBridgeWebSocket -Port $server.Port
+            Assert-Diagnostic $server.ReceivedAuthorization 'Plugin smoke omitted its configured bearer credential.'
             Assert-Diagnostic ($script:PluginBoundaryDiagnostic.budgetMs -eq 10000) "Production connect budget changed."
             if ($scenario -eq 'normal') {
                 Set-LoomPluginBoundaryPhase -Phase "subscribe-send"
@@ -101,6 +129,18 @@ try {
         }
         Write-Output "PASS $scenario"
     }
+    . (Join-Path $repoRoot 'scripts\framework-art-store-hook-smoke\HookBridge.ps1')
+    Test-CredentialBrokerFailure
+    $script:DaemonRequestHeaders = @{ Authorization = 'Bearer fixture' }
+    $server = [PluginBoundarySocketFixture]::new('normal')
+    $client = $null
+    try {
+        $client = New-LoomHookBridgeWebSocket -Port $server.Port
+        Assert-Diagnostic $server.ReceivedAuthorization 'Framework smoke omitted its configured bearer credential.'
+    } finally {
+        if ($null -ne $client) { $client.Dispose() }
+        $server.Dispose()
+    }
     Reset-LoomPluginBoundaryDiagnostic
     try { throw ('private-payload' * 10000) } catch {
         Save-LoomPluginBoundaryDiagnostic -EvidencePath $root -Failure $_
@@ -124,4 +164,4 @@ try {
     if (-not $resolvedRoot.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe test cleanup path." }
     Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
 }
-Write-Output "Plugin boundary diagnostics: 13 loopback, privacy, and error-preservation cases passed."
+Write-Output "Plugin boundary diagnostics: 13 loopback/privacy/error cases and both authenticated smoke clients passed."
