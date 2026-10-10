@@ -290,7 +290,7 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
     'security-events: write',
     'runs-on: ubuntu-latest',
     'actions/checkout@v5',
-    'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
+    'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069',
     'docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a',
     '.github/workflows/docker.yml',
     'examples/**',
