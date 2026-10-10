@@ -192,7 +192,8 @@ try {
         -WorkingDirectory $repoRoot `
         -StdoutPath (Join-Path $logsRoot "cloud.stdout.log") `
         -StderrPath (Join-Path $logsRoot "cloud.stderr.log")
-    Wait-TcpPort -HostName "127.0.0.1" -Port $cloudPort -Message "Cloud fixture did not open its TCP port"
+    Wait-TcpPort -HostName "127.0.0.1" -Port $cloudPort -Message "Cloud fixture did not open its TCP port" `
+        -Process $cloudProcess -StderrPath (Join-Path $logsRoot "cloud.stderr.log") -Secrets @($daemonToken)
 
     $artStoreProcess = Start-InheritedEnvProcess `
         -FilePath $artStoreExe `

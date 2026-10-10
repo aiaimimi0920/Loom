@@ -220,7 +220,10 @@ mod live_media_diagnostics_tests {
                     socket,
                     sessions,
                     "live:metrics".to_owned(),
-                    viewer.to_owned(),
+                    LiveMediaDeviceGrant {
+                        device_id: viewer.to_owned(),
+                        device_session: None,
+                    },
                     LiveDeviceRole::Viewer,
                     0,
                     0,

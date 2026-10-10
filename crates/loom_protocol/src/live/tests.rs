@@ -81,7 +81,9 @@ fn sample_frame() -> LiveBinaryFrame {
             color_space: LiveColorSpace::Srgb,
             codec: LiveCodec::H264,
         },
-        payload: vec![1, 2, 3, 4],
+        payload: vec![
+            0, 0, 1, 0x67, 0x42, 0, 30, 0, 0, 1, 0x68, 1, 0, 0, 1, 0x65, 1,
+        ],
     }
 }
 

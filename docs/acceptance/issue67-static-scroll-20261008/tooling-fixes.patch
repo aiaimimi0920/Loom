@@ -1,0 +1,133 @@
+--- a/ContentFixture.cs
++++ b/ContentFixture.cs
+@@ -15 +15,4 @@
+-        if (args.Length != 1) throw new ArgumentException("Expected ready JSON path");
++        if (args.Length < 1 || args.Length > 2) throw new ArgumentException("Expected ready JSON path and optional mode");
++        string initialMode = args.Length == 2 ? args[1] : "motion";
++        if (initialMode != "static" && initialMode != "scroll" && initialMode != "motion")
++            throw new ArgumentException("Invalid content mode");
+@@ -19 +22 @@
+-        Application.Run(new ContentFixture(Path.GetFullPath(args[0])));
++        Application.Run(new ContentFixture(Path.GetFullPath(args[0]), initialMode));
+@@ -37 +40 @@
+-    internal ContentFixture(string ready)
++    internal ContentFixture(string ready, string initialMode)
+@@ -69,2 +72 @@
+-            WriteState();
+-            animation.Start();
++            SetMode(initialMode);
+@@ -89,0 +92,8 @@
++        SetMode(next);
++        e.Handled = true;
++        e.SuppressKeyPress = true;
++    }
++
++    // Scenario setup only controls this real fixture HWND, never Hook or media state.
++    private void SetMode(string next)
++    {
+@@ -94,0 +105 @@
++        if (mode != "static") animation.Start();
+@@ -97,4 +107,0 @@
+-        // Static content has no timer, clock, frame number or blinking caret.
+-        if (mode != "static") animation.Start();
+-        e.Handled = true;
+-        e.SuppressKeyPress = true;
+--- a/Start-LocalFixture.ps1
++++ b/Start-LocalFixture.ps1
+@@ -9 +9,3 @@
+-$fixture=Start-Process (Join-Path $root 'ContentFixture.exe') -ArgumentList @("$dir\fixture-ready.json") -WorkingDirectory $root -WindowStyle Hidden -PassThru
++$trial=[IO.File]::ReadAllText("$root\trial.json")|ConvertFrom-Json
++if($trial.scenario-notin@('static','scroll','motion')){throw 'Invalid fixture startup mode'}
++$fixture=Start-Process (Join-Path $root 'ContentFixture.exe') -ArgumentList @("$dir\fixture-ready.json",$trial.scenario) -WorkingDirectory $root -WindowStyle Hidden -PassThru
+@@ -17 +19 @@
+-& (Join-Path $root 'Select-ContentMode.ps1') -Mode $trial.scenario
++& (Join-Path $root 'Assert-ContentMode.ps1') -Mode $trial.scenario
+--- /dev/null
++++ b/Assert-ContentMode.ps1
+@@ -0,0 +1,27 @@
++param([ValidateSet('static','scroll','motion')][string]$Mode)
++$ErrorActionPreference='Stop'
++$dir=Join-Path $PSScriptRoot 'source-direct'
++$owned=[IO.File]::ReadAllText("$dir\fixture-owned.json")|ConvertFrom-Json
++$ready=[IO.File]::ReadAllText("$dir\fixture-ready.json")|ConvertFrom-Json
++$p=Get-CimInstance Win32_Process -Filter "ProcessId=$($owned.pid)"
++if(-not$p-or$p.ExecutablePath-ine$owned.path-or$p.CreationDate.ToUniversalTime().ToString('o')-cne$owned.created){throw 'Content fixture identity changed'}
++if(-not('StartupFixtureIdentity' -as [type])){
++    Add-Type @'
++using System;
++using System.Runtime.InteropServices;
++public static class StartupFixtureIdentity {
++ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
++}
++'@
++}
++$h=[IntPtr][Convert]::ToInt64($ready.hwnd.Replace('0x',''),16)
++[uint32]$owner=0
++[void][StartupFixtureIdentity]::GetWindowThreadProcessId($h,[ref]$owner)
++if($owner-ne$owned.pid){throw 'Content fixture HWND owner changed'}
++$end=[DateTime]::UtcNow.AddSeconds(3)
++while(-not(Test-Path "$dir\fixture-state.json")-and[DateTime]::UtcNow-lt$end){Start-Sleep -Milliseconds 50}
++$state=[IO.File]::ReadAllText("$dir\fixture-state.json")|ConvertFrom-Json
++if($state.mode-cne$Mode-or$state.hwnd-cne$ready.hwnd-or$state.revision-ne1){throw 'Fixture startup scenario differs'}
++if($state.timerEnabled-ne($Mode-ne'static')){throw 'Fixture startup timer differs'}
++if($Mode-eq'static'-and($state.ticks-ne0-or$state.phase-ne0)){throw 'Static fixture must not animate'}
++$state|ConvertTo-Json
+--- a/ScenarioPolicy.mjs
++++ b/ScenarioPolicy.mjs
+@@ -5,0 +6,38 @@
++}
++
++// Unchanged static content may retain its last real frame; never relax identity or image proof.
++export function validateJoinProgress(first, after, image, scenario) {
++  validateScenario(scenario);
++  for (const key of ['relayId', 'liveSessionId', 'sourceDeviceId', 'sourceHookId', 'epoch', 'buildVersion']) {
++    assert(first[key] !== undefined && first[key] !== null, `missing join ${key}`);
++    assert.equal(after[key], first[key], `join ${key} changed`);
++  }
++  assert.equal(after.connectionState, 'connected');
++  assert.equal(after.hasError, false);
++  const a = first.presentation, b = after.presentation;
++  assert(a && b, 'join presentation missing');
++  for (const p of [a, b]) {
++    assert(Number.isSafeInteger(p.frameId) && p.frameId > 0, 'invalid join frame');
++    assert(Number.isSafeInteger(p.generation) && p.generation > 0, 'invalid join generation');
++    assert.equal(p.evidence, 'decoded_submitted');
++  }
++  assert.equal(b.codec, a.codec, 'join codec changed');
++  assert(b.frameId >= a.frameId && b.generation >= a.generation, 'join frame or generation reset');
++  assert(image?.connected && image.complete && image.width > 0 && image.height > 0, 'join image incomplete');
++  assert.equal(image.width, b.width);
++  assert.equal(image.height, b.height);
++  if (scenario !== 'static') {
++    assert(b.frameId > a.frameId, 'Viewer frame did not advance');
++    return;
++  }
++  assert.equal(b.width, a.width, 'static width changed');
++  assert.equal(b.height, a.height, 'static height changed');
++  assert.equal(after.renderEvidenceSupported, true);
++  const r = after.rendering;
++  assert.equal(r?.evidence, 'browser_element_render', 'static render proof missing');
++  assert.equal(r.frameId, b.frameId);
++  assert.equal(r.generation, b.generation);
++  assert(Number.isFinite(r.renderTimeMs) && r.renderTimeMs > 0);
++  assert(Number.isFinite(b.submittedAtMs) && b.submittedAtMs >= 0);
++  assert(Number.isFinite(r.sinceSubmittedMs) && r.sinceSubmittedMs >= 0);
++  assert(Math.abs(r.renderTimeMs - b.submittedAtMs - r.sinceSubmittedMs) < 0.001);
+--- a/Reverse-Control.mjs
++++ b/Reverse-Control.mjs
+@@ -5,0 +6 @@
++import { validateJoinProgress } from './ScenarioPolicy.mjs';
+@@ -69 +70 @@
+-  assert(result.after.presentation.frameId>result.first.presentation.frameId,'Viewer frame did not advance');
++
+@@ -79,2 +80,2 @@
+-  result.image=await slot.locator('img').first().evaluate(img=>({complete:img.complete,width:img.naturalWidth,height:img.naturalHeight}));
+-  assert(result.image.complete&&result.image.width>0&&result.image.height>0);
++  result.image=await slot.locator('img').first().evaluate(img=>({connected:img.isConnected,complete:img.complete,width:img.naturalWidth,height:img.naturalHeight}));
++  validateJoinProgress(result.first,result.after,result.image,trial.scenario);
+--- a/SampleSource.mjs
++++ b/SampleSource.mjs
+@@ -53,0 +54,3 @@
++      // The final wait is not another sampling interval. Early timer wakeups must
++      // not create a last-millisecond RPC with an artificially tiny deadline.
++      if (remaining <= intervalMs) break;
