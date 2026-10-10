@@ -1,0 +1,60 @@
+{
+    "candidateSha256":  "d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92",
+    "localRegressionPassed":  7,
+    "inputs":  [
+                   {
+                       "sha256":  "73cfe86a7e09fd86ef394f60ca63649821e332a3dce87b3dff2e42d593e2a13a",
+                       "file":  "preflight.json"
+                   },
+                   {
+                       "sha256":  "3492816a2a5d39b56eadeddfbbb0f61025e267db1fe06ef24b70cf20eaacea53",
+                       "file":  "approval.json"
+                   },
+                   {
+                       "sha256":  "97a1097603258303183d6cda2ef6d0e72ce0f2f440f8281b677eb8a7c2d709fe",
+                       "file":  "trial-template/tls-receipt.json"
+                   },
+                   {
+                       "sha256":  "4fe3b62b5cce7c6f01ee1bca5c3d3bbcfc6f9f2e61ac33b5a94fd6e4cc75b67f",
+                       "file":  "trial-template/harness-regression.json"
+                   },
+                   {
+                       "sha256":  "9fb696b304cfb7206aa83ba9f4fddc8d7fa1aaa6321bc231b93393fcb3683cde",
+                       "file":  "raw-1/runner-receipt.json"
+                   },
+                   {
+                       "sha256":  "16c176489278220feb87cdca1af5dff27f86d447b5caa72cc2765a31775e74cd",
+                       "file":  "raw-1/part-cleanup-verified.json"
+                   },
+                   {
+                       "sha256":  "8ba3afe8031074f3fd3a9a7f2c77ddb791442604977f367b58fbdca6daa630db",
+                       "file":  "closeout.json"
+                   },
+                   {
+                       "sha256":  "b41c387a856f6db8c4b745b63d5deaf11669cf25abd75999567fd807927fade6",
+                       "file":  "staged-fix/Read-FixtureStartupState.ps1"
+                   },
+                   {
+                       "sha256":  "c349e2271caf9931c29f3686b91261d6ca8047f8d4b2083721d46d219b9e49d2",
+                       "file":  "staged-fix/Assert-ContentMode.ps1"
+                   },
+                   {
+                       "sha256":  "b01eb22d59e05a091026d3a6136d2ec6dc46bebc9e7d0226f4125b7ca45b0a7b",
+                       "file":  "staged-fix/Test-FixtureStartupState.ps1"
+                   },
+                   {
+                       "sha256":  "5ad3ed4bbd8983c5c9fafa75ee1b713fc47d84fb86ca5ed6b32ca95373a5cb31",
+                       "file":  "staged-fix/regression.json"
+                   },
+                   {
+                       "sha256":  "16e35c4b353995e8df41c22f90b51b130ca817d9eef5722ef6d6f40539a2be14",
+                       "file":  "hook-check-runs.json"
+                   }
+               ],
+    "stagedFixNativeVerified":  false,
+    "cleanupPassed":  true,
+    "evidenceRoot":  "linshi/issue67-v33-raw-diagnostic-20261009",
+    "nativeTrialPassed":  false,
+    "nativeRetryPerformed":  false,
+    "mediaExecuted":  false
+}

@@ -35,6 +35,8 @@ Implementation, configuration and executable tests remain the source of truth.
   layouts, image delivery and acknowledgement.
 - [跨设备实时投射优化计划](LIVE_RELAY_OPTIMIZATION_PLAN.md)：Issue #67 的已实现基线、
   分块验收、逐任务提交和 AI 接手入口。
+- [Issue #67 小 PR 工作包](LIVE_RELAY_ACCEPTANCE_WORKPACKAGES.md)：六组剩余验收、
+  条件优化、独立合并规则及暂停复测边界。
 
 ## Packaging and operations
 

@@ -32,6 +32,9 @@ authors must not depend on private Loom or Hook source code.
   metadata and identification. Their optional fields retain Wall's strict rules.
 - Unknown optional fields must be ignored. Missing optional fields use the
   secure defaults defined by `loom_protocol`.
+- Device pairing, challenge issuance, and terminal versus pending authorization
+  errors follow [DEVICE_SESSIONS.md](DEVICE_SESSIONS.md). A disabled device must
+  not be treated as waiting for approval.
 - Streaming or persistent workers require a separately named protocol and
   explicit negotiation; they cannot silently change v1 framing.
 

@@ -1,0 +1,137 @@
+{
+  "analysisOnly": true,
+  "nativeTestExecuted": false,
+  "daemonWindow": {
+    "start": "2026-10-09T11:39:26.644Z",
+    "end": "2026-10-09T11:40:26.650Z"
+  },
+  "viewerReconnectBrackets": [
+    {
+      "index": 233,
+      "viewerRelativeMilliseconds": 63977.40000003576,
+      "before": 0,
+      "after": 1,
+      "beforeState": "connected",
+      "afterState": "connected",
+      "beforeHasError": false,
+      "afterHasError": false,
+      "bracketMilliseconds": 274.69999998807907
+    },
+    {
+      "index": 237,
+      "viewerRelativeMilliseconds": 65140,
+      "before": 1,
+      "after": 2,
+      "beforeState": "connected",
+      "afterState": "connected",
+      "beforeHasError": false,
+      "afterHasError": false,
+      "bracketMilliseconds": 337.69999998807907
+    }
+  ],
+  "resumeRequests": [
+    {
+      "completionUtc": "2026-10-09T11:40:37.569Z",
+      "durationSeconds": 0.0028536,
+      "inferredStartUtc": "2026-10-09T11:40:37.566Z",
+      "status": 200,
+      "responseBytes": 4301
+    },
+    {
+      "completionUtc": "2026-10-09T11:40:38.610Z",
+      "durationSeconds": 0.0114345,
+      "inferredStartUtc": "2026-10-09T11:40:38.598Z",
+      "status": 200,
+      "responseBytes": 4299
+    }
+  ],
+  "mediaConnections": [
+    {
+      "completionUtc": "2026-10-09T11:40:36.942Z",
+      "durationSeconds": 114.359798,
+      "inferredStartUtc": "2026-10-09T11:38:42.583Z",
+      "status": 101,
+      "responseBytes": 1149503326
+    },
+    {
+      "completionUtc": "2026-10-09T11:40:37.988Z",
+      "durationSeconds": 0.3548275,
+      "inferredStartUtc": "2026-10-09T11:40:37.634Z",
+      "status": 101,
+      "responseBytes": 1071320
+    },
+    {
+      "completionUtc": "2026-10-09T11:40:54.373Z",
+      "durationSeconds": 136.9530313,
+      "inferredStartUtc": "2026-10-09T11:38:37.420Z",
+      "status": 101,
+      "responseBytes": 2
+    },
+    {
+      "completionUtc": "2026-10-09T11:40:54.554Z",
+      "durationSeconds": 15.826433,
+      "inferredStartUtc": "2026-10-09T11:40:38.727Z",
+      "status": 101,
+      "responseBytes": 160137216
+    }
+  ],
+  "resumesAfterDaemonWindow": true,
+  "observedForwardDistribution": {
+    "socketWriteMs": {
+      "count": 119,
+      "min": 0,
+      "median": 94,
+      "max": 179,
+      "mean": 93.82352941176471
+    },
+    "queueAgeMs": {
+      "count": 119,
+      "min": 0,
+      "median": 25,
+      "max": 74,
+      "mean": 25.983193277310924
+    },
+    "adaptationMs": {
+      "count": 119,
+      "min": 0,
+      "median": 0,
+      "max": 0,
+      "mean": 0
+    }
+  },
+  "distributionPopulation": "distinct lastForward slots sampled by daemon observer, not all writes",
+  "viewerCdpMethods": {
+    "Target.getTargets": 1,
+    "Target.attachToTarget": 1,
+    "Runtime.evaluate": 240,
+    "Page.captureScreenshot": 1
+  },
+  "runtimeLogHasTransientReason": false,
+  "crossDeviceClockCalibrated": false,
+  "causeEstablished": false,
+  "pairedComparisonAvailable": false,
+  "conclusions": [
+    "Two resume requests occurred after the daemon sample window on the same PC1 clock.",
+    "Viewer skipped-frame delta in that window cannot be attributed to these later reconnects.",
+    "Sampled raw socket writes are slow; physical link, proxy, receiver and scheduling attribution remains unresolved.",
+    "Successful reconnect clears transient runtime error state; available logs lack the disconnect reason."
+  ],
+  "hashes": [
+    {
+      "file": "pair-input.json",
+      "sha256": "080d00160c9ff964631421c1c5083f5ffad9ea478727f2609f209d08d42f1ee0"
+    },
+    {
+      "file": "native-render-visible.json",
+      "sha256": "bad7e56a431458ca7e435eeabea2bd6310a234be57127348c0e8e3a8d1911b47"
+    },
+    {
+      "file": "caddy-access.jsonl",
+      "sha256": "7a68ea0e43cec9227bcdaa8b9015a8f7062abc570c2fc9c8d71f75d8d61dd688"
+    },
+    {
+      "file": "pc3-hook-runtime.log",
+      "sha256": "e419057c8a9f17a32a1519e0542647db87599fbcaebd97e476b5e79718d4ecd8"
+    }
+  ]
+}
