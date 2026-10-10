@@ -237,7 +237,11 @@ impl GatewayClient {
         }
 
         base_url.set_path("/v1/chat/completions");
-        let builder = Client::builder().timeout(config.timeout);
+        // A Gateway response cannot authorize another destination for private chat data.
+        // Refuse even same-origin redirects; the configured canonical endpoint is final.
+        let builder = Client::builder()
+            .timeout(config.timeout)
+            .redirect(reqwest::redirect::Policy::none());
         let builder = if config.disable_proxy {
             builder.no_proxy()
         } else {
