@@ -91,6 +91,13 @@ impl DeviceRegistryStore {
                 "device is not approved, is disabled, or its sessions were revoked",
             ));
         }
+        if session.used_nonces.len() >= DEVICE_SESSION_MAX_NONCES {
+            return Err(DeviceAuthError::new(
+                401,
+                "device_session_nonce_capacity",
+                "device session nonce budget is exhausted; create a new session",
+            ));
+        }
         if session.used_nonces.contains(nonce) {
             return Err(DeviceAuthError::new(
                 409,

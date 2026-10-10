@@ -116,3 +116,57 @@ fn declared_body_length_does_not_determine_reader_allocation() {
     };
     assert!(bytes.capacity() <= HTTP_READ_CHUNK_BYTES);
 }
+
+#[test]
+fn full_size_upload_capacity_is_capped_at_declared_length() {
+    let header = format!("POST /v1/mcp/servers/install HTTP/1.1\r\nContent-Length: {MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES}\r\n\r\n");
+    let expected = header.len() + MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES;
+    let mut source = std::io::Cursor::new(header.into_bytes())
+        .chain(std::io::repeat(b'x').take(MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES as u64));
+    let HttpReadOutcome::Request(bytes) = read_http_request(&mut source).unwrap() else {
+        panic!("full-size bounded upload should be accepted");
+    };
+    assert_eq!(bytes.len(), expected);
+    assert!(
+        bytes.capacity() <= expected,
+        "capacity={} expected={expected}",
+        bytes.capacity()
+    );
+}
+
+#[test]
+fn exhausted_device_nonce_budget_rejects_header_only_upload() {
+    let fixture = Fixture::new();
+    let (_, token) = wall_http::pair(fixture.port, "Exhausted upload");
+    let hash = sha256_bytes(token.as_bytes());
+    fixture
+        .devices
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut(&hash)
+        .unwrap()
+        .used_nonces = (0..DEVICE_SESSION_MAX_NONCES)
+        .map(|n| format!("used-nonce-{n:016}"))
+        .collect();
+    let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    write!(stream, "POST /v1/projections/create HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 4194304\r\nAuthorization: Device {token}\r\nX-Loom-Device-Nonce: {}\r\n\r\n", Uuid::new_v4()).unwrap();
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("exhausted session must reject from headers");
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    assert!(
+        response.contains("device_session_nonce_capacity"),
+        "{response}"
+    );
+    assert_eq!(
+        fixture.devices.lock().unwrap().sessions[&hash]
+            .used_nonces
+            .len(),
+        DEVICE_SESSION_MAX_NONCES
+    );
+}

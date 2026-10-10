@@ -204,8 +204,25 @@ pub(super) fn read_http_request_admitted(
             Ok(0) => break,
             Ok(bytes) => {
                 let scan_from = request.len().saturating_sub(3);
-                if request.try_reserve(bytes).is_err() {
-                    return Ok(payload_too_large_response());
+                let needed = request.len().saturating_add(bytes);
+                if request.capacity() < needed {
+                    let ceiling = head
+                        .as_ref()
+                        .map_or(MAX_HTTP_HEADER_BYTES + HTTP_READ_CHUNK_BYTES, |head| {
+                            head.body_start().saturating_add(head.content_length)
+                        });
+                    // Amortize received-byte growth without doubling past the admitted length.
+                    let capacity = request
+                        .capacity()
+                        .saturating_mul(2)
+                        .max(needed)
+                        .min(ceiling.max(needed));
+                    if request
+                        .try_reserve_exact(capacity.saturating_sub(request.len()))
+                        .is_err()
+                    {
+                        return Ok(payload_too_large_response());
+                    }
                 }
                 request.extend_from_slice(&buffer[..bytes]);
                 if head.is_none() {

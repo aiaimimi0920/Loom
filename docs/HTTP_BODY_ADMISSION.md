@@ -12,6 +12,8 @@ require header-only authentication before upload:
 - A device credential must name a currently valid, enabled, approved session,
   carry a fresh nonce, and be scoped to the requested route. In particular,
   device sessions do not gain package-install privileges.
+- A session whose nonce budget is exhausted is rejected during read-only
+  admission too; no new upload can park a worker using that exhausted session.
 - Missing/invalid credentials fail without waiting for `Content-Length` bytes.
 
 The two inbound `/v1/projection-peer/raster-check` and
@@ -30,7 +32,9 @@ over stale device credentials.
 
 The reader no longer reserves a declared `Content-Length`. Buffer growth follows
 bytes actually received, with fallible incremental allocation and existing route
-size limits. The bounded read worker pool, per-peer admission, queue limits,
+size limits. Amortized growth is capped at the validated declared end rather
+than doubling a full 96 MiB upload to 128 MiB; excess framing can add at most one
+read chunk before rejection. The bounded read worker pool, per-peer admission, queue limits,
 per-read timeout and 30-second total request deadline remain in force. Shutdown
 and refusal drains also no longer preallocate a declared upload; their existing
 short time budgets remain unchanged.

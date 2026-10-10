@@ -306,8 +306,13 @@ impl DeviceRegistryStore {
         nonce: &str,
     ) -> std::result::Result<String, DeviceAuthError> {
         self.cleanup_expired_device_auth();
-        let device_id = self.validate_device_session(token, nonce)?;
         let token_hash = sha256_bytes(token.as_bytes());
+        let device_id = self.validate_device_session(token, nonce).map_err(|error| {
+            if error.code == "device_session_nonce_capacity" {
+                self.sessions.remove(&token_hash);
+            }
+            error
+        })?;
         let session = self
             .sessions
             .get_mut(&token_hash)
