@@ -163,8 +163,17 @@ pub(super) fn read_http_request(stream: &mut impl Read) -> Result<HttpReadOutcom
 /// Reads one request, answering 408 at `deadline` and giving up once `abort` is set.
 pub(super) fn read_http_request_until(
     stream: &mut impl Read,
+    deadline: Instant,
+    abort: &AtomicBool,
+) -> Result<HttpReadOutcome> {
+    read_http_request_admitted(stream, deadline, abort, |_, _| Ok(()))
+}
+
+pub(super) fn read_http_request_admitted(
+    stream: &mut impl Read,
     mut deadline: Instant,
     abort: &AtomicBool,
+    admit: impl Fn(&ParsedHttpRequest, bool) -> std::result::Result<(), (u16, String)>,
 ) -> Result<HttpReadOutcome> {
     let mut request = Vec::new();
     let mut buffer = vec![0_u8; HTTP_READ_CHUNK_BYTES];
@@ -195,6 +204,9 @@ pub(super) fn read_http_request_until(
             Ok(0) => break,
             Ok(bytes) => {
                 let scan_from = request.len().saturating_sub(3);
+                if request.try_reserve(bytes).is_err() {
+                    return Ok(payload_too_large_response());
+                }
                 request.extend_from_slice(&buffer[..bytes]);
                 if head.is_none() {
                     head = match parse_request_head(&request, scan_from) {
@@ -204,19 +216,24 @@ pub(super) fn read_http_request_until(
                     if head.is_none() && request.len() > MAX_HTTP_HEADER_BYTES {
                         return Ok(payload_too_large_response());
                     }
+                    if let Some(head) = head.as_ref() {
+                        if head.exceeds_size_limit(request.len()) {
+                            return Ok(payload_too_large_response());
+                        }
+                        let headers =
+                            ParsedHttpRequest::from_raw(request[..head.body_start()].to_vec());
+                        if let Err((status, body)) =
+                            admit(&headers, head.body_limit > MAX_HTTP_BODY_BYTES)
+                        {
+                            return Ok(HttpReadOutcome::Rejected { status, body });
+                        }
+                    }
                 }
                 if let Some(head) = head.as_ref() {
                     if head.exceeds_size_limit(request.len()) {
                         return Ok(payload_too_large_response());
                     }
-                    let expected = head.body_start().saturating_add(head.content_length);
-                    if request.capacity() < expected
-                        && request
-                            .try_reserve_exact(expected.saturating_sub(request.len()))
-                            .is_err()
-                    {
-                        return Ok(payload_too_large_response());
-                    }
+                    // Grow only with bytes actually received, never with a declared Content-Length.
                     if head.has_excess_body(request.len()) {
                         return Ok(invalid_request_response());
                     }
