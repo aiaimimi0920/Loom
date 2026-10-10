@@ -60,6 +60,16 @@ rather than silently dropping selected messages. Cursor history retains at most
 2048 entries and 64 MiB; eviction or an oversized skipped event requires snapshot
 recovery. These bounds do not substitute for application operation deadlines.
 
+The daemon sends a WebSocket Ping every 30 seconds and releases a connection
+after 90 seconds without a complete inbound message (including Pong). Merely
+trickling fragments does not renew this idle budget. Reads have a 100 ms absolute
+slice so fragment traffic cannot starve idle checks or broadcasts; outbound
+messages and each broadcast batch have a one-second absolute I/O budget.
+Synchronous request execution is excluded from idle time, and response writes
+receive a fresh I/O budget after execution. Completed workers are reaped even
+when no new connection arrives; failure to create a worker drops that socket
+without panicking the listener.
+
 ## Integration requirements
 
 Daemon start must publish the actual bound port atomically before reporting

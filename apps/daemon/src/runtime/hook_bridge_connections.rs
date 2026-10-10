@@ -3,6 +3,8 @@
 struct HookBridgeConnections {
     cancelled: Arc<AtomicBool>,
     workers: Arc<Mutex<Vec<(JoinHandle<()>, TcpStream)>>>,
+    #[cfg(test)]
+    idle_timeout: Duration,
 }
 
 impl HookBridgeConnections {
@@ -10,6 +12,8 @@ impl HookBridgeConnections {
         Self {
             cancelled: Arc::new(AtomicBool::new(true)),
             workers: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(test)]
+            idle_timeout: HOOK_BRIDGE_IDLE_TIMEOUT,
         }
     }
 
@@ -20,6 +24,18 @@ impl HookBridgeConnections {
 
     fn cancellation(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancelled)
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        // Tests shorten one bridge instance only; production has no override.
+        #[cfg(test)]
+        {
+            self.idle_timeout
+        }
+        #[cfg(not(test))]
+        {
+            HOOK_BRIDGE_IDLE_TIMEOUT
+        }
     }
 
     fn track(&self, worker: JoinHandle<()>, interrupt: TcpStream) {
