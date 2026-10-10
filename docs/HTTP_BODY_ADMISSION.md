@@ -1,9 +1,11 @@
 # HTTP request body admission
 
-The daemon's read worker validates complete HTTP headers before accepting more
-body bytes. Host, Origin, browser-context, and JSON content-type policy use the
-same checks as route dispatch. At most one 64 KiB read chunk may already contain
-body bytes when the header terminator is found.
+For routes permitting bodies above the ordinary request limit, the daemon's
+read worker validates complete HTTP headers before accepting more body bytes.
+Host, Origin, browser-context, and JSON content-type policy use the same checks
+as route dispatch. Small-body and WebSocket routes retain their existing
+dispatch-owned policy. At most one 64 KiB read chunk may already contain body
+bytes when the header terminator is found.
 
 Routes with a body allowance larger than the ordinary request limit additionally
 require header-only authentication before upload:
@@ -38,6 +40,14 @@ read chunk before rejection. The bounded read worker pool, per-peer admission, q
 per-read timeout and 30-second total request deadline remain in force. Shutdown
 and refusal drains also no longer preallocate a declared upload; their existing
 short time budgets remain unchanged.
+
+An early admission rejection is written and write-half-closed immediately.
+The read worker then discards at most the remaining declared body using a fixed
+64 KiB buffer and a 500 ms total budget (200 ms write timeout). This keeps eager
+uploads from turning an ordinary 401/403 into a TCP reset that truncates the
+response, without buffering the upload or parking the accept loop. A malicious
+peer that outlasts the drain budget is still closed; delivery is not guaranteed
+to a peer that refuses to make bounded progress.
 
 Tests in `apps/daemon/src/tests/http_body_admission.rs` exercise real sockets
 that withhold the entire large body, invalid Host/Origin, device scope, valid

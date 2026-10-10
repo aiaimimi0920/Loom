@@ -5,7 +5,15 @@ use super::*;
 pub(super) enum HttpReadOutcome {
     Empty,
     Request(Vec<u8>),
-    Rejected { status: u16, body: String },
+    Rejected {
+        status: u16,
+        body: String,
+    },
+    RejectedBeforeBody {
+        status: u16,
+        body: String,
+        remaining: usize,
+    },
 }
 
 /// How much of a request is read per `read` call.
@@ -242,7 +250,13 @@ pub(super) fn read_http_request_admitted(
                         if let Err((status, body)) =
                             admit(&headers, head.body_limit > MAX_HTTP_BODY_BYTES)
                         {
-                            return Ok(HttpReadOutcome::Rejected { status, body });
+                            return Ok(HttpReadOutcome::RejectedBeforeBody {
+                                status,
+                                body,
+                                remaining: head.content_length.saturating_sub(
+                                    request.len().saturating_sub(head.body_start()),
+                                ),
+                            });
                         }
                     }
                 }

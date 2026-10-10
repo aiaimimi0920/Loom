@@ -170,3 +170,31 @@ fn exhausted_device_nonce_budget_rejects_header_only_upload() {
         DEVICE_SESSION_MAX_NONCES
     );
 }
+
+#[test]
+fn eager_unauthenticated_upload_receives_complete_admission_error() {
+    let fixture = Fixture::new();
+    let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let payload = vec![b' '; 4 * 1024 * 1024];
+    write!(stream, "POST /v1/projections/create HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", payload.len()).unwrap();
+    stream
+        .write_all(&payload)
+        .expect("eager upload should be drained, not reset");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("complete admission response, not TCP reset");
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    assert!(response.contains("unauthorized"), "{response}");
+    let (_, body) = response
+        .split_once("\r\n\r\n")
+        .expect("complete response headers");
+    let body: Value = serde_json::from_str(body).expect("complete rejection JSON");
+    assert_eq!(body["error"]["code"], "unauthorized");
+}

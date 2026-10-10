@@ -1,13 +1,81 @@
 //! Header-only admission before a client can upload a privileged large body.
 use super::*;
 
+struct RejectionWriter<'a> {
+    stream: &'a mut TcpStream,
+    deadline: Instant,
+}
+
+impl Write for RejectionWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                ErrorKind::TimedOut,
+                "admission response deadline",
+            ));
+        }
+        self.stream
+            .set_write_timeout(Some(remaining.min(Duration::from_millis(200))))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn reject(mut stream: TcpStream, status: u16, body: &str, mut remaining: usize) {
+    // Send the error/FIN immediately, including for a client waiting to send its body.
+    // Discard eager upload bytes on the bounded read worker, never on the accept loop.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    if write_response(
+        &mut RejectionWriter {
+            stream: &mut stream,
+            deadline,
+        },
+        status,
+        body,
+    )
+    .is_err()
+    {
+        return;
+    }
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut buffer = [0_u8; HTTP_READ_CHUNK_BYTES];
+    while remaining > 0 {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        if timeout.is_zero()
+            || stream
+                .set_read_timeout(Some(timeout.min(Duration::from_millis(50))))
+                .is_err()
+        {
+            break;
+        }
+        let length = remaining.min(buffer.len());
+        match stream.read(&mut buffer[..length]) {
+            Ok(0) => break,
+            Ok(read) => remaining -= read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
+        }
+    }
+}
+
 pub(super) fn admit(
     request: &ParsedHttpRequest,
     large_body_route: bool,
     runtime: &DaemonRuntime,
 ) -> std::result::Result<(), (u16, String)> {
+    // Small-body and WebSocket routes retain their existing dispatch-owned policy.
+    if !large_body_route {
+        return Ok(());
+    }
     enforce_request_security(request)?;
-    if !large_body_route || request.has_admin_credential(&runtime.auth_token) {
+    if request.has_admin_credential(&runtime.auth_token) {
         return Ok(());
     }
     let path = request.path.split('?').next().unwrap_or(&request.path);
