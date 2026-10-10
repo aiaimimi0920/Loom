@@ -7,13 +7,15 @@ const HOOK_BRIDGE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 struct HookBridgeLiveness {
     last_received: std::time::Instant,
     last_ping: std::time::Instant,
+    idle_timeout: Duration,
 }
 
 impl HookBridgeLiveness {
-    fn new(now: std::time::Instant) -> Self {
+    fn new(now: std::time::Instant, idle_timeout: Duration) -> Self {
         Self {
             last_received: now,
             last_ping: now,
+            idle_timeout,
         }
     }
 
@@ -26,7 +28,7 @@ impl HookBridgeLiveness {
         socket: &mut loom_local_channel::ServerSocket,
         now: std::time::Instant,
     ) -> bool {
-        if now.duration_since(self.last_received) >= HOOK_BRIDGE_IDLE_TIMEOUT {
+        if now.duration_since(self.last_received) >= self.idle_timeout {
             return false;
         }
         if now.duration_since(self.last_ping) >= HOOK_BRIDGE_PING_INTERVAL {
@@ -61,4 +63,16 @@ fn read_hook_bridge_message(
         .sock
         .set_operation_deadline(std::time::Instant::now() + HOOK_BRIDGE_READ_SLICE);
     socket.read()
+}
+
+fn close_hook_bridge_socket(
+    socket: &mut loom_local_channel::ServerSocket,
+    close: Option<tungstenite::protocol::CloseFrame<'static>>,
+) -> tungstenite::Result<()> {
+    // Reading Close queues a reply; flushing it needs its own outbound budget.
+    socket
+        .get_mut()
+        .sock
+        .set_operation_deadline(std::time::Instant::now() + HOOK_BRIDGE_WRITE_TIMEOUT);
+    socket.close(close)
 }

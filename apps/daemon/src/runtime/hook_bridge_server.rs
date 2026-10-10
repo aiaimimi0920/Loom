@@ -39,6 +39,7 @@ fn run_hook_bridge_websocket_server(
                 };
                 let identity = Arc::clone(&identity);
                 let connection_cancelled = connections.cancellation();
+                let idle_timeout = connections.idle_timeout();
                 let connected_clients = Arc::clone(&connected_clients);
                 let extension_clients = Arc::clone(&extension_clients);
                 let ocr_text_clients = Arc::clone(&ocr_text_clients);
@@ -64,6 +65,7 @@ fn run_hook_bridge_websocket_server(
                             stream,
                             identity,
                             connection_cancelled,
+                            idle_timeout,
                             connected_clients,
                             extension_clients,
                             ocr_text_clients,

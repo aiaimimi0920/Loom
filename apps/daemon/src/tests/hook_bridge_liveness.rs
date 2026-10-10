@@ -15,11 +15,22 @@ fn hook_liveness_socket(
     (socket, worker)
 }
 
+fn hook_liveness_receive(socket: &mut loom_local_channel::ServerSocket) -> tungstenite::Message {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match read_hook_bridge_message(socket) {
+            Ok(message) => return message,
+            Err(error) if hook_bridge_read_timed_out(&error) && Instant::now() < deadline => {}
+            Err(error) => panic!("expected message before test deadline: {error}"),
+        }
+    }
+}
+
 #[test]
 fn hook_bridge_liveness_pings_and_expires_without_inbound_messages() {
     let (mut client, worker) = hook_liveness_socket(|mut socket| {
         let start = Instant::now();
-        let mut liveness = HookBridgeLiveness::new(start);
+        let mut liveness = HookBridgeLiveness::new(start, HOOK_BRIDGE_IDLE_TIMEOUT);
         assert!(liveness.maintain(&mut socket, start + HOOK_BRIDGE_PING_INTERVAL));
         assert!(!liveness.maintain(&mut socket, start + HOOK_BRIDGE_IDLE_TIMEOUT));
     });
@@ -34,7 +45,7 @@ fn hook_bridge_liveness_pings_and_expires_without_inbound_messages() {
 fn hook_bridge_liveness_completed_work_renews_idle_budget() {
     let (mut client, worker) = hook_liveness_socket(|mut socket| {
         let start = Instant::now();
-        let mut liveness = HookBridgeLiveness::new(start);
+        let mut liveness = HookBridgeLiveness::new(start, HOOK_BRIDGE_IDLE_TIMEOUT);
         // A valid synchronous request may take longer than the idle window.
         let completed = start + HOOK_BRIDGE_IDLE_TIMEOUT * 2;
         liveness.received(completed);
@@ -103,6 +114,43 @@ fn hook_bridge_liveness_response_renews_expired_io_budget() {
 }
 
 #[test]
+fn hook_bridge_liveness_close_reply_renews_expired_read_budget() {
+    // Negative control: the old path can report ConnectionClosed even when the
+    // TLS close reply could not be flushed within the expired read deadline.
+    let (mut client, worker) = hook_liveness_socket(|mut socket| {
+        let tungstenite::Message::Close(close) = hook_liveness_receive(&mut socket) else {
+            panic!("expected peer close");
+        };
+        socket.get_mut().sock.set_operation_deadline(Instant::now());
+        let _ = socket.close(close);
+    });
+    client.close(None).unwrap();
+    assert!(
+        client.read().is_err(),
+        "negative control unexpectedly delivered Close"
+    );
+    worker.join().unwrap();
+
+    let (mut client, worker) = hook_liveness_socket(|mut socket| {
+        let message = hook_liveness_receive(&mut socket);
+        let tungstenite::Message::Close(close) = message else {
+            panic!("expected peer close");
+        };
+        socket.get_mut().sock.set_operation_deadline(Instant::now());
+        assert!(matches!(
+            close_hook_bridge_socket(&mut socket, close),
+            Ok(()) | Err(tungstenite::Error::ConnectionClosed)
+        ));
+    });
+    client.close(None).unwrap();
+    assert!(matches!(
+        client.read().unwrap(),
+        tungstenite::Message::Close(_)
+    ));
+    worker.join().unwrap();
+}
+
+#[test]
 fn hook_bridge_liveness_connection_capacity_rejects_and_reaps_without_new_accepts() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-bridge-native-capacity");
@@ -139,7 +187,10 @@ fn hook_bridge_liveness_daemon_releases_silent_authenticated_peer() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("hook-bridge-native-idle");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+    let idle_timeout = Duration::from_millis(300);
+    runtime.hook_bridge.lock().unwrap().connections.idle_timeout = idle_timeout;
     start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = Instant::now();
     // Do not read: tungstenite would automatically reply to received Ping frames.
     let _client =
         loom_local_channel::connect(&test_bridge_discovery(&root), Duration::from_secs(2)).unwrap();
@@ -149,8 +200,7 @@ fn hook_bridge_liveness_daemon_releases_silent_authenticated_peer() {
         thread::sleep(Duration::from_millis(10));
     }
     assert!(!connections.workers.lock().unwrap().is_empty());
-    let started = Instant::now();
-    let deadline = started + HOOK_BRIDGE_IDLE_TIMEOUT + Duration::from_secs(3);
+    let deadline = started + idle_timeout + Duration::from_secs(3);
     while !connections.workers.lock().unwrap().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(25));
     }
@@ -163,5 +213,5 @@ fn hook_bridge_liveness_daemon_releases_silent_authenticated_peer() {
         released,
         "silent authenticated peer retained a worker beyond its idle deadline"
     );
-    assert!(elapsed >= HOOK_BRIDGE_IDLE_TIMEOUT - Duration::from_secs(1));
+    assert!(elapsed >= idle_timeout - Duration::from_millis(50));
 }

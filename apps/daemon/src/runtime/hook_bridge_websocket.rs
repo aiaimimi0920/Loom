@@ -236,6 +236,7 @@ fn handle_hook_bridge_websocket_connection(
     stream: std::net::TcpStream,
     identity: Arc<loom_local_channel::ServerIdentity>,
     cancelled: Arc<AtomicBool>,
+    idle_timeout: Duration,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
     ocr_text_clients: Arc<AtomicUsize>,
@@ -269,11 +270,11 @@ fn handle_hook_bridge_websocket_connection(
         control_plane_root: Some(control_plane_root.clone()),
         ..ExtensionConnectionState::default()
     };
-    let mut liveness = HookBridgeLiveness::new(std::time::Instant::now());
+    let mut liveness = HookBridgeLiveness::new(std::time::Instant::now(), idle_timeout);
 
     loop {
         if cancelled.load(Ordering::SeqCst) {
-            let _ = websocket.close(None);
+            let _ = close_hook_bridge_socket(&mut websocket, None);
             break;
         }
         if !liveness.maintain(&mut websocket, std::time::Instant::now()) {
@@ -422,7 +423,7 @@ fn handle_hook_bridge_websocket_connection(
                 }
             }
             tungstenite::Message::Close(close) => {
-                let _ = websocket.close(close);
+                let _ = close_hook_bridge_socket(&mut websocket, close);
                 break;
             }
             _ => {}
