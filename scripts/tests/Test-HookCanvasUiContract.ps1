@@ -208,6 +208,20 @@ setInterval(() => {}, 1000);
     catch {
         $exitFailure = $_.Exception.Message
     }
+    if ($exitFailure -notlike '*exit code 7*') {
+        # Keep the same assertion and timeout; expose only this synthetic fixture
+        # so hosted-runner startup/pipe failures can be distinguished from a bad exit code.
+        $nodeCommand = Get-Command node
+        $fixtureStarted = Test-Path -LiteralPath $exitOutputPath -PathType Leaf
+        Write-Output "Inspector exit fixture: node=$($nodeCommand.Source); type=$($nodeCommand.CommandType); started=$fixtureStarted"
+        foreach ($streamName in @('stdout', 'stderr')) {
+            $streamPath = "$exitOutputPath.inspector.$streamName.log"
+            if (Test-Path -LiteralPath $streamPath -PathType Leaf) {
+                $streamText = [IO.File]::ReadAllText($streamPath)
+                Write-Output "Inspector exit fixture ${streamName}: $(Limit-SmokeText -Text $streamText -MaxLength 512)"
+            }
+        }
+    }
     Assert-True (-not [string]::IsNullOrWhiteSpace($exitFailure)) "Nonzero Inspector fixture unexpectedly succeeded."
     Assert-Contains 'exit code 7' $exitFailure "Inspector must report the concrete nonzero exit code. Actual=[$exitFailure]"
     Assert-Contains 'fixture stdout' $exitFailure "Inspector failure must include redirected stdout."
