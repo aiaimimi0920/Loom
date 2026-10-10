@@ -111,11 +111,15 @@ impl LoomDaemon {
             .recover_interrupted_runs()
             .map_err(|error| anyhow::anyhow!("recover Loom run store: {error}"))?;
         let run_store_status = run_store.status();
+        let mut capability_manifest = None;
         if let Some(manifest_dir) = config.manifest_dir.as_deref() {
-            if let Err(error) =
-                write_local_capability_manifest(manifest_dir, local_addr, Some(auth_token.as_str()))
-            {
-                handle_capability_manifest_error(local_addr, error)?;
+            match write_local_capability_manifest(
+                manifest_dir,
+                local_addr,
+                Some(auth_token.as_str()),
+            ) {
+                Ok(owner) => capability_manifest = Some(owner),
+                Err(error) => handle_capability_manifest_error(local_addr, error)?,
             }
         }
         let request_executor = config.request_executor;
@@ -125,9 +129,9 @@ impl LoomDaemon {
         let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root)));
         let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
         let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
-        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
-            control_plane_root.join("workflows"),
-        )));
+        let mut bridge_runtime = HookBridgeRuntime::new(control_plane_root.join("workflows"));
+        bridge_runtime.discovery = capability_manifest;
+        let hook_bridge = Arc::new(Mutex::new(bridge_runtime));
         let surface_instances = Arc::new(Mutex::new(
             SurfaceInstanceStore::new(
                 control_plane_root
@@ -276,9 +280,8 @@ impl LoomDaemon {
 
         let mut read_stage_result: std::io::Result<()> = Ok(());
         let maintenance_runtime = Arc::clone(&self.runtime);
-        let mut maintenance = periodic_maintenance::PeriodicMaintenance::start(
-            Duration::from_secs(1),
-            move || {
+        let mut maintenance =
+            periodic_maintenance::PeriodicMaintenance::start(Duration::from_secs(1), move || {
                 #[cfg(test)]
                 if let Some(observer) = maintenance_runtime.maintenance_observer.as_ref() {
                     observer.record();
@@ -295,10 +298,11 @@ impl LoomDaemon {
                     &maintenance_runtime.device_registry,
                 );
                 if let Err(error) = maintenance_runtime.capability_runtime.prune_idle() {
-                    runtime_log_warn(format!("Capability Plugin idle maintenance failed: {error}"));
+                    runtime_log_warn(format!(
+                        "Capability Plugin idle maintenance failed: {error}"
+                    ));
                 }
-            },
-        )?;
+            })?;
         let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
                 // Read the backlog before the listener goes away: shutdown can be observed before
@@ -421,12 +425,16 @@ impl LoomDaemon {
         let surface_stream_shutdown_result = surface_stream_executor.shutdown();
         let read_stage_shutdown_result = read_stage.shutdown();
         let maintenance_result = maintenance.shutdown();
+        // Drained request workers cannot restart the bridge after its final revocation.
+        let bridge_shutdown_result =
+            stop_hook_bridge(&self.runtime.hook_bridge, &self.runtime.shared_images);
         if let Err(error) = serve_result {
             let _ = shutdown_result;
             let _ = surface_stream_shutdown_result;
             let _ = read_stage_shutdown_result;
             let _ = read_stage_result;
             let _ = maintenance_result;
+            let _ = bridge_shutdown_result;
             self.runtime.live_sessions.shutdown_media_workers();
             self.runtime.capability_runtime.deactivate_all();
             return Err(error);
@@ -436,6 +444,7 @@ impl LoomDaemon {
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
         maintenance_result.context("shutdown Loom maintenance worker")?;
+        bridge_shutdown_result.context("shutdown Loom Hook bridge")?;
         self.runtime.live_sessions.shutdown_media_workers();
         self.runtime.capability_runtime.deactivate_all();
         Ok(())

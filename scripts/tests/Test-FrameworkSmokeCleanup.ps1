@@ -47,7 +47,12 @@ function Get-CimInstance {
     [CmdletBinding()]
     param([string]$ClassName, [string]$Filter)
     if ($script:CleanupState.Mode -eq "enumeration-denied") { throw "synthetic enumeration denial" }
-    if ($Filter -eq "ParentProcessId=$($script:CleanupState.ParentId)") {
+    if ($Filter -eq 'ProcessId >= 0' -or $Filter -eq "ParentProcessId=$($script:CleanupState.ParentId)") {
+        if ($Filter -eq 'ProcessId >= 0') {
+            $script:CleanupState.SnapshotQueries++
+            # Unrelated process rows in a global snapshot must never be acquired/killed.
+            [pscustomobject]@{ ProcessId = 2147483644; ParentProcessId = -1 }
+        }
         foreach ($node in @($script:CleanupState, $script:CleanupSibling)) {
             [pscustomobject]@{ ProcessId = $node.ChildId; ParentProcessId = $script:CleanupState.ParentId }
         }
@@ -117,7 +122,7 @@ function Invoke-CleanupScenario([string]$Mode) {
         if ($Mode -eq "older-child") { $childStart = $root.StartTime.AddSeconds(-1) }
         $script:CleanupState = @{ Mode = $Mode; ParentId = $root.Id; Root = $root; ChildId = 2147483646;
             ChildStart = $childStart; Exited = $false; HasExitedHint = $false; KillCalls = 0; Disposals = 0; Acquisitions = 0;
-            Signal = ($Mode -notin @("timeout", "kill-denied")); Waits = [Collections.Generic.List[int]]::new() }
+            Signal = ($Mode -notin @("timeout", "kill-denied")); Waits = [Collections.Generic.List[int]]::new(); SnapshotQueries = 0 }
         $script:CleanupState.Child = New-CleanupTestChild $script:CleanupState
         $script:CleanupSibling = @{ Mode = "delayed-exit"; ChildId = 2147483645; ChildStart = $root.StartTime.AddSeconds(2);
             Exited = $false; HasExitedHint = $false; KillCalls = 0; Disposals = 0; Acquisitions = 0;
@@ -131,6 +136,7 @@ function Invoke-CleanupScenario([string]$Mode) {
             Assert-Cleanup ($script:CleanupState.KillCalls -eq 0) "An unverified descendant was killed in $Mode."
         }
         if ($Mode -eq "delayed-exit") {
+            Assert-Cleanup ($script:CleanupState.SnapshotQueries -eq 3) "Cleanup must query one process snapshot per wave, not one per node."
             Assert-Cleanup ($script:CleanupState.KillCalls -eq 1) "Termination must be requested once per retained identity."
             Assert-Cleanup ($script:CleanupState.Waits.Count -gt 0) "Cleanup never observed the descendant exit signal."
         }

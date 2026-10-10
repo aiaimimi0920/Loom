@@ -99,6 +99,18 @@ behavior, compilation, and regression review.
 
 ## Release Validation
 
+The framework/store and plugin-boundary runtime smokes use a test-only native TLS
+probe, not browser WebSockets. Before running `verify-release.ps1 -RunSmoke` locally:
+
+```powershell
+cargo build --locked -p loom_local_channel --example bridge_probe
+```
+
+The two smoke entrypoints accept `-NativeBridgeProbeExecutable` for an explicitly
+built probe elsewhere. They pass their own isolated private manifest, never the
+user's running daemon credentials. CI builds the probe from the same checkout;
+it is a test tool and is not copied into the user-facing release package.
+
 Standalone packages default to `release\Loom` inside this repository. A parent
 checkout can provide its required destination explicitly:
 

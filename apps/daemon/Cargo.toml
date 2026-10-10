@@ -24,6 +24,7 @@ loom_core.workspace = true
 loom_durable.workspace = true
 loom_gateway.workspace = true
 loom_hook_bridge.workspace = true
+loom_local_channel = { workspace = true, features = ["server"] }
 loom_hooks.workspace = true
 loom_image_io.workspace = true
 loom_memory.workspace = true

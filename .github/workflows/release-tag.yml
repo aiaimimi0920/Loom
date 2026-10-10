@@ -98,6 +98,10 @@ jobs:
               "-VersionId", $env:LOOM_TAG, "-OutputRoot", ".\release\Loom", "-RequireCleanSource"
             )
 
+      - name: Build authenticated native smoke probe
+        shell: powershell
+        run: cargo build --locked -p loom_local_channel --example bridge_probe
+
       - name: Verify and smoke standalone Loom release
         shell: powershell
         run: |

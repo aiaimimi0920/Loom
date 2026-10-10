@@ -24,6 +24,7 @@ mod daemon;
 mod diagnostics;
 mod file_io;
 mod framework_packages;
+mod hook_bridge_subscription;
 mod hook_cache;
 mod http_response;
 mod loom_cache;

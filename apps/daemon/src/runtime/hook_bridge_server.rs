@@ -1,6 +1,7 @@
 // Accepts Hook bridge sockets and delegates each connection to a tracked worker.
 fn run_hook_bridge_websocket_server(
     listener: TcpListener,
+    identity: Arc<loom_local_channel::ServerIdentity>,
     shutdown_rx: Receiver<()>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
@@ -23,13 +24,20 @@ fn run_hook_bridge_websocket_server(
     surface_actions: SharedSurfaceActionExecutor,
 ) {
     loop {
-        if shutdown_rx.try_recv().is_ok() {
+        if !matches!(shutdown_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
             return;
         }
 
         match listener.accept() {
             Ok((stream, _)) => {
                 connections.reap_finished();
+                if connections.at_capacity() {
+                    continue;
+                }
+                let Ok(interrupt) = stream.try_clone() else {
+                    continue;
+                };
+                let identity = Arc::clone(&identity);
                 let connection_cancelled = connections.cancellation();
                 let connected_clients = Arc::clone(&connected_clients);
                 let extension_clients = Arc::clone(&extension_clients);
@@ -52,6 +60,7 @@ fn run_hook_bridge_websocket_server(
                 let worker = thread::spawn(move || {
                     handle_hook_bridge_websocket_connection(
                         stream,
+                        identity,
                         connection_cancelled,
                         connected_clients,
                         extension_clients,
@@ -73,7 +82,7 @@ fn run_hook_bridge_websocket_server(
                         surface_actions,
                     );
                 });
-                connections.track(worker);
+                connections.track(worker, interrupt);
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));

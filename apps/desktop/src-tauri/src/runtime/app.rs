@@ -51,6 +51,7 @@ pub fn run() {
 
     let run_result = builder
         .setup(|app| {
+            hook_bridge_subscription::start()?;
             let general =
                 read_loom_persisted_general_settings().unwrap_or(LoomGeneralRuntimeSettings {
                     minimize_to_tray: true,
@@ -108,6 +109,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            hook_bridge_subscription::read_hook_bridge_subscription_state,
             daemon::resolve_loom_daemon_url,
             diagnostics::resolve_application_diagnostics,
             diagnostics::open_application_log_location,

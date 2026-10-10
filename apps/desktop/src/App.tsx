@@ -275,13 +275,11 @@ export default function App() {
     if (
       snapshot.connectionState !== "online"
       || typeof window === "undefined"
-      || typeof WebSocket === "undefined"
     ) {
       return;
     }
     const sync = startHookBridgeWorkflowSync({
       refresh,
-      websocketUrl: hookBridgeUrl,
       invalidateHookCanvas: () => {
         setHookCanvasRefreshVersion((version) => version + 1);
       },
@@ -290,7 +288,7 @@ export default function App() {
     return () => {
       sync.dispose();
     };
-  }, [hookBridgeUrl, refresh, snapshot.connectionState]);
+  }, [refresh, snapshot.connectionState]);
 
   const openWorkflowArtCreator = useCallback((request: WorkflowArtCreationRequest) => {
     setPendingArtCreationRequest({

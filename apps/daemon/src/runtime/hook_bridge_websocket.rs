@@ -61,6 +61,15 @@ fn start_hook_bridge(
             }),
         );
     }
+    if runtime.discovery.is_none() {
+        return structured_error(
+            503,
+            json!({
+                "code": "hook_bridge_discovery_unavailable",
+                "message": "Private local discovery is required for the Hook bridge"
+            }),
+        );
+    }
     clear_hook_canvas_runtime_state(Some(shared_images));
 
     let listener = match TcpListener::bind(("127.0.0.1", requested_port)) {
@@ -83,6 +92,12 @@ fn start_hook_bridge(
     listener
         .set_nonblocking(true)
         .context("set hook bridge listener nonblocking")?;
+    let identity = Arc::new(loom_local_channel::ServerIdentity::generate(assigned_port)?);
+    runtime
+        .discovery
+        .as_ref()
+        .context("missing bridge discovery")?
+        .publish_bridge(Some(identity.discovery()))?;
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     runtime.connections.prepare_start();
     let connections = runtime.connections.clone();
@@ -108,31 +123,46 @@ fn start_hook_bridge(
     let worker_surface_instances = Arc::clone(surface_instances);
     let worker_surface_actions = Arc::clone(surface_actions);
     let workflow_root = runtime.workflow_root.clone();
-    let worker = thread::spawn(move || {
-        run_hook_bridge_websocket_server(
-            listener,
-            shutdown_rx,
-            connected_clients,
-            extension_clients,
-            ocr_text_clients,
-            connections,
-            broadcast_hub,
-            worker_capability_runtime,
-            worker_capability_resources,
-            worker_surface_resources,
-            worker_mcp_servers,
-            worker_tool_registry,
-            worker_workflow_store,
-            worker_settings,
-            worker_shared_images,
-            worker_framework_registry,
-            worker_control_plane_root,
-            workflow_root,
-            worker_run_store,
-            worker_surface_instances,
-            worker_surface_actions,
-        );
-    });
+    let worker = thread::Builder::new()
+        .name("loom-hook-accept".into())
+        .spawn(move || {
+            run_hook_bridge_websocket_server(
+                listener,
+                identity,
+                shutdown_rx,
+                connected_clients,
+                extension_clients,
+                ocr_text_clients,
+                connections,
+                broadcast_hub,
+                worker_capability_runtime,
+                worker_capability_resources,
+                worker_surface_resources,
+                worker_mcp_servers,
+                worker_tool_registry,
+                worker_workflow_store,
+                worker_settings,
+                worker_shared_images,
+                worker_framework_registry,
+                worker_control_plane_root,
+                workflow_root,
+                worker_run_store,
+                worker_surface_instances,
+                worker_surface_actions,
+            );
+        });
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            runtime.connections.cancel_and_join();
+            runtime
+                .discovery
+                .as_ref()
+                .context("missing bridge discovery")?
+                .publish_bridge(None)?;
+            return Err(error).context("spawn Hook bridge accept worker");
+        }
+    };
     runtime.shutdown_tx = Some(shutdown_tx);
     runtime.worker = Some(worker);
     runtime.port = Some(assigned_port);
@@ -150,6 +180,11 @@ fn stop_hook_bridge(
     let mut runtime = hook_bridge
         .lock()
         .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
+    let publication = runtime
+        .discovery
+        .as_ref()
+        .map(|owner| owner.publish_bridge(None))
+        .transpose();
     if let Some(shutdown_tx) = runtime.shutdown_tx.take() {
         let _ = shutdown_tx.send(());
     }
@@ -164,6 +199,7 @@ fn stop_hook_bridge(
     runtime.broadcast_hub.clear();
     runtime.port = None;
     clear_hook_canvas_runtime_state(Some(shared_images));
+    publication?;
 
     Ok((
         200,
@@ -198,6 +234,7 @@ fn hook_bridge_status_json(runtime: &HookBridgeRuntime) -> Value {
 
 fn handle_hook_bridge_websocket_connection(
     stream: std::net::TcpStream,
+    identity: Arc<loom_local_channel::ServerIdentity>,
     cancelled: Arc<AtomicBool>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
@@ -218,20 +255,14 @@ fn handle_hook_bridge_websocket_connection(
     surface_instances: SharedSurfaceInstanceStore,
     surface_actions: SharedSurfaceActionExecutor,
 ) {
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-    let Ok(mut websocket) = tungstenite::accept(stream) else {
+    let Ok(mut websocket) = identity.accept(stream) else {
         return;
     };
-    let _ = websocket
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(100)));
     connected_clients.fetch_add(1, Ordering::SeqCst);
     let _guard = ConnectedClientGuard { connected_clients };
-    let mut subscription_rx: Option<Receiver<String>> = None;
+    let mut subscription_rx: Option<BroadcastReceiver> = None;
     let mut _subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
-    let mut extension_subscription_rx: Option<Receiver<String>> = None;
+    let mut extension_subscription_rx: Option<BroadcastReceiver> = None;
     let mut _extension_subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
     let mut _extension_client_guard: Option<ExtensionClientGuard> = None;
     let mut extension_state = ExtensionConnectionState {

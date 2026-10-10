@@ -86,6 +86,14 @@ fn test_daemon_runtime_from_config(
     let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
         control_plane_root.join("workflows"),
     )));
+    hook_bridge.lock().unwrap().discovery = Some(
+        write_local_capability_manifest(
+            &control_plane_root.join("capabilities"),
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+        )
+        .expect("publish isolated test discovery"),
+    );
     let surface_instances = Arc::new(Mutex::new(
         SurfaceInstanceStore::new(
             control_plane_root
@@ -120,7 +128,8 @@ fn test_daemon_runtime_from_config(
     )));
     DaemonRuntime {
         offline_peers: offline_peers::OfflinePeers::new(control_plane_root).expect("offline peers"),
-        projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf()).expect("projection owner"),
+        projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())
+            .expect("projection owner"),
         hook_settings: config.hook_settings,
         run_store: Arc::new(Mutex::new(run_store)),
         auth_token: config
@@ -343,7 +352,7 @@ fn run_hook_bridge_text_with_intermediate(
 }
 
 fn read_hook_terminal_response(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+    socket: &mut loom_local_channel::ClientSocket,
     request_id: &str,
 ) -> Value {
     loop {

@@ -67,7 +67,7 @@ fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
 
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port);
+    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(formal_art_execute_request(

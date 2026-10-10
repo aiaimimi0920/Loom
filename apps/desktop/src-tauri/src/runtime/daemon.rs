@@ -363,6 +363,7 @@ pub(super) fn stop_owned_daemon_process() -> Option<u32> {
 
 pub(super) fn begin_desktop_exit() {
     LOOM_EXITING.store(true, Ordering::Release);
+    hook_bridge_subscription::stop();
     stop_owned_daemon_process();
 }
 

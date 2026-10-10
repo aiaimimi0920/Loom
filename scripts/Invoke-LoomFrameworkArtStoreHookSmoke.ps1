@@ -4,7 +4,8 @@ param(
     [string]$EvidenceRoot = ".\target\framework-art-store-hook-smoke",
     [ValidateSet("Debug", "Release")][string]$Configuration = "Debug",
     [switch]$SkipBuild,
-    [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks"
+    [string]$FrameworkArtifactRoot = ".loom-art-store-data\frameworks",
+    [string]$NativeBridgeProbeExecutable = ".\target\debug\examples\bridge_probe.exe"
 )
 
 Set-StrictMode -Version Latest
@@ -34,6 +35,9 @@ foreach ($moduleName in $libraryModules) {
 $imageSearchLabel = ConvertFrom-UnicodeCodePoints @(0x56FE, 0x7247, 0x641C, 0x7D22)
 
 $repoRoot = Resolve-SmokeRealDirectory -Path (Join-Path $PSScriptRoot "..") -Label "Loom repository"
+$nativeProbePath = if ([IO.Path]::IsPathRooted($NativeBridgeProbeExecutable)) {
+    [IO.Path]::GetFullPath($NativeBridgeProbeExecutable)
+} else { [IO.Path]::GetFullPath((Join-Path $repoRoot $NativeBridgeProbeExecutable)) }
 $frameworkIds = @(
     "process",
     "cloud_api",
@@ -218,6 +222,7 @@ try {
             LOOM_ART_STORE_URL = "http://127.0.0.1:$storePort"
             LOOM_IMAGE_SEARCH_ALLOW_LOOPBACK_IMAGES = "1"
             APPDATA = $appDataRoot
+            LOOM_CAPABILITY_MANIFEST_DIR = Join-Path $appDataRoot 'Neuro\capabilities'
             LOCALAPPDATA = $localAppDataRoot
         } `
         -StdoutPath (Join-Path $logsRoot "daemon.stdout.log") `
@@ -296,7 +301,8 @@ try {
 
     $subscriber = $null
     try {
-        $subscriber = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
+        $subscriber = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port) `
+            -ManifestPath (Join-Path $appDataRoot 'Neuro\capabilities\loom.json') -ProbeExecutable $nativeProbePath
         Send-LoomHookBridgeWebSocketJson `
             -Client $subscriber `
             -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:release-framework-smoke","events":["loom.hook.workflow.instantiated","loom.hook.workflow.updated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.preview","loom.hook.art.result","loom.hook.art.failure"]}}'

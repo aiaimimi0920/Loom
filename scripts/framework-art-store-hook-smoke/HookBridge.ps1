@@ -1,98 +1,34 @@
-# Loom Hook Bridge WebSocket request, response and cleanup helpers.
-function New-LoomHookBridgeWebSocket {
-    param([int]$Port)
+# Business assertions stay in PowerShell; authenticated transport stays native.
+. (Join-Path $PSScriptRoot '..\NativeBridgeProbe.ps1')
 
-    if ($Port -lt 1 -or $Port -gt 65535) {
-        throw "Hook Bridge port is out of range: $Port"
-    }
-    $client = [System.Net.WebSockets.ClientWebSocket]::new()
-    $uri = [Uri]::new("ws://127.0.0.1:$Port")
-    $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    try {
-        [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
-    } catch {
-        $client.Dispose()
-        throw
-    } finally {
-        $connectCts.Dispose()
-    }
-    return $client
+function New-LoomHookBridgeWebSocket {
+    param([int]$Port, [string]$ManifestPath, [string]$ProbeExecutable)
+    if ($Port -lt 1 -or $Port -gt 65535) { throw 'Hook Bridge port is out of range.' }
+    return Start-LoomNativeBridgeProbe -Executable $ProbeExecutable -ManifestPath $ManifestPath
 }
 
 function Send-LoomHookBridgeWebSocketJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
-        [string]$Json
-    )
-
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
-    if ($bytes.Length -gt 1MB) {
-        throw "Hook Bridge request exceeds the 1 MiB smoke limit."
-    }
-    $sendCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-    try {
-        [void]$Client.SendAsync(
-            [ArraySegment[byte]]::new($bytes),
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            $sendCts.Token
-        ).GetAwaiter().GetResult()
-    } finally {
-        $sendCts.Dispose()
-    }
+    param([object]$Client, [string]$Json)
+    if ([Text.Encoding]::UTF8.GetByteCount($Json) -gt 1MB) { throw 'Hook Bridge request exceeds the 1 MiB smoke limit.' }
+    [void](Invoke-LoomNativeBridgeProbe -Client $Client -BudgetMs 11000 -Command @{
+        op = 'send'; payload = $Json; timeoutMs = 10000
+    })
 }
 
 function Receive-LoomHookBridgeWebSocketJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
-        [int]$TimeoutSeconds = 30,
-        [int]$MaxMessageBytes = 1MB,
-        [string]$Operation = "message"
-    )
-
-    if ($TimeoutSeconds -lt 1 -or $MaxMessageBytes -lt 1) {
-        throw "Hook Bridge receive bounds must be positive."
+    param([object]$Client, [int]$TimeoutSeconds = 30,
+        [int]$MaxMessageBytes = 1MB, [string]$Operation = 'message')
+    if ($TimeoutSeconds -lt 1 -or $MaxMessageBytes -lt 1) { throw 'Hook Bridge receive bounds must be positive.' }
+    if ($TimeoutSeconds -gt 150 -or $MaxMessageBytes -gt 1MB) { throw 'Hook Bridge receive bounds exceed the smoke limit.' }
+    $envelope = Invoke-LoomNativeBridgeProbe -Client $Client -BudgetMs ($TimeoutSeconds * 1000 + 1000) -Command @{
+        op = 'receive'; timeoutMs = $TimeoutSeconds * 1000; maxBytes = $MaxMessageBytes
     }
-    $buffer = New-Object byte[] 8192
-    $stream = [System.IO.MemoryStream]::new()
-    $receiveCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
-    try {
-        do {
-            try {
-                $result = $Client.ReceiveAsync(
-                    [ArraySegment[byte]]::new($buffer),
-                    $receiveCts.Token
-                ).GetAwaiter().GetResult()
-            } catch {
-                if ($_.Exception.ToString() -match "OperationCanceledException|TaskCanceledException|operation was canceled") {
-                    throw "Hook Bridge $Operation receive timed out after $TimeoutSeconds seconds."
-                }
-                throw
-            }
-
-            if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-                throw "Hook Bridge WebSocket closed before sending a JSON response."
-            }
-            if ($result.MessageType -ne [System.Net.WebSockets.WebSocketMessageType]::Text) {
-                throw "Hook Bridge WebSocket returned a non-text response."
-            }
-            if (($stream.Length + $result.Count) -gt $MaxMessageBytes) {
-                throw "Hook Bridge response exceeds the $MaxMessageBytes-byte smoke limit."
-            }
-            $stream.Write($buffer, 0, $result.Count)
-        } while (-not $result.EndOfMessage)
-
-        $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
-        return $strictUtf8.GetString($stream.ToArray()) | ConvertFrom-Json
-    } finally {
-        $receiveCts.Dispose()
-        $stream.Dispose()
-    }
+    return $envelope.payload
 }
 
 function Receive-LoomHookResponse {
     param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
+        [object]$Client,
         [string]$RequestId
     )
 
@@ -125,7 +61,7 @@ function Receive-LoomHookResponse {
 
 function Invoke-LoomHookArtExecution {
     param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
+        [object]$Client,
         [string]$RequestId,
         [string]$NodeId,
         [string]$ArtId,
@@ -156,30 +92,6 @@ function Invoke-LoomHookArtExecution {
 }
 
 function Close-LoomHookBridgeWebSocket {
-    param([System.Net.WebSockets.ClientWebSocket]$Client)
-
-    if ($null -eq $Client) {
-        return
-    }
-
-    try {
-        if ($Client.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
-            $closeCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
-            try {
-                try {
-                    [void]$Client.CloseAsync(
-                        [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
-                        "done",
-                        $closeCts.Token
-                    ).GetAwaiter().GetResult()
-                } catch {
-                    Write-Warning "Hook Bridge WebSocket close failed: $($_.Exception.Message)"
-                }
-            } finally {
-                $closeCts.Dispose()
-            }
-        }
-    } finally {
-        $Client.Dispose()
-    }
+    param([AllowNull()][object]$Client)
+    Stop-LoomNativeBridgeProbe -Client $Client
 }

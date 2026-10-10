@@ -163,9 +163,12 @@ and shared-memory diagnostics remain available only inside the collapsed
 **高级技术信息** disclosure.
 
 When running an isolated desktop smoke, set `LOOM_HOOK_BRIDGE_PORT` (or
-`LOOM_HOOK_BRIDGE_URL`) alongside `LOOM_DAEMON_URL`; the desktop passes that
-bridge address to its Hook event client so the smoke does not reuse a user's
-port 19820 instance.
+`LOOM_HOOK_BRIDGE_URL`) alongside `LOOM_DAEMON_URL` to select the daemon's bridge
+port. Desktop event delivery uses a native authenticated TLS subscription discovered
+from `%APPDATA%/Neuro/capabilities/loom.json`, not a browser URL override. Isolate
+`APPDATA` too so the smoke cannot replace another running instance's manifest.
+See [local bridge security](protocol/LOCAL_BRIDGE_SECURITY.md); mixed transport
+versions fail closed and require a coordinated Hook/Loom update.
 
 Start the daemon on an isolated local port:
 
