@@ -33,6 +33,49 @@ revoked version, credential disclosure, or source-tree modification.
   advisory on Unix process groups.
 - Credential list and support/diagnostic APIs never return secret values.
 
+## Outbound peer binding
+
+The shared outbound client validates the exact DNS answer set consumed by its
+connector, including IPv4-mapped IPv6 addresses. Empty, mixed forbidden/allowed,
+and oversized DNS answers fail closed. A preliminary URL check is not treated
+as proof that a later connection reaches an approved peer.
+
+HTTP/HTTPS proxy routes use numeric `CONNECT IP:port` destinations after local
+policy validation; target TLS still uses the original URL hostname for SNI and
+certificate verification. HTTPS proxies must also pass their own normal TLS
+certificate verification. The operator-selected proxy is trusted to honor the
+numeric endpoint; this is not remote socket attestation. Proxy failure never
+falls back to a direct connection.
+Proxy selection and `NO_PROXY` are snapshotted with each protected client, using
+the same system matcher as reqwest. Ordinary Gateway proxy clients are unchanged.
+Custom proxy URLs are normalized (including IDNA hostnames) before matching;
+an unrepresentable custom route fails client creation rather than selecting direct.
+
+A client-owned loopback adapter preserves reqwest's request/streaming interface.
+It uses an ephemeral 256-bit credential and strips local proxy credentials before
+forwarding HTTP requests. Its process-wide limits are 128 clients and 128 active
+connections, with 16 connections per client, 256 KiB/128-field request headers, a 20-second
+connection deadline, a 60-second idle/write deadline, and a 15-minute total tunnel
+limit. Remaining connection time is divided across approved DNS candidates, with
+non-final attempts capped at five seconds so a stalled first address cannot
+consume the entire fallback window. Dropping the client lease cancels its listener
+and active connections.
+The incoming header budget accommodates MCP's 64 configured headers and 128 KiB
+aggregate limit plus protocol-managed headers. Upstream CONNECT response headers
+retain a separate 16 KiB/64-field limit; target HTTPS headers remain end-to-end encrypted.
+No external proxy service or persistent credential is installed.
+
+The Windows native image fallback uses the same adapter for proxy and direct
+routes, while keeping Windows TLS validation. Its explicit `IWebProxy` never
+bypasses loopback: .NET `WebProxy` otherwise bypasses loopback even with
+`BypassProxyOnLocal=false`. Direct routes connect to the already validated numeric
+address. The native child and adapter share the download's bounded lifetime.
+
+Protected proxy transport currently requires HTTP/HTTPS proxies; unsupported
+proxy schemes fail explicitly rather than silently bypassing the operator's
+route. HTTP development endpoints also require the upstream proxy to permit a
+CONNECT tunnel to their approved port.
+
 ## Trust policy
 
 The current default is `allow-unsigned` for local/development packages. This is

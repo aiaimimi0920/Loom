@@ -8,7 +8,19 @@ repository.workspace = true
 description = "Shared security primitives for Loom: archive extraction, outbound network policy, and untrusted JSON limits"
 
 [dependencies]
+base64.workspace = true
+httparse = "1.10"
+hyper-util = { version = "0.1", features = ["client-proxy"] }
+rand_core.workspace = true
+rustls.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+webpki-roots = "1.0"
 reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
 zip.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

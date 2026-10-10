@@ -12,5 +12,10 @@ pub mod archive;
 mod filesystem;
 pub mod json;
 pub mod network;
+mod network_dns;
+mod network_proxy;
+mod network_proxy_relay;
+mod network_proxy_request;
+mod network_proxy_tunnel;
 
 pub use filesystem::metadata_has_link_semantics;

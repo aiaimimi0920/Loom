@@ -2713,9 +2713,18 @@ dependencies = [
 name = "loom_security"
 version = "0.2.1"
 dependencies = [
+ "base64 0.22.1",
+ "httparse",
+ "hyper-util",
+ "rand_core 0.6.4",
+ "rcgen",
  "reqwest 0.12.28",
+ "rustls",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
  "zip",
 ]
 

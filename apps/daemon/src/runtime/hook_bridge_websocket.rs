@@ -180,6 +180,7 @@ fn stop_hook_bridge(
     let mut runtime = hook_bridge
         .lock()
         .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
+    let owned_bridge = runtime.worker.is_some();
     let publication = runtime
         .discovery
         .as_ref()
@@ -198,7 +199,11 @@ fn stop_hook_bridge(
     runtime.ocr_text_capable_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
-    clear_hook_canvas_runtime_state(Some(shared_images));
+    // Every daemon shutdown calls this, including runtimes that never started
+    // a bridge. Such an idle runtime does not own the process-wide Art state.
+    if owned_bridge {
+        clear_hook_canvas_runtime_state(Some(shared_images));
+    }
     publication?;
 
     Ok((

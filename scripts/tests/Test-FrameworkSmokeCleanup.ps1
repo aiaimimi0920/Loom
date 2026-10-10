@@ -15,6 +15,7 @@ function Assert-Cleanup([bool]$Condition, [string]$Message) {
 function New-CleanupTestChild([hashtable]$State) {
     $child = [pscustomobject]@{ State = $State; Id = $State.ChildId; StartTime = $State.ChildStart }
     $child | Add-Member ScriptProperty Handle {
+        if ($this.State.Mode -eq "exited-without-handle") { $this.State.Exited = $true; return [IntPtr]::Zero }
         if ($this.State.Mode -eq "exited-during-acquire") { $this.State.Exited = $true; throw "synthetic acquisition exit race" }
         if ($this.State.Mode -eq "handle-denied") { throw [UnauthorizedAccessException]::new("synthetic handle denial") }
         return [IntPtr]1
@@ -28,6 +29,8 @@ function New-CleanupTestChild([hashtable]$State) {
     $child | Add-Member ScriptMethod WaitForExit {
         param([int]$Milliseconds)
         [void]$this.State.Waits.Add($Milliseconds)
+        if ($this.State.Mode -eq "exited-without-handle") { throw "No handle remains to wait on" }
+        if ($Milliseconds -gt 0 -and $this.State.Mode -eq "missing-record-before-signal") { $this.State.Exited = $true }
         if ($Milliseconds -gt 0 -and $this.State.KillCalls -gt 0 -and $this.State.Signal) {
             $this.State.Exited = $true
         }
@@ -52,6 +55,10 @@ function Get-CimInstance {
             $script:CleanupState.SnapshotQueries++
             # Unrelated process rows in a global snapshot must never be acquired/killed.
             [pscustomobject]@{ ProcessId = 2147483644; ParentProcessId = -1 }
+            if ($script:CleanupState.Mode -like 'missing-record-*') {
+                # An unverified wait-only identity cannot authorize descendant discovery.
+                [pscustomobject]@{ ProcessId = 2147483643; ParentProcessId = $script:CleanupState.ChildId }
+            }
         }
         foreach ($node in @($script:CleanupState, $script:CleanupSibling)) {
             [pscustomobject]@{ ProcessId = $node.ChildId; ParentProcessId = $script:CleanupState.ParentId }
@@ -65,6 +72,7 @@ function Get-CimInstance {
             throw "synthetic parent query denial"
         }
         if ($node.Mode -eq "disappeared-after-pin") { $node.Exited = $true; return @() }
+        if ($node.Mode -in @("missing-record-before-signal", "missing-record-without-signal")) { return @() }
         $parentId = $script:CleanupState.ParentId
         if ($node.Mode -in @("wrong-parent", "wrong-parent-after-exit")) {
             $parentId++
@@ -130,8 +138,11 @@ function Invoke-CleanupScenario([string]$Mode) {
         $script:CleanupSibling.Child = New-CleanupTestChild $script:CleanupSibling
         $errors = @(Stop-SpawnedProcess -Process $root -TimeoutMilliseconds 5000 -WarningAction SilentlyContinue)
         Assert-Cleanup ($observer.WaitForExit(0)) "The real synthetic root leaked in $Mode."
-        $success = $Mode -in @("delayed-exit", "exit-during-kill", "disappeared", "exited-during-acquire", "disappeared-after-pin")
+        $success = $Mode -in @("delayed-exit", "exit-during-kill", "disappeared", "exited-during-acquire", "disappeared-after-pin", "exited-without-handle", "missing-record-before-signal")
         Assert-Cleanup (($errors.Count -eq 0) -eq $success) "Cleanup result mismatch in ${Mode}: expected success=$success; errors=$($errors.Count)."
+        if ($Mode -in @("exited-without-handle", "missing-record-before-signal", "missing-record-without-signal")) {
+            Assert-Cleanup ($script:CleanupState.KillCalls -eq 0) "An exiting unverified descendant was killed in $Mode."
+        }
         if ($Mode -in @("wrong-parent", "older-child", "handle-denied", "parent-query-denied", "acquire-denied", "exited-during-acquire", "query-denied-after-exit", "wrong-parent-after-exit", "disappeared-after-pin")) {
             Assert-Cleanup ($script:CleanupState.KillCalls -eq 0) "An unverified descendant was killed in $Mode."
         }
@@ -159,7 +170,7 @@ function Invoke-CleanupScenario([string]$Mode) {
 
 try {
     foreach ($mode in @("delayed-exit", "timeout", "enumeration-denied", "handle-denied", "parent-query-denied",
-        "kill-denied", "wrong-parent", "older-child", "disappeared", "exit-during-kill", "acquire-denied", "exited-during-acquire", "query-denied-after-exit", "wrong-parent-after-exit", "disappeared-after-pin")) {
+        "kill-denied", "wrong-parent", "older-child", "disappeared", "exit-during-kill", "acquire-denied", "exited-during-acquire", "query-denied-after-exit", "wrong-parent-after-exit", "disappeared-after-pin", "exited-without-handle", "missing-record-before-signal", "missing-record-without-signal")) {
         Invoke-CleanupScenario $mode
         Write-Output "Framework cleanup case passed: $mode"
     }

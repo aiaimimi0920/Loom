@@ -98,8 +98,9 @@ function Start-SmokeProcess {
 
 # Retain a real kernel handle before trusting a PID discovered in a process snapshot.
 function Get-SmokeOwnedChildProcess {
-    param([int]$ProcessId, [object]$Parent)
+    param([int]$ProcessId, [object]$Parent, [ref]$WaitOnly)
 
+    $WaitOnly.Value = $false
     $child = $null
     $retained = $false
     try {
@@ -114,11 +115,26 @@ function Get-SmokeOwnedChildProcess {
         } catch {
             $acquisitionError = $_
             try { if ($child.WaitForExit(0)) { return $null } } catch { }
+            # A PID-only wrapper cannot wait after exit. Require a fresh, explicit
+            # absence result; access denial or a reused/live PID remains a failure.
+            $probe = $null
+            try { $probe = Get-Process -Id $ProcessId -ErrorAction Stop }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') { return $null }
+                throw
+            } finally { if ($null -ne $probe) { $probe.Dispose() } }
             throw $acquisitionError
         }
         # Query/access failures remain failures even if the process exits concurrently.
         $records = @(Get-SmokeProcessRecords -Filter "ProcessId=$ProcessId")
-        if ($records.Count -eq 0 -and $child.WaitForExit(0)) { return $null }
+        if ($records.Count -eq 0) {
+            # Process enumeration can disappear before the pinned handle signals.
+            # Retain it only for the final shared-budget wait; do not kill this
+            # unverified identity or block discovery/termination of its siblings.
+            $WaitOnly.Value = $true
+            $retained = $true
+            return $child
+        }
         if ($records.Count -ne 1 -or [int]$records[0].ParentProcessId -ne $Parent.Id -or
             $child.StartTime.ToUniversalTime() -lt $Parent.StartTime.ToUniversalTime()) {
             throw "Cannot verify descendant $ProcessId belongs to process $($Parent.Id)."
@@ -150,6 +166,7 @@ function Stop-SpawnedProcess {
     $knownIds = [System.Collections.Generic.HashSet[int]]::new()
     [void]$knownIds.Add($Process.Id)
     $terminationRequested = [System.Collections.Generic.HashSet[int]]::new()
+    $waitOnlyIds = [System.Collections.Generic.HashSet[int]]::new()
     $failures = New-Object System.Collections.ArrayList
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     try {
@@ -182,15 +199,21 @@ function Stop-SpawnedProcess {
                     break
                 }
                 $parent = $owned[$parentIndex]
+                if ($waitOnlyIds.Contains($parent.Id)) { continue }
                 try {
                     foreach ($childId in $childrenByParent[$parent.Id]) {
                         if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { $discoveryExpired = $true; break }
                         if ($knownIds.Contains($childId)) { continue }
                         try {
-                            $child = Get-SmokeOwnedChildProcess -ProcessId $childId -Parent $parent
+                            $waitOnly = $false
+                            $child = Get-SmokeOwnedChildProcess -ProcessId $childId -Parent $parent -WaitOnly ([ref]$waitOnly)
                             if ($null -ne $child) {
                                 [void]$knownIds.Add($childId)
                                 [void]$owned.Add($child)
+                                if ($waitOnly) {
+                                    [void]$waitOnlyIds.Add($childId)
+                                    [void]$terminationRequested.Add($childId)
+                                }
                             }
                         } catch {
                             [void]$failures.Add("Failed to retain descendant ${childId}: $($_.Exception.Message)")

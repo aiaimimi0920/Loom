@@ -1,6 +1,26 @@
 // Real daemon lifecycle, private discovery and bounded broadcast delivery.
 
 #[test]
+fn stopping_an_inactive_bridge_preserves_unrelated_art_request() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
+    let root = unique_temp_dir("inactive-bridge-art-isolation");
+    let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+    assert!(runtime.hook_bridge.lock().unwrap().worker.is_none());
+    let other_images = Arc::new(Mutex::new(SharedImageStore::new()));
+    let request = hook_art_request("request:other-runtime", "node:other-runtime", 1);
+    let cancellation = match reserve_hook_art_request(&request, &other_images) {
+        HookArtReservation::Execute(token) => token,
+        _ => panic!("reserve unrelated Art request"),
+    };
+    stop_test_hook_bridge(&runtime);
+    let was_cancelled = cancellation.load(Ordering::Acquire);
+    clear_hook_canvas_runtime_state(Some(&other_images));
+    drop(runtime);
+    fs::remove_dir_all(root).unwrap();
+    assert!(!was_cancelled, "an inactive bridge cancelled another runtime's Art request");
+}
+
+#[test]
 fn broadcast_overload_evicts_slow_subscriber_without_blocking_healthy_one() {
     let hub = HookBridgeBroadcastHub::new();
     let (slow, _slow_guard) =
