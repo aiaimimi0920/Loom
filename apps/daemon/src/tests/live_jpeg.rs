@@ -4,15 +4,29 @@ mod live_jpeg_tests {
     const SESSION: &str = "live:jpeg";
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
 
-    struct TestDaemon {
+    #[test]
+    fn live_h264_real_socket_rejects_video_on_both_old_profiles_before_storage() {
+        for offer in ["loom.live.v1", "loom.live.jpeg.v1,loom.live.v1"] {
+            let daemon = TestDaemon::new();
+            let (mut source, _) = daemon.connect("source", "device-source", offer);
+            let bytes = super::live_h264_continuity_tests::frame(1, true);
+            // Valid C1 syntax: failure must not depend on malformed payload rejection.
+            assert!(LiveBinaryFrame::decode(&bytes).is_ok());
+            source.send(tungstenite::Message::Binary(bytes)).unwrap();
+            assert!(matches!(source.read(), Ok(tungstenite::Message::Close(_)) | Err(tungstenite::Error::ConnectionClosed)));
+            assert_eq!(daemon.store.lock_state().unwrap()[SESSION].last_frame_id, 0);
+        }
+    }
+
+    pub(super) struct TestDaemon {
         port: u16,
-        store: SharedLiveSessionStore,
+        pub(super) store: SharedLiveSessionStore,
         shutdown: mpsc::Sender<()>,
         worker: Option<JoinHandle<()>>,
         root: PathBuf,
     }
     impl TestDaemon {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let root = unique_temp_dir("live-jpeg");
             let daemon = LoomDaemon::bind(
                 DaemonConfig::localhost(0)
@@ -43,7 +57,7 @@ mod live_jpeg_tests {
             }
         }
 
-        fn connect(&self, role: &str, device: &str, offer: &'static str) -> (Socket, String) {
+        pub(super) fn connect(&self, role: &str, device: &str, offer: &'static str) -> (Socket, String) {
             use tungstenite::client::IntoClientRequest;
             use tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
             let mut request = format!("ws://127.0.0.1:{}/v1/live/media?sessionId=live%3Ajpeg&role={role}&deviceId={device}", self.port)
@@ -77,7 +91,7 @@ mod live_jpeg_tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
-    fn read_frame(socket: &mut Socket) -> Vec<u8> {
+    pub(super) fn read_frame(socket: &mut Socket) -> Vec<u8> {
         let started = Instant::now();
         loop {
             assert!(
@@ -98,6 +112,85 @@ mod live_jpeg_tests {
             .wait_for_frame(SESSION, 0, 0, Duration::ZERO)
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn live_jpeg_in_place_bgra_expansion_preserves_pixels_and_allocation() {
+        for channels in 1..=4 {
+            for pixels in [1, 2, 7, 257] {
+                let compact: Vec<u8> = (0..pixels * channels)
+                    .map(|index| (index % 251) as u8)
+                    .collect();
+                let mut output = vec![0xa5; 64 + pixels * 4];
+                output[64..64 + compact.len()].copy_from_slice(&compact);
+                let pointer = output.as_ptr();
+                let capacity = output.capacity();
+                expand_live_bgra_in_place(&mut output[64..], channels);
+                assert_eq!(output.as_ptr(), pointer);
+                assert_eq!(output.capacity(), capacity);
+                assert_eq!(&output[..64], &[0xa5; 64]);
+                for (source, actual) in compact
+                    .chunks_exact(channels)
+                    .zip(output[64..].chunks_exact(4))
+                {
+                    let expected = match channels {
+                        1 => [source[0], source[0], source[0], 255],
+                        2 => [source[0], source[0], source[0], source[1]],
+                        3 => [source[2], source[1], source[0], 255],
+                        4 => [source[2], source[1], source[0], source[3]],
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_jpeg_direct_buffer_matches_previous_conversion_for_rgb_and_gray() {
+        for color in [image::ExtendedColorType::Rgb8, image::ExtendedColorType::L8] {
+            for (width, height) in [(1, 1), (2, 3), (17, 9), (64, 32)] {
+                let channels = if color == image::ExtendedColorType::Rgb8 {
+                    3
+                } else {
+                    1
+                };
+                let pixels: Vec<u8> = (0..width * height * channels)
+                    .map(|index| ((index * 29) % 256) as u8)
+                    .collect();
+                let mut jpeg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                    .encode(&pixels, width, height, color)
+                    .unwrap();
+                let mut wire = FIXTURE[..64].to_vec();
+                wire[40..44].copy_from_slice(&width.to_be_bytes());
+                wire[44..48].copy_from_slice(&height.to_be_bytes());
+                wire[52..56].copy_from_slice(&(jpeg.len() as u32).to_be_bytes());
+                wire.extend_from_slice(&jpeg);
+                let store = LiveSessionStore::new();
+                store
+                    .create("device-source", live_start_envelope(SESSION))
+                    .unwrap();
+                store
+                    .publish_frame(SESSION, "device-source", wire.clone())
+                    .unwrap();
+                let frame = latest(&store);
+                let actual = frame.decode_legacy().unwrap();
+                let mut expected_pixels = image::load_from_memory(&jpeg)
+                    .unwrap()
+                    .into_rgba8()
+                    .into_raw();
+                for pixel in expected_pixels.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                }
+                let mut expected = wire[..64].to_vec();
+                expected[52..56].copy_from_slice(&(expected_pixels.len() as u32).to_be_bytes());
+                expected[57] = 1;
+                expected.extend_from_slice(&expected_pixels);
+                assert_eq!(actual.as_ref(), &expected);
+                assert_eq!(frame.bytes.as_ref(), &wire);
+            }
+        }
     }
 
     #[test]

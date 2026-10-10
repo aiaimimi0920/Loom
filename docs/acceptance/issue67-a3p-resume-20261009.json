@@ -1,0 +1,81 @@
+{
+    "gpuIntervalAverageMeasured":  false,
+    "a3pComplete":  false,
+    "pairedComparisonAvailable":  false,
+    "inputs":  [
+                   {
+                       "sha256":  "1f2048cb8aaf1ccd8ddbc5d44d0f89f1dc710b9dc8be59bf34615bcbe8f63b73",
+                       "file":  "approval.json"
+                   },
+                   {
+                       "sha256":  "c8c6d5b7ef14d408718841f2e261cda6ebdc246ecffa4dd905cf773864742d7e",
+                       "file":  "trial-template/harness-regression.json"
+                   },
+                   {
+                       "sha256":  "58916ea4f6b57e2993ee2b944f2f2c9d7bdc27af7a4a4a61560a42473ebeb5f2",
+                       "file":  "raw-1/runner-receipt.json"
+                   },
+                   {
+                       "sha256":  "bf8e40fc13766e66493b807abcdee24e69fcbd0a01d320d653ac1f953d9be796",
+                       "file":  "raw-1/part-cleanup-verified.json"
+                   },
+                   {
+                       "sha256":  "080d00160c9ff964631421c1c5083f5ffad9ea478727f2609f209d08d42f1ee0",
+                       "file":  "raw-1/pair-input.json"
+                   },
+                   {
+                       "sha256":  "bad7e56a431458ca7e435eeabea2bd6310a234be57127348c0e8e3a8d1911b47",
+                       "file":  "raw-1/native-render-visible.json"
+                   },
+                   {
+                       "sha256":  "9b81d81d7d202ff689aba0ff7055a366b30843584b4068eb55ad51bbcaf6ef4c",
+                       "file":  "raw-1/source-cadence.json"
+                   },
+                   {
+                       "sha256":  "8e59c1d4034cfb5a1f48081ee6d09e4af4c896ef44d069c0d26be0be46a78ecb",
+                       "file":  "raw-1/source-observer-helper-outcomes.json"
+                   },
+                   {
+                       "sha256":  "0559e37a4092254cfefba65fe03e2492b3f9db05e59ceac398a93f92321516bf",
+                       "file":  "raw-1/pair-resources-before.json"
+                   },
+                   {
+                       "sha256":  "8bd4197132e237aab26bcbf0233a4f899d98d8fba946989cb12a86accae3409a",
+                       "file":  "raw-1/pair-resources-after.json"
+                   },
+                   {
+                       "sha256":  "1fe955899b70c1a2b6b2a73e5f690a5204423939c9c972b365b69cc3ee984e8a",
+                       "file":  "raw-1/pair-gpu-before.json"
+                   },
+                   {
+                       "sha256":  "29927875c503dc2778863d8ae8645c164afc4bc200ca034e5ed24458ab8ae20b",
+                       "file":  "raw-1/pair-gpu-after.json"
+                   },
+                   {
+                       "sha256":  "0d4cf783b0f54c2676d4d6b64336b709b89e36b7cad94156976abc5497cc20c4",
+                       "file":  "raw-1/pair-dimension-provenance.json"
+                   },
+                   {
+                       "sha256":  "dd44aeab5bd6a533400876c1aa5fd65054bd9954a3f6414025cd550e33852c59",
+                       "file":  "raw-only-summary.json"
+                   },
+                   {
+                       "sha256":  "d70dd939dfbcf4c89c98b1ac332ac8d2042bbecdebb53b98de598c4383a26f7f",
+                       "file":  "stopped-closeout.json"
+                   },
+                   {
+                       "sha256":  "33df05d31160224bb5c3268ab26795470999af87f2d72c723dd32f35287678e3",
+                       "file":  "jpeg-1/local-port-preflight.json"
+                   },
+                   {
+                       "sha256":  "d2ac61ab02afefbf7ce977f6e7e84f5d36dd1049bbcc0520386c1e2c03e77132",
+                       "file":  "main-windows-job.json"
+                   }
+               ],
+    "jpegMediaExecuted":  false,
+    "rawExecutionAndCleanupPassed":  true,
+    "evidenceRoot":  "linshi/issue67-a3p-resume-20261009",
+    "dailyExitCount":  0,
+    "performanceAcceptancePassed":  false,
+    "physicalPresentationTested":  false
+}

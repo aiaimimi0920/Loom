@@ -69,12 +69,13 @@ fn update_managed_device(
             }
             device.enabled = input.enabled;
         }
-        if !input.enabled {
-            store.revoke_device_sessions(device_id);
-        }
         if let Err(error) = store.persist() {
             store.devices.insert(device_id.to_owned(), previous);
             return Err(error);
+        }
+        // Persist while holding the registry lock; failed management writes must not revoke grants.
+        if !input.enabled {
+            store.revoke_device_sessions(device_id);
         }
     }
     managed_devices_response(device_registry, hook_bridge)
@@ -102,11 +103,11 @@ fn remove_managed_device(
                 json!({"code": "device_not_found", "message": "device was not found"}),
             );
         };
-        store.revoke_device_sessions(device_id);
         if let Err(error) = store.persist() {
             store.devices.insert(device_id.to_owned(), removed);
             return Err(error);
         }
+        store.revoke_device_sessions(device_id);
     }
     managed_devices_response(device_registry, hook_bridge)
 }

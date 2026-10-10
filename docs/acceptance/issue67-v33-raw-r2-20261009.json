@@ -1,0 +1,136 @@
+{
+    "cleanupUtc":  "2026-10-09T14:17:39.7479482Z",
+    "nativeRunPassed":  true,
+    "pairedComparisonAvailable":  false,
+    "daemon":  {
+                   "startMs":  52,
+                   "endMs":  59566,
+                   "durationMs":  59514,
+                   "counters":  {
+                                    "publishedFrames":  1082,
+                                    "forwardedFrames":  1082,
+                                    "sourceSequenceGaps":  0,
+                                    "viewerSkippedFrames":  0,
+                                    "failedWrites":  0
+                                },
+                   "sourceFrameIdDelta":  1082,
+                   "publishedPerSecond":  18.18059616224754,
+                   "writesPerSecond":  18.18059616224754
+               },
+    "dailyExitCount":  0,
+    "dimensions":  {
+                       "initialDeclaredDimensions":  {
+                                                         "width":  439,
+                                                         "height":  271
+                                                     },
+                       "observedMediaDimensions":  {
+                                                       "width":  658,
+                                                       "height":  407
+                                                   },
+                       "samplesWithPresentation":  240,
+                       "samplesTotal":  240,
+                       "originalDaemonReportUnchanged":  true,
+                       "allFrameDimensionsVerified":  false,
+                       "sizeTransitionCause":  "not-investigated"
+                   },
+    "a3pComplete":  false,
+    "diagnosticNormalCloseObserved":  true,
+    "evidenceRoot":  "linshi/issue67-v33-raw-diagnostic-20261009-r2",
+    "abnormalDisconnectReproduced":  false,
+    "inputs":  [
+                   {
+                       "sha256":  "7d2e92518ecc0f5bd10337757e77146bf474150a7513705b252cfeb3d42bf1e8",
+                       "file":  "preflight.json"
+                   },
+                   {
+                       "sha256":  "3fcd240f1c404117111182266491a8f28a82fddeb917accaf9ec3c54f30a63c5",
+                       "file":  "approval.json"
+                   },
+                   {
+                       "sha256":  "613401a93fbaf2b92013cf5fb760e6f963966f71d6813f2db00db4d518690e7d",
+                       "file":  "candidate-input.json"
+                   },
+                   {
+                       "sha256":  "df9fe0def8443c9c7b2a8f6fe92420c616824f848cb19f0b87cea6b63c0d5fb7",
+                       "file":  "raw-1/runner-receipt.json"
+                   },
+                   {
+                       "sha256":  "4fbbf72317a62623a3df99a5efc37cdc952dd36d72a12723092358cbe1c7ab9a",
+                       "file":  "raw-1/part-cleanup-verified.json"
+                   },
+                   {
+                       "sha256":  "fcc60b00ceb33830615397dcdd8a1e6aa90c00e250ffaeaef92f6bb48ad29ba1",
+                       "file":  "raw-1/reversed-join-receipt.json"
+                   },
+                   {
+                       "sha256":  "4deeb11edd58c7553323aa85afe2a0804ccc18b3b02fadc30fbde0e6f443aa09",
+                       "file":  "raw-1/reversed-stop-receipt.json"
+                   },
+                   {
+                       "sha256":  "66300d2fa5f74ad919238859f376cbd637e6fe269e0e645790632a24bf629718",
+                       "file":  "raw-1/reversed-closed-receipt.json"
+                   },
+                   {
+                       "sha256":  "31a29c3148b3ba4cc9bbe5f9b2072a59e50797031f2838bb79a87a1be57db9a0",
+                       "file":  "raw-1/pair-input.json"
+                   },
+                   {
+                       "sha256":  "800ba911abf79b7471edfdd28d7daaf9ebb32d13073634a96b5f875e46b3aaf2",
+                       "file":  "raw-1/native-render-visible.json"
+                   },
+                   {
+                       "sha256":  "ad9089d2bc8f1a10f900cd44bf0fd39ebd849155de14c36edcb7e93b91b686dc",
+                       "file":  "raw-1/source-cadence.json"
+                   },
+                   {
+                       "sha256":  "0a3d7286b388e60b1459c2b908c305a8153587cf98e10a5903758e376a7ac623",
+                       "file":  "raw-1/source-observer-helper-outcomes.json"
+                   },
+                   {
+                       "sha256":  "16c82a2fcfaee5a481aef54515c84649dbc6d587d2c0a0e51ff06020594b5cb9",
+                       "file":  "raw-1/pair-gpu-before.json"
+                   },
+                   {
+                       "sha256":  "809ac6e076650ff92b0b5cd789eec61c328cda1927bbf2f4abc3024c9b577ff8",
+                       "file":  "raw-1/pair-gpu-after.json"
+                   },
+                   {
+                       "sha256":  "b41c387a856f6db8c4b745b63d5deaf11669cf25abd75999567fd807927fade6",
+                       "file":  "raw-1/Read-FixtureStartupState.ps1"
+                   },
+                   {
+                       "sha256":  "c349e2271caf9931c29f3686b91261d6ca8047f8d4b2083721d46d219b9e49d2",
+                       "file":  "raw-1/Assert-ContentMode.ps1"
+                   },
+                   {
+                       "sha256":  "3c3affbae743e19dd8a44f9a420ef9c36cb1154108a1b9748e264ad39ea92cdb",
+                       "file":  "trial-template/regression.json"
+                   },
+                   {
+                       "sha256":  "969353eccb63cc20771720ad56fd0c2a45e6da71a6410a3fd18faca6b91bbd9a",
+                       "file":  "raw-only-summary.json"
+                   },
+                   {
+                       "sha256":  "527353bdb33dd53d621d905e88eb488aad231ecb6e5efc6133504a10bdb922ce",
+                       "file":  "offline-diagnosis/pc3-hook-runtime.log"
+                   },
+                   {
+                       "sha256":  "6221b35b324a4fce0a638f629c2541fbaf3242c8bea0264548f95e3b77803424",
+                       "file":  "closeout.json"
+                   }
+               ],
+    "fixtureSharingConflictReproducedInThisRun":  false,
+    "originalReconnectCauseEstablished":  false,
+    "schemaVersion":  1,
+    "viewer":  {
+                   "reconnectDelta":  0,
+                   "distinctPaintedFrames":  184,
+                   "overwrittenFramesDelta":  2,
+                   "sampleCount":  240,
+                   "missingPaintProofSamples":  56,
+                   "durationMs":  62905
+               },
+    "diagnosticEvents":  [
+                             "[1791555357500] live_relay_viewer_disconnect :: reason=PeerClose(None) connected_ms=141734 epoch_frame_reconnect=Some((1, 2714, 0)) stop_requested=false remaining_budget=31"
+                         ]
+}
