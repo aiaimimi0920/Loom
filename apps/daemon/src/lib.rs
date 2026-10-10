@@ -152,6 +152,7 @@ include!("runtime/secure_persistence.rs");
 include!("runtime/mcp_persistence_models.rs");
 include!("runtime/settings_ocr_runtime.rs");
 include!("runtime/hook_bridge_connections.rs");
+include!("runtime/hook_bridge_liveness.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
 mod projection_edit;
@@ -248,6 +249,7 @@ include!("runtime/run_http_responses.rs");
 #[cfg(test)]
 mod tests {
     include!("tests/local_bridge_security.rs");
+    include!("tests/hook_bridge_liveness.rs");
     include!("tests/projection_http.rs");
     include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");

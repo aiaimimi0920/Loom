@@ -269,12 +269,21 @@ fn handle_hook_bridge_websocket_connection(
         control_plane_root: Some(control_plane_root.clone()),
         ..ExtensionConnectionState::default()
     };
+    let mut liveness = HookBridgeLiveness::new(std::time::Instant::now());
 
     loop {
         if cancelled.load(Ordering::SeqCst) {
             let _ = websocket.close(None);
             break;
         }
+        if !liveness.maintain(&mut websocket, std::time::Instant::now()) {
+            break;
+        }
+        // Bound the entire broadcast batch, not only each low-level socket write.
+        websocket
+            .get_mut()
+            .sock
+            .set_operation_deadline(std::time::Instant::now() + HOOK_BRIDGE_WRITE_TIMEOUT);
         if let Some(rx) = &subscription_rx {
             if !drain_hook_bridge_broadcasts(&mut websocket, rx) {
                 break;
@@ -286,11 +295,12 @@ fn handle_hook_bridge_websocket_connection(
             }
         }
 
-        let message = match websocket.read() {
+        let message = match read_hook_bridge_message(&mut websocket) {
             Ok(message) => message,
             Err(error) if hook_bridge_read_timed_out(&error) => continue,
             Err(_) => break,
         };
+        liveness.received(std::time::Instant::now());
         match message {
             tungstenite::Message::Text(text) => {
                 if is_extension_bridge_request(&text) {
@@ -315,9 +325,13 @@ fn handle_hook_bridge_websocket_connection(
                         extension_subscription_rx = Some(rx);
                         _extension_subscription_guard = Some(guard);
                     }
-                    if websocket
-                        .send(tungstenite::Message::Text(result.response))
-                        .is_err()
+                    // Legitimate synchronous work does not consume the peer's idle budget.
+                    liveness.received(std::time::Instant::now());
+                    if send_hook_bridge_message(
+                        &mut websocket,
+                        tungstenite::Message::Text(result.response),
+                    )
+                    .is_err()
                     {
                         break;
                     }
@@ -326,7 +340,9 @@ fn handle_hook_bridge_websocket_connection(
                 let mut intermediate_send_failed = false;
                 let mut recovery_channels: Option<Vec<String>> = None;
                 let mut emit_intermediate = |message: String| {
-                    if websocket.send(tungstenite::Message::Text(message)).is_err() {
+                    if send_hook_bridge_message(&mut websocket, tungstenite::Message::Text(message))
+                        .is_err()
+                    {
                         intermediate_send_failed = true;
                     }
                 };
@@ -344,6 +360,7 @@ fn handle_hook_bridge_websocket_connection(
                     Some(&surface_actions),
                     &mut emit_intermediate,
                 );
+                liveness.received(std::time::Instant::now());
                 if intermediate_send_failed {
                     break;
                 }
@@ -370,9 +387,11 @@ fn handle_hook_bridge_websocket_connection(
                     subscription_rx = Some(rx);
                     _subscription_guard = Some(guard);
                 }
-                if websocket
-                    .send(tungstenite::Message::Text(result.response))
-                    .is_err()
+                if send_hook_bridge_message(
+                    &mut websocket,
+                    tungstenite::Message::Text(result.response),
+                )
+                .is_err()
                 {
                     break;
                 }
@@ -383,7 +402,12 @@ fn handle_hook_bridge_websocket_connection(
                 }) {
                     let recovery = surface_snapshot_recovery_messages(&surface_instances);
                     for message in recovery {
-                        if websocket.send(tungstenite::Message::Text(message)).is_err() {
+                        if send_hook_bridge_message(
+                            &mut websocket,
+                            tungstenite::Message::Text(message),
+                        )
+                        .is_err()
+                        {
                             return;
                         }
                     }
@@ -391,7 +415,11 @@ fn handle_hook_bridge_websocket_connection(
                 broadcast_hook_bridge_messages(&broadcast_hub, &result.broadcasts);
             }
             tungstenite::Message::Ping(data) => {
-                let _ = websocket.send(tungstenite::Message::Pong(data));
+                if send_hook_bridge_message(&mut websocket, tungstenite::Message::Pong(data))
+                    .is_err()
+                {
+                    break;
+                }
             }
             tungstenite::Message::Close(close) => {
                 let _ = websocket.close(close);

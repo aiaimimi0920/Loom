@@ -28,9 +28,9 @@ fn run_hook_bridge_websocket_server(
             return;
         }
 
+        connections.reap_finished();
         match listener.accept() {
             Ok((stream, _)) => {
-                connections.reap_finished();
                 if connections.at_capacity() {
                     continue;
                 }
@@ -57,32 +57,36 @@ fn run_hook_bridge_websocket_server(
                 let run_store = Arc::clone(&run_store);
                 let surface_instances = Arc::clone(&surface_instances);
                 let surface_actions = Arc::clone(&surface_actions);
-                let worker = thread::spawn(move || {
-                    handle_hook_bridge_websocket_connection(
-                        stream,
-                        identity,
-                        connection_cancelled,
-                        connected_clients,
-                        extension_clients,
-                        ocr_text_clients,
-                        broadcast_hub,
-                        capability_runtime,
-                        capability_resources,
-                        surface_resources,
-                        mcp_servers,
-                        tool_registry,
-                        workflow_store,
-                        settings,
-                        shared_images,
-                        framework_registry,
-                        control_plane_root,
-                        workflow_root,
-                        run_store,
-                        surface_instances,
-                        surface_actions,
-                    );
-                });
-                connections.track(worker, interrupt);
+                let worker = thread::Builder::new()
+                    .name("hook-bridge-client".into())
+                    .spawn(move || {
+                        handle_hook_bridge_websocket_connection(
+                            stream,
+                            identity,
+                            connection_cancelled,
+                            connected_clients,
+                            extension_clients,
+                            ocr_text_clients,
+                            broadcast_hub,
+                            capability_runtime,
+                            capability_resources,
+                            surface_resources,
+                            mcp_servers,
+                            tool_registry,
+                            workflow_store,
+                            settings,
+                            shared_images,
+                            framework_registry,
+                            control_plane_root,
+                            workflow_root,
+                            run_store,
+                            surface_instances,
+                            surface_actions,
+                        );
+                    });
+                if let Ok(worker) = worker {
+                    connections.track(worker, interrupt);
+                }
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
