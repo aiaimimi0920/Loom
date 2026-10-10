@@ -32,6 +32,7 @@ Framework manifests declare a structured `permissionPolicy`.
 | MCP image download | Candidate URLs chosen by the MCP server are fetched under the tool's own `allowLocalhost` / `allowPrivateNetworks` declaration, with the whole candidate loop bounded by one wall-clock budget and an attempt cap |
 | State/cache/output | Dedicated writable directories outside version code |
 | Timeout/stdout/stderr | Enforced on Windows and Unix |
+| Native framework admission | All execution facades recheck persisted enabled state, current trust/revocation, permissions, dependency lockfile and exact package identity before dispatch, including reuse of a persistent MCP host |
 | Memory/active process count | Windows Job Object enforced; Unix declared only |
 | stdout/stderr | Bounded capture with truncation/error diagnostics |
 | Cancellation/drop | Whole managed process tree termination |
@@ -48,6 +49,24 @@ This also applies to manifest defaults. Package resources retain path support;
 other Arts, credentials, databases, caches, outputs and `loom-*` temp directories
 are not readable through this boundary. There is no reusable path-based staging
 grant or opaque upload-handle API in this contract.
+
+Framework installation records pin the full package SHA-256 in `packageDigest`.
+Only an explicit installation, upgrade or rollback writes that authority; execution
+never learns a new trusted digest from current package bytes. Legacy records without
+this field remain readable for listing, disabling and removal, but execution fails
+closed with a reinstall-required error. Reinstall the original verified package to
+establish the pin; enabling alone does not establish it. No old package/state files
+are deleted by this schema expansion. An older Loom may ignore/drop the extra field;
+returning to the secured version then requires reinstall again rather than silently
+trusting the downgraded writer's state. Administrative write access to the registry
+itself remains an authority boundary, not a defense against a compromised OS user.
+
+The lifecycle journal records the intended installation state, but cannot mint or
+replace registry authority during recovery. The atomic installation-record write
+is the commit point: after a crash, recovery retains the new activation only when
+that exact record was committed; otherwise it restores the previous activation.
+This also covers same-version replacements and rollback. Older journals retain
+their legacy recovery behavior and never synthesize a missing installation pin.
 
 `LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatibility default. It permits
 launch while reporting requested permissions and the matrix above through the

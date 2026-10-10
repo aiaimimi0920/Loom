@@ -92,34 +92,72 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     if let Err(error) = enforce_framework_permission_policy(&manifest) {
         return (false, format!("框架权限策略拒绝执行：{error}"));
     }
-    let trust_store_path = root.parent().unwrap_or(root).join(PLUGIN_TRUST_STORE_FILE);
-    let trust_store = match TrustStore::load(&trust_store_path) {
-        Ok(store) => store,
-        Err(error) => return (false, format!("无法读取插件信任库：{error}")),
-    };
-    let trust_status = match verify_package_signature(
-        &package_dir,
-        Some(&manifest.publisher),
-        manifest.signature.as_ref(),
-        &trust_store,
-    ) {
-        Ok(status) => status,
-        Err(error) => return (false, format!("框架包签名验证失败：{error}")),
-    };
-    // The persisted policy, not just the environment override: an operator who sets
-    // `require-trusted` in the trust store must not have framework packages — the components that
-    // execute Art code with the highest privilege — fall back to allowing unsigned ones.
-    if let Err(error) = trust_store.effective_policy().enforce(trust_status) {
-        return (false, format!("框架包信任策略拒绝执行：{error}"));
-    }
-    let control_plane_root = root.parent().unwrap_or(root);
-    if let Err(error) = verify_framework_lockfile(control_plane_root, &package_dir, &manifest) {
-        return (false, format!("框架包锁文件验证失败：{error}"));
+    // Doctor/UI must use the same persisted install authority as execution,
+    // including legacy records that require an explicit reinstall.
+    let admission = read_bounded_framework_metadata(&manifest_path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
+        .and_then(|text| FrameworkExecutionAdmission::capture(root, &package_dir, &text));
+    if let Err(error) = admission {
+        return (false, error);
     }
     (
         true,
         format!("已安装框架包 {} {}", manifest.name, manifest.version),
     )
+}
+
+/// Hash once per admission check, sharing the verified digest across trust,
+/// immutable-version identity and dependency-lock verification.
+pub(super) fn verify_framework_package_authority(
+    root: &Path,
+    package_dir: &Path,
+    manifest: &FrameworkPackageManifest,
+) -> Result<String, String> {
+    enforce_framework_permission_policy(manifest)?;
+    let control_plane_root = root.parent().unwrap_or(root);
+    let trust_store = TrustStore::load(&control_plane_root.join(PLUGIN_TRUST_STORE_FILE))
+        .map_err(|error| format!("无法读取插件信任库：{error}"))?;
+    let verified = loom_plugin_security::verify_package_signature_with_digest(
+        package_dir,
+        Some(&manifest.publisher),
+        manifest.signature.as_ref(),
+        &trust_store,
+    )
+    .map_err(|error| format!("框架包签名验证失败：{error}"))?;
+    trust_store
+        .effective_policy()
+        .enforce(verified.trust_status)
+        .map_err(|error| format!("框架包信任策略拒绝执行：{error}"))?;
+    let digest = match verified.canonical_digest {
+        Some(digest) => digest,
+        None => canonical_package_digest(package_dir, None).map_err(|error| error.to_string())?,
+    };
+    let expected = format!(
+        "{}-{}",
+        sanitize_version_for_path(&manifest.version),
+        &digest[..12]
+    );
+    let installed_identity_matches =
+        package_dir
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| {
+                name == expected
+                    || name
+                        .strip_prefix(&format!("{expected}-recovered-"))
+                        .is_some_and(|nonce| {
+                            !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+            });
+    if !installed_identity_matches {
+        return Err(
+            "framework package digest does not match its immutable version path".to_owned(),
+        );
+    }
+    verify_framework_lockfile_with_digest(control_plane_root, package_dir, manifest, &digest)
+        .map_err(|error| format!("框架包锁文件验证失败：{error}"))?;
+    Ok(digest)
 }
 
 /// Locates the active package directory of `id` under `runtime_root`.

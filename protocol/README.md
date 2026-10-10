@@ -40,6 +40,22 @@ authors must not depend on private Loom or Hook source code.
 
 ### Loom<->Hook Art contract and legacy retirement
 
+The local Hook bridge uses native-only TLS 1.3 with a pinned per-start certificate,
+private discovery and a connection-bound exporter proof. See
+[Native local bridge transport](LOCAL_BRIDGE_SECURITY.md) for the normative contract.
+The daemon HTTP administrator credential is independent and is never sent to the
+WebSocket listener. Duplicate authentication/instance/Host headers, foreign Host,
+Origin, browser subprotocol credentials and query credentials are rejected.
+
+Hook and Loom Desktop WebViews use narrow native IPC; neither receives bridge
+credentials or opens a browser WebSocket. Browser previews remain local-only.
+The former HTTP credentials broker and secret-returning native commands are removed.
+Application handshakes and extension grants still apply after authentication.
+
+Upgrade Hook and Loom together. Mixed versions fail closed without a plaintext or
+broker fallback. This is not a sandbox against arbitrary same-user processes that
+can read private discovery or native process memory.
+
 The canonical-only contract is the current production baseline. Obsolete
 wire aliases, persisted forms, package layouts, provider/process fields, and
 app-data identities are rejected rather than discovered or migrated.
@@ -228,9 +244,9 @@ preparation precedes issuance of the final invocation ticket.
 
 Both applications must be upgraded together: older Hook parsers reject the new
 binding field, and newer Hook rejects peers without the authorization feature.
-This application authorization contract is not transport authentication. The
-legacy loopback WebSocket still requires a separate trusted-channel migration;
-do not treat protocol session IDs or localhost addresses as peer identity.
+This application authorization contract complements the mandatory local WebSocket
+transport authentication described above; do not treat protocol session IDs or
+localhost addresses alone as peer identity.
 
 ## Normative framework process ABI
 

@@ -43,12 +43,13 @@ fn write_manifest_only_fixture(root: &Path, manifest: &[u8]) -> PathBuf {
 fn process_error_preserves_code_message_and_detail() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("error");
-    let art_dir = write_fixture_package(&root, ERROR_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, ERROR_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
         &fixture_tool(&art_dir),
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -196,12 +197,13 @@ fn framework_command_link_cannot_escape_the_package_directory() {
 fn invalid_process_response_is_a_structured_protocol_error() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("invalid");
-    let art_dir = write_fixture_package(&root, INVALID_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, INVALID_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
         &fixture_tool(&art_dir),
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -219,12 +221,13 @@ fn invalid_process_response_is_a_structured_protocol_error() {
 fn process_timeout_kills_the_framework_process() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("timeout");
-    let art_dir = write_fixture_package(&root, TIMEOUT_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, TIMEOUT_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
         &fixture_tool(&art_dir),
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         Duration::from_millis(50),
         None,
     )
@@ -241,12 +244,13 @@ fn process_timeout_kills_the_framework_process() {
 fn process_drains_large_stdout_without_deadlocking() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("large-stdout");
-    let art_dir = write_fixture_package(&root, LARGE_OUTPUT_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, LARGE_OUTPUT_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
         &fixture_tool(&art_dir),
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -263,12 +267,13 @@ fn process_drains_large_stdout_without_deadlocking() {
 fn process_normalizes_image_paths_before_the_temp_directory_is_removed() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("path-image-output");
-    let art_dir = write_fixture_package(&root, PATH_IMAGE_OUTPUT_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, PATH_IMAGE_OUTPUT_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
         &fixture_image_tool(&art_dir),
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -288,12 +293,13 @@ fn process_normalizes_image_paths_before_the_temp_directory_is_removed() {
 fn process_rejects_image_paths_outside_execution_output_roots() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("outside-path-image-output");
-    let art_dir = write_fixture_package(&root, OUTSIDE_PATH_IMAGE_OUTPUT_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, OUTSIDE_PATH_IMAGE_OUTPUT_SCRIPT);
     let error = execute_framework_art_in_root_with_timeout(
         &fixture_image_tool(&art_dir),
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -312,14 +318,15 @@ fn process_rejects_image_paths_outside_execution_output_roots() {
 fn framework_art_requires_installed_package_directory_metadata() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("missing-art-directory");
-    let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, SUCCESS_SCRIPT);
     let mut tool = fixture_tool(&art_dir);
     tool.metadata = Some(json!({}));
     let error = execute_framework_art_in_root_with_timeout(
         &tool,
         "publisher.test/script",
         json!({}),
-        &root,
+        &packages_root,
         Duration::from_secs(10),
         None,
     )
@@ -359,14 +366,15 @@ fn one_art_execution_stays_within_its_wall_time_budget() {
     const BUDGET_MS: u64 = 30_000;
 
     let root = temp_root("perf-wall-time");
-    let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, SUCCESS_SCRIPT);
     let tool = fixture_tool(&art_dir);
     let execute = || {
         execute_framework_art_in_root_with_timeout(
             &tool,
             "publisher.test/script",
             json!({ "inputs": { "image": "input.png" } }),
-            &root,
+            &packages_root,
             Duration::from_secs(60),
             None,
         )

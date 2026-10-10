@@ -9,12 +9,19 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use subtle::ConstantTimeEq;
 use tungstenite::{
     handshake::server::{ErrorResponse, Request, Response},
     WebSocket,
 };
 
 pub type ServerSocket = WebSocket<StreamOwned<ServerConnection, DeadlineStream>>;
+
+fn single_header<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+    let mut values = request.headers().get_all(name).iter();
+    let value = values.next()?.to_str().ok()?;
+    values.next().is_none().then_some(value)
+}
 
 /// Key material exists only in native memory; each start creates a new identity.
 pub struct ServerIdentity {
@@ -61,6 +68,7 @@ impl ServerIdentity {
 
     pub fn accept(&self, tcp: TcpStream) -> Result<ServerSocket> {
         anyhow::ensure!(tcp.peer_addr()?.ip().is_loopback(), "Nonlocal bridge peer");
+        let expected_host = tcp.local_addr()?.to_string();
         let mut stream = DeadlineStream::new(tcp, Instant::now() + HANDSHAKE_TIMEOUT)?;
         let mut tls = ServerConnection::new(Arc::clone(&self.config))?;
         while tls.is_handshaking() {
@@ -76,22 +84,20 @@ impl ServerIdentity {
         let callback = |request: &Request,
                         response: Response|
          -> std::result::Result<Response, ErrorResponse> {
-            let proof = request
-                .headers()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
+            let proof = single_header(request, "authorization")
                 .and_then(|s| s.strip_prefix("LoomBridgeProof "))
                 .filter(|s| s.len() == 64);
             let authorized = proof.is_some_and(|proof| {
-                <[u8; 32]>::from(Sha256::digest(proof.as_bytes())) == proof_hash
+                let supplied: [u8; 32] = Sha256::digest(proof.as_bytes()).into();
+                bool::from(supplied.ct_eq(&proof_hash))
             });
-            let instance = request
-                .headers()
-                .get("x-loom-bridge-instance")
-                .and_then(|v| v.to_str().ok());
+            let instance = single_header(request, "x-loom-bridge-instance");
             if !authorized
                 || instance != Some(self.discovery.instance_id.as_str())
+                || single_header(request, "host") != Some(expected_host.as_str())
+                || request.headers().contains_key("sec-websocket-protocol")
                 || request.headers().contains_key("origin")
+                || request.uri().authority().is_some()
                 || request.uri().path() != "/"
                 || request.uri().query().is_some()
             {
