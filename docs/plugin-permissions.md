@@ -32,6 +32,7 @@ Framework manifests declare a structured `permissionPolicy`.
 | MCP image download | Candidate URLs chosen by the MCP server are fetched under the tool's own `allowLocalhost` / `allowPrivateNetworks` declaration, with the whole candidate loop bounded by one wall-clock budget and an attempt cap |
 | State/cache/output | Dedicated writable directories outside version code |
 | Timeout/stdout/stderr | Enforced on Windows and Unix |
+| Native framework admission | All execution facades recheck persisted enabled state, current trust/revocation, permissions, dependency lockfile and exact package identity before dispatch, including reuse of a persistent MCP host |
 | Memory/active process count | Windows Job Object enforced; Unix declared only |
 | stdout/stderr | Bounded capture with truncation/error diagnostics |
 | Cancellation/drop | Whole managed process tree termination |

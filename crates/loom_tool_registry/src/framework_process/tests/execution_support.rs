@@ -113,7 +113,45 @@ pub(super) fn write_fixture_package(root: &Path, script: &str) -> PathBuf {
             .unwrap(),
         )
         .expect("write fixture manifest");
+    register_fixture_package(root, &package_dir);
     art_dir
+}
+
+#[cfg(windows)]
+pub(super) fn register_fixture_package(packages_root: &Path, package_dir: &Path) {
+    let control_root = packages_root
+        .parent()
+        .expect("isolated fixture control plane");
+    let manifest: FrameworkPackageManifest =
+        serde_json::from_slice(&fs::read(package_dir.join("framework.manifest.json")).unwrap())
+            .unwrap();
+    let digest = loom_plugin_security::canonical_package_digest(package_dir, None).unwrap();
+    let locks = package_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("locks");
+    fs::create_dir_all(&locks).unwrap();
+    fs::write(
+        locks.join(format!("{digest}.json")),
+        serde_json::to_vec(&loom_protocol::PluginLockfile {
+            schema_version: loom_protocol::PLUGIN_LOCKFILE_SCHEMA_VERSION,
+            package_id: manifest.qualified_id(),
+            package_version: manifest.version.clone(),
+            resolved: Vec::new(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        control_root.join("frameworks.json"),
+        serde_json::to_vec(&json!({
+            (manifest.qualified_id()): { "version": manifest.version, "enabled": true }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 pub(super) fn fixture_tool(art_dir: &Path) -> ToolDefinition {
