@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { MAX_RESPONSE_BYTES, parseArguments, sampleLiveRelay, validateOptions } from '../measure-live-relay.mjs';
@@ -121,18 +121,17 @@ test('the overall deadline bounds an unfinished body and reports insufficient da
   assert.equal(server.requests.length, 1);
 });
 
-test('credentials and TLS bypass are rejected before making a request', async () => {
+test('invalid credentials are rejected before making a request', async () => {
   const options = { ...defaults, baseUrl: 'http://127.0.0.1:1' };
   for (const auth of [undefined, '', 'secret', 'Bearer secret\r\nX: test']) {
     await assert.rejects(sampleLiveRelay(options, auth), /measurement_authorization_invalid/);
   }
-  const previous = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-  try { await assert.rejects(sampleLiveRelay(options, authorization), /measurement_tls_verification_required/); }
-  finally {
-    if (previous === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
-  }
+});
+
+test('real sampling and CLI entrypoints reject a simulated unsafe environment before network or output', () => {
+  execFileSync(process.execPath, ['--experimental-vm-modules',
+    fileURLToPath(new URL('./measure-live-relay-tls-probe.mjs', import.meta.url))],
+  { windowsHide: true, timeout: 5000, maxBuffer: 16384, stdio: 'pipe' });
 });
 
 test('CLI writes UTF-8 evidence once and never overwrites an existing file', async (t) => {
