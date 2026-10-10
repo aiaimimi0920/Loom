@@ -96,7 +96,7 @@ struct HookArtTerminalEntry {
 struct HookBridgeBroadcastHub {
     subscribers: Arc<Mutex<Vec<HookBridgeSubscriber>>>,
     next_subscriber_id: Arc<AtomicUsize>,
-    history: Arc<(Mutex<VecDeque<HookBridgeHistoryEntry>>, Condvar)>,
+    history: Arc<(Mutex<HookBridgeHistoryBuffer>, Condvar)>,
     next_sequence: Arc<AtomicUsize>,
 }
 
@@ -107,6 +107,42 @@ struct HookBridgeHistoryEntry {
 }
 
 const HOOK_BRIDGE_HISTORY_CAPACITY: usize = 2_048;
+const HOOK_BRIDGE_HISTORY_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Default)]
+struct HookBridgeHistoryBuffer {
+    entries: VecDeque<HookBridgeHistoryEntry>,
+    bytes: usize,
+}
+
+impl HookBridgeHistoryBuffer {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    fn record(&mut self, sequence: usize, message: &str) {
+        // A gap must invalidate earlier replay rather than silently skip an event.
+        if message.len() > HOOK_BRIDGE_HISTORY_BYTES {
+            self.clear();
+            return;
+        }
+        while self.entries.len() >= HOOK_BRIDGE_HISTORY_CAPACITY
+            || self.bytes + message.len() > HOOK_BRIDGE_HISTORY_BYTES
+        {
+            if let Some(entry) = self.entries.pop_front() {
+                self.bytes -= entry.message.len();
+            } else {
+                break;
+            }
+        }
+        self.bytes += message.len();
+        self.entries.push_back(HookBridgeHistoryEntry {
+            sequence,
+            message: message.to_owned(),
+        });
+    }
+}
 const HOOK_BRIDGE_POLL_MAX_MESSAGES: usize = 128;
 // Cursor zero requests recovery. Reserve one non-message cursor so an initial recovery can advance
 // even when no broadcast exists, without skipping the first future broadcast.
@@ -128,7 +164,10 @@ impl HookBridgeBroadcastHub {
         Self {
             subscribers: Arc::new(Mutex::new(Vec::new())),
             next_subscriber_id: Arc::new(AtomicUsize::new(1)),
-            history: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
+            history: Arc::new((
+                Mutex::new(HookBridgeHistoryBuffer::default()),
+                Condvar::new(),
+            )),
             next_sequence: Arc::new(AtomicUsize::new(HOOK_BRIDGE_RECOVERY_CURSOR + 1)),
         }
     }
@@ -159,13 +198,7 @@ impl HookBridgeBroadcastHub {
         };
         for message in broadcasts {
             let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
-            history.push_back(HookBridgeHistoryEntry {
-                sequence,
-                message: message.clone(),
-            });
-        }
-        while history.len() > HOOK_BRIDGE_HISTORY_CAPACITY {
-            history.pop_front();
+            history.record(sequence, message);
         }
         changed.notify_all();
     }
@@ -182,9 +215,11 @@ impl HookBridgeBroadcastHub {
             return (after, false, Vec::new());
         };
         loop {
-            let oldest = history.front().map(|entry| entry.sequence);
-            let reset = oldest.is_some_and(|oldest| after.saturating_add(1) < oldest);
+            let oldest = history.entries.front().map(|entry| entry.sequence);
+            let latest = self.next_sequence.load(Ordering::SeqCst).saturating_sub(1);
+            let reset = oldest.map_or(after < latest, |oldest| after.saturating_add(1) < oldest);
             let entries = history
+                .entries
                 .iter()
                 .filter(|entry| reset || entry.sequence > after)
                 .take(HOOK_BRIDGE_POLL_MAX_MESSAGES)
@@ -193,6 +228,9 @@ impl HookBridgeBroadcastHub {
             if !entries.is_empty() {
                 let next = entries.last().map(|entry| entry.sequence).unwrap_or(after);
                 return (next, reset, entries);
+            }
+            if reset {
+                return (latest, true, Vec::new());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -212,6 +250,6 @@ impl HookBridgeBroadcastHub {
 #[derive(Clone)]
 struct HookBridgeSubscriber {
     id: usize,
-    tx: Sender<String>,
+    tx: HookBridgeBroadcastSender,
     channels: Vec<String>,
 }

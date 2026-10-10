@@ -31,6 +31,7 @@ fn accept_authenticated_hook_socket(
     stream: TcpStream,
     token: &str,
 ) -> std::result::Result<tungstenite::WebSocket<TcpStream>, ()> {
+    await_bounded_hook_upgrade(&stream)?;
     tungstenite::accept_hdr(
         stream,
         |request: &tungstenite::handshake::server::Request,
@@ -52,6 +53,36 @@ fn accept_authenticated_hook_socket(
         },
     )
     .map_err(|_| ())
+}
+
+// Per-read timeouts alone allow a slow peer to keep a handshake thread forever.
+// Peek without consuming so tungstenite still owns HTTP parsing and validation.
+fn await_bounded_hook_upgrade(stream: &TcpStream) -> std::result::Result<(), ()> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|_| ())?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(100)))
+        .map_err(|_| ())?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut header = [0u8; 16 * 1024];
+    while Instant::now() < deadline {
+        match stream.peek(&mut header) {
+            Ok(0) => return Err(()),
+            Ok(size) => {
+                if header[..size].windows(4).any(|part| part == b"\r\n\r\n") {
+                    return Ok(());
+                }
+                if size == header.len() {
+                    return Err(());
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => return Err(()),
+        }
+    }
+    Err(())
 }
 
 fn authorize_hook_upgrade(

@@ -1,4 +1,5 @@
 // Owns Hook WebSocket connection threads so bridge stop/restart is deterministic.
+const HOOK_BRIDGE_MAX_CONNECTIONS: usize = 16;
 #[derive(Clone)]
 struct HookBridgeConnections {
     cancelled: Arc<AtomicBool>,
@@ -20,6 +21,17 @@ impl HookBridgeConnections {
 
     fn cancellation(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancelled)
+    }
+
+    // Only the listener creates/tracks workers, serially. Stop joins that listener
+    // before taking workers, so this check includes pending authentication sockets.
+    fn has_capacity(&self) -> bool {
+        !self.cancelled.load(Ordering::SeqCst)
+            && self
+                .workers
+                .lock()
+                .map(|workers| workers.len() < HOOK_BRIDGE_MAX_CONNECTIONS)
+                .unwrap_or(false)
     }
 
     fn track(&self, worker: JoinHandle<()>) {

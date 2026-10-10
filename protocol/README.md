@@ -61,6 +61,20 @@ no compatibility bypass. Application handshakes and extension grants still apply
 after transport authentication. This authenticates a local administrator channel,
 not a sandbox boundary against software that can read the same user's manifest.
 
+Bridge resource admission is bounded to 16 concurrent connection workers,
+including upgrades awaiting authentication. Excess sockets are closed before a
+worker is created. Upgrade headers have a 16 KiB / 2-second total budget. Idle
+connections receive Ping every 30 seconds and are closed after 90 seconds without
+inbound activity; browser clients answer Ping automatically. Time spent executing
+a legitimate request is not counted as an idle transport wait.
+
+Each subscription retains at most 32 events / 16 MiB. A full or oversized queue
+disconnects that slow subscriber without blocking publishers; clients reconnect
+and obtain fresh snapshots rather than silently continuing after missed events.
+Each connection drains at most 16 events before servicing inbound traffic and
+cancellation. Replay history is capped at 2048 events / 16 MiB; eviction or an
+oversized history gap requires the existing cursor-reset snapshot recovery.
+
 The bundled Loom desktop obtains subprotocol credentials through its trusted native
 command, and the PowerShell Hook smoke clients obtain scoped credentials from the
 same HTTP broker. Clients require the broker's port to match the requested port

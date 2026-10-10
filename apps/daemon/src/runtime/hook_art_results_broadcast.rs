@@ -283,8 +283,11 @@ fn hook_protocol_event_json(method: &str, params: &impl Serialize) -> String {
 fn register_hook_bridge_subscription(
     hub: &HookBridgeBroadcastHub,
     channels: Vec<String>,
-) -> (Receiver<String>, HookBridgeSubscriptionGuard) {
-    let (tx, rx) = mpsc::channel();
+) -> (HookBridgeBroadcastReceiver, HookBridgeSubscriptionGuard) {
+    let (tx, rx) = hook_bridge_broadcast_channel(
+        HOOK_BRIDGE_SUBSCRIPTION_CAPACITY,
+        HOOK_BRIDGE_SUBSCRIPTION_BYTES,
+    );
     let id = hub.next_subscriber_id.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut subscribers) = hub.subscribers.lock() {
         subscribers.push(HookBridgeSubscriber { id, tx, channels });
@@ -300,9 +303,10 @@ fn register_hook_bridge_subscription(
 
 fn drain_hook_bridge_broadcasts(
     websocket: &mut tungstenite::WebSocket<std::net::TcpStream>,
-    rx: &Receiver<String>,
+    rx: &HookBridgeBroadcastReceiver,
 ) -> bool {
-    loop {
+    // Yield to inbound messages, cancellation and heartbeat even under continuous publication.
+    for _ in 0..HOOK_BRIDGE_DRAIN_BATCH {
         match rx.try_recv() {
             Ok(message) => {
                 if websocket.send(tungstenite::Message::Text(message)).is_err() {
@@ -313,6 +317,7 @@ fn drain_hook_bridge_broadcasts(
             Err(mpsc::TryRecvError::Disconnected) => return false,
         }
     }
+    true
 }
 
 fn broadcast_hook_bridge_messages(hub: &HookBridgeBroadcastHub, broadcasts: &[String]) {
@@ -338,7 +343,7 @@ fn broadcast_hook_bridge_messages_with_count(
                 return true;
             }
             accepted = true;
-            subscriber.tx.send(broadcast.clone()).is_ok()
+            subscriber.tx.try_send(broadcast)
         });
         if retained && accepted {
             delivered += 1;

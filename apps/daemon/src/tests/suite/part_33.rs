@@ -41,7 +41,7 @@ fn enable_api_fixture_through_extension_route(
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
     digest: &str,
-) -> (Receiver<String>, HookBridgeSubscriptionGuard) {
+) -> (HookBridgeBroadcastReceiver, HookBridgeSubscriptionGuard) {
     let (events, subscription) = register_hook_bridge_subscription(
         &daemon.hook_bridge.lock().unwrap().broadcast_hub,
         vec![loom_protocol::EXTENSION_EVENT_SNAPSHOT_UPDATED.to_owned()],
@@ -250,7 +250,7 @@ fn disable_api_fixture_through_extension_route(
     root: &Path,
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
-    events: &Receiver<String>,
+    events: &HookBridgeBroadcastReceiver,
 ) {
     let request = ParsedHttpRequest {
         method: "POST".to_owned(),

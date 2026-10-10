@@ -240,19 +240,23 @@ fn handle_hook_bridge_websocket_connection(
         .set_read_timeout(Some(Duration::from_millis(100)));
     connected_clients.fetch_add(1, Ordering::SeqCst);
     let _guard = ConnectedClientGuard { connected_clients };
-    let mut subscription_rx: Option<Receiver<String>> = None;
+    let mut subscription_rx: Option<HookBridgeBroadcastReceiver> = None;
     let mut _subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
-    let mut extension_subscription_rx: Option<Receiver<String>> = None;
+    let mut extension_subscription_rx: Option<HookBridgeBroadcastReceiver> = None;
     let mut _extension_subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
     let mut _extension_client_guard: Option<ExtensionClientGuard> = None;
     let mut extension_state = ExtensionConnectionState {
         control_plane_root: Some(control_plane_root.clone()),
         ..ExtensionConnectionState::default()
     };
+    let mut heartbeat = HookBridgeHeartbeat::new(Instant::now());
 
     loop {
         if cancelled.load(Ordering::SeqCst) {
             let _ = websocket.close(None);
+            break;
+        }
+        if !heartbeat.poll(&mut websocket, Instant::now()) {
             break;
         }
         if let Some(rx) = &subscription_rx {
@@ -271,6 +275,7 @@ fn handle_hook_bridge_websocket_connection(
             Err(error) if hook_bridge_read_timed_out(&error) => continue,
             Err(_) => break,
         };
+        heartbeat.received(Instant::now());
         match message {
             tungstenite::Message::Text(text) => {
                 if is_extension_bridge_request(&text) {
@@ -301,6 +306,7 @@ fn handle_hook_bridge_websocket_connection(
                     {
                         break;
                     }
+                    heartbeat.received(Instant::now());
                     continue;
                 }
                 let mut intermediate_send_failed = false;
@@ -379,5 +385,7 @@ fn handle_hook_bridge_websocket_connection(
             }
             _ => {}
         }
+        // Time spent executing a legitimate request is not an idle transport wait.
+        heartbeat.received(Instant::now());
     }
 }

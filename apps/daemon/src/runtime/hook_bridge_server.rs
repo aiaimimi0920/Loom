@@ -27,10 +27,14 @@ fn run_hook_bridge_websocket_server(
         if shutdown_rx.try_recv().is_ok() {
             return;
         }
+        connections.reap_finished();
 
         match listener.accept() {
             Ok((stream, _)) => {
-                connections.reap_finished();
+                if !connections.has_capacity() {
+                    drop(stream);
+                    continue;
+                }
                 let connection_cancelled = connections.cancellation();
                 let auth_token = Arc::clone(&auth_token);
                 let connected_clients = Arc::clone(&connected_clients);
@@ -51,32 +55,36 @@ fn run_hook_bridge_websocket_server(
                 let run_store = Arc::clone(&run_store);
                 let surface_instances = Arc::clone(&surface_instances);
                 let surface_actions = Arc::clone(&surface_actions);
-                let worker = thread::spawn(move || {
-                    handle_hook_bridge_websocket_connection(
-                        stream,
-                        auth_token,
-                        connection_cancelled,
-                        connected_clients,
-                        extension_clients,
-                        ocr_text_clients,
-                        broadcast_hub,
-                        capability_runtime,
-                        capability_resources,
-                        surface_resources,
-                        mcp_servers,
-                        tool_registry,
-                        workflow_store,
-                        settings,
-                        shared_images,
-                        framework_registry,
-                        control_plane_root,
-                        workflow_root,
-                        run_store,
-                        surface_instances,
-                        surface_actions,
-                    );
-                });
-                connections.track(worker);
+                let worker = thread::Builder::new()
+                    .name("loom-hook-connection".to_owned())
+                    .spawn(move || {
+                        handle_hook_bridge_websocket_connection(
+                            stream,
+                            auth_token,
+                            connection_cancelled,
+                            connected_clients,
+                            extension_clients,
+                            ocr_text_clients,
+                            broadcast_hub,
+                            capability_runtime,
+                            capability_resources,
+                            surface_resources,
+                            mcp_servers,
+                            tool_registry,
+                            workflow_store,
+                            settings,
+                            shared_images,
+                            framework_registry,
+                            control_plane_root,
+                            workflow_root,
+                            run_store,
+                            surface_instances,
+                            surface_actions,
+                        );
+                    });
+                if let Ok(worker) = worker {
+                    connections.track(worker);
+                }
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
