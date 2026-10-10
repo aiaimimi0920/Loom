@@ -86,6 +86,7 @@ fn runtime_package(
         }))?)
     );
     Ok(CapabilityRuntimePackage {
+        effective_permissions: verified.manifest.permissions.clone(),
         manifest: verified.manifest,
         package_dir: verified.package_dir,
         digest: verified.digest,

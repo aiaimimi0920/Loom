@@ -234,7 +234,10 @@ fn handle_hook_bridge_websocket_connection(
     let mut extension_subscription_rx: Option<Receiver<String>> = None;
     let mut _extension_subscription_guard: Option<HookBridgeSubscriptionGuard> = None;
     let mut _extension_client_guard: Option<ExtensionClientGuard> = None;
-    let mut extension_state = ExtensionConnectionState::default();
+    let mut extension_state = ExtensionConnectionState {
+        control_plane_root: Some(control_plane_root.clone()),
+        ..ExtensionConnectionState::default()
+    };
 
     loop {
         if cancelled.load(Ordering::SeqCst) {

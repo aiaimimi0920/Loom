@@ -122,6 +122,16 @@ fn command_allows_image_upload(
     snapshot: &ContributionSnapshot,
     invocation: &ExtensionInvocation,
 ) -> bool {
+    let granted = snapshot.plugins.iter().any(|plugin| {
+        plugin.id == invocation.plugin_id
+            && plugin.trust_status == loom_protocol::ExtensionTrustStatus::Trusted
+            && plugin.effective_permissions.iter().any(|permission| {
+                permission == EXTENSION_IMAGE_READ_PERMISSION
+            })
+    });
+    if !granted {
+        return false;
+    }
     snapshot.contributions.commands.iter().any(|command| {
         command.id == invocation.command_id
             && command.plugin_id == invocation.plugin_id

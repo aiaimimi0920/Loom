@@ -8,11 +8,13 @@ use crate::{SurfaceResourceKind, EXTENSION_PROTOCOL};
 pub const EXTENSION_METHOD_HANDSHAKE: &str = "loom.extension.handshake";
 pub const EXTENSION_METHOD_SNAPSHOT_GET: &str = "loom.extension.snapshot.get";
 pub const EXTENSION_METHOD_COMMAND_INVOKE: &str = "loom.extension.command.invoke";
+pub const EXTENSION_METHOD_COMMAND_AUTHORIZE: &str = "loom.extension.command.authorize";
 pub const EXTENSION_EVENT_SNAPSHOT_UPDATED: &str = "loom.extension.snapshot.updated";
 pub const EXTENSION_REQUEST_METHODS: &[&str] = &[
     EXTENSION_METHOD_HANDSHAKE,
     EXTENSION_METHOD_SNAPSHOT_GET,
     EXTENSION_METHOD_COMMAND_INVOKE,
+    EXTENSION_METHOD_COMMAND_AUTHORIZE,
 ];
 pub const EXTENSION_EVENT_METHODS: &[&str] = &[EXTENSION_EVENT_SNAPSHOT_UPDATED];
 
@@ -22,6 +24,7 @@ pub const EXTENSION_FEATURE_SHORTCUTS: &str = "shortcut.registry";
 pub const EXTENSION_FEATURE_MENUS: &str = "menu.registry";
 pub const EXTENSION_FEATURE_NOTICES: &str = "notice.effects";
 pub const EXTENSION_FEATURE_OCR_TEXT: &str = "ocr-text.v1";
+pub const EXTENSION_FEATURE_RESOURCE_AUTHORIZATION: &str = "resource.authorization.v1";
 pub const EXTENSION_FEATURES: &[&str] = &[
     EXTENSION_FEATURE_SNAPSHOT,
     EXTENSION_FEATURE_COMMANDS,
@@ -29,6 +32,7 @@ pub const EXTENSION_FEATURES: &[&str] = &[
     EXTENSION_FEATURE_MENUS,
     EXTENSION_FEATURE_NOTICES,
     EXTENSION_FEATURE_OCR_TEXT,
+    EXTENSION_FEATURE_RESOURCE_AUTHORIZATION,
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,6 +44,8 @@ pub enum ExtensionBridgeRequest {
     SnapshotGet(ExtensionSessionRequest),
     #[serde(rename = "loom.extension.command.invoke")]
     CommandInvoke(ExtensionCommandInvokeRequest),
+    #[serde(rename = "loom.extension.command.authorize")]
+    CommandAuthorize(ExtensionCommandAuthorizeRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +77,21 @@ pub struct ExtensionCommandInvokeRequest {
     /// the capability process is invoked. Raw bytes never enter its JSON frame.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resource_uploads: Vec<ExtensionResourceUpload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionCommandAuthorizeRequest {
+    pub request_id: String,
+    pub session_id: String,
+    pub plugin_id: String,
+    pub command_id: String,
+    pub snapshot_generation: u64,
+    pub target: super::ExtensionTarget,
+    #[serde(default)]
+    pub check_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

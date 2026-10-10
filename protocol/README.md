@@ -201,6 +201,37 @@ dispatch and before applying returned effects. See
 `schemas/capability-runtime.v1.schema.json`, and
 `schemas/extension.v1.schema.json`.
 
+### Extension resource authorization
+
+Plugin bindings publish host-owned `effectivePermissions`: the installed manifest's
+permissions after verification against Loom's package-digest-bound grant store.
+An omitted field grants no resource access. Contribution `permissions` remain
+requirements, not grants. Hook exposes executable contributions only for `trusted`
+owners with matching scope; unsigned developer packages are not desktop authorities.
+
+Hook requires the `resource.authorization.v1` extension feature. Before reading
+Unit image bytes or attachments, it sends `loom.extension.command.authorize` with
+`requestId`, `sessionId`, `pluginId`, `commandId`, `snapshotGeneration`, and `target`.
+Loom checks current installed-package trust and grants. `checkOnly: true` returns
+`{ "authorized": true }` without allocating a ticket, for local cached overlay
+actions and OCR-context preparation. Otherwise the response contains an opaque
+`authorizationId`, valid for 30 seconds on that connection and for that exact
+command, plugin binding, generation and target. At most 32 tickets are outstanding.
+
+`loom.extension.command.invoke` carries that ID alongside `invocation` and optional
+`resourceUploads`. Resource uploads, existing resource references, unit attachments,
+and OCR input contexts require a ticket. Consumption removes the ticket before
+checking it; retries require a new authorization. The server rechecks current
+grants before staging, after staging, and before publishing runtime results.
+Reconnect and either handshake invalidate outstanding tickets. Long-running OCR
+preparation precedes issuance of the final invocation ticket.
+
+Both applications must be upgraded together: older Hook parsers reject the new
+binding field, and newer Hook rejects peers without the authorization feature.
+This application authorization contract is not transport authentication. The
+legacy loopback WebSocket still requires a separate trusted-channel migration;
+do not treat protocol session IDs or localhost addresses as peer identity.
+
 ## Normative framework process ABI
 
 1. Loom resolves the framework entry inside the immutable framework package.

@@ -368,6 +368,9 @@ fn package_with_contract(
     trust.write_atomic(&trust_store_path).unwrap();
     let digest = canonical_package_digest(root, Some("signature.json")).unwrap();
     CapabilityRuntimePackage {
+        effective_permissions: parse_capability_manifest(&manifest_bytes)
+            .unwrap()
+            .permissions,
         manifest: parse_capability_manifest(&manifest_bytes).unwrap(),
         package_dir: root.to_path_buf(),
         digest: digest.clone(),

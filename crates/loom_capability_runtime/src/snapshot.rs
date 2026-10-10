@@ -40,6 +40,7 @@ fn plugin_binding(registration: &SnapshotRegistration) -> ExtensionPluginBinding
         package_digest: registration.package.digest.clone(),
         trust_status: extension_trust(&registration.package.trust_status),
         permission_grant_digest: registration.package.permission_grant_digest.clone(),
+        effective_permissions: registration.package.effective_permissions.clone(),
         scope_id: registration.scope_id.clone(),
     }
 }
