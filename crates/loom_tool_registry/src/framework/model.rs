@@ -23,6 +23,10 @@ pub(super) struct FrameworkActivationState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct FrameworkLifecycleJournal {
+    /// The registry write is the commit point. Recovery never learns trust from
+    /// this journal: it only keeps activation if the registry already committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) next_installation: Option<FrameworkInstallationState>,
     pub(super) old_activation: Option<FrameworkActivationState>,
     pub(super) next_activation: FrameworkActivationState,
     pub(super) target: String,

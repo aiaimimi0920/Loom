@@ -12,3 +12,4 @@ mod installation_digest;
 mod lifecycle;
 mod policy;
 mod recovery;
+mod recovery_digest;

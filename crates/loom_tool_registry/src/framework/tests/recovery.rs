@@ -46,6 +46,7 @@ fn framework_recovery_restores_previous_activation_and_removes_orphan_target() {
         .write_lifecycle_journal(
             "process",
             &FrameworkLifecycleJournal {
+                next_installation: None,
                 old_activation: Some(old.clone()),
                 next_activation: FrameworkActivationState {
                     active: orphan_relative.clone(),
@@ -93,6 +94,7 @@ fn framework_recovery_keeps_a_version_the_interrupted_operation_did_not_create()
         .write_lifecycle_journal(
             "process",
             &FrameworkLifecycleJournal {
+                next_installation: None,
                 old_activation: Some(live.clone()),
                 next_activation: FrameworkActivationState {
                     active: older_relative.clone(),
@@ -144,6 +146,7 @@ fn a_failed_rollback_activation_leaves_no_lifecycle_journal_behind() {
         .write_lifecycle_journal(
             "process",
             &FrameworkLifecycleJournal {
+                next_installation: None,
                 old_activation: None,
                 next_activation: FrameworkActivationState {
                     active: "versions/sentinel".to_owned(),

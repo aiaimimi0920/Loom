@@ -61,6 +61,13 @@ returning to the secured version then requires reinstall again rather than silen
 trusting the downgraded writer's state. Administrative write access to the registry
 itself remains an authority boundary, not a defense against a compromised OS user.
 
+The lifecycle journal records the intended installation state, but cannot mint or
+replace registry authority during recovery. The atomic installation-record write
+is the commit point: after a crash, recovery retains the new activation only when
+that exact record was committed; otherwise it restores the previous activation.
+This also covers same-version replacements and rollback. Older journals retain
+their legacy recovery behavior and never synthesize a missing installation pin.
+
 `LOOM_PLUGIN_PERMISSION_MODE=audit` is the compatibility default. It permits
 launch while reporting requested permissions and the matrix above through the
 Desktop and `GET /v1/doctor/frameworks`.
