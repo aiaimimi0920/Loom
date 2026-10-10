@@ -24,6 +24,7 @@ fn framework_execution_admission_rechecks_disabled_state_and_corrupt_registry() 
     admission.revalidate().unwrap();
     fs::write(root.join(FRAMEWORKS_FILE), b"invalid-json").unwrap();
     assert!(admission.revalidate().is_err());
+    set_framework_tree_readonly(&root, false).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -54,6 +55,7 @@ fn framework_execution_admission_rechecks_revocation_after_resolution() {
         .unwrap();
     let error = admission.revalidate().unwrap_err();
     assert!(error.contains("Revoked"), "{error}");
+    set_framework_tree_readonly(&root, false).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -81,5 +83,6 @@ fn framework_execution_admission_rejects_tampering_and_activation_changes() {
         .revalidate()
         .unwrap_err()
         .contains("version changed"));
+    set_framework_tree_readonly(&root, false).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
