@@ -1,6 +1,8 @@
 # Loom Hook Bridge WebSocket request, response and cleanup helpers.
 function New-LoomHookBridgeWebSocket {
-    param([int]$Port)
+    param([int]$Port, [string]$Authorization = $script:DaemonRequestHeaders.Authorization)
+
+    if ([string]::IsNullOrWhiteSpace($Authorization)) { throw 'Hook authentication is required' }
 
     if ($Port -lt 1 -or $Port -gt 65535) {
         throw "Hook Bridge port is out of range: $Port"
@@ -9,6 +11,7 @@ function New-LoomHookBridgeWebSocket {
     $uri = [Uri]::new("ws://127.0.0.1:$Port")
     $connectCts = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
     try {
+        $client.Options.SetRequestHeader('Authorization', $Authorization)
         [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
     } catch {
         $client.Dispose()

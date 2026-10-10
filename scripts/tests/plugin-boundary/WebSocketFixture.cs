@@ -16,6 +16,7 @@ public sealed class PluginBoundarySocketFixture : IDisposable
     TcpClient client;
     public readonly int Port;
     public int ReceivedMessages;
+    public volatile bool ReceivedAuthorization;
 
     public PluginBoundarySocketFixture(string scenario)
     {
@@ -44,8 +45,12 @@ public sealed class PluginBoundarySocketFixture : IDisposable
                 if (scenario == "connect-timeout") { stop.Token.WaitHandle.WaitOne(5000); return; }
                 string key = null;
                 foreach (string line in header.ToString().Split(new[] { "\r\n" }, StringSplitOptions.None))
+                {
                     if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
                         key = line.Substring(line.IndexOf(':') + 1).Trim();
+                    if (line.Equals("Authorization: Bearer fixture", StringComparison.OrdinalIgnoreCase))
+                        ReceivedAuthorization = true;
+                }
                 using (var sha = SHA1.Create())
                 {
                     string accept = Convert.ToBase64String(sha.ComputeHash(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));

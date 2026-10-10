@@ -47,13 +47,20 @@ exactly `loom.hook.v1, loom.auth.<base64url-no-padding-of-UTF8-token>`; the serv
 returns only `loom.hook.v1`, never the credential. Query-string credentials,
 ambiguous headers, remote Host values and untrusted Origins are rejected. Allowed
 browser Origins are the Hook Tauri localhost origins and the explicit development
-origins `http://localhost:1420` and `http://127.0.0.1:1420`; an allowed Origin alone
+origins `http://localhost:1420` / `http://127.0.0.1:1420` (Hook) and
+`http://localhost:1423` / `http://127.0.0.1:1423` (Loom); an allowed Origin alone
 does not authorize access. Native clients may omit Origin but must authenticate.
 
 Upgrade Hook and Loom together. Old unauthenticated clients fail closed; there is
 no compatibility bypass. Application handshakes and extension grants still apply
 after transport authentication. This authenticates a local administrator channel,
 not a sandbox boundary against software that can read the same user's manifest.
+
+The bundled Loom desktop obtains subprotocol credentials through its trusted native
+command, and the PowerShell Hook smoke clients reuse their daemon bearer headers.
+A standalone Loom browser preview must explicitly set its memory-only credential
+with `setHookBridgePreviewToken` from `hookBridgeAuthentication.ts`; there is no
+ambient browser discovery, hard-coded token or unauthenticated preview bypass.
 
 The canonical-only contract is the current production baseline. Obsolete
 wire aliases, persisted forms, package layouts, provider/process fields, and
@@ -243,9 +250,9 @@ preparation precedes issuance of the final invocation ticket.
 
 Both applications must be upgraded together: older Hook parsers reject the new
 binding field, and newer Hook rejects peers without the authorization feature.
-This application authorization contract is not transport authentication. The
-legacy loopback WebSocket still requires a separate trusted-channel migration;
-do not treat protocol session IDs or localhost addresses as peer identity.
+This application authorization contract complements the mandatory local WebSocket
+transport authentication described above; do not treat protocol session IDs or
+localhost addresses alone as peer identity.
 
 ## Normative framework process ABI
 

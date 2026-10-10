@@ -4,6 +4,22 @@ mod hook_transport_auth {
     use tungstenite::client::IntoClientRequest;
 
     #[test]
+    fn hook_transport_supports_utf8_native_tokens_and_both_desktop_dev_origins() {
+        let mut request = authenticated_hook_test_request(19820, "local-凭据");
+        assert!(authorize_hook_upgrade(&request, "local-凭据").is_ok());
+        for origin in [
+            "http://localhost:1420",
+            "http://localhost:1423",
+            "http://127.0.0.1:1423",
+        ] {
+            request
+                .headers_mut()
+                .insert("origin", origin.parse().unwrap());
+            assert!(authorize_hook_upgrade(&request, "local-凭据").is_ok());
+        }
+    }
+
+    #[test]
     fn hook_transport_rejects_ambiguous_headers_and_url_credentials() {
         for header in ["host", "origin", "authorization", "sec-websocket-protocol"] {
             let mut request = authenticated_hook_test_request(19820, "secret");

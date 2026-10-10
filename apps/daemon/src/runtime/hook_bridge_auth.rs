@@ -51,6 +51,8 @@ fn authorize_hook_upgrade(
                     | "https://tauri.localhost"
                     | "http://localhost:1420"
                     | "http://127.0.0.1:1420"
+                    | "http://localhost:1423"
+                    | "http://127.0.0.1:1423"
             )
         })
     {
@@ -60,12 +62,13 @@ fn authorize_hook_upgrade(
         if headers.contains_key("sec-websocket-protocol") {
             return Err(401);
         }
+        let mut credentials = headers.get_all("authorization").iter();
+        let value = credentials.next().ok_or(401u16)?.as_bytes();
+        if credentials.next().is_some() {
+            return Err(401);
+        }
         (
-            one("authorization")
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .ok_or(401u16)?
-                .as_bytes()
-                .to_vec(),
+            value.strip_prefix(b"Bearer ").ok_or(401u16)?.to_vec(),
             false,
         )
     } else {

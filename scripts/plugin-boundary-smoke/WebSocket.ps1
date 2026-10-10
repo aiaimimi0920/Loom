@@ -1,5 +1,8 @@
 function New-LoomHookBridgeWebSocket {
-    param([int]$Port, [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
+    param([int]$Port, [ValidateRange(1, 10000)][int]$BudgetMs = 10000,
+        [string]$Authorization = $script:LoomAuthorizationHeader)
+
+    if ([string]::IsNullOrWhiteSpace($Authorization)) { throw 'Hook authentication is required' }
 
     $client = [System.Net.WebSockets.ClientWebSocket]::new()
     $uri = [Uri]::new("ws://127.0.0.1:$Port")
@@ -7,6 +10,7 @@ function New-LoomHookBridgeWebSocket {
     $connectCts = [System.Threading.CancellationTokenSource]::new($BudgetMs)
     $connected = $false
     try {
+        $client.Options.SetRequestHeader('Authorization', $Authorization)
         [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
         $connected = $true
         $script:PluginBoundaryDiagnostic.operationCompleted = $true

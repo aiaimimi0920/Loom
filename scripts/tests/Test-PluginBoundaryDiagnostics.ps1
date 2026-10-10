@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 . (Join-Path $repoRoot "scripts\plugin-boundary-smoke\Diagnostics.ps1")
 . (Join-Path $repoRoot "scripts\plugin-boundary-smoke\WebSocket.ps1")
+$script:LoomAuthorizationHeader = 'Bearer fixture'
 Add-Type -Path (Join-Path $PSScriptRoot "plugin-boundary\WebSocketFixture.cs")
 $root = Join-Path ([IO.Path]::GetTempPath()) "loom-plugin-diagnostic-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
@@ -21,9 +22,9 @@ function Test-SocketFailure([string]$Scenario, [string]$Phase, [int]$MinimumFrag
     try {
         Set-LoomPluginBoundaryPhase -Phase "connect"
         if ($Scenario -eq "connect-timeout") {
-            $client = New-LoomHookBridgeWebSocket -Port $server.Port -BudgetMs 100
+            $client = New-LoomHookBridgeWebSocket -Port $server.Port -Authorization 'Bearer fixture' -BudgetMs 100
         } else {
-            $client = New-LoomHookBridgeWebSocket -Port $server.Port
+            $client = New-LoomHookBridgeWebSocket -Port $server.Port -Authorization 'Bearer fixture'
             Set-LoomPluginBoundaryPhase -Phase $Phase
             if ($Scenario -eq "send-timeout") {
                 Send-LoomHookBridgeWebSocketJson -Client $client -Json ('x' * 16777216) -BudgetMs 100
@@ -77,6 +78,7 @@ try {
         try {
             Set-LoomPluginBoundaryPhase -Phase "connect"
             $client = New-LoomHookBridgeWebSocket -Port $server.Port
+            Assert-Diagnostic $server.ReceivedAuthorization 'Plugin smoke omitted its configured bearer credential.'
             Assert-Diagnostic ($script:PluginBoundaryDiagnostic.budgetMs -eq 10000) "Production connect budget changed."
             if ($scenario -eq 'normal') {
                 Set-LoomPluginBoundaryPhase -Phase "subscribe-send"
@@ -101,6 +103,17 @@ try {
         }
         Write-Output "PASS $scenario"
     }
+    . (Join-Path $repoRoot 'scripts\framework-art-store-hook-smoke\HookBridge.ps1')
+    $script:DaemonRequestHeaders = @{ Authorization = 'Bearer fixture' }
+    $server = [PluginBoundarySocketFixture]::new('normal')
+    $client = $null
+    try {
+        $client = New-LoomHookBridgeWebSocket -Port $server.Port
+        Assert-Diagnostic $server.ReceivedAuthorization 'Framework smoke omitted its configured bearer credential.'
+    } finally {
+        if ($null -ne $client) { $client.Dispose() }
+        $server.Dispose()
+    }
     Reset-LoomPluginBoundaryDiagnostic
     try { throw ('private-payload' * 10000) } catch {
         Save-LoomPluginBoundaryDiagnostic -EvidencePath $root -Failure $_
@@ -124,4 +137,4 @@ try {
     if (-not $resolvedRoot.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe test cleanup path." }
     Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
 }
-Write-Output "Plugin boundary diagnostics: 13 loopback, privacy, and error-preservation cases passed."
+Write-Output "Plugin boundary diagnostics: 13 loopback/privacy/error cases and both authenticated smoke clients passed."
