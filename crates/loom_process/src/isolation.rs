@@ -52,7 +52,11 @@ impl Drop for ProcessIsolation {
 }
 
 #[cfg(windows)]
-pub(crate) fn configure_process_group(_command: &mut Command) {}
+pub(crate) fn configure_process_group(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    // No plugin instruction may run before AssignProcessToJobObject succeeds.
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+}
 
 #[cfg(unix)]
 pub(crate) fn configure_process_group(command: &mut Command) {
@@ -99,12 +103,14 @@ fn attach_process_isolation(
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         ) == 0
         {
+            let error = std::io::Error::last_os_error();
             windows_sys::Win32::Foundation::CloseHandle(job);
-            return Err(std::io::Error::last_os_error().to_string());
+            return Err(error.to_string());
         }
         if AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+            let error = std::io::Error::last_os_error();
             windows_sys::Win32::Foundation::CloseHandle(job);
-            return Err(std::io::Error::last_os_error().to_string());
+            return Err(error.to_string());
         }
         Ok(ProcessIsolation { job })
     }

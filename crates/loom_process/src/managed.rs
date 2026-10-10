@@ -2,10 +2,10 @@
 
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, ExitStatus};
 
-use crate::command::supervised_command;
 use crate::error::ProcessError;
 use crate::isolation::ProcessIsolation;
 use crate::model::ProcessSpec;
+use crate::spawn::spawn_isolated;
 
 pub struct ManagedChildPipes {
     pub stdin: ChildStdin,
@@ -20,13 +20,7 @@ pub struct ManagedChild {
 
 impl ManagedChild {
     pub fn spawn(spec: &ProcessSpec) -> Result<(Self, ManagedChildPipes), ProcessError> {
-        let mut command = supervised_command(spec);
-        let mut child = command.spawn().map_err(ProcessError::Spawn)?;
-        let isolation = ProcessIsolation::attach(&child, &spec.limits).map_err(|error| {
-            let _ = child.kill();
-            let _ = child.wait();
-            ProcessError::Isolation(error)
-        })?;
+        let (mut child, isolation) = spawn_isolated(spec)?;
         let stdin = child.stdin.take().ok_or_else(|| {
             isolation.kill_tree(&mut child);
             let _ = child.wait();
