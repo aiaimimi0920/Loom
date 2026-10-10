@@ -169,7 +169,11 @@ impl DeviceRegistryStore {
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
         };
-        store.expire_pending_pairings(now)?;
+        if let Err(error) = store.expire_pending_pairings(now) {
+            // The cleanup restores every record; readable authorization state is
+            // still usable. Mutating requests retry cleanup and remain fail-closed.
+            eprintln!("loom device registry could not expire pairing requests: {error:#}");
+        }
         if let Err(error) = store.persist() {
             eprintln!("loom device registry could not persist the local host: {error:#}");
         }

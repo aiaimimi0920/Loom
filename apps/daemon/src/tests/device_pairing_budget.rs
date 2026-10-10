@@ -16,6 +16,55 @@ fn load_pairing_registry_snapshot(path: &Path, port: u16) -> DeviceRegistryStore
     DeviceRegistryStore::new(snapshot, format!("127.0.0.1:{port}").parse().unwrap()).unwrap()
 }
 
+#[cfg(windows)]
+#[test]
+fn public_pairing_startup_survives_readable_registry_replacement_failure() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = Fixture::new();
+    assert_eq!(
+        wall_http::public(
+            f.port,
+            "POST",
+            "/v1/devices/requests",
+            Some(pairing_payload())
+        )
+        .0,
+        200
+    );
+    let (id, snapshot) = {
+        let mut store = f.devices.lock().unwrap();
+        let id = store
+            .devices
+            .values()
+            .find(|d| d.approval == "pending")
+            .unwrap()
+            .id
+            .clone();
+        store.devices.get_mut(&id).unwrap().created_at = 1;
+        store.persist().unwrap();
+        let root = f.root.join("startup-replacement-denied");
+        fs::create_dir(&root).unwrap();
+        let snapshot = root.join("devices.json");
+        fs::copy(&store.path, &snapshot).unwrap();
+        (id, snapshot)
+    };
+    // Permit reads but deny replacement until this identity-pinning handle closes.
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&snapshot)
+        .unwrap();
+    let mut loaded =
+        DeviceRegistryStore::new(snapshot, format!("127.0.0.1:{}", f.port).parse().unwrap())
+            .unwrap();
+    assert!(loaded.devices.contains_key(&id));
+    assert!(loaded.expire_pending_pairings(unix_time_millis()).is_err());
+    assert!(loaded.devices.contains_key(&id));
+    drop(held);
+    loaded.expire_pending_pairings(unix_time_millis()).unwrap();
+    assert!(!loaded.devices.contains_key(&id));
+}
+
 #[test]
 fn public_pairing_capacity_is_persistent_and_duplicate_requests_do_not_write() {
     let f = Fixture::new();
