@@ -61,6 +61,40 @@ skip or repeat. A resume snapshot moves all three sequence baselines into a
 strictly newer epoch. Frame IDs may skip because video is replaceable; stale or
 duplicate frame IDs are rejected and the gap is observable.
 
+Device-token renewal does not reset an existing session's epoch or sequence
+namespaces. The authenticated member `GET /v1/live/sessions/{sessionId}` adds
+`requesterControl: { deviceId, epoch, controlSequence, inputSequence }`, read
+under the same lock as the session and observation snapshot. Only the requesting
+member's accepted positions are returned; discovery, admin snapshots and attach
+responses omit this field. A missing current-epoch position is zero. This read
+is not a reservation: concurrent commands can still make the next request fail
+with 409, and clients must not guess positions from error text or reset identity.
+
+A rejoining viewer sends `session_ack` at its accepted control position plus
+one. Every accepted attachment, including an existing member, emits a new
+`viewer_joined` state event and revision for bootstrap; membership remains
+deduplicated and controller authority is not granted. Source recovery reads
+the member snapshot after stopping its old publishers and continues each
+observation ID at its accepted position plus one. Old stability intervals and
+input edges must not be replayed. Clients requiring safe recovery fail closed
+when a daemon does not provide the actor-scoped cursor.
+
+Automatic credential renewal adds optional boolean `requireExistingMembership` to
+the viewer attachment HTTP request (not the control envelope). It defaults to false
+for explicit joins. When true, the daemon requires an existing viewer member and no
+controller lease owned by that viewer device under the same lock as sequence
+acceptance. Policy rejection is `409 live_viewer_renewal_unavailable`; it does not
+attach a member, consume a sequence, or emit a `viewer_joined` revision. Normal
+lease-expiration maintenance still runs before that check and may clear an expired
+controller and advance the revision, even when renewal is rejected. Existing
+Surface authorization, active-session and epoch checks still apply. Renewal never
+releases another connection's unexpired lease or acquires control. A client must
+not downgrade a rejected renewal to an explicit
+join. Older strict request parsers reject the added field; deploy Loom support first.
+Device credential renewal does not itself revoke a device identity: disabling or
+removing the device prevents fresh signed sessions, whereas invalidating only an
+individual token need not do so.
+
 ## Session and authority
 
 `LiveScreenshotSession` carries source device/Hook/window identity, the physical
@@ -72,6 +106,22 @@ The session advertises at most 32 viewers and one controller. Controller changes
 carry an authority revision and expiry. Device authentication, attachment
 binding, token expiry, nonce replay prevention, and revocation remain Loom
 runtime responsibilities; a valid JSON envelope is not authorization.
+
+For a live media connection admitted with a Device session, explicit session revocation
+uses WebSocket Close code `1008` (Policy), reason exactly `live_media_device_revoked`.
+The daemon retains an in-memory shared revocation marker for that admitted session, marks
+it before a successful disable/delete removes active sessions, and never clears it when
+the Device is re-enabled. The marker is reclaimed with its session/socket references;
+there is no persistent token tombstone history. Failed management persistence rolls back
+the Device without deleting or marking its sessions. Expiry and nonce-capacity eviction
+invalidate media authorization but do not set this deliberate-revoke marker.
+
+Clients may terminate that local relay and clear its old pixels on receiving this exact
+signal. Other Close reasons or generic HTTP errors do not prove deliberate revocation.
+An already-evicted session cannot acquire later revoke provenance, and network loss can
+prevent delivery of a Close. Authorization checks still fail closed in those cases;
+the signal is not a linearized zero-in-flight-frame guarantee or a declaration that the
+whole LiveSession is closed. Administrator admission retains its separate behavior.
 
 Capture queues retain exactly two or three newest video frames. Producers never
 wait for a slow viewer: the oldest frame is replaced and the next frame notice

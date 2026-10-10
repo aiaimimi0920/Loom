@@ -36,6 +36,7 @@ function Assert-ThrowsWithText {
 }
 
 & (Join-Path $PSScriptRoot "Test-FrameworkSmokeCleanup.ps1")
+& (Join-Path $PSScriptRoot "Test-FrameworkFixtureReadiness.ps1")
 
 $tempRoot = Resolve-SmokeRealDirectory -Path $env:TEMP -Label "test temporary directory"
 $testRoot = Initialize-SmokeRealDirectory `
