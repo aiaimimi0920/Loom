@@ -185,11 +185,9 @@ pub(super) fn is_remote_url_value(rendered_value: &str) -> bool {
 
 /// Resolve the local file a declared multipart file field wants to upload.
 ///
-/// The rendered value comes from the execution arguments, so the previous `Path::exists` check
-/// meant "read whatever path the caller names and upload it": a caller could aim a hosted Art at
-/// an SSH key or a credential store and exfiltrate it through the Art's own endpoint. The path now
-/// has to canonicalize to a real file inside a root Loom itself owns, the way the framework arm
-/// confines every path it accepts.
+/// Arguments and manifest defaults are not file-read capabilities. Only resources inside the
+/// resolved Art package may be read by path. Invocation images arrive as data URLs; neither the
+/// control plane nor a loom-prefixed temp directory establishes an invocation-scoped grant.
 pub(super) fn cloud_multipart_upload_path(
     tool: &ToolDefinition,
     field: &str,
@@ -211,24 +209,7 @@ pub(super) fn cloud_multipart_upload_path(
             canonical.display()
         )));
     }
-    let inside_allowed_root = cloud_multipart_upload_roots(tool)
-        .iter()
-        .any(|root| cloud_upload_root_allows(root, &canonical));
-    if !inside_allowed_root {
-        return Err(template_error(format!(
-            "multipart field `{field}` upload path `{}` resolves outside the Art package, control plane, and staged input roots",
-            canonical.display()
-        )));
-    }
-    Ok(canonical)
-}
-
-/// Roots a cloud Art may upload a local file from: its own package directory, the control plane
-/// root that holds Art state, cache, and outputs, and the host temp directory the daemon stages
-/// call inputs in.
-pub(super) fn cloud_multipart_upload_roots(tool: &ToolDefinition) -> Vec<PathBuf> {
-    let mut roots = vec![std::env::temp_dir()];
-    if let Some(package_dir) = tool
+    let inside_allowed_root = tool
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.get("artPackage"))
@@ -236,35 +217,15 @@ pub(super) fn cloud_multipart_upload_roots(tool: &ToolDefinition) -> Vec<PathBuf
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|dir| !dir.is_empty())
-    {
-        roots.push(PathBuf::from(package_dir));
+        .and_then(|dir| fs::canonicalize(dir).ok())
+        .is_some_and(|package| package.is_dir() && canonical.starts_with(package));
+    if !inside_allowed_root {
+        return Err(template_error(format!(
+            "multipart field `{field}` upload path `{}` resolves outside the Art package; supply invocation file contents as a data URL instead",
+            canonical.display()
+        )));
     }
-    if let Some(control_plane_root) = crate::art_settings::control_plane_root_for_tool(tool) {
-        roots.push(control_plane_root);
-    }
-    roots
-}
-
-/// The host temp directory is shared with every other program on the machine, so being inside it
-/// is not by itself a reason to upload a file. Only Loom's own staging entries — every temp path
-/// this workspace creates is prefixed `loom-` — count as allowed inside it. Any other allowed root
-/// vouches for its whole subtree, including a control plane root that happens to live under temp.
-pub(super) fn cloud_upload_root_allows(root: &Path, canonical: &Path) -> bool {
-    let Ok(canonical_root) = fs::canonicalize(root) else {
-        return false;
-    };
-    if !canonical.starts_with(&canonical_root) {
-        return false;
-    }
-    if fs::canonicalize(std::env::temp_dir()).is_ok_and(|temp_root| temp_root == canonical_root) {
-        return canonical
-            .strip_prefix(&canonical_root)
-            .ok()
-            .and_then(|relative| relative.components().next())
-            .and_then(|component| component.as_os_str().to_str())
-            .is_some_and(|first| first.starts_with("loom-"));
-    }
-    true
+    Ok(canonical)
 }
 
 pub(super) fn parse_cloud_method(
