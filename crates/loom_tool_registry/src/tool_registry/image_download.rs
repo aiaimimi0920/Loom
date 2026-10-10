@@ -88,8 +88,22 @@ pub(super) fn download_image_bytes_with_powershell_httpclient(
     network_policy::validate_outbound_url(&parsed_url, policy).ok()?;
     let script = r#"
 Add-Type -AssemblyName System.Net.Http
+Add-Type -TypeDefinition @'
+public sealed class LoomPinnedProxy : System.Net.IWebProxy {
+  private readonly System.Uri endpoint;
+  public System.Net.ICredentials Credentials { get; set; }
+  public LoomPinnedProxy(string address, string password) {
+    endpoint = new System.Uri(address);
+    Credentials = new System.Net.NetworkCredential("loom", password);
+  }
+  public System.Uri GetProxy(System.Uri destination) { return endpoint; }
+  public bool IsBypassed(System.Uri destination) { return false; }
+}
+'@
 $handler = New-Object System.Net.Http.HttpClientHandler
 $handler.AllowAutoRedirect = $false
+$handler.UseProxy = $true
+$handler.Proxy = New-Object LoomPinnedProxy($env:LOOM_FETCH_PROXY, $env:LOOM_FETCH_PROXY_PASSWORD)
 $client = New-Object System.Net.Http.HttpClient($handler)
 $timeoutSeconds = 0
 if ($env:LOOM_FETCH_TIMEOUT_SECONDS) {
@@ -143,6 +157,9 @@ try {
 }
 "#;
 
+    // WebProxy bypasses loopback even with BypassProxyOnLocal=false. The explicit
+    // IWebProxy above keeps every native connection behind the same peer policy.
+    let proxy = loom_security::network::NativeHttpProxy::new(policy.clone()).ok()?;
     let mut command = Command::new("powershell.exe");
     command
         .arg("-NoProfile")
@@ -151,6 +168,8 @@ try {
         .arg("-Command")
         .arg(script)
         .env("LOOM_FETCH_URL", url)
+        .env("LOOM_FETCH_PROXY", proxy.url())
+        .env("LOOM_FETCH_PROXY_PASSWORD", proxy.password())
         .env("LOOM_FETCH_MAX_BYTES", MAX_MCP_IMAGE_BYTES.to_string())
         .env(
             "LOOM_FETCH_TIMEOUT_SECONDS",

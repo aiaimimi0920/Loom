@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use loom_protocol::PackageTrustStatus;
 use loom_security::network::{
-    apply_runtime_proxy_async, host_is_loopback_literal, validate_outbound_url, OutboundPolicy,
+    apply_outbound_policy_async, host_is_loopback_literal, validate_outbound_url, OutboundPolicy,
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::redirect::Policy as RedirectPolicy;
