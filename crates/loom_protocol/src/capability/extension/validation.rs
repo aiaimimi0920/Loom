@@ -28,6 +28,8 @@ pub enum ExtensionValidationError {
     InvalidScope(String),
     #[error("extension digest is invalid")]
     InvalidDigest,
+    #[error("extension effective permissions are invalid")]
+    InvalidPermissions,
     #[error("extension invocation is invalid")]
     InvalidInvocation,
     #[error("failed extension result requires an error")]
@@ -70,6 +72,15 @@ fn validate_snapshot(snapshot: &ContributionSnapshot) -> Result<(), ExtensionVal
     }
     let mut plugins = HashMap::new();
     for plugin in &snapshot.plugins {
+        let permissions = &plugin.effective_permissions;
+        if permissions.len() > 64
+            || permissions
+                .iter()
+                .any(|permission| permission.is_empty() || permission.len() > 128)
+            || permissions.iter().collect::<HashSet<_>>().len() != permissions.len()
+        {
+            return Err(ExtensionValidationError::InvalidPermissions);
+        }
         if !valid_digest(&plugin.package_digest) || !valid_digest(&plugin.permission_grant_digest) {
             return Err(ExtensionValidationError::InvalidDigest);
         }

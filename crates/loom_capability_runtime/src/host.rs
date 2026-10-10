@@ -60,6 +60,8 @@ pub struct CapabilityRuntimePackage {
     pub trust_store_path: PathBuf,
     pub trust_status: PackageTrustStatus,
     pub permission_grant_digest: String,
+    /// Host-approved manifest permissions, never contribution self-declarations.
+    pub effective_permissions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

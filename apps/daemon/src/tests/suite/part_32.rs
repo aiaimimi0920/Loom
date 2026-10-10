@@ -85,10 +85,12 @@ fn capability_plugin_api_installs_configures_enables_and_uninstalls() {
     );
 
     assert_api_fixture_extension_invocation(
+        &root,
         &runtime,
         &resources,
         &daemon_runtime.surface_resources,
     );
+    assert_extension_authorization_lifecycle(&root, &runtime);
 
     let invoked = expect_json_text_route_response(
         route_request(

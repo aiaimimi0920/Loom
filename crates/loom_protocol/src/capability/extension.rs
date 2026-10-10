@@ -37,6 +37,9 @@ pub struct ExtensionPluginBinding {
     pub package_digest: String,
     pub trust_status: ExtensionTrustStatus,
     pub permission_grant_digest: String,
+    /// Missing permissions on older snapshots grant no resource access.
+    #[serde(default)]
+    pub effective_permissions: Vec<String>,
     pub scope_id: String,
 }
 

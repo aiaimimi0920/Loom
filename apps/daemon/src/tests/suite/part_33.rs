@@ -79,11 +79,13 @@ fn enable_api_fixture_through_extension_route(
 }
 
 fn assert_api_fixture_extension_invocation(
+    root: &Path,
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
     surface_resources: &SharedSurfaceResourceStore,
 ) {
     let mut state = ExtensionConnectionState {
+        control_plane_root: Some(root.to_path_buf()),
         hook_session_id: Some("hook:test-session".to_owned()),
         ..ExtensionConnectionState::default()
     };
@@ -176,7 +178,8 @@ fn assert_api_fixture_extension_invocation(
                 "apiVersion": "1.0",
                 "requiredFeatures": [
                     loom_protocol::EXTENSION_FEATURE_SNAPSHOT,
-                    loom_protocol::EXTENSION_FEATURE_COMMANDS
+                    loom_protocol::EXTENSION_FEATURE_COMMANDS,
+                    loom_protocol::EXTENSION_FEATURE_RESOURCE_AUTHORIZATION
                 ],
                 "optionalFeatures": [
                     loom_protocol::EXTENSION_FEATURE_MENUS,
@@ -193,11 +196,28 @@ fn assert_api_fixture_extension_invocation(
     let handshake: ExtensionBridgeResponse = serde_json::from_str(&handshake.response).unwrap();
     assert_eq!(handshake.status, ExtensionBridgeStatus::Succeeded);
     let session = handshake.data["sessionId"].as_str().unwrap();
+    let without_ticket = handle_extension_bridge_text(&json!({
+        "method": loom_protocol::EXTENSION_METHOD_COMMAND_INVOKE,
+        "params": { "sessionId": session, "invocation": invocation.clone() }
+    }).to_string(), &mut state, runtime, resources, surface_resources);
+    let without_ticket: ExtensionBridgeResponse = serde_json::from_str(&without_ticket.response).unwrap();
+    let denied: ExtensionResult = serde_json::from_value(without_ticket.data).unwrap();
+    assert_eq!(denied.status, ExtensionResultStatus::Failed);
+    assert_eq!(denied.error.unwrap().code, CapabilityErrorCode::PermissionDenied);
+    let authorization = handle_extension_authorization(loom_protocol::ExtensionCommandAuthorizeRequest {
+        request_id: "authorize-fixture".to_owned(), session_id: session.to_owned(),
+        plugin_id: "publisher.example/api-fixture".to_owned(),
+        command_id: "publisher.example/api-fixture.run".to_owned(), snapshot_generation: 1,
+        target: ExtensionTarget { unit_id: "unit-test".to_owned(), revision: 1 }, check_only: false,
+    }, &mut state, runtime);
+    let authorization: ExtensionBridgeResponse = serde_json::from_str(&authorization.response).unwrap();
+    assert_eq!(authorization.status, ExtensionBridgeStatus::Succeeded);
     let response = handle_extension_bridge_text(
         &json!({
             "method": loom_protocol::EXTENSION_METHOD_COMMAND_INVOKE,
             "params": {
                 "sessionId": session,
+                "authorizationId": authorization.data["authorizationId"],
                 "invocation": invocation
             }
         })

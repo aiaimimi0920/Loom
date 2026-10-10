@@ -5,6 +5,8 @@ struct ExtensionConnectionState {
     extension_session_id: Option<String>,
     negotiated_features: HashSet<String>,
     consumed_gestures: HashSet<String>,
+    control_plane_root: Option<PathBuf>,
+    resource_authorizations: HashMap<String, ExtensionResourceAuthorization>,
 }
 
 /// Maximum gesture-bearing commands accepted during one extension session.
@@ -23,12 +25,14 @@ impl ExtensionConnectionState {
         self.extension_session_id = None;
         self.negotiated_features.clear();
         self.consumed_gestures.clear();
+        self.resource_authorizations.clear();
     }
 
     fn begin_extension_session(&mut self, session_id: String, features: &[String]) {
         self.extension_session_id = Some(session_id);
         self.negotiated_features = features.iter().cloned().collect();
         self.consumed_gestures.clear();
+        self.resource_authorizations.clear();
     }
 
     fn extension_session_matches(&self, session_id: &str) -> bool {

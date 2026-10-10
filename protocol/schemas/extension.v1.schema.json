@@ -38,6 +38,11 @@
         "packageDigest": { "$ref": "#/$defs/digest" },
         "trustStatus": { "enum": ["trusted", "unsigned_developer", "revoked", "untrusted"] },
         "permissionGrantDigest": { "$ref": "#/$defs/digest" },
+        "effectivePermissions": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "default": []
+        },
         "scopeId": { "$ref": "#/$defs/safeId" }
       },
       "additionalProperties": false
