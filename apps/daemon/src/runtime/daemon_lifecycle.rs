@@ -125,9 +125,10 @@ impl LoomDaemon {
         let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root)));
         let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
         let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
-        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
-            control_plane_root.join("workflows"),
-        )));
+        let hook_bridge = Arc::new(Mutex::new(
+            HookBridgeRuntime::new(control_plane_root.join("workflows"))
+                .with_auth_token(&auth_token),
+        ));
         let surface_instances = Arc::new(Mutex::new(
             SurfaceInstanceStore::new(
                 control_plane_root
@@ -276,9 +277,8 @@ impl LoomDaemon {
 
         let mut read_stage_result: std::io::Result<()> = Ok(());
         let maintenance_runtime = Arc::clone(&self.runtime);
-        let mut maintenance = periodic_maintenance::PeriodicMaintenance::start(
-            Duration::from_secs(1),
-            move || {
+        let mut maintenance =
+            periodic_maintenance::PeriodicMaintenance::start(Duration::from_secs(1), move || {
                 #[cfg(test)]
                 if let Some(observer) = maintenance_runtime.maintenance_observer.as_ref() {
                     observer.record();
@@ -295,10 +295,11 @@ impl LoomDaemon {
                     &maintenance_runtime.device_registry,
                 );
                 if let Err(error) = maintenance_runtime.capability_runtime.prune_idle() {
-                    runtime_log_warn(format!("Capability Plugin idle maintenance failed: {error}"));
+                    runtime_log_warn(format!(
+                        "Capability Plugin idle maintenance failed: {error}"
+                    ));
                 }
-            },
-        )?;
+            })?;
         let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
                 // Read the backlog before the listener goes away: shutdown can be observed before

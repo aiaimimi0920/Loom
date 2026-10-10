@@ -83,9 +83,14 @@ fn test_daemon_runtime_from_config(
     let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root)));
     let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
     let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
-        control_plane_root.join("workflows"),
-    )));
+    let hook_bridge = Arc::new(Mutex::new(
+        HookBridgeRuntime::new(control_plane_root.join("workflows")).with_auth_token(
+            config
+                .auth_token
+                .as_deref()
+                .unwrap_or(TEST_DAEMON_AUTH_TOKEN),
+        ),
+    ));
     let surface_instances = Arc::new(Mutex::new(
         SurfaceInstanceStore::new(
             control_plane_root
@@ -120,7 +125,8 @@ fn test_daemon_runtime_from_config(
     )));
     DaemonRuntime {
         offline_peers: offline_peers::OfflinePeers::new(control_plane_root).expect("offline peers"),
-        projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf()).expect("projection owner"),
+        projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())
+            .expect("projection owner"),
         hook_settings: config.hook_settings,
         run_store: Arc::new(Mutex::new(run_store)),
         auth_token: config

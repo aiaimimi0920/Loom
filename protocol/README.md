@@ -40,6 +40,21 @@ authors must not depend on private Loom or Hook source code.
 
 ### Loom<->Hook Art contract and legacy retirement
 
+The local Hook WebSocket requires transport authentication before HTTP upgrade,
+for both `loom.hook.v1` and extension traffic. Native clients send the daemon's
+local-manifest credential as `Authorization: Bearer <token>`. Browser clients offer
+exactly `loom.hook.v1, loom.auth.<base64url-no-padding-of-UTF8-token>`; the server
+returns only `loom.hook.v1`, never the credential. Query-string credentials,
+ambiguous headers, remote Host values and untrusted Origins are rejected. Allowed
+browser Origins are the Hook Tauri localhost origins and the explicit development
+origins `http://localhost:1420` and `http://127.0.0.1:1420`; an allowed Origin alone
+does not authorize access. Native clients may omit Origin but must authenticate.
+
+Upgrade Hook and Loom together. Old unauthenticated clients fail closed; there is
+no compatibility bypass. Application handshakes and extension grants still apply
+after transport authentication. This authenticates a local administrator channel,
+not a sandbox boundary against software that can read the same user's manifest.
+
 The canonical-only contract is the current production baseline. Obsolete
 wire aliases, persisted forms, package layouts, provider/process fields, and
 app-data identities are rejected rather than discovered or migrated.

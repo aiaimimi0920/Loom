@@ -61,6 +61,11 @@ fn start_hook_bridge(
             }),
         );
     }
+    let auth_token = runtime
+        .auth_token
+        .clone()
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Hook transport authentication is not configured"))?;
     clear_hook_canvas_runtime_state(Some(shared_images));
 
     let listener = match TcpListener::bind(("127.0.0.1", requested_port)) {
@@ -111,6 +116,7 @@ fn start_hook_bridge(
     let worker = thread::spawn(move || {
         run_hook_bridge_websocket_server(
             listener,
+            auth_token,
             shutdown_rx,
             connected_clients,
             extension_clients,
@@ -198,6 +204,7 @@ fn hook_bridge_status_json(runtime: &HookBridgeRuntime) -> Value {
 
 fn handle_hook_bridge_websocket_connection(
     stream: std::net::TcpStream,
+    auth_token: Arc<str>,
     cancelled: Arc<AtomicBool>,
     connected_clients: Arc<AtomicUsize>,
     extension_clients: Arc<AtomicUsize>,
@@ -221,7 +228,7 @@ fn handle_hook_bridge_websocket_connection(
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-    let Ok(mut websocket) = tungstenite::accept(stream) else {
+    let Ok(mut websocket) = accept_authenticated_hook_socket(stream, &auth_token) else {
         return;
     };
     let _ = websocket

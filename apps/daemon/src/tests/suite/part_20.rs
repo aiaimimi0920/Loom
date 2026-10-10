@@ -278,9 +278,12 @@ fn connect_hook_bridge_websocket(bridge_port: u16) -> tungstenite::WebSocket<Tcp
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
         .expect("set websocket write timeout");
-    tungstenite::client(format!("ws://127.0.0.1:{bridge_port}"), stream)
-        .expect("connect bridge websocket")
-        .0
+    tungstenite::client(
+        authenticated_hook_test_request(bridge_port, TEST_DAEMON_AUTH_TOKEN),
+        stream,
+    )
+    .expect("connect bridge websocket")
+    .0
 }
 
 fn read_hook_bridge_json(socket: &mut tungstenite::WebSocket<TcpStream>) -> serde_json::Value {
