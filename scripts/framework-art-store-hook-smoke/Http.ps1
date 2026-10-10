@@ -90,21 +90,56 @@ function Wait-TcpPort {
         [string]$HostName,
         [int]$Port,
         [string]$Message,
-        [int]$TimeoutSeconds = 10
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 10,
+        [System.Diagnostics.Process]$Process,
+        [string]$StderrPath = "",
+        [string[]]$Secrets = @()
     )
 
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $lastError = $null
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    $budget = [long]$TimeoutSeconds * 1000
+    $lastError = "TCP connection attempt timed out"
     do {
+        # The caller retains ownership and cleanup; a dead fixture cannot become ready.
+        if ($null -ne $Process -and $Process.WaitForExit(0)) {
+            $detail = ""
+            if (-not [string]::IsNullOrWhiteSpace($StderrPath)) {
+                try {
+                    $safePath = Resolve-SmokeRealFile -Path $StderrPath -Label "fixture stderr"
+                    $stream = [System.IO.File]::Open($safePath, 'Open', 'Read', 'ReadWrite')
+                    try {
+                        # Read a bounded tail, not an unbounded redirected log or command line.
+                        $offset = [Math]::Max(0L, $stream.Length - 4096L)
+                        [void]$stream.Seek($offset, 'Begin')
+                        $bytes = New-Object byte[] 4096
+                        $count = $stream.Read($bytes, 0, $bytes.Length)
+                        $tail = [Text.Encoding]::UTF8.GetString($bytes, 0, $count)
+                        # Discard cut lines so truncation cannot expose only part of a secret.
+                        if ($offset -gt 0) {
+                            $newline = $tail.IndexOf("`n")
+                            $tail = if ($newline -ge 0) { $tail.Substring($newline + 1) } else { "<stderr line exceeds limit>" }
+                        }
+                        if ($stream.Position -lt $stream.Length) {
+                            $newline = $tail.LastIndexOf("`n")
+                            $tail = if ($newline -ge 0) { $tail.Substring(0, $newline) } else { "<stderr changed during read>" }
+                        }
+                        $detail = ConvertTo-SafeSmokeErrorText -Text $tail -Secrets $Secrets
+                    } finally { $stream.Dispose() }
+                } catch { $detail = "Fixture stderr unavailable" }
+            }
+            throw "$Message ($($HostName):$Port). Fixture exited with code $($Process.ExitCode). $detail"
+        }
         $client = $null
         $waitHandle = $null
         try {
             $client = [System.Net.Sockets.TcpClient]::new()
             $async = $client.BeginConnect($HostName, $Port, $null, $null)
             $waitHandle = $async.AsyncWaitHandle
-            if ($waitHandle.WaitOne(250)) {
+            $remaining = [int][Math]::Max(0L, $budget - $clock.ElapsedMilliseconds)
+            if ($waitHandle.WaitOne([Math]::Min(250, $remaining))) {
                 $client.EndConnect($async)
                 if ($client.Connected) {
+                    if ($null -ne $Process -and $Process.WaitForExit(0)) { continue }
                     return
                 }
             }
@@ -118,9 +153,10 @@ function Wait-TcpPort {
                 $client.Dispose()
             }
         }
-        Start-Sleep -Milliseconds 100
-    } while ([DateTime]::UtcNow -lt $deadline)
+        $remaining = [int][Math]::Max(0L, $budget - $clock.ElapsedMilliseconds)
+        if ($remaining -gt 0) { Start-Sleep -Milliseconds ([Math]::Min(100, $remaining)) }
+    } while ($clock.ElapsedMilliseconds -lt $budget)
 
-    $safeError = ConvertTo-SafeSmokeErrorText -Text $lastError
+    $safeError = ConvertTo-SafeSmokeErrorText -Text $lastError -Secrets $Secrets
     throw "$Message ($($HostName):$Port). Last error: $safeError"
 }

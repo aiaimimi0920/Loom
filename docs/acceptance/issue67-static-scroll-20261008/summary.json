@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "scope": "A3-P single-viewer static-text and scrolling raw/JPEG native acceptance",
+  "passed": true,
+  "wholeIssue67Complete": false,
+  "candidate": {
+    "buildVersion": "v0.2.32.31",
+    "sha256": "24b96c307fb335304c557b183b76c8e5a76006af97e0b9e09c7f7e88d4a989f1",
+    "bytes": 9036288,
+    "sourceCommit": "3bcf1db6d95bc0e3270eeda1064b13cab8534e51"
+  },
+  "loomDaemon": {
+    "sha256": "acf6fa5e70ca5ad826f85c0ef9ff6145adaa7b8d68168081771ead225dd7df44",
+    "freshMainBuild": false
+  },
+  "parts": [
+    {
+      "name": "raw-1",
+      "scenario": "static",
+      "codec": "raw_bgra",
+      "passed": true,
+      "cleanupPassed": true,
+      "daemonSamples": 119,
+      "viewerSamples": 240,
+      "sourceSamples": 60,
+      "dimensions": {
+        "width": 658,
+        "height": 407
+      },
+      "daemonPublishedPerSecond": 0,
+      "distinctSampledPaintedFrames": 1,
+      "missingPaintSamples": 0,
+      "sourceStageTimingPassed": true,
+      "minimumMemoryHeadroomPercent": 36.962343562761625,
+      "hookTreeHostCpuPercent": {
+        "source": 1.4042649212025962,
+        "viewer": 0.9197511456785227
+      },
+      "resourceEndpointSeconds": {
+        "source": 79.9276416,
+        "viewer": 79.6326135
+      },
+      "finishedUtc": "2026-10-08T17:40:32.8075866Z"
+    },
+    {
+      "name": "jpeg-1",
+      "scenario": "static",
+      "codec": "jpeg",
+      "passed": true,
+      "cleanupPassed": true,
+      "daemonSamples": 119,
+      "viewerSamples": 240,
+      "sourceSamples": 60,
+      "dimensions": {
+        "width": 658,
+        "height": 407
+      },
+      "daemonPublishedPerSecond": 0,
+      "distinctSampledPaintedFrames": 1,
+      "missingPaintSamples": 0,
+      "sourceStageTimingPassed": true,
+      "minimumMemoryHeadroomPercent": 38.39363226930734,
+      "hookTreeHostCpuPercent": {
+        "source": 1.4872102158464304,
+        "viewer": 1.142718692419984
+      },
+      "resourceEndpointSeconds": {
+        "source": 79.2346236,
+        "viewer": 79.0501038
+      },
+      "finishedUtc": "2026-10-08T17:43:42.2910683Z"
+    },
+    {
+      "name": "jpeg-2",
+      "scenario": "scroll",
+      "codec": "jpeg",
+      "passed": true,
+      "cleanupPassed": true,
+      "daemonSamples": 119,
+      "viewerSamples": 240,
+      "sourceSamples": 60,
+      "dimensions": {
+        "width": 658,
+        "height": 407
+      },
+      "daemonPublishedPerSecond": 20.150586821148934,
+      "distinctSampledPaintedFrames": 187,
+      "missingPaintSamples": 53,
+      "sourceStageTimingPassed": true,
+      "minimumMemoryHeadroomPercent": 38.47037546136134,
+      "hookTreeHostCpuPercent": {
+        "source": 2.374049601046398,
+        "viewer": 2.0592862108226306
+      },
+      "resourceEndpointSeconds": {
+        "source": 80.8986011,
+        "viewer": 80.7128881
+      },
+      "finishedUtc": "2026-10-08T17:46:50.7546155Z"
+    },
+    {
+      "name": "raw-2",
+      "scenario": "scroll",
+      "codec": "raw_bgra",
+      "passed": true,
+      "cleanupPassed": true,
+      "daemonSamples": 118,
+      "viewerSamples": 240,
+      "sourceSamples": 60,
+      "dimensions": {
+        "width": 658,
+        "height": 407
+      },
+      "daemonPublishedPerSecond": 20.172523747188936,
+      "distinctSampledPaintedFrames": 135,
+      "missingPaintSamples": 105,
+      "sourceStageTimingPassed": true,
+      "minimumMemoryHeadroomPercent": 41.38812740496871,
+      "hookTreeHostCpuPercent": {
+        "source": 3.904266347688789,
+        "viewer": 3.1629553161487305
+      },
+      "resourceEndpointSeconds": {
+        "source": 80.4074988,
+        "viewer": 80.4293788
+      },
+      "finishedUtc": "2026-10-08T17:49:57.4631689Z"
+    }
+  ],
+  "checks": {
+    "nodeTestsPassed": 53,
+    "nativeFixtureStartupTests": 3,
+    "wrongModeRejected": true,
+    "memoryBoundaryTests": 4,
+    "memoryGateStages": 4,
+    "powershellParse": true,
+    "nodeSyntax": true,
+    "utf8NoBom": true,
+    "gitDiffCheck": {
+      "Hook": "passed; existing CRLF warning",
+      "Loom": "passed"
+    }
+  },
+  "fixes": [
+    {
+      "name": "fixture startup scenario",
+      "cause": "unnecessary foreground activation/global key dependency removed; historical exact Win32 branch unavailable",
+      "proof": "all three startup modes verified; four native content trials passed"
+    },
+    {
+      "name": "static join condition",
+      "cause": "unconditional frame advancement rejected valid unchanged static frame",
+      "proof": "retained native receipt reproduces old rejection; strict scenario-aware regression tests passed"
+    },
+    {
+      "name": "source observer final interval",
+      "cause": "early final timer wakeup allowed tiny-budget extra RPC",
+      "proof": "old fake-clock reproduction fails after 3 successful snapshots and 4 RPCs; fixed succeeds with 3 RPCs; real deadline failures remain failures"
+    }
+  ],
+  "comparisons": {
+    "staticText": {
+      "available": false,
+      "error": "comparison_input_invalid",
+      "zeroPublicationWindows": [
+        "raw-1",
+        "jpeg-1"
+      ],
+      "endToEndVerdict": "not-established"
+    },
+    "scrolling": {
+      "available": true,
+      "bytesPerWriteReductionPercent": 90.15936917987986,
+      "conditionsVerified": false,
+      "endToEndVerdict": "not-established"
+    }
+  },
+  "cleanup": {
+    "passed": true,
+    "utc": "2026-10-08T17:53:39.6208479Z",
+    "localHookCount": 0,
+    "remoteHookCount": 0,
+    "ownedProcessAndPortResidual": false,
+    "remoteTasksDisabled": 4,
+    "dailyExitPerformed": false,
+    "dailyRestorePerformed": false
+  },
+  "limitations": [
+    "single viewer",
+    "no visual quality equivalence",
+    "no GPU measurement",
+    "no calibrated cross-device frame age",
+    "no physical display proof",
+    "short endpoint resource observations are not long-run leak proof",
+    "device-loss acceptance not covered",
+    "socket write is not receiver acknowledgement"
+  ],
+  "sourceEvidence": {
+    "locator": "issue67-observer-boundary-fix-20261008T1736Z",
+    "receiptSha256": "ce1d558135a873afa1e6b42e678ab6fb68bb279638bd3468fa0206d628f567e8"
+  },
+  "toolingProvenance": [
+    {
+      "path": "ContentFixture.cs",
+      "sha256": "a10e0f1c8f45639c65d67441fc00e037ef84150949954ee9c883b1f9430a3901"
+    },
+    {
+      "path": "trial-template/ContentFixture.exe",
+      "sha256": "f9417ced80f10bc2418e574cbf6c5a358a391505959fcbc76c68d1d6367f17e9"
+    },
+    {
+      "path": "trial-template/Start-LocalFixture.ps1",
+      "sha256": "45273014100b62f2a55cba7b48a02e8e0be776a7cdb2e2bb9b53c9fc142db0b7"
+    },
+    {
+      "path": "trial-template/Assert-ContentMode.ps1",
+      "sha256": "d0006bff14c1b7f6016b19cf17bba8d7364207827fcbf9c57a3d35b969e7f378"
+    },
+    {
+      "path": "trial-template/ScenarioPolicy.mjs",
+      "sha256": "2f3a314cc10c259b86695fc321f3ac9577011604b6d317799cc9514ed10244a6"
+    },
+    {
+      "path": "trial-template/ScenarioPolicy.test.mjs",
+      "sha256": "3040d41bf3509d898db96b63c3cc0cc6d1e2217ae865610ca987588767a7e8ac"
+    },
+    {
+      "path": "trial-template/Reverse-Control.mjs",
+      "sha256": "f09734fd68e5da60e58cc384e987123fd723d58fb74443480587caf05fe4f0ad"
+    },
+    {
+      "path": "trial-template/JoinScenario.test.mjs",
+      "sha256": "4a4534e9a25ebbbbc8a8bd4751020a6dda5cf4c10c7ca08253ca1337b6c7794d"
+    },
+    {
+      "path": "trial-template/SampleSource.mjs",
+      "sha256": "6e9da325a3a4b51668d83ca454c1ecb78bef73b1ab4e275433df4c7c7b698157"
+    },
+    {
+      "path": "trial-template/SourceBoundary.test.mjs",
+      "sha256": "32f1d1d409eaa82b71689759e78ad63f6c961df7f2e2896175f5dc431baf35d2"
+    }
+  ],
+  "mergedProductPRs": [
+    {
+      "repo": "Loom",
+      "number": 83,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "bfd4cc224918a476b44a2a3877bc748fb8e1f6d7",
+      "url": "https://github.com/aiaimimi0920/Loom/pull/83"
+    },
+    {
+      "repo": "Loom",
+      "number": 84,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "f607016cc56679c910466db170d4455298ce16f7",
+      "url": "https://github.com/aiaimimi0920/Loom/pull/84"
+    },
+    {
+      "repo": "Loom",
+      "number": 85,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "03d03ac123f3f2c9fa3b04df0667b8ddcd3e779a",
+      "url": "https://github.com/aiaimimi0920/Loom/pull/85"
+    },
+    {
+      "repo": "Hook",
+      "number": 57,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "8a26ff4a1722d3dfe8bdeb5f42701bf85c94838b",
+      "url": "https://github.com/aiaimimi0920/Hook/pull/57"
+    },
+    {
+      "repo": "Hook",
+      "number": 58,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "198d9f3edd1b487d1c27542ccc972a48aeab35bb",
+      "url": "https://github.com/aiaimimi0920/Hook/pull/58"
+    },
+    {
+      "repo": "Hook",
+      "number": 59,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "cecf02e6f8ab5e7322cd390c3a1d75b7cb47adf6",
+      "url": "https://github.com/aiaimimi0920/Hook/pull/59"
+    },
+    {
+      "repo": "Hook",
+      "number": 60,
+      "merged": true,
+      "state": "closed",
+      "mergeCommit": "3bcf1db6d95bc0e3270eeda1064b13cab8534e51",
+      "url": "https://github.com/aiaimimi0920/Hook/pull/60"
+    }
+  ]
+}

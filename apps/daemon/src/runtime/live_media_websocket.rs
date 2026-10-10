@@ -34,7 +34,7 @@ fn handle_live_media_websocket_upgrade(
         return;
     }
     let result = prepare_live_media_upgrade(&request, runtime);
-    let (device_id, session_id, role, after_epoch, after_frame_id, accept_key) = match result {
+    let (grant, session_id, role, after_epoch, after_frame_id, accept_key) = match result {
         Ok(value) => value,
         Err(error) => {
             if let Ok((status, body)) = live_error_response(error) {
@@ -71,13 +71,21 @@ fn handle_live_media_websocket_upgrade(
             let socket = tungstenite::WebSocket::from_raw_socket(
                 stream,
                 tungstenite::protocol::Role::Server,
-                Some(live_media_websocket_config()),
+                Some(if role == LiveDeviceRole::Viewer {
+                    tungstenite::protocol::WebSocketConfig {
+                        max_message_size: Some(loom_protocol::LIVE_VIDEO_CONTROL_MAX_BYTES),
+                        max_frame_size: Some(loom_protocol::LIVE_VIDEO_CONTROL_MAX_BYTES),
+                        ..Default::default()
+                    }
+                } else {
+                    live_media_websocket_config()
+                }),
             );
             run_live_media_socket(
                 socket,
                 sessions,
                 session_id,
-                device_id,
+                grant,
                 role,
                 after_epoch,
                 after_frame_id,
@@ -94,7 +102,17 @@ fn handle_live_media_websocket_upgrade(
 fn prepare_live_media_upgrade(
     request: &ParsedHttpRequest,
     runtime: &DaemonRuntime,
-) -> std::result::Result<(String, String, LiveDeviceRole, u64, u64, String), LiveRuntimeError> {
+) -> std::result::Result<
+    (
+        LiveMediaDeviceGrant,
+        String,
+        LiveDeviceRole,
+        u64,
+        u64,
+        String,
+    ),
+    LiveRuntimeError,
+> {
     enforce_request_security(request).map_err(|(status, body)| {
         let message = serde_json::from_str::<Value>(&body)
             .ok()
@@ -138,15 +156,14 @@ fn prepare_live_media_upgrade(
     };
     loom_protocol::validate_live_identifier(&device_id, "device_id")
         .map_err(|error| invalid_live_upgrade(error.to_string()))?;
-    runtime
-        .live_sessions
-        .authorize_media(&session_id, &device_id, role)?;
+    let grant = LiveMediaDeviceGrant::new(request, &runtime.device_registry, device_id);
+    grant.authorize(&runtime.live_sessions, &session_id, role)?;
     let key = request
         .header("sec-websocket-key")
         .ok_or_else(|| invalid_live_upgrade("Sec-WebSocket-Key is required"))?;
     let accept_key = tungstenite::handshake::derive_accept_key(key.as_bytes());
     Ok((
-        device_id,
+        grant,
         session_id,
         role,
         after_epoch,
@@ -206,64 +223,74 @@ fn run_live_media_socket(
     mut socket: tungstenite::WebSocket<TcpStream>,
     sessions: SharedLiveSessionStore,
     session_id: String,
-    device_id: String,
+    grant: LiveMediaDeviceGrant,
     role: LiveDeviceRole,
     after_epoch: u64,
     after_frame_id: u64,
     profile: LiveMediaProfile,
     _connection_permit: LiveMediaConnectionPermit,
 ) {
-    if sessions
-        .set_media_connected(&session_id, &device_id, role, true)
-        .is_err()
+    if grant.authorize(&sessions, &session_id, role).is_err()
+        || sessions
+            .set_media_connected(&session_id, &grant.device_id, role, true)
+            .is_err()
     {
-        let _ = socket.close(None);
+        let _ = socket.close(grant.revocation_close());
         return;
     }
     let _role_guard = LiveMediaRoleGuard {
         sessions: Arc::clone(&sessions),
         session_id: session_id.clone(),
-        device_id: device_id.clone(),
+        device_id: grant.device_id.clone(),
         role,
     };
     match role {
         LiveDeviceRole::Source => {
-            run_live_source_socket(&mut socket, &sessions, &session_id, &device_id, profile)
+            run_live_source_socket(&mut socket, &sessions, &session_id, &grant, profile)
         }
         LiveDeviceRole::Viewer => run_live_viewer_socket(
             &mut socket,
             &sessions,
             &session_id,
-            &device_id,
+            &grant,
             after_epoch,
             after_frame_id,
             profile,
         ),
         LiveDeviceRole::Controller => {}
     }
-    let _ = socket.close(None);
+    let _ = socket.close(grant.revocation_close());
 }
 
 fn run_live_source_socket(
     socket: &mut tungstenite::WebSocket<TcpStream>,
     sessions: &SharedLiveSessionStore,
     session_id: &str,
-    device_id: &str,
+    grant: &LiveMediaDeviceGrant,
     profile: LiveMediaProfile,
 ) {
+    let mut previous_policy = None;
     while !sessions.media_cancelled.load(Ordering::SeqCst) {
-        if sessions
-            .authorize_media(session_id, device_id, LiveDeviceRole::Source)
+        if grant
+            .authorize(sessions, session_id, LiveDeviceRole::Source)
             .is_err()
+        {
+            break;
+        }
+        if profile == LiveMediaProfile::H264
+            && !send_live_video_policy(socket, sessions, session_id, &mut previous_policy)
         {
             break;
         }
         match socket.read() {
             Ok(tungstenite::Message::Binary(bytes)) => {
-                if !profile.accepts(&bytes)
-                    || sessions
-                        .publish_frame(session_id, device_id, bytes)
-                        .is_err()
+                // A revoke can arrive while read() blocks. Check again before accepting media.
+                if !grant.valid() || !profile.accepts(&bytes) {
+                    break;
+                }
+                if sessions
+                    .publish_media_frame(session_id, &grant.device_id, bytes, Some(profile))
+                    .is_err()
                 {
                     break;
                 }
@@ -289,21 +316,34 @@ fn run_live_viewer_socket(
     socket: &mut tungstenite::WebSocket<TcpStream>,
     sessions: &SharedLiveSessionStore,
     session_id: &str,
-    device_id: &str,
+    grant: &LiveMediaDeviceGrant,
     mut after_epoch: u64,
     mut after_frame_id: u64,
     profile: LiveMediaProfile,
 ) {
+    let Ok(video_lease) =
+        LiveVideoViewerLease::acquire(sessions, session_id, profile == LiveMediaProfile::H264)
+    else {
+        return;
+    };
+    if profile == LiveMediaProfile::H264 {
+        // A fresh decoder never inherits reference state from a reconnect cursor.
+        after_epoch = 0;
+        after_frame_id = 0;
+    }
     let _ = socket
         .get_mut()
         .set_read_timeout(Some(LIVE_VIEWER_CONTROL_TIMEOUT));
     let mut last_ping = Instant::now();
     while !sessions.media_cancelled.load(Ordering::SeqCst) {
-        if sessions
-            .authorize_media(session_id, device_id, LiveDeviceRole::Viewer)
+        if grant
+            .authorize(sessions, session_id, LiveDeviceRole::Viewer)
             .is_err()
         {
             break;
+        }
+        if video_lease.accepts_h264() {
+            sessions.request_video_recovery(session_id, after_epoch, after_frame_id);
         }
         match sessions.wait_for_frame(
             session_id,
@@ -312,11 +352,19 @@ fn run_live_viewer_socket(
             LIVE_MEDIA_SOCKET_TIMEOUT,
         ) {
             Ok(Some(frame)) => {
+                if frame.bytes.get(57) == Some(&2) && !video_lease.accepts_h264() {
+                    if !service_live_video_viewer_control(socket, &video_lease, grant, profile) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
                 let adaptation_started = Instant::now();
                 let bytes = match frame.representation(profile) {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => {
-                        if !service_live_viewer_control_messages(socket) {
+                        if !service_live_video_viewer_control(socket, &video_lease, grant, profile)
+                        {
                             break;
                         }
                         thread::sleep(Duration::from_millis(5));
@@ -324,13 +372,15 @@ fn run_live_viewer_socket(
                     }
                     Err(_) => break,
                 };
+                // The bounded wait and adaptation must not carry an obsolete Device grant into send().
                 if sessions.media_cancelled.load(Ordering::SeqCst)
-                    || !sessions.viewer_frame_authorized(session_id, device_id, frame.epoch)
+                    || !grant.valid()
+                    || !sessions.viewer_frame_authorized(session_id, &grant.device_id, frame.epoch)
                 {
                     break;
                 }
                 let mut sample = LiveMediaForwardSample::selected(
-                    device_id,
+                    &grant.device_id,
                     &frame,
                     after_epoch,
                     after_frame_id,
@@ -362,7 +412,7 @@ fn run_live_viewer_socket(
             Ok(None) => {}
             Err(_) => break,
         }
-        if !service_live_viewer_control_messages(socket) {
+        if !service_live_video_viewer_control(socket, &video_lease, grant, profile) {
             break;
         }
     }

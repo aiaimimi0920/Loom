@@ -1,0 +1,178 @@
+{
+    "schemaVersion":  1,
+    "evidenceRoot":  "linshi/issue67-v33-paired-preflight-20261009",
+    "plannedOrder":  [
+                         "raw-1",
+                         "jpeg-1"
+                     ],
+    "rawPassed":  true,
+    "jpegMediaStarted":  false,
+    "jpegTaskCreated":  false,
+    "pairedComparisonAvailable":  false,
+    "jpegRejection":  {
+                          "owningProcess":  0,
+                          "stage":  "preflight",
+                          "interPartCooldownSeconds":  180,
+                          "state":  "TimeWait",
+                          "endpointCount":  1,
+                          "utc":  "2026-10-09T14:38:57.9668806Z",
+                          "error":  "Required isolated ports unavailable",
+                          "port":  49874
+                      },
+    "hookSourceSha":  "6acc92f17247c9e4dbf8e341b8a5be4ca7017312",
+    "hookMainSha":  "67399b345e793db0fc6d921b6c1523a9d6f4c1d0",
+    "hookSha256":  "d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92",
+    "loomSha256":  "8132707e238e9a1e439a0d6a9543e05c58a8927ff9d7a2c3887b8616ec3df806",
+    "daemonSampleCount":  119,
+    "daemon":  {
+                   "startMs":  39,
+                   "endMs":  59945,
+                   "durationMs":  59906,
+                   "counters":  {
+                                    "publishedFrames":  516,
+                                    "forwardedFrames":  516,
+                                    "sourceSequenceGaps":  0,
+                                    "viewerSkippedFrames":  0,
+                                    "failedWrites":  0
+                                },
+                   "sourceFrameIdDelta":  516,
+                   "publishedPerSecond":  8.613494474676994,
+                   "writesPerSecond":  8.613494474676994
+               },
+    "viewer":  {
+                   "paintedFrames":  197,
+                   "missingProofSamples":  43,
+                   "sampleCount":  240,
+                   "reconnectDelta":  0,
+                   "durationMs":  63121.69999998808,
+                   "overwrittenDelta":  0
+               },
+    "dimensions":  {
+                       "initialDeclaredDimensions":  {
+                                                         "width":  439,
+                                                         "height":  271
+                                                     },
+                       "observedMediaDimensions":  {
+                                                       "width":  658,
+                                                       "height":  407
+                                                   },
+                       "samplesWithPresentation":  240,
+                       "samplesTotal":  240,
+                       "originalDaemonReportUnchanged":  true,
+                       "allFrameDimensionsVerified":  false,
+                       "sizeTransitionCause":  "not-investigated"
+                   },
+    "cleanup":  {
+                    "dailyExitCount":  0,
+                    "passed":  true,
+                    "a3pComplete":  false,
+                    "remote":  {
+                                   "jpegTaskExists":  false,
+                                   "hookCount":  0,
+                                   "rawTaskState":  "Disabled",
+                                   "listeners":  [
+
+                                                 ]
+                               },
+                    "local":  {
+                                  "hookCount":  0,
+                                  "listeners":  [
+
+                                                ]
+                              },
+                    "utc":  "2026-10-09T14:40:50.5541005Z"
+                },
+    "rawOnlyAnalyzerNote":  "The --raw-only analyzer emits a generic no-JPEG scope label. Actual execution disposition is the JPEG port-preflight rejection recorded here, not absence of JPEG authorization.",
+    "a3pComplete":  false,
+    "originalReconnectCauseEstablished":  false,
+    "inputs":  [
+                   {
+                       "sha256":  "26a5a552ce783eb7d6ad63e391ab41887230fe59f306456755bcdcaa54643b57",
+                       "file":  "preflight.json"
+                   },
+                   {
+                       "sha256":  "2b3297418fbc3c344c302d1c2496d56663954e952c2c70e984c96b510f6f6491",
+                       "file":  "approval.json"
+                   },
+                   {
+                       "sha256":  "613401a93fbaf2b92013cf5fb760e6f963966f71d6813f2db00db4d518690e7d",
+                       "file":  "candidate-input.json"
+                   },
+                   {
+                       "sha256":  "cb142c8c94175db6566e4bff54c0e32301219fb104f5f27ccdd095687f0cd73b",
+                       "file":  "trial-template/harness-regression.json"
+                   },
+                   {
+                       "sha256":  "8f3f7eba4058f606dd84d71b6107254889ae6592ecc53405d8f5af9888c21408",
+                       "file":  "inter-part-cooldown.json"
+                   },
+                   {
+                       "sha256":  "465955ea39014c1c33409d4fdbbd5f061c378be50d634d96ce4bb366fe97bfc4",
+                       "file":  "raw-1/trial.json"
+                   },
+                   {
+                       "sha256":  "5a09056d850d31573aa434d9e4e81b46d3f3d4014b22d1e6e008b137af0127dd",
+                       "file":  "raw-1/pc3-transfer-receipt.json"
+                   },
+                   {
+                       "sha256":  "036c7fcbe10a7cfe952328f8d678cee066f0d6e5399daa5a0a02c57fa06aaae3",
+                       "file":  "raw-1/runner-receipt.json"
+                   },
+                   {
+                       "sha256":  "80d8a8e5d1ef18cebe625ca3d74369a75cad2421acc78ecdf7e786e81309462a",
+                       "file":  "raw-1/part-cleanup-verified.json"
+                   },
+                   {
+                       "sha256":  "4deeb11edd58c7553323aa85afe2a0804ccc18b3b02fadc30fbde0e6f443aa09",
+                       "file":  "raw-1/reversed-stop-receipt.json"
+                   },
+                   {
+                       "sha256":  "6aa73256c69d71b8f9daac258b9aefe007cfa57458a4f5398f2d6ceb8daaf3bf",
+                       "file":  "raw-1/reversed-closed-receipt.json"
+                   },
+                   {
+                       "sha256":  "7d5df7fd26241d45bca43f3b58dd5bb737d50549559e56508fddc089cdafb527",
+                       "file":  "raw-1/pair-input.json"
+                   },
+                   {
+                       "sha256":  "7915e782bf80520d22b096dbe23b14a5e2366278629436ed12cdf7feb75884f9",
+                       "file":  "raw-1/native-render-visible.json"
+                   },
+                   {
+                       "sha256":  "bb194e7d251ef596fdf90b954867c830ec8296df6484b451a454f1e3da49ab2d",
+                       "file":  "raw-1/source-cadence.json"
+                   },
+                   {
+                       "sha256":  "fc5fbdb49d3b590e06350394a8761a8696140e9aa1235d54ed8534edf193f602",
+                       "file":  "raw-1/source-observer-helper-outcomes.json"
+                   },
+                   {
+                       "sha256":  "e2e47a851682fb156ecec4ed64785192cad9bb678c1b2398dc7c2c094a011c98",
+                       "file":  "raw-only-summary.json"
+                   },
+                   {
+                       "sha256":  "0b0195eeee118dff1973dcc0145653cfd8a58f871ef4260fe6d9be90fee1f1e7",
+                       "file":  "jpeg-1/trial.json"
+                   },
+                   {
+                       "sha256":  "547be83c407c9da9cefbdf143cb499b736731a8a284464bef43ef23b413d4d5f",
+                       "file":  "jpeg-1/pc3-transfer-receipt.json"
+                   },
+                   {
+                       "sha256":  "d025dba98e3c09ad4a29d5a3647eedcf65b8027577ec7ea11135207651421a7e",
+                       "file":  "jpeg-1/local-port-preflight.json"
+                   },
+                   {
+                       "sha256":  "24564c5e6a20084cd1ef07320d726162f7eaa7a4331b2d196f149c56391eef7c",
+                       "file":  "jpeg-1/preflight-rejection-c131da80c4ec48e98ba43ca58454c103.json"
+                   },
+                   {
+                       "sha256":  "b568d3bed1c3a0cbe3ed14f6b18d5e6ceba15a2638f44d2229e0d594b5815356",
+                       "file":  "closeout.json"
+                   },
+                   {
+                       "sha256":  "544d91b87ffeee1d76fb3ab516a3ca747220a551f70349ed970c1cc627f14e2e",
+                       "file":  "hook-main-checks-2.json"
+                   }
+               ]
+}

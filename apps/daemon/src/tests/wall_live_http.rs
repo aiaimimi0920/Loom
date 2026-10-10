@@ -155,8 +155,11 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
             _ => panic!("invalid wall grant must fail before upgrade"),
         }
     }
+    let _video_capable = LiveVideoViewerLease::acquire(&sessions, "live-1", true).unwrap();
+    wait_wall_video_policy(&sessions, true);
     let mut viewer = wall_socket(port, &authorization, lease, 2).unwrap();
     assert_wall_raw(&wall_binary(&mut viewer), 1);
+    wait_wall_video_policy(&sessions, false);
     sessions
         .publish_frame("live-1", &owner, encoded_live_frame(2))
         .unwrap();
@@ -215,6 +218,7 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
     wall_closed(&mut viewer);
     wall_closed(&mut compressed);
     wall_closed(&mut compressed_peer);
+    wait_wall_video_policy(&sessions, true);
     assert!(wall_socket(port, &authorization, lease, 3).is_err());
     layout["revision"] = json!(4);
     layout["placements"][0]["rect"]["x"] = json!(-100);
@@ -228,8 +232,20 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
         .0,
         200
     );
+    sessions
+        .publish_frame(
+            "live-1",
+            &owner,
+            super::live_h264_continuity_tests::frame(3, true),
+        )
+        .unwrap();
     let mut viewer = wall_socket(port, &authorization, lease, 4).unwrap();
-    assert_wall_raw(&wall_binary(&mut viewer), 2);
+    wait_wall_video_policy(&sessions, false);
+    // Joining during H264 waits for compatible media instead of closing or forwarding codec 2.
+    sessions
+        .publish_frame("live-1", &owner, encoded_live_frame(4))
+        .unwrap();
+    assert_wall_raw(&wall_binary(&mut viewer), 4);
     sessions
         .set_media_connected("live-1", &owner, LiveDeviceRole::Source, false)
         .unwrap();
@@ -251,12 +267,28 @@ fn wall_live_binary_grant_revalidates_without_minting_surface_membership() {
         .received_at = Instant::now() - Duration::from_secs(6);
     assert!(wall_socket(port, &authorization, lease, 4).is_err());
     sessions
-        .publish_frame("live-1", &owner, encoded_live_frame(3))
+        .publish_frame("live-1", &owner, encoded_live_frame(5))
         .unwrap();
     let mut viewer = wall_socket(port, &authorization, lease, 4).unwrap();
-    assert_wall_raw(&wall_binary(&mut viewer), 3);
+    assert_wall_raw(&wall_binary(&mut viewer), 5);
     registry.lock().unwrap().revoke_device_sessions(&owner);
     wall_closed(&mut viewer);
     assert!(wall_socket(port, &authorization, lease, 4).is_err());
     server.finish().unwrap();
+}
+
+fn wait_wall_video_policy(sessions: &LiveSessionStore, expected: bool) {
+    let started = Instant::now();
+    loop {
+        let loom_protocol::LiveVideoSourceControl::VideoPolicy { h264_allowed, .. } =
+            sessions.video_policy("live-1").unwrap();
+        if h264_allowed == expected {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "wall video lease did not transition"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
 }
