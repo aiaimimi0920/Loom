@@ -53,6 +53,9 @@ fn admission_rejects_replaced_directory_activation_and_digest_lock() {
         .err()
         .expect("the registry pin cannot follow a substituted activation");
     assert!(error.contains("pinned installation digest"), "{error}");
+    let (ready, detail) = framework_ready_in(ID, Some(&root.join("frameworks")));
+    assert!(!ready);
+    assert!(detail.contains("pinned installation digest"), "{detail}");
     assert_eq!(
         fs::read(root.join(FRAMEWORKS_FILE)).unwrap(),
         original_state
@@ -74,6 +77,9 @@ fn legacy_install_digest_requires_explicit_reinstall_without_losing_state() {
     let legacy = fs::read(root.join(FRAMEWORKS_FILE)).unwrap();
     assert!(registry.is_installed(ID));
     assert!(admit(&registry).err().unwrap().contains("reinstall"));
+    let (ready, detail) = framework_ready_in(ID, Some(&root.join("frameworks")));
+    assert!(!ready);
+    assert!(detail.contains("reinstall"), "{detail}");
     assert_eq!(fs::read(root.join(FRAMEWORKS_FILE)).unwrap(), legacy);
     registry.disable(ID).unwrap();
     registry.enable(ID).unwrap();
@@ -85,6 +91,7 @@ fn legacy_install_digest_requires_explicit_reinstall_without_losing_state() {
         .install_framework_package_from_zip(&package)
         .unwrap();
     admit(&registry).unwrap().revalidate().unwrap();
+    assert!(framework_ready_in(ID, Some(&root.join("frameworks"))).0);
     // A repeated reinstall is idempotent and retains the same verified pin.
     let pin = registry.installation_states().unwrap()[ID]
         .package_digest

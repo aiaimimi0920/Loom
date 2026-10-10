@@ -92,7 +92,13 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     if let Err(error) = enforce_framework_permission_policy(&manifest) {
         return (false, format!("框架权限策略拒绝执行：{error}"));
     }
-    if let Err(error) = verify_framework_package_authority(root, &package_dir, &manifest) {
+    // Doctor/UI must use the same persisted install authority as execution,
+    // including legacy records that require an explicit reinstall.
+    let admission = read_bounded_framework_metadata(&manifest_path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
+        .and_then(|text| FrameworkExecutionAdmission::capture(root, &package_dir, &text));
+    if let Err(error) = admission {
         return (false, error);
     }
     (
