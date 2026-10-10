@@ -155,6 +155,7 @@ include!("runtime/hook_bridge_connections.rs");
 include!("runtime/hook_bridge_liveness.rs");
 include!("runtime/hook_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
+include!("runtime/device_pairing_budget.rs");
 mod projection_edit;
 include!("runtime/projection_snapshot.rs");
 include!("runtime/projection_store.rs");

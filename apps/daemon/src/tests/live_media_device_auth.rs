@@ -5,6 +5,7 @@ mod live_media_device_auth {
     include!("live_media_device_renewal.rs");
     include!("live_viewer_renewal_policy.rs");
     include!("device_disabled_approval.rs");
+    include!("device_pairing_budget.rs");
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
 
     struct Fixture {
