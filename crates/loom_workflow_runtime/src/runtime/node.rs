@@ -84,7 +84,15 @@ pub(super) fn execute_workflow_node(
             node_id: node.id.clone(),
         })?;
         let params = child_args.into_iter().collect::<HashMap<_, _>>();
-        let result = loom_native_image::process_art(&node.uses, &input, params);
+        let result = loom_native_image::process_art_controlled(
+            &node.uses,
+            &input,
+            params,
+            deadline,
+            cancellation,
+        );
+        check_cancelled(cancellation)?;
+        remaining_timeout(deadline)?;
         if !result.success {
             return Err(WorkflowRuntimeError::NativeFailed {
                 workflow_id: workflow_id.to_owned(),
