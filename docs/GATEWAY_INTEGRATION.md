@@ -20,9 +20,16 @@ local template planner and does not contact Gateway.
 | `LOOM_GATEWAY_TOKEN` | Optional bearer token sent only in the HTTP Authorization header. |
 | `LOOM_GATEWAY_TIMEOUT_SECS` | Blocking request timeout, default 60 seconds, bounded to 1 through 300. |
 
-The base URL must be an `http` or `https` origin without credentials, a path,
-query, or fragment. The transport limits a response body to 1 MiB. These
-limits apply before planner output validation.
+The base URL must be an origin without credentials, a path, query, or fragment.
+Remote Gateway origins require HTTPS, even without a bearer token: prompts are
+also confidential. Cleartext HTTP is allowed only for literal IP loopback hosts
+(including IPv4-mapped loopback IPv6) and always bypasses proxies to stay local.
+Use `127.0.0.1` or `[::1]` rather than `localhost` for local HTTP development;
+DNS names are not an HTTP exception. Existing remote HTTP configurations must
+move to a TLS-enabled Gateway origin, not drop the token or disable verification.
+HTTPS keeps the configured system/custom proxy and normal certificate validation.
+The transport limits a response body to 1 MiB. These limits apply before planner
+output validation.
 
 HTTP redirects are never followed, including same-origin redirects. Configure
 the final serving origin directly. Every 3xx response is a typed HTTP status

@@ -62,6 +62,8 @@ pub enum GatewayError {
     UnsupportedScheme,
     #[error("Gateway URL must not contain credentials")]
     CredentialsInUrl,
+    #[error("Gateway requires HTTPS except for a direct IP-loopback HTTP origin")]
+    InsecureTransport,
     #[error("Gateway HTTP client error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("Gateway I/O error: {0}")]
@@ -236,13 +238,27 @@ impl GatewayClient {
             ));
         }
 
+        // Cleartext is a local development exception, never a DNS or proxy route.
+        // Apply this even without a token: prompts are also confidential.
+        let cleartext = base_url.scheme() == "http";
+        let loopback = base_url
+            .host_str()
+            .and_then(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.to_canonical().is_loopback());
+        if cleartext && !loopback {
+            return Err(GatewayError::InsecureTransport);
+        }
         base_url.set_path("/v1/chat/completions");
         // A Gateway response cannot authorize another destination for private chat data.
         // Refuse even same-origin redirects; the configured canonical endpoint is final.
         let builder = Client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none());
-        let builder = if config.disable_proxy {
+        let builder = if config.disable_proxy || cleartext {
             builder.no_proxy()
         } else {
             match runtime_proxy_store()
