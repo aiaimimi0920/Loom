@@ -222,7 +222,7 @@ Assert-Workflow -Name "release-tag.yml" -RequiredText @(
     '-RequireCleanSource',
     'actions/attest-build-provenance@v2',
     'actions/attest-sbom@v2',
-    'softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228',
+    'softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64',
     'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3',
     'Check release publication state',
     '.github/scripts/release-publication.cjs',
