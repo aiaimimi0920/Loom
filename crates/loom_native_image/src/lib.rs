@@ -1,11 +1,12 @@
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::time::Instant;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
-use image::{DynamicImage, GenericImageView, ImageFormat, Rgba};
+use image::{DynamicImage, GenericImageView, Rgba};
 use serde::{Deserialize, Serialize};
+
+mod blur;
+mod budget;
+mod codec;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ProcessResult {
@@ -30,28 +31,38 @@ pub fn is_native_art_id(art_id: &str) -> bool {
 
 #[must_use]
 pub fn apply_pixelate(img: &DynamicImage, block_size: u32) -> DynamicImage {
+    pixelate_controlled(img, block_size, || Ok(())).expect("unlimited local pixelate")
+}
+
+fn pixelate_controlled(
+    img: &DynamicImage,
+    block_size: u32,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<DynamicImage, String> {
+    check()?;
     let (width, height) = img.dimensions();
     let block_size = block_size.max(1);
     let mut output = img.to_rgba8();
 
     for block_y in (0..height).step_by(block_size as usize) {
         for block_x in (0..width).step_by(block_size as usize) {
-            let end_x = (block_x + block_size).min(width);
-            let end_y = (block_y + block_size).min(height);
+            let end_x = block_x.saturating_add(block_size).min(width);
+            let end_y = block_y.saturating_add(block_size).min(height);
 
-            let mut r_sum: u32 = 0;
-            let mut g_sum: u32 = 0;
-            let mut b_sum: u32 = 0;
-            let mut a_sum: u32 = 0;
-            let mut count: u32 = 0;
+            let mut r_sum: u64 = 0;
+            let mut g_sum: u64 = 0;
+            let mut b_sum: u64 = 0;
+            let mut a_sum: u64 = 0;
+            let mut count: u64 = 0;
 
             for y in block_y..end_y {
+                check()?;
                 for x in block_x..end_x {
                     let pixel = img.get_pixel(x, y);
-                    r_sum += pixel[0] as u32;
-                    g_sum += pixel[1] as u32;
-                    b_sum += pixel[2] as u32;
-                    a_sum += pixel[3] as u32;
+                    r_sum += pixel[0] as u64;
+                    g_sum += pixel[1] as u64;
+                    b_sum += pixel[2] as u64;
+                    a_sum += pixel[3] as u64;
                     count += 1;
                 }
             }
@@ -64,6 +75,7 @@ pub fn apply_pixelate(img: &DynamicImage, block_size: u32) -> DynamicImage {
                     (a_sum / count) as u8,
                 ]);
                 for y in block_y..end_y {
+                    check()?;
                     for x in block_x..end_x {
                         output.put_pixel(x, y, avg_color);
                     }
@@ -72,56 +84,12 @@ pub fn apply_pixelate(img: &DynamicImage, block_size: u32) -> DynamicImage {
         }
     }
 
-    DynamicImage::ImageRgba8(output)
+    Ok(DynamicImage::ImageRgba8(output))
 }
 
 #[must_use]
 pub fn apply_blur(img: &DynamicImage, radius: u32) -> DynamicImage {
-    let radius = radius.max(1) as i32;
-    let (width, height) = img.dimensions();
-    let src = img.to_rgba8();
-    let mut output = src.clone();
-
-    for y in 0..height {
-        for x in 0..width {
-            let mut r_sum: u32 = 0;
-            let mut g_sum: u32 = 0;
-            let mut b_sum: u32 = 0;
-            let mut a_sum: u32 = 0;
-            let mut count: u32 = 0;
-
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-
-                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                        let pixel = src.get_pixel(nx as u32, ny as u32);
-                        r_sum += pixel[0] as u32;
-                        g_sum += pixel[1] as u32;
-                        b_sum += pixel[2] as u32;
-                        a_sum += pixel[3] as u32;
-                        count += 1;
-                    }
-                }
-            }
-
-            if count > 0 {
-                output.put_pixel(
-                    x,
-                    y,
-                    Rgba([
-                        (r_sum / count) as u8,
-                        (g_sum / count) as u8,
-                        (b_sum / count) as u8,
-                        (a_sum / count) as u8,
-                    ]),
-                );
-            }
-        }
-    }
-
-    DynamicImage::ImageRgba8(output)
+    blur::box_blur(img, radius, || Ok(())).expect("unlimited local blur")
 }
 
 #[must_use]
@@ -139,9 +107,9 @@ pub fn apply_brightness(img: &DynamicImage, amount: i32) -> DynamicImage {
         for x in 0..width {
             let pixel = src.get_pixel(x, y);
             let new_pixel = Rgba([
-                (pixel[0] as i32 + amount).clamp(0, 255) as u8,
-                (pixel[1] as i32 + amount).clamp(0, 255) as u8,
-                (pixel[2] as i32 + amount).clamp(0, 255) as u8,
+                (i64::from(pixel[0]) + i64::from(amount)).clamp(0, 255) as u8,
+                (i64::from(pixel[1]) + i64::from(amount)).clamp(0, 255) as u8,
+                (i64::from(pixel[2]) + i64::from(amount)).clamp(0, 255) as u8,
                 pixel[3],
             ]);
             output.put_pixel(x, y, new_pixel);
@@ -195,21 +163,31 @@ pub fn process_image(
     img: &DynamicImage,
     params: &HashMap<String, serde_json::Value>,
 ) -> Result<DynamicImage, String> {
-    match art_id {
+    process_image_controlled(art_id, img, params, budget::Budget::new(None, None))
+}
+
+fn process_image_controlled(
+    art_id: &str,
+    img: &DynamicImage,
+    params: &HashMap<String, serde_json::Value>,
+    budget: budget::Budget<'_>,
+) -> Result<DynamicImage, String> {
+    budget.check()?;
+    budget::validate_surface(img.width(), img.height())?;
+    let result = match art_id {
         "core.image.pixelate" => {
-            let block_size = params
-                .get("pixel_size")
-                .or_else(|| params.get("blockSize"))
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(10) as u32;
-            Ok(apply_pixelate(img, block_size))
+            let block_size = budget::integer_parameter(
+                params.get("pixel_size").or_else(|| params.get("blockSize")),
+                10,
+                budget::MAX_DIMENSION,
+                "pixel_size",
+            )?;
+            pixelate_controlled(img, block_size, || budget.check())
         }
         "core.image.blur" => {
-            let radius = params
-                .get("radius")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(5) as u32;
-            Ok(apply_blur(img, radius))
+            let radius =
+                budget::integer_parameter(params.get("radius"), 5, budget::MAX_RADIUS, "radius")?;
+            blur::box_blur(img, radius, || budget.check())
         }
         "core.image.grayscale" => Ok(apply_grayscale(img)),
         "core.image.brightness" => {
@@ -228,7 +206,9 @@ pub fn process_image(
         }
         "core.image.invert" => Ok(apply_invert(img)),
         _ => Err(format!("Unknown art_id: {art_id}")),
-    }
+    }?;
+    budget.check()?;
+    Ok(result)
 }
 
 #[must_use]
@@ -237,38 +217,32 @@ pub fn process_art(
     input_base64: &str,
     params: HashMap<String, serde_json::Value>,
 ) -> ProcessResult {
+    process_art_controlled(art_id, input_base64, params, None, None)
+}
+
+pub fn process_art_controlled(
+    art_id: &str,
+    input_base64: &str,
+    params: HashMap<String, serde_json::Value>,
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> ProcessResult {
     let start = Instant::now();
-    let base64_data = input_base64.split(',').last().unwrap_or(input_base64);
-    let image_bytes = match BASE64.decode(base64_data) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return process_error(start, format!("Failed to decode base64: {error}"));
-        }
-    };
-    let img = match image::load_from_memory(&image_bytes) {
-        Ok(img) => img,
-        Err(error) => {
-            return process_error(start, format!("Failed to load image: {error}"));
-        }
-    };
-    let result_img = match process_image(art_id, &img, &params) {
-        Ok(img) => img,
-        Err(error) => return process_error(start, error),
-    };
-
-    let mut output_bytes = Cursor::new(Vec::new());
-    if let Err(error) = result_img.write_to(&mut output_bytes, ImageFormat::Png) {
-        return process_error(start, format!("Failed to encode output: {error}"));
-    }
-
-    ProcessResult {
-        success: true,
-        output_base64: Some(format!(
-            "data:image/png;base64,{}",
-            BASE64.encode(output_bytes.into_inner())
-        )),
-        error: None,
-        processing_time_ms: start.elapsed().as_millis() as u64,
+    let result = (|| {
+        let budget = budget::Budget::new(deadline, cancellation);
+        budget.check()?;
+        let img = codec::decode(input_base64, budget)?;
+        let output = process_image_controlled(art_id, &img, &params, budget)?;
+        codec::encode(&output, budget)
+    })();
+    match result {
+        Ok(output) => ProcessResult {
+            success: true,
+            output_base64: Some(output),
+            error: None,
+            processing_time_ms: start.elapsed().as_millis() as u64,
+        },
+        Err(error) => process_error(start, error),
     }
 }
 
