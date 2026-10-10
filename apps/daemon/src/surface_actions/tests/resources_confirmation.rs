@@ -202,8 +202,10 @@
         );
         let executions = Arc::new(AtomicUsize::new(0));
         let runner_executions = Arc::clone(&executions);
+        let (execution_tx, execution_rx) = std::sync::mpsc::sync_channel(1);
         let runner: Arc<SurfaceActionRunner> = Arc::new(move |_| {
             runner_executions.fetch_add(1, Ordering::SeqCst);
+            let _ = execution_tx.try_send(());
             Ok(json!({
                 "surfaceAction": {
                     "protocolVersion": SURFACE_PROTOCOL_VERSION,
@@ -277,12 +279,10 @@
             })
             .expect("approve confirmed Surface action");
         assert_eq!(approved.status, SurfaceActionStatus::Queued);
-        for _ in 0..20 {
-            if executions.load(Ordering::SeqCst) == 1 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // Queued approval is asynchronous, not a guarantee of a 200 ms scheduler slot.
+        execution_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("approved Surface action reached the runner");
         assert_eq!(executions.load(Ordering::SeqCst), 1);
 
         let rejected_event = SurfaceEvent {
