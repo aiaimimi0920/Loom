@@ -169,7 +169,25 @@ impl FrameworkRegistry {
                     .unwrap_or_default(),
             )
             .ok();
-            if current.as_ref() != Some(&journal.next_activation) {
+            let installation_committed = match &journal.next_installation {
+                Some(next) => {
+                    let publisher = package_root
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(OsStr::to_str)
+                        .unwrap_or_default();
+                    let local_id = package_root
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .unwrap_or_default();
+                    self.installation_states()?
+                        .get(&format!("{publisher}/{local_id}"))
+                        == Some(next)
+                }
+                // Legacy journals cannot create a pin; admission still fails closed.
+                None => true,
+            };
+            if current.as_ref() != Some(&journal.next_activation) || !installation_committed {
                 if let Some(old) = &journal.old_activation {
                     let temporary = activation_path.with_extension("json.tmp");
                     let mut bytes = serde_json::to_vec_pretty(old)?;

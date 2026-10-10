@@ -7,7 +7,8 @@ use std::fs;
 fn process_request_contains_art_inputs_params_and_context() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("success");
-    let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, SUCCESS_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
         &fixture_tool(&art_dir),
         "publisher.test/script",
@@ -16,7 +17,7 @@ fn process_request_contains_art_inputs_params_and_context() {
             "params": { "strength": 0.5 },
             "disabledParams": ["unused"]
         }),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -202,7 +203,8 @@ fn mcp_framework_resolves_independent_package_and_server_scoped_credentials() {
 fn flat_art_arguments_are_partitioned_by_manifest_schema() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("flat-schema");
-    let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, SUCCESS_SCRIPT);
     let result = execute_framework_art_in_root_with_timeout(
         &fixture_tool_with_schema(&art_dir),
         "publisher.test/script",
@@ -211,7 +213,7 @@ fn flat_art_arguments_are_partitioned_by_manifest_schema() {
             "reference": "reference.png",
             "strength": 25
         }),
-        &root,
+        &packages_root,
         FUNCTIONAL_FIXTURE_TIMEOUT,
         None,
     )
@@ -229,8 +231,9 @@ fn flat_art_arguments_are_partitioned_by_manifest_schema() {
 fn execute_tool_routes_framework_art_to_the_external_process() {
     let _powershell_guard = lock_windows_powershell_fixture();
     let root = temp_root("execute-tool");
-    let art_dir = write_fixture_package(&root, SUCCESS_SCRIPT);
-    let _environment = EnvVarGuard::set("LOOM_FRAMEWORK_PACKAGES_DIR", &root);
+    let packages_root = root.join("frameworks");
+    let art_dir = write_fixture_package(&packages_root, SUCCESS_SCRIPT);
+    let _environment = EnvVarGuard::set("LOOM_FRAMEWORK_PACKAGES_DIR", &packages_root);
     let result = crate::execute_tool(
         &fixture_tool_with_schema(&art_dir),
         &[],

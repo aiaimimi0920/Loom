@@ -24,6 +24,7 @@ use crate::{ToolDefinition, ToolExecution};
 
 mod catalog;
 mod dependencies;
+mod execution_admission;
 mod model;
 mod package_runtime;
 mod permissions;
@@ -52,6 +53,7 @@ pub use readiness::{
 };
 pub use registry_core::FrameworkRegistry;
 
+pub(crate) use execution_admission::FrameworkExecutionAdmission;
 pub(crate) use package_runtime::{is_valid_framework, is_valid_framework_reference};
 
 use catalog::*;

@@ -6,6 +6,10 @@ use super::*;
 pub(super) struct FrameworkInstallationState {
     pub version: String,
     pub enabled: bool,
+    /// Pinned only by an explicit install/upgrade/rollback, never by execution.
+    /// Legacy records remain manageable but require reinstall before execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +23,10 @@ pub(super) struct FrameworkActivationState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct FrameworkLifecycleJournal {
+    /// The registry write is the commit point. Recovery never learns trust from
+    /// this journal: it only keeps activation if the registry already committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) next_installation: Option<FrameworkInstallationState>,
     pub(super) old_activation: Option<FrameworkActivationState>,
     pub(super) next_activation: FrameworkActivationState,
     pub(super) target: String,

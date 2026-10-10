@@ -91,10 +91,11 @@ pub(super) fn write_framework_lockfile(
     Ok(())
 }
 
-pub(super) fn verify_framework_lockfile(
+pub(super) fn verify_framework_lockfile_with_digest(
     control_plane_root: &Path,
     package_dir: &Path,
     manifest: &FrameworkPackageManifest,
+    digest: &str,
 ) -> Result<(), String> {
     let versions_root = package_dir
         .parent()
@@ -105,14 +106,6 @@ pub(super) fn verify_framework_lockfile(
     let package_root = versions_root
         .parent()
         .ok_or_else(|| "version directory has no package root".to_owned())?;
-    let digest = canonical_package_digest(
-        package_dir,
-        manifest
-            .signature
-            .as_ref()
-            .map(|signature| signature.file.as_str()),
-    )
-    .map_err(|error| error.to_string())?;
     let lockfile_path = package_root.join("locks").join(format!("{digest}.json"));
     let lockfile: loom_protocol::PluginLockfile = serde_json::from_slice(
         &read_bounded_file(&lockfile_path, FRAMEWORK_METADATA_MAX_BYTES)
@@ -165,14 +158,26 @@ pub(super) fn verify_framework_lockfile(
                 resolved.id
             ));
         }
-        if !candidates.iter().any(|candidate| {
-            candidate.kind == resolved.kind
-                && candidate.id == resolved.id
-                && candidate.version == resolved.version
-                && candidate.sha256.eq_ignore_ascii_case(&resolved.sha256)
-        }) {
+        let candidate = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.kind == resolved.kind
+                    && candidate.id == resolved.id
+                    && candidate.version == resolved.version
+                    && candidate.sha256.eq_ignore_ascii_case(&resolved.sha256)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "locked dependency `{}` is unavailable or has changed",
+                    resolved.id
+                )
+            })?;
+        // Registry digests describe registration time, not the bytes about to run.
+        let actual =
+            canonical_package_digest(&candidate.path, None).map_err(|error| error.to_string())?;
+        if !actual.eq_ignore_ascii_case(&resolved.sha256) {
             return Err(format!(
-                "locked dependency `{}` is unavailable or has changed",
+                "locked dependency `{}` contents have changed",
                 resolved.id
             ));
         }

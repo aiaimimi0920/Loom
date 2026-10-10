@@ -215,6 +215,18 @@ pub(super) fn execute_framework_art_in_root_with_timeout(
         });
     }
 
+    let admission_error = |reason| ToolRegistryError::FrameworkProcessProtocol {
+        id: tool.id.clone(),
+        framework: framework.to_owned(),
+        reason: format!("framework admission rejected: {reason}"),
+    };
+    let admission = crate::framework::FrameworkExecutionAdmission::capture(
+        packages_root,
+        &package_dir,
+        &manifest_text,
+    )
+    .map_err(admission_error)?;
+
     let art_dir =
         art_directory(tool).ok_or_else(|| ToolRegistryError::FrameworkArtDirectoryNotFound {
             id: tool.id.clone(),
@@ -360,6 +372,9 @@ pub(super) fn execute_framework_art_in_root_with_timeout(
     let mut stdin_payload = payload;
     stdin_payload.push(b'\n');
     let mut persistent_host = None;
+    // Do not reuse authorization from Art resolution or credential preparation.
+    // Both a new process and a cached MCP host require current admission.
+    admission.revalidate().map_err(admission_error)?;
     let (exit_status, stdout, stderr, process_diagnostics) = if persistent_mcp_host {
         let key = persistent_host_key(&command_path, &manifest_text, &process.args);
         let (stdout, host) = request_persistent_mcp_host(

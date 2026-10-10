@@ -251,9 +251,15 @@ impl FrameworkRegistry {
                 active: active_relative_text,
                 previous,
             };
+            let next_installation = FrameworkInstallationState {
+                version: manifest.version.clone(),
+                enabled: true,
+                package_digest: Some(digest.clone()),
+            };
             self.write_lifecycle_journal(
                 &storage_key,
                 &FrameworkLifecycleJournal {
+                    next_installation: Some(next_installation.clone()),
                     old_activation: old_activation.clone(),
                     next_activation: activation.clone(),
                     target: active_relative.to_string_lossy().replace('\\', "/"),
@@ -268,13 +274,7 @@ impl FrameworkRegistry {
                 return Err(error);
             }
 
-            installed.insert(
-                storage_key.clone(),
-                FrameworkInstallationState {
-                    version: manifest.version.clone(),
-                    enabled: true,
-                },
-            );
+            installed.insert(storage_key.clone(), next_installation);
             if let Err(error) = self.write_installed(&installed) {
                 if let Some(old_activation) = old_activation {
                     let _ = self.write_activation(&storage_key, &old_activation);
@@ -376,9 +376,18 @@ impl FrameworkRegistry {
             }
         })?;
         run_framework_self_test(&manifest, &target)?;
+        // Read before activation so a corrupt registry cannot leave a partial swap.
+        let mut installed = self.installation_states()?;
+        let state = installed
+            .get_mut(&key)
+            .ok_or_else(|| FrameworkError::FrameworkNotInstalled(key.clone()))?;
+        state.version = manifest.version;
+        state.package_digest = Some(digest);
+        let next_installation = state.clone();
         self.write_lifecycle_journal(
             &key,
             &FrameworkLifecycleJournal {
+                next_installation: Some(next_installation),
                 old_activation: Some(activation.clone()),
                 next_activation: next.clone(),
                 target: next.active.clone(),
@@ -393,20 +402,6 @@ impl FrameworkRegistry {
             // exactly that value, so drop it instead.
             self.clear_lifecycle_journal(&key);
             return Err(error);
-        }
-        // A corrupt state file gets the same treatment as a failed state write: the activation
-        // that was just written has to go back, or the package would run at the rolled-back
-        // version while the state file still claims the newer one.
-        let mut installed = match self.installation_states() {
-            Ok(installed) => installed,
-            Err(error) => {
-                let _ = self.write_activation(&key, &activation);
-                self.clear_lifecycle_journal(&key);
-                return Err(error);
-            }
-        };
-        if let Some(state) = installed.get_mut(&key) {
-            state.version = manifest.version;
         }
         if let Err(error) = self.write_installed(&installed) {
             let _ = self.write_activation(&key, &activation);
