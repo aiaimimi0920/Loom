@@ -31,6 +31,7 @@ fn route_settings_runs(
     route_path: &str,
 ) -> Result<(u16, String)> {
     match (request.method.as_str(), route_path) {
+        ("POST", "/v1/hook-bridge/credentials") => hook_bridge_credentials(hook_bridge),
         ("GET", "/v1/settings/shortcuts") => get_shortcuts(settings),
         ("PUT", path) if path_id(path, "/v1/settings/shortcuts/").is_some() => put_shortcut(
             path_id(path, "/v1/settings/shortcuts/").expect("checked path"),

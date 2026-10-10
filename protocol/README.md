@@ -41,8 +41,13 @@ authors must not depend on private Loom or Hook source code.
 ### Loom<->Hook Art contract and legacy retirement
 
 The local Hook WebSocket requires transport authentication before HTTP upgrade,
-for both `loom.hook.v1` and extension traffic. Native clients send the daemon's
-local-manifest credential as `Authorization: Bearer <token>`. Browser clients offer
+for both `loom.hook.v1` and extension traffic. Clients first call the administrator-
+authenticated `POST /v1/hook-bridge/credentials` HTTP broker. Only a successfully
+bound, running bridge returns `{url, token}`: its canonical `127.0.0.1` endpoint
+and a random, memory-only `hook-v1.` credential. A stopped or failed bridge returns
+503. Restarting rotates this credential; it cannot authorize daemon HTTP APIs.
+Native clients send this scoped credential as `Authorization: Bearer <token>`.
+The daemon administrator bearer is never sent to a WebSocket listener. Browser clients offer
 exactly `loom.hook.v1, loom.auth.<base64url-no-padding-of-UTF8-token>`; the server
 returns only `loom.hook.v1`, never the credential. Query-string credentials,
 ambiguous headers, remote Host values and untrusted Origins are rejected. Allowed
@@ -57,9 +62,12 @@ after transport authentication. This authenticates a local administrator channel
 not a sandbox boundary against software that can read the same user's manifest.
 
 The bundled Loom desktop obtains subprotocol credentials through its trusted native
-command, and the PowerShell Hook smoke clients reuse their daemon bearer headers.
+command, and the PowerShell Hook smoke clients obtain scoped credentials from the
+same HTTP broker. Clients require the broker's port to match the requested port
+and connect to its canonical URL, not an unverified localhost/IPv6 listener.
 A standalone Loom browser preview must explicitly set its memory-only credential
-with `setHookBridgePreviewToken` from `hookBridgeAuthentication.ts`; there is no
+with `setHookBridgePreviewToken` from `hookBridgeAuthentication.ts`, using a scoped
+bridge token obtained by the operator (never an administrator token); there is no
 ambient browser discovery, hard-coded token or unauthenticated preview bypass.
 
 The canonical-only contract is the current production baseline. Obsolete

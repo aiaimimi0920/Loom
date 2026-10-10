@@ -116,7 +116,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         .set_write_timeout(Some(Duration::from_secs(20)))
         .expect("set websocket write timeout");
     let (mut socket, _) = tungstenite::client(
-        authenticated_hook_test_request(bridge_port, &runtime.auth_token),
+        authenticated_hook_test_request(bridge_port, &test_bound_daemon_token(bridge_port).unwrap()),
         stream,
     )
     .expect("connect bridge websocket");

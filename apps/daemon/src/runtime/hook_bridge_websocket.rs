@@ -61,11 +61,6 @@ fn start_hook_bridge(
             }),
         );
     }
-    let auth_token = runtime
-        .auth_token
-        .clone()
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Hook transport authentication is not configured"))?;
     clear_hook_canvas_runtime_state(Some(shared_images));
 
     let listener = match TcpListener::bind(("127.0.0.1", requested_port)) {
@@ -85,6 +80,14 @@ fn start_hook_bridge(
         .local_addr()
         .context("read hook bridge local address")?
         .port();
+    // A bound listener gets an independent credential, never the daemon admin token.
+    // A restarted listener cannot accept a credential captured from its predecessor.
+    let mut entropy = [0u8; 32];
+    OsRng.fill_bytes(&mut entropy);
+    let auth_token: Arc<str> = Arc::from(format!("hook-v1.{}", BASE64_URL.encode(entropy)));
+    runtime.auth_token = Some(Arc::clone(&auth_token));
+    #[cfg(test)]
+    record_test_bound_daemon_token(assigned_port, &auth_token);
     listener
         .set_nonblocking(true)
         .context("set hook bridge listener nonblocking")?;
@@ -169,6 +172,7 @@ fn stop_hook_bridge(
     runtime.ocr_text_capable_clients.store(0, Ordering::SeqCst);
     runtime.broadcast_hub.clear();
     runtime.port = None;
+    runtime.auth_token = None;
     clear_hook_canvas_runtime_state(Some(shared_images));
 
     Ok((

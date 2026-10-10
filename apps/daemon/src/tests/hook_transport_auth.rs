@@ -4,6 +4,78 @@ mod hook_transport_auth {
     use tungstenite::client::IntoClientRequest;
 
     #[test]
+    fn hook_transport_broker_requires_admin_and_rotates_listener_credentials() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        let root = unique_temp_dir("hook-transport-broker");
+        let runtime = test_daemon_runtime(&root, None);
+        let path = "/v1/hook-bridge/credentials";
+        let request = parsed_request("POST", path, &[], Some("{}"));
+        expect_json_text_route_response(route_request(&runtime, &request), 503);
+        assert!(!is_public_device_auth_route("POST", path));
+        assert!(!device_session_route_allowed("POST", path));
+        let mut anonymous = parsed_request("POST", path, &[], Some("{}"));
+        anonymous
+            .headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
+        expect_json_text_route_response(route_request(&runtime, &anonymous), 401);
+
+        let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+        let port = started["port"].as_u64().unwrap() as u16;
+        let credential = expect_json_text_route_response(route_request(&runtime, &request), 200);
+        assert_eq!(credential["url"], format!("ws://127.0.0.1:{port}"));
+        let token = credential["token"].as_str().unwrap();
+        assert!(token.starts_with("hook-v1."));
+        assert_ne!(token, TEST_DAEMON_AUTH_TOKEN);
+        let scoped_http = parsed_request(
+            "POST",
+            path,
+            &[("Authorization", &format!("Bearer {token}"))],
+            Some("{}"),
+        );
+        expect_json_text_route_response(route_request(&runtime, &scoped_http), 401);
+        assert!(tungstenite::connect(authenticated_hook_test_request(
+            port,
+            TEST_DAEMON_AUTH_TOKEN
+        ))
+        .is_err());
+        let (mut socket, _) =
+            tungstenite::connect(authenticated_hook_test_request(port, token)).unwrap();
+        let _ = socket.close(None);
+        drop(socket);
+        stop_test_hook_bridge(&runtime);
+        expect_json_text_route_response(route_request(&runtime, &request), 503);
+
+        let restarted = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+        let new_port = restarted["port"].as_u64().unwrap() as u16;
+        let next = expect_json_text_route_response(route_request(&runtime, &request), 200);
+        assert_ne!(next["token"], token);
+        assert!(tungstenite::connect(authenticated_hook_test_request(new_port, token)).is_err());
+        stop_test_hook_bridge(&runtime);
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hook_transport_broker_never_issues_credentials_for_an_occupied_port() {
+        let _guard = lock_ignoring_poison(&ENV_LOCK);
+        let root = unique_temp_dir("hook-transport-impostor");
+        let runtime = test_daemon_runtime(&root, None);
+        let impostor = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = impostor.local_addr().unwrap().port();
+        let request = parsed_request(
+            "POST",
+            "/v1/hook-bridge/start",
+            &[],
+            Some(&format!(r#"{{"port":{port}}}"#)),
+        );
+        expect_json_text_route_response(route_request(&runtime, &request), 409);
+        expect_json_result_response(hook_bridge_credentials(&runtime.hook_bridge), 503);
+        assert!(runtime.hook_bridge.lock().unwrap().auth_token.is_none());
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn hook_transport_supports_utf8_native_tokens_and_both_desktop_dev_origins() {
         let mut request = authenticated_hook_test_request(19820, "local-凭据");
         assert!(authorize_hook_upgrade(&request, "local-凭据").is_ok());

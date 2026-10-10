@@ -14,15 +14,18 @@ export async function createAuthenticatedHookBridgeSocket(endpoint: string): Pro
     throw new Error("Hook authentication requires a credential-free loopback endpoint");
   }
   let protocols: string[];
+  let connectionUrl = endpoint;
   if (isTauri()) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      protocols = await Promise.race([
-        invoke<string[]>("hook_bridge_websocket_protocols", { endpoint }),
+      const connection = await Promise.race([
+        invoke<{ url: string; protocols: string[] }>("hook_bridge_websocket_protocols", { endpoint }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("Local authentication timed out")), 5000);
         }),
       ]);
+      connectionUrl = connection.url;
+      protocols = connection.protocols;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -32,5 +35,5 @@ export async function createAuthenticatedHookBridgeSocket(endpoint: string): Pro
       .replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
     protocols = ["loom.hook.v1", `loom.auth.${encoded}`];
   }
-  return new WebSocket(endpoint, protocols);
+  return new WebSocket(connectionUrl, protocols);
 }

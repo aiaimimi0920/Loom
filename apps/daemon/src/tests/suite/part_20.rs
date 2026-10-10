@@ -279,7 +279,7 @@ fn connect_hook_bridge_websocket(bridge_port: u16) -> tungstenite::WebSocket<Tcp
         .set_write_timeout(Some(Duration::from_secs(10)))
         .expect("set websocket write timeout");
     tungstenite::client(
-        authenticated_hook_test_request(bridge_port, TEST_DAEMON_AUTH_TOKEN),
+        authenticated_hook_test_request(bridge_port, &test_bound_daemon_token(bridge_port).unwrap()),
         stream,
     )
     .expect("connect bridge websocket")

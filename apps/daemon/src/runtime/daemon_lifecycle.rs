@@ -126,8 +126,7 @@ impl LoomDaemon {
         let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
         let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
         let hook_bridge = Arc::new(Mutex::new(
-            HookBridgeRuntime::new(control_plane_root.join("workflows"))
-                .with_auth_token(&auth_token),
+            HookBridgeRuntime::new(control_plane_root.join("workflows")),
         ));
         let surface_instances = Arc::new(Mutex::new(
             SurfaceInstanceStore::new(

@@ -48,7 +48,7 @@ public sealed class PluginBoundarySocketFixture : IDisposable
                 {
                     if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
                         key = line.Substring(line.IndexOf(':') + 1).Trim();
-                    if (line.Equals("Authorization: Bearer fixture", StringComparison.OrdinalIgnoreCase))
+                    if (line.Equals("Authorization: Bearer hook-v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", StringComparison.OrdinalIgnoreCase))
                         ReceivedAuthorization = true;
                 }
                 using (var sha = SHA1.Create())

@@ -27,10 +27,6 @@ impl HookBridgeRuntime {
             workflow_root,
         }
     }
-    fn with_auth_token(mut self, token: &str) -> Self {
-        self.auth_token = Some(Arc::from(token));
-        self
-    }
 }
 
 #[derive(Default)]

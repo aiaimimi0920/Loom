@@ -1,4 +1,32 @@
 // Authenticates the transport before either Hook or extension messages can dispatch.
+fn hook_bridge_credentials(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, String)> {
+    let runtime = hook_bridge
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock Hook bridge"))?;
+    if !runtime
+        .worker
+        .as_ref()
+        .is_some_and(|worker| !worker.is_finished())
+    {
+        return structured_error(
+            503,
+            json!({"code": "hook_bridge_unavailable", "message": "Hook bridge is not running"}),
+        );
+    }
+    match (runtime.port, runtime.auth_token.as_ref()) {
+        (Some(port), Some(token)) => Ok((
+            200,
+            serde_json::to_string(&json!({
+                "url": format!("ws://127.0.0.1:{port}"), "token": token.as_ref()
+            }))?,
+        )),
+        _ => structured_error(
+            503,
+            json!({"code": "hook_bridge_unavailable", "message": "Hook bridge is not running"}),
+        ),
+    }
+}
+
 fn accept_authenticated_hook_socket(
     stream: TcpStream,
     token: &str,

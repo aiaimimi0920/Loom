@@ -84,12 +84,7 @@ fn test_daemon_runtime_from_config(
     let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
     let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
     let hook_bridge = Arc::new(Mutex::new(
-        HookBridgeRuntime::new(control_plane_root.join("workflows")).with_auth_token(
-            config
-                .auth_token
-                .as_deref()
-                .unwrap_or(TEST_DAEMON_AUTH_TOKEN),
-        ),
+        HookBridgeRuntime::new(control_plane_root.join("workflows")),
     ));
     let surface_instances = Arc::new(Mutex::new(
         SurfaceInstanceStore::new(
