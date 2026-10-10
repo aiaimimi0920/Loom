@@ -37,6 +37,7 @@ impl LiveBinaryFrame {
         validate_binary_identity(self.epoch, &self.metadata)?;
         validate_payload_len(self.payload.len())?;
         validate_codec_payload(&self.metadata, self.payload.len())?;
+        super::h264::validate_h264(&self.metadata, &self.payload)?;
         let mut output = vec![0u8; LIVE_BINARY_HEADER_LEN + self.payload.len()];
         output[0..4].copy_from_slice(&LIVE_BINARY_MAGIC);
         output[4] = LIVE_BINARY_VERSION;
@@ -104,6 +105,7 @@ impl LiveBinaryFrame {
         };
         validate_binary_identity(epoch, &metadata)?;
         validate_codec_payload(&metadata, payload_len)?;
+        super::h264::validate_h264(&metadata, &input[LIVE_BINARY_HEADER_LEN..])?;
         Ok((epoch, metadata))
     }
 }

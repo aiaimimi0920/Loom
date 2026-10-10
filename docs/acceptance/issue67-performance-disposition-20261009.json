@@ -1,0 +1,83 @@
+{
+    "schemaVersion":  1,
+    "evidenceRoot":  "linshi/issue67-final-performance-20261009",
+    "performanceDisposition":  "waived-by-user",
+    "blocksDelivery":  false,
+    "measuredPass":  false,
+    "completePerformanceTestExecuted":  false,
+    "reason":  "Host headroom below 15% before services",
+    "observedFreePercent":  14.2983920616775,
+    "thresholdFreePercent":  15,
+    "plannedOrder":  [
+                         "jpeg-1",
+                         "raw-1"
+                     ],
+    "jpegMediaStarted":  false,
+    "rawAttempted":  false,
+    "automaticRetryAllowed":  false,
+    "userDecision":  "One final performance attempt; if incomplete, skip remaining performance acceptance and address real-use problems later.",
+    "scope":  "remaining A3-P performance acceptance only; no assertion about other A3 workpackages",
+    "hookSha256":  "d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92",
+    "loomSha256":  "8132707e238e9a1e439a0d6a9543e05c58a8927ff9d7a2c3887b8616ec3df806",
+    "cleanup":  {
+                    "passed":  true,
+                    "local":  {
+                                  "hookCount":  0,
+                                  "listeners":  [
+
+                                                ]
+                              },
+                    "utc":  "2026-10-09T14:50:52.0601495Z",
+                    "dailyExitCount":  0,
+                    "remote":  {
+                                   "jpegTaskExists":  false,
+                                   "hookCount":  0,
+                                   "rawTaskExists":  false,
+                                   "listeners":  [
+
+                                                 ]
+                               }
+                },
+    "inputs":  [
+                   {
+                       "sha256":  "11be3a42ba35d05dfdc16bb067de723117a278cf3dbd0b13d7f7cc2bf7557aa4",
+                       "file":  "approval.json"
+                   },
+                   {
+                       "sha256":  "c983ed34a6f9d05e8d424c6253f70d704efc5387b03131bc26df5683ed896fb2",
+                       "file":  "preflight.json"
+                   },
+                   {
+                       "sha256":  "613401a93fbaf2b92013cf5fb760e6f963966f71d6813f2db00db4d518690e7d",
+                       "file":  "candidate-input.json"
+                   },
+                   {
+                       "sha256":  "9c89dff1e367b27077ad6d5820474947b9dec092a2b62f849127d89fc836486d",
+                       "file":  "trial-template/harness-regression.json"
+                   },
+                   {
+                       "sha256":  "5cfcc69a301165fcfdc5f19dc177769f25917aa2f508b1821195f60ae2ad88e7",
+                       "file":  "jpeg-1/pc3-transfer-receipt.json"
+                   },
+                   {
+                       "sha256":  "c4363e4ca8955f347d6d2b30c309a5024b4f96b791881822df6bd0e77190f2c2",
+                       "file":  "raw-1/pc3-transfer-receipt.json"
+                   },
+                   {
+                       "sha256":  "2d7271e7bbed0cd9bf5007287294abfcb387c19b1cce5a82068750c6022010b7",
+                       "file":  "jpeg-1/host-memory-preflight.json"
+                   },
+                   {
+                       "sha256":  "0eaedd39c17c8163a957cec3d9a9c79c73339c5bc8e6668d1851cf1979f71438",
+                       "file":  "jpeg-1/runner-receipt.json"
+                   },
+                   {
+                       "sha256":  "ad341798e75374cc527f436f8de71ec08179cc2f7cf3f8e96277c9a763f34732",
+                       "file":  "jpeg-1/part-cleanup-verified.json"
+                   },
+                   {
+                       "sha256":  "24c5a7476709d2fc414b6e917e1b2f5562c1e0285ed90a8197978315970e040b",
+                       "file":  "closeout.json"
+                   }
+               ]
+}
