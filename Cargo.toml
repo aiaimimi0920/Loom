@@ -20,6 +20,7 @@ members = [
     "crates/loom_workflow_store",
     "crates/loom_tool_registry",
     "crates/loom_hook_bridge",
+    "crates/loom_local_channel",
     "crates/loom_native_image",
     "crates/loom_workflow_runtime",
     "crates/loom_shared_image",
@@ -56,6 +57,8 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "
 paddle-ocr-rs = { version = "=0.6.1", default-features = false }
 rayon = "1.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
 rxing = { version = "0.9.2", default-features = false, features = ["client_support", "encoding_rs", "decoders", "full_barcode_format_support", "multi_barcode_readers"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
@@ -85,6 +88,7 @@ loom_mcp = { path = "crates/loom_mcp" }
 loom_workflow_store = { path = "crates/loom_workflow_store" }
 loom_tool_registry = { path = "crates/loom_tool_registry" }
 loom_hook_bridge = { path = "crates/loom_hook_bridge" }
+loom_local_channel = { path = "crates/loom_local_channel" }
 loom_native_image = { path = "crates/loom_native_image" }
 loom_workflow_runtime = { path = "crates/loom_workflow_runtime" }
 loom_shared_image = { path = "crates/loom_shared_image" }

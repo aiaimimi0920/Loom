@@ -1,198 +1,99 @@
-import { createAuthenticatedHookBridgeSocket } from "./hookBridgeAuthentication.ts";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
-type HookBridgeHandler = (payload: unknown) => void;
-
-type HookBridgeSocketLike = {
-  readonly readyState: number;
-  onopen: ((event?: unknown) => void) | null;
-  onmessage: ((event: { data: string }) => void) | null;
-  onclose: ((event?: unknown) => void) | null;
-  onerror: ((event?: unknown) => void) | null;
-  send(payload: string): void;
-  close(): void;
-};
-
-type HookBridgeWebSocketFactory = (url: string) => HookBridgeSocketLike | Promise<HookBridgeSocketLike>;
-
-interface HookBridgeBrowserClientOptions {
-  url?: string;
-  websocketFactory?: HookBridgeWebSocketFactory;
-  reconnectDelayMs?: number;
-  scheduleReconnect?: (callback: () => void, delayMs: number) => number;
-  cancelReconnect?: (handle: number) => void;
-  logger?: Pick<Console, "error">;
-}
-
+type Handler = (payload: unknown) => void;
+type Timer = number | ReturnType<typeof setTimeout>;
 export interface HookBridgeBrowserClient {
-  subscribe(event: string, handler: HookBridgeHandler): () => void;
+  subscribe(event: string, handler: Handler): () => void;
   dispose(): void;
 }
 
-const DEFAULT_HOOK_BRIDGE_URL = "ws://127.0.0.1:19820";
-const DEFAULT_RECONNECT_DELAY_MS = 1000;
-const SOCKET_OPEN = 1;
-const SOCKET_CLOSED = 3;
+export interface HookBridgeSubscriptionState {
+  connected: boolean;
+  epoch: string;
+  workflowRevision: string;
+  capabilitiesRevision: string;
+}
 
-const socketIsClosed = (socket: HookBridgeSocketLike | null) =>
-  !socket || socket.readyState === SOCKET_CLOSED;
+interface Options {
+  readState?: () => Promise<HookBridgeSubscriptionState>;
+  schedule?: (callback: () => void, delayMs: number) => Timer;
+  cancel?: (handle: Timer) => void;
+}
 
-export function createHookBridgeBrowserClient(
-  options: HookBridgeBrowserClientOptions = {},
-): HookBridgeBrowserClient {
-  const hookBridgeUrl = options.url ?? DEFAULT_HOOK_BRIDGE_URL;
-  const websocketFactory: HookBridgeWebSocketFactory =
-    options.websocketFactory ??
-    (async (url: string) => await createAuthenticatedHookBridgeSocket(url) as unknown as HookBridgeSocketLike);
-  const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
-  const scheduleReconnect =
-    options.scheduleReconnect ??
-    ((callback: () => void, delayMs: number) => window.setTimeout(callback, delayMs));
-  const cancelReconnect =
-    options.cancelReconnect ?? ((handle: number) => window.clearTimeout(handle));
-  const logger = options.logger ?? console;
+const WORKFLOW = "loom.hook.workflow.updated";
+const CAPABILITIES = "loom.hook.capabilities.updated";
 
-  const handlers = new Map<string, Set<HookBridgeHandler>>();
-  let socket: HookBridgeSocketLike | null = null;
-  let reconnectHandle: number | null = null;
+// The historical facade now polls a fixed native subscription. No URL, credentials,
+// raw messages or arbitrary methods cross the WebView boundary.
+export function createHookBridgeBrowserClient(options: Options = {}): HookBridgeBrowserClient {
+  const read = options.readState ?? (typeof window !== "undefined" && isTauri()
+    ? () => invoke<HookBridgeSubscriptionState>("read_hook_bridge_subscription_state")
+    : null);
+  const schedule = options.schedule ?? setTimeout;
+  const cancel = options.cancel ?? clearTimeout;
+  const handlers = new Map<string, Set<Handler>>();
+  let timer: Timer | null = null;
+  let previous: HookBridgeSubscriptionState | null = null;
   let disposed = false;
-  let connecting = false;
   let generation = 0;
+  let inFlight = false;
 
-  const clearReconnect = () => {
-    if (reconnectHandle === null) return;
-    cancelReconnect(reconnectHandle);
-    reconnectHandle = null;
-  };
-
-  const sendSubscription = () => {
-    if (!socket || socket.readyState !== SOCKET_OPEN) return;
-    const events = Array.from(handlers.keys());
-    if (events.length === 0) return;
-    socket.send(
-      JSON.stringify({
-        method: "loom.hook.subscribe",
-        params: {
-          requestId: `subscribe:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
-          events,
-        },
-      }),
-    );
-  };
-
-  const scheduleReconnectIfNeeded = () => {
-    if (disposed || reconnectHandle !== null || handlers.size === 0) return;
-    reconnectHandle = scheduleReconnect(() => {
-      reconnectHandle = null;
-      ensureSocket();
-    }, reconnectDelayMs);
-  };
-
-  const stopSocketIfUnused = () => {
-    if (handlers.size > 0) return;
-    generation += 1;
-    connecting = false;
-    clearReconnect();
-    if (!socket) return;
-    const current = socket;
-    socket = null;
-    current.close();
-  };
-
-  const ensureSocket = () => {
-    if (disposed || handlers.size === 0 || connecting) return;
-    if (socket && socket.readyState !== SOCKET_CLOSED) {
-      if (socket.readyState === SOCKET_OPEN) {
-        sendSubscription();
-      }
-      return;
+  const emit = (method: string, ownGeneration: number) => {
+    for (const handler of [...(handlers.get(method) ?? [])]) {
+      if (disposed || ownGeneration !== generation || !handlers.get(method)?.has(handler)) continue;
+      try { handler(method === WORKFLOW ? { workflowId: "hook-live" } : {}); }
+      catch { /* One UI listener must not stop subscription recovery. */ }
     }
-
-    const attempt = ++generation;
-    connecting = true;
-    const failed = () => {
-      if (disposed || generation !== attempt) return;
-      connecting = false;
-      scheduleReconnectIfNeeded();
-    };
+  };
+  const poll = async () => {
+    if (!read || disposed || handlers.size === 0 || inFlight) return;
+    inFlight = true;
+    const ownGeneration = generation;
     try {
-      const candidate = websocketFactory(hookBridgeUrl);
-      if ("then" in candidate) void candidate.then((next) => attachSocket(next, attempt), failed);
-      else attachSocket(candidate, attempt);
-    } catch { failed(); }
-  };
-
-  const attachSocket = (nextSocket: HookBridgeSocketLike, attempt: number) => {
-    if (disposed || generation !== attempt || handlers.size === 0) { nextSocket.close(); return; }
-    connecting = false;
-    socket = nextSocket;
-    // A closed connection may still have callbacks queued after its replacement starts.
-    const isCurrent = () => !disposed && socket === nextSocket;
-
-    nextSocket.onopen = () => {
-      if (!isCurrent()) return;
-      clearReconnect();
-      sendSubscription();
-    };
-
-    nextSocket.onmessage = (event) => {
-      if (!isCurrent()) return;
-      try {
-        const parsed = JSON.parse(String(event.data));
-        const method = typeof parsed?.method === "string" ? parsed.method : null;
-        if (!method) return;
-
-        const channelHandlers = handlers.get(method);
-        if (!channelHandlers || channelHandlers.size === 0) return;
-        channelHandlers.forEach((handler) => handler(parsed.params));
-      } catch (error) {
-        logger.error("[hookBridgeBrowserClient] Failed to process bridge payload:", error);
+      const current = await read();
+      if (disposed || ownGeneration !== generation) return;
+      if (current.connected) {
+        // A new connection refreshes both snapshots to cover its disconnected gap.
+        const reset = !previous?.connected || previous.epoch !== current.epoch;
+        if (reset || previous?.workflowRevision !== current.workflowRevision) emit(WORKFLOW, ownGeneration);
+        if (reset || previous?.capabilitiesRevision !== current.capabilitiesRevision) emit(CAPABILITIES, ownGeneration);
       }
-    };
-
-    nextSocket.onclose = () => {
-      if (!isCurrent()) return;
-      socket = null;
-      scheduleReconnectIfNeeded();
-    };
-
-    nextSocket.onerror = () => {
-      if (!isCurrent()) return;
-      nextSocket.close();
-    };
+      if (ownGeneration === generation) previous = current;
+    } catch {
+      if (ownGeneration === generation) previous = null;
+    } finally {
+      inFlight = false;
+      if (!disposed && handlers.size > 0) {
+        timer = schedule(() => { timer = null; void poll(); }, 250);
+      }
+    }
   };
-
+  const stopPolling = () => {
+    generation += 1;
+    previous = null;
+    if (timer !== null) cancel(timer);
+    timer = null;
+  };
   return {
-    subscribe(channel: string, handler: HookBridgeHandler) {
-      const normalized = channel.trim();
-      if (disposed || !normalized) {
-        return () => undefined;
-      }
-
-      const channelHandlers = handlers.get(normalized) ?? new Set<HookBridgeHandler>();
-      channelHandlers.add(handler);
-      handlers.set(normalized, channelHandlers);
-      ensureSocket();
-
+    subscribe(event, handler) {
+      if (disposed || (event !== WORKFLOW && event !== CAPABILITIES)) return () => {};
+      const listeners = handlers.get(event) ?? new Set<Handler>();
+      listeners.add(handler);
+      handlers.set(event, listeners);
+      if (timer === null) void poll();
+      let stopped = false;
       return () => {
-        const existing = handlers.get(normalized);
-        if (!existing) return;
-        existing.delete(handler);
-        if (existing.size === 0) {
-          handlers.delete(normalized);
-        }
-        stopSocketIfUnused();
+        if (stopped) return;
+        stopped = true;
+        listeners.delete(handler);
+        if (listeners.size === 0 && handlers.get(event) === listeners) handlers.delete(event);
+        if (handlers.size === 0) stopPolling();
       };
     },
     dispose() {
       disposed = true;
-      generation += 1;
-      connecting = false;
       handlers.clear();
-      clearReconnect();
-      if (!socketIsClosed(socket)) {
-        socket?.close();
-      }
-      socket = null;
+      stopPolling();
     },
   };
 }

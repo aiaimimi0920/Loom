@@ -7,7 +7,10 @@ on:
       - ".github/workflows/build-windows.yml"
       - "scripts/Invoke-LoomPluginBoundarySmoke.ps1"
       - "scripts/plugin-boundary-smoke/**"
+      - "scripts/NativeBridgeProbe.ps1"
+      - "crates/loom_local_channel/**"
       - "scripts/tests/Test-PluginBoundary*.ps1"
+      - "scripts/tests/Test-NativeBridgeProbeCleanup.ps1"
       - "scripts/tests/plugin-boundary/**"
   push:
     branches: [main]
@@ -16,7 +19,10 @@ on:
       - ".github/workflows/build-windows.yml"
       - "scripts/Invoke-LoomPluginBoundarySmoke.ps1"
       - "scripts/plugin-boundary-smoke/**"
+      - "scripts/NativeBridgeProbe.ps1"
+      - "crates/loom_local_channel/**"
       - "scripts/tests/Test-PluginBoundary*.ps1"
+      - "scripts/tests/Test-NativeBridgeProbeCleanup.ps1"
       - "scripts/tests/plugin-boundary/**"
   workflow_dispatch:
 
@@ -29,9 +35,9 @@ concurrency:
 
 jobs:
   diagnostics:
-    name: PowerShell 5.1 loopback diagnostics
+    name: Native TLS and PowerShell 5.1 diagnostics
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -39,9 +45,18 @@ jobs:
       - name: Verify diagnostic artifact contract
         shell: powershell
         run: .\scripts\tests\Test-PluginBoundarySmokeContract.ps1
-      - name: Exercise real loopback WebSocket failures
+      - name: Exercise native TLS and bounded message transport
+        shell: powershell
+        run: |
+          cargo test --locked -p loom_local_channel --features server
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p loom_local_channel --example bridge_probe --features server
+      - name: Exercise native facade and redacted diagnostics
         shell: powershell
         run: .\scripts\tests\Test-PluginBoundaryDiagnostics.ps1
       - name: Preserve primary failures through real main cleanup
         shell: powershell
         run: .\scripts\tests\Test-PluginBoundaryCleanup.ps1
+      - name: Keep native probe cleanup retryable
+        shell: powershell
+        run: .\scripts\tests\Test-NativeBridgeProbeCleanup.ps1

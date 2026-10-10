@@ -40,35 +40,21 @@ authors must not depend on private Loom or Hook source code.
 
 ### Loom<->Hook Art contract and legacy retirement
 
-The local Hook WebSocket requires transport authentication before HTTP upgrade,
-for both `loom.hook.v1` and extension traffic. Clients first call the administrator-
-authenticated `POST /v1/hook-bridge/credentials` HTTP broker. Only a successfully
-bound, running bridge returns `{url, token}`: its canonical `127.0.0.1` endpoint
-and a random, memory-only `hook-v1.` credential. A stopped or failed bridge returns
-503. Restarting rotates this credential; it cannot authorize daemon HTTP APIs.
-Native clients send this scoped credential as `Authorization: Bearer <token>`.
-The daemon administrator bearer is never sent to a WebSocket listener. Browser clients offer
-exactly `loom.hook.v1, loom.auth.<base64url-no-padding-of-UTF8-token>`; the server
-returns only `loom.hook.v1`, never the credential. Query-string credentials,
-ambiguous headers, remote Host values and untrusted Origins are rejected. Allowed
-browser Origins are the Hook Tauri localhost origins and the explicit development
-origins `http://localhost:1420` / `http://127.0.0.1:1420` (Hook) and
-`http://localhost:1423` / `http://127.0.0.1:1423` (Loom); an allowed Origin alone
-does not authorize access. Native clients may omit Origin but must authenticate.
+The local Hook bridge uses native-only TLS 1.3 with a pinned per-start certificate,
+private discovery and a connection-bound exporter proof. See
+[Native local bridge transport](LOCAL_BRIDGE_SECURITY.md) for the normative contract.
+The daemon HTTP administrator credential is independent and is never sent to the
+WebSocket listener. Duplicate authentication/instance/Host headers, foreign Host,
+Origin, browser subprotocol credentials and query credentials are rejected.
 
-Upgrade Hook and Loom together. Old unauthenticated clients fail closed; there is
-no compatibility bypass. Application handshakes and extension grants still apply
-after transport authentication. This authenticates a local administrator channel,
-not a sandbox boundary against software that can read the same user's manifest.
+Hook and Loom Desktop WebViews use narrow native IPC; neither receives bridge
+credentials or opens a browser WebSocket. Browser previews remain local-only.
+The former HTTP credentials broker and secret-returning native commands are removed.
+Application handshakes and extension grants still apply after authentication.
 
-The bundled Loom desktop obtains subprotocol credentials through its trusted native
-command, and the PowerShell Hook smoke clients obtain scoped credentials from the
-same HTTP broker. Clients require the broker's port to match the requested port
-and connect to its canonical URL, not an unverified localhost/IPv6 listener.
-A standalone Loom browser preview must explicitly set its memory-only credential
-with `setHookBridgePreviewToken` from `hookBridgeAuthentication.ts`, using a scoped
-bridge token obtained by the operator (never an administrator token); there is no
-ambient browser discovery, hard-coded token or unauthenticated preview bypass.
+Upgrade Hook and Loom together. Mixed versions fail closed without a plaintext or
+broker fallback. This is not a sandbox against arbitrary same-user processes that
+can read private discovery or native process memory.
 
 The canonical-only contract is the current production baseline. Obsolete
 wire aliases, persisted forms, package layouts, provider/process fields, and

@@ -52,7 +52,7 @@ function Save-LoomPluginBoundaryDiagnostic {
             phase = $state.phase
             requestId = $state.requestId
             budgetMs = $state.budgetMs
-            budgetScope = "per-websocket-operation-or-fragment"
+            budgetScope = "per-native-operation-whole-message"
             phaseElapsedMs = $state.elapsed.ElapsedMilliseconds
             webSocketState = $state.webSocketState
             fragments = $state.fragments

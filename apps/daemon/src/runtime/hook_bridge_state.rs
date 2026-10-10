@@ -1,6 +1,6 @@
 // Hook bridge process state, broadcast history, and subscriber records.
 struct HookBridgeRuntime {
-    auth_token: Option<Arc<str>>,
+    discovery: Option<LocalCapabilityManifest>,
     port: Option<u16>,
     shutdown_tx: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
@@ -15,7 +15,7 @@ struct HookBridgeRuntime {
 impl HookBridgeRuntime {
     fn new(workflow_root: PathBuf) -> Self {
         Self {
-            auth_token: None,
+            discovery: None,
             port: None,
             shutdown_tx: None,
             worker: None,
@@ -157,15 +157,27 @@ impl HookBridgeBroadcastHub {
         let Ok(mut history) = history_lock.lock() else {
             return;
         };
+        let mut bytes: usize = history.iter().map(|entry| entry.message.len()).sum();
         for message in broadcasts {
             let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
+            if message.len() > hook_broadcast_queue::MAX_BYTES {
+                // A skipped event invalidates cursor continuity; force snapshot recovery.
+                history.clear();
+                bytes = 0;
+                continue;
+            }
+            while history.len() >= HOOK_BRIDGE_HISTORY_CAPACITY
+                || bytes > hook_broadcast_queue::MAX_BYTES - message.len()
+            {
+                if let Some(removed) = history.pop_front() {
+                    bytes -= removed.message.len();
+                }
+            }
+            bytes += message.len();
             history.push_back(HookBridgeHistoryEntry {
                 sequence,
                 message: message.clone(),
             });
-        }
-        while history.len() > HOOK_BRIDGE_HISTORY_CAPACITY {
-            history.pop_front();
         }
         changed.notify_all();
     }
@@ -182,6 +194,12 @@ impl HookBridgeBroadcastHub {
             return (after, false, Vec::new());
         };
         loop {
+            if history.is_empty() {
+                let latest = self.next_sequence.load(Ordering::SeqCst).saturating_sub(1);
+                if latest > after {
+                    return (latest, true, Vec::new());
+                }
+            }
             let oldest = history.front().map(|entry| entry.sequence);
             let reset = oldest.is_some_and(|oldest| after.saturating_add(1) < oldest);
             let entries = history
@@ -212,6 +230,6 @@ impl HookBridgeBroadcastHub {
 #[derive(Clone)]
 struct HookBridgeSubscriber {
     id: usize,
-    tx: Sender<String>,
+    tx: hook_broadcast_queue::BroadcastSender,
     channels: Vec<String>,
 }

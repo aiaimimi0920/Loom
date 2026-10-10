@@ -108,18 +108,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         200,
     );
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let stream = TcpStream::connect(("127.0.0.1", bridge_port)).expect("connect bridge tcp socket");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .expect("set websocket read timeout");
-    stream
-        .set_write_timeout(Some(Duration::from_secs(20)))
-        .expect("set websocket write timeout");
-    let (mut socket, _) = tungstenite::client(
-        authenticated_hook_test_request(bridge_port, &test_bound_daemon_token(bridge_port).unwrap()),
-        stream,
-    )
-    .expect("connect bridge websocket");
+    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(
@@ -213,7 +202,7 @@ fn daemon_extension_bridge_rejects_a_socket_without_hook_handshake() {
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port);
+    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(
@@ -249,7 +238,7 @@ fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
-    let mut subscriber = connect_hook_bridge_websocket(bridge_port);
+    let mut subscriber = connect_hook_bridge_websocket(bridge_port, &root);
     subscriber
         .send(tungstenite::Message::Text(
             json!({
@@ -265,7 +254,7 @@ fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
     let subscribe_response = read_hook_bridge_json(&mut subscriber);
     assert_eq!(subscribe_response["status"], "succeeded");
 
-    let mut publisher = connect_hook_bridge_websocket(bridge_port);
+    let mut publisher = connect_hook_bridge_websocket(bridge_port, &root);
     publisher
             .send(tungstenite::Message::Text(
                 json!({
@@ -318,7 +307,7 @@ fn daemon_hook_bridge_accepts_versioned_surface_subscriptions() {
 
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut subscriber = connect_hook_bridge_websocket(bridge_port);
+    let mut subscriber = connect_hook_bridge_websocket(bridge_port, &root);
     subscriber
         .send(tungstenite::Message::Text(
             json!({
@@ -375,7 +364,7 @@ fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
-    let mut subscriber = connect_hook_bridge_websocket(bridge_port);
+    let mut subscriber = connect_hook_bridge_websocket(bridge_port, &root);
     subscriber
         .send(tungstenite::Message::Text(
             json!({
@@ -409,7 +398,8 @@ fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
 
     subscriber
         .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(400)))
+        .sock
+        .finish_handshake(Duration::from_millis(400))
         .expect("shrink websocket read timeout");
     let read_result = subscriber.read();
     match read_result {
@@ -475,7 +465,7 @@ fn daemon_hook_bridge_executes_mcp_backed_art_node() {
 
     let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port);
+    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(formal_art_execute_request(

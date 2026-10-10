@@ -131,8 +131,12 @@ fn daemon_hook_bridge_executes_cloud_api_art_node_image_output() {
     let root = unique_temp_dir("cloud-art-node");
     let image_data = test_png_base64();
     let fixture = CloudApiFixture::start(CloudApiFixtureMode::Image(image_data.clone()));
-    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
-        .expect("bind daemon");
+    let daemon = LoomDaemon::bind(
+        DaemonConfig::localhost(0)
+            .with_control_plane_root(&root)
+            .with_manifest_dir(root.join("capabilities")),
+    )
+    .expect("bind daemon");
     let address = daemon.local_addr().expect("local address");
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -161,7 +165,7 @@ fn daemon_hook_bridge_executes_cloud_api_art_node_image_output() {
 
     let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port);
+    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(formal_art_execute_request(
@@ -193,8 +197,12 @@ fn daemon_hook_bridge_executes_cloud_api_multipart_art_node_with_input_file() {
     let root = unique_temp_dir("cloud-multipart-art-node");
     let image_data = test_png_base64();
     let fixture = CloudApiFixture::start(CloudApiFixtureMode::MultipartImage(image_data.clone()));
-    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_control_plane_root(&root))
-        .expect("bind daemon");
+    let daemon = LoomDaemon::bind(
+        DaemonConfig::localhost(0)
+            .with_control_plane_root(&root)
+            .with_manifest_dir(root.join("capabilities")),
+    )
+    .expect("bind daemon");
     let address = daemon.local_addr().expect("local address");
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
@@ -226,7 +234,7 @@ fn daemon_hook_bridge_executes_cloud_api_multipart_art_node_with_input_file() {
 
     let started = http_json_post(address.port(), "/v1/hook-bridge/start", r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port);
+    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(formal_art_execute_request(
@@ -270,23 +278,23 @@ fn daemon_hook_bridge_executes_cloud_api_multipart_art_node_with_input_file() {
 // Formal inline resources must be materialized to a file so multipart
 // templates can upload the real image bytes.
 
-fn connect_hook_bridge_websocket(bridge_port: u16) -> tungstenite::WebSocket<TcpStream> {
-    let stream = TcpStream::connect(("127.0.0.1", bridge_port)).expect("connect bridge tcp socket");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("set websocket read timeout");
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .expect("set websocket write timeout");
-    tungstenite::client(
-        authenticated_hook_test_request(bridge_port, &test_bound_daemon_token(bridge_port).unwrap()),
-        stream,
-    )
-    .expect("connect bridge websocket")
-    .0
+fn connect_hook_bridge_websocket(
+    bridge_port: u16,
+    root: &Path,
+) -> loom_local_channel::ClientSocket {
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(root.join("capabilities/loom.json")).unwrap()).unwrap();
+    let discovery: loom_local_channel::BridgeDiscovery =
+        serde_json::from_value(manifest["hookBridge"].clone()).unwrap();
+    assert_eq!(
+        discovery.endpoint,
+        format!("wss://127.0.0.1:{bridge_port}/")
+    );
+    loom_local_channel::connect(&discovery, Duration::from_secs(10))
+        .expect("connect authenticated bridge")
 }
 
-fn read_hook_bridge_json(socket: &mut tungstenite::WebSocket<TcpStream>) -> serde_json::Value {
+fn read_hook_bridge_json(socket: &mut loom_local_channel::ClientSocket) -> serde_json::Value {
     let response = socket.read().expect("read websocket frame");
     let response = response.into_text().expect("text frame");
     serde_json::from_str(&response).expect("response json")

@@ -1,122 +1,63 @@
+. (Join-Path $PSScriptRoot '..\NativeBridgeProbe.ps1')
+
 function New-LoomHookBridgeWebSocket {
-    param([int]$Port, [ValidateRange(1, 10000)][int]$BudgetMs = 10000,
-        [string]$Authorization, [string]$DaemonBaseUrl = '')
-
-    if ([string]::IsNullOrWhiteSpace($Authorization)) {
-        if ([string]::IsNullOrWhiteSpace($DaemonBaseUrl)) { $DaemonBaseUrl = $baseUrl }
-        $credential = Invoke-LoomJson -Method Post -Url "$DaemonBaseUrl/v1/hook-bridge/credentials" -Body @{}
-        if ([string]$credential.url -ne "ws://127.0.0.1:$Port" -or
-            [string]$credential.token -notmatch '^hook-v1\.[A-Za-z0-9_-]{43}$') {
-            throw 'Hook credential does not match the daemon-owned listener'
-        }
-        $Authorization = "Bearer $($credential.token)"
-    }
-    if ([string]::IsNullOrWhiteSpace($Authorization)) { throw 'Hook authentication is required' }
-
-    $client = [System.Net.WebSockets.ClientWebSocket]::new()
-    $uri = [Uri]::new("ws://127.0.0.1:$Port")
+    param([int]$Port, [string]$ManifestPath, [string]$ProbeExecutable,
+        [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
+    if ($Port -lt 1 -or $Port -gt 65535) { throw 'Hook Bridge port is out of range.' }
     $script:PluginBoundaryDiagnostic.budgetMs = $BudgetMs
-    $connectCts = [System.Threading.CancellationTokenSource]::new($BudgetMs)
-    $connected = $false
-    try {
-        $client.Options.SetRequestHeader('Authorization', $Authorization)
-        [void]$client.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
-        $connected = $true
-        $script:PluginBoundaryDiagnostic.operationCompleted = $true
-    }
-    finally {
-        $script:PluginBoundaryDiagnostic.webSocketState = [string]$client.State
-        $connectCts.Dispose()
-        if (-not $connected) { $client.Dispose() }
-    }
+    $script:PluginBoundaryDiagnostic.operationCompleted = $false
+    $client = Start-LoomNativeBridgeProbe -Executable $ProbeExecutable -ManifestPath $ManifestPath -BudgetMs $BudgetMs
+    $script:PluginBoundaryDiagnostic.webSocketState = $client.State
+    $script:PluginBoundaryDiagnostic.operationCompleted = $true
     return $client
 }
 
 function Send-LoomHookBridgeWebSocketJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Client,
-        [string]$Json,
-        [ValidateRange(1, 10000)][int]$BudgetMs = 10000
-    )
-
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    param([object]$Client, [string]$Json, [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
+    if ([Text.Encoding]::UTF8.GetByteCount($Json) -gt 1MB) { throw 'Hook Bridge request exceeds the 1 MiB smoke limit.' }
     $script:PluginBoundaryDiagnostic.budgetMs = $BudgetMs
     $script:PluginBoundaryDiagnostic.operationCompleted = $false
-    $sendCts = [System.Threading.CancellationTokenSource]::new($BudgetMs)
     try {
-        [void]$Client.SendAsync(
-            [ArraySegment[byte]]::new($bytes),
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            $sendCts.Token
-        ).GetAwaiter().GetResult()
+        [void](Invoke-LoomNativeBridgeProbe -Client $Client -BudgetMs $BudgetMs -Command @{
+            op = 'send'; payload = $Json; timeoutMs = $BudgetMs
+        })
         $script:PluginBoundaryDiagnostic.operationCompleted = $true
-    }
-    finally {
-        $script:PluginBoundaryDiagnostic.webSocketState = [string]$Client.State
-        $sendCts.Dispose()
-    }
+    } finally { $script:PluginBoundaryDiagnostic.webSocketState = $Client.State }
 }
 
 function Receive-LoomHookBridgeWebSocketJson {
-    param([System.Net.WebSockets.ClientWebSocket]$Client, [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
-
-    $buffer = New-Object byte[] 4096
-    $builder = [System.Text.StringBuilder]::new()
+    param([object]$Client, [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
     $script:PluginBoundaryDiagnostic.budgetMs = $BudgetMs
     $script:PluginBoundaryDiagnostic.operationCompleted = $false
-    do {
-        $receiveCts = [System.Threading.CancellationTokenSource]::new($BudgetMs)
-        try {
-            $result = $Client.ReceiveAsync(
-                [ArraySegment[byte]]::new($buffer),
-                $receiveCts.Token
-            ).GetAwaiter().GetResult()
+    try {
+        $response = Invoke-LoomNativeBridgeProbe -Client $Client -BudgetMs $BudgetMs -Command @{
+            op = 'receive'; timeoutMs = $BudgetMs; maxBytes = 1MB
         }
-        finally {
-            $script:PluginBoundaryDiagnostic.webSocketState = [string]$Client.State
-            $receiveCts.Dispose()
-        }
-        $script:PluginBoundaryDiagnostic.fragments++
-        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-            throw "Hook Bridge WebSocket closed before sending a JSON response."
-        }
-        [void]$builder.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count))
-    } while (-not $result.EndOfMessage)
-    $value = $builder.ToString() | ConvertFrom-Json
-    $script:PluginBoundaryDiagnostic.messages++
-    $script:PluginBoundaryDiagnostic.operationCompleted = $true
-    return $value
+        $script:PluginBoundaryDiagnostic.messages++
+        $script:PluginBoundaryDiagnostic.operationCompleted = $true
+        return $response.payload
+    } finally { $script:PluginBoundaryDiagnostic.webSocketState = $Client.State }
 }
 
 function Close-LoomHookBridgeWebSocket {
-    param([AllowNull()][System.Net.WebSockets.ClientWebSocket]$Client)
-
-    if ($null -eq $Client) {
-        return
-    }
-    try {
-        $Client.Dispose()
-    }
-    catch {
-    }
+    param([AllowNull()][object]$Client)
+    Stop-LoomNativeBridgeProbe -Client $Client
 }
 
-
 function Receive-LoomHookBridgeExecutionResult {
-    param([System.Net.WebSockets.ClientWebSocket]$Client, [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
-    do {
-        $hookExecution = Receive-LoomHookBridgeWebSocketJson -Client $Client -BudgetMs $BudgetMs
-        $protocolVersionProperty = $hookExecution.PSObject.Properties["protocolVersion"]
-        $requestIdProperty = $hookExecution.PSObject.Properties["requestId"]
-        $statusProperty = $hookExecution.PSObject.Properties["status"]
-    } while (
-        $null -eq $protocolVersionProperty -or
-        $null -eq $requestIdProperty -or
-        $null -eq $statusProperty -or
-        [string]$protocolVersionProperty.Value -ne "loom.hook.v1" -or
-        [string]$requestIdProperty.Value -ne "execute:third-party-plugin" -or
-        [string]::IsNullOrWhiteSpace([string]$statusProperty.Value)
-    )
-    return $hookExecution
+    param([object]$Client, [ValidateRange(1, 10000)][int]$BudgetMs = 10000)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    for ($attempt = 0; $attempt -lt 64; $attempt++) {
+        $remaining = $BudgetMs - [int]$watch.ElapsedMilliseconds
+        if ($remaining -lt 1) { break }
+        $message = Receive-LoomHookBridgeWebSocketJson -Client $Client -BudgetMs $remaining
+        $protocol = $message.PSObject.Properties['protocolVersion']
+        $requestId = $message.PSObject.Properties['requestId']
+        $status = $message.PSObject.Properties['status']
+        if ($null -ne $protocol -and $null -ne $requestId -and $null -ne $status -and
+            [string]$protocol.Value -eq 'loom.hook.v1' -and
+            [string]$requestId.Value -eq 'execute:third-party-plugin' -and
+            -not [string]::IsNullOrWhiteSpace([string]$status.Value)) { return $message }
+    }
+    throw 'Hook Bridge execution response exceeded its budget.'
 }

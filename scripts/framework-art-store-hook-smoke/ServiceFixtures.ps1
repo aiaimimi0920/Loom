@@ -195,6 +195,7 @@ for raw_line in sys.stdin:
 Write-Utf8NoBomFile -Path $mcpScriptPath -Content $mcpScript
 
 $fixturePythonLiteral = $fixturePythonCommand.Replace("'", "''")
+$fixtureWorkingDirectoryLiteral = $runRoot.Replace("'", "''")
 $fixturePythonPrefix = if ($fixturePythonArgsPrefix.Count -gt 0) {
     "@(" + (($fixturePythonArgsPrefix | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ", ") + ")"
 } else {
@@ -206,6 +207,8 @@ param(
     [string[]]`$McpArguments
 )
 `$pythonPrefix = $fixturePythonPrefix
+# Use the owned run root: legacy Windows process creation rejects an inherited package cwd over MAX_PATH.
+Set-Location -LiteralPath '$fixtureWorkingDirectoryLiteral' -ErrorAction Stop
 & '$fixturePythonLiteral' @pythonPrefix (Join-Path `$PSScriptRoot 'fake-mcp-server.py') @McpArguments
 exit `$LASTEXITCODE
 "@

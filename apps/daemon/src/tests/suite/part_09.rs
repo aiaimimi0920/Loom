@@ -83,9 +83,17 @@ fn test_daemon_runtime_from_config(
     let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root)));
     let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
     let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
-    let hook_bridge = Arc::new(Mutex::new(
-        HookBridgeRuntime::new(control_plane_root.join("workflows")),
-    ));
+    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
+        control_plane_root.join("workflows"),
+    )));
+    hook_bridge.lock().unwrap().discovery = Some(
+        write_local_capability_manifest(
+            &control_plane_root.join("capabilities"),
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+        )
+        .expect("publish isolated test discovery"),
+    );
     let surface_instances = Arc::new(Mutex::new(
         SurfaceInstanceStore::new(
             control_plane_root
@@ -344,7 +352,7 @@ fn run_hook_bridge_text_with_intermediate(
 }
 
 fn read_hook_terminal_response(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+    socket: &mut loom_local_channel::ClientSocket,
     request_id: &str,
 ) -> Value {
     loop {

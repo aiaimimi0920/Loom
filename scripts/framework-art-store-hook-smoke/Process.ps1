@@ -158,6 +158,23 @@ function Stop-SpawnedProcess {
         $null = $Process.StartTime
         for ($wave = 0; $wave -lt 3; $wave++) {
             $discoveryExpired = $false
+            $childrenByParent = @{}
+            try {
+                # One snapshot per wave avoids a synchronous CIM round trip per node.
+                # Discovery is not authority: each new child is still pinned and its
+                # live parent/creation identity is verified below before termination.
+                if ($clock.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
+                    foreach ($record in @(Get-SmokeProcessRecords -Filter 'ProcessId >= 0')) {
+                        $parentId = [int]$record.ParentProcessId
+                        if (-not $childrenByParent.ContainsKey($parentId)) {
+                            $childrenByParent[$parentId] = [Collections.Generic.List[int]]::new()
+                        }
+                        $childrenByParent[$parentId].Add([int]$record.ProcessId)
+                    }
+                }
+            } catch {
+                [void]$failures.Add("Failed to enumerate descendants for process $($Process.Id): $($_.Exception.Message)")
+            }
             # Revisit retained parents even after they exit; their children may outlive them.
             for ($parentIndex = 0; $parentIndex -lt $owned.Count; $parentIndex++) {
                 if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
@@ -166,7 +183,7 @@ function Stop-SpawnedProcess {
                 }
                 $parent = $owned[$parentIndex]
                 try {
-                    foreach ($childId in @(Get-SmokeChildProcessIds -ParentProcessId $parent.Id)) {
+                    foreach ($childId in $childrenByParent[$parent.Id]) {
                         if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { $discoveryExpired = $true; break }
                         if ($knownIds.Contains($childId)) { continue }
                         try {

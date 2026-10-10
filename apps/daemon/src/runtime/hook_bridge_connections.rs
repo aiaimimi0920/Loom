@@ -2,7 +2,7 @@
 #[derive(Clone)]
 struct HookBridgeConnections {
     cancelled: Arc<AtomicBool>,
-    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    workers: Arc<Mutex<Vec<(JoinHandle<()>, TcpStream)>>>,
 }
 
 impl HookBridgeConnections {
@@ -22,11 +22,19 @@ impl HookBridgeConnections {
         Arc::clone(&self.cancelled)
     }
 
-    fn track(&self, worker: JoinHandle<()>) {
+    fn track(&self, worker: JoinHandle<()>, interrupt: TcpStream) {
         match self.workers.lock() {
-            Ok(mut workers) => workers.push(worker),
-            Err(poisoned) => poisoned.into_inner().push(worker),
+            Ok(mut workers) => workers.push((worker, interrupt)),
+            Err(poisoned) => poisoned.into_inner().push((worker, interrupt)),
         }
+    }
+
+    fn at_capacity(&self) -> bool {
+        // One accept owner checks and inserts; bound unauthenticated handshake workers too.
+        self.workers
+            .lock()
+            .map(|workers| workers.len() >= 32)
+            .unwrap_or(true)
     }
 
     fn reap_finished(&self) {
@@ -38,7 +46,7 @@ impl HookBridgeConnections {
             let mut finished = Vec::new();
             let mut index = 0;
             while index < workers.len() {
-                if workers[index].is_finished() {
+                if workers[index].0.is_finished() {
                     finished.push(workers.swap_remove(index));
                 } else {
                     index += 1;
@@ -46,7 +54,7 @@ impl HookBridgeConnections {
             }
             finished
         };
-        for worker in finished {
+        for (worker, _) in finished {
             let _ = worker.join();
         }
     }
@@ -60,7 +68,12 @@ impl HookBridgeConnections {
             };
             std::mem::take(&mut *workers)
         };
-        for worker in workers {
+        // Interrupt all sockets before joining any worker: per-read timeouts cannot
+        // interrupt a peer that keeps an incomplete message alive with fragments.
+        for (_, interrupt) in &workers {
+            let _ = interrupt.shutdown(std::net::Shutdown::Both);
+        }
+        for (worker, _) in workers {
             let _ = worker.join();
         }
     }

@@ -1,4 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
+mod hook_broadcast_queue;
+use hook_broadcast_queue::BroadcastReceiver;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -231,8 +233,8 @@ include!("runtime/capability_extension_authorization.rs");
 include!("runtime/capability_extension_bridge.rs");
 include!("runtime/capability_extension_responses.rs");
 include!("runtime/hook_bridge_server.rs");
+include!("runtime/local_capability_manifest.rs");
 include!("runtime/hook_bridge_websocket.rs");
-include!("runtime/hook_bridge_auth.rs");
 include!("runtime/hook_canvas_cache.rs");
 include!("runtime/hook_protocol_dispatch.rs");
 include!("runtime/hook_art_execution.rs");
@@ -245,7 +247,7 @@ include!("runtime/run_http_responses.rs");
 
 #[cfg(test)]
 mod tests {
-    include!("tests/hook_transport_auth.rs");
+    include!("tests/local_bridge_security.rs");
     include!("tests/projection_http.rs");
     include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");

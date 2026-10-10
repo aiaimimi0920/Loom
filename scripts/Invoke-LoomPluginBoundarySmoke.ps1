@@ -2,7 +2,8 @@
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
     [string]$EvidenceRoot = ".\target\plugin-boundary-smoke",
-    [string]$HookRepository = ""
+    [string]$HookRepository = "",
+    [string]$NativeBridgeProbeExecutable = ".\target\debug\examples\bridge_probe.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -206,6 +207,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
 $hookRoot = Resolve-HookRepository -LoomRepository $repoRoot -ExplicitPath $HookRepository
 $daemonPath = Resolve-RepoPath -Path $DaemonExecutable
+$nativeProbePath = Resolve-RepoPath -Path $NativeBridgeProbeExecutable
 $evidencePath = Resolve-RepoPath -Path $EvidenceRoot
 $controlPlane = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-plugin-boundary-" + [guid]::NewGuid().ToString("N"))
 $configuration = Join-Path $controlPlane "configuration"
@@ -241,7 +243,7 @@ $primaryFailure = $null
 Reset-LoomPluginBoundaryDiagnostic
 $oldEnvironment = @{}
 
-foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_DAEMON_TOKEN", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH")) {
+foreach ($name in @("LOOM_DAEMON_HOST", "LOOM_DAEMON_PORT", "LOOM_DAEMON_TOKEN", "LOOM_CONTROL_PLANE_ROOT", "LOOM_CONFIGURATION_ROOT", "LOOM_RUN_STORE_PATH", "LOOM_CAPABILITY_MANIFEST_DIR")) {
     $oldEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name)
 }
 
@@ -326,6 +328,7 @@ $response = [ordered]@{
     $env:LOOM_CONTROL_PLANE_ROOT = $controlPlane
     $env:LOOM_CONFIGURATION_ROOT = $configuration
     $env:LOOM_RUN_STORE_PATH = $runStore
+    $env:LOOM_CAPABILITY_MANIFEST_DIR = Join-Path $controlPlane 'capabilities'
     $daemon = Start-TestDaemon -Executable $daemonPath -WorkingDirectory $repoRoot -BaseUrl $baseUrl -StdoutPath $stdoutPath -StderrPath $stderrPath
 
     $initial = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/frameworks" -Body $null
@@ -376,7 +379,8 @@ $response = [ordered]@{
     Assert-True ([bool]$hookBridgeStarted.running) "Hook Bridge did not start for the third-party Art."
     $hookBridgeRunning = $true
     Set-LoomPluginBoundaryPhase -Phase "connect"
-    $hookBridgeClient = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port)
+    $hookBridgeClient = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port) `
+        -ManifestPath (Join-Path $env:LOOM_CAPABILITY_MANIFEST_DIR 'loom.json') -ProbeExecutable $nativeProbePath
     Set-LoomPluginBoundaryPhase -Phase "subscribe-send"
     Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:third-party-plugin","events":["loom.hook.workflow.instantiated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.result","loom.hook.art.failure"]}}'
     Set-LoomPluginBoundaryPhase -Phase "subscribe-receive"
