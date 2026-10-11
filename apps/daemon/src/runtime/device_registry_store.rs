@@ -53,6 +53,8 @@ struct DeviceRegistryStore {
 }
 
 const DEVICE_CHALLENGE_TTL_MILLIS: u64 = 60_000;
+const DEVICE_CHALLENGE_MAX_TOTAL: usize = 256;
+const DEVICE_CHALLENGE_MAX_PER_DEVICE: usize = 4;
 const DEVICE_SESSION_TTL_MILLIS: u64 = 15 * 60_000;
 const DEVICE_SESSION_MAX_NONCES: usize = 65_536;
 
@@ -194,6 +196,27 @@ impl DeviceRegistryStore {
     ) -> std::result::Result<DeviceSessionChallengeResponse, DeviceAuthError> {
         self.cleanup_expired_device_auth();
         let device_id = self.authorized_keyed_device(device_id)?.id.clone();
+        // 与插入共用 registry 锁；拒绝不会驱逐或延长尚可签发的挑战。
+        if self.challenges.len() >= DEVICE_CHALLENGE_MAX_TOTAL {
+            return Err(DeviceAuthError::new(
+                429,
+                "device_challenge_capacity",
+                "device challenge capacity is exhausted; retry after existing challenges expire",
+            ));
+        }
+        if self
+            .challenges
+            .values()
+            .filter(|c| c.device_id == device_id)
+            .count()
+            >= DEVICE_CHALLENGE_MAX_PER_DEVICE
+        {
+            return Err(DeviceAuthError::new(
+                429,
+                "device_challenge_device_capacity",
+                "this device has too many outstanding challenges; use an existing challenge or wait for expiry",
+            ));
+        }
         let now = unix_time_millis();
         let mut random = [0_u8; 32];
         OsRng.fill_bytes(&mut random);
@@ -307,12 +330,14 @@ impl DeviceRegistryStore {
     ) -> std::result::Result<String, DeviceAuthError> {
         self.cleanup_expired_device_auth();
         let token_hash = sha256_bytes(token.as_bytes());
-        let device_id = self.validate_device_session(token, nonce).map_err(|error| {
-            if error.code == "device_session_nonce_capacity" {
-                self.sessions.remove(&token_hash);
-            }
-            error
-        })?;
+        let device_id = self
+            .validate_device_session(token, nonce)
+            .map_err(|error| {
+                if error.code == "device_session_nonce_capacity" {
+                    self.sessions.remove(&token_hash);
+                }
+                error
+            })?;
         let session = self
             .sessions
             .get_mut(&token_hash)
