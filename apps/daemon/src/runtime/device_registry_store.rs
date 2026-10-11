@@ -306,30 +306,13 @@ impl DeviceRegistryStore {
         nonce: &str,
     ) -> std::result::Result<String, DeviceAuthError> {
         self.cleanup_expired_device_auth();
-        validate_device_auth_nonce(nonce)?;
         let token_hash = sha256_bytes(token.as_bytes());
-        let (device_id, session_epoch) = self
-            .sessions
-            .get(&token_hash)
-            .map(|session| (session.device_id.clone(), session.session_epoch))
-            .ok_or_else(|| {
-                DeviceAuthError::new(
-                    401,
-                    "device_session_invalid",
-                    "device session is missing or expired",
-                )
-            })?;
-        let device = self.devices.get(&device_id).ok_or_else(|| {
-            DeviceAuthError::new(401, "device_revoked", "device has been removed")
+        let device_id = self.validate_device_session(token, nonce).map_err(|error| {
+            if error.code == "device_session_nonce_capacity" {
+                self.sessions.remove(&token_hash);
+            }
+            error
         })?;
-        if device.approval != "approved" || !device.enabled || device.session_epoch != session_epoch
-        {
-            return Err(DeviceAuthError::new(
-                401,
-                "device_revoked",
-                "device is not approved, is disabled, or its sessions were revoked",
-            ));
-        }
         let session = self
             .sessions
             .get_mut(&token_hash)

@@ -103,6 +103,7 @@ mod account_login;
 mod brain_plan;
 mod capability_resources;
 mod hook_canvas;
+mod http_body_admission;
 mod http_request;
 mod periodic_maintenance;
 mod projection_settings;

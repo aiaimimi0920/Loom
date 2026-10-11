@@ -269,11 +269,12 @@ impl LoomDaemon {
         let (ready_tx, ready_rx) = mpsc::channel::<ReadyConnection>();
         let read_draining = Arc::new(AtomicBool::new(false));
         let reader_draining = Arc::clone(&read_draining);
+        let reader_runtime = Arc::clone(&self.runtime);
         let mut read_stage = BoundedRequestExecutor::new(
             "loom-read",
             CONNECTION_READ_WORKERS,
             CONNECTION_READ_QUEUE_CAPACITY,
-            move |job: ConnectionReadJob| read_connection(job, &reader_draining),
+            move |job: ConnectionReadJob| read_connection(job, &reader_draining, &reader_runtime),
         )?;
         let peer_read_admission = PeerReadAdmission::new(CONNECTION_READ_PER_PEER_LIMIT);
         let mut pending_reads = ConnectionReadBacklog::default();

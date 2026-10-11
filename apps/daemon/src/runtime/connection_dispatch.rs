@@ -177,7 +177,7 @@ fn drain_accept_backlog(
 /// before the 503 is written; this consumes bytes that may already be in the kernel without allowing
 /// an idle client to delay shutdown indefinitely. A read already in progress uses the same grace in
 /// `read_http_request_until`.
-fn read_connection(job: ConnectionReadJob, draining: &AtomicBool) {
+fn read_connection(job: ConnectionReadJob, draining: &AtomicBool, runtime: &DaemonRuntime) {
     let ConnectionReadJob {
         mut stream,
         ready,
@@ -197,7 +197,12 @@ fn read_connection(job: ConnectionReadJob, draining: &AtomicBool) {
         return;
     }
     let deadline = Instant::now() + Duration::from_millis(MAX_REQUEST_READ_MILLIS);
-    match read_http_request_until(&mut stream, deadline, draining) {
+    match read_http_request_admitted(&mut stream, deadline, draining, |head, large| {
+        http_body_admission::admit(head, large, runtime)
+    }) {
+        Ok(HttpReadOutcome::RejectedBeforeBody { status, body, remaining }) => {
+            http_body_admission::reject(stream, status, &body, remaining);
+        }
         Ok(outcome) => {
             // A failed send means the accept loop has already stopped receiving, which only happens
             // after shutdown drained the channel. Dropping the socket then is the right answer.
@@ -252,6 +257,9 @@ fn dispatch_connection(
         HttpReadOutcome::Empty => {}
         HttpReadOutcome::Rejected { status, body } => {
             write_response_safely(stream, status, &body);
+        }
+        HttpReadOutcome::RejectedBeforeBody { status, body, remaining } => {
+            http_body_admission::reject(stream, status, &body, remaining);
         }
         HttpReadOutcome::Request(request) => {
             let request = ParsedHttpRequest::from_raw(request);

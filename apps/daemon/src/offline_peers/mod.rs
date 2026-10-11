@@ -97,6 +97,36 @@ impl OfflinePeers {
             )
     }
 
+    pub(crate) fn body_proof_route(path: &str) -> bool {
+        matches!(
+            path,
+            "/v1/projection-peer/raster-check" | "/v1/projection-peer/transfer"
+        )
+    }
+
+    pub(crate) fn device_body_route(path: &str) -> bool {
+        transfers::ROUTES.contains(&path)
+    }
+
+    pub(crate) fn admit_device_body(
+        request: &ParsedHttpRequest,
+        registry: &SharedDeviceRegistryStore,
+    ) -> PeerResult<()> {
+        let token = request
+            .authorization_credential("Device")
+            .ok_or_else(|| failure(403, "projection_device_required"))?;
+        let nonce = request
+            .header("x-loom-device-nonce")
+            .ok_or_else(|| failure(401, "projection_pairing_required"))?;
+        registry
+            // Header admission runs on the bounded socket-reader pool.
+            .try_lock()
+            .map_err(|_| failure(503, "device_registry_unavailable"))?
+            .validate_device_session(token, nonce)
+            .map_err(|_| failure(401, "projection_pairing_required"))?;
+        Ok(())
+    }
+
     pub fn handle(
         &self,
         request: &ParsedHttpRequest,
