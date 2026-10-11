@@ -1,4 +1,4 @@
-// Device handlers, route identifiers, app paths, and Surface request models.
+// Device registry, public pairing receipts, and session issuance handlers.
 fn managed_devices_response(
     device_registry: &SharedDeviceRegistryStore,
     hook_bridge: &SharedHookBridgeRuntime,
@@ -38,81 +38,28 @@ fn list_managed_devices(
     managed_devices_response(device_registry, hook_bridge)
 }
 
-fn poll_surface_stream(
-    path: &str,
-    hook_bridge: &SharedHookBridgeRuntime,
-    surface_instances: &SharedSurfaceInstanceStore,
-    authenticated_device_id: Option<&str>,
+fn pairing_receipt(
+    device: &ManagedDevice,
+    submitted_name: &str,
+    submitted_key: &str,
 ) -> Result<(u16, String)> {
-    let after = query_value(path, "after")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or_default();
-    let timeout_ms = query_value(path, "timeoutMs")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(5_000)
-        .min(5_000);
-    let hub = hook_bridge
-        .lock()
-        .map_err(|_| anyhow::anyhow!("hook bridge runtime is unavailable"))?
-        .broadcast_hub
-        .clone();
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut cursor = after.max(HOOK_BRIDGE_RECOVERY_CURSOR);
-    let mut reset = false;
-    let mut messages = if after == 0 {
-        surface_snapshot_recovery_messages_for_device(surface_instances, authenticated_device_id)
-            .into_iter()
-            .filter_map(|message| serde_json::from_str::<Value>(&message).ok())
-            .collect::<Vec<_>>()
+    // This unauthenticated response must not serialize registry records or stored
+    // administrator labels. Keep Hook's two-array shape, scoped to this request.
+    let entry = json!({
+        "id": device.id,
+        "publicKey": submitted_key,
+        "name": submitted_name,
+        "approval": device.approval,
+        "enabled": device.enabled,
+    });
+    let (devices, pending) = if device.approval == "pending" {
+        (Vec::new(), vec![entry])
     } else {
-        Vec::new()
+        (vec![entry], Vec::new())
     };
-    loop {
-        let remaining = if messages.is_empty() {
-            deadline.saturating_duration_since(Instant::now())
-        } else {
-            Duration::ZERO
-        };
-        let (next, batch_reset, entries) = hub.wait_after(cursor, remaining);
-        cursor = next;
-        reset |= batch_reset;
-        for entry in entries {
-            let Ok(message) = serde_json::from_str::<Value>(&entry.message) else {
-                continue;
-            };
-            if surface_message_visible_to_device(
-                &message,
-                authenticated_device_id,
-                surface_instances,
-            ) {
-                messages.push(message);
-            }
-            if messages.len() >= HOOK_BRIDGE_POLL_MAX_MESSAGES {
-                break;
-            }
-        }
-        if !messages.is_empty() || Instant::now() >= deadline || (cursor == after && !reset) {
-            break;
-        }
-    }
-    if after != 0 && reset {
-        messages.extend(
-            surface_snapshot_recovery_messages_for_device(
-                surface_instances,
-                authenticated_device_id,
-            )
-            .into_iter()
-            .filter_map(|message| serde_json::from_str::<Value>(&message).ok()),
-        );
-    }
     Ok((
         200,
-        serde_json::to_string(&json!({
-            "protocolVersion": loom_protocol::SURFACE_STREAM_PROTOCOL_VERSION,
-            "next": cursor,
-            "reset": reset,
-            "messages": messages,
-        }))?,
+        serde_json::to_string(&json!({"devices": devices, "pending": pending}))?,
     ))
 }
 
@@ -197,27 +144,24 @@ fn add_managed_device(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let id = format!(
-        "device-{created_at:x}-{:x}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            & 0xfffff
-    );
+    // Public receipts expose this identifier; do not encode creation time in it.
+    let id = format!("device-{}", Uuid::new_v4());
     {
         let mut store = device_registry
             .lock()
             .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
         store.expire_pending_pairings(created_at)?;
         if let Some(fingerprint) = key_fingerprint.as_deref() {
-            if store.devices.values().any(|device| {
+            if let Some(device) = store.devices.values().find(|device| {
                 device.key_fingerprint.as_deref() == Some(fingerprint)
                     && device.approval != "rejected"
             }) {
                 if approval == "pending" {
-                    drop(store);
-                    return managed_devices_response(device_registry, hook_bridge);
+                    return pairing_receipt(
+                        device,
+                        name,
+                        public_key.as_deref().expect("pending key validated"),
+                    );
                 }
                 return structured_error(
                     409,
@@ -249,7 +193,7 @@ fn add_managed_device(
                 last_seen_at: None,
                 is_local: false,
                 enabled: true,
-                public_key,
+                public_key: public_key.clone(),
                 key_fingerprint,
                 session_epoch: u64::from(approval == "approved"),
             },
@@ -262,6 +206,13 @@ fn add_managed_device(
                 store.devices.remove(&id);
             }
             return Err(error);
+        }
+        if approval == "pending" {
+            return pairing_receipt(
+                &store.devices[&id],
+                name,
+                public_key.as_deref().expect("pending key validated"),
+            );
         }
     }
     managed_devices_response(device_registry, hook_bridge)
