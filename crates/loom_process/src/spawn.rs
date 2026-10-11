@@ -2,14 +2,37 @@
 
 use std::process::Child;
 
+#[cfg(not(target_os = "linux"))]
 use crate::command::supervised_command;
 use crate::error::ProcessError;
 use crate::isolation::ProcessIsolation;
+use crate::launch_control::LaunchControl;
 use crate::model::ProcessSpec;
 
 pub(crate) fn spawn_isolated(
     spec: &ProcessSpec,
 ) -> Result<(Child, ProcessIsolation), ProcessError> {
+    spawn_controlled(spec, &LaunchControl::default())
+}
+
+pub(crate) fn spawn_controlled(
+    spec: &ProcessSpec,
+    control: &LaunchControl<'_>,
+) -> Result<(Child, ProcessIsolation), ProcessError> {
+    control.check()?;
+    #[cfg(target_os = "linux")]
+    return crate::linux_spawn::spawn(spec, control);
+    #[cfg(not(target_os = "linux"))]
+    spawn_platform(spec)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_platform(spec: &ProcessSpec) -> Result<(Child, ProcessIsolation), ProcessError> {
+    if !cfg!(windows) {
+        return Err(ProcessError::Isolation(
+            "managed process containment is unsupported on this OS".into(),
+        ));
+    }
     let mut child = supervised_command(spec)
         .spawn()
         .map_err(ProcessError::Spawn)?;

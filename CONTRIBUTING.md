@@ -11,6 +11,8 @@ documented in `docs/ARCHITECTURE.md`.
 - PowerShell 5.1 or newer on Windows
 - Tauri v2 platform prerequisites for desktop builds
 - Docker when changing the container image or daemon packaging
+- Linux managed-process tests: distribution Bubblewrap at `/usr/bin/bwrap`, `perl-base`, Python 3,
+  user/PID namespace support and pidfd support; see `docs/LINUX_PROCESS_ISOLATION.md`
 
 ## Setup
 

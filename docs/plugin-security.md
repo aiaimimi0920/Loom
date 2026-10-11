@@ -30,7 +30,7 @@ revoked version, credential disclosure, or source-tree modification.
 - Managed process trees enforce timeout and stdout/stderr limits and are
   terminated on timeout, cancellation, or drop. Windows Job Objects additionally
   enforce memory and active-process limits; those two declarations remain
-  advisory on Unix process groups.
+  advisory on Linux PID namespaces.
 - Credential list and support/diagnostic APIs never return secret values.
 
 ## Outbound peer binding
@@ -98,11 +98,13 @@ lifecycle and fails if either fingerprint changes.
 
 ## OS isolation boundary
 
-The current Windows boundary uses Job Objects; Unix uses process groups. This
-reliably bounds and terminates descendants, but it is not a complete
-AppContainer, restricted-token filesystem broker, Linux namespace, or seccomp
-profile. Direct arbitrary executable access to network, filesystem, GPU, or
-clipboard is therefore not claimed as fully OS-denied.
+Windows uses Job Objects; Linux requires Bubblewrap PID namespaces with a pinned
+init pidfd. Process groups are not a containment fallback: `setsid` descendants
+must remain inside the kernel-owned lifetime boundary. Unsupported platforms or
+Linux hosts fail closed for managed launches. See [Linux deployment and tests](LINUX_PROCESS_ISOLATION.md).
+This is not a complete AppContainer, restricted-token filesystem broker, or
+seccomp profile. Direct arbitrary network, filesystem, GPU, and clipboard access
+is therefore not claimed as fully OS-denied.
 
 Both Windows process launch paths create the child suspended, configure and
 assign its kill-on-close Job Object, and only then resume its verified primary

@@ -2,13 +2,14 @@
 
 use std::process::Command;
 
+#[cfg(not(target_os = "linux"))]
 use crate::model::ProcessLimits;
 
 pub(crate) struct ProcessIsolation {
     #[cfg(windows)]
     job: windows_sys::Win32::Foundation::HANDLE,
-    #[cfg(unix)]
-    process_group: i32,
+    #[cfg(target_os = "linux")]
+    namespace_init: std::os::fd::OwnedFd,
 }
 
 // Windows kernel handles are process-wide rather than thread-affine. This type owns exactly one
@@ -17,6 +18,12 @@ pub(crate) struct ProcessIsolation {
 unsafe impl Send for ProcessIsolation {}
 
 impl ProcessIsolation {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_linux(namespace_init: std::os::fd::OwnedFd) -> Self {
+        Self { namespace_init }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn attach(
         child: &std::process::Child,
         limits: &ProcessLimits,
@@ -48,7 +55,10 @@ impl Drop for ProcessIsolation {
 
 #[cfg(not(windows))]
 impl Drop for ProcessIsolation {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        crate::linux_spawn::kill_namespace(&self.namespace_init);
+    }
 }
 
 #[cfg(windows)]
@@ -116,22 +126,12 @@ fn attach_process_isolation(
     }
 }
 
-#[cfg(unix)]
-fn attach_process_isolation(
-    child: &std::process::Child,
-    _limits: &ProcessLimits,
-) -> Result<ProcessIsolation, String> {
-    Ok(ProcessIsolation {
-        process_group: child.id() as i32,
-    })
-}
-
-#[cfg(not(any(windows, unix)))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn attach_process_isolation(
     _child: &std::process::Child,
     _limits: &ProcessLimits,
 ) -> Result<ProcessIsolation, String> {
-    Ok(ProcessIsolation {})
+    Err("managed process containment is unsupported on this OS".into())
 }
 
 #[cfg(windows)]
@@ -144,15 +144,13 @@ fn kill_process_tree(isolation: &ProcessIsolation, child: &mut std::process::Chi
     let _ = child.kill();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn kill_process_tree(isolation: &ProcessIsolation, child: &mut std::process::Child) {
-    unsafe {
-        libc::kill(-isolation.process_group, libc::SIGKILL);
-    }
+    crate::linux_spawn::kill_namespace(&isolation.namespace_init);
     let _ = child.kill();
 }
 
-#[cfg(not(any(windows, unix)))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn kill_process_tree(_isolation: &ProcessIsolation, child: &mut std::process::Child) {
     let _ = child.kill();
 }
@@ -190,7 +188,7 @@ fn isolation_peak_memory_bytes(isolation: &ProcessIsolation) -> Option<u64> {
 
 #[cfg(not(windows))]
 fn isolation_peak_memory_bytes(_isolation: &ProcessIsolation) -> Option<u64> {
-    // A process group is not an accounting boundary the way a job object is: there is no kernel
+    // A PID namespace is not an accounting boundary the way a job object is: there is no kernel
     // counter to read, and summing `/proc` samples would measure when Loom happened to look rather
     // than the peak. Reporting nothing is more honest than reporting a sample.
     None
