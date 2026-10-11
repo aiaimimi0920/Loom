@@ -13,7 +13,7 @@ use crate::error::ProcessError;
 use crate::isolation::ProcessIsolation;
 use crate::launch_control::LaunchControl;
 use crate::linux_exec::ExecAck;
-use crate::linux_handshake::Handshake;
+use crate::linux_handshake::{isolation_error, Handshake};
 use crate::model::ProcessSpec;
 
 pub(crate) fn spawn(
@@ -64,11 +64,6 @@ pub(crate) fn spawn_using(
     executable: &Path,
     control: &LaunchControl<'_>,
 ) -> Result<(Child, ProcessIsolation), ProcessError> {
-    let isolation_error = |error: io::Error| {
-        ProcessError::Isolation(format!(
-        "Linux managed processes require trusted /usr/bin/bwrap and /usr/bin/perl, user/PID namespaces and pidfd support: {error}"
-    ))
-    };
     trusted_supervisor_file(executable).map_err(isolation_error)?;
     trusted_supervisor_file(Path::new("/usr/bin/perl")).map_err(isolation_error)?;
     let target = supervised_command(spec);
@@ -121,7 +116,7 @@ pub(crate) fn spawn_using(
     let mut child = command.spawn().map_err(ProcessError::Spawn)?;
     // ManagedChild callers may use a 1 ms protocol-request timeout; that is not
     // the launch setup budget. Keep setup separately bounded, like OS spawning.
-    let init = match handshake.pin_init(setup_deadline) {
+    let init = match handshake.pin_init(setup_deadline, control) {
         Ok(init) => init,
         Err(error) => {
             // No untrusted instruction ran. Kill trusted setup processes before
@@ -131,7 +126,7 @@ pub(crate) fn spawn_using(
             }
             let _ = child.kill();
             let _ = child.wait();
-            return Err(isolation_error(error));
+            return Err(error);
         }
     };
     let isolation = ProcessIsolation::from_linux(init);
