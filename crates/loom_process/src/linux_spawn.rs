@@ -2,7 +2,6 @@
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -14,6 +13,7 @@ use crate::isolation::ProcessIsolation;
 use crate::launch_control::LaunchControl;
 use crate::linux_exec::ExecAck;
 use crate::linux_handshake::{isolation_error, Handshake};
+use crate::linux_supervisor::Supervisors;
 use crate::model::ProcessSpec;
 
 pub(crate) fn spawn(
@@ -23,51 +23,22 @@ pub(crate) fn spawn(
     spawn_using(spec, Path::new("/usr/bin/bwrap"), control)
 }
 
-fn trusted_supervisor_file(path: &Path) -> io::Result<()> {
-    let resolved = path.canonicalize()?;
-    let root_uid = visible_root_uid()?;
-    // Neither PATH nor plugin-provided environment can substitute the supervisor.
-    for component in resolved.ancestors() {
-        let metadata = component.metadata()?;
-        if metadata.uid() != root_uid || metadata.mode() & 0o022 != 0 {
-            return Err(io::Error::other(
-                "supervisor executable and ancestors must be root-owned and not group/world-writable",
-            ));
-        }
-    }
-    if !resolved.is_file() {
-        return Err(io::Error::other(
-            "supervisor executable is not a regular file",
-        ));
-    }
-    Ok(())
-}
-
-fn visible_root_uid() -> io::Result<u32> {
-    // Kernel ownership is translated in nested user namespaces. Root-owned host
-    // files appear as the mapped root ID, or the kernel overflow UID when root
-    // is unmapped; assuming uid==0 here would break every nested nonroot runtime.
-    for line in std::fs::read_to_string("/proc/self/uid_map")?.lines() {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.len() == 3 && fields[1] == "0" {
-            return fields[0].parse().map_err(io::Error::other);
-        }
-    }
-    std::fs::read_to_string("/proc/sys/kernel/overflowuid")?
-        .trim()
-        .parse()
-        .map_err(io::Error::other)
-}
-
 pub(crate) fn spawn_using(
     spec: &ProcessSpec,
     executable: &Path,
     control: &LaunchControl<'_>,
 ) -> Result<(Child, ProcessIsolation), ProcessError> {
-    trusted_supervisor_file(executable).map_err(isolation_error)?;
-    trusted_supervisor_file(Path::new("/usr/bin/perl")).map_err(isolation_error)?;
+    if executable != Path::new("/usr/bin/bwrap") {
+        return Err(isolation_error(io::Error::other(
+            "supervisor path override is not permitted",
+        )));
+    }
+    let supervisors = Supervisors::get().map_err(isolation_error)?;
     let target = supervised_command(spec);
-    let mut command = Command::new(executable);
+    let mut command = Command::new(format!(
+        "/proc/self/fd/{}",
+        supervisors.bubblewrap.as_raw_fd()
+    ));
     command.env_clear().envs(inherited_runtime_environment());
     command.args([
         "--unshare-user",
@@ -106,7 +77,8 @@ pub(crate) fn spawn_using(
             .arg(&directory);
     }
     let mut handshake = Handshake::new(&mut command).map_err(isolation_error)?;
-    let mut exec_ack = ExecAck::prepare(&mut command, &target).map_err(isolation_error)?;
+    let mut exec_ack =
+        ExecAck::prepare(&mut command, &target, supervisors).map_err(isolation_error)?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

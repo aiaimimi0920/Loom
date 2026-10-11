@@ -4,9 +4,29 @@
 or later), distribution `perl-base` (`/usr/bin/perl`, for an exec-only acknowledgement
 shim), enabled unprivileged user/PID namespaces, and Linux pidfd support
 (`pidfd_open` and `pidfd_send_signal`, Linux 5.3 or later). The executable and its
-ancestors must be root-owned and not group/world-writable. Ownership checks account
-for the kernel's UID translation in nested user namespaces. No PATH or plugin
-environment override selects the supervisor.
+ancestors must be root-owned and not group/world-writable at the outer launch
+boundary, where the initial user namespace identity map makes ownership
+distinguishable. Neither a nested virtual UID 0 nor `overflowuid` proves host root
+ownership. No PATH or plugin environment override selects the supervisor.
+
+The outer launcher opens and pins the validated Bubblewrap and Perl files. Each
+managed child receives those kernel file references in a bounded, one-use
+`SCM_RIGHTS` frame over an inherited Unix socketpair. The receiver requires valid
+`SO_PEERCRED` credentials originating outside its PID namespace; same-namespace
+and unconnected forged sockets are rejected. `LOOM_PROCESS_SUPERVISOR_FD` is an
+internal descriptor locator, never a package-selected configuration value.
+Explicit plugin environment cannot replace it. Nested launchers cache the
+received files and execute through `/proc/self/fd`, so bind-mounting a fake file
+over `/usr/bin/bwrap` or `/usr/bin/perl` cannot retarget them. Each nested managed
+launch forwards a new one-use frame, without a broker thread or unbounded queue.
+
+A standalone caller already in a remapped user namespace without this inherited
+launch capability fails closed, including rootless containers that have no trusted
+outer bootstrap. Ordinary nonroot users in the initial namespace and their managed
+nested runtimes are supported. Unmanaged intermediaries must not strip the launch
+descriptor when they intend to start a nested managed runtime. This protocol
+preserves ancestor launch authority; it does not authenticate a malicious program
+supervising itself, nor grant it authority to escape the ancestor PID boundary.
 
 ## Lifetime boundary
 
