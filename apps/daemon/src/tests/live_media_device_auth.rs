@@ -7,6 +7,7 @@ mod live_media_device_auth {
     include!("device_disabled_approval.rs");
     include!("device_pairing_budget.rs");
     include!("device_pairing_receipt.rs");
+    include!("device_challenge_budget.rs");
     include!("http_body_admission.rs");
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
 
