@@ -38,6 +38,31 @@ fn list_managed_devices(
     managed_devices_response(device_registry, hook_bridge)
 }
 
+fn pairing_receipt(
+    device: &ManagedDevice,
+    submitted_name: &str,
+    submitted_key: &str,
+) -> Result<(u16, String)> {
+    // This unauthenticated response must not serialize registry records or stored
+    // administrator labels. Keep Hook's two-array shape, scoped to this request.
+    let entry = json!({
+        "id": device.id,
+        "publicKey": submitted_key,
+        "name": submitted_name,
+        "approval": device.approval,
+        "enabled": device.enabled,
+    });
+    let (devices, pending) = if device.approval == "pending" {
+        (Vec::new(), vec![entry])
+    } else {
+        (vec![entry], Vec::new())
+    };
+    Ok((
+        200,
+        serde_json::to_string(&json!({"devices": devices, "pending": pending}))?,
+    ))
+}
+
 fn poll_surface_stream(
     path: &str,
     hook_bridge: &SharedHookBridgeRuntime,
@@ -211,13 +236,16 @@ fn add_managed_device(
             .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
         store.expire_pending_pairings(created_at)?;
         if let Some(fingerprint) = key_fingerprint.as_deref() {
-            if store.devices.values().any(|device| {
+            if let Some(device) = store.devices.values().find(|device| {
                 device.key_fingerprint.as_deref() == Some(fingerprint)
                     && device.approval != "rejected"
             }) {
                 if approval == "pending" {
-                    drop(store);
-                    return managed_devices_response(device_registry, hook_bridge);
+                    return pairing_receipt(
+                        device,
+                        name,
+                        public_key.as_deref().expect("pending key validated"),
+                    );
                 }
                 return structured_error(
                     409,
@@ -249,7 +277,7 @@ fn add_managed_device(
                 last_seen_at: None,
                 is_local: false,
                 enabled: true,
-                public_key,
+                public_key: public_key.clone(),
                 key_fingerprint,
                 session_epoch: u64::from(approval == "approved"),
             },
@@ -262,6 +290,13 @@ fn add_managed_device(
                 store.devices.remove(&id);
             }
             return Err(error);
+        }
+        if approval == "pending" {
+            return pairing_receipt(
+                &store.devices[&id],
+                name,
+                public_key.as_deref().expect("pending key validated"),
+            );
         }
     }
     managed_devices_response(device_registry, hook_bridge)
