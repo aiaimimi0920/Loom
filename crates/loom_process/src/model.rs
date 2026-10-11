@@ -12,10 +12,10 @@ pub struct ProcessLimits {
     pub timeout: Duration,
     pub stdout_bytes: usize,
     pub stderr_bytes: usize,
-    /// Windows job-object memory limit. Unix process groups currently provide no equivalent
+    /// Windows job-object memory limit. Linux PID namespaces provide no equivalent
     /// tree-wide memory boundary, so this value is not enforced there.
     pub memory_bytes: Option<usize>,
-    /// Windows job-object active-process limit. Unix process groups currently provide no safe
+    /// Windows job-object active-process limit. Linux PID namespaces provide no safe
     /// per-tree equivalent, so this value is not enforced there.
     pub max_processes: Option<u32>,
 }

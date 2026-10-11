@@ -184,7 +184,10 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pkg-config libssl-dev
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pkg-config libssl-dev bubblewrap python3
+
+      - name: Verify Linux managed-process isolation prerequisites
+        run: /usr/bin/bwrap --unshare-user --unshare-pid --die-with-parent --cap-drop ALL --bind / / --dev-bind /dev /dev --proc /proc -- /usr/bin/true
 
       - name: Format Rust workspace
         run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-4 -- cargo fmt --all -- --check

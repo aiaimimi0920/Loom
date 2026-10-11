@@ -237,9 +237,11 @@ Permissions combine enforced and declared boundaries. Loom enforces package
 containment, immutable code versus writable state, bounded process trees,
 timeout/output limits, scoped credential brokering, and
 host-mediated HTTP policy. Direct arbitrary process network/filesystem access,
-GPU, and clipboard are not fully OS-denied by current Job Object/process-group
+GPU, and clipboard are not fully OS-denied by current Job Object/PID-namespace
 isolation. Windows Job Objects also enforce memory and active-process limits;
-Unix process groups currently expose those declarations as advisory.
+Linux PID namespaces expose those declarations as advisory. Linux managed
+launches require Bubblewrap and pidfds; unsupported isolation fails closed, as
+documented in [Linux process containment](LINUX_PROCESS_ISOLATION.md).
 `LOOM_PLUGIN_PERMISSION_MODE=audit` is the current default;
 `strict` fails closed for those unenforceable declarations. The doctor API and
 Desktop expose the same enforcement matrix rather than claiming a complete OS

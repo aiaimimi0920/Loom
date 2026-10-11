@@ -31,11 +31,11 @@ Framework manifests declare a structured `permissionPolicy`.
 | Cloud request templating | Endpoint substitutions percent-encoded with a fixed-authority check; header and JSON body substitutions inserted as values into the parsed template |
 | MCP image download | Candidate URLs chosen by the MCP server are fetched under the tool's own `allowLocalhost` / `allowPrivateNetworks` declaration, with the whole candidate loop bounded by one wall-clock budget and an attempt cap |
 | State/cache/output | Dedicated writable directories outside version code |
-| Timeout/stdout/stderr | Enforced on Windows and Unix |
+| Timeout/stdout/stderr | Enforced on Windows and supported Linux isolation hosts |
 | Native framework admission | All execution facades recheck persisted enabled state, current trust/revocation, permissions, dependency lockfile and exact package identity before dispatch, including reuse of a persistent MCP host |
-| Memory/active process count | Windows Job Object enforced; Unix declared only |
+| Memory/active process count | Windows Job Object enforced; Linux declared only |
 | stdout/stderr | Bounded capture with truncation/error diagnostics |
-| Cancellation/drop | Whole managed process tree termination |
+| Cancellation/drop | Windows Job Object / Linux PID namespace + pidfd termination; no process-group fallback |
 | Host HTTP/download | HTTPS/DNS/IP/redirect/domain/size policy |
 | Credential names/scopes/expiry | Brokered and enforced |
 | Credential storage | Windows DPAPI current-user plus owner-only DACL; Unix owner-only `0700` directory/`0600` file with a reversible local-file fallback |
