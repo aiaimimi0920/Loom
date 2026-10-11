@@ -76,6 +76,12 @@ fn public_pairing_returns_only_submitted_identity_receipt() {
         assert_eq!(entry["name"], request["name"]);
         assert_eq!(entry["enabled"], state != "disabled");
         let id = entry["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            Uuid::parse_str(id.strip_prefix("device-").unwrap())
+                .unwrap()
+                .get_version_num(),
+            4
+        );
         if let Some(expected) = &expected_id {
             assert_eq!(&id, expected);
         }

@@ -200,6 +200,7 @@ include!("runtime/route_dispatch/mcp_art.rs");
 include!("runtime/route_dispatch/framework_tools.rs");
 include!("runtime/route_dispatch/settings_runs.rs");
 include!("runtime/device_handlers.rs");
+include!("runtime/surface_stream_poll.rs");
 include!("runtime/surface_request_models.rs");
 include!("runtime/surface_resource_leases.rs");
 include!("runtime/surface_instance_routes.rs");
