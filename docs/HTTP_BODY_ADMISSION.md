@@ -10,7 +10,9 @@ bytes when the header terminator is found.
 Routes with a body allowance larger than the ordinary request limit additionally
 require header-only authentication before upload:
 
-- A valid administrator bearer or administrator cookie admits the body.
+- A valid administrator bearer or administrator cookie admits bodies on routes
+  that accept administrator authority. Ordinary and offline projection routes
+  that require a device actor must pass device preflight even with admin credentials.
 - A device credential must name a currently valid, enabled, approved session,
   carry a fresh nonce, and be scoped to the requested route. In particular,
   device sessions do not gain package-install privileges.
@@ -30,7 +32,7 @@ Device preflight is read-only. It does not consume a nonce or cache authority fo
 dispatch. After the body arrives, dispatch rechecks expiry, revocation, scope,
 and nonce freshness, then consumes the nonce exactly once. Concurrent requests
 with the same nonce cannot both execute. Admin credentials retain precedence
-over stale device credentials.
+over stale device credentials only on routes that accept administrator authority.
 
 The reader no longer reserves a declared `Content-Length`. Buffer growth follows
 bytes actually received, with fallible incremental allocation and existing route

@@ -198,3 +198,30 @@ fn eager_unauthenticated_upload_receives_complete_admission_error() {
     let body: Value = serde_json::from_str(body).expect("complete rejection JSON");
     assert_eq!(body["error"]["code"], "unauthorized");
 }
+
+#[test]
+fn admin_only_device_routes_reject_before_upload() {
+    let fixture = Fixture::new();
+    let token = test_bound_daemon_token(fixture.port).unwrap();
+    for (path, code) in [
+        (
+            "/v1/offline-projections/create",
+            "projection_device_required",
+        ),
+        ("/v1/projections/create", "projection_pairing_required"),
+    ] {
+        let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write!(stream, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 4194304\r\nAuthorization: Bearer {token}\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("admin alone cannot admit device-only upload");
+        assert!(
+            response.starts_with("HTTP/1.1 403") && response.contains(code),
+            "{response}"
+        );
+    }
+}

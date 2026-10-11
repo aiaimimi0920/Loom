@@ -75,9 +75,6 @@ pub(super) fn admit(
         return Ok(());
     }
     enforce_request_security(request)?;
-    if request.has_admin_credential(&runtime.auth_token) {
-        return Ok(());
-    }
     let path = request.path.split('?').next().unwrap_or(&request.path);
     // These two peer endpoints authenticate a pinned-key proof inside the body,
     // not an administrator/session header. Keep their existing 6 MiB byte cap;
@@ -89,6 +86,22 @@ pub(super) fn admit(
         return offline_peers::OfflinePeers::admit_device_body(request, &runtime.device_registry)
             .map_err(|error| request_security_error(error.status, error.code, error.code));
     }
+    let admin = request.has_admin_credential(&runtime.auth_token);
+    let requires_device = PROJECTION_ROUTES.contains(&path) || PROJECTION_V2_ROUTES.contains(&path);
+    if admin && !requires_device {
+        return Ok(());
+    }
+    let device_error = |status, code, message: &str| {
+        if admin && requires_device {
+            request_security_error(
+                403,
+                "projection_pairing_required",
+                "projection_pairing_required",
+            )
+        } else {
+            request_security_error(status, code, message)
+        }
+    };
     if path == "/v1/projection-peers/raster-check" {
         return Err(request_security_error(
             403,
@@ -105,14 +118,14 @@ pub(super) fn admit(
             ));
         }
         let nonce = request.header("x-loom-device-nonce").ok_or_else(|| {
-            request_security_error(
+            device_error(
                 400,
                 "device_nonce_missing",
                 "authenticated device requests require X-Loom-Device-Nonce",
             )
         })?;
         let registry = runtime.device_registry.lock().map_err(|_| {
-            request_security_error(
+            device_error(
                 503,
                 "device_registry_unavailable",
                 "device registry is unavailable",
@@ -122,10 +135,10 @@ pub(super) fn admit(
         // consumes it exactly once, after the complete body has arrived.
         registry
             .validate_device_session(token, nonce)
-            .map_err(|error| request_security_error(error.status, &error.code, &error.message))?;
+            .map_err(|error| device_error(error.status, error.code, &error.message))?;
         return Ok(());
     }
-    Err(request_security_error(401, "unauthorized", "large request bodies require a valid Loom administrator or scoped device session credential"))
+    Err(device_error(401, "unauthorized", "large request bodies require a valid Loom administrator or scoped device session credential"))
 }
 
 impl DeviceRegistryStore {
