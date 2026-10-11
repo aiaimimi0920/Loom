@@ -1,4 +1,4 @@
-// Capability lifecycle broadcasts are the live-refresh boundary used by Hook.
+// Capability lifecycle broadcasts are the live-refresh boundary used by Otter.
 #[test]
 fn capability_install_broadcasts_inventory_update_before_enablement() {
     let root = unique_temp_dir("capability-install-event");
@@ -16,7 +16,7 @@ fn capability_install_broadcasts_inventory_update_before_enablement() {
         .expect("trust store");
     let archive = capability_api_fixture(&root, &key);
     let daemon = test_daemon_runtime(&root, None);
-    let (events, _subscription) = register_hook_bridge_subscription(
+    let (events, _subscription) = register_otter_bridge_subscription(
         &daemon.hook_bridge.lock().unwrap().broadcast_hub,
         vec![loom_protocol::HOOK_EVENT_CAPABILITIES_UPDATED.to_owned()],
     );

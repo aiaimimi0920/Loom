@@ -6,13 +6,13 @@ Implementation, configuration and executable tests remain the source of truth.
 ## Product and development
 
 - [Product, desktop, daemon and CLI](../README.md): startup, configuration,
-  installation, Hook synchronization, request concurrency and run persistence.
+  installation, Otter synchronization, request concurrency and run persistence.
 - [Architecture](ARCHITECTURE.md): runtime ownership, package boundaries,
   durable events, memory and workflow contracts.
 - [Development manual](DEVELOPMENT.md) and [contribution guide](../CONTRIBUTING.md):
   module size, hardening, formatting, testing and release requirements.
 - [Agent definitions](AGENT_DEFINITIONS.md) and [workflow contract](WORKFLOW_CONTRACT.md).
-- [Hook canvas](HOOK_CANVAS.md): live projection, workflow actions, event refresh
+- [Otter canvas](HOOK_CANVAS.md): live projection, workflow actions, event refresh
   and daemon-owned image preview authorization.
 - [Gateway integration](GATEWAY_INTEGRATION.md): model access and planner behavior.
 - [Asset Library integration](ASSET_LIBRARY_INTEGRATION.md).

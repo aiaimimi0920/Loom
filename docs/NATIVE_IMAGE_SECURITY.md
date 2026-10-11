@@ -1,7 +1,7 @@
 # Native image workflow resource boundaries
 
 `loom_native_image` owns the six `core.image.*` workflow operators. The daemon
-reaches them through `loom_workflow_runtime`; Hook supplies inputs but does not
+reaches them through `loom_workflow_runtime`; Otter supplies inputs but does not
 choose resource limits. These operators accept PNG input and emit PNG data URLs.
 
 Each job enforces these limits independently:

@@ -9,7 +9,7 @@ mod metadata;
 mod store;
 
 pub use adapters::{
-    built_in_registry, ConfigAdapter, ConfigRegistry, HookVoiceAdapter, TalkVoiceAdapter,
+    built_in_registry, ConfigAdapter, ConfigRegistry, OtterVoiceAdapter, TalkVoiceAdapter,
     TeaConfigAdapter, VoiceConfig,
 };
 pub use app::{ManagedAppId, ManagedAppSet};
@@ -27,7 +27,10 @@ mod tests {
     #[test]
     fn app_ids_parse_case_insensitively() {
         assert_eq!("tea".parse::<ManagedAppId>().unwrap(), ManagedAppId::Tea);
-        assert_eq!("HOOK".parse::<ManagedAppId>().unwrap(), ManagedAppId::Hook);
+        assert_eq!(
+            "OTTER".parse::<ManagedAppId>().unwrap(),
+            ManagedAppId::Otter
+        );
         assert_eq!("Talk".parse::<ManagedAppId>().unwrap(), ManagedAppId::Talk);
         assert!("gateway".parse::<ManagedAppId>().is_err());
     }
@@ -36,7 +39,7 @@ mod tests {
     fn managed_app_set_parses_comma_separated_env() {
         let set = ManagedAppSet::parse(" hook, tea ,,talk ");
         assert!(set.contains(ManagedAppId::Tea));
-        assert!(set.contains(ManagedAppId::Hook));
+        assert!(set.contains(ManagedAppId::Otter));
         assert!(set.contains(ManagedAppId::Talk));
         assert!(!ManagedAppSet::parse("").contains(ManagedAppId::Tea));
     }

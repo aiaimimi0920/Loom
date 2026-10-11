@@ -1,4 +1,4 @@
-//! Converts decoded codes into one bounded, generic attachment scene for Hook.
+//! Converts decoded codes into one bounded, generic attachment scene for Otter.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

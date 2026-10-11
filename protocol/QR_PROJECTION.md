@@ -11,7 +11,7 @@ Device A creates a fresh `projectionId` and one-time `nonce`, stores a bounded
 rendezvous record in Loom, and signs the envelope with the paired device key.
 The record contains the source device/session identity, source unit ID and
 revision, content kind, and a SHA-256 digest. The rendezvous reference is an
-opaque identifier and is never resolved by Hook directly.
+opaque identifier and is never resolved by Otter directly.
 
 Device B parses the QR locally and confirms its server before any network request.
 The origin applies only to this association. With an approved device session,
@@ -47,7 +47,7 @@ latest snapshot is retained. This transport provides HTTPS rendezvous and
 snapshots; LAN discovery, NAT traversal, interactive Art and video are outside v1.
 
 The opt-in [editing session contract](PROJECTION_EDIT.md) adds a separate shared-Loom
-object document. Its backend is implemented, but Hook and offline-peer integration
+object document. Its backend is implemented, but Otter and offline-peer integration
 are pending. PNG-only clients do not opt in automatically.
 
 The first implementation must keep the envelope and transfer record bounded,

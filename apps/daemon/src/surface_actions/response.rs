@@ -85,7 +85,7 @@ fn apply_action_response(
     response: SurfaceActionResponse,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_resources: &SharedSurfaceResourceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(), SurfaceExecutionError> {
     let response = broker_action_resource_uploads(response, surface_resources)?;
     validate_action_response_resources(&response, surface_resources)?;
@@ -166,7 +166,7 @@ fn apply_action_response(
         }
         drop(store);
         for (patch, hook_node_id) in broadcasts {
-            broadcast_hook_bridge_json(
+            broadcast_otter_bridge_json(
                 hook_bridge,
                 json!({
                     "method": SURFACE_EVENT_PATCH,
@@ -181,7 +181,7 @@ fn apply_action_response(
     }
 
     if let Some(preview) = response.preview {
-        let (commit, hook_nodes) = {
+        let (commit, otter_nodes) = {
             let mut store = surface_instances.lock().map_err(|_| {
                 execution_error("surface_store_unavailable", "Surface store is unavailable")
             })?;
@@ -198,7 +198,7 @@ fn apply_action_response(
                 port_id: preview.port_id,
                 value: preview.value,
             };
-            let hook_nodes = instance
+            let otter_nodes = instance
                 .attachments
                 .values()
                 .map(|attachment| attachment.descriptor.hook_node_id.clone())
@@ -206,10 +206,10 @@ fn apply_action_response(
             store
                 .commit_preview(&job.event.instance_id, commit.clone())
                 .map_err(store_execution_error)?;
-            (commit, hook_nodes)
+            (commit, otter_nodes)
         };
-        for hook_node_id in hook_nodes {
-            broadcast_hook_bridge_json(
+        for hook_node_id in otter_nodes {
+            broadcast_otter_bridge_json(
                 hook_bridge,
                 json!({
                     "method": SURFACE_EVENT_PREVIEW,
@@ -220,7 +220,7 @@ fn apply_action_response(
     }
 
     if let Some(result) = response.result {
-        let (commit, hook_nodes) = {
+        let (commit, otter_nodes) = {
             let mut store = surface_instances.lock().map_err(|_| {
                 execution_error("surface_store_unavailable", "Surface store is unavailable")
             })?;
@@ -237,7 +237,7 @@ fn apply_action_response(
                 outputs: result.outputs,
                 state_patch: result.state_patch,
             };
-            let hook_nodes = instance
+            let otter_nodes = instance
                 .attachments
                 .values()
                 .map(|attachment| attachment.descriptor.hook_node_id.clone())
@@ -245,10 +245,10 @@ fn apply_action_response(
             store
                 .commit_result(&job.event.instance_id, commit.clone())
                 .map_err(store_execution_error)?;
-            (commit, hook_nodes)
+            (commit, otter_nodes)
         };
-        for hook_node_id in hook_nodes {
-            broadcast_hook_bridge_json(
+        for hook_node_id in otter_nodes {
+            broadcast_otter_bridge_json(
                 hook_bridge,
                 json!({
                     "method": SURFACE_EVENT_RESULT,

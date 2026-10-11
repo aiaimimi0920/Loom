@@ -9,7 +9,7 @@ fn request_id_for_event(event_id: &str) -> String {
 fn finish_cancelled(
     job: &SurfaceActionJob,
     surface_instances: &SharedSurfaceInstanceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) {
     let mut cancelled = job.ack.clone();
     cancelled.status = SurfaceActionStatus::Cancelled;
@@ -26,7 +26,7 @@ fn finish_failed(
     job: &SurfaceActionJob,
     error: SurfaceExecutionError,
     surface_instances: &SharedSurfaceInstanceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) {
     let failure = SurfaceExecutionFailure {
         protocol_version: SURFACE_PROTOCOL_VERSION.to_owned(),
@@ -44,7 +44,7 @@ fn finish_failed(
     failed.error = Some(error);
     persist_ack(surface_instances, &failed, true);
     broadcast_ack(hook_bridge, &failed);
-    broadcast_hook_bridge_json(
+    broadcast_otter_bridge_json(
         hook_bridge,
         json!({
             "method": SURFACE_EVENT_FAILURE,
@@ -66,15 +66,15 @@ fn persist_ack(
     }
 }
 
-fn broadcast_ack(hook_bridge: &SharedHookBridgeRuntime, ack: &SurfaceActionAck) {
-    broadcast_hook_bridge_json(
+fn broadcast_ack(hook_bridge: &SharedOtterBridgeRuntime, ack: &SurfaceActionAck) {
+    broadcast_otter_bridge_json(
         hook_bridge,
         json!({ "method": SURFACE_EVENT_ACTION_ACK, "params": ack }),
     );
 }
 
 fn broadcast_progress(
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     job: &SurfaceActionJob,
     value: Option<f64>,
     stage: &str,
@@ -91,7 +91,7 @@ fn broadcast_progress(
         stage: Some(stage.to_owned()),
         message_key: None,
     };
-    broadcast_hook_bridge_json(
+    broadcast_otter_bridge_json(
         hook_bridge,
         json!({ "method": SURFACE_EVENT_ACTION_PROGRESS, "params": progress }),
     );

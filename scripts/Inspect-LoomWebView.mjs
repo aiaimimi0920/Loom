@@ -147,12 +147,12 @@ async function readNodePresentations(client, rootSelector) {
   return await client.evaluate(`(() => {
     const root = document.querySelector(${JSON.stringify(rootSelector)});
     if (!root) return [];
-    return Array.from(root.querySelectorAll('[data-testid="hook-canvas-node"]')).map((node) => ({
+    return Array.from(root.querySelectorAll('[data-testid="otter-canvas-node"]')).map((node) => ({
       nodeId: node.getAttribute('data-node-id') ?? '',
       text: node.textContent?.trim() ?? '',
-      placeholderText: node.querySelector('.hook-canvas-node__placeholder')?.textContent?.trim() ?? null,
-      placeholderDetailText: node.querySelector('.hook-canvas-node__placeholder-detail')?.textContent?.trim() ?? null,
-      placeholderClassName: node.querySelector('.hook-canvas-node__placeholder')?.className ?? null,
+      placeholderText: node.querySelector('.otter-canvas-node__placeholder')?.textContent?.trim() ?? null,
+      placeholderDetailText: node.querySelector('.otter-canvas-node__placeholder-detail')?.textContent?.trim() ?? null,
+      placeholderClassName: node.querySelector('.otter-canvas-node__placeholder')?.className ?? null,
       className: node.className,
       hasImage: Boolean(node.querySelector('img')),
       imageCount: node.querySelectorAll('img').length,
@@ -164,14 +164,14 @@ async function readFailedArtExecutionFailureVisible(client, rootSelector) {
   return await client.evaluate(`(() => {
     const root = document.querySelector(${JSON.stringify(rootSelector)});
     if (!root) return false;
-    const node = root.querySelector('[data-testid="hook-canvas-node"][data-node-id="failed-art"]');
+    const node = root.querySelector('[data-testid="otter-canvas-node"][data-node-id="failed-art"]');
     if (!node) return false;
-    const placeholder = node.querySelector('.hook-canvas-node__placeholder');
-    const placeholderTitle = node.querySelector('.hook-canvas-node__placeholder-title')?.textContent?.trim() ?? '';
+    const placeholder = node.querySelector('.otter-canvas-node__placeholder');
+    const placeholderTitle = node.querySelector('.otter-canvas-node__placeholder-title')?.textContent?.trim() ?? '';
     return Boolean(placeholder)
       && placeholderTitle === "执行失败"
-      && placeholder.className.includes('hook-canvas-node__placeholder--error')
-      && node.className.includes('hook-canvas-node--status-error')
+      && placeholder.className.includes('otter-canvas-node__placeholder--error')
+      && node.className.includes('otter-canvas-node--status-error')
       && !node.querySelector('img');
   })()`);
 }
@@ -196,26 +196,26 @@ async function main() {
     await client.command("Runtime.enable");
     await client.command("Page.enable");
     await client.evaluate("document.readyState === 'loading' ? new Promise(resolve => window.addEventListener('load', resolve, { once: true })) : true");
-    await client.evaluate("document.querySelector('[data-testid=\"nav-hook-bridge\"]')?.click(); true");
+    await client.evaluate("document.querySelector('[data-testid=\"nav-otter-bridge\"]')?.click(); true");
     await waitFor(client, `(() => {
-      const thumbnail = document.querySelector('[data-testid="hook-canvas-thumbnail"]');
+      const thumbnail = document.querySelector('[data-testid="otter-canvas-thumbnail"]');
       const revision = thumbnail?.getAttribute('data-revision') ?? 'empty';
-      const nodeCount = thumbnail?.querySelectorAll('[data-testid="hook-canvas-node"]').length ?? 0;
+      const nodeCount = thumbnail?.querySelectorAll('[data-testid="otter-canvas-node"]').length ?? 0;
       return Boolean(thumbnail) && revision !== 'empty' && nodeCount >= ${minimumNodes};
     })()`);
 
-    const thumbnailNodes = await readNodePresentations(client, '[data-testid="hook-canvas-thumbnail"]');
+    const thumbnailNodes = await readNodePresentations(client, '[data-testid="otter-canvas-thumbnail"]');
     const failedArtThumbnailFailureVisible = await readFailedArtExecutionFailureVisible(
       client,
-      '[data-testid="hook-canvas-thumbnail"]',
+      '[data-testid="otter-canvas-thumbnail"]',
     );
     const uiState = await client.evaluate(`(() => {
-      const thumbnail = document.querySelector('[data-testid="hook-canvas-thumbnail"]');
+      const thumbnail = document.querySelector('[data-testid="otter-canvas-thumbnail"]');
       const yaml = document.querySelector('.studio-textarea--yaml');
       const visible = yaml && (yaml.offsetWidth || yaml.offsetHeight || yaml.getClientRects().length);
       return {
         thumbnailVisible: Boolean(thumbnail),
-        thumbnailNodeCount: thumbnail?.querySelectorAll('[data-testid="hook-canvas-node"]').length ?? 0,
+        thumbnailNodeCount: thumbnail?.querySelectorAll('[data-testid="otter-canvas-node"]').length ?? 0,
         thumbnailEdgeCount: thumbnail?.querySelectorAll('svg line').length ?? 0,
         revision: thumbnail?.getAttribute('data-revision') ?? null,
         yamlVisible: Boolean(visible),
@@ -263,7 +263,7 @@ async function main() {
     if (client) try {
       failure.afterFailure = await client.evaluate(`(() => ({
         bodyText: document.body.innerText.slice(0, 1600),
-        activeHookView: Boolean(document.querySelector('[data-testid="hook-canvas-view"]')),
+        activeOtterView: Boolean(document.querySelector('[data-testid="otter-canvas-view"]')),
         activeSection: document.querySelector('.workspace-header h1')?.textContent?.trim() ?? null,
         workflowRequestText: document.querySelector('.workflow-studio')?.innerText?.slice(0, 500) ?? null,
       }))()`);

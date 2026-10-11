@@ -3,25 +3,25 @@
 This directory is the public, source-independent contract for framework and
 Art package authors. Rust types live in `crates/loom_protocol`; the JSON Schema
 files in `protocol/schemas` are the language-neutral source of truth. Plugin
-authors must not depend on private Loom or Hook source code.
+authors must not depend on private Loom or Otter source code.
 
 ## Compatibility rules
 
 - `loom.framework.v1` is stable. Existing field names and one-request/one-result
   JSON semantics will not change incompatibly.
-- `loom.hook.v1` is the standardized Loom<->Hook Art bridge contract. It owns
+- `loom.hook.v1` is the standardized Loom<->Otter Art bridge contract. It owns
   connection negotiation, capability discovery, Art execution requests and
   results, Surface attachment/resource operations, and structured failures.
-  Loom and Hook negotiate from `protocolVersion` plus
+  Loom and Otter negotiate from `protocolVersion` plus
   `supportedProtocolVersions`; package authors must use the brokered contract
-  rather than calling Hook or Loom implementation APIs directly.
+  rather than calling Otter or Loom implementation APIs directly.
 - Hosts negotiate from `protocolVersion` plus `supportedProtocolVersions`.
   Packages must not infer behavior from the Loom application version.
 - `loom.art.execute.v1` and `loom.art.result.v1` describe framework execution.
 - `loom.art.runtime.v1` describes a package-local Art runtime entry.
 - `loom.surface.v1` describes distributed Art Surface manifests, snapshots,
   patches, typed events, content-addressed resources, previews, and atomic
-  formal result commits. It is independent of Hook's frontend framework.
+  formal result commits. It is independent of Otter's frontend framework.
 - `loom.wall.v1` describes physical endpoints, wall layouts and source placement.
   Its strict field and coordinate rules are defined in
   [WALL_PROTOCOL.md](WALL_PROTOCOL.md); geometry alone does not authorize input.
@@ -38,21 +38,21 @@ authors must not depend on private Loom or Hook source code.
 - Streaming or persistent workers require a separately named protocol and
   explicit negotiation; they cannot silently change v1 framing.
 
-### Loom<->Hook Art contract and legacy retirement
+### Loom<->Otter Art contract and legacy retirement
 
-The local Hook bridge uses native-only TLS 1.3 with a pinned per-start certificate,
+The local Otter bridge uses native-only TLS 1.3 with a pinned per-start certificate,
 private discovery and a connection-bound exporter proof. See
 [Native local bridge transport](LOCAL_BRIDGE_SECURITY.md) for the normative contract.
 The daemon HTTP administrator credential is independent and is never sent to the
 WebSocket listener. Duplicate authentication/instance/Host headers, foreign Host,
 Origin, browser subprotocol credentials and query credentials are rejected.
 
-Hook and Loom Desktop WebViews use narrow native IPC; neither receives bridge
+Otter and Loom Desktop WebViews use narrow native IPC; neither receives bridge
 credentials or opens a browser WebSocket. Browser previews remain local-only.
 The former HTTP credentials broker and secret-returning native commands are removed.
 Application handshakes and extension grants still apply after authentication.
 
-Upgrade Hook and Loom together. Mixed versions fail closed without a plaintext or
+Upgrade Otter and Loom together. Mixed versions fail closed without a plaintext or
 broker fallback. This is not a sandbox against arbitrary same-user processes that
 can read private discovery or native process memory.
 
@@ -63,11 +63,11 @@ app-data identities are rejected rather than discovered or migrated.
 The canonical cross-application Art path is `loom.hook.v1` together with the
 `loom.surface.v1` Surface payload protocol. Loom owns package installation,
 execution, resource brokering, formal-result commits, and device/session
-authorization; Hook owns capability-driven rendering and user interaction. The
-wire contract does not expose private Rust types, Hook DOM handles, Tauri IPC,
+authorization; Otter owns capability-driven rendering and user interaction. The
+wire contract does not expose private Rust types, Otter DOM handles, Tauri IPC,
 or package source paths.
 
-There are no legacy compatibility inputs on the production Loom<->Hook Art
+There are no legacy compatibility inputs on the production Loom<->Otter Art
 bridge. Requests and ordinary events use only the exact `loom.hook.*` names
 defined by `loom.hook.v1`; Surface pushes use only the exact
 `loom.surface.snapshot`, `loom.surface.patch`, `loom.surface.generation`,
@@ -80,7 +80,7 @@ accepted. Bridge Art identity is publisher-qualified, for example
 `neuro.official/surface-device-dashboard`.
 
 Every `loom.hook.art.execute` request declares a non-empty
-`outputTransports` list. A native Hook client may request `shared_memory` and
+`outputTransports` list. A native Otter client may request `shared_memory` and
 `websocket`; a browser client requests only `websocket`. Loom materializes every
 declared formal output port using a transport the client can consume. It never
 sends an undeclared shared-memory handle and never drops scalar or secondary
@@ -94,25 +94,25 @@ of an already released owned handle is idempotently reported as missing;
 cross-request or cross-identity handles are rejected without releasing any
 mapping.
 
-Hook translates formal `loom.surface.*` pushes into private `surface/...` Tauri
+Otter translates formal `loom.surface.*` pushes into private `surface/...` Tauri
 events for its frontend. Those process-internal UI events are not wire aliases.
 Framework and Art storage use only publisher-qualified immutable layouts; the
-Art Store exposes exact versioned packages; Hook reads only its current app-data
-identity; and framework processes accept only the current ABI fields. Hook's
+Art Store exposes exact versioned packages; Otter reads only its current app-data
+identity; and framework processes accept only the current ABI fields. Otter's
 WGC-to-GDI screenshot fallback is a current capture reliability mechanism, not
 a package, persistence, or bridge compatibility path.
 
 ## Distributed Art Surface v1
 
 Surface v1 uses a small JSON control protocol and keeps large resources outside
-control messages. A Hook client first advertises its Surface API version,
+control messages. A Otter client first advertises its Surface API version,
 runtime kinds, node catalog, input capabilities, and transports. Loom may then
 select a declarative or pre-built JavaScript variant, fall back to the package's
-declarative scene, or use Hook's default output view.
+declarative scene, or use Otter's default output view.
 
 The first mount uses a `SurfaceSnapshot`. Later updates use ordered
 `SurfacePatch` values with `baseRevision` and `revision`. Scene node IDs are
-stable across patches. JavaScript source, arbitrary HTML, Hook DOM handles, and
+stable across patches. JavaScript source, arbitrary HTML, Otter DOM handles, and
 Tauri IPC are not part of the wire contract.
 
 Surface events carry an instance, attachment, event, request generation, and
@@ -134,7 +134,7 @@ Resources use immutable `sha256:<hex>` IDs. Same-host clients may negotiate
 shared memory, while remote clients use an authenticated Loom resource service.
 Large Base64 payloads do not belong in snapshots or patches.
 
-Remote Hook devices generate an Ed25519 key pair and submit only the public key
+Remote Otter devices generate an Ed25519 key pair and submit only the public key
 as a pending pairing request. Human approval is required before Loom issues a
 one-time challenge. The client signs the canonical
 `loom.device-session.v1` challenge envelope and receives a short-lived opaque
@@ -197,7 +197,7 @@ publisher-owned packages have the canonical identity `publisher/id`.
 ## Capability runtime ABI
 
 The experimental Browser Live document-pinning consumer has been retired from
-Hook; browser windows use native window capture. Its package-specific command
+Otter; browser windows use native window capture. Its package-specific command
 description is archived at
 `cleanup-base-20260928:protocol/BROWSER_DOCUMENT_PROVIDER.md` and is not an active
 host contract. The generic capability ABI below remains the extension boundary.
@@ -222,10 +222,10 @@ dispatch and before applying returned effects. See
 Plugin bindings publish host-owned `effectivePermissions`: the installed manifest's
 permissions after verification against Loom's package-digest-bound grant store.
 An omitted field grants no resource access. Contribution `permissions` remain
-requirements, not grants. Hook exposes executable contributions only for `trusted`
+requirements, not grants. Otter exposes executable contributions only for `trusted`
 owners with matching scope; unsigned developer packages are not desktop authorities.
 
-Hook requires the `resource.authorization.v1` extension feature. Before reading
+Otter requires the `resource.authorization.v1` extension feature. Before reading
 Unit image bytes or attachments, it sends `loom.extension.command.authorize` with
 `requestId`, `sessionId`, `pluginId`, `commandId`, `snapshotGeneration`, and `target`.
 Loom checks current installed-package trust and grants. `checkOnly: true` returns
@@ -242,8 +242,8 @@ grants before staging, after staging, and before publishing runtime results.
 Reconnect and either handshake invalidate outstanding tickets. Long-running OCR
 preparation precedes issuance of the final invocation ticket.
 
-Both applications must be upgraded together: older Hook parsers reject the new
-binding field, and newer Hook rejects peers without the authorization feature.
+Both applications must be upgraded together: older Otter parsers reject the new
+binding field, and newer Otter rejects peers without the authorization feature.
 This application authorization contract complements the mandatory local WebSocket
 transport authentication described above; do not treat protocol session IDs or
 localhost addresses alone as peer identity.
@@ -325,7 +325,7 @@ arts/<publisher>/<id>/
 Install, upgrade, and rollback verify publisher identity, signature/trust,
 canonical digest, framework version/digest, binary hashes, and lockfile schema.
 The active package is verified again before daemon execution. Failed activation
-restores the prior pointer; code is never written into Loom or Hook source.
+restores the prior pointer; code is never written into Loom or Otter source.
 
 ## Dependencies and locks
 
@@ -402,7 +402,7 @@ credential values, URL credentials/query/fragment, and oversized strings.
 - `schemas/surface-scene.v1.schema.json`
 - `schemas/surface-stream.v1.schema.json`
 - `schemas/device-session.v1.schema.json`
-- `schemas/hook-message.v1.schema.json`
+- `schemas/otter-message.v1.schema.json`
 - `schemas/wall.v1.schema.json`
 - `schemas/wall-presentation.v1.schema.json`
 - `schemas/wall-identification.v1.schema.json`
@@ -426,4 +426,4 @@ loom-plugin trust revoke <STORE> <PUBLISHER> <KEY_ID>
 
 The Plugin SDK ZIP contains this CLI, plugin schemas, capability runtime
 templates and fake host, and the developer/security documents. It does not
-contain Loom or Hook source.
+contain Loom or Otter source.

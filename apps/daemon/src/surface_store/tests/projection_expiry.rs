@@ -27,7 +27,7 @@ fn a_mutation_that_leaves_the_persistent_projection_alone_writes_nothing() {
     store
         .attach(
             &temporary.descriptor.instance_id,
-            "hook-node:stock",
+            "otter-node:stock",
             "device-000-local",
             None,
         )
@@ -41,7 +41,7 @@ fn a_mutation_that_leaves_the_persistent_projection_alone_writes_nothing() {
     let attachment = store
         .attach(
             &persistent.descriptor.instance_id,
-            "hook-node:stock",
+            "otter-node:stock",
             "device-000-local",
             None,
         )
@@ -93,7 +93,7 @@ fn an_expiry_tick_writes_only_when_something_expired() {
     let attachment = store
         .attach(
             &record.descriptor.instance_id,
-            "hook-node:stock",
+            "otter-node:stock",
             "device-000-local",
             None,
         )

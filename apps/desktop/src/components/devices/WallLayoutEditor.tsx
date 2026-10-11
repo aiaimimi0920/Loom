@@ -64,7 +64,7 @@ export function WallLayoutEditor({ baseUrl, layout, state, sources: inventory, p
         const listed = sources.find((s) => s.source.kind === p.source.kind && s.source.id === p.source.id);
         return <details className="wall-row" key={p.placementId} open>
           <summary>{p.source.kind} · {p.source.id}</summary>
-          {!listed && <p className="wall-warning">当前目录未列出来源，原有引用仍保留。请先刷新内容来源；仍在运行的 Hook 采集可重新连接，已关闭的来源需要重新发布并选择。</p>}
+          {!listed && <p className="wall-warning">当前目录未列出来源，原有引用仍保留。请先刷新内容来源；仍在运行的 Otter 采集可重新连接，已关闭的来源需要重新发布并选择。</p>}
           {listed && p.source.kind === "live" && <p className="wall-muted" role="status">{listed.status}</p>}
           <WallGeometryFields label="墙面位置" rect={p.rect} onChange={(rect) => update({ rect })} />
           <WallGeometryFields label="源裁剪（0 到 1）" rect={p.sourceCrop} onChange={(sourceCrop) => update({ sourceCrop })} />

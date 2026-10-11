@@ -2,10 +2,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getLoomDaemonJson, loadHookCanvasPreview } from "../loomApi.ts";
+import { getLoomDaemonJson, loadOtterCanvasPreview } from "../loomApi.ts";
 
-test("browser Hook previews stay on the configured daemon preview route", async () => {
-  const preview = await loadHookCanvasPreview(
+test("browser Otter previews stay on the configured daemon preview route", async () => {
+  const preview = await loadOtterCanvasPreview(
     "http://127.0.0.1:18765",
     "/v1/hook-bridge/canvas/nodes/node-1/preview",
   );
@@ -15,11 +15,11 @@ test("browser Hook previews stay on the configured daemon preview route", async 
     "http://127.0.0.1:18765/v1/hook-bridge/canvas/nodes/node-1/preview",
   );
   await assert.rejects(
-    loadHookCanvasPreview("http://127.0.0.1:18765", "https://attacker.test/preview"),
+    loadOtterCanvasPreview("http://127.0.0.1:18765", "https://attacker.test/preview"),
     /outside the preview route/,
   );
   await assert.rejects(
-    loadHookCanvasPreview(
+    loadOtterCanvasPreview(
       "http://127.0.0.1:18765",
       "/v1/hook-bridge/canvas/nodes/../../../admin/preview",
     ),
@@ -27,7 +27,7 @@ test("browser Hook previews stay on the configured daemon preview route", async 
   );
 });
 
-test("Tauri Hook preview failures do not fall back to an external URL", async (context) => {
+test("Tauri Otter preview failures do not fall back to an external URL", async (context) => {
   const globals = globalThis;
   const hadWindow = Reflect.has(globals, "window");
   const originalWindow: unknown = Reflect.get(globals, "window");
@@ -58,7 +58,7 @@ test("Tauri Hook preview failures do not fall back to an external URL", async (c
   });
 
   await assert.rejects(
-    loadHookCanvasPreview(
+    loadOtterCanvasPreview(
       "http://127.0.0.1:18765",
       "/v1/hook-bridge/canvas/nodes/node-1/preview",
     ),

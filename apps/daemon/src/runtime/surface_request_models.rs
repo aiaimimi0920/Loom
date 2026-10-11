@@ -2,7 +2,7 @@
 fn approve_managed_device(
     device_id: &str,
     device_registry: &SharedDeviceRegistryStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     {
         let mut store = device_registry
@@ -34,7 +34,7 @@ fn update_managed_device(
     device_id: &str,
     body: &str,
     device_registry: &SharedDeviceRegistryStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let input = match serde_json::from_str::<ManagedDeviceUpdate>(body) {
         Ok(input) => input,
@@ -85,7 +85,7 @@ fn update_managed_device(
 fn remove_managed_device(
     device_id: &str,
     device_registry: &SharedDeviceRegistryStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     {
         let mut store = device_registry

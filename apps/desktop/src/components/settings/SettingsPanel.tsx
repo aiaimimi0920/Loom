@@ -4,7 +4,7 @@ import { AboutPanel } from "./AboutPanel";
 import {
   gestureShortcutModifiers,
   HOOK_SHORTCUT_GROUPS,
-  HookShortcutGroupIcon,
+  OtterShortcutGroupIcon,
   removeShortcutSlot,
   SettingsAccordionSection,
   SHORTCUT_GESTURE_MODIFIERS,
@@ -17,7 +17,7 @@ import {
 } from "./settingsModel";
 import {
   GeneralSettingsPanel,
-  HookCacheSettingsPanel,
+  OtterCacheSettingsPanel,
   NetworkSettingsPanel,
 } from "./SettingsPanels";
 import { createPortal } from "react-dom";
@@ -34,13 +34,13 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     availableArtToolById,
     availableArtTools,
     checkApplicationUpdate,
-    clearHookCache,
+    clearOtterCache,
     draft,
     handleQuickBindingCapture,
     handleShortcutCapture,
-    hookCacheBusyKind,
-    hookCacheLoading,
-    hookCacheSnapshot,
+    otterCacheBusyKind,
+    otterCacheLoading,
+    otterCacheSnapshot,
     openApplicationLog,
     openQuickBindingEditor,
     openRepository,
@@ -59,8 +59,8 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
     shortcuts,
     toggleSettingsSection,
     toggleShortcutGroup,
-    updateHookCacheDraft,
-    updateHookGeneralDraft,
+    updateOtterCacheDraft,
+    updateOtterGeneralDraft,
     updateNetworkDraft,
   } = controller;
 
@@ -87,7 +87,7 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
             aria-controls="settings-app-panel-hook"
             onClick={() => selectSettingsApp("hook")}
           >
-            Hook
+            Otter
           </button>
         </nav>
       </header>
@@ -96,7 +96,7 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
         className="settings-app-panel"
         id={`settings-app-panel-${activeSettingsApp}`}
         role="tabpanel"
-        aria-label={`${activeSettingsApp === "loom" ? "Loom" : "Hook"} 设置`}
+        aria-label={`${activeSettingsApp === "loom" ? "Loom" : "Otter"} 设置`}
       >
       {activeSettingsApp === "loom" ? (
         <LoomSettingsSections baseUrl={snapshot.baseUrl} controller={controller} />
@@ -110,56 +110,56 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
                 theme: draft.hook_general.theme,
                 closeToTray: draft.hook_general.close_to_tray,
               }}
-              onChange={updateHookGeneralDraft}
+              onChange={updateOtterGeneralDraft}
             />
           </SettingsAccordionSection>
 
           <SettingsAccordionSection id="shortcuts" label="快捷键" open={openSettingsSection === "shortcuts"} onToggle={() => toggleSettingsSection("shortcuts")}>
-            <div className="hook-shortcut-groups">
+            <div className="otter-shortcut-groups">
               {HOOK_SHORTCUT_GROUPS.map((group) => {
                 const groupOpen = openShortcutGroups.has(group.id);
-                const contentId = `hook-shortcut-group-content-${group.id}`;
+                const contentId = `otter-shortcut-group-content-${group.id}`;
                 return (
-                <section className={groupOpen ? "hook-shortcut-group hook-shortcut-group--open" : "hook-shortcut-group"} key={group.id} aria-labelledby={`hook-shortcut-group-${group.id}`}>
-                  <header className="hook-shortcut-group__header">
-                    <h3 id={`hook-shortcut-group-${group.id}`}>
+                <section className={groupOpen ? "otter-shortcut-group otter-shortcut-group--open" : "otter-shortcut-group"} key={group.id} aria-labelledby={`otter-shortcut-group-${group.id}`}>
+                  <header className="otter-shortcut-group__header">
+                    <h3 id={`otter-shortcut-group-${group.id}`}>
                       <button
-                        className="hook-shortcut-group__trigger"
+                        className="otter-shortcut-group__trigger"
                         type="button"
                         aria-expanded={groupOpen}
                         aria-controls={contentId}
                         onClick={() => toggleShortcutGroup(group.id)}
                       >
-                        <HookShortcutGroupIcon kind={group.icon} />
+                        <OtterShortcutGroupIcon kind={group.icon} />
                         <span>{group.label}</span>
-                        <svg className="hook-shortcut-group__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                        <svg className="otter-shortcut-group__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
                           <path d="m7 9 5 5 5-5" />
                         </svg>
                       </button>
                     </h3>
                   </header>
-                  {groupOpen ? <div className="hook-shortcut-list" id={contentId}>
+                  {groupOpen ? <div className="otter-shortcut-list" id={contentId}>
                     {group.items.map((item) => (
-                      <div className="hook-shortcut-row" key={item.id}>
-                        <span className="hook-shortcut-row__text">
+                      <div className="otter-shortcut-row" key={item.id}>
+                        <span className="otter-shortcut-row__text">
                           <strong>{item.label}</strong>
                           <small>{item.description}</small>
                         </span>
                         {item.sourceId ? (
                           <button
-                            className="hook-shortcut-row__keys hook-shortcut-row__keys--editable"
+                            className="otter-shortcut-row__keys otter-shortcut-row__keys--editable"
                             type="button"
                             aria-label={`修改${item.label}快捷键`}
                             title="修改快捷键"
                             onClick={() => openShortcutEditor(item)}
                           >
                             <ShortcutKeySequence shortcuts={resolveShortcutKeys(item)} />
-                            <svg className="hook-shortcut-row__edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                            <svg className="otter-shortcut-row__edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
                               <path d="M4 20h4l11-11-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" />
                             </svg>
                           </button>
                         ) : (
-                          <span className="hook-shortcut-row__keys" aria-label={`${item.label}操作手势`}>
+                          <span className="otter-shortcut-row__keys" aria-label={`${item.label}操作手势`}>
                             <ShortcutKeySequence shortcuts={item.keys} />
                           </span>
                         )}
@@ -172,25 +172,25 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
                           .map((binding) => {
                             const tool = availableArtToolById.get(binding.art)!;
                             return (
-                              <div className="hook-shortcut-row hook-shortcut-row--art-binding" key={binding.id}>
-                                <span className="hook-shortcut-row__text">
+                              <div className="otter-shortcut-row otter-shortcut-row--art-binding" key={binding.id}>
+                                <span className="otter-shortcut-row__text">
                                   <strong>{tool.name || tool.id}</strong>
                                   <small>快速添加 Art 节点</small>
                                 </span>
-                                <span className="hook-quick-binding-actions">
+                                <span className="otter-quick-binding-actions">
                                   <button
-                                    className="hook-shortcut-row__keys hook-shortcut-row__keys--editable"
+                                    className="otter-shortcut-row__keys otter-shortcut-row__keys--editable"
                                     type="button"
                                     aria-label={`修改${tool.name || tool.id}快捷键`}
                                     onClick={() => openQuickBindingEditor(binding)}
                                   >
                                     <ShortcutKeySequence shortcuts={splitShortcutAlternatives(binding.key)} />
-                                    <svg className="hook-shortcut-row__edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                    <svg className="otter-shortcut-row__edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
                                       <path d="M4 20h4l11-11-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" />
                                     </svg>
                                   </button>
                                   <button
-                                    className="hook-quick-binding-remove"
+                                    className="otter-quick-binding-remove"
                                     type="button"
                                     aria-label={`删除${tool.name || tool.id}快捷键`}
                                     title="删除"
@@ -208,7 +208,7 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
                             );
                           })}
                         <button
-                          className="hook-shortcut-add-art"
+                          className="otter-shortcut-add-art"
                           type="button"
                           disabled={!availableArtTools.length}
                           onClick={() => openQuickBindingEditor()}
@@ -225,19 +225,19 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
           </SettingsAccordionSection>
 
           <SettingsAccordionSection id="cache" label="缓存" open={openSettingsSection === "cache"} onToggle={() => toggleSettingsSection("cache")}>
-            <HookCacheSettingsPanel
+            <OtterCacheSettingsPanel
               settings={draft.hook_cache}
-              snapshot={hookCacheSnapshot}
-              loading={hookCacheLoading}
-              busyKind={hookCacheBusyKind}
-              onSettingsChange={updateHookCacheDraft}
-              onClear={(kind) => void clearHookCache(kind)}
+              snapshot={otterCacheSnapshot}
+              loading={otterCacheLoading}
+              busyKind={otterCacheBusyKind}
+              onSettingsChange={updateOtterCacheDraft}
+              onClear={(kind) => void clearOtterCache(kind)}
             />
           </SettingsAccordionSection>
 
           <SettingsAccordionSection id="network" label="网络" open={openSettingsSection === "network"} onToggle={() => toggleSettingsSection("network")}>
             <NetworkSettingsPanel
-              appName="Hook"
+              appName="Otter"
               value={draft.network.hook}
               onChange={(patch) => updateNetworkDraft("hook", patch)}
             />

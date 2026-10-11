@@ -1,9 +1,9 @@
 // Loom daemon tests fragment 15; included into the shared crate test module.
 #[test]
-fn daemon_exposes_hook_canvas_snapshot_contract() {
+fn daemon_exposes_otter_canvas_snapshot_contract() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
-    let appdata = unique_temp_dir("hook-canvas-appdata");
+    clear_otter_canvas_runtime_state(None);
+    let appdata = unique_temp_dir("otter-canvas-appdata");
     let session_dir = appdata.join("com.yamiyu.hook");
     let images = session_dir.join("images");
     fs::create_dir_all(&images).expect("create session images");
@@ -11,12 +11,12 @@ fn daemon_exposes_hook_canvas_snapshot_contract() {
             session_dir.join("session.json"),
             r#"{"stickers":[{"id":"capture node","type":"sticker","src":"images/capture.png","x":20,"y":30,"w":320,"h":180}],"links":[]}"#,
         )
-        .expect("write Hook session");
+        .expect("write Otter session");
     fs::write(images.join("capture.png"), test_png_bytes()).expect("write preview");
     let previous = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata);
 
-    let (status, body) = hook_canvas_snapshot().expect("hook canvas snapshot");
+    let (status, body) = otter_canvas_snapshot().expect("hook canvas snapshot");
     assert_eq!(status, 200);
     let canvas = serde_json::from_str::<serde_json::Value>(&body).expect("snapshot json");
     assert_eq!(canvas["available"], true);
@@ -32,21 +32,21 @@ fn daemon_exposes_hook_canvas_snapshot_contract() {
     assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas"));
     assert!(daemon_help_text().contains("GET  /v1/hook-bridge/canvas/nodes/{nodeId}/preview"));
     restore_env("APPDATA", previous);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     fs::remove_dir_all(appdata).expect("cleanup");
 }
 
 #[test]
-fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
+fn daemon_otter_canvas_prefers_live_otter_workflow_snapshot_when_available() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
-    let root = unique_temp_dir("hook-canvas-live-workflow");
-    let appdata = unique_temp_dir("hook-canvas-live-workflow-appdata");
+    clear_otter_canvas_runtime_state(None);
+    let root = unique_temp_dir("otter-canvas-live-workflow");
+    let appdata = unique_temp_dir("otter-canvas-live-workflow-appdata");
     let previous_appdata = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata);
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-    let workflow = run_hook_bridge_text(
+    let workflow = run_otter_bridge_text(
             &runtime,
             &json!({
                 "method": loom_protocol::HOOK_METHOD_WORKFLOW_SYNC,
@@ -54,7 +54,7 @@ fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
                     "requestId": "sync-live-workflow",
                     "workflowId": HOOK_LIVE_WORKFLOW_ID,
                     "snapshot": {
-                        "name": "Hook Live",
+                        "name": "Otter Live",
                         "nodes": [
                             {
                                 "id": "capture",
@@ -97,7 +97,7 @@ fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
         );
     assert_eq!(workflow["status"], "succeeded", "response={workflow}");
 
-    let (status, body) = hook_canvas_snapshot().expect("hook canvas snapshot");
+    let (status, body) = otter_canvas_snapshot().expect("hook canvas snapshot");
     assert_eq!(status, 200);
     let canvas = serde_json::from_str::<serde_json::Value>(&body).expect("snapshot json");
     assert_eq!(canvas["available"], true);
@@ -109,24 +109,24 @@ fn daemon_hook_canvas_prefers_live_hook_workflow_snapshot_when_available() {
     assert_eq!(canvas["nodes"][1]["previewAvailable"], true);
 
     restore_env("APPDATA", previous_appdata);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     drop(runtime);
     fs::remove_dir_all(root).expect("cleanup root");
     fs::remove_dir_all(appdata).expect("cleanup appdata");
 }
 
 #[test]
-fn hook_canvas_patch_migrates_legacy_session_and_persists_revision_across_reload() {
+fn otter_canvas_patch_migrates_legacy_session_and_persists_revision_across_reload() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
-    let root = unique_temp_dir("hook-session-revision-migration");
+    clear_otter_canvas_runtime_state(None);
+    let root = unique_temp_dir("otter-session-revision-migration");
     let session_path = root.join("session.json");
     fs::write(
         &session_path,
         r#"{"stickers":[{"id":"node-1","params":{"strength":1}}],"links":[]}"#,
     )
-    .expect("write legacy Hook session");
-    store_hook_live_workflow_snapshot(
+    .expect("write legacy Otter session");
+    store_otter_live_workflow_snapshot(
         &session_path,
         HOOK_LIVE_WORKFLOW_ID,
         &json!({
@@ -135,29 +135,29 @@ fn hook_canvas_patch_migrates_legacy_session_and_persists_revision_across_reload
         }),
     )
     .expect("store legacy live snapshot");
-    let patch = HookCanvasPersistPatch {
+    let patch = OtterCanvasPersistPatch {
         param_updates: vec![("strength".to_owned(), json!(9))],
     };
 
-    let revision = persist_hook_canvas_live_node_patch("node-1", &patch)
+    let revision = persist_otter_canvas_live_node_patch("node-1", &patch)
         .expect("persist Loom patch against legacy revision");
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let reloaded: Value =
-        serde_json::from_slice(&fs::read(&session_path).expect("reload persisted Hook session"))
-            .expect("parse persisted Hook session");
+        serde_json::from_slice(&fs::read(&session_path).expect("reload persisted Otter session"))
+            .expect("parse persisted Otter session");
 
     assert_eq!(revision, 1);
     assert_eq!(reloaded["documentSchemaVersion"], 1);
     assert_eq!(reloaded["documentRevision"], 1);
     assert_eq!(reloaded["stickers"][0]["params"]["strength"], 9);
-    fs::remove_dir_all(root).expect("cleanup Hook session migration test");
+    fs::remove_dir_all(root).expect("cleanup Otter session migration test");
 }
 
 #[test]
-fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() {
+fn otter_canvas_patch_rejects_concurrent_otter_revision_and_preserves_otter_edit() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
-    let root = unique_temp_dir("hook-session-concurrent-edit");
+    clear_otter_canvas_runtime_state(None);
+    let root = unique_temp_dir("otter-session-concurrent-edit");
     let session_path = root.join("session.json");
     fs::write(
         &session_path,
@@ -169,8 +169,8 @@ fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() 
         }))
         .unwrap(),
     )
-    .expect("write initial Hook session");
-    store_hook_live_workflow_snapshot(
+    .expect("write initial Otter session");
+    store_otter_live_workflow_snapshot(
         &session_path,
         HOOK_LIVE_WORKFLOW_ID,
         &json!({
@@ -181,24 +181,24 @@ fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() 
         }),
     )
     .expect("store revision-one live snapshot");
-    let hook_lease = HookSessionFileLease::acquire(&session_path).expect("Hook writer lease");
+    let otter_lease = OtterSessionFileLease::acquire(&session_path).expect("Otter writer lease");
     let loom_patch = thread::spawn(|| {
-        persist_hook_canvas_live_node_patch(
+        persist_otter_canvas_live_node_patch(
             "node-1",
-            &HookCanvasPersistPatch {
+            &OtterCanvasPersistPatch {
                 param_updates: vec![("strength".to_owned(), json!(9))],
             },
         )
     });
     thread::sleep(Duration::from_millis(75));
-    let hook_edit = json!({
+    let otter_edit = json!({
         "documentSchemaVersion": 1,
         "documentRevision": 2,
         "stickers": [{"id":"node-1","params":{"strength":4}}],
         "links": []
     });
-    write_hook_canvas_root(&session_path, &hook_edit).expect("commit concurrent Hook edit");
-    drop(hook_lease);
+    write_otter_canvas_root(&session_path, &otter_edit).expect("commit concurrent Otter edit");
+    drop(otter_lease);
 
     let error = loom_patch
         .join()
@@ -209,7 +209,7 @@ fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() 
     assert!(
         matches!(
             &error,
-            HookCanvasPersistError::RevisionConflict {
+            OtterCanvasPersistError::RevisionConflict {
                 expected: 1,
                 current: 2
             }
@@ -218,15 +218,15 @@ fn hook_canvas_patch_rejects_concurrent_hook_revision_and_preserves_hook_edit() 
     );
     assert_eq!(preserved["documentRevision"], 2);
     assert_eq!(preserved["stickers"][0]["params"]["strength"], 4);
-    clear_hook_canvas_runtime_state(None);
-    fs::remove_dir_all(root).expect("cleanup concurrent Hook edit test");
+    clear_otter_canvas_runtime_state(None);
+    fs::remove_dir_all(root).expect("cleanup concurrent Otter edit test");
 }
 
 #[test]
-fn hook_canvas_patch_rejects_future_session_schema_without_overwrite() {
+fn otter_canvas_patch_rejects_future_session_schema_without_overwrite() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
-    let root = unique_temp_dir("hook-session-future-schema");
+    clear_otter_canvas_runtime_state(None);
+    let root = unique_temp_dir("otter-session-future-schema");
     let session_path = root.join("session.json");
     let future = serde_json::to_vec(&json!({
         "documentSchemaVersion": 2,
@@ -235,8 +235,8 @@ fn hook_canvas_patch_rejects_future_session_schema_without_overwrite() {
         "links": []
     }))
     .unwrap();
-    fs::write(&session_path, &future).expect("write future Hook session");
-    store_hook_live_workflow_snapshot(
+    fs::write(&session_path, &future).expect("write future Otter session");
+    store_otter_live_workflow_snapshot(
         &session_path,
         HOOK_LIVE_WORKFLOW_ID,
         &json!({
@@ -248,30 +248,30 @@ fn hook_canvas_patch_rejects_future_session_schema_without_overwrite() {
     )
     .expect("store supported live snapshot");
 
-    let error = persist_hook_canvas_live_node_patch(
+    let error = persist_otter_canvas_live_node_patch(
         "node-1",
-        &HookCanvasPersistPatch {
+        &OtterCanvasPersistPatch {
             param_updates: vec![("strength".to_owned(), json!(9))],
         },
     )
-    .expect_err("future Hook schema must fail closed");
+    .expect_err("future Otter schema must fail closed");
 
     assert!(matches!(
         error,
-        HookCanvasPersistError::UnsupportedDocument(_)
+        OtterCanvasPersistError::UnsupportedDocument(_)
     ));
     assert_eq!(fs::read(&session_path).unwrap(), future);
-    clear_hook_canvas_runtime_state(None);
-    fs::remove_dir_all(root).expect("cleanup future Hook schema test");
+    clear_otter_canvas_runtime_state(None);
+    fs::remove_dir_all(root).expect("cleanup future Otter schema test");
 }
 
 #[test]
-fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
+fn daemon_can_save_a_otter_canvas_component_directly_as_a_workflow() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let previous_appdata = std::env::var("APPDATA").ok();
-    let root = unique_temp_dir("hook-canvas-save-workflow");
-    let appdata = unique_temp_dir("hook-canvas-save-workflow-appdata");
+    let root = unique_temp_dir("otter-canvas-save-workflow");
+    let appdata = unique_temp_dir("otter-canvas-save-workflow-appdata");
     let session_dir = appdata.join("com.yamiyu.hook");
     let images = session_dir.join("images");
     fs::create_dir_all(&images).expect("create session images");
@@ -290,7 +290,7 @@ fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
               ]
             }"#,
         )
-        .expect("write Hook session");
+        .expect("write Otter session");
     for name in ["a.png", "b.png", "c.png", "lonely.png"] {
         fs::write(images.join(name), test_png_bytes()).expect("write preview");
     }
@@ -298,23 +298,23 @@ fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
 
     let workflow_store = WorkflowStore::new(root.join("workflows"));
     let canvas_workflow_root = root.join("canvas-workflows");
-    let (status, body) = save_hook_canvas_workflow(
-        "hook-export",
-        r#"{"selectedNodeId":"a","workflowName":"Hook Export"}"#,
+    let (status, body) = save_otter_canvas_workflow(
+        "otter-export",
+        r#"{"selectedNodeId":"a","workflowName":"Otter Export"}"#,
         &workflow_store,
         &canvas_workflow_root,
     )
-    .expect("save Hook canvas workflow");
+    .expect("save Otter canvas workflow");
     assert_eq!(status, 200);
     let saved = serde_json::from_str::<serde_json::Value>(&body).expect("saved workflow json");
-    assert_eq!(saved["workflow"]["id"], "hook-export");
-    assert_eq!(saved["workflow"]["name"], "Hook Export");
+    assert_eq!(saved["workflow"]["id"], "otter-export");
+    assert_eq!(saved["workflow"]["name"], "Otter Export");
 
     let loaded = workflow_store
-        .load_workflow("hook-export")
+        .load_workflow("otter-export")
         .expect("load saved workflow");
     let data = loaded;
-    assert!(data.contains("name: 'Hook Export'"));
+    assert!(data.contains("name: 'Otter Export'"));
     assert!(data.contains("- id: a"));
     assert!(data.contains("- id: resize"));
     assert!(data.contains("- id: resize-2"));
@@ -325,11 +325,11 @@ fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
     // Renaming updates the display name in meta.json without changing the id.
     let canvas_root = root.join("canvas-workflows");
     let (rename_status, rename_body) =
-        rename_canvas_workflow("hook-export", r#"{"name":"Renamed Flow"}"#, &canvas_root)
+        rename_canvas_workflow("otter-export", r#"{"name":"Renamed Flow"}"#, &canvas_root)
             .expect("rename canvas workflow");
     assert_eq!(rename_status, 200);
     let renamed = serde_json::from_str::<serde_json::Value>(&rename_body).expect("rename json");
-    assert_eq!(renamed["id"], "hook-export");
+    assert_eq!(renamed["id"], "otter-export");
     assert_eq!(renamed["name"], "Renamed Flow");
     let (_, list_body) = list_canvas_workflows(&canvas_root).expect("list canvas workflows");
     let list_json = serde_json::from_str::<serde_json::Value>(&list_body).expect("list json");
@@ -337,11 +337,11 @@ fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
         .as_array()
         .expect("workflows array")
         .iter()
-        .any(|w| w["id"] == "hook-export" && w["name"] == "Renamed Flow"));
+        .any(|w| w["id"] == "otter-export" && w["name"] == "Renamed Flow"));
 
     // Deleting removes the frozen snapshot directory.
     let (delete_status, _) =
-        delete_canvas_workflow("hook-export", &canvas_root).expect("delete canvas workflow");
+        delete_canvas_workflow("otter-export", &canvas_root).expect("delete canvas workflow");
     assert_eq!(delete_status, 200);
     let (_, after_body) = list_canvas_workflows(&canvas_root).expect("list after delete");
     let after_json = serde_json::from_str::<serde_json::Value>(&after_body).expect("after json");
@@ -349,18 +349,18 @@ fn daemon_can_save_a_hook_canvas_component_directly_as_a_workflow() {
         .as_array()
         .expect("workflows array")
         .iter()
-        .all(|w| w["id"] != "hook-export"));
+        .all(|w| w["id"] != "otter-export"));
 
     restore_env("APPDATA", previous_appdata);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     fs::remove_dir_all(root).expect("cleanup root");
     fs::remove_dir_all(appdata).expect("cleanup appdata");
 }
 
 #[test]
-fn daemon_serves_only_registered_hook_canvas_preview_images() {
+fn daemon_serves_only_registered_otter_canvas_preview_images() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let appdata = unique_temp_dir("hook-canvas-preview-appdata");
+    let appdata = unique_temp_dir("otter-canvas-preview-appdata");
     let session_dir = appdata.join("com.yamiyu.hook");
     let images = session_dir.join("images");
     fs::create_dir_all(&images).expect("create session images");
@@ -377,16 +377,16 @@ fn daemon_serves_only_registered_hook_canvas_preview_images() {
               "links": []
             }"#,
         )
-        .expect("write Hook session");
+        .expect("write Otter session");
     let previous = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata);
 
-    let registered = hook_canvas_preview_response("capture node").expect("registered preview");
+    let registered = otter_canvas_preview_response("capture node").expect("registered preview");
     let registered_body = expect_binary_route_response(registered, 200, "image/png");
     assert_eq!(registered_body, png);
 
     for node_id in ["unknown", "escape"] {
-        let response = hook_canvas_preview_response(node_id).expect("preview not found response");
+        let response = otter_canvas_preview_response(node_id).expect("preview not found response");
         let body = expect_text_route_response(response, 404);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&body).expect("preview error json")["error"]

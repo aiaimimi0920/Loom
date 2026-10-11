@@ -17,7 +17,7 @@ export interface ApplicationDiagnosticsInfo {
   logFileExists: boolean;
 }
 
-export interface HookCacheEntryInfo {
+export interface OtterCacheEntryInfo {
   key: string;
   label: string;
   path: string;
@@ -25,21 +25,21 @@ export interface HookCacheEntryInfo {
   fileCount: number;
 }
 
-export interface HookCacheSnapshotInfo {
-  temporary: HookCacheEntryInfo;
+export interface OtterCacheSnapshotInfo {
+  temporary: OtterCacheEntryInfo;
   recycleBinEntries: number;
   referenceEntries: number;
 }
 
-export interface HookCacheClearResult {
+export interface OtterCacheClearResult {
   kind: string;
   freedBytes: number;
-  snapshot: HookCacheSnapshotInfo;
+  snapshot: OtterCacheSnapshotInfo;
 }
 
 export interface LoomCacheSnapshotInfo {
-  artRuntime: HookCacheEntryInfo;
-  frameworkTemporary: HookCacheEntryInfo;
+  artRuntime: OtterCacheEntryInfo;
+  frameworkTemporary: OtterCacheEntryInfo;
 }
 
 export interface LoomCacheClearResult {
@@ -48,33 +48,33 @@ export interface LoomCacheClearResult {
   snapshot: LoomCacheSnapshotInfo;
 }
 
-export type HookShortcutGroupIconKind = "capture" | "tools" | "sticker" | "transform";
+export type OtterShortcutGroupIconKind = "capture" | "tools" | "sticker" | "transform";
 
-export type HookShortcutContext = "capture-selecting" | "sticker-editing" | "unit-selected" | "canvas";
-export type HookShortcutGestureAction = "点击" | "拖动" | "滚轮";
+export type OtterShortcutContext = "capture-selecting" | "sticker-editing" | "unit-selected" | "canvas";
+export type OtterShortcutGestureAction = "点击" | "拖动" | "滚轮";
 export type ShortcutSlot = 0 | 1 | 2;
 export type ShortcutSlots = [string, string, string];
 
-export interface HookShortcutDisplayItem {
+export interface OtterShortcutDisplayItem {
   id: string;
   label: string;
   description: string;
   keys: string[];
   sourceId?: string;
-  contexts: HookShortcutContext[];
-  gestureAction?: HookShortcutGestureAction;
+  contexts: OtterShortcutContext[];
+  gestureAction?: OtterShortcutGestureAction;
   conflictFamily?: string;
 }
 
-export interface HookShortcutDisplayGroup {
+export interface OtterShortcutDisplayGroup {
   id: string;
   label: string;
-  icon: HookShortcutGroupIconKind;
-  items: HookShortcutDisplayItem[];
+  icon: OtterShortcutGroupIconKind;
+  items: OtterShortcutDisplayItem[];
 }
 
 export interface ShortcutEditorState {
-  item: HookShortcutDisplayItem;
+  item: OtterShortcutDisplayItem;
   keys: ShortcutSlots;
   activeSlot: ShortcutSlot;
   slotCount: 1 | 2 | 3;
@@ -88,27 +88,27 @@ export interface QuickBindingEditorState {
   slotCount: 1 | 2 | 3;
 }
 
-export const ALL_HOOK_SHORTCUT_CONTEXTS: HookShortcutContext[] = [
+export const ALL_OTTER_SHORTCUT_CONTEXTS: OtterShortcutContext[] = [
   "capture-selecting",
   "sticker-editing",
   "unit-selected",
   "canvas",
 ];
 
-export const HOOK_SHORTCUT_GROUPS: HookShortcutDisplayGroup[] = [
+export const HOOK_SHORTCUT_GROUPS: OtterShortcutDisplayGroup[] = [
   {
     id: "capture-file",
     label: "捕获与操作",
     icon: "capture",
     items: [
-      { id: "capture", sourceId: "capture", label: "截图", description: "截取屏幕区域", keys: ["Ctrl+1"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
-      { id: "live-capture", sourceId: "live_capture", label: "实时截图", description: "截取持续更新的窗口或屏幕区域", keys: ["Ctrl+2"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
-      { id: "long-capture", sourceId: "long_capture", label: "长截图", description: "开始或结束长截图", keys: ["Ctrl+3"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
-      { id: "open-image", sourceId: "open_image", label: "打开图片", description: "导入图片并创建贴图", keys: ["Ctrl+O"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
+      { id: "capture", sourceId: "capture", label: "截图", description: "截取屏幕区域", keys: ["Ctrl+1"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
+      { id: "live-capture", sourceId: "live_capture", label: "实时截图", description: "截取持续更新的窗口或屏幕区域", keys: ["Ctrl+2"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
+      { id: "long-capture", sourceId: "long_capture", label: "长截图", description: "开始或结束长截图", keys: ["Ctrl+3"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
+      { id: "open-image", sourceId: "open_image", label: "打开图片", description: "导入图片并创建贴图", keys: ["Ctrl+O"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
       { id: "save", sourceId: "save_image", label: "保存图片", description: "保存当前贴图的正式输出", keys: ["Ctrl+S"], contexts: ["unit-selected"] },
-      { id: "toggle-clean-view", sourceId: "toggle_clean_view", label: "清爽视图", description: "显示或隐藏界面辅助控件", keys: ["Ctrl+Shift+4"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
+      { id: "toggle-clean-view", sourceId: "toggle_clean_view", label: "清爽视图", description: "显示或隐藏界面辅助控件", keys: ["Ctrl+Shift+4"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
       { id: "cancel", sourceId: "cancel", label: "取消 / 退出", description: "根据当前状态取消、删除或退出", keys: ["Escape", "Delete", "Backspace"], contexts: ["capture-selecting", "sticker-editing", "unit-selected"], conflictFamily: "contextual-cancel-delete" },
-      { id: "force-close", label: "强行关闭", description: "连续按下 3 次 Esc 强行退出 Hook", keys: ["Esc × 3"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
+      { id: "force-close", label: "强行关闭", description: "连续按下 3 次 Esc 强行退出 Otter", keys: ["Esc × 3"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
     ],
   },
   {
@@ -140,7 +140,7 @@ export const HOOK_SHORTCUT_GROUPS: HookShortcutDisplayGroup[] = [
     label: "贴图编辑",
     icon: "transform",
     items: [
-      { id: "toggle-sticker-toolbar", sourceId: "toggle_sticker_toolbar", label: "贴图工具栏", description: "显示或隐藏贴图编辑工具栏", keys: ["Ctrl+E"], contexts: ALL_HOOK_SHORTCUT_CONTEXTS },
+      { id: "toggle-sticker-toolbar", sourceId: "toggle_sticker_toolbar", label: "贴图工具栏", description: "显示或隐藏贴图编辑工具栏", keys: ["Ctrl+E"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
       { id: "control-copy", sourceId: "copy_unit", label: "复制控件", description: "复制贴图内当前选中的控件", keys: ["Ctrl+C"], contexts: ["sticker-editing"] },
       { id: "control-paste", sourceId: "paste_unit", label: "粘贴控件", description: "粘贴已复制的贴图控件", keys: ["Ctrl+V"], contexts: ["sticker-editing"] },
       { id: "control-delete", sourceId: "delete_unit", label: "删除控件", description: "删除贴图内当前选中的控件", keys: ["Escape", "Delete", "Backspace"], contexts: ["sticker-editing"], conflictFamily: "contextual-cancel-delete" },
@@ -159,7 +159,7 @@ export const HOOK_SHORTCUT_GROUPS: HookShortcutDisplayGroup[] = [
   },
 ];
 
-export function HookShortcutGroupIcon({ kind }: { kind: HookShortcutGroupIconKind }) {
+export function OtterShortcutGroupIcon({ kind }: { kind: OtterShortcutGroupIconKind }) {
   const props = {
     viewBox: "0 0 24 24",
     fill: "none",
@@ -198,7 +198,7 @@ export const shortcutKeyDisplayLabel = (key: string) => key === "Escape" ? "Esc"
 export const SHORTCUT_GESTURE_MODIFIERS = ["Ctrl", "Alt", "Shift", "Meta"] as const;
 export type ShortcutGestureModifier = typeof SHORTCUT_GESTURE_MODIFIERS[number];
 
-export const gestureShortcutModifiers = (shortcut: string, action: HookShortcutGestureAction) => new Set(
+export const gestureShortcutModifiers = (shortcut: string, action: OtterShortcutGestureAction) => new Set(
   shortcutKeyParts(shortcut).filter((part): part is ShortcutGestureModifier => (
     part !== action && SHORTCUT_GESTURE_MODIFIERS.includes(part as ShortcutGestureModifier)
   )),
@@ -206,7 +206,7 @@ export const gestureShortcutModifiers = (shortcut: string, action: HookShortcutG
 
 export const toggleGestureShortcutModifier = (
   shortcut: string,
-  action: HookShortcutGestureAction,
+  action: OtterShortcutGestureAction,
   modifier: ShortcutGestureModifier,
 ) => {
   const selected = gestureShortcutModifiers(shortcut, action);
@@ -219,8 +219,8 @@ export const toggleGestureShortcutModifier = (
 };
 
 export const shortcutContextsOverlap = (
-  left: readonly HookShortcutContext[],
-  right: readonly HookShortcutContext[],
+  left: readonly OtterShortcutContext[],
+  right: readonly OtterShortcutContext[],
 ) => left.some((context) => right.includes(context));
 
 export const shortcutSlotCount = (keys: readonly string[]): 1 | 2 | 3 => (
@@ -235,16 +235,16 @@ export const removeShortcutSlot = (keys: ShortcutSlots, slot: ShortcutSlot): Sho
 
 export function ShortcutKeySequence({ shortcuts }: { shortcuts: string[] }) {
   return (
-    <span className="hook-shortcut-key-sequences">
+    <span className="otter-shortcut-key-sequences">
       {shortcuts.map((shortcut, shortcutIndex) => (
-        <span className="hook-shortcut-key-sequence" key={`${shortcut}-${shortcutIndex}`}>
+        <span className="otter-shortcut-key-sequence" key={`${shortcut}-${shortcutIndex}`}>
           {shortcutKeyParts(shortcut).map((key, keyIndex) => (
-            <span className="hook-shortcut-key-part" key={`${key}-${keyIndex}`}>
-              {keyIndex > 0 ? <span className="hook-shortcut-key-plus" aria-hidden="true">+</span> : null}
+            <span className="otter-shortcut-key-part" key={`${key}-${keyIndex}`}>
+              {keyIndex > 0 ? <span className="otter-shortcut-key-plus" aria-hidden="true">+</span> : null}
               <kbd>{shortcutKeyDisplayLabel(key)}</kbd>
             </span>
           ))}
-          {shortcutIndex < shortcuts.length - 1 ? <span className="hook-shortcut-key-or">或</span> : null}
+          {shortcutIndex < shortcuts.length - 1 ? <span className="otter-shortcut-key-or">或</span> : null}
         </span>
       ))}
     </span>
@@ -288,9 +288,9 @@ export const FALLBACK_APPLICATION_DIAGNOSTICS: Record<SettingsAppId, Application
   },
   hook: {
     app: "hook",
-    appName: "Hook",
+    appName: "Otter",
     version: "0.1.7",
-    repositoryUrl: "https://github.com/aiaimimi0920/Hook",
+    repositoryUrl: "https://github.com/aiaimimi0920/Otter",
     commitShort: null,
     logDir: "",
     logFile: null,

@@ -99,7 +99,7 @@ fn catalog_rejects_a_trusted_non_official_publisher() {
 }
 
 #[test]
-fn host_compatibility_requires_extension_hook_and_declared_features() {
+fn host_compatibility_requires_extension_otter_and_declared_features() {
     let key = generate_signing_key("catalog-1");
     let now = Utc::now();
     let entry = signed_catalog(&key, now, now + Duration::hours(1))
@@ -109,13 +109,13 @@ fn host_compatibility_requires_extension_hook_and_declared_features() {
     let mut support = compatible_host(false);
     assert_eq!(
         capability_host_compatibility_error(&entry, &support).as_deref(),
-        Some("需要连接支持能力扩展的 Hook")
+        Some("需要连接支持能力扩展的 Otter")
     );
     support.hook_connected = true;
     assert!(capability_host_compatibility_error(&entry, &support).is_none());
     support.hook_features.clear();
     assert!(capability_host_compatibility_error(&entry, &support)
-        .is_some_and(|message| message.contains("Hook")));
+        .is_some_and(|message| message.contains("Otter")));
 }
 
 #[test]

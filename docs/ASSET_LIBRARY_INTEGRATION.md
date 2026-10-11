@@ -2,7 +2,7 @@
 
 This document defines the target integration between Loom and the independent
 AssetLibrary service: catalog reads, authenticated downloads, package
-verification, atomic installation, Hook publication, and InstallReceipt
+verification, atomic installation, Otter publication, and InstallReceipt
 synchronization. It is the implementation contract for the next Loom task; it
 does not claim that the adapter is already wired into `loom-daemon` or Desktop.
 
@@ -15,7 +15,7 @@ Authoritative references:
 - [AssetLibrary OpenAPI](https://github.com/aiaimimi0920/AssetLibrary/blob/main/contracts/openapi/openapi.yaml)
 - [download and Edge contract](https://github.com/aiaimimi0920/AssetLibrary/blob/main/docs/DOWNLOAD_SEARCH_EDGE.md)
 - [Loom client and installation contract](https://github.com/aiaimimi0920/AssetLibrary/blob/main/docs/LOOM_CLIENT_AND_PUBLISHER_CLI.md)
-- [Hook-side integration guide](https://github.com/aiaimimi0920/Hook/blob/main/docs/ASSET_LIBRARY_INTEGRATION.md)
+- [Otter-side integration guide](https://github.com/aiaimimi0920/Otter/blob/main/docs/ASSET_LIBRARY_INTEGRATION.md)
 
 ## Current status and non-goals
 
@@ -235,7 +235,7 @@ The body is:
   "receipt_public_key_base64": "<ephemeral Ed25519 public key>",
   "host": {
     "loom_version": "<current Loom version>",
-    "hook_version": "<current detected Hook semantic version>",
+    "otter_version": "<current detected Otter semantic version>",
     "platform": "windows-x64",
     "loom_capability_api": {"version":"1.0","features":[]},
     "hook_extension_api": {"version":"1.0","features":[]},
@@ -250,7 +250,7 @@ The body is:
 
 The example values are illustrative. The implementation must derive versions,
 features, nodes, and frameworks from live registries. Both product version fields
-must be valid semantic versions. If the paired Hook version cannot be determined,
+must be valid semantic versions. If the paired Otter version cannot be determined,
 fail host-profile construction rather than inventing compatibility. Do not
 advertise support merely to pass compatibility. Framework IDs are canonical
 `publisher/id`, and `ready` reflects current readiness rather than installation
@@ -293,7 +293,7 @@ Before calling Loom's install target, verify all of:
 - trusted publisher-key fingerprint and Ed25519 signature;
 - strict Art or Capability manifest shape;
 - publisher/package identity, kind, version, permissions, and entrypoint;
-- platform, Loom/Hook API versions, required features, Surface nodes, and
+- platform, Loom/Otter API versions, required features, Surface nodes, and
   framework readiness.
 
 Do not weaken validation based on package popularity, official-looking names, a
@@ -310,7 +310,7 @@ Map AssetLibrary's verified package into the existing Loom control plane:
 ```
 
 Installation must use the existing immutable-version, active-pointer, registry,
-lock, lifecycle, and recovery model. It must never write into the Loom or Hook
+lock, lifecycle, and recovery model. It must never write into the Loom or Otter
 source repository.
 
 The AssetLibrary client calls a Loom-owned `InstallTarget` transaction:
@@ -328,7 +328,7 @@ Required semantics:
 - `prepare` securely extracts immutable staged content and does not change the
   active version;
 - `commit` atomically activates the new version while retaining the old version;
-- post-commit checks prove registry/runtime behavior and that the Hook protocol
+- post-commit checks prove registry/runtime behavior and that the Otter protocol
   projection can be generated and validated;
 - `finalize` removes staging and retained backup only after checks and receipt
   signing succeed;
@@ -344,19 +344,19 @@ package kind, so do not invent a framework download URL from its catalog.
 
 After activation:
 
-- Art packages enter Loom's tool registry and are exposed to Hook through
+- Art packages enter Loom's tool registry and are exposed to Otter through
   `loom.hook.v1` `ArtCapability` metadata;
 - Capability packages enter Loom's capability registry and are projected as a
   `loom.extension.v1` contribution snapshot;
-- Hook receives digest-bound trust and permission-grant metadata, not a package
+- Otter receives digest-bound trust and permission-grant metadata, not a package
   directory or executable;
 - all actual Art/Capability execution remains in Loom and produces normal durable
   run evidence.
 
 The local install result is not successful until the active registry can reload
-and the relevant Hook protocol projection validates. A live Hook acknowledgement
-is additionally required when Hook initiated the install; Loom Desktop installs
-must not otherwise require Hook to be running.
+and the relevant Otter protocol projection validates. A live Otter acknowledgement
+is additionally required when Otter initiated the install; Loom Desktop installs
+must not otherwise require Otter to be running.
 
 ### 8. Sign and synchronize the InstallReceipt
 
@@ -398,7 +398,7 @@ key. A rejected receipt remains explicitly rejected for user/operator handling.
 
 This is short-lived preauthorized continuation, not indefinite offline trust.
 
-## Errors exposed to Desktop and Hook
+## Errors exposed to Desktop and Otter
 
 The native adapter should normalize failures into bounded fields such as:
 
@@ -447,7 +447,7 @@ Choose one reviewed distribution mechanism:
 
 Whichever mechanism is selected, CI must detect OpenAPI/schema drift and run the
 AssetLibrary client contract fixtures. A passing upstream P7 suite alone does not
-prove Loom's `InstallTarget`, registries, UI bridge, or Hook publication.
+prove Loom's `InstallTarget`, registries, UI bridge, or Otter publication.
 
 ## Local full-flow verification
 
@@ -472,9 +472,9 @@ against the P7 harness and proves:
 2. exact host-profile negotiation;
 3. clean and resumed downloads, corruption rejection, cancellation, and expiry;
 4. Art install, active registry reload, execution, upgrade, and rollback;
-5. Capability install and digest/trust/grant-bound Hook snapshot;
+5. Capability install and digest/trust/grant-bound Otter snapshot;
 6. pending receipt recovery after Account/API restoration;
-7. absence of secrets in daemon/Desktop/Hook logs and events;
+7. absence of secrets in daemon/Desktop/Otter logs and events;
 8. no writes outside configured Loom control-plane and cache roots.
 
 ## Implementation order and acceptance gate
@@ -487,7 +487,7 @@ reviewable slices without changing the final ownership model:
 3. implement Account Service bearer injection at the native boundary;
 4. adapt verified packages to Loom's Art and Capability installation targets;
 5. expose bounded progress, cancellation, safe errors, and installed state;
-6. publish active results through existing Hook protocols;
+6. publish active results through existing Otter protocols;
 7. integrate receipt queue/retry and restart recovery;
 8. add Neuro-style store UI only after the service boundary is tested;
 9. pass focused unit/contract tests, the cross-process runtime gate, formatter,

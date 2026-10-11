@@ -32,7 +32,7 @@ fn confirmation_is_persisted_identity_bound_and_queues_only_after_approval() {
     let attachment = store
         .attach(
             &record.descriptor.instance_id,
-            "hook-node:stock",
+            "otter-node:stock",
             "device-000-local",
             None,
         )
@@ -66,7 +66,7 @@ fn confirmation_is_persisted_identity_bound_and_queues_only_after_approval() {
     assert_eq!(ack.status, SurfaceActionStatus::AwaitingConfirmation);
     assert!(store.pending_events().is_empty());
     assert_eq!(request.device_id, "device-000-local");
-    assert_eq!(request.hook_node_id, "hook-node:stock");
+    assert_eq!(request.hook_node_id, "otter-node:stock");
     drop(store);
 
     let mut store = SurfaceInstanceStore::new(&path).expect("reload confirmation store");
@@ -288,7 +288,7 @@ fn patch_requires_current_revision_and_updates_recoverable_snapshot() {
     let attachment = store
         .attach(
             &record.descriptor.instance_id,
-            "hook-node:1",
+            "otter-node:1",
             "device:1",
             None,
         )

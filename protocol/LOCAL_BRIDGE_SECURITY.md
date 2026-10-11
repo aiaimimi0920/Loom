@@ -1,8 +1,8 @@
 # Native local bridge transport
 
 Implementation status: the transport primitive, daemon lifecycle publication,
-and Hook native callers/extension adapter are implemented on the development
-branch. Hook browser preview is local-only. Loom Desktop now uses a fixed native
+and Otter native callers/extension adapter are implemented on the development
+branch. Otter browser preview is local-only. Loom Desktop now uses a fixed native
 subscription. Operational probes use a native TLS test adapter; packaged applications
 and their operational smokes must still be jointly verified before this
 document establishes an end-to-end production security guarantee.
@@ -43,7 +43,7 @@ access; that threat is outside this discovery boundary.
    A logged proof cannot be replayed on a different TLS connection.
 5. Reject invalid token/instance, browser `Origin`, non-root path and queries
    before upgrading or dispatching any application message.
-6. The existing Hook/extension protocol handshakes follow on this authenticated
+6. The existing Otter/extension protocol handshakes follow on this authenticated
    socket. They remain protocol negotiation, not a substitute for authentication.
 
 The combined TLS/upgrade handshake has one three-second absolute deadline;
@@ -82,17 +82,17 @@ connection owns a TCP interrupt handle; stop shuts down all sockets before joini
 workers, including authenticated peers holding an incomplete fragmented message.
 This stop guarantee is not an application message lifetime deadline.
 
-Hook and Loom Desktop WebViews use narrow native IPC, not browser WebSockets or
+Otter and Loom Desktop WebViews use narrow native IPC, not browser WebSockets or
 an arbitrary URL proxy. Native owns persistent sockets and credentials. IPC
 must allowlist methods, bound pending work and payloads, and fence late events
-by connection epoch. Hook's disabled startup integration policy must reject
+by connection epoch. Otter's disabled startup integration policy must reject
 both long-lived listeners and direct one-shot connection entry points.
 
 Loom Desktop reads `%APPDATA%/Neuro/capabilities/loom.json` in native code.
 Its main-window-only read command exposes connection state and decimal-string
 epoch/revision counters, never discovery credentials or arbitrary bridge methods.
-One owned worker authenticates, confirms the Hook handshake, then subscribes only
-to workflow/capability updates. Hook handshake and subscription confirmations each
+One owned worker authenticates, confirms the Otter handshake, then subscribes only
+to workflow/capability updates. Otter handshake and subscription confirmations each
 have a three-second absolute deadline. Live reads use 250 ms operation deadlines;
 an interrupt handle and joined worker precede daemon shutdown. These are per-read
 bounds, not a total lifetime bound for an entire fragmented WebSocket message.
@@ -107,7 +107,7 @@ payload limits and one absolute receive deadline across all fragments. The paren
 owns the process, closes stdin and uses bounded wait/termination on failures.
 No probe executable or arbitrary proxy is added to the user-facing desktop package.
 
-Mixed versions fail closed: no anonymous/plaintext fallback. Update Hook and
+Mixed versions fail closed: no anonymous/plaintext fallback. Update Otter and
 Loom together; rollback requires rolling both applications back as a pair and
 acknowledging that the older transport does not supply this security boundary.
 User workspaces and stored assets are unchanged by the transport migration.

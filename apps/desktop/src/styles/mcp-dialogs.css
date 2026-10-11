@@ -269,9 +269,9 @@
   .framework-dialog input,
   .framework-dialog select,
   .framework-dialog textarea,
-  .hook-canvas-workflow-select select,
-  .hook-canvas-param-expose__value,
-  .hook-canvas-rename-dialog__input
+  .otter-canvas-workflow-select select,
+  .otter-canvas-param-expose__value,
+  .otter-canvas-rename-dialog__input
 ) {
   color-scheme: light;
 }
@@ -282,9 +282,9 @@
     .framework-dialog input,
     .framework-dialog select,
     .framework-dialog textarea,
-    .hook-canvas-workflow-select select,
-    .hook-canvas-param-expose__value,
-    .hook-canvas-rename-dialog__input
+    .otter-canvas-workflow-select select,
+    .otter-canvas-param-expose__value,
+    .otter-canvas-rename-dialog__input
   ) {
     color-scheme: light;
   }

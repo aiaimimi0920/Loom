@@ -1,7 +1,7 @@
 # C1：H.264 连续帧合同
 
 本文件定义 C1 的中继数据边界，跟踪 [#91](https://github.com/aiaimimi0920/Loom/issues/91)。
-当前已实现 payload 校验、存储/游标连续性及 Loom 端显式协商；Hook 产品尚未 offer 新 profile。
+当前已实现 payload 校验、存储/游标连续性及 Loom 端显式协商；Otter 产品尚未 offer 新 profile。
 已有 `loom.live.v1`、`loom.live.jpeg.v1` 明确拒绝 codec 2，不会将其当图片发送给旧端。
 
 ## Wire 与资源边界
@@ -30,8 +30,8 @@
 
 1. 本增量先部署被动校验和连续性规则；正常 JPEG/raw 读写无需迁移，不改保存数据。
 2. Loom 以显式 `loom.live.h264.v1` 选择视频 profile，携带 H.264 或 JPEG/raw 回退；
-   旧 profile 选择逻辑不变。Hook 必须在 encoder/decoder 产品 owner 就绪后才 offer 它。
-3. Hook decoder 在本地 latest-image 缓存之前按顺序消费 AU，只允许丢已解码图像；
+   旧 profile 选择逻辑不变。Otter 必须在 encoder/decoder 产品 owner 就绪后才 offer 它。
+3. Otter decoder 在本地 latest-image 缓存之前按顺序消费 AU，只允许丢已解码图像；
    重连、epoch、权限撤销、取消和尺寸变化需重置 decoder 并等待独立 IDR。
 4. 完成一源一收、late join、overflow 恢复、旧端回退与停止后再关闭 C1。
 
@@ -72,5 +72,5 @@ protocol 测试覆盖语法、预算与 keyframe 标志；daemon 测试覆盖源
 profile 都在入库前关闭 H.264 源连接。协商回归覆盖真实 socket 的视频/图片切换、旧端加入、
 sticky fallback、stale control 和墙在 H.264 后等待图片；状态测试覆盖短暂兼容需求导致
 在途 AU 丢失后的 IDR 恢复，以及 pending 限频和 lease 清理。
-语法夹具不冒充可解码视频；真实硬件像素证据由 Hook 的 WGC 编码测试提供，Hook 产品源端
+语法夹具不冒充可解码视频；真实硬件像素证据由 Otter 的 WGC 编码测试提供，Otter 产品源端
 控制接线、网络 decoder/呈现和配套独立 release 验收仍待完成。

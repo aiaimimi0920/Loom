@@ -8,16 +8,16 @@ pub(super) fn application_log_dir(app: &str) -> Result<PathBuf, String> {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| desktop_control_plane_root().join("logs"))),
-        "hook" => Ok(std::env::var_os("HOOK_LOG_DIR")
+        "hook" => Ok(loom_local_channel::brand_env::var_os("HOOK_LOG_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os("LOCALAPPDATA")
                     .filter(|value| !value.is_empty())
                     .map(PathBuf::from)
-                    .map(|root| root.join("Hook").join("logs"))
+                    .map(|root| root.join("Otter").join("logs"))
             })
-            .unwrap_or_else(|| std::env::temp_dir().join("Hook").join("logs"))),
+            .unwrap_or_else(|| std::env::temp_dir().join("Otter").join("logs"))),
         _ => Err("不支持的应用诊断目标。".to_owned()),
     }
 }
@@ -58,10 +58,10 @@ pub(super) fn application_diagnostics(app: &str) -> Result<ApplicationDiagnostic
             newest_log_file(&log_dir),
         ),
         "hook" => {
-            let log_file = log_dir.join("hook-runtime.log");
+            let log_file = log_dir.join("otter-runtime.log");
             (
-                "Hook",
-                std::env::var("LOOM_HOOK_APP_VERSION")
+                "Otter",
+                loom_local_channel::brand_env::var("LOOM_HOOK_APP_VERSION")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| HOOK_COMPANION_VERSION.to_owned()),
@@ -212,7 +212,7 @@ pub(super) fn open_url_in_default_browser(url: &str) -> Result<(), String> {
 pub(super) fn open_external_url(url: String) -> Result<(), String> {
     let url = url.trim();
     if !url.starts_with("https://") || !is_allowed_repository_url(url) {
-        return Err("只允许打开 Loom 或 Hook 的官方仓库地址。".to_owned());
+        return Err("只允许打开 Loom 或 Otter 的官方仓库地址。".to_owned());
     }
     open_url_in_default_browser(url)
 }

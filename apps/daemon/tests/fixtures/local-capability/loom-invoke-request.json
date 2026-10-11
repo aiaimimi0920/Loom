@@ -5,7 +5,7 @@
   "input": {
     "goal": "release smoke",
     "constraints": [
-      "Hook Talk Loom"
+      "Otter Talk Loom"
     ]
   }
 }

@@ -1,8 +1,8 @@
 # Projection groups and recipient policy
 
 Status: persistent administrator API and shared/offline-peer enforcement implemented.
-Desktop group/rule editing and Hook current-Loom receiver migration are implemented.
-Hook group target selection remains in development.
+Desktop group/rule editing and Otter current-Loom receiver migration are implemented.
+Otter group target selection remains in development.
 Official user authentication is reserved, not implemented.
 
 ## Administrator API
@@ -12,7 +12,7 @@ It also returns targets (approved keyed local devices and verified peer director
 entries) and peerDirectory.status (complete, partial, busy or unavailable).
 Directory data is advisory; unavailable members are preserved in saved settings.
 PUT on the same path replaces groups and rules using expectedRevision. Both routes
-require the local administrator credential; paired Hook credentials cannot read or
+require the local administrator credential; paired Otter credentials cannot read or
 write the administrative document. Writes require all rule targets to be approved,
 enabled keyed devices on this Loom. Unknown fields and invalid references fail.
 
@@ -59,9 +59,9 @@ send: create and peer offer continue to recheck live recipient authority.
 
 The friends field is {status: "unavailable", reason:
 "official_account_not_implemented"}; it does not represent a signed-in account.
-Hook now consumes this directory for device/group multiselect, persistent source
+Otter now consumes this directory for device/group multiselect, persistent source
 bindings and bounded batch creation. Successful saved bindings are not recreated
-on partial retry. Hook persists the signed v1 invitation and original PNG before
+on partial retry. Otter persists the signed v1 invitation and original PNG before
 targeted creation, then reconciles that projection ID through source read before
 retrying. Shared-Loom replay errors are not treated as new invitations. Offline
 source read uses the saved local route; retries never regenerate the signed identity.
@@ -71,7 +71,7 @@ checks, and is separate from ordinary workspace persistence.
 Shared-Loom targeted create checks the recipient policy. Pending invitation inspect
 and accept recheck it. Shared target discovery evaluates the current source identity
 and hides rejected recipients. Shared and offline inbox entries carry receivePolicy
-(auto or confirm); rejected pending invitations are omitted. Hook follows this
+(auto or confirm); rejected pending invitations are omitted. Otter follows this
 per-invitation decision instead of overriding it with its legacy local auto setting.
 Absent receivePolicy remains readable from older Looms using the legacy setting.
 
@@ -87,11 +87,11 @@ A newly rejected pending invitation cannot be accepted while rejected, including
 by using an old confirmation dialog. A policy change may hide pending invitations;
 this does not manufacture a displayed receipt or remove the sender's source sticker.
 
-Hook's disabled presence still means this Hook is not participating in delivery.
-Loom cannot deliver to a stopped or non-polling Hook. Hook follows its current Loom
+Otter's disabled presence still means this Otter is not participating in delivery.
+Loom cannot deliver to a stopped or non-polling Otter. Otter follows its current Loom
 automatically; only participation pause/resume remains local. Fresh installs follow
 Loom, explicitly saved legacy disabled settings migrate to pause, and legacy auto
-does not override the authoritative invitation decision. Hook clears stale manual
+does not override the authoritative invitation decision. Otter clears stale manual
 origins before asynchronous context discovery and fails closed on context errors.
 
 ## Storage and bounds

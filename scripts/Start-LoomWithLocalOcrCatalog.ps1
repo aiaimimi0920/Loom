@@ -157,7 +157,7 @@ try {
     $env:LOOM_CONTROL_PLANE_ROOT = $controlRoot
     $loom = Start-Process -FilePath $loomExe -WorkingDirectory $packageRoot -PassThru
     Write-Host "Loom OCR test catalog: $env:LOOM_CAPABILITY_CATALOG_URL"
-    Write-Host "Keep this window open while testing. Start Hook, then open Loom Settings > Capability Extensions."
+    Write-Host "Keep this window open while testing. Start Otter, then open Loom Settings > Capability Extensions."
 
     $accept = $listener.AcceptTcpClientAsync()
     while (-not $loom.HasExited) {

@@ -41,9 +41,9 @@ try {
         $client = [pscustomobject]@{ State = 'Open' }
         $caught = $null
         try {
-            if ($phase -eq 'connect') { $null = New-LoomHookBridgeWebSocket -Port 1234 -ManifestPath 'fixture' -ProbeExecutable 'fixture' -BudgetMs 100 }
-            elseif ($phase -like '*-send') { Send-LoomHookBridgeWebSocketJson -Client $client -Json '{}' -BudgetMs 100 }
-            else { $null = Receive-LoomHookBridgeWebSocketJson -Client $client -BudgetMs 100 }
+            if ($phase -eq 'connect') { $null = New-LoomOtterBridgeWebSocket -Port 1234 -ManifestPath 'fixture' -ProbeExecutable 'fixture' -BudgetMs 100 }
+            elseif ($phase -like '*-send') { Send-LoomOtterBridgeWebSocketJson -Client $client -Json '{}' -BudgetMs 100 }
+            else { $null = Receive-LoomOtterBridgeWebSocketJson -Client $client -BudgetMs 100 }
         } catch { $caught = $_; Save-LoomPluginBoundaryDiagnostic -EvidencePath $root -Failure $_ }
         Assert-Diagnostic ($null -ne $caught) "$phase did not fail."
         $text = [IO.File]::ReadAllText($diagnosticPath)
@@ -61,14 +61,14 @@ try {
     $script:messages.Enqueue([pscustomobject]@{ method = 'loom.hook.art.progress' })
     $script:messages.Enqueue([pscustomobject]@{ protocolVersion = 'loom.hook.v1'; requestId = 'other'; status = 'succeeded' })
     $script:messages.Enqueue([pscustomobject]@{ protocolVersion = 'loom.hook.v1'; requestId = 'execute:third-party-plugin'; status = 'succeeded' })
-    $client = New-LoomHookBridgeWebSocket -Port 1234 -ManifestPath 'fixture' -ProbeExecutable 'fixture'
+    $client = New-LoomOtterBridgeWebSocket -Port 1234 -ManifestPath 'fixture' -ProbeExecutable 'fixture'
     Set-LoomPluginBoundaryPhase -Phase 'execute-send'
-    Send-LoomHookBridgeWebSocketJson -Client $client -Json '{}'
+    Send-LoomOtterBridgeWebSocketJson -Client $client -Json '{}'
     Assert-Diagnostic ($script:sends -eq 1) 'Send was duplicated or omitted.'
     Set-LoomPluginBoundaryPhase -Phase 'execute-receive'
-    $result = Receive-LoomHookBridgeExecutionResult -Client $client
+    $result = Receive-LoomOtterBridgeExecutionResult -Client $client
     Assert-Diagnostic ($result.requestId -eq 'execute:third-party-plugin' -and $script:PluginBoundaryDiagnostic.messages -eq 3) 'Unrelated event filtering changed.'
-    Close-LoomHookBridgeWebSocket -Client $client
+    Close-LoomOtterBridgeWebSocket -Client $client
     Assert-Diagnostic ($client.State -eq 'Closed') 'Facade did not close transport.'
     Reset-LoomPluginBoundaryDiagnostic
     try { throw ('private-payload' * 10000) } catch { Save-LoomPluginBoundaryDiagnostic -EvidencePath $root -Failure $_ }

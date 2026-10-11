@@ -35,7 +35,7 @@ fn route_capability_plugins(
     control_plane_root: &Path,
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Option<Result<(u16, String)>> {
     const PREFIX: &str = "/v1/capability-plugins/";
     if route_path != "/v1/capability-plugins" && !route_path.starts_with(PREFIX) {
@@ -169,13 +169,13 @@ fn route_capability_plugins(
     if response.as_ref().is_ok_and(|(status, _)| *status < 400) {
         if runtime.generation() != previous_generation {
             if let Ok(snapshot) = runtime.contribution_snapshot() {
-                broadcast_hook_bridge_json(hook_bridge, extension_snapshot_event(snapshot));
+                broadcast_otter_bridge_json(hook_bridge, extension_snapshot_event(snapshot));
             }
         }
         if updates_capability_inventory {
-            // Hook refreshes the declarative capability catalog on this generic
+            // Otter refreshes the declarative capability catalog on this generic
             // event. Installation must emit it even before a plugin is enabled.
-            broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+            broadcast_otter_bridge_json(hook_bridge, capabilities_updated_event());
         }
     }
     Some(response)

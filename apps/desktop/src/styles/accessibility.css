@@ -18,7 +18,7 @@
   .app-toast,
   .app-confirm-dialog,
   .settings-section__body,
-  .hook-shortcut-list,
+  .otter-shortcut-list,
   .mcp-busy-indicator {
     animation: none !important;
   }
@@ -29,7 +29,7 @@
     outline-color: Highlight;
   }
 
-  .hook-canvas-edges path.hook-canvas-edge--active {
+  .otter-canvas-edges path.otter-canvas-edge--active {
     filter: none;
     stroke: Highlight;
   }

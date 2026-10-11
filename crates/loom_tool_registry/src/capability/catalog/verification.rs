@@ -270,10 +270,10 @@ pub fn capability_host_compatibility_error(
     )
     .or_else(|| {
         if !host.hook_connected {
-            Some("需要连接支持能力扩展的 Hook".to_owned())
+            Some("需要连接支持能力扩展的 Otter".to_owned())
         } else {
             requirement_error(
-                "Hook",
+                "Otter",
                 &compatibility.hook_extension_api,
                 &host.hook_api_version,
                 &host.hook_features,

@@ -2,7 +2,7 @@
 param(
     [string]$DaemonExecutable = ".\target\debug\loom-daemon.exe",
     [string]$EvidenceRoot = ".\target\plugin-boundary-smoke",
-    [string]$HookRepository = "",
+    [string]$OtterRepository = "",
     [string]$NativeBridgeProbeExecutable = ".\target\debug\examples\bridge_probe.exe"
 )
 
@@ -32,7 +32,7 @@ function Resolve-RepoPath {
     return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
 }
 
-function Resolve-HookRepository {
+function Resolve-OtterRepository {
     param(
         [string]$LoomRepository,
         [string]$ExplicitPath
@@ -42,18 +42,18 @@ function Resolve-HookRepository {
     if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
         $candidates += Resolve-RepoPath -Path $ExplicitPath
     } else {
-        $candidates += [System.IO.Path]::GetFullPath((Join-Path $LoomRepository "..\Hook"))
+        $candidates += [System.IO.Path]::GetFullPath((Join-Path $LoomRepository "..\Otter"))
 
         $superproject = (& git -C $LoomRepository rev-parse --show-superproject-working-tree 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($superproject)) {
-            $candidates += [System.IO.Path]::GetFullPath((Join-Path $superproject "Hook"))
+            $candidates += [System.IO.Path]::GetFullPath((Join-Path $superproject "Otter"))
         }
 
         $commonGitDir = (& git -C $LoomRepository rev-parse --path-format=absolute --git-common-dir 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commonGitDir)) {
             $submoduleMatch = [regex]::Match($commonGitDir, '^(?<root>.+)[\\/]\.git[\\/]modules[\\/].+$')
             if ($submoduleMatch.Success) {
-                $candidates += [System.IO.Path]::GetFullPath((Join-Path $submoduleMatch.Groups['root'].Value "Hook"))
+                $candidates += [System.IO.Path]::GetFullPath((Join-Path $submoduleMatch.Groups['root'].Value "Otter"))
             }
         }
     }
@@ -69,10 +69,10 @@ function Resolve-HookRepository {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
-        throw "Explicit Hook repository could not be resolved. Checked: $($candidates -join ', ')"
+        throw "Explicit Otter repository could not be resolved. Checked: $($candidates -join ', ')"
     }
     # Loom is also released as a standalone repository. The boundary smoke can validate Loom's
-    # third-party lifecycle without a sibling checkout; when Hook is present, retain the stronger
+    # third-party lifecycle without a sibling checkout; when Otter is present, retain the stronger
     # source-integrity assertion below.
     return $null
 }
@@ -205,7 +205,7 @@ function Stop-TestDaemon {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
-$hookRoot = Resolve-HookRepository -LoomRepository $repoRoot -ExplicitPath $HookRepository
+$otterRoot = Resolve-OtterRepository -LoomRepository $repoRoot -ExplicitPath $OtterRepository
 $daemonPath = Resolve-RepoPath -Path $DaemonExecutable
 $nativeProbePath = Resolve-RepoPath -Path $NativeBridgeProbeExecutable
 $evidencePath = Resolve-RepoPath -Path $EvidenceRoot
@@ -230,14 +230,14 @@ $qualifiedFrameworkId = "$publisherId/$frameworkId"
 $artId = "third-party-image-echo"
 $qualifiedArtId = "$publisherId/$artId"
 $loomBefore = Get-GitStateFingerprint -Repository $repoRoot
-$hookBefore = if ($null -ne $hookRoot) {
-    Get-GitStateFingerprint -Repository $hookRoot
+$hookBefore = if ($null -ne $otterRoot) {
+    Get-GitStateFingerprint -Repository $otterRoot
 } else {
     $null
 }
 $daemon = $null
-$hookBridgeClient = $null
-$hookBridgeRunning = $false
+$otterBridgeClient = $null
+$otterBridgeRunning = $false
 $succeeded = $false
 $primaryFailure = $null
 Reset-LoomPluginBoundaryDiagnostic
@@ -290,7 +290,7 @@ $response = [ordered]@{
     $artManifest = [ordered]@{
         id = $artId
         name = "Third-party Image Echo"
-        description = "An Art package generated outside Loom and Hook source."
+        description = "An Art package generated outside Loom and Otter source."
         enabled = $true
         execution = [ordered]@{
             type = "framework_art"
@@ -371,21 +371,21 @@ $response = [ordered]@{
     Assert-True ([string]$upgradedExecution.result.value -eq "plugin:hello:2.0.0") "Third-party framework upgrade did not replace runtime behavior."
 
     $capabilities = Invoke-LoomJson -Method Get -Url "$baseUrl/v1/tools" -Body $null
-    $hookCapability = @($capabilities.tools | Where-Object { [string]$_.id -eq $artId -and [bool]$_.enabled }) | Select-Object -First 1
-    Assert-True ($null -ne $hookCapability) "Hook-facing enabled Art discovery did not include the third-party Art."
-    Assert-True ([string]$hookCapability.execution.type -eq "framework_art") "Hook-facing capability did not preserve generic framework_art execution metadata."
+    $otterCapability = @($capabilities.tools | Where-Object { [string]$_.id -eq $artId -and [bool]$_.enabled }) | Select-Object -First 1
+    Assert-True ($null -ne $otterCapability) "Otter-facing enabled Art discovery did not include the third-party Art."
+    Assert-True ([string]$otterCapability.execution.type -eq "framework_art") "Otter-facing capability did not preserve generic framework_art execution metadata."
 
-    $hookBridgeStarted = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/start" -Body @{ port = 0 }
-    Assert-True ([bool]$hookBridgeStarted.running) "Hook Bridge did not start for the third-party Art."
-    $hookBridgeRunning = $true
+    $otterBridgeStarted = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/start" -Body @{ port = 0 }
+    Assert-True ([bool]$otterBridgeStarted.running) "Otter Bridge did not start for the third-party Art."
+    $otterBridgeRunning = $true
     Set-LoomPluginBoundaryPhase -Phase "connect"
-    $hookBridgeClient = New-LoomHookBridgeWebSocket -Port ([int]$hookBridgeStarted.port) `
+    $otterBridgeClient = New-LoomOtterBridgeWebSocket -Port ([int]$otterBridgeStarted.port) `
         -ManifestPath (Join-Path $env:LOOM_CAPABILITY_MANIFEST_DIR 'loom.json') -ProbeExecutable $nativeProbePath
     Set-LoomPluginBoundaryPhase -Phase "subscribe-send"
-    Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:third-party-plugin","events":["loom.hook.workflow.instantiated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.result","loom.hook.art.failure"]}}'
+    Send-LoomOtterBridgeWebSocketJson -Client $otterBridgeClient -Json '{"method":"loom.hook.subscribe","params":{"requestId":"subscribe:third-party-plugin","events":["loom.hook.workflow.instantiated","loom.hook.art.ack","loom.hook.art.progress","loom.hook.art.result","loom.hook.art.failure"]}}'
     Set-LoomPluginBoundaryPhase -Phase "subscribe-receive"
-    $subscribed = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
-    Assert-True ([string]$subscribed.protocolVersion -eq "loom.hook.v1" -and [string]$subscribed.status -eq "succeeded") "Hook Bridge did not subscribe to Art node events."
+    $subscribed = Receive-LoomOtterBridgeWebSocketJson -Client $otterBridgeClient
+    Assert-True ([string]$subscribed.protocolVersion -eq "loom.hook.v1" -and [string]$subscribed.status -eq "succeeded") "Otter Bridge did not subscribe to Art node events."
     Reset-LoomPluginBoundaryDiagnostic
     $instantiated = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/workflows/instantiate" -Body @{
         workflowId = "third-party-plugin-smoke"
@@ -395,12 +395,12 @@ $response = [ordered]@{
         )
         edges = @()
     }
-    Assert-True ([string]$instantiated.status -eq "succeeded") "Third-party Hook node instantiation failed."
+    Assert-True ([string]$instantiated.status -eq "succeeded") "Third-party Otter node instantiation failed."
     Set-LoomPluginBoundaryPhase -Phase "instantiation-receive"
-    $instantiatedBroadcast = Receive-LoomHookBridgeWebSocketJson -Client $hookBridgeClient
-    Assert-True ([string]$instantiatedBroadcast.method -eq "loom.hook.workflow.instantiated") "Third-party Hook node broadcast was not emitted."
-    Assert-True ([string]$instantiatedBroadcast.params.nodes[0].data.artId -eq $qualifiedArtId) "Hook node broadcast lost the dynamic Art id."
-    $hookExecutionRequest = [ordered]@{
+    $instantiatedBroadcast = Receive-LoomOtterBridgeWebSocketJson -Client $otterBridgeClient
+    Assert-True ([string]$instantiatedBroadcast.method -eq "loom.hook.workflow.instantiated") "Third-party Otter node broadcast was not emitted."
+    Assert-True ([string]$instantiatedBroadcast.params.nodes[0].data.artId -eq $qualifiedArtId) "Otter node broadcast lost the dynamic Art id."
+    $otterExecutionRequest = [ordered]@{
         method = "loom.hook.art.execute"
         params = [ordered]@{
             protocolVersion = "loom.hook.v1"
@@ -416,18 +416,18 @@ $response = [ordered]@{
         }
     }
     Set-LoomPluginBoundaryPhase -Phase "execute-send"
-    Send-LoomHookBridgeWebSocketJson -Client $hookBridgeClient -Json ($hookExecutionRequest | ConvertTo-Json -Depth 20 -Compress)
+    Send-LoomOtterBridgeWebSocketJson -Client $otterBridgeClient -Json ($otterExecutionRequest | ConvertTo-Json -Depth 20 -Compress)
     Set-LoomPluginBoundaryPhase -Phase "execute-receive"
-    $hookExecution = Receive-LoomHookBridgeExecutionResult -Client $hookBridgeClient
-    Assert-True ([string]$hookExecution.status -eq "succeeded") "Third-party Art failed through the Hook Bridge."
-    $hookOutput = @($hookExecution.data.outputs.PSObject.Properties | ForEach-Object { $_.Value })[0]
-    Assert-True ([string]$hookOutput.kind -eq "value") "Hook Bridge did not return the formal value output kind."
-    Assert-True (($hookOutput.value | ConvertTo-Json -Depth 20 -Compress) -like '*hook:hello:2.0.0*') "Hook Bridge did not execute the upgraded third-party framework and Art content."
+    $otterExecution = Receive-LoomOtterBridgeExecutionResult -Client $otterBridgeClient
+    Assert-True ([string]$otterExecution.status -eq "succeeded") "Third-party Art failed through the Otter Bridge."
+    $otterOutput = @($otterExecution.data.outputs.PSObject.Properties | ForEach-Object { $_.Value })[0]
+    Assert-True ([string]$otterOutput.kind -eq "value") "Otter Bridge did not return the formal value output kind."
+    Assert-True (($otterOutput.value | ConvertTo-Json -Depth 20 -Compress) -like '*hook:hello:2.0.0*') "Otter Bridge did not execute the upgraded third-party framework and Art content."
     Reset-LoomPluginBoundaryDiagnostic
-    Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
-    $hookBridgeClient = $null
+    Close-LoomOtterBridgeWebSocket -Client $otterBridgeClient
+    $otterBridgeClient = $null
     Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
-    $hookBridgeRunning = $false
+    $otterBridgeRunning = $false
 
     $disabledFramework = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/frameworks/$frameworkId/disable" -Body $null
     Assert-True (-not [bool]$disabledFramework.framework.ready) "Third-party framework disable did not make it unready."
@@ -473,9 +473,9 @@ $response = [ordered]@{
 
     $loomAfter = Get-GitStateFingerprint -Repository $repoRoot
     Assert-True ($loomBefore -eq $loomAfter) "Third-party smoke changed Loom source state."
-    if ($null -ne $hookRoot) {
-        $hookAfter = Get-GitStateFingerprint -Repository $hookRoot
-        Assert-True ($hookBefore -eq $hookAfter) "Third-party smoke changed Hook source state."
+    if ($null -ne $otterRoot) {
+        $hookAfter = Get-GitStateFingerprint -Repository $otterRoot
+        Assert-True ($hookBefore -eq $hookAfter) "Third-party smoke changed Otter source state."
     }
 
     $succeeded = $true
@@ -486,15 +486,15 @@ $response = [ordered]@{
         thirdPartyFrameworkCompiledOutsideRepository = $true
         frameworkUpgraded = $true
         frameworkLockRefreshRequired = $true
-        hookCapabilityDiscovered = $true
-        hookNodeInstantiated = $true
-        hookBridgeExecuted = $true
+        otterCapabilityDiscovered = $true
+        otterNodeInstantiated = $true
+        otterBridgeExecuted = $true
         restarted = $true
         frameworkLifecycle = "install-upgrade-disable-enable-uninstall-reinstall"
         artLifecycle = "install-disable-enable-uninstall-reinstall"
         loomSourceChanged = $false
-        hookSourceChanged = $false
-        hookRepositoryChecked = ($null -ne $hookRoot)
+        otterSourceChanged = $false
+        otterRepositoryChecked = ($null -ne $otterRoot)
         frameworkId = $qualifiedFrameworkId
         artId = $qualifiedArtId
     }
@@ -508,9 +508,9 @@ catch {
 }
 finally {
     Complete-LoomPluginBoundaryCleanup -PrimaryFailure $primaryFailure -EvidencePath $evidencePath -Actions @({
-        Close-LoomHookBridgeWebSocket -Client $hookBridgeClient
+        Close-LoomOtterBridgeWebSocket -Client $otterBridgeClient
     }, {
-        if ($hookBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
+        if ($otterBridgeRunning -and $null -ne $daemon -and -not $daemon.HasExited) {
             Invoke-LoomJson -Method Post -Url "$baseUrl/v1/hook-bridge/stop" -Body @{} | Out-Null
         }
     }, {

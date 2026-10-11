@@ -11,7 +11,7 @@ fn route_framework_tools(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     capability_runtime: &SharedCapabilityRuntime,
     capability_resources: &SharedCapabilityResourceBroker,
     device_registry: &SharedDeviceRegistryStore,
@@ -193,7 +193,7 @@ fn route_framework_tools(
             shared_images,
         ),
         ("POST", "/v1/hook-bridge/cache-control") => {
-            broadcast_hook_cache_control(&request.body, hook_bridge)
+            broadcast_otter_cache_control(&request.body, hook_bridge)
         }
         ("GET", "/v1/settings") => get_settings(settings),
         ("PUT", "/v1/settings") => put_settings(&request.body, settings, hook_bridge),

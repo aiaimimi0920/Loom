@@ -6,7 +6,7 @@ use super::*;
 fn application_diagnostics_expose_build_repositories_and_six_character_commits() {
     for (app, repository) in [
         ("loom", "https://github.com/aiaimimi0920/Loom"),
-        ("hook", "https://github.com/aiaimimi0920/Hook"),
+        ("hook", "https://github.com/aiaimimi0920/Otter"),
     ] {
         let diagnostics = application_diagnostics(app).expect("application diagnostics");
         assert_eq!(diagnostics.repository_url.as_deref(), Some(repository));
@@ -105,9 +105,9 @@ fn loom_general_settings_restore_and_apply_close_to_tray() {
 }
 
 #[test]
-fn hook_cache_snapshot_and_clear_only_manage_hook_temporary_files() {
+fn otter_cache_snapshot_and_clear_only_manage_otter_temporary_files() {
     let _guard = ENV_LOCK.lock().expect("env lock");
-    let root = unique_temp_dir("hook-cache");
+    let root = unique_temp_dir("otter-cache");
     let clipboard = root.join("clipboard");
     let app_data = root.join("app-data");
     let image_search = app_data.join("image-search-cache");
@@ -131,10 +131,10 @@ fn hook_cache_snapshot_and_clear_only_manage_hook_temporary_files() {
     std::env::set_var("HOOK_CLIPBOARD_CACHE_DIR", &clipboard);
     std::env::set_var("HOOK_APPDATA_DIR", &app_data);
 
-    let before = hook_cache_snapshot().expect("cache snapshot");
+    let before = otter_cache_snapshot().expect("cache snapshot");
     assert_eq!(
-        read_hook_persisted_cache_settings(),
-        Some(HookCachePreferences {
+        read_otter_persisted_cache_settings(),
+        Some(OtterCachePreferences {
             recycle_bin_max_entries: 50,
             recycle_bin_retention_days: 30,
             temp_cache_max_bytes: 0,
@@ -144,7 +144,7 @@ fn hook_cache_snapshot_and_clear_only_manage_hook_temporary_files() {
     assert_eq!(before.temporary.bytes, 12);
     assert_eq!(before.recycle_bin_entries, 2);
     assert_eq!(before.reference_entries, 1);
-    let cleared = clear_hook_cache_blocking("temporary").expect("clear temporary cache");
+    let cleared = clear_otter_cache_blocking("temporary").expect("clear temporary cache");
     assert_eq!(cleared.freed_bytes, 12);
     assert_eq!(cleared.snapshot.temporary.bytes, 0);
     assert!(image_search.join("remote_test.png").is_file());
@@ -166,7 +166,7 @@ fn persisted_cache_settings_ignore_oversized_files() {
         root.join("app-settings.json"),
         vec![b' '; MAX_SETTINGS_FILE_BYTES as usize + 1],
     )
-    .expect("write oversized Hook settings");
+    .expect("write oversized Otter settings");
     let loom_settings = root.join("settings").join("settings.json");
     fs::create_dir_all(loom_settings.parent().expect("settings parent"))
         .expect("create settings dir");
@@ -176,7 +176,7 @@ fn persisted_cache_settings_ignore_oversized_files() {
     )
     .expect("write oversized Loom settings");
 
-    assert_eq!(read_hook_persisted_cache_settings(), None);
+    assert_eq!(read_otter_persisted_cache_settings(), None);
     assert_eq!(read_loom_persisted_cache_settings(), None);
     assert_eq!(read_loom_persisted_general_settings(), None);
 

@@ -6,7 +6,7 @@ fn attach_and_mount_surface(
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
     authenticated_device_id: Option<&str>,
@@ -116,7 +116,7 @@ fn dispose_superseded_surface_attachments(
     hook_node_id: &str,
     device_id: &str,
     surface_instances: &SharedSurfaceInstanceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
     authenticated_device_id: Option<&str>,
@@ -229,7 +229,7 @@ fn put_surface_snapshot(
     body: &str,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_resources: &SharedSurfaceResourceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let snapshot = match serde_json::from_str::<SurfaceSnapshot>(body) {
         Ok(snapshot) => snapshot,
@@ -252,7 +252,7 @@ fn put_surface_snapshot(
             drop(store);
             if let Some(attachment) = instance.attachments.get(&attachment_id) {
                 if let Some(snapshot) = &attachment.snapshot {
-                    broadcast_hook_bridge_json(
+                    broadcast_otter_bridge_json(
                         hook_bridge,
                         json!({
                             "method": SURFACE_EVENT_SNAPSHOT,
@@ -264,7 +264,7 @@ fn put_surface_snapshot(
                         }),
                     );
                 }
-                broadcast_hook_bridge_json(
+                broadcast_otter_bridge_json(
                     hook_bridge,
                     json!({
                         "method": SURFACE_EVENT_LIFECYCLE,
@@ -292,7 +292,7 @@ fn apply_surface_patch(
     body: &str,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_resources: &SharedSurfaceResourceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let patch = match serde_json::from_str::<SurfacePatch>(body) {
         Ok(patch) => patch,
@@ -315,7 +315,7 @@ fn apply_surface_patch(
             let response = serde_json::to_string(&instance)?;
             drop(store);
             if let Some(attachment) = instance.attachments.get(&attachment_id) {
-                broadcast_hook_bridge_json(
+                broadcast_otter_bridge_json(
                     hook_bridge,
                     json!({
                         "method": SURFACE_EVENT_PATCH,
@@ -337,7 +337,7 @@ fn begin_surface_generation(
     instance_id: &str,
     body: &str,
     surface_instances: &SharedSurfaceInstanceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request = if body.trim().is_empty() {
         BeginSurfaceGenerationRequest::default()
@@ -359,7 +359,7 @@ fn begin_surface_generation(
                 .unwrap_or_default();
             drop(store);
             for attachment in attachments.values() {
-                broadcast_hook_bridge_json(
+                broadcast_otter_bridge_json(
                     hook_bridge,
                     json!({
                         "method": SURFACE_EVENT_GENERATION,
@@ -382,7 +382,7 @@ fn transition_surface_lifecycle(
     instance_id: &str,
     body: &str,
     surface_instances: &SharedSurfaceInstanceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
     authenticated_device_id: Option<&str>,
@@ -423,7 +423,7 @@ fn transition_surface_lifecycle(
             let response = serde_json::to_string(&attachment)?;
             drop(store);
             release_surface_resource_leases(surface_resources, &lease_ids, shared_images)?;
-            broadcast_hook_bridge_json(
+            broadcast_otter_bridge_json(
                 hook_bridge,
                 json!({
                     "method": SURFACE_EVENT_LIFECYCLE,
@@ -434,7 +434,7 @@ fn transition_surface_lifecycle(
                 }),
             );
             if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {
-                broadcast_hook_bridge_json(
+                broadcast_otter_bridge_json(
                     hook_bridge,
                     json!({
                         "method": SURFACE_EVENT_DISPOSE,

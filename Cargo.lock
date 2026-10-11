@@ -2385,13 +2385,13 @@ dependencies = [
  "loom_core",
  "loom_durable",
  "loom_gateway",
- "loom_hook_bridge",
  "loom_hooks",
  "loom_image_io",
  "loom_local_channel",
  "loom_mcp",
  "loom_memory",
  "loom_native_image",
+ "loom_otter_bridge",
  "loom_perf",
  "loom_plugin_security",
  "loom_projection",
@@ -2535,16 +2535,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loom_hook_bridge"
-version = "0.2.2"
-dependencies = [
- "loom_protocol",
- "loom_workflow_store",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "loom_hooks"
 version = "0.2.2"
 dependencies = [
@@ -2635,6 +2625,16 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "zerocopy",
+]
+
+[[package]]
+name = "loom_otter_bridge"
+version = "0.2.2"
+dependencies = [
+ "loom_protocol",
+ "loom_workflow_store",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

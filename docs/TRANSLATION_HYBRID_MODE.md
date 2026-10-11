@@ -18,9 +18,9 @@ When the mode is unset, Loom preserves the existing Gateway behavior unless
 `LOOM_LOCAL_TRANSLATION_BASE_URL` is configured. With that URL present, the
 implicit mode is `auto`.
 
-Hook's default `auto` selection follows this daemon configuration. An explicit
-`local` or `gateway` selection in Hook overrides the daemon default. In particular,
-an operator's `LOOM_TRANSLATION_MODE=local` remains local-only when Hook uses its
+Otter's default `auto` selection follows this daemon configuration. An explicit
+`local` or `gateway` selection in Otter overrides the daemon default. In particular,
+an operator's `LOOM_TRANSLATION_MODE=local` remains local-only when Otter uses its
 default selection.
 
 ## Local service contract
@@ -91,7 +91,7 @@ visible before enabling `auto` for sensitive OCR content.
 
 The existing translation host still validates the exact number of translations,
 source revision, block geometry, response size, and final attachment size. A
-provider error therefore leaves the original OCR attachment intact. The Hook
+provider error therefore leaves the original OCR attachment intact. The Otter
 command and renderer contracts do not change.
 
 The repository does not bundle a translation model. An operator must install a

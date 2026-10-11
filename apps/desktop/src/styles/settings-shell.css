@@ -235,12 +235,12 @@
   color: var(--loom-theme-muted);
 }
 
-.hook-shortcut-groups {
+.otter-shortcut-groups {
   display: grid;
   gap: 14px;
 }
 
-.hook-shortcut-group {
+.otter-shortcut-group {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--loom-theme-line);
@@ -248,20 +248,20 @@
   background: var(--loom-theme-panel);
 }
 
-.hook-shortcut-group__header {
+.otter-shortcut-group__header {
   min-height: 52px;
 }
 
-.hook-shortcut-group--open .hook-shortcut-group__header {
+.otter-shortcut-group--open .otter-shortcut-group__header {
   border-bottom: 1px solid var(--loom-theme-line);
 }
 
-.hook-shortcut-group__header h3 {
+.otter-shortcut-group__header h3 {
   width: 100%;
   margin: 0;
 }
 
-.hook-shortcut-group__trigger {
+.otter-shortcut-group__trigger {
   display: grid;
   width: 100%;
   min-height: 52px;
@@ -277,46 +277,46 @@
   transition: background 130ms ease, color 130ms ease;
 }
 
-.hook-shortcut-group__trigger:hover {
+.otter-shortcut-group__trigger:hover {
   background: var(--loom-theme-hover);
 }
 
-.hook-shortcut-group__trigger:focus-visible {
+.otter-shortcut-group__trigger:focus-visible {
   outline: 2px solid var(--loom-theme-accent-text);
   outline-offset: -2px;
 }
 
-.hook-shortcut-group__trigger > span {
+.otter-shortcut-group__trigger > span {
   font-size: 0.94rem;
   font-weight: 850;
 }
 
-.hook-shortcut-group__trigger svg {
+.otter-shortcut-group__trigger svg {
   width: 21px;
   height: 21px;
   flex: 0 0 auto;
   color: var(--loom-theme-secondary-text);
 }
 
-.hook-shortcut-group__trigger .hook-shortcut-group__chevron {
+.otter-shortcut-group__trigger .otter-shortcut-group__chevron {
   width: 18px;
   height: 18px;
   color: var(--loom-theme-muted);
   transition: transform 150ms ease, color 150ms ease;
 }
 
-.hook-shortcut-group--open .hook-shortcut-group__chevron {
+.otter-shortcut-group--open .otter-shortcut-group__chevron {
   color: var(--loom-theme-accent-text);
   transform: rotate(180deg);
 }
 
-.hook-shortcut-list {
+.otter-shortcut-list {
   display: grid;
   padding: 0 18px;
   animation: settings-section-enter 140ms ease-out;
 }
 
-.hook-shortcut-row {
+.otter-shortcut-row {
   display: grid;
   min-height: 66px;
   grid-template-columns: minmax(180px, 1fr) minmax(250px, 0.9fr);
@@ -326,27 +326,27 @@
   transition: background 120ms ease;
 }
 
-.hook-shortcut-row:last-child {
+.otter-shortcut-row:last-child {
   border-bottom: 0;
 }
 
-.hook-shortcut-row:hover {
+.otter-shortcut-row:hover {
   background: color-mix(in srgb, var(--loom-theme-secondary) 7%, transparent);
 }
 
-.hook-shortcut-row__text {
+.otter-shortcut-row__text {
   display: grid;
   min-width: 0;
   gap: 4px;
 }
 
-.hook-shortcut-row__text strong {
+.otter-shortcut-row__text strong {
   color: var(--loom-theme-text);
   font-size: 0.87rem;
   font-weight: 820;
 }
 
-.hook-shortcut-row__text small {
+.otter-shortcut-row__text small {
   overflow: hidden;
   color: var(--loom-theme-muted);
   font-size: 0.73rem;
@@ -355,7 +355,7 @@
   white-space: nowrap;
 }
 
-.hook-shortcut-row__keys {
+.otter-shortcut-row__keys {
   display: flex;
   width: 100%;
   max-width: none;
@@ -366,7 +366,7 @@
   gap: 6px;
 }
 
-.hook-shortcut-row__keys--editable {
+.otter-shortcut-row__keys--editable {
   border: 1px solid transparent;
   border-radius: 7px;
   padding: 4px 5px;
@@ -376,42 +376,42 @@
   transition: border-color 130ms ease, background 130ms ease;
 }
 
-.hook-shortcut-row__keys--editable:hover {
+.otter-shortcut-row__keys--editable:hover {
   border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 34%, transparent);
   background: color-mix(in srgb, var(--loom-theme-secondary) 9%, transparent);
 }
 
-.hook-shortcut-row__keys--editable:focus-visible {
+.otter-shortcut-row__keys--editable:focus-visible {
   outline: 2px solid var(--loom-theme-accent-text);
   outline-offset: 2px;
 }
 
-.hook-shortcut-key-sequences,
-.hook-shortcut-key-sequence,
-.hook-shortcut-key-part {
+.otter-shortcut-key-sequences,
+.otter-shortcut-key-sequence,
+.otter-shortcut-key-part {
   display: inline-flex;
   align-items: center;
 }
 
-.hook-shortcut-key-sequences {
+.otter-shortcut-key-sequences {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 7px;
 }
 
-.hook-shortcut-key-sequence,
-.hook-shortcut-key-part {
+.otter-shortcut-key-sequence,
+.otter-shortcut-key-part {
   gap: 5px;
 }
 
-.hook-shortcut-key-plus,
-.hook-shortcut-key-or {
+.otter-shortcut-key-plus,
+.otter-shortcut-key-or {
   color: var(--loom-theme-muted);
   font-size: 0.68rem;
   font-weight: 800;
 }
 
-.hook-shortcut-row__keys kbd {
+.otter-shortcut-row__keys kbd {
   display: inline-flex;
   min-width: 38px;
   min-height: 34px;
@@ -431,14 +431,14 @@
   white-space: nowrap;
 }
 
-.hook-shortcut-row__edit-icon {
+.otter-shortcut-row__edit-icon {
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
   color: var(--loom-theme-secondary-text);
 }
 
-.hook-quick-binding-actions {
+.otter-quick-binding-actions {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -446,6 +446,6 @@
   gap: 7px;
 }
 
-.hook-quick-binding-actions .hook-shortcut-row__keys {
+.otter-quick-binding-actions .otter-shortcut-row__keys {
   width: auto;
 }

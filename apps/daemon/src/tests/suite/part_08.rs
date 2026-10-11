@@ -1,8 +1,8 @@
 // Loom daemon tests fragment 8; included into the shared crate test module.
 #[test]
-fn hook_art_rejects_tampered_art_packages_before_execution() {
+fn otter_art_rejects_tampered_art_packages_before_execution() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-art-package-integrity");
+    let root = unique_temp_dir("otter-art-package-integrity");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
     runtime
         .framework_registry
@@ -23,7 +23,7 @@ fn hook_art_rejects_tampered_art_packages_before_execution() {
     fs::set_permissions(&payload_path, permissions).expect("unlock installed payload");
     fs::write(&payload_path, b"tampered").expect("tamper installed payload");
 
-    let hook_response = run_hook_bridge_text(
+    let otter_response = run_otter_bridge_text(
         &runtime,
         &formal_art_execute_request(
             "integrity-request",
@@ -34,21 +34,21 @@ fn hook_art_rejects_tampered_art_packages_before_execution() {
         ),
     );
     assert!(
-        hook_response
+        otter_response
             .to_string()
             .contains("integrity verification failed"),
-        "unexpected Hook response: {hook_response}"
+        "unexpected Otter response: {otter_response}"
     );
-    let hook_run_id = hook_response["data"]["executionId"]
+    let otter_run_id = otter_response["data"]["executionId"]
         .as_str()
-        .expect("Hook run id");
+        .expect("Otter run id");
     {
         let store = runtime.run_store.lock().expect("run store");
         assert_eq!(
-            store.get_run(hook_run_id).unwrap().unwrap()["status"],
+            store.get_run(otter_run_id).unwrap().unwrap()["status"],
             "failed"
         );
-        let events = store.get_events(hook_run_id).unwrap().unwrap();
+        let events = store.get_events(otter_run_id).unwrap().unwrap();
         assert_eq!(events.last().unwrap()["kind"], "external_tool_failed");
     }
 

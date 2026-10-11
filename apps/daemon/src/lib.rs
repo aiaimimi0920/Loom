@@ -1,6 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
-mod hook_broadcast_queue;
-use hook_broadcast_queue::BroadcastReceiver;
+mod otter_broadcast_queue;
+use otter_broadcast_queue::BroadcastReceiver;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -32,15 +32,15 @@ use loom_durable::{
     InMemoryRunEvidenceStore, RunEventDraft, RunEvidenceStore, RunStoreError, RunStoreStatus,
     SqliteRunEvidenceStore,
 };
-use loom_hook_bridge::{
-    capabilities_updated_event, instantiate_workflow, sync_workflow, update_workflow_node,
-    HOOK_BRIDGE_PORT,
-};
 use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::package::{
     install_server_package, uninstall_server_package, McpPackageError, MAX_MCP_SERVER_PACKAGE_BYTES,
 };
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
+use loom_otter_bridge::{
+    capabilities_updated_event, instantiate_workflow, sync_workflow, update_workflow_node,
+    HOOK_BRIDGE_PORT,
+};
 use loom_plugin_security::{generate_signing_key, sign_message, SigningKeyDocument, TrustPolicy};
 use loom_protocol::{
     device_session_signature_message, is_safe_package_id, is_safe_publisher_id,
@@ -51,15 +51,15 @@ use loom_protocol::{
     ExtensionCommandInvokeRequest, ExtensionError, ExtensionHandshakeRequest, ExtensionInvocation,
     ExtensionMessage, ExtensionResourceKind, ExtensionResourceRef, ExtensionResourceUpload,
     ExtensionResult, ExtensionResultStatus, ExtensionSnapshotEvent, ExtensionSnapshotEventParams,
-    ExtensionTarget, HookArtAck, HookArtCancelRequest, HookArtCapability, HookArtExecuteRequest,
-    HookArtFailure, HookArtPortValue, HookArtPreviewCommit, HookArtProgress,
-    HookArtResourcesReleaseRequest, HookArtResultCommit, HookCapabilities, HookEvent,
-    HookHandshakeResponse, HookRequest, HookRequestStatus, HookResponse, HookTransportMode,
-    LiveBinaryFrame, LiveConditionOperator, LiveControlEnvelope, LiveControlMessage,
-    LiveDeviceRole, LiveObservation, LiveObservationCapability, LiveObservationConfidence,
-    LiveObservationSource, LiveObservationState, LiveScreenshotSession, LiveSessionState,
-    LiveTriggerAudit, LiveTriggerBinding, LiveTriggerCondition, LiveTriggerOutcome,
-    LiveVisibilityState, PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceActionStatus,
+    ExtensionTarget, HookEvent, LiveBinaryFrame, LiveConditionOperator, LiveControlEnvelope,
+    LiveControlMessage, LiveDeviceRole, LiveObservation, LiveObservationCapability,
+    LiveObservationConfidence, LiveObservationSource, LiveObservationState, LiveScreenshotSession,
+    LiveSessionState, LiveTriggerAudit, LiveTriggerBinding, LiveTriggerCondition,
+    LiveTriggerOutcome, LiveVisibilityState, OtterArtAck, OtterArtCancelRequest,
+    OtterArtCapability, OtterArtExecuteRequest, OtterArtFailure, OtterArtPortValue,
+    OtterArtPreviewCommit, OtterArtProgress, OtterArtResourcesReleaseRequest, OtterArtResultCommit,
+    OtterCapabilities, OtterHandshakeResponse, OtterRequest, OtterRequestStatus, OtterResponse,
+    OtterTransportMode, PublisherTrustRecord, SurfaceActionCancelRequest, SurfaceActionStatus,
     SurfaceConfirmationDecision, SurfaceEvent, SurfaceExecutionFailure, SurfaceHostCapabilities,
     SurfaceInstanceMode, SurfaceInstancePersistence, SurfaceLifecycleEvent, SurfaceNode,
     SurfacePatch, SurfacePortValue, SurfacePreviewCommit, SurfaceResourceDescriptor,
@@ -102,9 +102,9 @@ use uuid::Uuid;
 mod account_login;
 mod brain_plan;
 mod capability_resources;
-mod hook_canvas;
 mod http_body_admission;
 mod http_request;
+mod otter_canvas;
 mod periodic_maintenance;
 mod projection_settings;
 mod request_executor;
@@ -152,9 +152,9 @@ include!("runtime/capability_plugin_runtime_api.rs");
 include!("runtime/secure_persistence.rs");
 include!("runtime/mcp_persistence_models.rs");
 include!("runtime/settings_ocr_runtime.rs");
-include!("runtime/hook_bridge_connections.rs");
-include!("runtime/hook_bridge_liveness.rs");
-include!("runtime/hook_bridge_state.rs");
+include!("runtime/otter_bridge_connections.rs");
+include!("runtime/otter_bridge_liveness.rs");
+include!("runtime/otter_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
 include!("runtime/device_pairing_budget.rs");
 mod projection_edit;
@@ -228,21 +228,21 @@ include!("runtime/shared_image_routes.rs");
 include!("runtime/settings_workflow_routes.rs");
 include!("runtime/canvas_workflow_persistence.rs");
 include!("runtime/canvas_bridge_routes.rs");
-include!("runtime/hook_canvas_preview_session.rs");
-include!("runtime/hook_art_request_lifecycle.rs");
-include!("runtime/hook_canvas_live_persistence.rs");
+include!("runtime/otter_canvas_preview_session.rs");
+include!("runtime/otter_art_request_lifecycle.rs");
+include!("runtime/otter_canvas_live_persistence.rs");
 include!("runtime/capability_extension_resources.rs");
 include!("runtime/capability_extension_state.rs");
 include!("runtime/capability_extension_authorization.rs");
 include!("runtime/capability_extension_bridge.rs");
 include!("runtime/capability_extension_responses.rs");
-include!("runtime/hook_bridge_server.rs");
+include!("runtime/otter_bridge_server.rs");
 include!("runtime/local_capability_manifest.rs");
-include!("runtime/hook_bridge_websocket.rs");
-include!("runtime/hook_canvas_cache.rs");
-include!("runtime/hook_protocol_dispatch.rs");
-include!("runtime/hook_art_execution.rs");
-include!("runtime/hook_art_results_broadcast.rs");
+include!("runtime/otter_bridge_websocket.rs");
+include!("runtime/otter_canvas_cache.rs");
+include!("runtime/otter_protocol_dispatch.rs");
+include!("runtime/otter_art_execution.rs");
+include!("runtime/otter_art_results_broadcast.rs");
 include!("runtime/surface_recovery_errors.rs");
 include!("runtime/workflow_error_responses.rs");
 include!("runtime/capability_command_dispatch.rs");
@@ -252,13 +252,13 @@ include!("runtime/run_http_responses.rs");
 #[cfg(test)]
 mod tests {
     include!("tests/local_bridge_security.rs");
-    include!("tests/hook_bridge_liveness.rs");
+    include!("tests/otter_bridge_liveness.rs");
     include!("tests/projection_http.rs");
     include!("tests/wall_http.rs");
     include!("tests/suite/part_01.rs");
     include!("tests/connection_read_admission.rs");
     include!("tests/maintenance_isolation.rs");
-    include!("tests/hook_canvas_cache.rs");
+    include!("tests/otter_canvas_cache.rs");
     include!("tests/suite/part_02.rs");
     include!("tests/suite/part_03.rs");
     include!("tests/suite/part_04.rs");

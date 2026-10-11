@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_SAMPLES, Measurement } from './live-relay-measurement.mjs';
 import { validateOptions } from './measure-live-relay.mjs';
 
-const HASH_FIELDS = ['hookSha256', 'loomSha256', 'contentFixtureSha256', 'captureSettingsSha256', 'networkConditionsSha256'];
+const HASH_FIELDS = ['otterSha256', 'loomSha256', 'contentFixtureSha256', 'captureSettingsSha256', 'networkConditionsSha256'];
 const CONDITIONS = [...HASH_FIELDS, 'width', 'height', 'targetFps', 'scenario'];
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const fail = () => { throw new Error('comparison_input_invalid'); };

@@ -11,7 +11,7 @@ fn live_start_envelope(session_id: &str) -> LiveControlEnvelope {
                 protocol_version: loom_protocol::LIVE_PROTOCOL_VERSION.to_owned(),
                 session_id: session_id.to_owned(),
                 source_device_id: "device-source".to_owned(),
-                source_hook_id: "hook-node:source".to_owned(),
+                source_hook_id: "otter-node:source".to_owned(),
                 source_kind: loom_protocol::LiveSourceKind::Window,
                 source_window_identity: loom_protocol::LiveWindowIdentity {
                     window_id: "window:fixture".to_owned(),
@@ -457,9 +457,9 @@ fn seed_phase_four_surface_bindings(runtime: &DaemonRuntime) -> (String, [String
         .expect("create Phase 4 Surface instance");
     let instance_id = instance.descriptor.instance_id;
     let bindings = [
-        ("hook-node:phase4-source", "device-phase4-source"),
-        ("hook-node:phase4-viewer-a", "device-phase4-viewer-a"),
-        ("hook-node:phase4-viewer-b", "device-phase4-viewer-b"),
+        ("otter-node:phase4-source", "device-phase4-source"),
+        ("otter-node:phase4-viewer-a", "device-phase4-viewer-a"),
+        ("otter-node:phase4-viewer-b", "device-phase4-viewer-b"),
     ];
     let attachments = bindings.map(|(hook, device)| {
         store

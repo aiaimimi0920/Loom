@@ -122,7 +122,7 @@ fn bound_framework_candidates(mut candidates: Vec<Value>) -> (Vec<Value>, usize)
 /// The candidate keys every consumer reads, and the producer keys that may stand in for them.
 ///
 /// The MCP tool path emits `{index, title, imageUrl, thumbnailUrl, sourcePageUrl, width, height}`
-/// (`lib.rs`), and both consumers — the Hook canvas result strip and Hook's
+/// (`lib.rs`), and both consumers — the Otter canvas result strip and Otter's
 /// `artDeliveryCandidates` — key each item on `imageUrl` and drop items without it. Framework Arts
 /// author their own candidate objects and reach for the names their own runtime uses, so the host
 /// normalizes them here instead of requiring every Art to know the wire shape.
@@ -160,7 +160,7 @@ fn first_candidate_string(item: &Map<String, Value>, keys: &[&str]) -> Option<St
 
 /// Fill in the canonical candidate keys without discarding what the Art already sent.
 ///
-/// Producer-specific keys are left in place: Hook's candidate strip also renders `thumbnail`, and
+/// Producer-specific keys are left in place: Otter's candidate strip also renders `thumbnail`, and
 /// an Art may attach its own fields. Only the canonical keys are added, and only when they are
 /// missing or empty, so an Art that already speaks the wire shape passes through unchanged. An
 /// item with no usable image reference at all is left alone rather than given a fabricated one; the

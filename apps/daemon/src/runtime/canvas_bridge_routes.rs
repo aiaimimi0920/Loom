@@ -90,7 +90,7 @@ fn canvas_workflow_preview_response(
     let Ok(canonical_images) = fs::canonicalize(&images_dir) else {
         return structured_error(
             404,
-            json!({ "code": "preview_not_found", "message": "Hook canvas preview was not found" }),
+            json!({ "code": "preview_not_found", "message": "Otter canvas preview was not found" }),
         )
         .map(|(status, body)| RouteResponse::Text { status, body });
     };
@@ -105,12 +105,12 @@ fn canvas_workflow_preview_response(
             continue;
         }
         if let Ok(bytes) = fs::read(&canonical) {
-            return hook_canvas_preview_binary_response(bytes);
+            return otter_canvas_preview_binary_response(bytes);
         }
     }
     structured_error(
         404,
-        json!({ "code": "preview_not_found", "message": "Hook canvas preview was not found" }),
+        json!({ "code": "preview_not_found", "message": "Otter canvas preview was not found" }),
     )
     .map(|(status, body)| RouteResponse::Text { status, body })
 }
@@ -204,22 +204,22 @@ fn delete_workflow(path_id: &str, workflow_store: &WorkflowStore) -> Result<(u16
     ))
 }
 
-fn hook_bridge_status(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, String)> {
+fn otter_bridge_status(hook_bridge: &SharedOtterBridgeRuntime) -> Result<(u16, String)> {
     let runtime = hook_bridge
         .lock()
         .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
     Ok((
         200,
-        serde_json::to_string(&hook_bridge_status_json(&runtime))?,
+        serde_json::to_string(&otter_bridge_status_json(&runtime))?,
     ))
 }
 
-fn instantiate_hook_workflow(
+fn instantiate_otter_workflow(
     body: &str,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: HookWorkflowInstantiateHttpRequest = match serde_json::from_str(request_body) {
+    let request: OtterWorkflowInstantiateHttpRequest = match serde_json::from_str(request_body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -241,15 +241,15 @@ fn instantiate_hook_workflow(
         &mode,
         request.workflow_id,
     )
-    .map_err(|error| anyhow::anyhow!("instantiate Hook workflow: {error}"))?;
+    .map_err(|error| anyhow::anyhow!("instantiate Otter workflow: {error}"))?;
     let serialized = serde_json::to_string(&event)?;
-    let delivered_clients = broadcast_hook_bridge_messages_with_count(&hub, &[serialized]);
+    let delivered_clients = broadcast_otter_bridge_messages_with_count(&hub, &[serialized]);
     if delivered_clients == 0 {
         return structured_error(
             409,
             json!({
                 "code": "no_hook_client",
-                "message": "No Hook client is connected to receive workflow instantiation",
+                "message": "No Otter client is connected to receive workflow instantiation",
             }),
         );
     }
@@ -267,12 +267,12 @@ fn instantiate_hook_workflow(
     ))
 }
 
-fn update_hook_workflow_node(
+fn update_otter_workflow_node(
     body: &str,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
-    let request: HookWorkflowNodeUpdateHttpRequest = match serde_json::from_str(request_body) {
+    let request: OtterWorkflowNodeUpdateHttpRequest = match serde_json::from_str(request_body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -295,19 +295,19 @@ fn update_hook_workflow_node(
             .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
         (runtime.workflow_root.clone(), runtime.broadcast_hub.clone())
     };
-    if is_hook_live_workflow_id(workflow_id) {
-        let mut patch = HookCanvasPersistPatch::default();
+    if is_otter_live_workflow_id(workflow_id) {
+        let mut patch = OtterCanvasPersistPatch::default();
         patch
             .param_updates
             .push((param.to_owned(), request.value.clone()));
-        if let Err(error) = persist_hook_canvas_live_node_patch(node_id, &patch) {
+        if let Err(error) = persist_otter_canvas_live_node_patch(node_id, &patch) {
             let status = match &error {
-                HookCanvasPersistError::RevisionConflict { .. }
-                | HookCanvasPersistError::SnapshotUnavailable
-                | HookCanvasPersistError::UnsupportedDocument(_) => 409,
-                HookCanvasPersistError::NodeUnavailable(_) => 422,
-                HookCanvasPersistError::SessionUnavailable(_)
-                | HookCanvasPersistError::WriteFailed(_) => 500,
+                OtterCanvasPersistError::RevisionConflict { .. }
+                | OtterCanvasPersistError::SnapshotUnavailable
+                | OtterCanvasPersistError::UnsupportedDocument(_) => 409,
+                OtterCanvasPersistError::NodeUnavailable(_) => 422,
+                OtterCanvasPersistError::SessionUnavailable(_)
+                | OtterCanvasPersistError::WriteFailed(_) => 500,
             };
             return structured_error(
                 status,
@@ -339,7 +339,7 @@ fn update_hook_workflow_node(
         }
     };
 
-    broadcast_hook_bridge_messages(&broadcast_hub, &[serde_json::to_string(&event)?]);
+    broadcast_otter_bridge_messages(&broadcast_hub, &[serde_json::to_string(&event)?]);
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -353,11 +353,11 @@ fn update_hook_workflow_node(
     ))
 }
 
-fn hook_bridge_session(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, String)> {
+fn otter_bridge_session(hook_bridge: &SharedOtterBridgeRuntime) -> Result<(u16, String)> {
     let runtime = hook_bridge
         .lock()
         .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
-    let (session_path, available, session, error) = read_hook_session_snapshot();
+    let (session_path, available, session, error) = read_otter_session_snapshot();
     Ok((
         200,
         serde_json::to_string(&json!({
@@ -374,16 +374,16 @@ fn hook_bridge_session(hook_bridge: &SharedHookBridgeRuntime) -> Result<(u16, St
     ))
 }
 
-fn hook_canvas_snapshot() -> Result<(u16, String)> {
-    match load_active_hook_canvas_document() {
+fn otter_canvas_snapshot() -> Result<(u16, String)> {
+    match load_active_otter_canvas_document() {
         Ok(document) => Ok((200, serde_json::to_string(&document.snapshot)?)),
         Err(error) => {
-            eprintln!("loom Hook canvas snapshot failed: {error:#}");
+            eprintln!("loom Otter canvas snapshot failed: {error:#}");
             structured_error(
                 500,
                 json!({
                     "code": "hook_canvas_error",
-                    "message": "Hook canvas snapshot is temporarily unavailable",
+                    "message": "Otter canvas snapshot is temporarily unavailable",
                 }),
             )
         }

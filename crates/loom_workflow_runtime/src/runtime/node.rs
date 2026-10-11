@@ -47,7 +47,7 @@ pub(super) fn execute_workflow_node(
         child_input = extract_root_input(&JsonValue::Object(child_args.clone()));
     }
     if child_input.is_none() {
-        // Hook canvas edges are serialized as `needs`. When the node has no
+        // Otter canvas edges are serialized as `needs`. When the node has no
         // explicit input binding, keep the visual pipeline semantics by
         // forwarding the first upstream image along that edge.
         child_input = node

@@ -225,7 +225,7 @@ fn service_live_video_viewer_control(
                 let _ = socket.close(close);
                 return false;
             }
-            Err(error) if hook_bridge_read_timed_out(&error) => return true,
+            Err(error) if otter_bridge_read_timed_out(&error) => return true,
             _ => return false,
         }
     }

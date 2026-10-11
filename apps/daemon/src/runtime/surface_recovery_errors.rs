@@ -161,7 +161,7 @@ fn surface_message_visible_to_device(
     params.get("deviceId").and_then(Value::as_str) == Some(device_id)
 }
 
-fn subscriber_accepts_broadcast(subscriber: &HookBridgeSubscriber, broadcast: &str) -> bool {
+fn subscriber_accepts_broadcast(subscriber: &OtterBridgeSubscriber, broadcast: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(broadcast) else {
         return false;
     };
@@ -179,7 +179,7 @@ fn channel_accepts_method(channel: &str, method: &str) -> bool {
     !channel.is_empty() && method == channel
 }
 
-fn hook_bridge_read_timed_out(error: &tungstenite::Error) -> bool {
+fn otter_bridge_read_timed_out(error: &tungstenite::Error) -> bool {
     matches!(
         error,
         tungstenite::Error::Io(io_error)
@@ -229,7 +229,7 @@ fn tool_registry_error_response(error: ToolRegistryError) -> Result<(u16, String
         ),
         // A cancelled run is not a server fault, so it is reported as a conflict with the state the
         // caller itself put the run into rather than as a 500. The code matches the `cancelled` code
-        // already used for a cancelled Art run on the Hook bridge, so a client recognises both alike.
+        // already used for a cancelled Art run on the Otter bridge, so a client recognises both alike.
         ToolRegistryError::ExecutionCancelled { id } => structured_error(
             409,
             json!({

@@ -1,5 +1,5 @@
 //! Administrator-owned offline peer configuration and authenticated connectivity checks.
-//! Raster checks prove transport only and grant no Hook delivery or delegation authority.
+//! Raster checks prove transport only and grant no Otter delivery or delegation authority.
 use super::*;
 
 mod catalog;

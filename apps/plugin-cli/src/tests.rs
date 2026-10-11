@@ -114,7 +114,7 @@ mod tests {
         assert!(output.contains("conformance"));
         assert!(output.contains("pack"));
         assert!(output.contains("surface-manifest"));
-        assert!(output.contains("hook-message"));
+        assert!(output.contains("otter-message"));
         assert!(output.contains("init capability"));
         assert!(output.contains("capability-runtime"));
     }

@@ -5,7 +5,7 @@ fn install_art_from_store(
     framework_registry: &FrameworkRegistry,
     workflow_store: &WorkflowStore,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request = match serde_json::from_str::<InstallFromStoreRequest>(body) {
         Ok(request) => request,

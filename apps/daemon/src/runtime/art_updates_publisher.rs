@@ -15,7 +15,7 @@ fn update_art_version(
     framework_registry: &FrameworkRegistry,
     workflow_store: &WorkflowStore,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request: UpdateArtVersionRequest = match serde_json::from_str(body) {
         Ok(request) => request,
@@ -110,7 +110,7 @@ fn auto_update_arts(
     framework_registry: &FrameworkRegistry,
     workflow_store: &WorkflowStore,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     settings_store: &SharedLoomSettingsStore,
 ) -> Result<(u16, String)> {
     let auto_update_enabled = settings_store

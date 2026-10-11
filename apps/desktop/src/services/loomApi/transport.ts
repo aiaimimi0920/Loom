@@ -1,7 +1,7 @@
 // Shared Tauri/HTTP transport selection, response normalization, and daemon preview access.
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { LoomDaemonStartResult } from "./snapshotTypes.ts";
-import { createHookCanvasPreviewLoader } from "../hookCanvasPreviewLoader.ts";
+import { createOtterCanvasPreviewLoader } from "../otterCanvasPreviewLoader.ts";
 
 const MAX_DAEMON_JSON_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_DAEMON_ERROR_DETAIL_CHARS = 2_048;
@@ -158,24 +158,24 @@ export async function getLoomDaemonJson<T>(baseUrl: string, path: string): Promi
   return await getJson<T>(baseUrl, path);
 }
 
-// Load a Hook canvas preview image. The WebView cannot reliably fetch daemon
+// Load a Otter canvas preview image. The WebView cannot reliably fetch daemon
 // images through a direct `http://127.0.0.1` `<img src>`, so prefer the native
 // Tauri command that returns a base64 `data:` URL. Fall back to the direct
 // daemon URL only for browser previews where the Tauri command is unavailable.
-const previewLoader = createHookCanvasPreviewLoader(readHookCanvasPreview);
+const previewLoader = createOtterCanvasPreviewLoader(readOtterCanvasPreview);
 
-export function loadHookCanvasPreview(baseUrl: string, path: string, signal?: AbortSignal): Promise<string> {
+export function loadOtterCanvasPreview(baseUrl: string, path: string, signal?: AbortSignal): Promise<string> {
   return previewLoader.load(baseUrl, path, signal);
 }
 
-async function readHookCanvasPreview(baseUrl: string, path: string): Promise<string> {
+async function readOtterCanvasPreview(baseUrl: string, path: string): Promise<string> {
   if (isTauri()) {
-    return await invoke<string>("read_hook_canvas_preview", { baseUrl, path });
+    return await invoke<string>("read_otter_canvas_preview", { baseUrl, path });
   }
 
   // Browser previews may use a direct URL, but only for the daemon-owned preview route.
   if (!path.startsWith("/v1/hook-bridge/canvas/nodes/")) {
-    throw new Error("Hook canvas preview path is outside the preview route");
+    throw new Error("Otter canvas preview path is outside the preview route");
   }
   const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   const base = new URL(normalizedBaseUrl);
@@ -185,7 +185,7 @@ async function readHookCanvasPreview(baseUrl: string, path: string): Promise<str
     || !preview.pathname.startsWith("/v1/hook-bridge/canvas/nodes/")
     || !preview.pathname.endsWith("/preview")
   ) {
-    throw new Error("Hook canvas preview path is outside the preview route");
+    throw new Error("Otter canvas preview path is outside the preview route");
   }
   return preview.toString();
 }

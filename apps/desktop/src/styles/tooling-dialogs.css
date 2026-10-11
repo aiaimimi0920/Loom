@@ -1,4 +1,4 @@
-/* Owns ordered graphite overrides for framework dialogs, Art creation, Hook synchronization, and canvas panels. */
+/* Owns ordered graphite overrides for framework dialogs, Art creation, Otter synchronization, and canvas panels. */
 
 .framework-dialog :is(input, textarea)::placeholder {
   color: var(--loom-theme-muted);
@@ -96,111 +96,111 @@
   scrollbar-color: color-mix(in srgb, var(--loom-theme-text) 26%, transparent) transparent;
 }
 
-.hook-canvas-workflow-select,
-.hook-canvas-node-props__row dt,
-.hook-canvas-workflow-io__label,
-.hook-canvas-workflow-io__empty,
-.hook-canvas-param-expose__hint {
+.otter-canvas-workflow-select,
+.otter-canvas-node-props__row dt,
+.otter-canvas-workflow-io__label,
+.otter-canvas-workflow-io__empty,
+.otter-canvas-param-expose__hint {
   color: var(--loom-theme-muted);
 }
 
-.hook-canvas-workflow-select select,
-.hook-canvas-param-expose__value,
-.hook-canvas-rename-dialog__input {
+.otter-canvas-workflow-select select,
+.otter-canvas-param-expose__value,
+.otter-canvas-rename-dialog__input {
   border-color: var(--loom-theme-line);
   background: var(--loom-theme-control);
   color: var(--loom-theme-text);
   color-scheme: inherit;
 }
 
-.hook-canvas-workflow-select select option,
-.hook-canvas-param-expose__value option {
+.otter-canvas-workflow-select select option,
+.otter-canvas-param-expose__value option {
   background: var(--loom-theme-control);
   color: var(--loom-theme-text);
 }
 
-.hook-canvas-workflow-select select:focus,
-.hook-canvas-param-expose__value:focus,
-.hook-canvas-rename-dialog__input:focus {
+.otter-canvas-workflow-select select:focus,
+.otter-canvas-param-expose__value:focus,
+.otter-canvas-rename-dialog__input:focus {
   border-color: color-mix(in srgb, var(--loom-theme-accent-text) 56%, var(--loom-theme-line));
   outline: 2px solid color-mix(in srgb, var(--loom-theme-accent-text) 12%, transparent);
   outline-offset: 1px;
 }
 
-.hook-canvas-rename-backdrop {
+.otter-canvas-rename-backdrop {
   background: var(--neuro-overlay);
 }
 
-.hook-canvas-rename-dialog,
-.hook-canvas-node-props,
-.hook-canvas-workflow-io {
+.otter-canvas-rename-dialog,
+.otter-canvas-node-props,
+.otter-canvas-workflow-io {
   border: 1px solid var(--loom-theme-line);
   background: var(--loom-theme-panel);
   color: var(--loom-theme-text);
   box-shadow: none;
 }
 
-.hook-canvas-workspace {
+.otter-canvas-workspace {
   border: 0;
   background: transparent;
   color: var(--loom-theme-text);
   box-shadow: none;
 }
 
-.hook-sync-card {
+.otter-sync-card {
   border: 0;
   border-radius: 0;
   padding: 0;
   background: transparent;
 }
 
-.hook-sync-card::before {
+.otter-sync-card::before {
   content: none;
 }
 
-.hook-canvas-rename-dialog__title,
-.hook-canvas-node-props__title,
-.hook-canvas-node-props__row dd,
-.hook-canvas-workflow-io__title,
-.hook-canvas-workflow-io__port-name,
-.hook-canvas-param-expose__node,
-.hook-canvas-param-expose__toggle {
+.otter-canvas-rename-dialog__title,
+.otter-canvas-node-props__title,
+.otter-canvas-node-props__row dd,
+.otter-canvas-workflow-io__title,
+.otter-canvas-workflow-io__port-name,
+.otter-canvas-param-expose__node,
+.otter-canvas-param-expose__toggle {
   color: var(--loom-theme-text);
 }
 
-.hook-canvas-workflow-io__port {
+.otter-canvas-workflow-io__port {
   border-color: var(--loom-theme-line);
   background: var(--loom-theme-control);
 }
 
-.hook-canvas-workflow-io__port-type {
+.otter-canvas-workflow-io__port-type {
   color: var(--loom-theme-secondary-text);
 }
 
-.hook-canvas-param-expose {
+.otter-canvas-param-expose {
   border-color: var(--loom-theme-line);
 }
 
-.hook-canvas-param-expose__toggle input {
+.otter-canvas-param-expose__toggle input {
   accent-color: var(--loom-theme-accent-text);
 }
 
-.hook-canvas-param-expose__value:disabled {
+.otter-canvas-param-expose__value:disabled {
   background: var(--loom-theme-control-hover);
   color: var(--loom-theme-muted);
 }
 
-.hook-canvas-status {
+.otter-canvas-status {
   border-color: color-mix(in srgb, var(--loom-theme-accent-text) 28%, var(--loom-theme-line));
   background: color-mix(in srgb, var(--loom-theme-accent) 8%, var(--loom-theme-control));
   color: var(--loom-theme-accent-text);
 }
 
-.hook-canvas-surface {
+.otter-canvas-surface {
   border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 20%, var(--loom-theme-line));
 }
 
-.hook-canvas-zoom__slider {
+.otter-canvas-zoom__slider {
   accent-color: var(--loom-theme-accent-text);
 }
 

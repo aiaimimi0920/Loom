@@ -10,7 +10,7 @@ This document does not assert completed multi-terminal runtime support.
 
 `loom.wall.v1` describes physical display endpoints and content placement. It is
 independent of application sessions. Loom owns layout and input authorization;
-Hook implements a terminal today. Future terminals advertise actual display and
+Otter implements a terminal today. Future terminals advertise actual display and
 input capabilities instead of requiring a general-purpose CPU, GPU or web runtime.
 The management UI is optional at runtime and is not part of the output image.
 
@@ -106,7 +106,7 @@ or bypass Surface action/attachment authorization.
 [wall-geometry.v1.json](fixtures/wall-geometry.v1.json) supplies independent
 expected points and projections for two unequal-density endpoints, a rotated
 tile, a negative wall origin, a seam and a cropped source spanning both tiles.
-Rust runs it in `loom_protocol::wall::tests`. Hook keeps a byte-identical public
+Rust runs it in `loom_protocol::wall::tests`. Otter keeps a byte-identical public
 fixture at `__tests__/fixtures/wall/wall-geometry.v1.json` and runs
 `__tests__/unit/WallGeometry.test.ts`, including standalone checkouts. Any fixture
 change must update both copies and verify their SHA-256 equality before release.

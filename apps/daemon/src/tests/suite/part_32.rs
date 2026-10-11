@@ -328,7 +328,7 @@ fn capability_plugin_api_rejects_unknown_fields_and_routes_only_its_namespace() 
             &root,
             &runtime,
             &resources,
-            &Arc::new(Mutex::new(HookBridgeRuntime::new(root.clone()))),
+            &Arc::new(Mutex::new(OtterBridgeRuntime::new(root.clone()))),
         )
         .is_none()
     );

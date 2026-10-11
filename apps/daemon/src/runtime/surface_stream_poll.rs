@@ -1,7 +1,7 @@
 // Device-scoped long polling and snapshot recovery for Surface streams.
 fn poll_surface_stream(
     path: &str,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_instances: &SharedSurfaceInstanceStore,
     authenticated_device_id: Option<&str>,
 ) -> Result<(u16, String)> {

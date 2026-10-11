@@ -117,7 +117,7 @@ impl WorkflowStore {
                 let (name, node_count) = workflow_details_from_yaml(&yaml)?;
                 live_workflow = Some(WorkflowMetadata {
                     id: "hook-live".to_owned(),
-                    name: name.unwrap_or_else(|| "Hook 实时工作流".to_owned()),
+                    name: name.unwrap_or_else(|| "Otter 实时工作流".to_owned()),
                     node_count,
                     updated_at: now_string(),
                 });

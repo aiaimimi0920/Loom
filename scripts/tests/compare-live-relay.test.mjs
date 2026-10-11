@@ -21,7 +21,7 @@ function input(codec, bytes) {
   }
   return {
     conditions: {
-      hookSha256: 'a'.repeat(64), loomSha256: 'b'.repeat(64), contentFixtureSha256: 'c'.repeat(64),
+      otterSha256: 'a'.repeat(64), loomSha256: 'b'.repeat(64), contentFixtureSha256: 'c'.repeat(64),
       captureSettingsSha256: 'd'.repeat(64), networkConditionsSha256: 'e'.repeat(64),
       width: 64, height: 32, targetFps: 30, scenario: 'static-text',
     },

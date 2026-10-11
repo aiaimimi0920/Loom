@@ -178,7 +178,7 @@ fn protected_destructive_roots() -> Vec<PathBuf> {
     let mut roots = vec![
         std::env::temp_dir(),
         desktop_control_plane_root(),
-        hook_effective_app_data_dir(),
+        otter_effective_app_data_dir(),
     ];
     roots.extend(
         ["USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA"]

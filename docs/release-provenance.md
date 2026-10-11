@@ -96,7 +96,7 @@ The same check can run independently:
 .\scripts\Invoke-LoomQrProjectionSmoke.ps1 -PackageDir .\release\Loom\Vx.y.z
 ```
 
-This is packaged-daemon protocol evidence. Native Hook windows and cross-machine
+This is packaged-daemon protocol evidence. Native Otter windows and cross-machine
 HTTPS still require separate acceptance on the actual devices.
 
 `.github/workflows/release-tag.yml` calls the reusable dependency security
@@ -200,7 +200,7 @@ release must use a new canonical tag on reviewed source and pass every gate.
 ## Joint release acceptance
 
 The former Phase 77-79 records mixed implementation history with joint acceptance.
-Their cleanup does not complete the remaining exact-package Hook/Loom release
+Their cleanup does not complete the remaining exact-package Otter/Loom release
 gate. Old shared-dirty-worktree descriptions and reserved candidate IDs are not
 current instructions; inspect both repositories and choose unused output paths.
 
@@ -219,7 +219,7 @@ For a joint release, retain evidence for all of the following:
   paths without unexplained regressions.
 - Loom's full Rust, desktop, smoke and release gates from the reviewed source,
   followed by `verify-release.ps1 -RunSmoke -RequireCleanSource` on the exact package.
-- Hook's full frontend, browser, Rust, native/runtime and release gates from its
+- Otter's full frontend, browser, Rust, native/runtime and release gates from its
   reviewed source, with the executable and ZIP digests matching provenance.
 - New verified artifacts under the required release roots, final commit identity,
   `gitDirty=false` and `sourceGitDirty=false`, plus recorded commands, results,
@@ -235,7 +235,7 @@ Historical phase records and detailed candidate evidence can be recovered from
 Git tag `cleanup-base-20260928`. Keep future verification results with the exact
 release artifacts rather than extending a completed implementation diary.
 
-For Art Surface native acceptance, bind the exact Hook/daemon paths and SHA-256
+For Art Surface native acceptance, bind the exact Otter/daemon paths and SHA-256
 values to startup, pairing/approval, attachment, action/resource/formal result,
 600-second resource sampling, same-instance restart recovery and final teardown.
 Historical passing pairs cannot validate later source or package bytes. Record
@@ -254,7 +254,7 @@ requires a new release ID and regenerated checksums/SBOM/provenance.
 
 ## Smoke-process teardown
 
-Framework/Art Store/Hook smoke pins the root handle at launch and retains verified
+Framework/Art Store/Otter smoke pins the root handle at launch and retains verified
 child process handles before requesting termination. A child must still report the pinned parent's PID and must not predate
 that parent. Termination is requested once per retained identity, and all parent
 and child exit waits consume one monotonic five-second budget. A real timeout,

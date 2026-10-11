@@ -96,16 +96,16 @@ pub struct LoggingConfig {
     pub dir: PathBuf,
 }
 
-pub struct HookVoiceAdapter;
+pub struct OtterVoiceAdapter;
 pub struct TalkVoiceAdapter;
 
-impl ConfigAdapter for HookVoiceAdapter {
+impl ConfigAdapter for OtterVoiceAdapter {
     fn app(&self) -> ManagedAppId {
-        ManagedAppId::Hook
+        ManagedAppId::Otter
     }
 
     fn display_name(&self) -> &'static str {
-        "Hook"
+        "Otter"
     }
 
     fn schema_version(&self) -> u32 {

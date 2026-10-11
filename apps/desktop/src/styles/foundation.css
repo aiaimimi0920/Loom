@@ -86,7 +86,7 @@
 :root[data-loom-theme="light"] :is(
   .section-kicker,
   .settings-network-row__label span,
-  .hook-cache-row small,
+  .otter-cache-row small,
   .about-panel__rows dt,
   .about-panel__rows code
 ) {

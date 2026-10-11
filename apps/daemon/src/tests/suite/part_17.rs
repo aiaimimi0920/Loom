@@ -1,17 +1,17 @@
 // Loom daemon tests fragment 17; included into the shared crate test module.
 #[test]
-fn daemon_hook_bridge_runtime_start_status_stop() {
+fn daemon_otter_bridge_runtime_start_status_stop() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-bridge-runtime");
+    let root = unique_temp_dir("otter-bridge-runtime");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-    let stopped = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
+    let stopped = expect_json_result_response(otter_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(stopped["running"], false);
     assert_eq!(stopped["connectedClients"], 0);
     assert_eq!(stopped["extensionCapableClients"], 0);
 
     let started = expect_json_result_response(
-        start_hook_bridge(
+        start_otter_bridge(
             r#"{"port":0}"#,
             &runtime.hook_bridge,
             &runtime.capability_runtime,
@@ -39,12 +39,12 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
         loom_protocol::EXTENSION_PROTOCOL
     );
 
-    let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
+    let running = expect_json_result_response(otter_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(running["running"], true);
     assert_eq!(running["port"], started["port"]);
 
     let duplicate_start = expect_json_result_response(
-        start_hook_bridge(
+        start_otter_bridge(
             r#"{"port":0}"#,
             &runtime.hook_bridge,
             &runtime.capability_runtime,
@@ -66,14 +66,14 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
     assert_eq!(duplicate_start["error"]["code"], "hook_bridge_running");
 
     let stopped_again = expect_json_result_response(
-        stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
+        stop_otter_bridge(&runtime.hook_bridge, &runtime.shared_images),
         200,
     );
     assert_eq!(stopped_again["running"], false);
     assert_eq!(stopped_again["connectedClients"], 0);
     assert_eq!(stopped_again["port"], 19820);
 
-    let final_status = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
+    let final_status = expect_json_result_response(otter_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(final_status["running"], false);
     assert_eq!(final_status["port"], 19820);
 
@@ -82,13 +82,13 @@ fn daemon_hook_bridge_runtime_start_status_stop() {
 }
 
 #[test]
-fn daemon_hook_bridge_accepts_websocket_handshake_request() {
+fn daemon_otter_bridge_accepts_websocket_handshake_request() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-bridge-handshake");
+    let root = unique_temp_dir("otter-bridge-handshake");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
     let started = expect_json_result_response(
-        start_hook_bridge(
+        start_otter_bridge(
             r#"{"port":0}"#,
             &runtime.hook_bridge,
             &runtime.capability_runtime,
@@ -108,7 +108,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         200,
     );
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut socket = connect_otter_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(
@@ -153,7 +153,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
             .to_string(),
         ))
         .expect("send extension handshake");
-    let extension_response = read_hook_bridge_json(&mut socket);
+    let extension_response = read_otter_bridge_json(&mut socket);
     assert_eq!(extension_response["status"], "succeeded");
     assert!(extension_response["data"]["sessionId"]
         .as_str()
@@ -167,7 +167,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
         ])
     );
 
-    let running = expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200);
+    let running = expect_json_result_response(otter_bridge_status(&runtime.hook_bridge), 200);
     assert_eq!(running["running"], true);
     assert!(
         running["connectedClients"]
@@ -178,7 +178,7 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
     assert_eq!(running["extensionCapableClients"], 1);
 
     let stopped = expect_json_result_response(
-        stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
+        stop_otter_bridge(&runtime.hook_bridge, &runtime.shared_images),
         200,
     );
     assert_eq!(stopped["running"], false);
@@ -186,23 +186,23 @@ fn daemon_hook_bridge_accepts_websocket_handshake_request() {
     assert_eq!(stopped["extensionCapableClients"], 0);
     drop(socket);
 
-    let restarted = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let restarted = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     assert_eq!(restarted["connectedClients"], 0);
     assert_eq!(restarted["extensionCapableClients"], 0);
-    stop_test_hook_bridge(&runtime);
+    stop_test_otter_bridge(&runtime);
 
     drop(runtime);
     fs::remove_dir_all(root).expect("cleanup hook bridge root");
 }
 
 #[test]
-fn daemon_extension_bridge_rejects_a_socket_without_hook_handshake() {
+fn daemon_extension_bridge_rejects_a_socket_without_otter_handshake() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("extension-bridge-auth-order");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut socket = connect_otter_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(
@@ -219,26 +219,26 @@ fn daemon_extension_bridge_rejects_a_socket_without_hook_handshake() {
             .to_string(),
         ))
         .expect("send unauthenticated extension handshake");
-    let response = read_hook_bridge_json(&mut socket);
+    let response = read_otter_bridge_json(&mut socket);
     assert_eq!(response["status"], "failed");
     assert_eq!(response["error"]["code"], "hook_session_required");
 
     drop(socket);
-    stop_test_hook_bridge(&runtime);
+    stop_test_otter_bridge(&runtime);
     drop(runtime);
     fs::remove_dir_all(root).expect("cleanup extension bridge root");
 }
 
 #[test]
-fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
+fn daemon_otter_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-bridge-fanout");
+    let root = unique_temp_dir("otter-bridge-fanout");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
-    let mut subscriber = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut subscriber = connect_otter_bridge_websocket(bridge_port, &root);
     subscriber
         .send(tungstenite::Message::Text(
             json!({
@@ -251,10 +251,10 @@ fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
             .to_string(),
         ))
         .expect("send subscribe");
-    let subscribe_response = read_hook_bridge_json(&mut subscriber);
+    let subscribe_response = read_otter_bridge_json(&mut subscriber);
     assert_eq!(subscribe_response["status"], "succeeded");
 
-    let mut publisher = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut publisher = connect_otter_bridge_websocket(bridge_port, &root);
     publisher
             .send(tungstenite::Message::Text(
                 json!({
@@ -270,10 +270,10 @@ fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
                 .to_string(),
             ))
             .expect("send instantiate workflow");
-    let publish_response = read_hook_bridge_json(&mut publisher);
+    let publish_response = read_otter_bridge_json(&mut publisher);
     assert_eq!(publish_response["status"], "succeeded");
 
-    let broadcast = read_hook_bridge_json(&mut subscriber);
+    let broadcast = read_otter_bridge_json(&mut subscriber);
     assert_eq!(
         broadcast["method"],
         loom_protocol::HOOK_EVENT_WORKFLOW_INSTANTIATED
@@ -282,7 +282,7 @@ fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
     assert_eq!(broadcast["params"]["nodes"][0]["id"], "prompt");
     assert_eq!(broadcast["params"]["edges"][0]["target"], "out");
 
-    let running = hook_bridge_status_value(&runtime);
+    let running = otter_bridge_status_value(&runtime);
     assert!(
         running["subscribedClients"]
             .as_u64()
@@ -292,22 +292,22 @@ fn daemon_hook_bridge_fans_out_broadcasts_to_subscribed_websocket_clients() {
 
     drop(publisher);
     drop(subscriber);
-    let stopped = stop_test_hook_bridge(&runtime);
+    let stopped = stop_test_otter_bridge(&runtime);
     assert_eq!(stopped["running"], false);
 
     drop(runtime);
-    fs::remove_dir_all(root).expect("cleanup Hook Bridge fanout root");
+    fs::remove_dir_all(root).expect("cleanup Otter Bridge fanout root");
 }
 
 #[test]
-fn daemon_hook_bridge_accepts_versioned_surface_subscriptions() {
+fn daemon_otter_bridge_accepts_versioned_surface_subscriptions() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-bridge-surface-subscription");
+    let root = unique_temp_dir("otter-bridge-surface-subscription");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut subscriber = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut subscriber = connect_otter_bridge_websocket(bridge_port, &root);
     subscriber
         .send(tungstenite::Message::Text(
             json!({
@@ -320,7 +320,7 @@ fn daemon_hook_bridge_accepts_versioned_surface_subscriptions() {
             .to_string(),
         ))
         .expect("send Surface subscribe");
-    let response = read_hook_bridge_json(&mut subscriber);
+    let response = read_otter_bridge_json(&mut subscriber);
     assert_eq!(response["status"], "succeeded");
     assert_eq!(
         response["data"]["events"][0],
@@ -328,17 +328,17 @@ fn daemon_hook_bridge_accepts_versioned_surface_subscriptions() {
     );
 
     drop(subscriber);
-    let stopped = stop_test_hook_bridge(&runtime);
+    let stopped = stop_test_otter_bridge(&runtime);
     assert_eq!(stopped["running"], false);
     drop(runtime);
     fs::remove_dir_all(root).expect("cleanup Surface subscription root");
 }
 
 #[test]
-fn daemon_hook_bridge_rejects_legacy_surface_subscription_alias() {
-    let root = unique_temp_dir("hook-bridge-legacy-surface-subscription");
+fn daemon_otter_bridge_rejects_legacy_surface_subscription_alias() {
+    let root = unique_temp_dir("otter-bridge-legacy-surface-subscription");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
-    let response = run_hook_bridge_text(
+    let response = run_otter_bridge_text(
         &runtime,
         &json!({
             "method": loom_protocol::HOOK_METHOD_SUBSCRIBE,
@@ -356,15 +356,15 @@ fn daemon_hook_bridge_rejects_legacy_surface_subscription_alias() {
 }
 
 #[test]
-fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
+fn daemon_otter_bridge_filters_broadcasts_by_subscribed_channel() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-bridge-channel-filter");
+    let root = unique_temp_dir("otter-bridge-channel-filter");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
 
-    let mut subscriber = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut subscriber = connect_otter_bridge_websocket(bridge_port, &root);
     subscriber
         .send(tungstenite::Message::Text(
             json!({
@@ -377,7 +377,7 @@ fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
             .to_string(),
         ))
         .expect("send subscribe");
-    let subscribe_response = read_hook_bridge_json(&mut subscriber);
+    let subscribe_response = read_otter_bridge_json(&mut subscriber);
     assert_eq!(subscribe_response["status"], "succeeded");
 
     let saved_tool = expect_json_text_route_response(
@@ -409,7 +409,7 @@ fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
     }
 
     drop(subscriber);
-    let stopped = stop_test_hook_bridge(&runtime);
+    let stopped = stop_test_otter_bridge(&runtime);
     assert_eq!(stopped["running"], false);
 
     drop(runtime);
@@ -417,7 +417,7 @@ fn daemon_hook_bridge_filters_broadcasts_by_subscribed_channel() {
 }
 
 #[test]
-fn daemon_hook_bridge_executes_mcp_backed_art_node() {
+fn daemon_otter_bridge_executes_mcp_backed_art_node() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("mcp-art-node");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
@@ -448,7 +448,7 @@ fn daemon_hook_bridge_executes_mcp_backed_art_node() {
                     r#"{
               "id": "fixture-art",
               "name": "Fixture Art",
-              "description": "Execute fixture MCP through Hook bridge",
+              "description": "Execute fixture MCP through Otter bridge",
               "enabled": true,
               "execution": {
                 "type": "mcp",
@@ -463,9 +463,9 @@ fn daemon_hook_bridge_executes_mcp_backed_art_node() {
     );
     assert_eq!(saved_tool["tool"]["id"], "fixture-art");
 
-    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut socket = connect_otter_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(formal_art_execute_request(
@@ -476,7 +476,7 @@ fn daemon_hook_bridge_executes_mcp_backed_art_node() {
             json!({ "text": "execute art node runtime" }),
         )))
         .expect("send execute art node");
-    let response = read_hook_terminal_response(&mut socket, "mcp-execute");
+    let response = read_otter_terminal_response(&mut socket, "mcp-execute");
 
     assert_eq!(response["status"], "succeeded", "response={response}");
     assert_eq!(response["data"]["nodeId"], "node-mcp");
@@ -486,7 +486,7 @@ fn daemon_hook_bridge_executes_mcp_backed_art_node() {
     );
 
     drop(socket);
-    let stopped = stop_test_hook_bridge(&runtime);
+    let stopped = stop_test_otter_bridge(&runtime);
     assert_eq!(stopped["running"], false);
 
     drop(runtime);

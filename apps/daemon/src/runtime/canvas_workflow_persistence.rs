@@ -20,11 +20,11 @@ fn canvas_workflow_dir(root: &Path, id: &str) -> Option<PathBuf> {
     Some(root.join(trimmed))
 }
 
-fn canvas_workflow_preview_ext(source: &hook_canvas::HookCanvasPreviewSource) -> &'static str {
+fn canvas_workflow_preview_ext(source: &otter_canvas::OtterCanvasPreviewSource) -> &'static str {
     // Sniff the extension from the source bytes so the saved file keeps a usable
     // type; default to png which the content-type sniffer also accepts.
     match source {
-        hook_canvas::HookCanvasPreviewSource::File(path) => {
+        otter_canvas::OtterCanvasPreviewSource::File(path) => {
             match path.extension().and_then(|ext| ext.to_str()) {
                 Some(ext)
                     if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") =>
@@ -35,17 +35,17 @@ fn canvas_workflow_preview_ext(source: &hook_canvas::HookCanvasPreviewSource) ->
                 _ => "png",
             }
         }
-        hook_canvas::HookCanvasPreviewSource::DataUrl(_) => "png",
+        otter_canvas::OtterCanvasPreviewSource::DataUrl(_) => "png",
     }
 }
 
-fn save_hook_canvas_workflow(
+fn save_otter_canvas_workflow(
     path_id: &str,
     body: &str,
     workflow_store: &WorkflowStore,
     canvas_workflow_root: &Path,
 ) -> Result<(u16, String)> {
-    let request = match serde_json::from_str::<SaveHookCanvasWorkflowRequest>(body) {
+    let request = match serde_json::from_str::<SaveOtterCanvasWorkflowRequest>(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
@@ -57,15 +57,15 @@ fn save_hook_canvas_workflow(
         return invalid_request("invalid workflow id");
     };
 
-    let document = match load_active_hook_canvas_document() {
+    let document = match load_active_otter_canvas_document() {
         Ok(document) => document,
         Err(error) => {
-            eprintln!("loom Hook canvas workflow export failed: {error:#}");
+            eprintln!("loom Otter canvas workflow export failed: {error:#}");
             return structured_error(
                 500,
                 json!({
                     "code": "hook_canvas_error",
-                    "message": "Hook canvas workflow export is temporarily unavailable",
+                    "message": "Otter canvas workflow export is temporarily unavailable",
                 }),
             );
         }
@@ -81,21 +81,21 @@ fn save_hook_canvas_workflow(
         .export_workflow_yaml_for_selected_node(request.selected_node_id.trim(), &workflow_name)
     {
         Ok(data) => data,
-        Err(hook_canvas::HookCanvasWorkflowExportError::NodeNotFound(node_id)) => {
+        Err(otter_canvas::OtterCanvasWorkflowExportError::NodeNotFound(node_id)) => {
             return structured_error(
                 404,
                 json!({
                     "code": "hook_canvas_node_not_found",
-                    "message": format!("Hook canvas node `{node_id}` was not found"),
+                    "message": format!("Otter canvas node `{node_id}` was not found"),
                 }),
             );
         }
-        Err(hook_canvas::HookCanvasWorkflowExportError::InvalidNode(node_id)) => {
+        Err(otter_canvas::OtterCanvasWorkflowExportError::InvalidNode(node_id)) => {
             return structured_error(
                 400,
                 json!({
                     "code": "hook_canvas_node_invalid",
-                    "message": format!("Hook canvas node `{node_id}` is not canonical"),
+                    "message": format!("Otter canvas node `{node_id}` is not canonical"),
                 }),
             );
         }
@@ -105,21 +105,21 @@ fn save_hook_canvas_workflow(
     let component =
         match document.component_snapshot_for_selected_node(request.selected_node_id.trim()) {
             Ok(component) => component,
-            Err(hook_canvas::HookCanvasWorkflowExportError::NodeNotFound(node_id)) => {
+            Err(otter_canvas::OtterCanvasWorkflowExportError::NodeNotFound(node_id)) => {
                 return structured_error(
                     404,
                     json!({
                         "code": "hook_canvas_node_not_found",
-                        "message": format!("Hook canvas node `{node_id}` was not found"),
+                        "message": format!("Otter canvas node `{node_id}` was not found"),
                     }),
                 );
             }
-            Err(hook_canvas::HookCanvasWorkflowExportError::InvalidNode(node_id)) => {
+            Err(otter_canvas::OtterCanvasWorkflowExportError::InvalidNode(node_id)) => {
                 return structured_error(
                     400,
                     json!({
                         "code": "hook_canvas_node_invalid",
-                        "message": format!("Hook canvas node `{node_id}` is not canonical"),
+                        "message": format!("Otter canvas node `{node_id}` is not canonical"),
                     }),
                 );
             }
@@ -127,7 +127,7 @@ fn save_hook_canvas_workflow(
 
     // Persist image copies for each member node, then rewrite preview URLs to the
     // saved-workflow preview route so the frozen snapshot renders without the
-    // live Hook session.
+    // live Otter session.
     let images_dir = workflow_dir.join("images");
     if let Err(error) = fs::create_dir_all(&images_dir) {
         eprintln!("loom canvas workflow image dir failed: {error:#}");
@@ -143,18 +143,18 @@ fn save_hook_canvas_workflow(
     let mut saved_previews: HashMap<String, String> = HashMap::new();
     for (node_id, source) in &component.previews {
         let bytes = match source {
-            hook_canvas::HookCanvasPreviewSource::DataUrl(data_url) => {
+            otter_canvas::OtterCanvasPreviewSource::DataUrl(data_url) => {
                 match loom_image_io::decode_data_url_bytes(data_url) {
                     Ok(bytes) => bytes,
                     Err(_) => continue,
                 }
             }
-            hook_canvas::HookCanvasPreviewSource::File(path) => match fs::read(path) {
+            otter_canvas::OtterCanvasPreviewSource::File(path) => match fs::read(path) {
                 Ok(bytes) => bytes,
                 Err(_) => continue,
             },
         };
-        if bytes.len() as u64 > hook_canvas::MAX_PREVIEW_BYTES {
+        if bytes.len() as u64 > otter_canvas::MAX_PREVIEW_BYTES {
             continue;
         }
         let ext = canvas_workflow_preview_ext(source);

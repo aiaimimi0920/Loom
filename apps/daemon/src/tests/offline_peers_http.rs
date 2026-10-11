@@ -62,7 +62,7 @@ fn offline_peers_http_rejects_device_admin_access_tampering_and_replay() {
     let root_a = ProjectionRoot::new(); let root_b = ProjectionRoot::new();
     let (a, mut server_a) = start(&root_a.0); let (b, mut server_b) = start(&root_b.0);
     let view_a = peer_view(a); let view_b = peer_view(b);
-    let hook = Identity::pair(a, "Hook cannot configure Loom peers");
+    let hook = Identity::pair(a, "Otter cannot configure Loom peers");
     let headers = format!("Authorization: Device {}\r\nX-Loom-Device-Nonce: {}\r\n", hook.token, Uuid::new_v4());
     assert_eq!(response(http_request_with_extra_headers(a, "GET", "/v1/projection-peers", None, &headers)).0, 403);
     assert_eq!(public(a, "/v1/projection-peers/probe", json!({})).0, 403);

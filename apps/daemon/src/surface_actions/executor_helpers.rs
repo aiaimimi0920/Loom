@@ -1,9 +1,9 @@
 // Wire confirmation broadcasting and test-only package validation helpers.
 fn broadcast_confirmation(
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     confirmation: &SurfaceConfirmationRequest,
 ) {
-    broadcast_hook_bridge_json(
+    broadcast_otter_bridge_json(
         hook_bridge,
         json!({
             "method": SURFACE_EVENT_CONFIRMATION_REQUEST,

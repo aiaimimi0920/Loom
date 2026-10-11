@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://neuro.local/schemas/loom/surface-stream.v1.schema.json",
   "title": "Loom Surface Stream v1",
-  "description": "Response envelope of the daemon's surface stream poll. `protocolVersion` is required, not optional: Hook rejects an envelope that omits it rather than treating the peer as a legacy daemon, so a build that drops the field looks like a protocol mismatch instead of an older version.",
+  "description": "Response envelope of the daemon's surface stream poll. `protocolVersion` is required, not optional: Otter rejects an envelope that omits it rather than treating the peer as a legacy daemon, so a build that drops the field looks like a protocol mismatch instead of an older version.",
   "type": "object",
   "required": ["protocolVersion", "next", "reset", "messages"],
   "properties": {

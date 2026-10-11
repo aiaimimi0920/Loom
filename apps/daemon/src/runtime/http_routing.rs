@@ -253,7 +253,7 @@ fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteR
                 &runtime.canvas_workflow_root,
             );
         }
-        if let Some(node_id) = hook_canvas_preview_node_id(&request.method, &request.path) {
+        if let Some(node_id) = otter_canvas_preview_node_id(&request.method, &request.path) {
             if !request.has_admin_credential(&runtime.auth_token) {
                 return structured_error(
                     401,
@@ -264,7 +264,7 @@ fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteR
                 )
                 .map(|(status, body)| RouteResponse::Text { status, body });
             }
-            return hook_canvas_preview_response(&node_id);
+            return otter_canvas_preview_response(&node_id);
         }
         route_with_runtime(runtime, request)
             .map(|(status, body)| RouteResponse::Text { status, body })

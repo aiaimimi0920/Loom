@@ -8,7 +8,7 @@ availability is negotiated and must not be inferred from the presence of this co
 `loom.live.v1` is the shared control and media contract for live screenshot
 sessions. Loom owns session identity, device roles, controller authority,
 recovery ordering, observation normalization, trigger audit, and transport
-authorization. Hook owns source capture, viewer rendering, input execution, and
+authorization. Otter owns source capture, viewer rendering, input execution, and
 capability reporting. Art execution remains in Loom.
 
 `loom.surface.v1` remains the declarative UI/state protocol. The
@@ -97,7 +97,7 @@ individual token need not do so.
 
 ## Session and authority
 
-`LiveScreenshotSession` carries source device/Hook/window identity, the physical
+`LiveScreenshotSession` carries source device/Otter/window identity, the physical
 source region and anchor, frame stream descriptor, input and observation
 capabilities, trigger bindings, viewers, the optional controller, visibility
 and capture strategies, revision, and timestamps.
@@ -158,14 +158,14 @@ IDs. H.264 is the LAN candidate; raw BGRA is a local/diagnostic candidate. HEVC
 and AV1 are not v1 codecs.
 
 The enum alone does not establish a negotiated or usable H.264 path. The current
-Hook LiveRelay viewer supports sRGB/raw BGRA and the explicitly negotiated JPEG
+Otter LiveRelay viewer supports sRGB/raw BGRA and the explicitly negotiated JPEG
 profile below. H.264 still lacks a functioning end-to-end decoder path; its
 enum is not enabled by diagnostics or by JPEG negotiation.
 
 ### JPEG 连接级媒体 profile
 
 `loom.live.jpeg.v1` 是可选 WebSocket 子协议，不替换 `loom.live.v1` 控制协议。
-只有请求明确提供它时，Loom 才返回它；旧客户端仍选 v1。新 Hook 提供
+只有请求明确提供它时，Loom 才返回它；旧客户端仍选 v1。新 Otter 提供
 `loom.live.jpeg.v1,loom.live.v1`，旧 Loom 可选择第二项，因此无需额外探测请求。
 鉴权、Host/Origin 检查、source/viewer 分权、连接上限和 epoch 门禁不变。
 
@@ -193,8 +193,8 @@ JPEG 头中的真实尺寸与声明一致，完整解码由实际消费者完成
 每次媒体循环亦重查成员资格；空闲连接通过既有 250ms 等待边界观察撤销。
 
 该候选只启用 daemon 已有 `image` 依赖的 JPEG feature，不引入新服务、视频栈或
-传输路由。Hook 与 Loom 可独立回退到旧版本并自动恢复 raw，无持久格式迁移。
-`protocol/fixtures/live-jpeg-v1.nllv` 与 Hook 同路径字节一致；Rust 混合版本
+传输路由。Otter 与 Loom 可独立回退到旧版本并自动恢复 raw，无持久格式迁移。
+`protocol/fixtures/live-jpeg-v1.nllv` 与 Otter 同路径字节一致；Rust 混合版本
 loopback WebSocket、旧端像素和墙 adapter 测试不能冒充跨设备性能验收。
 
 ### Bounded LiveRelay stage diagnostics
@@ -265,7 +265,7 @@ administrator credential retains its explicit operational read path. Reliable
 events also require a paired session member. Media frames never carry
 observation values.
 
-Hook reports observations and executes transparent input, but it never executes
+Otter reports observations and executes transparent input, but it never executes
 Art locally. A paired viewer registers a trigger with
 `POST /v1/live/sessions/{sessionId}/triggers`. The viewer may target only its
 own mounted Surface attachment. Loom validates the target and condition before
@@ -303,7 +303,7 @@ members can receive the bounded current snapshot and reliable audit updates.
 
 ## Phase 8 extension capability boundary
 
-Hook exposes the local `hook.live.extensions.v1` discovery report before an
+Otter exposes the local `hook.live.extensions.v1` discovery report before an
 optional provider is allowed to affect a live session. Each entry carries a
 bounded capability ID, kind, `available` or `unavailable`, execution owner,
 trust boundary, optional observation source and maximum confidence, and an
@@ -313,11 +313,11 @@ success state.
 Application adapters and visual providers have `executionOwner =
 loom_capability_plugin` and `trustBoundary =
 loom_verified_capability_package`. An adapter cannot become live merely because
-Hook recognizes an application name. Its code and configuration must be an
+Otter recognizes an application name. Its code and configuration must be an
 installed, enabled, non-revoked Loom Capability Plugin with approved permissions
 and a content-bound package digest. The generic Capability Plugin runtime owns
 process isolation, limits, lifecycle, permission grants, signature status, and
-fault recovery; Hook does not add browser-, Electron-, or renderer-specific
+fault recovery; Otter does not add browser-, Electron-, or renderer-specific
 branches to capture or UIA owners.
 
 The initial report contains three adapter slots (`browser_accessibility`,
@@ -326,7 +326,7 @@ The initial report contains three adapter slots (`browser_accessibility`,
 `pen_input`, `ime_input`, `clipboard_input`, `file_drop_input`). This candidate
 reports every slot as unavailable because no corresponding provider/backend is
 shipped in the core pair. OCR remains an independently installed Loom Capability
-Plugin and is not copied into Hook core.
+Plugin and is not copied into Otter core.
 
 Visual observations have maximum confidence `high`. Loom also resolves the
 target action from the locked Surface package immediately before dispatch and
@@ -335,7 +335,7 @@ authorization, confirmation, cancellation, idempotency, and audit checks remain
 in Loom. Human takeover continues through controller transfer or the source
 device's immediate reclaim path. Optional semantic active operations remain
 ordinary permission-checked Loom Surface/Art actions; an adapter never executes
-Art inside Hook.
+Art inside Otter.
 
 The current window-message input backend continues to advertise only the input
 kinds it actually implements. Touch, pen, IME composition, live clipboard, and
@@ -353,12 +353,12 @@ single-controller lease remain authoritative server checks.
 
 Viewer media sockets now read bounded WebSocket control frames as well as
 sending media. They answer Ping with the exact Pong payload, consume Pong, and
-reject viewer binary/text data. Hook uses this to measure viewer round-trip
+reject viewer binary/text data. Otter uses this to measure viewer round-trip
 latency and choose its replaceable pointer-move coalescing interval. Reliable
 input edges and control events remain on the authenticated ordered HTTP control
 plane and are not downgraded by latency policy.
 
-Hook exposes `hook.live.network.v1` as a local, non-secret capability report.
+Otter exposes `hook.live.network.v1` as a local, non-secret capability report.
 For this candidate, `websocket_binary` may be available for loopback/private
 HTTPS Loom, while `cloud_relay` and `webrtc_turn` are unavailable because no
 relay provider or NAT traversal service is configured. Loom continues to reject
@@ -377,5 +377,5 @@ infrastructure and both clean-source formal releases exist.
 The `loom_protocol` tests cover JSON schema acceptance/rejection, unknown fields,
 version rejection, bounds, exact control/input ordering, frame gaps, epoch
 resume, binary round-trip, truncated/oversized/mismatched frames, and untrusted
-observation values. Hook maintains an independent TypeScript parser and binary
+observation values. Otter maintains an independent TypeScript parser and binary
 codec with matching negative tests.

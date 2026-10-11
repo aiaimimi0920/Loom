@@ -2,7 +2,7 @@
 fn delete_tool(
     path_id: &str,
     tool_registry: &ToolRegistry,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let deleted = match tool_registry.delete_tool(path_id) {
         Ok(deleted) => deleted,
@@ -20,7 +20,7 @@ fn delete_tool(
         );
     }
 
-    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+    broadcast_otter_bridge_json(hook_bridge, capabilities_updated_event());
     Ok((
         200,
         serde_json::to_string(&json!({ "toolId": path_id, "deleted": true }))?,
@@ -42,8 +42,8 @@ fn list_enabled_tools(tool_registry: &ToolRegistry) -> Result<(u16, String)> {
     ))
 }
 
-fn broadcast_tool_capabilities_updated(hook_bridge: &SharedHookBridgeRuntime) {
-    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+fn broadcast_tool_capabilities_updated(hook_bridge: &SharedOtterBridgeRuntime) {
+    broadcast_otter_bridge_json(hook_bridge, capabilities_updated_event());
 }
 
 fn get_tool(tool_id: &str, tool_registry: &ToolRegistry) -> Result<(u16, String)> {
@@ -58,7 +58,7 @@ fn set_tool_enabled(
     tool_id: &str,
     enabled: bool,
     tool_registry: &ToolRegistry,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let mut tool = match get_registered_tool(tool_id, tool_registry) {
         Ok(tool) => tool,
@@ -69,7 +69,7 @@ fn set_tool_enabled(
         Ok(saved) => saved,
         Err(error) => return tool_registry_error_response(error),
     };
-    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+    broadcast_otter_bridge_json(hook_bridge, capabilities_updated_event());
     Ok((200, serde_json::to_string(&json!({ "tool": saved }))?))
 }
 
@@ -77,7 +77,7 @@ fn update_tool_defaults(
     tool_id: &str,
     body: &str,
     tool_registry: &ToolRegistry,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request = match serde_json::from_str::<Value>(body) {
         Ok(value) => value,
@@ -92,7 +92,7 @@ fn update_tool_defaults(
         Ok(saved) => saved,
         Err(error) => return tool_registry_error_response(error),
     };
-    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+    broadcast_otter_bridge_json(hook_bridge, capabilities_updated_event());
     Ok((200, serde_json::to_string(&json!({ "tool": saved }))?))
 }
 
@@ -118,7 +118,7 @@ fn tool_not_found_response(tool_id: &str) -> Result<(u16, String)> {
     )
 }
 
-fn hook_image_input_names(tool: &ToolDefinition) -> Vec<String> {
+fn otter_image_input_names(tool: &ToolDefinition) -> Vec<String> {
     tool.inputs
         .iter()
         .filter_map(|input| {
@@ -167,7 +167,7 @@ fn tool_supports_shader_preview(tool: &ToolDefinition) -> bool {
         })
 }
 
-fn hook_capability_parameters(
+fn otter_capability_parameters(
     tool: &ToolDefinition,
     tools: &[ToolDefinition],
     workflow_store: &WorkflowStore,
@@ -186,7 +186,7 @@ fn hook_capability_parameters(
     tool.params
         .iter()
         .map(|param| {
-            let Some(param_id) = hook_parameter_id(param) else {
+            let Some(param_id) = otter_parameter_id(param) else {
                 return param.clone();
             };
             let Some(binding) = bindings.inputs.iter().find(|binding| {
@@ -207,16 +207,16 @@ fn hook_capability_parameters(
             let Some(node_param) = node_tool
                 .params
                 .iter()
-                .find(|candidate| hook_parameter_id(candidate) == Some(target))
+                .find(|candidate| otter_parameter_id(candidate) == Some(target))
             else {
                 return param.clone();
             };
-            merge_hook_parameter_ui_schema(param, node_param)
+            merge_otter_parameter_ui_schema(param, node_param)
         })
         .collect()
 }
 
-fn hook_parameter_id(param: &Value) -> Option<&str> {
+fn otter_parameter_id(param: &Value) -> Option<&str> {
     param.get("id").and_then(Value::as_str)
 }
 
@@ -232,7 +232,7 @@ fn find_workflow_node_tool<'a>(
     matches.next().is_none().then_some(first)
 }
 
-fn merge_hook_parameter_ui_schema(param: &Value, source: &Value) -> Value {
+fn merge_otter_parameter_ui_schema(param: &Value, source: &Value) -> Value {
     const UI_SCHEMA_KEYS: &[&str] = &[
         "widget",
         "type",

@@ -1,5 +1,5 @@
 //! Loom-owned QR projection identity, coordination, persistence and transport.
-//! Hook receives public projection state; the account signing key stays native.
+//! Otter receives public projection state; the account signing key stays native.
 
 mod central;
 mod envelope;

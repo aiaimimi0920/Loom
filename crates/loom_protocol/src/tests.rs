@@ -130,8 +130,8 @@ fn resource_limits_use_manifest_mib_spelling() {
     assert_eq!(serialized["memoryMiB"], 512);
 }
 
-/// The surface stream envelope is the one Hook parses without going through a Rust type, so the
-/// schema and the constant have to agree. Hook also rejects an envelope with no
+/// The surface stream envelope is the one Otter parses without going through a Rust type, so the
+/// schema and the constant have to agree. Otter also rejects an envelope with no
 /// `protocolVersion` instead of treating it as an older daemon, which is why the field stays
 /// required here rather than optional.
 #[test]
@@ -153,7 +153,7 @@ fn surface_stream_schema_pins_the_protocol_version_constant() {
 }
 
 #[test]
-fn hook_message_schema_omits_removed_fixed_enhancement_methods() {
+fn otter_message_schema_omits_removed_fixed_enhancement_methods() {
     let schema: Value = serde_json::from_str(schemas::HOOK_MESSAGE_V1).expect("schema JSON");
     let definitions = schema["$defs"].as_object().expect("schema definitions");
     let request_variants = definitions["request"]["oneOf"]
@@ -187,7 +187,7 @@ fn hook_message_schema_omits_removed_fixed_enhancement_methods() {
     }
 
     let supported_request =
-        serde_json::to_value(HookRequest::SettingsGet(HookSettingsGetRequest {
+        serde_json::to_value(OtterRequest::SettingsGet(OtterSettingsGetRequest {
             request_id: "request-1".to_owned(),
         }))
         .expect("serialize supported request");

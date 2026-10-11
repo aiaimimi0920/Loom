@@ -61,7 +61,7 @@ fn surface_instance_migration_is_explicit_remounts_and_can_rollback_exactly() {
             &[],
             Some(
                 &json!({
-                    "hookNodeId": "hook-node:surface-migrating",
+                    "hookNodeId": "otter-node:surface-migrating",
                     "deviceId": "device-000-local",
                     "capabilities": default_declarative_surface_host_capabilities()
                 })

@@ -48,7 +48,7 @@
                    },
                    {
                        "sha256":  "16e35c4b353995e8df41c22f90b51b130ca817d9eef5722ef6d6f40539a2be14",
-                       "file":  "hook-check-runs.json"
+                       "file":  "otter-check-runs.json"
                    }
                ],
     "stagedFixNativeVerified":  false,

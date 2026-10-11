@@ -13,7 +13,7 @@ fn framework_image_candidates_use_canonical_loom_metadata() {
     let mut tool = ToolDefinition::new(
         "fixture-image-art",
         "Fixture Image Art",
-        "Projects framework candidates for Hook.",
+        "Projects framework candidates for Otter.",
         crate::ToolExecution::FrameworkArt {
             framework: "mcp".to_owned(),
         },
@@ -54,7 +54,7 @@ fn framework_image_candidates_are_normalized_to_the_consumer_wire_shape() {
     let mut tool = ToolDefinition::new(
         "fixture-image-art",
         "Fixture Image Art",
-        "Projects framework candidates for Hook.",
+        "Projects framework candidates for Otter.",
         crate::ToolExecution::FrameworkArt {
             framework: "mcp".to_owned(),
         },
@@ -114,7 +114,7 @@ fn image_candidate_tool() -> ToolDefinition {
     let mut tool = ToolDefinition::new(
         "fixture-image-art",
         "Fixture Image Art",
-        "Projects framework candidates for Hook.",
+        "Projects framework candidates for Otter.",
         crate::ToolExecution::FrameworkArt {
             framework: "mcp".to_owned(),
         },

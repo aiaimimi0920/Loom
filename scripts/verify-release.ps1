@@ -143,9 +143,9 @@ if ($extensionCompatibilityRecords.Count -eq 1) {
 }
 
 $smokeStatus = "not-run"
-$hookCanvasSmokeStatus = "not-run"
-$hookErrorPreviewSmokeStatus = "not-run"
-$frameworkArtStoreHookSmokeStatus = "not-run"
+$otterCanvasSmokeStatus = "not-run"
+$otterErrorPreviewSmokeStatus = "not-run"
+$frameworkArtStoreOtterSmokeStatus = "not-run"
 $pluginBoundarySmokeStatus = "not-run"
 $surfacePrototypeSmokeStatus = "not-run"
 $authoredArtCreationSmokeStatus = "not-run"
@@ -166,54 +166,54 @@ if ($RunSmoke) {
     }
     $smokeStatus = "passed"
 
-    $hookCanvasSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookCanvasUiSmoke.ps1"
-    Assert-True -Condition (Test-Path -LiteralPath $hookCanvasSmokePath -PathType Leaf) -Message "Missing Hook canvas UI smoke script: $hookCanvasSmokePath"
-    $hookCanvasEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\hook-canvas"
-    $hookCanvasSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+    $otterCanvasSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomOtterCanvasUiSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $otterCanvasSmokePath -PathType Leaf) -Message "Missing Otter canvas UI smoke script: $otterCanvasSmokePath"
+    $otterCanvasEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\otter-canvas"
+    $otterCanvasSmokeResult = Invoke-CapturedPowerShell -Arguments @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", $hookCanvasSmokePath,
+        "-File", $otterCanvasSmokePath,
         "-PackageDir", $packageFullPath,
-        "-EvidenceRoot", $hookCanvasEvidenceRoot
+        "-EvidenceRoot", $otterCanvasEvidenceRoot
     )
-    $hookCanvasSmokeOutput = @($hookCanvasSmokeResult.output)
-    if ([int]$hookCanvasSmokeResult.exitCode -ne 0) {
-        throw "Hook canvas UI smoke failed: $($hookCanvasSmokeOutput -join [Environment]::NewLine)"
+    $otterCanvasSmokeOutput = @($otterCanvasSmokeResult.output)
+    if ([int]$otterCanvasSmokeResult.exitCode -ne 0) {
+        throw "Otter canvas UI smoke failed: $($otterCanvasSmokeOutput -join [Environment]::NewLine)"
     }
-    $hookCanvasSmokeStatus = "passed"
+    $otterCanvasSmokeStatus = "passed"
 
-    $hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
-    Assert-True -Condition (Test-Path -LiteralPath $hookErrorPreviewSmokePath -PathType Leaf) -Message "Missing Hook error preview smoke script: $hookErrorPreviewSmokePath"
-    $hookErrorPreviewEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\hook-error-preview"
-    $hookErrorPreviewSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+    $otterErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomOtterErrorPreviewSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $otterErrorPreviewSmokePath -PathType Leaf) -Message "Missing Otter error preview smoke script: $otterErrorPreviewSmokePath"
+    $otterErrorPreviewEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\otter-error-preview"
+    $otterErrorPreviewSmokeResult = Invoke-CapturedPowerShell -Arguments @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", $hookErrorPreviewSmokePath,
+        "-File", $otterErrorPreviewSmokePath,
         "-PackageDir", $packageFullPath,
-        "-EvidenceRoot", $hookErrorPreviewEvidenceRoot
+        "-EvidenceRoot", $otterErrorPreviewEvidenceRoot
     )
-    $hookErrorPreviewSmokeOutput = @($hookErrorPreviewSmokeResult.output)
-    if ([int]$hookErrorPreviewSmokeResult.exitCode -ne 0) {
-        throw "Hook error preview smoke failed: $($hookErrorPreviewSmokeOutput -join [Environment]::NewLine)"
+    $otterErrorPreviewSmokeOutput = @($otterErrorPreviewSmokeResult.output)
+    if ([int]$otterErrorPreviewSmokeResult.exitCode -ne 0) {
+        throw "Otter error preview smoke failed: $($otterErrorPreviewSmokeOutput -join [Environment]::NewLine)"
     }
-    $hookErrorPreviewSmokeStatus = "passed"
+    $otterErrorPreviewSmokeStatus = "passed"
 
-    $frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
-    Assert-True -Condition (Test-Path -LiteralPath $frameworkArtStoreHookSmokePath -PathType Leaf) -Message "Missing framework art-store Hook smoke script: $frameworkArtStoreHookSmokePath"
+    $frameworkArtStoreOtterSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $frameworkArtStoreOtterSmokePath -PathType Leaf) -Message "Missing framework art-store Otter smoke script: $frameworkArtStoreOtterSmokePath"
     $frameworkArtStoreEvidenceRoot = Join-Path $repoRoot "target\runtime-smoke\framework-art-store-hook"
-    $frameworkArtStoreHookSmokeResult = Invoke-CapturedPowerShell -Arguments @(
+    $frameworkArtStoreOtterSmokeResult = Invoke-CapturedPowerShell -Arguments @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", $frameworkArtStoreHookSmokePath,
+        "-File", $frameworkArtStoreOtterSmokePath,
         "-PackageDir", $packageFullPath,
         "-Configuration", "Release",
         "-EvidenceRoot", $frameworkArtStoreEvidenceRoot
     )
-    $frameworkArtStoreHookSmokeOutput = @($frameworkArtStoreHookSmokeResult.output)
-    if ([int]$frameworkArtStoreHookSmokeResult.exitCode -ne 0) {
-        throw "Framework art-store Hook smoke failed: $($frameworkArtStoreHookSmokeOutput -join [Environment]::NewLine)"
+    $frameworkArtStoreOtterSmokeOutput = @($frameworkArtStoreOtterSmokeResult.output)
+    if ([int]$frameworkArtStoreOtterSmokeResult.exitCode -ne 0) {
+        throw "Framework art-store Otter smoke failed: $($frameworkArtStoreOtterSmokeOutput -join [Environment]::NewLine)"
     }
-    $frameworkArtStoreHookSmokeStatus = "passed"
+    $frameworkArtStoreOtterSmokeStatus = "passed"
 
     $pluginBoundarySmokePath = Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1"
     Assert-True -Condition (Test-Path -LiteralPath $pluginBoundarySmokePath -PathType Leaf) -Message "Missing plugin boundary smoke script: $pluginBoundarySmokePath"
@@ -272,9 +272,9 @@ $result = [ordered]@{
     manifest = $manifestPath
     filesChecked = @($checksumEntries.Keys).Count
     smoke = $smokeStatus
-    hookCanvasSmoke = $hookCanvasSmokeStatus
-    hookErrorPreviewSmoke = $hookErrorPreviewSmokeStatus
-    frameworkArtStoreHookSmoke = $frameworkArtStoreHookSmokeStatus
+    otterCanvasSmoke = $otterCanvasSmokeStatus
+    otterErrorPreviewSmoke = $otterErrorPreviewSmokeStatus
+    frameworkArtStoreOtterSmoke = $frameworkArtStoreOtterSmokeStatus
     pluginBoundarySmoke = $pluginBoundarySmokeStatus
     surfacePrototypeSmoke = $surfacePrototypeSmokeStatus
     authoredArtCreationSmoke = $authoredArtCreationSmokeStatus

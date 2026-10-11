@@ -11,7 +11,7 @@ fn route_surfaces_devices(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     capability_runtime: &SharedCapabilityRuntime,
     capability_resources: &SharedCapabilityResourceBroker,
     device_registry: &SharedDeviceRegistryStore,

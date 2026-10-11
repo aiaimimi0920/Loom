@@ -227,7 +227,7 @@ fn create_surface_instance(
 fn delete_surface_instance(
     instance_id: &str,
     surface_instances: &SharedSurfaceInstanceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
     walls: &SharedWallStore,
@@ -259,7 +259,7 @@ fn delete_surface_instance(
                     walls,
                 );
                 for attachment in existing.attachments.values() {
-                    broadcast_hook_bridge_json(
+                    broadcast_otter_bridge_json(
                         hook_bridge,
                         json!({
                             "method": SURFACE_EVENT_LIFECYCLE,
@@ -275,7 +275,7 @@ fn delete_surface_instance(
                             }
                         }),
                     );
-                    broadcast_hook_bridge_json(
+                    broadcast_otter_bridge_json(
                         hook_bridge,
                         json!({
                             "method": SURFACE_EVENT_DISPOSE,

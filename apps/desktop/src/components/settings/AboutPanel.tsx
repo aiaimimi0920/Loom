@@ -7,24 +7,24 @@ export function ApplicationAboutMark({ app }: { app: SettingsAppId }) {
     return <LoomMark />;
   }
   return (
-    <svg className="about-panel__hook-mark" viewBox="0 0 1024 1024" aria-hidden="true">
+    <svg className="about-panel__otter-mark" viewBox="0 0 1024 1024" aria-hidden="true">
       <defs>
-        <filter id="about-hook-green-glow" x="-90%" y="-90%" width="280%" height="280%">
+        <filter id="about-otter-green-glow" x="-90%" y="-90%" width="280%" height="280%">
           <feGaussianBlur stdDeviation="18" result="blur" />
           <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.13  0 0 0 0 0.77  0 0 0 0 0.37  0 0 0 0.78 0" />
           <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
-        <filter id="about-hook-yellow-glow" x="-90%" y="-90%" width="280%" height="280%">
+        <filter id="about-otter-yellow-glow" x="-90%" y="-90%" width="280%" height="280%">
           <feGaussianBlur stdDeviation="18" result="blur" />
           <feColorMatrix in="blur" type="matrix" values="0 0 0 0 1  0 0 0 0 0.9  0 0 0 0 0  0 0 0 0.82 0" />
           <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
       <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M250 394V250h144" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-hook-green-glow)" />
-        <path d="M774 394V250H630" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-hook-green-glow)" />
-        <path d="M250 630v144h144" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-hook-green-glow)" />
-        <path d="M774 630v144H630" stroke="var(--loom-brand-secondary)" strokeWidth="72" filter="url(#about-hook-yellow-glow)" />
+        <path d="M250 394V250h144" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-otter-green-glow)" />
+        <path d="M774 394V250H630" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-otter-green-glow)" />
+        <path d="M250 630v144h144" stroke="var(--loom-brand-primary)" strokeWidth="72" filter="url(#about-otter-green-glow)" />
+        <path d="M774 630v144H630" stroke="var(--loom-brand-secondary)" strokeWidth="72" filter="url(#about-otter-yellow-glow)" />
       </g>
     </svg>
   );

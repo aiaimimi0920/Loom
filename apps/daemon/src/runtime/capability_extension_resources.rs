@@ -1,4 +1,4 @@
-// Invocation-scoped upload conversion for authenticated Hook extension commands.
+// Invocation-scoped upload conversion for authenticated Otter extension commands.
 const MAX_EXTENSION_RESOURCE_UPLOADS: usize = 4;
 const EXTENSION_IMAGE_READ_PERMISSION: &str = "hook.unit.image.read";
 /// How long a staged upload stays leased.

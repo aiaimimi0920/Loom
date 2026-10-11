@@ -145,7 +145,7 @@ pub struct SurfaceActionProgress {
 
 /// Immutable input delivered to an Art runtime for one declared Surface action.
 ///
-/// The runtime never receives Hook internals or credentials through this
+/// The runtime never receives Otter internals or credentials through this
 /// envelope. Framework credential grants continue to use the existing broker.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,7 +205,7 @@ pub struct SurfaceActionResultUpdate {
 /// Package-to-host resource upload used only inside a trusted Surface action
 /// response. Runtime patches reference it as `surface-upload:<id>`; Loom stores
 /// and leases the bytes, then replaces the placeholder before anything crosses
-/// the Hook control channel.
+/// the Otter control channel.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceActionResourceUpload {

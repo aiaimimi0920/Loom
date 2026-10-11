@@ -7,7 +7,7 @@
         tool.metadata.as_mut().expect("Surface metadata")["capabilities"]["surface"]["actions"]
             [0]["timeoutMs"] = json!(40);
         let (registry, instances, resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, tool, "hook-node:timeout");
+            setup_action_fixture(&root, tool, "otter-node:timeout");
         let runner_finished = Arc::new(AtomicBool::new(false));
         let worker_finished = Arc::clone(&runner_finished);
         let runner: Arc<SurfaceActionRunner> = Arc::new(move |_| {
@@ -87,7 +87,7 @@
         action["cancelable"] = json!(true);
         action["timeoutMs"] = json!(2000);
         let (registry, instances, resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, tool, "hook-node:cancel");
+            setup_action_fixture(&root, tool, "otter-node:cancel");
         let runner_started = Arc::new(AtomicBool::new(false));
         let worker_started = Arc::clone(&runner_started);
         let runner: Arc<SurfaceActionRunner> = Arc::new(move |job| {
@@ -176,7 +176,7 @@
         action["concurrency"] = json!("replace_latest");
         action["timeoutMs"] = json!(2000);
         let (registry, instances, resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, tool, "hook-node:replace");
+            setup_action_fixture(&root, tool, "otter-node:replace");
         let first_started = Arc::new(AtomicBool::new(false));
         let worker_first_started = Arc::clone(&first_started);
         let runner: Arc<SurfaceActionRunner> = Arc::new(move |job| {

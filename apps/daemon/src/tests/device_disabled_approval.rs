@@ -4,7 +4,7 @@ fn disabled_approval_distinguishes_pending_and_preserves_disable_on_registration
     let f = Fixture::new();
     let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
     let registration = json!({
-        "name":"Pending disabled Hook", "kind":"computer", "address":"hook://test",
+        "name":"Pending disabled Otter", "kind":"computer", "address":"hook://test",
         "publicKey":BASE64.encode(key.verifying_key().to_bytes())
     });
     let (status, registry) = wall_http::public(
@@ -27,7 +27,7 @@ fn disabled_approval_distinguishes_pending_and_preserves_disable_on_registration
         "PUT",
         &format!("/v1/devices/{id}"),
         Some(json!({
-            "name":"Pending disabled Hook", "kind":"computer", "address":"hook://test", "enabled":false
+            "name":"Pending disabled Otter", "kind":"computer", "address":"hook://test", "enabled":false
         })),
     );
     assert_eq!(status, 200);
@@ -45,7 +45,7 @@ fn disabled_approval_distinguishes_pending_and_preserves_disable_on_registration
             );
             // 批准端点可能启用设备；重新显式禁用，以覆盖 approved + disabled。
             assert_eq!(wall_http::admin(f.port, "PUT", &format!("/v1/devices/{id}"), Some(json!({
-                "name":"Pending disabled Hook", "kind":"computer", "address":"hook://test", "enabled":false
+                "name":"Pending disabled Otter", "kind":"computer", "address":"hook://test", "enabled":false
             }))).0, 200);
         }
         let (status, _) = wall_http::public(

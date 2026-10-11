@@ -4,7 +4,7 @@ import {
   getLoomAppPaths,
   getLoomSettings,
   getLoomShortcuts,
-  HookCacheSettings,
+  OtterCacheSettings,
   listPluginTrust,
   LoomAppPaths,
   LoomArtStoreSettings,
@@ -25,10 +25,10 @@ import {
   ApplicationDiagnosticsInfo,
   FALLBACK_APPLICATION_DIAGNOSTICS,
   HOOK_SHORTCUT_GROUPS,
-  HookCacheClearResult,
-  HookCacheSnapshotInfo,
-  HookShortcutContext,
-  HookShortcutDisplayItem,
+  OtterCacheClearResult,
+  OtterCacheSnapshotInfo,
+  OtterShortcutContext,
+  OtterShortcutDisplayItem,
   LoomCacheClearResult,
   LoomCacheSnapshotInfo,
   QuickBindingEditorState,
@@ -45,8 +45,8 @@ import {
 import {
   formatCacheBytes,
   GeneralSettingsValue,
-  hookCachePreferencesForRuntime,
-  hookCacheSettingsForUi,
+  otterCachePreferencesForRuntime,
+  otterCacheSettingsForUi,
   loomCachePreferencesForRuntime,
   loomCacheSettingsForUi,
 } from "./SettingsPanels";
@@ -72,9 +72,9 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
   const [loomCacheSnapshot, setLoomCacheSnapshot] = useState<LoomCacheSnapshotInfo | null>(null);
   const [loomCacheLoading, setLoomCacheLoading] = useState(false);
   const [loomCacheBusyKind, setLoomCacheBusyKind] = useState<string | null>(null);
-  const [hookCacheSnapshot, setHookCacheSnapshot] = useState<HookCacheSnapshotInfo | null>(null);
-  const [hookCacheLoading, setHookCacheLoading] = useState(false);
-  const [hookCacheBusyKind, setHookCacheBusyKind] = useState<string | null>(null);
+  const [otterCacheSnapshot, setOtterCacheSnapshot] = useState<OtterCacheSnapshotInfo | null>(null);
+  const [otterCacheLoading, setOtterCacheLoading] = useState(false);
+  const [otterCacheBusyKind, setOtterCacheBusyKind] = useState<string | null>(null);
   const [artStoreTrustPolicy, setArtStoreTrustPolicy] = useState<LoomPluginTrustPolicy>("allow_unsigned");
   const [artStoreTrustPolicyBusy, setArtStoreTrustPolicyBusy] = useState(false);
   const [activeSettingsApp, setActiveSettingsApp] = useState<SettingsAppId>("loom");
@@ -115,7 +115,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
           !== JSON.stringify(lastSavedSettingsRef.current.general);
         const loomCacheChanged = JSON.stringify(nextSettings.loom_cache)
           !== JSON.stringify(lastSavedSettingsRef.current.loom_cache);
-        const hookCacheChanged = JSON.stringify(nextSettings.hook_cache)
+        const otterCacheChanged = JSON.stringify(nextSettings.hook_cache)
           !== JSON.stringify(lastSavedSettingsRef.current.hook_cache);
         const saved = await saveLoomSettings(baseUrl, nextSettings);
         if (settingsBaseUrlRef.current === baseUrl) {
@@ -145,10 +145,10 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
             });
           }
         }
-        if (hookCacheChanged) {
+        if (otterCacheChanged) {
           try {
-            await invoke("wait_for_hook_cache_settings", {
-              settings: hookCachePreferencesForRuntime(saved.hook_cache),
+            await invoke("wait_for_otter_cache_settings", {
+              settings: otterCachePreferencesForRuntime(saved.hook_cache),
             });
           } catch (error) {
             pushAppToast({
@@ -194,18 +194,18 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     }
   }, []);
 
-  const refreshHookCache = useCallback(async () => {
-    setHookCacheLoading(true);
+  const refreshOtterCache = useCallback(async () => {
+    setOtterCacheLoading(true);
     try {
-      const next = await invoke<HookCacheSnapshotInfo>("get_hook_cache_snapshot");
-      if (settingsMountedRef.current) setHookCacheSnapshot(next);
+      const next = await invoke<OtterCacheSnapshotInfo>("get_otter_cache_snapshot");
+      if (settingsMountedRef.current) setOtterCacheSnapshot(next);
     } catch (error) {
       pushAppToast({
         level: "error",
         text: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      if (settingsMountedRef.current) setHookCacheLoading(false);
+      if (settingsMountedRef.current) setOtterCacheLoading(false);
     }
   }, []);
 
@@ -266,7 +266,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
             ...loadedSettings.art_store,
           },
           loom_cache: loomCacheSettingsForUi(loadedSettings.loom_cache),
-          hook_cache: hookCacheSettingsForUi(loadedSettings.hook_cache),
+          hook_cache: otterCacheSettingsForUi(loadedSettings.hook_cache),
           shortcuts: Object.fromEntries(nextShortcuts.map((shortcut) => [shortcut.id, shortcut])),
         };
         lastSavedSettingsRef.current = hydratedSettings;
@@ -328,9 +328,9 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     if (activeSettingsApp === "loom") {
       void refreshLoomCache();
     } else {
-      void refreshHookCache();
+      void refreshOtterCache();
     }
-  }, [activeSettingsApp, openSettingsSection, refreshHookCache, refreshLoomCache]);
+  }, [activeSettingsApp, openSettingsSection, refreshOtterCache, refreshLoomCache]);
 
   useEffect(() => {
     if (activeSettingsApp !== "loom" || openSettingsSection !== "art-store") return;
@@ -414,7 +414,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     }));
   };
 
-  const updateHookGeneralDraft = (patch: Partial<GeneralSettingsValue>) => {
+  const updateOtterGeneralDraft = (patch: Partial<GeneralSettingsValue>) => {
     setDraft((current) => ({
       ...current,
       hook_general: {
@@ -466,7 +466,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     }
   };
 
-  const updateHookCacheDraft = (patch: Partial<HookCacheSettings>) => {
+  const updateOtterCacheDraft = (patch: Partial<OtterCacheSettings>) => {
     setDraft((current) => ({
       ...current,
       hook_cache: { ...current.hook_cache, ...patch },
@@ -502,7 +502,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     }
   };
 
-  const clearHookCache = async (kind: "recycleBin" | "temporary" | "referenceLibrary") => {
+  const clearOtterCache = async (kind: "recycleBin" | "temporary" | "referenceLibrary") => {
     const labels = {
       recycleBin: "回收站",
       temporary: "临时缓存",
@@ -511,18 +511,18 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     const accepted = await requestAppConfirmation({
       title: `清空${labels[kind]}`,
       message: kind === "referenceLibrary"
-        ? "将移除 Hook 参考列表中的全部记录，桌面贴图不会被删除。"
+        ? "将移除 Otter 参考列表中的全部记录，桌面贴图不会被删除。"
         : kind === "recycleBin"
           ? "回收站中的贴图记录将被永久移除。"
-          : "将移除 Hook 的临时中转文件，后续需要时会自动重新生成。",
+          : "将移除 Otter 的临时中转文件，后续需要时会自动重新生成。",
       confirmLabel: "清空",
       tone: kind === "recycleBin" ? "danger" : "warning",
     });
     if (!accepted) return;
-    setHookCacheBusyKind(kind);
+    setOtterCacheBusyKind(kind);
     try {
-      const result = await invoke<HookCacheClearResult>("clear_hook_cache", { kind });
-      setHookCacheSnapshot(result.snapshot);
+      const result = await invoke<OtterCacheClearResult>("clear_otter_cache", { kind });
+      setOtterCacheSnapshot(result.snapshot);
       pushAppToast({
         level: "info",
         text: kind === "temporary"
@@ -530,7 +530,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
           : `已清空${labels[kind]}`,
       });
       if (kind !== "temporary") {
-        window.setTimeout(() => void refreshHookCache(), 500);
+        window.setTimeout(() => void refreshOtterCache(), 500);
       }
     } catch (error) {
       pushAppToast({
@@ -538,7 +538,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         text: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      setHookCacheBusyKind(null);
+      setOtterCacheBusyKind(null);
     }
   };
 
@@ -555,7 +555,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     setOpenSettingsSection(null);
   };
 
-  const resolveShortcutKeys = (item: HookShortcutDisplayItem) => {
+  const resolveShortcutKeys = (item: OtterShortcutDisplayItem) => {
     if (!item.sourceId) return item.keys;
     const configured = shortcuts.find((shortcut) => shortcut.id === item.sourceId)?.keys.trim();
     const normalizedConfigured = configured?.replace(/\s+/g, "").toLocaleLowerCase();
@@ -576,7 +576,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     });
   };
 
-  const openShortcutEditor = (item: HookShortcutDisplayItem) => {
+  const openShortcutEditor = (item: OtterShortcutDisplayItem) => {
     if (!item.sourceId) return;
     const keys = resolveShortcutKeys(item);
     setShortcutEditor({
@@ -605,7 +605,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
 
   const shortcutConflictMessage = (
     candidateKeys: ShortcutSlots,
-    candidateContexts: readonly HookShortcutContext[],
+    candidateContexts: readonly OtterShortcutContext[],
     excludeSourceId?: string,
     excludeQuickBindingId?: string,
     candidateConflictFamily?: string,
@@ -709,5 +709,5 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     pushAppToast({ level: "info", text: "Art 快捷键已更新" });
   };
 
-  return { activeSettingsApp, appDiagnostics, appPaths, applyQuickBindingEditor, applyShortcutEditor, artStoreTrustPolicy, artStoreTrustPolicyBusy, availableArtToolById, availableArtTools, checkApplicationUpdate, clearHookCache, clearLoomCache, draft, handleQuickBindingCapture, handleShortcutCapture, hookCacheBusyKind, hookCacheLoading, hookCacheSnapshot, loomCacheBusyKind, loomCacheLoading, loomCacheSnapshot, openApplicationLog, openQuickBindingEditor, openRepository, openSettingsSection, openShortcutEditor, openShortcutGroups, quickBindingConflict, quickBindingEditor, resolveShortcutKeys, selectSettingsApp, setDraft, setQuickBindingEditor, setShortcutEditor, shortcutEditor, shortcutEditorConflict, shortcuts, toggleMinimizeToTray, toggleSettingsSection, toggleShortcutGroup, updateArtStoreDraft, updateArtStoreTrustPolicy, updateHookCacheDraft, updateHookGeneralDraft, updateLoomCacheDraft, updateMcpDraft, updateNetworkDraft };
+  return { activeSettingsApp, appDiagnostics, appPaths, applyQuickBindingEditor, applyShortcutEditor, artStoreTrustPolicy, artStoreTrustPolicyBusy, availableArtToolById, availableArtTools, checkApplicationUpdate, clearOtterCache, clearLoomCache, draft, handleQuickBindingCapture, handleShortcutCapture, otterCacheBusyKind, otterCacheLoading, otterCacheSnapshot, loomCacheBusyKind, loomCacheLoading, loomCacheSnapshot, openApplicationLog, openQuickBindingEditor, openRepository, openSettingsSection, openShortcutEditor, openShortcutGroups, quickBindingConflict, quickBindingEditor, resolveShortcutKeys, selectSettingsApp, setDraft, setQuickBindingEditor, setShortcutEditor, shortcutEditor, shortcutEditorConflict, shortcuts, toggleMinimizeToTray, toggleSettingsSection, toggleShortcutGroup, updateArtStoreDraft, updateArtStoreTrustPolicy, updateOtterCacheDraft, updateOtterGeneralDraft, updateLoomCacheDraft, updateMcpDraft, updateNetworkDraft };
 }

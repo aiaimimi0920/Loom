@@ -120,7 +120,7 @@ fn validate_capability_package(
     }
     if let Some(surface) = &manifest.entrypoints.hook_ui {
         validate_relative_package_path(directory, &surface.manifest, require_payload)
-            .context("validate capability Hook UI manifest")?;
+            .context("validate capability Otter UI manifest")?;
     }
     for command in &manifest.contributes.commands {
         for schema in [&command.input_schema, &command.output_schema]

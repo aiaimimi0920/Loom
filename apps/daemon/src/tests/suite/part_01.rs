@@ -14,7 +14,7 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Take the process-wide test serialization lock, treating an earlier panic as no obstacle.
 ///
-/// The mutex stops tests that mutate process-wide state — environment variables and the Hook canvas
+/// The mutex stops tests that mutate process-wide state — environment variables and the Otter canvas
 /// runtime — from running at the same time, and it carries no data that a
 /// panicking test could have left half-written. Poisoning is therefore the wrong signal here: the
 /// state each test depends on is state that test sets up itself, so the next holder of the lock is
@@ -179,15 +179,15 @@ fn partial_request_can_read_a_bounded_refusal_without_a_reset() {
     );
 }
 
-fn hook_art_request(request_id: &str, node_id: &str, generation: u64) -> HookArtExecuteRequest {
-    HookArtExecuteRequest {
+fn otter_art_request(request_id: &str, node_id: &str, generation: u64) -> OtterArtExecuteRequest {
+    OtterArtExecuteRequest {
         protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
         request_id: request_id.to_owned(),
         node_id: node_id.to_owned(),
         art_id: "neuro.official/art".to_owned(),
         generation,
         device_id: Some("device:local".to_owned()),
-        output_transports: vec![HookTransportMode::SharedMemory],
+        output_transports: vec![OtterTransportMode::SharedMemory],
         inputs: BTreeMap::new(),
         parameters: BTreeMap::new(),
         disabled_parameters: Vec::new(),
@@ -232,11 +232,11 @@ fn unit_test_daemon_bind_owns_an_isolated_control_plane_root() {
 }
 
 #[test]
-fn hook_bridge_status_advertises_only_formal_namespaced_protocol() {
-    let runtime = HookBridgeRuntime::new(unique_temp_dir("hook-status").join("workflows"));
-    let status = hook_bridge_status_json(&runtime);
+fn otter_bridge_status_advertises_only_formal_namespaced_protocol() {
+    let runtime = OtterBridgeRuntime::new(unique_temp_dir("otter-status").join("workflows"));
+    let status = otter_bridge_status_json(&runtime);
     assert_eq!(status["protocol"], loom_protocol::HOOK_PROTOCOL_VERSION);
-    let methods = status["methods"].as_array().expect("Hook methods");
+    let methods = status["methods"].as_array().expect("Otter methods");
     assert!(methods.iter().all(|method| {
         method
             .as_str()
@@ -249,115 +249,115 @@ fn hook_bridge_status_advertises_only_formal_namespaced_protocol() {
 }
 
 #[test]
-fn hook_art_request_ids_are_idempotent_and_generations_replace_previous_work() {
+fn otter_art_request_ids_are_idempotent_and_generations_replace_previous_work() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
-    let first = hook_art_request("request:first", "node:one", 1);
-    let first_token = match reserve_hook_art_request(&first, &store) {
-        HookArtReservation::Execute(token) => token,
+    let first = otter_art_request("request:first", "node:one", 1);
+    let first_token = match reserve_otter_art_request(&first, &store) {
+        OtterArtReservation::Execute(token) => token,
         _ => panic!("first request must execute"),
     };
     assert!(matches!(
-        reserve_hook_art_request(&first, &store),
-        HookArtReservation::Replay(_)
+        reserve_otter_art_request(&first, &store),
+        OtterArtReservation::Replay(_)
     ));
 
-    let replacement = hook_art_request("request:replacement", "node:one", 2);
+    let replacement = otter_art_request("request:replacement", "node:one", 2);
     assert!(matches!(
-        reserve_hook_art_request(&replacement, &store),
-        HookArtReservation::Execute(_)
+        reserve_otter_art_request(&replacement, &store),
+        OtterArtReservation::Execute(_)
     ));
     assert!(first_token.load(Ordering::Acquire));
-    assert!(!hook_art_request_is_current(
+    assert!(!otter_art_request_is_current(
         "request:first",
         "node:one",
         1,
         first.device_id.as_deref()
     ));
-    assert!(hook_art_request_is_current(
+    assert!(otter_art_request_is_current(
         "request:replacement",
         "node:one",
         2,
         replacement.device_id.as_deref()
     ));
 
-    let stale = hook_art_request("request:stale", "node:one", 1);
-    let HookArtReservation::Reject(response) = reserve_hook_art_request(&stale, &store) else {
+    let stale = otter_art_request("request:stale", "node:one", 1);
+    let OtterArtReservation::Reject(response) = reserve_otter_art_request(&stale, &store) else {
         panic!("stale request must be rejected");
     };
-    let response: HookResponse = serde_json::from_str(&response).expect("stale response");
-    assert_eq!(response.status, HookRequestStatus::Failed);
+    let response: OtterResponse = serde_json::from_str(&response).expect("stale response");
+    assert_eq!(response.status, OtterRequestStatus::Failed);
     assert_eq!(
         response.error.expect("stale error").code,
         "stale_generation"
     );
-    clear_hook_canvas_runtime_state(Some(&store));
+    clear_otter_canvas_runtime_state(Some(&store));
 }
 
 #[test]
-fn hook_art_generation_resets_after_client_restart_when_node_is_idle() {
+fn otter_art_generation_resets_after_client_restart_when_node_is_idle() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
-    let first = hook_art_request("request:completed", "node:restart", 5);
-    match reserve_hook_art_request(&first, &store) {
-        HookArtReservation::Execute(_) => {}
+    let first = otter_art_request("request:completed", "node:restart", 5);
+    match reserve_otter_art_request(&first, &store) {
+        OtterArtReservation::Execute(_) => {}
         _ => panic!("completed request must execute"),
     }
-    finish_hook_art_request(
+    finish_otter_art_request(
         &first.request_id,
         &first.node_id,
         first.generation,
         first.device_id.as_deref(),
-        hook_art_request_fingerprint(&first),
-        HookRequestStatus::Succeeded,
+        otter_art_request_fingerprint(&first),
+        OtterRequestStatus::Succeeded,
         "{}".to_owned(),
         &store,
     );
 
-    let restarted = hook_art_request("request:after-restart", "node:restart", 1);
+    let restarted = otter_art_request("request:after-restart", "node:restart", 1);
     assert!(matches!(
-        reserve_hook_art_request(&restarted, &store),
-        HookArtReservation::Execute(_)
+        reserve_otter_art_request(&restarted, &store),
+        OtterArtReservation::Execute(_)
     ));
-    clear_hook_canvas_runtime_state(Some(&store));
+    clear_otter_canvas_runtime_state(Some(&store));
 }
 
 #[test]
-fn hook_art_request_coordination_is_scoped_by_device() {
+fn otter_art_request_coordination_is_scoped_by_device() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
-    let device_one = hook_art_request("request:shared", "node:shared", 4);
-    let mut device_two = hook_art_request("request:shared", "node:shared", 4);
+    let device_one = otter_art_request("request:shared", "node:shared", 4);
+    let mut device_two = otter_art_request("request:shared", "node:shared", 4);
     device_two.device_id = Some("device:remote".to_owned());
 
-    let device_one_token = match reserve_hook_art_request(&device_one, &store) {
-        HookArtReservation::Execute(token) => token,
+    let device_one_token = match reserve_otter_art_request(&device_one, &store) {
+        OtterArtReservation::Execute(token) => token,
         _ => panic!("first device request must execute"),
     };
-    let device_two_token = match reserve_hook_art_request(&device_two, &store) {
-        HookArtReservation::Execute(token) => token,
+    let device_two_token = match reserve_otter_art_request(&device_two, &store) {
+        OtterArtReservation::Execute(token) => token,
         _ => panic!("second device request must execute independently"),
     };
 
     assert!(!device_one_token.load(Ordering::Acquire));
     assert!(!device_two_token.load(Ordering::Acquire));
-    assert!(hook_art_request_is_current(
+    assert!(otter_art_request_is_current(
         &device_one.request_id,
         &device_one.node_id,
         device_one.generation,
         device_one.device_id.as_deref(),
     ));
-    assert!(hook_art_request_is_current(
+    assert!(otter_art_request_is_current(
         &device_two.request_id,
         &device_two.node_id,
         device_two.generation,
         device_two.device_id.as_deref(),
     ));
     assert_eq!(
-        next_hook_art_preview_revision(
+        next_otter_art_preview_revision(
             &device_one.request_id,
             &device_one.node_id,
             device_one.generation,
@@ -366,7 +366,7 @@ fn hook_art_request_coordination_is_scoped_by_device() {
         Some(1)
     );
     assert_eq!(
-        next_hook_art_preview_revision(
+        next_otter_art_preview_revision(
             &device_two.request_id,
             &device_two.node_id,
             device_two.generation,
@@ -374,64 +374,64 @@ fn hook_art_request_coordination_is_scoped_by_device() {
         ),
         Some(1)
     );
-    clear_hook_canvas_runtime_state(Some(&store));
+    clear_otter_canvas_runtime_state(Some(&store));
 }
 
 #[test]
-fn hook_art_request_id_replay_requires_an_identical_request() {
+fn otter_art_request_id_replay_requires_an_identical_request() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
-    let request = hook_art_request("request:identity", "node:identity", 1);
+    let request = otter_art_request("request:identity", "node:identity", 1);
     assert!(matches!(
-        reserve_hook_art_request(&request, &store),
-        HookArtReservation::Execute(_)
+        reserve_otter_art_request(&request, &store),
+        OtterArtReservation::Execute(_)
     ));
 
     let mut changed = request.clone();
     changed.parameters.insert("quality".to_owned(), json!(90));
-    let HookArtReservation::Reject(response) = reserve_hook_art_request(&changed, &store) else {
+    let OtterArtReservation::Reject(response) = reserve_otter_art_request(&changed, &store) else {
         panic!("changed request payload must conflict with the active requestId");
     };
-    let response: HookResponse = serde_json::from_str(&response).expect("conflict response");
+    let response: OtterResponse = serde_json::from_str(&response).expect("conflict response");
     assert_eq!(
         response.error.expect("conflict error").code,
         "request_id_conflict"
     );
-    clear_hook_canvas_runtime_state(Some(&store));
+    clear_otter_canvas_runtime_state(Some(&store));
 }
 
 #[test]
-fn hook_art_cancellation_binds_node_generation_and_device() {
+fn otter_art_cancellation_binds_node_generation_and_device() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    clear_hook_canvas_runtime_state(None);
+    clear_otter_canvas_runtime_state(None);
     let store = Arc::new(Mutex::new(SharedImageStore::new()));
-    let request = hook_art_request("request:cancel", "node:cancel", 4);
-    let token = match reserve_hook_art_request(&request, &store) {
-        HookArtReservation::Execute(token) => token,
+    let request = otter_art_request("request:cancel", "node:cancel", 4);
+    let token = match reserve_otter_art_request(&request, &store) {
+        OtterArtReservation::Execute(token) => token,
         _ => panic!("request must execute"),
     };
-    let wrong_device = HookArtCancelRequest {
+    let wrong_device = OtterArtCancelRequest {
         protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
         request_id: request.request_id.clone(),
         node_id: request.node_id.clone(),
         generation: request.generation,
         device_id: Some("device:other".to_owned()),
     };
-    let response: HookResponse =
-        serde_json::from_str(&cancel_hook_art_request(&wrong_device, &store))
+    let response: OtterResponse =
+        serde_json::from_str(&cancel_otter_art_request(&wrong_device, &store))
             .expect("wrong-device cancellation response");
-    assert_eq!(response.status, HookRequestStatus::Failed);
+    assert_eq!(response.status, OtterRequestStatus::Failed);
     assert!(!token.load(Ordering::Acquire));
 
-    let cancellation = HookArtCancelRequest {
+    let cancellation = OtterArtCancelRequest {
         device_id: request.device_id.clone(),
         ..wrong_device
     };
-    let response: HookResponse =
-        serde_json::from_str(&cancel_hook_art_request(&cancellation, &store))
+    let response: OtterResponse =
+        serde_json::from_str(&cancel_otter_art_request(&cancellation, &store))
             .expect("cancellation response");
-    assert_eq!(response.status, HookRequestStatus::CancelRequested);
+    assert_eq!(response.status, OtterRequestStatus::CancelRequested);
     assert!(token.load(Ordering::Acquire));
-    clear_hook_canvas_runtime_state(Some(&store));
+    clear_otter_canvas_runtime_state(Some(&store));
 }

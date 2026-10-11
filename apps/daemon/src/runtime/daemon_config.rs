@@ -367,7 +367,7 @@ struct DaemonRuntime {
     mcp_servers: SharedMcpServerStore,
     tool_registry: ToolRegistry,
     workflow_store: WorkflowStore,
-    // Root for frozen Hook-canvas workflow snapshots: <root>/canvas-workflows/<id>/
+    // Root for frozen Otter-canvas workflow snapshots: <root>/canvas-workflows/<id>/
     // holds snapshot.json plus an images/ dir of that workflow's node previews.
     canvas_workflow_root: PathBuf,
     // Tracks which art execution frameworks the user has installed.
@@ -375,7 +375,7 @@ struct DaemonRuntime {
     // Control-plane root, for the art install dir (<root>/arts/<id>/).
     control_plane_root: PathBuf,
     bundled_art_sha256_allowlist: BTreeSet<String>,
-    hook_bridge: SharedHookBridgeRuntime,
+    hook_bridge: SharedOtterBridgeRuntime,
     device_registry: SharedDeviceRegistryStore,
     live_sessions: SharedLiveSessionStore,
     walls: SharedWallStore,

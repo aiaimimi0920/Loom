@@ -95,7 +95,7 @@ fn from_request_with_default(
             return ProviderMode::parse(Some(&value), false);
         }
     }
-    // Hook's default "auto" must honor an operator's strict local-only configuration.
+    // Otter's default "auto" must honor an operator's strict local-only configuration.
     default()
 }
 

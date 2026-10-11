@@ -32,7 +32,7 @@ fn surface_instance_routes_keep_preview_and_formal_results_separate() {
 
     let attach_path = format!("/v1/surfaces/instances/{instance_id}/attachments");
     let attach_body = json!({
-        "hookNodeId": "hook-node:stock",
+        "hookNodeId": "otter-node:stock",
         "deviceId": "device-000-local",
     })
     .to_string();
@@ -47,7 +47,7 @@ fn surface_instance_routes_keep_preview_and_formal_results_separate() {
         .as_str()
         .expect("attachment id")
         .to_owned();
-    let (surface_rx, _surface_subscription) = register_hook_bridge_subscription(
+    let (surface_rx, _surface_subscription) = register_otter_bridge_subscription(
         &runtime
             .hook_bridge
             .lock()
@@ -90,7 +90,7 @@ fn surface_instance_routes_keep_preview_and_formal_results_separate() {
     )
     .expect("Surface snapshot push JSON");
     assert_eq!(snapshot_push["method"], SURFACE_EVENT_SNAPSHOT);
-    assert_eq!(snapshot_push["params"]["hookNodeId"], "hook-node:stock");
+    assert_eq!(snapshot_push["params"]["hookNodeId"], "otter-node:stock");
     let mounted_push: Value = serde_json::from_str(
         &surface_rx
             .recv_timeout(Duration::from_secs(1))

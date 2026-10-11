@@ -1,8 +1,8 @@
 // Run evidence, registered tool execution, and shared-image storage and conversion.
-fn record_hook_art_run(
+fn record_otter_art_run(
     run_store: &SharedRunStore,
     tool_registry: &ToolRegistry,
-    request: &HookArtExecuteRequest,
+    request: &OtterArtExecuteRequest,
     started_at: Instant,
     succeeded: bool,
     error: Option<&loom_protocol::SurfaceExecutionError>,

@@ -1,6 +1,6 @@
 /* Owns ordered graphite tooling overrides for Art hub, registry/store cards, and shared tooling controls. */
 
-/* Art and Hook Sync share the compact, graphite configuration language used
+/* Art and Otter Sync share the compact, graphite configuration language used
    by Settings. These overrides are visual only; their established layout and
    interaction contracts remain owned by the feature components above. */
 .workspace-panel--tooling,

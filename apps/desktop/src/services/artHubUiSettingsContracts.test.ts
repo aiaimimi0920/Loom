@@ -17,7 +17,7 @@ import {
 import type { LoomFramework, LoomToolDefinition } from "./loomApi.ts";
 import { appSource, styleSource } from "./artHubUiContractSource.ts";
 
-test("renders Loom and Hook as attached application settings tabs", () => {
+test("renders Loom and Otter as attached application settings tabs", () => {
   assert.match(appSource, /type SettingsAppId = "loom" \| "hook"/);
   assert.match(appSource, /type SettingsSectionId = "general" \| "shortcuts" \| "mcp" \| "art-store" \| "capabilities" \| "network" \| "cache" \| "about"/);
   assert.match(appSource, /function SettingsAccordionSection\(/);
@@ -43,7 +43,7 @@ test("renders Loom and Hook as attached application settings tabs", () => {
   assert.match(styleSource, /\.settings-section--open \.settings-section__icon \{[\s\S]*?color: var\(--loom-theme-secondary-text\);/);
 });
 
-test("shows compact About and diagnostic log content for Loom and Hook", () => {
+test("shows compact About and diagnostic log content for Loom and Otter", () => {
   assert.match(appSource, /<dt>应用名称<\/dt>/);
   assert.match(appSource, /<dt>版本号<\/dt>/);
   assert.match(appSource, /<dt>检查更新<\/dt>/);
@@ -52,7 +52,7 @@ test("shows compact About and diagnostic log content for Loom and Hook", () => {
   assert.match(appSource, /<dt>仓库<\/dt>/);
   assert.match(appSource, /diagnostics\.commitShort\?\.slice\(0, 6\)/);
   assert.match(appSource, /open_external_url/);
-  assert.match(appSource, /(?:^|["'`])https:\/\/github\.com\/aiaimimi0920\/Hook(?:["'`]|$)/);
+  assert.match(appSource, /(?:^|["'`])https:\/\/github\.com\/aiaimimi0920\/Otter(?:["'`]|$)/);
   assert.match(appSource, /M250 394V250h144/);
   assert.match(appSource, /M774 630v144H630/);
   assert.match(appSource, /<h3>诊断日志<\/h3>/);
@@ -73,7 +73,7 @@ test("shows compact About and diagnostic log content for Loom and Hook", () => {
   assert.match(styleSource, /\.workspace-scroll--settings \{[\s\S]*?scrollbar-gutter: stable;/);
 });
 
-test("uses the dark Settings visual baseline for Art and Hook Sync without changing their content", () => {
+test("uses the dark Settings visual baseline for Art and Otter Sync without changing their content", () => {
   assert.match(appSource, /workspace-panel workspace-panel--tooling/);
   assert.match(appSource, /workspace-header workspace-header--tooling/);
   assert.match(appSource, /workspace-scroll workspace-scroll--tooling/);
@@ -83,16 +83,16 @@ test("uses the dark Settings visual baseline for Art and Hook Sync without chang
   assert.match(styleSource, /\.art-hub__surface \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
   assert.match(styleSource, /\.art-registry-card--enabled \{[\s\S]*?color-mix\(in srgb, var\(--loom-theme-success\) 10%, var\(--loom-theme-panel\)\)/);
   assert.match(styleSource, /\.framework-dialog \{[\s\S]*?background: var\(--loom-theme-panel\)/);
-  assert.match(styleSource, /\.hook-canvas-rename-dialog,[\s\S]*?background: var\(--loom-theme-panel\)/);
-  assert.match(styleSource, /\.hook-canvas-workspace \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
-  assert.match(styleSource, /\.hook-canvas-surface \{[\s\S]*?overflow: hidden;/);
+  assert.match(styleSource, /\.otter-canvas-rename-dialog,[\s\S]*?background: var\(--loom-theme-panel\)/);
+  assert.match(styleSource, /\.otter-canvas-workspace \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(styleSource, /\.otter-canvas-surface \{[\s\S]*?overflow: hidden;/);
 });
 
-test("provides independent proxy settings for Loom and Hook", () => {
+test("provides independent proxy settings for Loom and Otter", () => {
   assert.equal((appSource.match(/<SettingsAccordionSection id="network" label="网络"/g) || []).length, 2);
   assert.match(appSource, /function NetworkSettingsPanel\(/);
   assert.match(appSource, /appName="Loom"[\s\S]*?value=\{draft\.network\.loom\}/);
-  assert.match(appSource, /appName="Hook"[\s\S]*?value=\{draft\.network\.hook\}/);
+  assert.match(appSource, /appName="Otter"[\s\S]*?value=\{draft\.network\.hook\}/);
   assert.match(appSource, /<option value="system">跟随系统<\/option>/);
   assert.match(appSource, /<option value="custom">自定义<\/option>/);
   assert.match(appSource, /<option value="disabled">不使用代理<\/option>/);
@@ -106,13 +106,13 @@ test("provides independent proxy settings for Loom and Hook", () => {
   assert.match(styleSource, /\.settings-network-row \{[\s\S]*?grid-template-columns:/);
 });
 
-test("provides independent compact general settings for Loom and Hook", () => {
+test("provides independent compact general settings for Loom and Otter", () => {
   assert.equal((appSource.match(/<SettingsAccordionSection id="general" label="常规"/g) || []).length, 2);
   assert.match(appSource, /function GeneralSettingsPanel\(/);
   assert.match(appSource, /appName="loom"[\s\S]*?language: draft\.general\.language[\s\S]*?theme: draft\.general\.theme[\s\S]*?closeToTray: draft\.general\.minimize_to_tray/);
   assert.match(appSource, /appName="hook"[\s\S]*?language: draft\.hook_general\.language[\s\S]*?theme: draft\.hook_general\.theme[\s\S]*?closeToTray: draft\.hook_general\.close_to_tray/);
   assert.match(appSource, /<strong>语言<\/strong>[\s\S]*?<strong>主题<\/strong>[\s\S]*?<strong>关闭到系统托盘<\/strong>/);
-  assert.match(appSource, /const updateHookGeneralDraft[\s\S]*?hook_general:/);
+  assert.match(appSource, /const updateOtterGeneralDraft[\s\S]*?hook_general:/);
   assert.doesNotMatch(appSource, /SettingsAccordionSection id="window"/);
   assert.match(styleSource, /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
   assert.match(styleSource, /\.settings-general-toggle \{[\s\S]*?justify-self: end;/);
@@ -155,13 +155,13 @@ test("manages only rebuildable Loom caches and removes the obsolete engine UI", 
   assert.doesNotMatch(appSource, /清空已安装 Art|清空工作流|清空运行记录/);
 });
 
-test("manages Hook recycle bin, temporary cache, and reference images from the Hook settings tab", () => {
+test("manages Otter recycle bin, temporary cache, and reference images from the Otter settings tab", () => {
   assert.equal((appSource.match(/<SettingsAccordionSection id="cache" label="缓存"/g) || []).length, 2);
-  assert.match(appSource, /function HookCacheSettingsPanel\(/);
-  assert.match(appSource, /get_hook_cache_snapshot/);
-  assert.match(appSource, /clear_hook_cache/);
-  assert.match(appSource, /wait_for_hook_cache_settings/);
-  assert.match(appSource, /hookCachePreferencesForRuntime\(saved\.hook_cache\)/);
+  assert.match(appSource, /function OtterCacheSettingsPanel\(/);
+  assert.match(appSource, /get_otter_cache_snapshot/);
+  assert.match(appSource, /clear_otter_cache/);
+  assert.match(appSource, /wait_for_otter_cache_settings/);
+  assert.match(appSource, /otterCachePreferencesForRuntime\(saved\.hook_cache\)/);
   assert.match(appSource, /回收站上限/);
   assert.match(appSource, /回收站自动清理周期/);
   assert.match(appSource, /临时缓存上限/);
@@ -175,17 +175,17 @@ test("manages Hook recycle bin, temporary cache, and reference images from the H
   assert.match(appSource, /label: "256 MB"/);
   assert.match(appSource, /label: "1 GB"/);
   assert.match(appSource, /label: "无限制"/);
-  assert.doesNotMatch(appSource, /hook-cache-usage-title/);
-  assert.equal((appSource.match(/hook-cache-row hook-cache-row--action/g) || []).length, 5);
+  assert.doesNotMatch(appSource, /otter-cache-usage-title/);
+  assert.equal((appSource.match(/otter-cache-row otter-cache-row--action/g) || []).length, 5);
   assert.doesNotMatch(appSource, /图片搜索缓存/);
   assert.doesNotMatch(appSource, /剪贴板缓存/);
   assert.match(appSource, /requestAppConfirmation\(\{[\s\S]*?title: `清空\$\{labels\[kind\]\}`/);
-  assert.match(styleSource, /\.hook-cache-settings \{[\s\S]*?gap: 12px;/);
-  assert.match(styleSource, /\.hook-cache-group \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
-  assert.match(styleSource, /\.hook-cache-row--total b \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
+  assert.match(styleSource, /\.otter-cache-settings \{[\s\S]*?gap: 12px;/);
+  assert.match(styleSource, /\.otter-cache-group \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(styleSource, /\.otter-cache-row--total b \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
 });
 
-test("auto-saves Loom fields and Hook shortcuts without a manual save action", () => {
+test("auto-saves Loom fields and Otter shortcuts without a manual save action", () => {
   assert.match(appSource, /pendingSettingsRef\.current = draft/);
   assert.match(appSource, /window\.setTimeout\(\(\) => \{[\s\S]*?void flushSettingsQueue\(\);[\s\S]*?\}, 360\)/);
   assert.match(appSource, /while \(pendingSettingsRef\.current\)/);
@@ -194,7 +194,7 @@ test("auto-saves Loom fields and Hook shortcuts without a manual save action", (
   assert.doesNotMatch(appSource, /saveSettingsDraft|saveShortcutDraft|保存兼容设置/);
 });
 
-test("groups, collapses, and edits Hook shortcuts without nested scrolling", () => {
+test("groups, collapses, and edits Otter shortcuts without nested scrolling", () => {
   assert.match(appSource, /label: "捕获与操作"/);
   assert.match(appSource, /label: "高级工具"/);
   assert.match(appSource, /label: "贴图操作"/);
@@ -204,7 +204,7 @@ test("groups, collapses, and edits Hook shortcuts without nested scrolling", () 
   assert.match(appSource, /label: "移动模式"/);
   assert.match(appSource, /label: "旋转模式"/);
   assert.match(appSource, /label: "缩放模式"/);
-  assert.match(appSource, /className="hook-shortcut-group__trigger"[\s\S]*?aria-expanded=\{groupOpen\}/);
+  assert.match(appSource, /className="otter-shortcut-group__trigger"[\s\S]*?aria-expanded=\{groupOpen\}/);
   assert.match(appSource, /function ShortcutKeySequence\(/);
   assert.match(appSource, /role="dialog"[\s\S]*?aria-labelledby="shortcut-edit-dialog-title"/);
   assert.match(appSource, /type ShortcutSlot = 0 \| 1 \| 2/);
@@ -229,7 +229,7 @@ test("groups, collapses, and edits Hook shortcuts without nested scrolling", () 
   assert.match(appSource, /quickBindingEditor\.slotCount < 3[\s\S]*?添加额外快捷键/);
   assert.match(appSource, /availableArtTools\.map/);
   assert.match(appSource, /quick_bindings: current\.quick_bindings\.some/);
-  assert.doesNotMatch(styleSource, /\.hook-shortcut-list \{[^}]*overflow-y:/);
+  assert.doesNotMatch(styleSource, /\.otter-shortcut-list \{[^}]*overflow-y:/);
   assert.match(styleSource, /\.shortcut-gesture-picker \{/);
   assert.match(styleSource, /\.shortcut-add-secondary \{/);
 });

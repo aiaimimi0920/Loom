@@ -38,7 +38,7 @@ export function OfficialOcrCapabilityCard({
     : catalogItem ? (catalogItem.compatible ? "可下载安装" : "当前版本不兼容")
       : catalogConfigured ? "官方目录暂未提供" : "等待官方目录配置";
   const detail = installed
-    ? "OCR、二维码和条码识别均由同一个按需能力包提供；停用后 Hook 不再加载模型或解码器。"
+    ? "OCR、二维码和条码识别均由同一个按需能力包提供；停用后 Otter 不再加载模型或解码器。"
     : catalogItem
       ? `下载 ${formatCapabilityBytes(catalogItem.entry.package.bytes)}，安装后约占用 ${formatCapabilityBytes(catalogItem.entry.diskBytes)}。下载包、SBOM 与 Provenance 均在安装前验证。`
       : catalogDiagnostic || "配置经过签名验证的官方能力目录后，即可下载 OCR 模型与本地识别运行时。";
@@ -77,7 +77,7 @@ export function OfficialOcrCapabilityCard({
         )}
         <small id="official-ocr-install-help">
           {catalogItem && !catalogItem.compatible
-            ? catalogItem.compatibilityDetail || "当前 Loom/Hook API 与该包不兼容。"
+            ? catalogItem.compatibilityDetail || "当前 Loom/Otter API 与该包不兼容。"
             : "大模型包只通过受信任目录下载，不经过本地 ZIP 的小包上传通道。"}
         </small>
       </div>

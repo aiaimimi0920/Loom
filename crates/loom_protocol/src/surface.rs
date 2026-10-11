@@ -1,7 +1,7 @@
 //! Stable contracts for distributed Art surfaces.
 //!
 //! Surface v1 deliberately describes UI state, events, resources, and formal
-//! results without exposing Hook's internal frontend framework. Art packages
+//! results without exposing Otter's internal frontend framework. Art packages
 //! may author TypeScript, JavaScript, or declarative scenes, but hosts exchange
 //! only these language-neutral envelopes.
 
@@ -18,7 +18,7 @@ pub use scene::*;
 pub use validation::*;
 
 pub const SURFACE_PROTOCOL_VERSION: &str = "loom.surface.v1";
-/// Version tag on the daemon's surface stream poll envelope. Hook carries its own copy of this
+/// Version tag on the daemon's surface stream poll envelope. Otter carries its own copy of this
 /// literal, so changing the value here is a two-repo change and has to be announced before it lands.
 pub const SURFACE_STREAM_PROTOCOL_VERSION: &str = "loom.surface-stream.v1";
 pub const SURFACE_API_VERSION: &str = "1.0";

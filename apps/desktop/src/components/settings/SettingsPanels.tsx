@@ -1,7 +1,7 @@
 // Presentational settings sections and cache conversion helpers.
 import {
   DEFAULT_LOOM_SETTINGS,
-  HookCacheSettings,
+  OtterCacheSettings,
   LoomArtStoreSettings,
   LoomCacheSettings,
   LoomMcpSettings,
@@ -9,7 +9,7 @@ import {
   LoomProxySettings,
 } from "../../services/loomApi";
 import {
-  HookCacheSnapshotInfo,
+  OtterCacheSnapshotInfo,
   LoomCacheSnapshotInfo,
   SettingsAppId,
   SettingsSectionIcon,
@@ -30,7 +30,7 @@ export function GeneralSettingsPanel({
   value: GeneralSettingsValue;
   onChange: (patch: Partial<GeneralSettingsValue>) => void;
 }) {
-  const applicationName = appName === "loom" ? "Loom" : "Hook";
+  const applicationName = appName === "loom" ? "Loom" : "Otter";
   return (
     <section className="settings-general-panel" aria-label={`${applicationName} 常规设置`}>
       <header className="settings-general-panel__header">
@@ -312,15 +312,15 @@ export function LoomCacheSettingsPanel({
 }) {
   const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
   return (
-    <div className="hook-cache-settings loom-cache-settings" aria-busy={loading || Boolean(busyKind)}>
-      <section className="hook-cache-group" aria-labelledby="loom-cache-policy-title">
-        <header className="hook-cache-group__header">
+    <div className="otter-cache-settings loom-cache-settings" aria-busy={loading || Boolean(busyKind)}>
+      <section className="otter-cache-group" aria-labelledby="loom-cache-policy-title">
+        <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7" /><path d="M12 9v4l2.5 1.5M9 3h6M12 3v3" /></svg>
           <strong id="loom-cache-policy-title">缓存规则</strong>
         </header>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>Art 运行缓存上限</strong><small>限制已安装 Art 在运行时生成的可重建缓存</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="Art 运行缓存上限" value={settings.art_cache_max_bytes} onChange={(event) => onSettingsChange({ art_cache_max_bytes: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="Art 运行缓存上限" value={settings.art_cache_max_bytes} onChange={(event) => onSettingsChange({ art_cache_max_bytes: Number(event.target.value) })}>
             {[
               { value: 256 * 1024 * 1024, label: "256 MB" },
               { value: 1024 * 1024 * 1024, label: "1 GB" },
@@ -329,31 +329,31 @@ export function LoomCacheSettingsPanel({
             ].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </div>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>Art 运行缓存自动清理周期</strong><small>按最后修改时间移除可重新生成的缓存文件</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="Art 运行缓存自动清理周期" value={settings.art_cache_retention_days} onChange={(event) => onSettingsChange({ art_cache_retention_days: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="Art 运行缓存自动清理周期" value={settings.art_cache_retention_days} onChange={(event) => onSettingsChange({ art_cache_retention_days: Number(event.target.value) })}>
             {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </select>
         </div>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>框架临时文件自动清理周期</strong><small>清理已经结束的框架执行残留，不影响已安装框架</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="框架临时文件自动清理周期" value={settings.framework_temp_retention_days} onChange={(event) => onSettingsChange({ framework_temp_retention_days: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="框架临时文件自动清理周期" value={settings.framework_temp_retention_days} onChange={(event) => onSettingsChange({ framework_temp_retention_days: Number(event.target.value) })}>
             {[1, 3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </select>
         </div>
       </section>
 
-      <section className="hook-cache-group" aria-labelledby="loom-cache-clean-title">
-        <header className="hook-cache-group__header">
+      <section className="otter-cache-group" aria-labelledby="loom-cache-clean-title">
+        <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 18 8-8 4 4-8 8H4v-4ZM13.5 8.5l2-2 2 2-2 2M15.5 6.5l2-2 2 2-2 2" /></svg>
           <strong id="loom-cache-clean-title">手动清理</strong>
         </header>
-        <div className="hook-cache-row hook-cache-row--action" title={snapshot?.artRuntime.path}>
+        <div className="otter-cache-row otter-cache-row--action" title={snapshot?.artRuntime.path}>
           <span><strong>Art 运行缓存</strong><small>{snapshot ? `${snapshot.artRuntime.fileCount} 个文件` : "正在统计缓存"}</small></span>
           <b>{snapshot ? formatCacheBytes(snapshot.artRuntime.bytes) : "统计中..."}</b>
           <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("artRuntime")}>{busyKind === "artRuntime" ? "清理中..." : "清空"}</button>
         </div>
-        <div className="hook-cache-row hook-cache-row--action" title={snapshot?.frameworkTemporary.path}>
+        <div className="otter-cache-row otter-cache-row--action" title={snapshot?.frameworkTemporary.path}>
           <span><strong>框架临时文件</strong><small>{snapshot ? `${snapshot.frameworkTemporary.fileCount} 个文件` : "正在统计缓存"}</small></span>
           <b>{snapshot ? formatCacheBytes(snapshot.frameworkTemporary.bytes) : "统计中..."}</b>
           <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("frameworkTemporary")}>{busyKind === "frameworkTemporary" ? "清理中..." : "清空"}</button>
@@ -363,7 +363,7 @@ export function LoomCacheSettingsPanel({
   );
 }
 
-export function hookCacheSettingsForUi(value?: Partial<HookCacheSettings>): HookCacheSettings {
+export function otterCacheSettingsForUi(value?: Partial<OtterCacheSettings>): OtterCacheSettings {
   const merged = { ...DEFAULT_LOOM_SETTINGS.hook_cache, ...value };
   return {
     recycle_bin_max_entries: [0, 15, 50].includes(merged.recycle_bin_max_entries)
@@ -382,7 +382,7 @@ export function hookCacheSettingsForUi(value?: Partial<HookCacheSettings>): Hook
   };
 }
 
-export function hookCachePreferencesForRuntime(settings: HookCacheSettings) {
+export function otterCachePreferencesForRuntime(settings: OtterCacheSettings) {
   return {
     recycleBinMaxEntries: settings.recycle_bin_max_entries,
     recycleBinRetentionDays: settings.recycle_bin_retention_days,
@@ -391,7 +391,7 @@ export function hookCachePreferencesForRuntime(settings: HookCacheSettings) {
   };
 }
 
-export function HookCacheSettingsPanel({
+export function OtterCacheSettingsPanel({
   settings,
   snapshot,
   loading,
@@ -399,36 +399,36 @@ export function HookCacheSettingsPanel({
   onSettingsChange,
   onClear,
 }: {
-  settings: HookCacheSettings;
-  snapshot: HookCacheSnapshotInfo | null;
+  settings: OtterCacheSettings;
+  snapshot: OtterCacheSnapshotInfo | null;
   loading: boolean;
   busyKind: string | null;
-  onSettingsChange: (patch: Partial<HookCacheSettings>) => void;
+  onSettingsChange: (patch: Partial<OtterCacheSettings>) => void;
   onClear: (kind: "recycleBin" | "temporary" | "referenceLibrary") => void;
 }) {
   const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
   return (
-    <div className="hook-cache-settings" aria-busy={loading || Boolean(busyKind)}>
-      <section className="hook-cache-group" aria-labelledby="hook-cache-policy-title">
-        <header className="hook-cache-group__header">
+    <div className="otter-cache-settings" aria-busy={loading || Boolean(busyKind)}>
+      <section className="otter-cache-group" aria-labelledby="otter-cache-policy-title">
+        <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7" /><path d="M12 9v4l2.5 1.5M9 3h6M12 3v3" /></svg>
-          <strong id="hook-cache-policy-title">缓存规则</strong>
+          <strong id="otter-cache-policy-title">缓存规则</strong>
         </header>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>回收站上限</strong><small>超过上限时优先移除最早删除的贴图</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="回收站上限" value={settings.recycle_bin_max_entries} onChange={(event) => onSettingsChange({ recycle_bin_max_entries: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="回收站上限" value={settings.recycle_bin_max_entries} onChange={(event) => onSettingsChange({ recycle_bin_max_entries: Number(event.target.value) })}>
             {[15, 50, 0].map((value) => <option key={value} value={value}>{value === 0 ? "无限" : `${value} 项`}</option>)}
           </select>
         </div>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>回收站自动清理周期</strong><small>按删除时间清理过期贴图</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="回收站自动清理周期" value={settings.recycle_bin_retention_days} onChange={(event) => onSettingsChange({ recycle_bin_retention_days: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="回收站自动清理周期" value={settings.recycle_bin_retention_days} onChange={(event) => onSettingsChange({ recycle_bin_retention_days: Number(event.target.value) })}>
             {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </select>
         </div>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>临时缓存上限</strong><small>用于截图、拖放和图像处理中转文件</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="临时缓存上限" value={settings.temp_cache_max_bytes} onChange={(event) => onSettingsChange({ temp_cache_max_bytes: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="临时缓存上限" value={settings.temp_cache_max_bytes} onChange={(event) => onSettingsChange({ temp_cache_max_bytes: Number(event.target.value) })}>
             {[
               { value: 128 * 1024 * 1024, label: "128 MB" },
               { value: 256 * 1024 * 1024, label: "256 MB" },
@@ -437,30 +437,30 @@ export function HookCacheSettingsPanel({
             ].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </div>
-        <div className="hook-cache-row">
+        <div className="otter-cache-row">
           <span><strong>临时缓存自动清理周期</strong><small>移除超过保留时间的临时文件</small></span>
-          <select className="studio-input hook-cache-row__control" aria-label="临时缓存自动清理周期" value={settings.temp_cache_retention_days} onChange={(event) => onSettingsChange({ temp_cache_retention_days: Number(event.target.value) })}>
+          <select className="studio-input otter-cache-row__control" aria-label="临时缓存自动清理周期" value={settings.temp_cache_retention_days} onChange={(event) => onSettingsChange({ temp_cache_retention_days: Number(event.target.value) })}>
             {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </select>
         </div>
       </section>
 
-      <section className="hook-cache-group" aria-labelledby="hook-cache-clean-title">
-        <header className="hook-cache-group__header">
+      <section className="otter-cache-group" aria-labelledby="otter-cache-clean-title">
+        <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 18 8-8 4 4-8 8H4v-4ZM13.5 8.5l2-2 2 2-2 2M15.5 6.5l2-2 2 2-2 2" /></svg>
-          <strong id="hook-cache-clean-title">手动清理</strong>
+          <strong id="otter-cache-clean-title">手动清理</strong>
         </header>
-        <div className="hook-cache-row hook-cache-row--action">
+        <div className="otter-cache-row otter-cache-row--action">
           <span><strong>清空回收站</strong><small>永久移除回收站中的贴图记录</small></span>
           <b>{snapshot ? `${snapshot.recycleBinEntries} 项` : "统计中..."}</b>
           <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("recycleBin")}>{busyKind === "recycleBin" ? "清理中..." : "清空"}</button>
         </div>
-        <div className="hook-cache-row hook-cache-row--action" title={snapshot?.temporary.path}>
+        <div className="otter-cache-row otter-cache-row--action" title={snapshot?.temporary.path}>
           <span><strong>清空临时缓存</strong><small>{snapshot ? `${snapshot.temporary.fileCount} 个文件` : "正在统计缓存"}</small></span>
           <b>{snapshot ? formatCacheBytes(snapshot.temporary.bytes) : "统计中..."}</b>
           <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("temporary")}>{busyKind === "temporary" ? "清理中..." : "清空"}</button>
         </div>
-        <div className="hook-cache-row hook-cache-row--action">
+        <div className="otter-cache-row otter-cache-row--action">
           <span><strong>清空参考图</strong><small>移除参考列表，不删除桌面上的贴图</small></span>
           <b>{snapshot ? `${snapshot.referenceEntries} 项` : "统计中..."}</b>
           <button className="ghost-button" type="button" disabled={Boolean(busyKind)} onClick={() => onClear("referenceLibrary")}>{busyKind === "referenceLibrary" ? "清理中..." : "清空"}</button>

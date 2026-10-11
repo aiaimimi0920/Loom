@@ -9,7 +9,7 @@ fn sample_session() -> LiveScreenshotSession {
         protocol_version: LIVE_PROTOCOL_VERSION.to_owned(),
         session_id: "live-session-1".to_owned(),
         source_device_id: "device-a".to_owned(),
-        source_hook_id: "hook-a".to_owned(),
+        source_hook_id: "otter-a".to_owned(),
         source_kind: LiveSourceKind::Window,
         source_window_identity: LiveWindowIdentity {
             window_id: "0x1234".to_owned(),

@@ -18,8 +18,8 @@ pub(super) fn configured_loom_daemon_url() -> String {
     std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
 }
 
-pub(super) fn configured_hook_bridge_url() -> String {
-    if let Ok(active_url) = ACTIVE_HOOK_BRIDGE_URL
+pub(super) fn configured_otter_bridge_url() -> String {
+    if let Ok(active_url) = ACTIVE_OTTER_BRIDGE_URL
         .get_or_init(|| Mutex::new(None))
         .lock()
     {
@@ -27,19 +27,19 @@ pub(super) fn configured_hook_bridge_url() -> String {
             return active_url.clone();
         }
     }
-    if let Ok(url) = std::env::var("LOOM_HOOK_BRIDGE_URL") {
+    if let Ok(url) = loom_local_channel::brand_env::var("LOOM_HOOK_BRIDGE_URL") {
         if !url.trim().is_empty() {
             return url.trim().to_owned();
         }
     }
-    if let Ok(port) = std::env::var("LOOM_HOOK_BRIDGE_PORT") {
+    if let Ok(port) = loom_local_channel::brand_env::var("LOOM_HOOK_BRIDGE_PORT") {
         if let Ok(port) = port.trim().parse::<u16>() {
             if port > 0 {
                 return format!("ws://127.0.0.1:{port}");
             }
         }
     }
-    DEFAULT_HOOK_BRIDGE_URL.to_owned()
+    DEFAULT_OTTER_BRIDGE_URL.to_owned()
 }
 
 pub(super) fn resolve_command_base_url(base_url: String) -> String {

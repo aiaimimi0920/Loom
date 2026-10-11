@@ -1,8 +1,8 @@
 // Loom daemon tests fragment 16; included into the shared crate test module.
 #[test]
-fn daemon_prefers_data_url_hook_canvas_preview_over_file_backed_src() {
+fn daemon_prefers_data_url_otter_canvas_preview_over_file_backed_src() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let appdata = unique_temp_dir("hook-canvas-preview-data-url");
+    let appdata = unique_temp_dir("otter-canvas-preview-data-url");
     let session_dir = appdata.join("com.yamiyu.hook");
     let images = session_dir.join("images");
     fs::create_dir_all(&images).expect("create session images");
@@ -42,7 +42,7 @@ fn daemon_prefers_data_url_hook_canvas_preview_over_file_backed_src() {
     let previous = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata);
 
-    let response = hook_canvas_preview_response("capture").expect("data-url preview response");
+    let response = otter_canvas_preview_response("capture").expect("data-url preview response");
     let body = expect_binary_route_response(response, 200, "image/png");
     assert_eq!(
         body, preferred_png,
@@ -54,9 +54,9 @@ fn daemon_prefers_data_url_hook_canvas_preview_over_file_backed_src() {
 }
 
 #[test]
-fn daemon_validates_hook_canvas_preview_type_and_size() {
+fn daemon_validates_otter_canvas_preview_type_and_size() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let appdata = unique_temp_dir("hook-canvas-preview-validation");
+    let appdata = unique_temp_dir("otter-canvas-preview-validation");
     let session_dir = appdata.join("com.yamiyu.hook");
     let images = session_dir.join("images");
     fs::create_dir_all(&images).expect("create session images");
@@ -64,7 +64,7 @@ fn daemon_validates_hook_canvas_preview_type_and_size() {
     let oversized_path = images.join("oversized.png");
     fs::File::create(&oversized_path)
         .expect("create oversized")
-        .set_len(hook_canvas::MAX_PREVIEW_BYTES + 1)
+        .set_len(otter_canvas::MAX_PREVIEW_BYTES + 1)
         .expect("size oversized");
     fs::write(images.join("pixel.jpg"), [0xff, 0xd8, 0xff, 0xe0]).expect("write jpeg");
     fs::write(images.join("pixel.webp"), b"RIFF\x04\x00\x00\x00WEBP").expect("write webp");
@@ -80,19 +80,19 @@ fn daemon_validates_hook_canvas_preview_type_and_size() {
               "links": []
             }"#,
     )
-    .expect("write Hook session");
+    .expect("write Otter session");
     let previous = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata);
 
     let unsupported =
-        hook_canvas_preview_response("unsupported").expect("unsupported preview response");
+        otter_canvas_preview_response("unsupported").expect("unsupported preview response");
     expect_text_route_response(unsupported, 415);
 
-    let oversized = hook_canvas_preview_response("oversized").expect("oversized preview response");
+    let oversized = otter_canvas_preview_response("oversized").expect("oversized preview response");
     expect_text_route_response(oversized, 413);
 
     for (node_id, expected_type) in [("jpeg", "image/jpeg"), ("webp", "image/webp")] {
-        let response = hook_canvas_preview_response(node_id)
+        let response = otter_canvas_preview_response(node_id)
             .unwrap_or_else(|error| panic!("preview response for {node_id}: {error:#}"));
         expect_binary_route_response(response, 200, expected_type);
     }
@@ -102,10 +102,10 @@ fn daemon_validates_hook_canvas_preview_type_and_size() {
 }
 
 #[test]
-fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
+fn daemon_preserves_auth_and_structured_errors_for_otter_canvas_routes() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let appdata = unique_temp_dir("hook-canvas-auth-appdata");
-    let control_plane_root = unique_temp_dir("hook-canvas-auth-control-plane");
+    let appdata = unique_temp_dir("otter-canvas-auth-appdata");
+    let control_plane_root = unique_temp_dir("otter-canvas-auth-control-plane");
     let session_dir = appdata.join("com.yamiyu.hook");
     let images = session_dir.join("images");
     fs::create_dir_all(&images).expect("create session images");
@@ -114,7 +114,7 @@ fn daemon_preserves_auth_and_structured_errors_for_hook_canvas_routes() {
         session_dir.join("session.json"),
         r#"{"stickers":[{"id":"capture","type":"sticker","src":"images/capture.png"}],"links":[]}"#,
     )
-    .expect("write Hook session");
+    .expect("write Otter session");
     let previous = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata);
     let runtime = test_daemon_runtime(&control_plane_root, Some("canvas-secret"));
@@ -208,7 +208,7 @@ fn settings_persist_mcp_limits_and_global_art_update_policy() {
     let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
         root.join("settings.json"),
     )));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
     let mut settings = LoomSettings::default();
     settings.mcp.request_timeout_seconds = 120;
     settings.mcp.memory_limit_bytes = 1024 * 1024 * 1024;
@@ -303,19 +303,19 @@ fn art_store_latest_requests_resolve_to_a_cataloged_exact_version() {
 }
 
 #[test]
-fn hook_cache_settings_and_library_commands_use_the_hook_bridge_channel() {
-    let root = unique_temp_dir("hook-cache-control");
+fn otter_cache_settings_and_library_commands_use_the_otter_bridge_channel() {
+    let root = unique_temp_dir("otter-cache-control");
     let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
         root.join("settings.json"),
     )));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
     let hub = hook_bridge
         .lock()
         .expect("hook bridge")
         .broadcast_hub
         .clone();
     let (rx, _subscription) =
-        register_hook_bridge_subscription(&hub, vec![HOOK_EVENT_CACHE_CONTROL.to_owned()]);
+        register_otter_bridge_subscription(&hub, vec![HOOK_EVENT_CACHE_CONTROL.to_owned()]);
 
     let body = serde_json::to_string(&LoomSettings::default()).expect("settings body");
     let (status, _) =
@@ -334,7 +334,7 @@ fn hook_cache_settings_and_library_commands_use_the_hook_bridge_channel() {
     );
 
     let (status, _) =
-        broadcast_hook_cache_control(r#"{"action":"clearReferenceLibrary"}"#, &hook_bridge)
+        broadcast_otter_cache_control(r#"{"action":"clearReferenceLibrary"}"#, &hook_bridge)
             .expect("broadcast reference clear");
     assert_eq!(status, 200);
     let clear_event: Value = serde_json::from_str(
@@ -348,19 +348,19 @@ fn hook_cache_settings_and_library_commands_use_the_hook_bridge_channel() {
 }
 
 #[test]
-fn hook_receives_full_settings_after_settings_or_shortcut_updates() {
-    let root = unique_temp_dir("hook-settings-updated");
+fn otter_receives_full_settings_after_settings_or_shortcut_updates() {
+    let root = unique_temp_dir("otter-settings-updated");
     let settings_store = Arc::new(Mutex::new(LoomSettingsStore::new(
         root.join("settings.json"),
     )));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
     let hub = hook_bridge
         .lock()
         .expect("hook bridge")
         .broadcast_hub
         .clone();
     let (rx, _subscription) =
-        register_hook_bridge_subscription(&hub, vec![HOOK_EVENT_SETTINGS_UPDATED.to_owned()]);
+        register_otter_bridge_subscription(&hub, vec![HOOK_EVENT_SETTINGS_UPDATED.to_owned()]);
 
     let mut settings = LoomSettings::default();
     settings.general.theme = "dark".to_owned();

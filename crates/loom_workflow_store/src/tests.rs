@@ -48,7 +48,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 #[test]
-fn hook_live_alias_uses_latest_yaml() {
+fn otter_live_alias_uses_latest_yaml() {
     let root = temp_root("hook-live-alias");
     let store = WorkflowStore::new(&root);
     let yaml = "name: Live\nnodes: []\n";
@@ -72,10 +72,10 @@ fn hook_live_alias_uses_latest_yaml() {
 }
 
 #[test]
-fn list_workflows_includes_hook_live_alias_when_latest_yaml_exists() {
+fn list_workflows_includes_otter_live_alias_when_latest_yaml_exists() {
     let root = temp_root("hook-live-list");
     let store = WorkflowStore::new(&root);
-    let yaml = "name: Hook 实时工作流\nnodes:\n  - id: screenshot\n    uses: __sticker__\n";
+    let yaml = "name: Otter 实时工作流\nnodes:\n  - id: screenshot\n    uses: __sticker__\n";
 
     store
         .save_workflow("hook-live", yaml)
@@ -87,7 +87,7 @@ fn list_workflows_includes_hook_live_alias_when_latest_yaml_exists() {
         .find(|workflow| workflow.id == "hook-live")
         .expect("hook live workflow should be listed");
 
-    assert_eq!(live.name, "Hook 实时工作流");
+    assert_eq!(live.name, "Otter 实时工作流");
     assert_eq!(live.node_count, 1);
     assert!(!root.join("workflow_index.json").exists());
 

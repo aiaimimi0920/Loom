@@ -1,6 +1,6 @@
 // Loom daemon tests fragment 18; included into the shared crate test module.
 #[test]
-fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
+fn daemon_otter_bridge_executes_mcp_image_search_art_node_image_output() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("mcp-image-search-art-node");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
@@ -39,7 +39,7 @@ fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
                     r#"{
               "id": "fixture-image-search-art",
               "name": "图片搜索",
-              "description": "Execute fixture MCP image search through Hook bridge",
+              "description": "Execute fixture MCP image search through Otter bridge",
               "enabled": true,
               "execution": {
                 "type": "mcp",
@@ -65,9 +65,9 @@ fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
     );
     assert_eq!(saved_tool["tool"]["id"], "fixture-image-search-art");
 
-    let started = start_test_hook_bridge(&runtime, r#"{"port":0}"#);
+    let started = start_test_otter_bridge(&runtime, r#"{"port":0}"#);
     let bridge_port = started["port"].as_u64().expect("bridge port") as u16;
-    let mut socket = connect_hook_bridge_websocket(bridge_port, &root);
+    let mut socket = connect_otter_bridge_websocket(bridge_port, &root);
 
     socket
         .send(tungstenite::Message::Text(formal_art_execute_request(
@@ -83,14 +83,14 @@ fn daemon_hook_bridge_executes_mcp_image_search_art_node_image_output() {
             }),
         )))
         .expect("send MCP image-search execute art node");
-    let response = read_hook_terminal_response(&mut socket, "mcp-image-search");
+    let response = read_otter_terminal_response(&mut socket, "mcp-image-search");
 
     assert_eq!(response["status"], "succeeded", "response={response}");
     assert_eq!(response["data"]["nodeId"], "node-mcp-image-search");
     assert!(response["data"]["outputs"]["output"]["handle"].is_string());
 
     drop(socket);
-    let stopped = stop_test_hook_bridge(&runtime);
+    let stopped = stop_test_otter_bridge(&runtime);
     assert_eq!(stopped["running"], false);
 
     drop(runtime);

@@ -24,7 +24,7 @@ fn fixture() -> (Peer, SigningKeyDocument, CatalogProof) {
         transfer_protocol: "loom.offline-transfer.v1".to_owned(),
         signature: String::new(),
         devices: vec![CatalogDevice {
-            device_id: "hook-b".to_owned(),
+            device_id: "otter-b".to_owned(),
             name: "Receiver".to_owned(),
             policy: "auto".to_owned(),
         }],
@@ -56,8 +56,8 @@ fn offline_catalog_rejects_expired_duplicate_and_over_budget_signed_payloads() {
     assert!(proof.verify(&peer, &proof.challenge).is_err());
     proof.devices = (0..65)
         .map(|i| CatalogDevice {
-            device_id: format!("hook-{i}"),
-            name: "Hook".to_owned(),
+            device_id: format!("otter-{i}"),
+            name: "Otter".to_owned(),
             policy: "confirm".to_owned(),
         })
         .collect();

@@ -364,11 +364,11 @@ try {
         $localDevice = "device-000-local"
         $attach = @{}
         $firstDashboard = Invoke-JsonPost "$baseUrl/v1/surfaces/attach" @{
-            artId = $artNames.dashboard.id; hookNodeId = "hook-node:dashboard-one"; deviceId = $localDevice
+            artId = $artNames.dashboard.id; hookNodeId = "otter-node:dashboard-one"; deviceId = $localDevice
             capabilities = New-SurfaceHostCapabilities -RemoteResources
         }
         $secondDashboard = Invoke-JsonPost "$baseUrl/v1/surfaces/attach" @{
-            artId = $artNames.dashboard.id; hookNodeId = "hook-node:dashboard-two"; deviceId = $localDevice
+            artId = $artNames.dashboard.id; hookNodeId = "otter-node:dashboard-two"; deviceId = $localDevice
             capabilities = New-SurfaceHostCapabilities -RemoteResources
         }
         $dashboardInstanceId = [string]$firstDashboard.instance.descriptor.instanceId
@@ -384,11 +384,11 @@ try {
         }
 
         $stock = Invoke-JsonPost "$baseUrl/v1/surfaces/attach" @{
-            artId = $artNames.stock.id; hookNodeId = "hook-node:stock"; deviceId = $localDevice
+            artId = $artNames.stock.id; hookNodeId = "otter-node:stock"; deviceId = $localDevice
             capabilities = New-SurfaceHostCapabilities
         }
         $form = Invoke-JsonPost "$baseUrl/v1/surfaces/attach" @{
-            artId = $artNames.form.id; hookNodeId = "hook-node:form"; deviceId = $localDevice
+            artId = $artNames.form.id; hookNodeId = "otter-node:form"; deviceId = $localDevice
             capabilities = New-SurfaceHostCapabilities
         }
         $attach.stock = @{ instanceId = [string]$stock.instance.descriptor.instanceId; attachmentId = [string](@($stock.instance.attachments.PSObject.Properties)[0].Name) }
@@ -470,7 +470,7 @@ try {
         $preRestartFirstAttachment = Get-SurfaceAttachment $preRestartDashboard $attach.dashboard.firstAttachmentId
         $preRestartRevision = [int64]$preRestartFirstAttachment.snapshot.revision
         $temporary = Invoke-JsonPost "$baseUrl/v1/surfaces/attach" @{
-            artId = $artNames.stock.id; hookNodeId = "hook-node:temporary"; deviceId = $localDevice
+            artId = $artNames.stock.id; hookNodeId = "otter-node:temporary"; deviceId = $localDevice
             capabilities = New-SurfaceHostCapabilities; persistence = "temporary"
         }
         $temporaryInstanceId = [string]$temporary.instance.descriptor.instanceId
@@ -492,7 +492,7 @@ try {
 
         $streamRecovery = Invoke-JsonGet "$baseUrl/v1/surfaces/stream?after=0&timeoutMs=1"
         $dashboardRecovery = @($streamRecovery.messages | Where-Object {
-            [string]$_.method -eq "loom.surface.snapshot" -and [string]$_.params.hookNodeId -eq "hook-node:dashboard-one"
+            [string]$_.method -eq "loom.surface.snapshot" -and [string]$_.params.hookNodeId -eq "otter-node:dashboard-one"
         } | Select-Object -First 1)
         Assert-Equal 1 $dashboardRecovery.Count "Surface stream did not replay the dashboard snapshot after restart"
         Assert-Equal $preRestartRevision ([int64]$dashboardRecovery[0].params.snapshot.revision) "replayed Surface snapshot revision mismatch"

@@ -11,7 +11,7 @@ fn device_pairing_issues_short_lived_session_rejects_replay_and_revokes_on_disab
     let signing_key = SigningKey::generate(&mut OsRng);
     let public_key = BASE64.encode(signing_key.verifying_key().to_bytes());
     let pairing_body = json!({
-        "name": "Paired Hook",
+        "name": "Paired Otter",
         "kind": "computer",
         "address": "192.168.10.20",
         "publicKey": public_key,
@@ -29,7 +29,7 @@ fn device_pairing_issues_short_lived_session_rejects_replay_and_revokes_on_disab
         .expect("device registry")
         .devices
         .values()
-        .find(|device| device.name == "Paired Hook")
+        .find(|device| device.name == "Paired Otter")
         .expect("pending paired device")
         .id
         .clone();
@@ -184,7 +184,7 @@ fn device_pairing_issues_short_lived_session_rejects_replay_and_revokes_on_disab
 
     let update_path = format!("/v1/devices/{device_id}");
     let update_body = json!({
-        "name": "Paired Hook",
+        "name": "Paired Otter",
         "kind": "computer",
         "address": "192.168.10.20",
         "enabled": false,
@@ -250,8 +250,8 @@ fn stale_device_credential_does_not_mask_a_valid_administrator_bearer() {
 
 #[test]
 fn surface_stream_history_is_ordered_bounded_and_reports_cursor_reset() {
-    let hub = HookBridgeBroadcastHub::new();
-    broadcast_hook_bridge_messages(
+    let hub = OtterBridgeBroadcastHub::new();
+    broadcast_otter_bridge_messages(
         &hub,
         &[
             json!({"method": SURFACE_EVENT_PATCH, "params": {"revision": 1}}).to_string(),
@@ -266,7 +266,7 @@ fn surface_stream_history_is_ordered_bounded_and_reports_cursor_reset() {
     assert!(entries[0].sequence < entries[1].sequence);
 
     for revision in 0..=HOOK_BRIDGE_HISTORY_CAPACITY {
-        broadcast_hook_bridge_messages(
+        broadcast_otter_bridge_messages(
             &hub,
             &[json!({
                 "method": SURFACE_EVENT_PATCH,
@@ -287,7 +287,7 @@ fn initial_surface_recovery_advances_without_skipping_the_first_broadcast() {
     let surface_instances = Arc::new(Mutex::new(
         SurfaceInstanceStore::new(root.join("instances.json")).expect("Surface store"),
     ));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
 
     let (_, initial_body) = poll_surface_stream(
         "/v1/surfaces/stream?after=0&timeoutMs=0",
@@ -302,10 +302,10 @@ fn initial_surface_recovery_advances_without_skipping_the_first_broadcast() {
 
     let hub = hook_bridge
         .lock()
-        .expect("Hook bridge")
+        .expect("Otter bridge")
         .broadcast_hub
         .clone();
-    broadcast_hook_bridge_messages(
+    broadcast_otter_bridge_messages(
         &hub,
         &[json!({"method": SURFACE_EVENT_PATCH, "params": {"revision": 1}}).to_string()],
     );
@@ -346,7 +346,7 @@ fn surface_stream_isolated_by_authenticated_attachment_device() {
         let attachment_a = store
             .attach(
                 &instance.descriptor.instance_id,
-                "hook-node:a",
+                "otter-node:a",
                 "device-a",
                 None,
             )
@@ -354,7 +354,7 @@ fn surface_stream_isolated_by_authenticated_attachment_device() {
         let attachment_b = store
             .attach(
                 &instance.descriptor.instance_id,
-                "hook-node:b",
+                "otter-node:b",
                 "device-b",
                 None,
             )
@@ -365,19 +365,19 @@ fn surface_stream_isolated_by_authenticated_attachment_device() {
             attachment_b.descriptor.attachment_id,
         )
     };
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
     let hub = hook_bridge
         .lock()
-        .expect("Hook bridge")
+        .expect("Otter bridge")
         .broadcast_hub
         .clone();
-    broadcast_hook_bridge_messages(
+    broadcast_otter_bridge_messages(
         &hub,
         &[
             json!({
                 "method": SURFACE_EVENT_PATCH,
                 "params": {
-                    "hookNodeId": "hook-node:a",
+                    "hookNodeId": "otter-node:a",
                     "patch": {
                         "instanceId": instance_id,
                         "attachmentId": attachment_a,
@@ -388,7 +388,7 @@ fn surface_stream_isolated_by_authenticated_attachment_device() {
             json!({
                 "method": SURFACE_EVENT_PATCH,
                 "params": {
-                    "hookNodeId": "hook-node:b",
+                    "hookNodeId": "otter-node:b",
                     "patch": {
                         "instanceId": instance_id,
                         "attachmentId": attachment_b,
@@ -408,9 +408,9 @@ fn surface_stream_isolated_by_authenticated_attachment_device() {
     .expect("poll device A stream");
     assert_eq!(status, 200, "{body}");
     let response: Value = serde_json::from_str(&body).expect("stream JSON");
-    // Hook carries its own copy of this string and rejects an envelope without it, so the wire
+    // Otter carries its own copy of this string and rejects an envelope without it, so the wire
     // value is spelled out here rather than read from the constant: changing it has to break a
-    // test in this repository, not only in Hook's.
+    // test in this repository, not only in Otter's.
     assert_eq!(response["protocolVersion"], "loom.surface-stream.v1");
     assert_eq!(response["next"], 3);
     assert_eq!(response["messages"].as_array().map(Vec::len), Some(1));

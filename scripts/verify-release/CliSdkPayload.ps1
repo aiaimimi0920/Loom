@@ -60,7 +60,7 @@ function Assert-PluginSdkZipPayload {
         "protocol/schemas/framework-execute-response.v1.schema.json",
         "protocol/schemas/framework-manifest.v1.schema.json",
         "protocol/schemas/device-session.v1.schema.json",
-        "protocol/schemas/hook-message.v1.schema.json",
+        "protocol/schemas/otter-message.v1.schema.json",
         "protocol/schemas/surface-manifest.v1.schema.json",
         "protocol/schemas/surface-message.v1.schema.json",
         "protocol/schemas/surface-scene.v1.schema.json",

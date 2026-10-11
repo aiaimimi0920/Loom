@@ -7,7 +7,7 @@ import type {
   LoomToolDefinition,
   LoomWorkflowMetadata,
 } from "./coreTypes.ts";
-import type { LoomHookBridgeStatus } from "./hookTypes.ts";
+import type { LoomOtterBridgeStatus } from "./otterTypes.ts";
 import type { LoomMcpServer } from "./mcpTypes.ts";
 import type { LoomPythonArt } from "./pythonTypes.ts";
 
@@ -36,7 +36,7 @@ export interface LoomSnapshot {
   tools: LoomToolDefinition[];
   pythonArts: LoomPythonArt[];
   workflows: LoomWorkflowMetadata[];
-  hookBridge: LoomHookBridgeStatus | null;
+  hookBridge: LoomOtterBridgeStatus | null;
   settings: LoomSettingsLinks;
   error: string | null;
 }

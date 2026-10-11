@@ -32,5 +32,6 @@ fn websocket_config() -> tungstenite::protocol::WebSocketConfig {
 
 #[cfg(all(test, feature = "server"))]
 mod auth_tests;
+pub mod brand_env;
 #[cfg(all(test, feature = "server"))]
 mod tests;

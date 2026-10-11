@@ -1,5 +1,5 @@
 //! Authoritative edit sessions shared by a source Unit's projection bindings.
-//! Bitmap v1 remains unchanged until Hook opts in to this separate document contract.
+//! Bitmap v1 remains unchanged until Otter opts in to this separate document contract.
 use crate::{DeviceRegistryStore, ManagedDevice, ProjectionError, ProjectionRecord};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

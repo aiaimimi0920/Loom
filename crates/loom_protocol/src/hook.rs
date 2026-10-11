@@ -1,4 +1,4 @@
-//! Stable Loom-to-Hook control protocol.
+//! Stable Loom-to-Otter control protocol.
 //!
 //! `loom.hook.v1` owns connection negotiation, capability discovery, workflow
 //! control, and traditional Art-node execution. Distributed UI messages remain
@@ -66,17 +66,17 @@ pub const HOOK_EVENT_METHODS: &[&str] = &[
     HOOK_EVENT_CACHE_CONTROL,
 ];
 
-pub fn hook_subscription_event_supported(event: &str) -> bool {
+pub fn otter_subscription_event_supported(event: &str) -> bool {
     HOOK_EVENT_METHODS.contains(&event) || SURFACE_EVENT_METHODS.contains(&event)
 }
 
-fn default_hook_protocol_version() -> String {
+fn default_otter_protocol_version() -> String {
     HOOK_PROTOCOL_VERSION.to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HookTransportMode {
+pub enum OtterTransportMode {
     Websocket,
     SharedMemory,
     CloudflareRelay,
@@ -84,8 +84,8 @@ pub enum HookTransportMode {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookHandshakeRequest {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterHandshakeRequest {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     #[serde(default)]
     pub supported_protocol_versions: Vec<String>,
@@ -95,12 +95,12 @@ pub struct HookHandshakeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(default)]
-    pub transports: Vec<HookTransportMode>,
+    pub transports: Vec<OtterTransportMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<SurfaceHostCapabilities>,
 }
 
-impl HookHandshakeRequest {
+impl OtterHandshakeRequest {
     #[must_use]
     pub fn advertised_protocol_versions(&self) -> Vec<&str> {
         let mut versions = vec![self.protocol_version.as_str()];
@@ -115,9 +115,9 @@ impl HookHandshakeRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookCapabilities {
+pub struct OtterCapabilities {
     #[serde(default)]
-    pub art_definitions: Vec<HookArtCapability>,
+    pub art_definitions: Vec<OtterArtCapability>,
     pub surface: SurfaceHostCapabilities,
     #[serde(default)]
     pub operations: Vec<String>,
@@ -125,7 +125,7 @@ pub struct HookCapabilities {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtCapability {
+pub struct OtterArtCapability {
     pub id: String,
     pub label: String,
     #[serde(default)]
@@ -135,7 +135,7 @@ pub struct HookArtCapability {
     #[serde(default)]
     pub auto_process: bool,
     #[serde(default)]
-    pub supported_transports: Vec<HookTransportMode>,
+    pub supported_transports: Vec<OtterTransportMode>,
     #[serde(default)]
     pub parameters: Vec<Value>,
     #[serde(default)]
@@ -158,44 +158,44 @@ const fn default_capability_enabled() -> bool {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookHandshakeResponse {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterHandshakeResponse {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub server_name: String,
     pub server_version: String,
     pub session_id: String,
-    pub transport: HookTransportMode,
-    pub capabilities: HookCapabilities,
+    pub transport: OtterTransportMode,
+    pub capabilities: OtterCapabilities,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
-pub enum HookRequest {
+pub enum OtterRequest {
     #[serde(rename = "loom.hook.handshake")]
-    Handshake(HookHandshakeRequest),
+    Handshake(OtterHandshakeRequest),
     #[serde(rename = "loom.hook.capabilities.list")]
-    CapabilitiesList(HookCapabilitiesListRequest),
+    CapabilitiesList(OtterCapabilitiesListRequest),
     #[serde(rename = "loom.hook.subscribe")]
-    Subscribe(HookSubscribeRequest),
+    Subscribe(OtterSubscribeRequest),
     #[serde(rename = "loom.hook.workflow.sync")]
-    WorkflowSync(HookWorkflowSyncRequest),
+    WorkflowSync(OtterWorkflowSyncRequest),
     #[serde(rename = "loom.hook.workflow.node.update")]
-    WorkflowNodeUpdate(HookWorkflowNodeUpdateRequest),
+    WorkflowNodeUpdate(OtterWorkflowNodeUpdateRequest),
     #[serde(rename = "loom.hook.workflow.instantiate")]
-    WorkflowInstantiate(HookWorkflowInstantiateRequest),
+    WorkflowInstantiate(OtterWorkflowInstantiateRequest),
     #[serde(rename = "loom.hook.art.execute")]
-    ArtExecute(HookArtExecuteRequest),
+    ArtExecute(OtterArtExecuteRequest),
     #[serde(rename = "loom.hook.art.cancel")]
-    ArtCancel(HookArtCancelRequest),
+    ArtCancel(OtterArtCancelRequest),
     #[serde(rename = "loom.hook.art.resources.release")]
-    ArtResourcesRelease(HookArtResourcesReleaseRequest),
+    ArtResourcesRelease(OtterArtResourcesReleaseRequest),
     #[serde(rename = "loom.hook.settings.get")]
-    SettingsGet(HookSettingsGetRequest),
+    SettingsGet(OtterSettingsGetRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookCapabilitiesListRequest {
+pub struct OtterCapabilitiesListRequest {
     pub request_id: String,
     #[serde(default)]
     pub enabled_only: bool,
@@ -203,7 +203,7 @@ pub struct HookCapabilitiesListRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookSubscribeRequest {
+pub struct OtterSubscribeRequest {
     pub request_id: String,
     #[serde(default)]
     pub events: Vec<String>,
@@ -211,7 +211,7 @@ pub struct HookSubscribeRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookWorkflowSyncRequest {
+pub struct OtterWorkflowSyncRequest {
     pub request_id: String,
     pub workflow_id: String,
     pub snapshot: Value,
@@ -219,7 +219,7 @@ pub struct HookWorkflowSyncRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookWorkflowNodeUpdateRequest {
+pub struct OtterWorkflowNodeUpdateRequest {
     pub request_id: String,
     pub workflow_id: String,
     pub node_id: String,
@@ -229,7 +229,7 @@ pub struct HookWorkflowNodeUpdateRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookWorkflowInstantiateRequest {
+pub struct OtterWorkflowInstantiateRequest {
     pub request_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_id: Option<String>,
@@ -242,7 +242,7 @@ pub struct HookWorkflowInstantiateRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtExecuteRequest {
+pub struct OtterArtExecuteRequest {
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
@@ -250,9 +250,9 @@ pub struct HookArtExecuteRequest {
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
-    pub output_transports: Vec<HookTransportMode>,
+    pub output_transports: Vec<OtterTransportMode>,
     #[serde(default)]
-    pub inputs: BTreeMap<String, HookArtPortValue>,
+    pub inputs: BTreeMap<String, OtterArtPortValue>,
     #[serde(default)]
     pub parameters: BTreeMap<String, Value>,
     #[serde(default)]
@@ -263,7 +263,7 @@ pub struct HookArtExecuteRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HookArtPortValue {
+pub enum OtterArtPortValue {
     Value {
         value: Value,
     },
@@ -290,7 +290,7 @@ pub enum HookArtPortValue {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtCancelRequest {
+pub struct OtterArtCancelRequest {
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
@@ -301,7 +301,7 @@ pub struct HookArtCancelRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtResourcesReleaseRequest {
+pub struct OtterArtResourcesReleaseRequest {
     pub protocol_version: String,
     pub request_id: String,
     pub execution_request_id: String,
@@ -314,13 +314,13 @@ pub struct HookArtResourcesReleaseRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookSettingsGetRequest {
+pub struct OtterSettingsGetRequest {
     pub request_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HookRequestStatus {
+pub enum OtterRequestStatus {
     Accepted,
     Running,
     CancelRequested,
@@ -331,11 +331,11 @@ pub enum HookRequestStatus {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookResponse {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterResponse {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
-    pub status: HookRequestStatus,
+    pub status: OtterRequestStatus,
     #[serde(default)]
     pub data: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -344,22 +344,22 @@ pub struct HookResponse {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtAck {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterArtAck {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
     pub generation: u64,
     pub accepted: bool,
-    pub status: HookRequestStatus,
+    pub status: OtterRequestStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<SurfaceExecutionError>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtProgress {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterArtProgress {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
@@ -374,36 +374,36 @@ pub struct HookArtProgress {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtPreviewCommit {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterArtPreviewCommit {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
     pub generation: u64,
     pub preview_revision: u64,
     pub port_id: String,
-    pub value: HookArtPortValue,
+    pub value: OtterArtPortValue,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtResultCommit {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterArtResultCommit {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
     pub generation: u64,
     pub result_revision: u64,
     #[serde(default)]
-    pub outputs: BTreeMap<String, HookArtPortValue>,
+    pub outputs: BTreeMap<String, OtterArtPortValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookArtFailure {
-    #[serde(default = "default_hook_protocol_version")]
+pub struct OtterArtFailure {
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub request_id: String,
     pub node_id: String,
@@ -416,53 +416,53 @@ pub struct HookArtFailure {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookEvent {
-    #[serde(default = "default_hook_protocol_version")]
+    #[serde(default = "default_otter_protocol_version")]
     pub protocol_version: String,
     pub method: String,
     pub params: Value,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum HookProtocolError {
-    #[error("unsupported Hook protocol; client advertises {advertised:?}")]
+pub enum OtterProtocolError {
+    #[error("unsupported Otter protocol; client advertises {advertised:?}")]
     UnsupportedProtocol { advertised: Vec<String> },
-    #[error("invalid Hook protocol identifier: {0}")]
+    #[error("invalid Otter protocol identifier: {0}")]
     InvalidIdentifier(String),
-    #[error("unsupported Hook transport")]
+    #[error("unsupported Otter transport")]
     UnsupportedTransport,
 }
 
-pub fn negotiate_hook_protocol(
-    request: &HookHandshakeRequest,
-) -> Result<&'static str, HookProtocolError> {
+pub fn negotiate_otter_protocol(
+    request: &OtterHandshakeRequest,
+) -> Result<&'static str, OtterProtocolError> {
     let advertised = request.advertised_protocol_versions();
     if advertised.contains(&HOOK_PROTOCOL_VERSION) {
         return Ok(HOOK_PROTOCOL_VERSION);
     }
-    Err(HookProtocolError::UnsupportedProtocol {
+    Err(OtterProtocolError::UnsupportedProtocol {
         advertised: advertised.into_iter().map(str::to_owned).collect(),
     })
 }
 
-pub fn validate_hook_handshake(request: &HookHandshakeRequest) -> Result<(), HookProtocolError> {
-    negotiate_hook_protocol(request)?;
+pub fn validate_otter_handshake(request: &OtterHandshakeRequest) -> Result<(), OtterProtocolError> {
+    negotiate_otter_protocol(request)?;
     for value in [
         request.client_id.as_str(),
         request.client_version.as_str(),
         request.platform.as_str(),
     ] {
-        if !is_safe_hook_identifier(value) {
-            return Err(HookProtocolError::InvalidIdentifier(value.to_owned()));
+        if !is_safe_otter_identifier(value) {
+            return Err(OtterProtocolError::InvalidIdentifier(value.to_owned()));
         }
     }
     if request.transports.is_empty() {
-        return Err(HookProtocolError::UnsupportedTransport);
+        return Err(OtterProtocolError::UnsupportedTransport);
     }
     Ok(())
 }
 
 #[must_use]
-pub fn is_safe_hook_identifier(value: &str) -> bool {
+pub fn is_safe_otter_identifier(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty()
         && value.len() <= 160
@@ -493,44 +493,47 @@ mod tests {
     }
 
     #[test]
-    fn hook_handshake_negotiates_from_supported_versions() {
-        let request = HookHandshakeRequest {
+    fn otter_handshake_negotiates_from_supported_versions() {
+        let request = OtterHandshakeRequest {
             protocol_version: "loom.hook.v2".to_owned(),
             supported_protocol_versions: vec![HOOK_PROTOCOL_VERSION.to_owned()],
             client_id: "hook.desktop".to_owned(),
             client_version: "0.1.7".to_owned(),
             platform: "windows-x64".to_owned(),
             device_id: Some("device:local".to_owned()),
-            transports: vec![HookTransportMode::SharedMemory],
+            transports: vec![OtterTransportMode::SharedMemory],
             surface: Some(surface_capabilities()),
         };
 
-        assert_eq!(negotiate_hook_protocol(&request), Ok(HOOK_PROTOCOL_VERSION));
-        validate_hook_handshake(&request).expect("valid handshake");
+        assert_eq!(
+            negotiate_otter_protocol(&request),
+            Ok(HOOK_PROTOCOL_VERSION)
+        );
+        validate_otter_handshake(&request).expect("valid handshake");
     }
 
     #[test]
-    fn hook_handshake_rejects_unsupported_protocols() {
-        let request = HookHandshakeRequest {
+    fn otter_handshake_rejects_unsupported_protocols() {
+        let request = OtterHandshakeRequest {
             protocol_version: "loom.hook.v2".to_owned(),
             supported_protocol_versions: Vec::new(),
             client_id: "hook.desktop".to_owned(),
             client_version: "0.1.7".to_owned(),
             platform: "windows-x64".to_owned(),
             device_id: None,
-            transports: vec![HookTransportMode::Websocket],
+            transports: vec![OtterTransportMode::Websocket],
             surface: None,
         };
 
         assert!(matches!(
-            negotiate_hook_protocol(&request),
-            Err(HookProtocolError::UnsupportedProtocol { .. })
+            negotiate_otter_protocol(&request),
+            Err(OtterProtocolError::UnsupportedProtocol { .. })
         ));
     }
 
     #[test]
-    fn hook_request_uses_only_namespaced_methods() {
-        let request = HookRequest::ArtCancel(HookArtCancelRequest {
+    fn otter_request_uses_only_namespaced_methods() {
+        let request = OtterRequest::ArtCancel(OtterArtCancelRequest {
             protocol_version: HOOK_PROTOCOL_VERSION.to_owned(),
             request_id: "request:1".to_owned(),
             node_id: "node:1".to_owned(),
@@ -548,23 +551,23 @@ mod tests {
     }
 
     #[test]
-    fn hook_subscriptions_accept_only_versioned_hook_and_surface_events() {
-        assert!(hook_subscription_event_supported(
+    fn otter_subscriptions_accept_only_versioned_otter_and_surface_events() {
+        assert!(otter_subscription_event_supported(
             HOOK_EVENT_WORKFLOW_INSTANTIATED
         ));
-        assert!(hook_subscription_event_supported(
+        assert!(otter_subscription_event_supported(
             crate::SURFACE_EVENT_SNAPSHOT
         ));
         assert!(crate::SURFACE_EVENT_METHODS
             .iter()
             .all(|method| method.starts_with("loom.surface.")));
-        assert!(!hook_subscription_event_supported("surface"));
-        assert!(!hook_subscription_event_supported("surface/snapshot"));
+        assert!(!otter_subscription_event_supported("surface"));
+        assert!(!otter_subscription_event_supported("surface/snapshot"));
     }
 
     #[test]
-    fn hook_art_result_uses_typed_formal_outputs() {
-        let commit = HookArtResultCommit {
+    fn otter_art_result_uses_typed_formal_outputs() {
+        let commit = OtterArtResultCommit {
             protocol_version: HOOK_PROTOCOL_VERSION.to_owned(),
             request_id: "request:1".to_owned(),
             node_id: "node:1".to_owned(),
@@ -572,7 +575,7 @@ mod tests {
             result_revision: 2,
             outputs: BTreeMap::from([(
                 "result".to_owned(),
-                HookArtPortValue::Value {
+                OtterArtPortValue::Value {
                     value: serde_json::json!({ "ok": true }),
                 },
             )]),
@@ -585,8 +588,8 @@ mod tests {
     }
 
     #[test]
-    fn hook_art_execute_requires_explicit_output_transports() {
-        let missing_protocol = serde_json::from_value::<HookRequest>(serde_json::json!({
+    fn otter_art_execute_requires_explicit_output_transports() {
+        let missing_protocol = serde_json::from_value::<OtterRequest>(serde_json::json!({
             "method": HOOK_METHOD_ART_EXECUTE,
             "params": {
                 "requestId": "request:1",
@@ -601,7 +604,7 @@ mod tests {
         }));
         assert!(missing_protocol.is_err());
 
-        let missing = serde_json::from_value::<HookRequest>(serde_json::json!({
+        let missing = serde_json::from_value::<OtterRequest>(serde_json::json!({
             "method": HOOK_METHOD_ART_EXECUTE,
             "params": {
                 "protocolVersion": HOOK_PROTOCOL_VERSION,
@@ -616,7 +619,7 @@ mod tests {
         }));
         assert!(missing.is_err());
 
-        let request = serde_json::from_value::<HookRequest>(serde_json::json!({
+        let request = serde_json::from_value::<OtterRequest>(serde_json::json!({
             "method": HOOK_METHOD_ART_EXECUTE,
             "params": {
                 "protocolVersion": HOOK_PROTOCOL_VERSION,
@@ -631,18 +634,18 @@ mod tests {
             }
         }))
         .expect("canonical Art execute request");
-        let HookRequest::ArtExecute(request) = request else {
+        let OtterRequest::ArtExecute(request) = request else {
             panic!("expected Art execute request")
         };
         assert_eq!(
             request.output_transports,
-            vec![HookTransportMode::Websocket]
+            vec![OtterTransportMode::Websocket]
         );
     }
 
     #[test]
-    fn hook_art_resource_release_uses_canonical_identity() {
-        let missing_protocol = serde_json::from_value::<HookRequest>(serde_json::json!({
+    fn otter_art_resource_release_uses_canonical_identity() {
+        let missing_protocol = serde_json::from_value::<OtterRequest>(serde_json::json!({
             "method": HOOK_METHOD_ART_RESOURCES_RELEASE,
             "params": {
                 "requestId": "release:request:1",
@@ -655,7 +658,7 @@ mod tests {
         }));
         assert!(missing_protocol.is_err());
 
-        let missing_execution = serde_json::from_value::<HookRequest>(serde_json::json!({
+        let missing_execution = serde_json::from_value::<OtterRequest>(serde_json::json!({
             "method": HOOK_METHOD_ART_RESOURCES_RELEASE,
             "params": {
                 "protocolVersion": HOOK_PROTOCOL_VERSION,
@@ -668,7 +671,7 @@ mod tests {
         }));
         assert!(missing_execution.is_err());
 
-        let request = HookRequest::ArtResourcesRelease(HookArtResourcesReleaseRequest {
+        let request = OtterRequest::ArtResourcesRelease(OtterArtResourcesReleaseRequest {
             protocol_version: HOOK_PROTOCOL_VERSION.to_owned(),
             request_id: "release:request:1".to_owned(),
             execution_request_id: "request:1".to_owned(),
@@ -684,8 +687,8 @@ mod tests {
     }
 
     #[test]
-    fn hook_art_cancel_requires_explicit_protocol_version() {
-        let missing_protocol = serde_json::from_value::<HookRequest>(serde_json::json!({
+    fn otter_art_cancel_requires_explicit_protocol_version() {
+        let missing_protocol = serde_json::from_value::<OtterRequest>(serde_json::json!({
             "method": HOOK_METHOD_ART_CANCEL,
             "params": {
                 "requestId": "request:1",

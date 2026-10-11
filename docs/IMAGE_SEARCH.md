@@ -5,7 +5,7 @@
 The `neuro.official/custom-image-search` Art uses the generic `mcp` framework
 and declares the independent `neuro.official/neuro-image-search` MCP package
 as a dependency. Sources live in `art-packages/samples/image-search` and
-`mcp-server-packages/image-search`. Hook does not launch the server or contain
+`mcp-server-packages/image-search`. Otter does not launch the server or contain
 an image-search execution branch.
 
 Configure **Brave API Key** through the Art dependency status or MCP service
@@ -20,7 +20,7 @@ Credential storage and platform limitations are described in
 The older Art-local server payload and read-only `art-mcp:` service projection
 belong to retired implementations. Current service management uses the
 independent MCP package and its credential lifecycle. Do not restore the old
-projection or put the Brave key into Art defaults, Hook state or manifests.
+projection or put the Brave key into Art defaults, Otter state or manifests.
 
 ## Inputs, parameters and results
 
@@ -31,7 +31,7 @@ Only an absent capability input declaration permits the current unit-port fallba
 
 Canonical `type: "secret"` or `data_type: "secret"` cannot be downgraded by
 `secret: false`. Secret defaults and known secret parameters must be excluded
-from Hook node state, session persistence, workflow snapshots and execution
+from Otter node state, session persistence, workflow snapshots and execution
 parameters. Credentials are resolved inside Loom's protected execution boundary.
 
 The manifest exposes the search query and candidate count. The Art converts MCP
@@ -45,7 +45,7 @@ It normalizes supported scalar types, aliases and enum values, checks required
 arguments, and omits undeclared properties when `additionalProperties` is false.
 Unsupported composed schemas such as `$ref`, `allOf`, `anyOf` and `oneOf`, and
 nested object/array property types, are rejected by the current host. There is
-no general complex-schema passthrough guarantee. Art/Hook control fields must
+no general complex-schema passthrough guarantee. Art/Otter control fields must
 not become accidental tool arguments, and secret-bearing call arguments must
 not be echoed into result metadata.
 
@@ -68,7 +68,7 @@ Verify both a fresh control plane and upgrade from an existing installation.
 `scripts/tests/Test-LoomImageSearchMcpServer.ps1` exercises the server contract;
 `scripts/tests/Test-LoomSampleArtInstallExecution.ps1` exercises independent
 package installation and execution with isolated fixtures. Fixture evidence
-does not establish current public Brave availability or native Hook acceptance.
+does not establish current public Brave availability or native Otter acceptance.
 Use [release provenance](release-provenance.md) for exact-package joint gates.
 Historical phase 72-74 provider runs, candidate hashes and old-process blockers
 remain recoverable from Git tag `cleanup-base-20260928`.

@@ -202,7 +202,7 @@ function New-IntegrityFixture {
         @{ path = "protocol/schemas/capability-runtime.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/device-session.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/extension.v1.schema.json"; content = "{}" },
-        @{ path = "protocol/schemas/hook-message.v1.schema.json"; content = "{}" },
+        @{ path = "protocol/schemas/otter-message.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-manifest.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-message.v1.schema.json"; content = "{}" },
         @{ path = "protocol/schemas/surface-scene.v1.schema.json"; content = "{}" },

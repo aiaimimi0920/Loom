@@ -4,7 +4,7 @@ fn validate_live_attachment(
     instance_id: &str,
     attachment_id: &str,
     expected_device_id: &str,
-    expected_hook_node_id: Option<&str>,
+    expected_otter_node_id: Option<&str>,
     authenticated_device_id: Option<&str>,
 ) -> std::result::Result<(), LiveRuntimeError> {
     if authenticated_device_id.is_some_and(|device_id| device_id != expected_device_id) {
@@ -31,12 +31,12 @@ fn validate_live_attachment(
     })?;
     if attachment.descriptor.device_id != expected_device_id
         || attachment.descriptor.instance_id != instance_id
-        || expected_hook_node_id.is_some_and(|node| attachment.descriptor.hook_node_id != node)
+        || expected_otter_node_id.is_some_and(|node| attachment.descriptor.hook_node_id != node)
     {
         return Err(LiveRuntimeError::new(
             403,
             "live_attachment_identity_mismatch",
-            "the Surface attachment does not match the live device and Hook identity",
+            "the Surface attachment does not match the live device and Otter identity",
         ));
     }
     if attachment.lifecycle == loom_protocol::SurfaceLifecycleState::Disposed {

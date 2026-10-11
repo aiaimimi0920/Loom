@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) const DEFAULT_LOOM_DAEMON_URL: &str = "http://127.0.0.1:8765";
-pub(super) const DEFAULT_HOOK_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
+pub(super) const DEFAULT_OTTER_BRIDGE_URL: &str = "ws://127.0.0.1:19820";
 pub(super) const HOOK_COMPANION_VERSION: &str = "0.1.7";
 pub(super) const LOOM_DAEMON_EXECUTABLE_ENV: &str = "LOOM_DAEMON_EXECUTABLE";
 pub(super) const FRAMEWORK_PACKAGE_CATALOG_ENV: &str = "LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR";
@@ -25,7 +25,7 @@ pub(super) const OFFICIAL_FRAMEWORK_IDS: [&str; 4] = ["process", "cloud_api", "m
 pub(super) static PACKAGED_ART_BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 pub(super) static DAEMON_START_LOCK: Mutex<()> = Mutex::new(());
 pub(super) static ACTIVE_DAEMON_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-pub(super) static ACTIVE_HOOK_BRIDGE_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+pub(super) static ACTIVE_OTTER_BRIDGE_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 pub(super) static OWNED_DAEMON_PROCESS: OnceLock<Mutex<Option<std::process::Child>>> =
     OnceLock::new();
 pub(super) static LOOM_CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);

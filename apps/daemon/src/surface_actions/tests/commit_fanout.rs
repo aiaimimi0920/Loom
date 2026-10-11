@@ -26,7 +26,7 @@
             let attachment = store
                 .attach(
                     &instance.descriptor.instance_id,
-                    "hook-node:test",
+                    "otter-node:test",
                     "device-000-local",
                     Some(host_capabilities()),
                 )
@@ -77,8 +77,8 @@
                 attachment.descriptor.attachment_id,
             )
         };
-        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
-        let (rx, _subscription) = register_hook_bridge_subscription(
+        let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
+        let (rx, _subscription) = register_otter_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
             loom_protocol::SURFACE_EVENT_METHODS
                 .iter()
@@ -224,7 +224,7 @@
                 let attachment = store
                     .attach(
                         &instance.descriptor.instance_id,
-                        &format!("hook-node:{suffix}"),
+                        &format!("otter-node:{suffix}"),
                         "device-000-local",
                         Some(host_capabilities()),
                     )
@@ -267,8 +267,8 @@
             SurfaceResourceStore::new(root.join("surface-resources"))
                 .expect("open Surface resources"),
         ));
-        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
-        let (rx, _subscription) = register_hook_bridge_subscription(
+        let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
+        let (rx, _subscription) = register_otter_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
             loom_protocol::SURFACE_EVENT_METHODS
                 .iter()
@@ -346,7 +346,7 @@
             assert_eq!(snapshot.revision, 2);
             assert_eq!(snapshot.scene.children[0].props["text"], "ready");
         }
-        let mut hook_nodes = BTreeSet::new();
+        let mut otter_nodes = BTreeSet::new();
         for _ in 0..2 {
             let message: Value = serde_json::from_str(
                 &rx.recv_timeout(Duration::from_secs(1))
@@ -354,16 +354,16 @@
             )
             .expect("shared patch JSON");
             assert_eq!(message["method"], SURFACE_EVENT_PATCH);
-            hook_nodes.insert(
+            otter_nodes.insert(
                 message["params"]["hookNodeId"]
                     .as_str()
-                    .expect("Hook node id")
+                    .expect("Otter node id")
                     .to_owned(),
             );
         }
         assert_eq!(
-            hook_nodes,
-            BTreeSet::from(["hook-node:one".to_owned(), "hook-node:two".to_owned()])
+            otter_nodes,
+            BTreeSet::from(["otter-node:one".to_owned(), "otter-node:two".to_owned()])
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -374,7 +374,7 @@
         let digest = "9".repeat(64);
         let tool = surface_tool(&digest);
         let (_registry, instances, resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, tool.clone(), "hook-node:stale-generation");
+            setup_action_fixture(&root, tool.clone(), "otter-node:stale-generation");
         let event = fixture_event(
             &instance_id,
             &attachment_id,

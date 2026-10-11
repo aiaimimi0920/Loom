@@ -37,7 +37,7 @@ export interface LoomSettings {
   mcp: LoomMcpSettings;
   art_store: LoomArtStoreSettings;
   loom_cache: LoomCacheSettings;
-  hook_cache: HookCacheSettings;
+  hook_cache: OtterCacheSettings;
   engine: {
     comfyui_url: string;
     python_interpreter: string;
@@ -69,7 +69,7 @@ export interface LoomCacheSettings {
   framework_temp_retention_days: number;
 }
 
-export interface HookCacheSettings {
+export interface OtterCacheSettings {
   recycle_bin_max_entries: number;
   recycle_bin_retention_days: number;
   temp_cache_max_bytes: number;

@@ -30,7 +30,7 @@ test("opens local Art creation in a dedicated accessible dialog", () => {
   assert.match(styleSource, /\.art-create-dialog__scroll \{[\s\S]*?min-height: 0;[\s\S]*?overflow-y: auto;[\s\S]*?scrollbar-width: thin;/);
 });
 
-test("routes saved Hook workflows through the prefilled workflow Art creator", () => {
+test("routes saved Otter workflows through the prefilled workflow Art creator", () => {
   assert.match(appSource, /const \[pendingArtCreationRequest, setPendingArtCreationRequest\] = useState<ArtCreationRequest \| null>\(null\)/);
   assert.match(appSource, /mode: "workflow",[\s\S]*?repositoryName: request\.tool\.id,[\s\S]*?workflowId: request\.workflowId,[\s\S]*?templateTool: request\.tool/);
   assert.match(appSource, /setActiveSection\("registry"\)/);

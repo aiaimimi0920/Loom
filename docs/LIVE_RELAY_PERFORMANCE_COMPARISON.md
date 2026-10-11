@@ -10,7 +10,7 @@
 ```text
 {
   "conditions": {
-    "hookSha256": "实际 Hook EXE 的 64 位小写 SHA256",
+    "otterSha256": "实际 Otter EXE 的 64 位小写 SHA256",
     "loomSha256": "实际 daemon EXE 的 64 位小写 SHA256",
     "contentFixtureSha256": "内容夹具文件的 64 位小写 SHA256",
     "captureSettingsSha256": "公共采集设置文件的 64 位小写 SHA256",
@@ -76,14 +76,14 @@ rtk proxy node --test scripts/tests/compare-live-relay.test.mjs scripts/tests/li
 
 ## 2026-10-07 本机编码阶段补充证据
 
-复用 Hook 的 `live_jpeg_encode_benchmark`，未修改生产源码或基准算法。
-从 Hook 根目录执行：
+复用 Otter 的 `live_jpeg_encode_benchmark`，未修改生产源码或基准算法。
+从 Otter 根目录执行：
 
 ```powershell
 rtk proxy cargo test --locked --release --manifest-path src-tauri/Cargo.toml live_jpeg_encode_benchmark -- --ignored --nocapture --test-threads=1
 ```
 
-首次构建耗时约 15 分钟，测试 1/1 通过；存在 Cargo `hook_lib` 输出文件名冲突
+首次构建耗时约 15 分钟，测试 1/1 通过；存在 Cargo `otter_lib` 输出文件名冲突
 警告，未变成构建失败。随后对同一测试 EXE 独立启动 3 次相同基准，均通过。
 每次每尺寸 18 个合成 RGB 帧编码样本，没有显式预热，不读取桌面像素。
 
@@ -105,17 +105,17 @@ rtk proxy cargo test --locked --release --manifest-path src-tauri/Cargo.toml liv
 
 证据根：`linshi/issue67-a3p-encode-20261007`。`receipt.json` 保存测试 EXE、
 codec/WIC 源码与 Cargo.lock 的 SHA256、CPU 信息及重复轮次，原始日志全部保留。
-这不是候选 Hook 应用包的性能认证，不是 raw/JPEG 对照，未测 CPU 占用率/GPU、
+这不是候选 Otter 应用包的性能认证，不是 raw/JPEG 对照，未测 CPU 占用率/GPU、
 画质或端到端帧龄，不关闭 A3-P，也不单凭本数据触发 B/C 阶段改造。
 
 ## 同输入源端适配微基准
 
-Hook 的 `live_relay_paired_adaptation_benchmark` 直接调用生产函数
+Otter 的 `live_relay_paired_adaptation_benchmark` 直接调用生产函数
 `encode_live_relay_capture_frame`，使用相同 JPEG 输入比较两个协商 profile。
 当前 `Legacy` 是把已有 JPEG 解码为 BGRA 再封装，并非未经过 JPEG 的原始桌面
 像素流；`Jpeg` 保留压缩 payload，但仍执行校验、协议封装、分配与复制，不是零拷贝。
 
-从 Hook 根目录执行：
+从 Otter 根目录执行：
 
 ```powershell
 rtk proxy cargo test --locked --release --lib --manifest-path src-tauri/Cargo.toml live_relay_jpeg_tests -- --include-ignored --nocapture --test-threads=1
@@ -158,14 +158,14 @@ EXE/源码/Cargo.lock SHA256、CPU 信息及审查边界。独立只读审查未
 
 ## 首组双机原生 motion 对照（2026-10-07）
 
-真实 WGC 动态窗口经 PC1 → LAN HTTPS/WSS → PC3 原生 Hook 单观看端传输，
+真实 WGC 动态窗口经 PC1 → LAN HTTPS/WSS → PC3 原生 Otter 单观看端传输，
 正常 UI 发布并用 Surface 参数加入；SSH 仅用于管理/CDP，媒体不走 SSH。
 固定顺序 raw → JPEG，各一次，每轮预热 30 秒、请求 daemon 采样 60 秒。
 唯一 raw CDP 观察器未启用 `Network.enable`，另采集 240 次浏览器呈现状态。
 
 两组使用同一内部 `.25` 候选、daemon 和 motion 夹具，独立隔离数据与相同代理路径：
 
-- Hook SHA256：`401c0c94f7953d3eeb2a993a940e7a622920618e6f5844f44ee512e172db15a1`。
+- Otter SHA256：`401c0c94f7953d3eeb2a993a940e7a622920618e6f5844f44ee512e172db15a1`。
 - Loom SHA256：`acf6fa5e70ca5ad826f85c0ef9ff6145adaa7b8d68168081771ead225dd7df44`。
 - 内容夹具 SHA256：`db45d8e33398d9a0164fb0a5da8b4a94556e10633fd27237b2bdc02e962a4305`。
 
@@ -209,11 +209,11 @@ CPU 按进程组累计 CPU seconds ÷ 实际端点间隔 ÷ 本机逻辑核数�
 | 指标 | raw | JPEG |
 | --- | ---: | ---: |
 | source / viewer 端点间隔（秒） | 88.778900 / 88.450058 | 89.637089 / 89.171716 |
-| source Hook tree 平均整机 CPU 占比 | 3.917445% | 2.343071% |
-| viewer Hook tree 平均整机 CPU 占比 | 7.437106% | 4.114472% |
+| source Otter tree 平均整机 CPU 占比 | 3.917445% | 2.343071% |
+| viewer Otter tree 平均整机 CPU 占比 | 7.437106% | 4.114472% |
 | daemon 平均整机 CPU 占比 | 0.605730% | 0.174314% |
-| source Hook Private MiB 净差 | -0.593750 | -2.730469 |
-| viewer Hook Private MiB 净差 | +7.234375 | +5.335938 |
+| source Otter Private MiB 净差 | -0.593750 | -2.730469 |
+| viewer Otter Private MiB 净差 | +7.234375 | +5.335938 |
 
 这不是峰值、GPU 测量或无泄漏证明；两轮实际帧量不同，不能直接归因为每帧效率收益。
 离线比较工具本身不测 CPU，以上数据来自独立资源端点回执。
@@ -277,7 +277,7 @@ viewer 独立采样窗口 raw 为 63.159800 秒、JPEG 为 63.751200 秒，recei
 
 每组 240 个不同的已提交 presentation 槽样本中，源端 `encodeTimestampMs` 减
 `captureTimestampMs` 的中位数为 raw 29 ms、JPEG 20 ms，范围为 13–88/7–74 ms。
-当前 `Hook/src-tauri/src/native/live_relay_protocol.rs` 在 representation 适配后写入
+当前 `Otter/src-tauri/src/native/live_relay_protocol.rs` 在 representation 适配后写入
 wire encode timestamp，因此该差值包含自 capture timestamp 起的排队、readback/编码
 及源端适配，不是纯 JPEG
 编码耗时；两时间戳来自源端，不做未校准的跨机相减。此离散总体没有显示 JPEG 的
@@ -285,7 +285,7 @@ wire encode timestamp，因此该差值包含自 capture timestamp 起的排队�
 
 ### 已核代码机制与下一次测量边界
 
-当前工作区 source loop（Hook `src-tauri/src/native/live_relay_websocket.rs`）对两种
+当前工作区 source loop（Otter `src-tauri/src/native/live_relay_websocket.rs`）对两种
 profile 共用同步 socket service → latest frame → representation → send → 10 ms sleep；
 `live_relay_connection.rs` 的 source read timeout 请求值为 1 ms，不能等同实际等待时间。
 `live_relay_protocol.rs` 仅 raw 分支额外做 JPEG 解码/BGRA 展开，没有 JPEG 专属的
@@ -334,7 +334,7 @@ daemon、viewer、source 三个观察任务由测量主进程 `Promise.allSettle
 
 本地20项通过，包括3项真实本机无业务PowerShell helper的正常/超时/取消退出核验；
 其余为状态与生命周期夹具，不是原生双机媒体证据。模板要求绑定新证据根的新批准，
-未装配运行资产、未启动Hook或远端、未再次退出日常。下一步为获批后的交叉顺序对照，
+未装配运行资产、未启动Otter或远端、未再次退出日常。下一步为获批后的交叉顺序对照，
 仍不能以本工具接线关闭A3-P或认定JPEG前段低速已修复。
 
 ### 首次交叉顺序尝试：源端结束校验失败，停止后续组
@@ -385,7 +385,7 @@ JSON先序列化再独占创建文件。helper失败新增脱敏退出原因、�
 
 本次没有进入性能采样；jpeg-1/jpeg-2/raw-2均未启动，也没有验证上一轮source
 observer修正的原生效果。失败清理后恢复日常`.23`；16:14:12 UTC重新核验PID32052
-的路径、创建时间及SHA一致，本地专用监听为零，PC3 Hook/专用监听为零且任务Disabled。
+的路径、创建时间及SHA一致，本地专用监听为零，PC3 Otter/专用监听为零且任务Disabled。
 `failure-closeout.json`保存该核验。失败清理不等于正常UI停止清帧验收。
 
 仅修正staged工具，不改写本轮脚本和历史失败证据：新增Capture-Readiness门禁，
@@ -416,7 +416,7 @@ capture计数增加431（约7.204009/s），source发送计数增加430。source
 退出期间查询竞争、PID复用还是其他原因，不放宽owner门禁，也不追认整个试验通过。
 
 17:01:06 UTC重新核验日常`.23` PID49396路径/创建时间/SHA一致，本机专用监听为零，
-PC3 Hook/专用监听为零且任务Disabled；见`failure-closeout.json`。最终资源清理通过
+PC3 Otter/专用监听为零且任务Disabled；见`failure-closeout.json`。最终资源清理通过
 不抹去原始正常退出身份门禁失败。raw速率也出现低值，仅说明不能把既往JPEG低速
 直接归为codec问题；不同轮次不是同条件配对，尚不能判断原因或收益。A3-P仍未完成。
 
@@ -440,7 +440,7 @@ PC3 HTTPS前置检查为200，但尚未启动远端观看任务/本机候选捕�
 只读查询发现本地49881存在PID17348（FlClashCore.exe）的IPv6 Bound/Established
 端点，而不是Listen。只检查监听的旧门禁漏过了该冲突；未停止该进程，未修改网络、
 防火墙、驱动或端口排除配置。证据为`port-conflict-diagnosis.json`。17:34:57 UTC
-fresh核验日常`.23` PID43744身份/hash一致，本地测试监听为零，PC3 Hook/测试监听
+fresh核验日常`.23` PID43744身份/hash一致，本地测试监听为零，PC3 Otter/测试监听
 为零且本轮远端任务未创建；`failure-closeout.json`通过，不抹去原试验失败。
 
 仅在staged父runner退出日常之前新增双机端口检查：本地49873/49874/49875/49876/
@@ -457,7 +457,7 @@ A3-P仍未完成。
 loopback监听和exit=0，退出后两端监听消失、日常PID43744身份/hash未变；第一次
 smoke的active观察错过进程窗口，失败回执保留，不用exit=0追认完整观察通过。
 证据在staged目录management-port-smoke-r2.json和management-port-smoke-closeout.json。
-未启动Hook或媒体、未改系统网络、未停止FlClash；管理转发通过不代替A3-P原生验收。
+未启动Otter或媒体、未改系统网络、未停止FlClash；管理转发通过不代替A3-P原生验收。
 
 ### 新端口轮次：父子授权合同不一致，子程序claim前拒绝
 
@@ -469,7 +469,7 @@ raw-1子进程执行了前置检查，但未claim、未启动服务/捕获/观�
 
 子stdout保留`Explicit normal-exit approval required`，父随后缺runner-receipt错误
 也保留。18:25:42 UTC核验日常`.23` PID33936路径/创建时间/hash一致，本地测试监听
-为零，PC3无Hook/测试监听且本轮任务未创建；见`failure-closeout.json`。
+为零，PC3无Otter/测试监听且本轮任务未创建；见`failure-closeout.json`。
 
 staged父子改为共用结构授权/root绑定函数，原始用户回复仅归档，不逐字匹配；新增
 子`-ValidateOnly`，父在退出前演练全部四组授权。子前置拒绝保存独立回执，父缺回执
@@ -478,9 +478,9 @@ staged父子改为共用结构授权/root绑定函数，原始用户回复仅归
 
 ### 三组通过，末组源端结束校验超时（2026-10-07）
 
-`183441Z`前置检查发现日常Hook已不存在，零退出、零组启动；没有证据解释其退出
+`183441Z`前置检查发现日常Otter已不存在，零退出、零组启动；没有证据解释其退出
 原因。随后新根`linshi/issue67-a3p-cross-order-20261007T183819Z`采用明确的
-`-DailyAlreadyAbsent`分支：要求无任何Hook、已知日常`.23`路径/hash匹配，记录
+`-DailyAlreadyAbsent`分支：要求无任何Otter、已知日常`.23`路径/hash匹配，记录
 `dailyExitCount=0`、`dailyAlreadyAbsent=true`、`normallyExited=false`。未虚构正常退出；
 本轮结束后仍启动已核验的日常包。该分支的3项离线负控/正控通过。
 
@@ -506,7 +506,7 @@ raw-2保留失败：60秒观察窗口完成59次成功状态采样，末样本�
 没有进入正常UI停止清帧验收，仅失败清理通过；不拿清理通过追认该组通过。
 
 父回执保持`passed=false`。18:55:13 UTC重新核验日常`.23` PID39056路径、创建时间、
-SHA一致，本地测试监听为零，PC3无Hook及测试监听，四组远端任务均Disabled。
+SHA一致，本地测试监听为零，PC3无Otter及测试监听，四组远端任务均Disabled。
 入口为`pair-runner-receipt.json`和`failure-closeout.json`。仅首对及独立JPEG重复的
 离线派生分析保存为`completed-subset-analysis.json`，明确
 `nativeCrossOrderPassed=false`；未运行要求四组成功的`Summarize-Cross.mjs`。
@@ -542,7 +542,7 @@ GPU、跨机时钟校准、严格画质及物理呈现等边界均未由本轮�
 伪装成端到端帧龄。后续需要在真实测量窗口绑定更窄误差及稳定性证据，A3-P仍未完成。
 
 随后改用持续SSH会话，使远端PowerShell启动在每组读时窗口之外；固定9次只读语句
-逐次关联响应，不增加转发/监听，不改变系统时钟或日常Hook。两次成功探测的恒定
+逐次关联响应，不增加转发/监听，不改变系统时钟或日常Otter。两次成功探测的恒定
 偏差交集分别为[-5214,-5196]ms（18ms宽）与[-5220,-5211]ms（9ms宽）。这两个
 独立窗口不能相互取交集来假定跨窗口稳定，也不能追溯套用旧媒体帧；两次数据均保留。
 协议实现、回归及边界见staged目录README，结果为persistent-clock-analysis-1.json
@@ -557,25 +557,25 @@ exit7的真实负控均通过，随后独立查询远端PID消失，日常`.23`�
 
 ### 源worker四阶段生产测量接线（尚未打包原生验证）
 
-Hook新增固定大小的sourceTiming会话累计统计，接入source worker的循环入口socket
+Otter新增固定大小的sourceTiming会话累计统计，接入source worker的循环入口socket
 service、latest frame锁/clone、representation适配及binary socket.send，并通过原
 get_live_relay_status快照提供。每阶段记录attempts/成功/失败/empty、总/最大微秒；
 不存帧历史或错误正文，不改预算、帧率、sleep、队列和重连策略。它不是capture侧JPEG
-编码、GPU/readback或远端ACK。完整字段语义和失败边界见Hook的LIVE_RELAY_DIAGNOSTICS.md。
+编码、GPU/readback或远端ACK。完整字段语义和失败边界见Otter的LIVE_RELAY_DIAGNOSTICS.md。
 
 4项新Rust回归及既有真实loopback WebSocket源worker测试验证固定统计、返回值保持、
 早退合并和源发送计数接线；最终live_relay聚焦为38 passed、4 ignored。真实WGC等
 ignored入口未执行。staged只读source采样投影新增字段，28项Node回归通过，额外敏感
-字段不进入报告，旧包缺失指标不被伪装为0。Hook formatter及有效行数ratchet通过。
+字段不进入报告，旧包缺失指标不被伪装为0。Otter formatter及有效行数ratchet通过。
 
 证据根为linshi/issue67-source-stage-timing-20261007。新接线尚未编译成独立候选包、
 未运行双机原生测试；原`.25`不包含此代码。只能报告测量实现与软件回归通过，不能
 据此认定低速根因、整体收益或A3-P完成。capture/readback/JPEG及预算拒绝测点仍缺。
 
-随后补充Hook captureTiming三阶段生产接线：mailbox交接（复合范围）、实际JPEG编码、
+随后补充Otter captureTiming三阶段生产接线：mailbox交接（复合范围）、实际JPEG编码、
 帧入队。与sourceTiming共享固定统计值而不共享会话状态，不改raw/permit释放、预算
 或节流。capture聚焦25 passed/2 ignored、relay38 passed/4 ignored、预算10 passed及
-staged29项Node回归通过，行数/格式门禁通过。详细字段边界见Hook诊断文档；证据同根
+staged29项Node回归通过，行数/格式门禁通过。详细字段边界见Otter诊断文档；证据同根
 capture-receipt.json。尚缺独立readback/预算拒绝分类及新包原生验收，不能把handoff
 合计耗时解释成GPU耗时，也不能使用`.25`旧包认证新测量。
 
@@ -584,7 +584,7 @@ lockUnavailable（含竞争及poisoned）。handoff返回后取非整体原子�
 而非重复累加；不改变准入判定、公平性或permit释放，但既有锁内新增计数有少量开销。
 预算12 passed、capture26 passed/2 ignored、relay38 passed/4 ignored、staged30项
 Node回归通过。独立readback、新候选打包及真实双机仍未验证，A3-P不因此完成。
-边界详见Hook诊断文档，同证据根新增admission-receipt.json；不追认旧试验已具备这些测点。
+边界详见Otter诊断文档，同证据根新增admission-receipt.json；不追认旧试验已具备这些测点。
 
 随后补充消费端readback.stagingCopy/mapRgb，两条mailbox/fallback路径均接入；前者
 为staging分配及GPU copy提交的CPU调用，后者含Map等待、转换及Unmap，均不是GPU完成
@@ -595,7 +595,7 @@ live_gpu28 passed/6 ignored、relay38 passed/4 ignored、staged31项Node回归�
 
 ### v0.2.32.26 四组真实双机及阶段计时验证
 
-2026-10-07随后构建独立内部`.26`候选，Hook SHA-256为
+2026-10-07随后构建独立内部`.26`候选，Otter SHA-256为
 `4a4119bb1b08c48f5d16cbe497d1be505b9cd5670ab88e263b00ab1ecea49024`。
 构建/源码哈希及headless已核验；dirty候选不作为正式Release。真实试验证据根：
 `linshi/issue67-a3p-v26-20261007-r3`。同一包、单观看端、motion、每组30秒warmup和
@@ -623,7 +623,7 @@ GPU执行时间或p95，也不能单据均值认定瓶颈/因果。本轮未重�
 实际退出前停止，失败目录保留。r3仅将测试daemon loopback端口改为47873；媒体端口
 及系统网络/驱动未改变，无关进程未停止。日常`.23`正常退出一次，20:28:07 UTC恢复，
 20:29:33 UTC fresh closeout核PID33424/path/开始时间/SHA通过，本地测试监听0，PC3
-Hook及测试监听0，四个测试任务Disabled。可见/关闭截图抽查符合原生观看与停止清帧。
+Otter及测试监听0，四个测试任务Disabled。可见/关闭截图抽查符合原生观看与停止清帧。
 
 本轮只通过单观看端motion两对交叉顺序及新测点验收；static/scroll、多观看端、质量
 匹配、跨机时钟/帧龄、GPU及物理呈现等完整性能条件仍未证明，A3-P和Issue67保持未完成。
@@ -638,7 +638,7 @@ Hook及测试监听0，四个测试任务Disabled。可见/关闭截图抽查符
 CPU百分比为CPU秒差/本机Stopwatch间隔/逻辑核数×100，源机12核，观看机16核。
 它是整个主机算力口径下该进程组的区间平均，不是整机CPU、单核占比或峰值。
 
-| 组 | 源端Hook树CPU% | 观看端Hook树CPU% | daemon CPU% | 源端/观看端Private MiB差 |
+| 组 | 源端Otter树CPU% | 观看端Otter树CPU% | daemon CPU% | 源端/观看端Private MiB差 |
 | --- | ---: | ---: | ---: | ---: |
 | raw-1 | 3.369 | 3.410 | 0.565 | -6.328 / -60.535 |
 | jpeg-1 | 2.644 | 2.085 | 0.281 | -3.086 / +2.090 |
@@ -647,7 +647,7 @@ CPU百分比为CPU秒差/本机Stopwatch间隔/逻辑核数×100，源机12核�
 
 各CPU端点窗口为79.876–80.618秒，包含采样启动/退出开销，不与60秒daemon或源端
 阶段差分窗口拼成精确全链路归因。每个进程的读取也非原子；端点集合相同不证明期间
-没有短命进程，数据不是全进程历史。fixture单列而非算入Hook，GPU、Caddy和整机负载
+没有短命进程，数据不是全进程历史。fixture单列而非算入Otter，GPU、Caddy和整机负载
 不在该CPU表中。Private差为端点差，不是峰值或泄漏判定，不替代A3-R长稳。
 
 #### B1/B2/C1/D1当前条件项决策
@@ -670,7 +670,7 @@ CPU百分比为CPU秒差/本机Stopwatch间隔/逻辑核数×100，源机12核�
 
 #### 静态readback独立硬件回归
 
-在不退出日常Hook的情况下，执行现有ignored原生测试
+在不退出日常Otter的情况下，执行现有ignored原生测试
 `live_gpu::snapshot::native_tests::static_staging_copy_progresses_without_other_gpu_work`
 （`cargo test --locked --lib --manifest-path src-tauri/Cargo.toml <test> -- --exact --ignored --test-threads=1`）。
 实际1 passed，0.33秒；独立D3D11硬件设备、32×16初始化纹理，连续8次staging copy/Map
@@ -689,17 +689,17 @@ PID33424/path/开始时间/SHA重新核验。源码和测试EXE哈希见
 新根`linshi/issue67-a3p-static-scroll-v26-20261007`的候选传输与授权预检通过，
 日常正常退出一次。raw-1在本机源端启动前触发15%内存余量门禁：子runner表面报
 `source-direct\\owned.json readiness timeout`，实际source-launcher stderr明确为
-`Host memory headroom below 15-percent native-start gate`。未创建源端Hook、未进入
+`Host memory headroom below 15-percent native-start gate`。未创建源端Otter、未进入
 内容捕获或性能采样，后三组未启动，不能据此评价静态/滚动产品行为。
 
 本机快照余量从preflight20.310%降至services-ready14.489%、pc3-viewer-ready11.980%；
 最终独立closeout为7.735%。这些时点不足以证明某个进程或服务导致变化，不停止
 无关负载、不降低门槛。双机失败清理通过，日常`.23`于00:11:38 UTC恢复PID38724，
-00:12:32 UTC再次核path/创建时间/SHA，本地测试监听0、PC3 Hook/测试监听0，唯一
+00:12:32 UTC再次核path/创建时间/SHA，本地测试监听0、PC3 Otter/测试监听0，唯一
 已创建raw-1任务Disabled。原始失败及`failure-closeout.json`保留，未自动重跑。
 
 随后只改staged测试工具：内存快照保存后可选择执行同一15%门禁，子runner在
 services-ready等4个节点显式启用，避免已知不足后继续启动后续阶段或只等ready超时。
 14.99%拒绝、15%通过、20%通过和纯观察低余量不拒绝四项边界回归通过，并核四处接线。
 首轮测试夹具变量作用域错误已修正，失败夹具证据保留。该工具修正未原生复验，
-没有修改Hook或Loom生产策略；再次运行仍需足够容量与新的正常退出许可。
+没有修改Otter或Loom生产策略；再次运行仍需足够容量与新的正常退出许可。

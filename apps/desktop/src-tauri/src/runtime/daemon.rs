@@ -104,7 +104,7 @@ pub(super) fn resolve_loom_daemon_url() -> DesktopRuntimeConfig {
     DesktopRuntimeConfig {
         loom_daemon_url,
         settings_url,
-        hook_bridge_url: configured_hook_bridge_url(),
+        hook_bridge_url: configured_otter_bridge_url(),
     }
 }
 
@@ -175,7 +175,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
         return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
     }
     let mut base_url = normalize_base_url(configured_loom_daemon_url());
-    let mut isolated_hook_bridge_url = None;
+    let mut isolated_otter_bridge_url = None;
     let current_exe =
         std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
     if http_get_json(&base_url, "/health").is_ok() {
@@ -196,14 +196,14 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
             .port();
         drop(listener);
         base_url = format!("http://127.0.0.1:{port}");
-        let hook_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("无法为当前 Loom 分配 Hook Bridge 端口：{error}"))?;
-        let hook_port = hook_listener
+        let otter_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|error| format!("无法为当前 Loom 分配 Otter Bridge 端口：{error}"))?;
+        let otter_port = otter_listener
             .local_addr()
-            .map_err(|error| format!("无法读取 Loom Hook Bridge 端口：{error}"))?
+            .map_err(|error| format!("无法读取 Loom Otter Bridge 端口：{error}"))?
             .port();
-        drop(hook_listener);
-        isolated_hook_bridge_url = Some(format!("ws://127.0.0.1:{hook_port}"));
+        drop(otter_listener);
+        isolated_otter_bridge_url = Some(format!("ws://127.0.0.1:{otter_port}"));
     }
 
     let explicit_daemon_path = std::env::var(LOOM_DAEMON_EXECUTABLE_ENV)
@@ -260,7 +260,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
     }
 
     // Write the discovery manifest to the shared Neuro capabilities dir so peer
-    // apps (e.g. Hook) can find this daemon via %APPDATA%\Neuro\capabilities\loom.json.
+    // apps (e.g. Otter) can find this daemon via %APPDATA%\Neuro\capabilities\loom.json.
     if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
         let manifest_dir = std::path::PathBuf::from(appdata)
             .join("Neuro")
@@ -283,8 +283,8 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
     if let Ok(mut active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
         *active_url = Some(base_url.clone());
     }
-    if let Some(hook_bridge_url) = isolated_hook_bridge_url {
-        if let Ok(mut active_url) = ACTIVE_HOOK_BRIDGE_URL
+    if let Some(hook_bridge_url) = isolated_otter_bridge_url {
+        if let Ok(mut active_url) = ACTIVE_OTTER_BRIDGE_URL
             .get_or_init(|| Mutex::new(None))
             .lock()
         {
@@ -352,7 +352,7 @@ pub(super) fn stop_owned_daemon_process() -> Option<u32> {
     if let Ok(mut active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
         *active_url = None;
     }
-    if let Ok(mut active_url) = ACTIVE_HOOK_BRIDGE_URL
+    if let Ok(mut active_url) = ACTIVE_OTTER_BRIDGE_URL
         .get_or_init(|| Mutex::new(None))
         .lock()
     {
@@ -363,7 +363,7 @@ pub(super) fn stop_owned_daemon_process() -> Option<u32> {
 
 pub(super) fn begin_desktop_exit() {
     LOOM_EXITING.store(true, Ordering::Release);
-    hook_bridge_subscription::stop();
+    otter_bridge_subscription::stop();
     stop_owned_daemon_process();
 }
 

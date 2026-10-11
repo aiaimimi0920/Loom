@@ -60,7 +60,7 @@ impl SurfaceInstanceStore {
         host_capabilities: Option<SurfaceHostCapabilities>,
         ephemeral: bool,
     ) -> Result<SurfaceAttachmentRecord, SurfaceStoreError> {
-        validate_identity(hook_node_id, "Hook node id")?;
+        validate_identity(hook_node_id, "Otter node id")?;
         validate_identity(device_id, "device id")?;
         self.transaction(|instances| {
             let instance = instance_mut(instances, instance_id)?;

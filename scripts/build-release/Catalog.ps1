@@ -43,7 +43,7 @@ function Get-LoomCatalog {
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-scene.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-scene.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\surface-stream.v1.schema.json") -DestinationRelativePath "protocol\schemas\surface-stream.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\device-session.v1.schema.json") -DestinationRelativePath "protocol\schemas\device-session.v1.schema.json"
-            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\hook-message.v1.schema.json") -DestinationRelativePath "protocol\schemas\hook-message.v1.schema.json"
+            New-SupportSpec -Source (Join-Path $repoRoot "protocol\schemas\otter-message.v1.schema.json") -DestinationRelativePath "protocol\schemas\otter-message.v1.schema.json"
             New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\README.md") -DestinationRelativePath "sdk\surface\README.md"
             New-SupportSpec -Source (Join-Path $repoRoot "sdk\surface\neuro-surface.d.ts") -DestinationRelativePath "sdk\surface\neuro-surface.d.ts"
             New-SupportSpec -Source (Join-Path $repoRoot "scripts\Invoke-LoomCapabilityPluginConformance.ps1") -DestinationRelativePath "scripts\Invoke-LoomCapabilityPluginConformance.ps1"

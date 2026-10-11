@@ -21,7 +21,7 @@ pub const SURFACE_STREAM_V1: &str =
 pub const DEVICE_SESSION_V1: &str =
     include_str!("../../../protocol/schemas/device-session.v1.schema.json");
 pub const HOOK_MESSAGE_V1: &str =
-    include_str!("../../../protocol/schemas/hook-message.v1.schema.json");
+    include_str!("../../../protocol/schemas/otter-message.v1.schema.json");
 pub const CAPABILITY_PACKAGE_V1: &str =
     include_str!("../../../protocol/schemas/capability-package.v1.schema.json");
 pub const CAPABILITY_RUNTIME_V1: &str =

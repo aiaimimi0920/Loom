@@ -21,7 +21,7 @@ fn surface_confirmation_route_requires_the_bound_approved_device() {
         let attachment = store
             .attach(
                 &instance.descriptor.instance_id,
-                "hook-node:confirmation-route",
+                "otter-node:confirmation-route",
                 "device-000-local",
                 None,
             )
@@ -236,7 +236,7 @@ fn installed_declarative_surface_package_mounts_and_pushes_snapshot() {
         .to_owned();
 
     let attach_body = json!({
-        "hookNodeId": "hook-node:surface-stock",
+        "hookNodeId": "otter-node:surface-stock",
         "deviceId": "device-000-local",
         "capabilities": default_declarative_surface_host_capabilities()
     })
@@ -254,7 +254,7 @@ fn installed_declarative_surface_package_mounts_and_pushes_snapshot() {
         .expect("attachment id")
         .to_owned();
 
-    let (surface_rx, _surface_subscription) = register_hook_bridge_subscription(
+    let (surface_rx, _surface_subscription) = register_otter_bridge_subscription(
         &runtime
             .hook_bridge
             .lock()
@@ -293,7 +293,7 @@ fn installed_declarative_surface_package_mounts_and_pushes_snapshot() {
     )
     .expect("Surface push JSON");
     assert_eq!(push["method"], SURFACE_EVENT_SNAPSHOT);
-    assert_eq!(push["params"]["hookNodeId"], "hook-node:surface-stock");
+    assert_eq!(push["params"]["hookNodeId"], "otter-node:surface-stock");
     assert_eq!(push["params"]["snapshot"]["revision"], 1);
     let lifecycle: Value = serde_json::from_str(
         &surface_rx
@@ -391,8 +391,8 @@ fn shared_surface_attach_reuses_declared_instance_across_attachments() {
         serde_json::from_str::<Value>(&mounted).expect("mounted JSON")
     };
 
-    let first = attach("hook-node:shared-one");
-    let second = attach("hook-node:shared-two");
+    let first = attach("otter-node:shared-one");
+    let second = attach("otter-node:shared-two");
     let first_id = first["instance"]["descriptor"]["instanceId"]
         .as_str()
         .expect("first shared instance id");

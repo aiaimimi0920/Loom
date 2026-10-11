@@ -74,13 +74,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-StandaloneReleaseContract.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-FrameworkArtStoreHookSmokeModules.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-FrameworkArtStoreOtterSmokeModules.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-SmokeReleaseModules.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-ReleaseIntegrityTamper.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-HookCanvasUiContract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-OtterCanvasUiContract.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-DevelopmentManualContract.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

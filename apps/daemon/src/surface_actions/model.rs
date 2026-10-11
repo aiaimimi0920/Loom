@@ -61,5 +61,5 @@ pub(crate) struct SurfaceActionExecutor {
     /// the manifest once instead of once per event. Guarded by its own mutex: it must not be reachable
     /// only while the Surface store lock is held, which is the whole point of caching it.
     manifest_cache: Mutex<BTreeMap<String, Arc<SurfacePackageManifest>>>,
-    hook_bridge: SharedHookBridgeRuntime,
+    hook_bridge: SharedOtterBridgeRuntime,
 }

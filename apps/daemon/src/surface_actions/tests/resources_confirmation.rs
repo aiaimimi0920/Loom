@@ -149,7 +149,7 @@
             let attachment = store
                 .attach(
                     &instance.descriptor.instance_id,
-                    "hook-node:confirmation",
+                    "otter-node:confirmation",
                     "device-000-local",
                     Some(host_capabilities()),
                 )
@@ -192,8 +192,8 @@
                 attachment.descriptor.attachment_id,
             )
         };
-        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
-        let (rx, _subscription) = register_hook_bridge_subscription(
+        let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
+        let (rx, _subscription) = register_otter_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
             loom_protocol::SURFACE_EVENT_METHODS
                 .iter()

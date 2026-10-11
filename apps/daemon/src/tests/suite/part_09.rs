@@ -83,7 +83,7 @@ fn test_daemon_runtime_from_config(
     let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root)));
     let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
     let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(
         control_plane_root.join("workflows"),
     )));
     hook_bridge.lock().unwrap().discovery = Some(
@@ -261,9 +261,9 @@ fn expect_json_result_response(
     serde_json::from_str(&body).expect("json result body")
 }
 
-fn start_test_hook_bridge(runtime: &DaemonRuntime, body: &str) -> serde_json::Value {
+fn start_test_otter_bridge(runtime: &DaemonRuntime, body: &str) -> serde_json::Value {
     expect_json_result_response(
-        start_hook_bridge(
+        start_otter_bridge(
             body,
             &runtime.hook_bridge,
             &runtime.capability_runtime,
@@ -284,25 +284,25 @@ fn start_test_hook_bridge(runtime: &DaemonRuntime, body: &str) -> serde_json::Va
     )
 }
 
-fn stop_test_hook_bridge(runtime: &DaemonRuntime) -> serde_json::Value {
+fn stop_test_otter_bridge(runtime: &DaemonRuntime) -> serde_json::Value {
     expect_json_result_response(
-        stop_hook_bridge(&runtime.hook_bridge, &runtime.shared_images),
+        stop_otter_bridge(&runtime.hook_bridge, &runtime.shared_images),
         200,
     )
 }
 
-fn hook_bridge_status_value(runtime: &DaemonRuntime) -> serde_json::Value {
-    expect_json_result_response(hook_bridge_status(&runtime.hook_bridge), 200)
+fn otter_bridge_status_value(runtime: &DaemonRuntime) -> serde_json::Value {
+    expect_json_result_response(otter_bridge_status(&runtime.hook_bridge), 200)
 }
 
-fn run_hook_bridge_text(runtime: &DaemonRuntime, request: &str) -> serde_json::Value {
+fn run_otter_bridge_text(runtime: &DaemonRuntime, request: &str) -> serde_json::Value {
     let workflow_root = runtime
         .hook_bridge
         .lock()
         .expect("lock hook bridge runtime for test")
         .workflow_root
         .clone();
-    let result = handle_hook_bridge_websocket_text(
+    let result = handle_otter_bridge_websocket_text(
         request,
         &runtime.mcp_servers,
         &runtime.tool_registry,
@@ -317,7 +317,7 @@ fn run_hook_bridge_text(runtime: &DaemonRuntime, request: &str) -> serde_json::V
     serde_json::from_str(&result.response).expect("hook bridge json response")
 }
 
-fn run_hook_bridge_text_with_intermediate(
+fn run_otter_bridge_text_with_intermediate(
     runtime: &DaemonRuntime,
     request: &str,
 ) -> (Vec<serde_json::Value>, serde_json::Value) {
@@ -328,7 +328,7 @@ fn run_hook_bridge_text_with_intermediate(
         .workflow_root
         .clone();
     let mut intermediate = Vec::new();
-    let result = handle_hook_bridge_websocket_text_with_intermediate(
+    let result = handle_otter_bridge_websocket_text_with_intermediate(
         request,
         &runtime.mcp_servers,
         &runtime.tool_registry,
@@ -351,12 +351,12 @@ fn run_hook_bridge_text_with_intermediate(
     )
 }
 
-fn read_hook_terminal_response(
+fn read_otter_terminal_response(
     socket: &mut loom_local_channel::ClientSocket,
     request_id: &str,
 ) -> Value {
     loop {
-        let message = read_hook_bridge_json(socket);
+        let message = read_otter_bridge_json(socket);
         if message["requestId"] == request_id
             && message.get("status").is_some()
             && message.get("method").is_none()

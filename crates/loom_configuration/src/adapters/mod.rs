@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use crate::{ManagedAppId, ManagedConfigError, UiSection};
 
 pub use tea::TeaConfigAdapter;
-pub use voice::{HookVoiceAdapter, TalkVoiceAdapter, VoiceConfig};
+pub use voice::{OtterVoiceAdapter, TalkVoiceAdapter, VoiceConfig};
 
 pub trait ConfigAdapter: Send + Sync {
     fn app(&self) -> ManagedAppId;
@@ -44,7 +44,7 @@ impl ConfigRegistry {
 pub fn built_in_registry() -> ConfigRegistry {
     ConfigRegistry::new(vec![
         Box::new(TeaConfigAdapter),
-        Box::new(HookVoiceAdapter),
+        Box::new(OtterVoiceAdapter),
         Box::new(TalkVoiceAdapter),
     ])
 }
@@ -55,10 +55,10 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn registry_contains_tea_hook_and_talk() {
+    fn registry_contains_tea_otter_and_talk() {
         let registry = built_in_registry();
         assert!(registry.get(ManagedAppId::Tea).is_some());
-        assert!(registry.get(ManagedAppId::Hook).is_some());
+        assert!(registry.get(ManagedAppId::Otter).is_some());
         assert!(registry.get(ManagedAppId::Talk).is_some());
     }
 
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn voice_adapter_validates_provider_requirements() {
-        let adapter = HookVoiceAdapter;
+        let adapter = OtterVoiceAdapter;
         let mut config = adapter.default_config();
         config["provider"]["mock_transcript"] = json!("");
         let error = adapter
@@ -106,10 +106,10 @@ mod tests {
     }
 
     #[test]
-    fn hook_and_talk_keep_separate_app_ids_with_shared_voice_shape() {
-        let hook = HookVoiceAdapter;
+    fn otter_and_talk_keep_separate_app_ids_with_shared_voice_shape() {
+        let hook = OtterVoiceAdapter;
         let talk = TalkVoiceAdapter;
-        assert_eq!(hook.app(), ManagedAppId::Hook);
+        assert_eq!(hook.app(), ManagedAppId::Otter);
         assert_eq!(talk.app(), ManagedAppId::Talk);
         assert_eq!(hook.schema_version(), talk.schema_version());
         assert!(hook.default_config().get("voice_mode").is_some());

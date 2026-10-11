@@ -70,10 +70,10 @@ pub(crate) fn verify_runtime_package(package: &CapabilityRuntimePackage) -> Host
         .effective_policy()
         .enforce(trust_status.clone())
         .map_err(|error| CapabilityHostError::InvalidPackage(error.to_string()))?;
-    // The recorded status is what the contribution snapshot publishes to Hook, which gates UI
+    // The recorded status is what the contribution snapshot publishes to Otter, which gates UI
     // affordances on it. Policy enforcement alone only rejects statuses the policy forbids, so a
     // downgrade the policy still tolerates — a publisher key removed from the trust store turning
-    // `Trusted` into `Unsigned` — would leave the plugin running while Hook keeps showing the
+    // `Trusted` into `Unsigned` — would leave the plugin running while Otter keeps showing the
     // status it had at activation. Treat any drift as evidence the package must be re-admitted.
     if trust_status != package.trust_status {
         return Err(CapabilityHostError::InvalidPackage(

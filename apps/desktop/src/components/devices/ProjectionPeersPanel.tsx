@@ -68,7 +68,7 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
   }
   const disabled = busy || !online;
   return <section className="wall-management projection-peers" aria-label="投射连接管理">
-    <header><h2>跨 Loom 投射连接</h2><p className="wall-muted">在双方 Loom 中登记对方公开身份和地址。Hook 会自动列出已授权且在线的接收设备。</p></header>
+    <header><h2>跨 Loom 投射连接</h2><p className="wall-muted">在双方 Loom 中登记对方公开身份和地址。Otter 会自动列出已授权且在线的接收设备。</p></header>
     {!online && <p role="status">本机 Loom 离线。</p>}
     {error && <p role="alert" className="wall-error">{error}</p>}
     {notice && <p role="status">{notice}</p>}

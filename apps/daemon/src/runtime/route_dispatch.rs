@@ -79,7 +79,7 @@ fn route(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     device_registry: &SharedDeviceRegistryStore,
     live_sessions: &SharedLiveSessionStore,
     walls: &SharedWallStore,
@@ -147,7 +147,7 @@ fn route(
         if !admin_authenticated { return structured_error(403, json!({"code":"projection_settings_admin_required"})); }
         return route_projection_settings(request, device_registry);
     }
-    // Account credentials remain admin-only; Hook device sessions cannot operate this API.
+    // Account credentials remain admin-only; Otter device sessions cannot operate this API.
     if request.method == "POST" && route_path.starts_with("/v1/account/") {
         return match projection_owner.account(control_plane_root, &route_path[12..], &request.body) {
             Ok(value) => Ok((200, serde_json::to_string(&value)?)),

@@ -54,7 +54,7 @@ on layout changes, source disconnect, device revocation and lease expiry without
 waiting for terminal cooperation. Release events make the native source attempt
 bounded key/button cleanup before another controller is admitted.
 
-The Hook client keeps one serial queue with at most 64 entries, coalesces only
+The Otter client keeps one serial queue with at most 64 entries, coalesces only
 adjacent moves, discards samples waiting over 1500 ms and never retries a rejected
 edge. Native input HTTP calls have a two-second timeout and 8192-byte response
 limit. Blur, pointer cancellation, unavailable media and terminal shutdown cancel

@@ -1,7 +1,7 @@
 # Loom OCR Result Contract
 
 OCR is implemented by the separately installed `neuro.official/ocr` Capability
-Plugin. Hook invokes its namespaced command through `loom.extension.v1` and
+Plugin. Otter invokes its namespaced command through `loom.extension.v1` and
 `loom.capability.runtime.v1`; `loom-daemon` does not expose a fixed
 `loom.hook.ocr.execute` branch or link the OCR inference crate. Image bytes are
 passed as a bounded host-mediated resource reference rather than an unbounded
@@ -157,13 +157,13 @@ of fabricating text.
 ## Compatibility
 
 `rawText`, `lineGeometry`, `characterSpans`, and `wordSpans` are additive block
-fields in the versioned OCR attachment schema. Generic Hook hosts keep unknown
+fields in the versioned OCR attachment schema. Generic Otter hosts keep unknown
 attachments opaque; compatible OCR renderers bound list sizes and validate source
 tags, text correspondence, scores, coordinate order, and line containment before
 using span extents. Malformed, corrected/translated, or absent geometry falls
 back inside the plugin renderer rather than a core OCR branch.
 
-Legacy `UnitData.ocrResult` values are accepted only by Hook's bounded one-time
+Legacy `UnitData.ocrResult` values are accepted only by Otter's bounded one-time
 session migration. Successful migration writes the versioned generic attachment
 and clears the legacy field; invalid, conflicting, or oversized values are
 preserved without executing or rendering them so user data is not silently lost.
@@ -220,13 +220,13 @@ host-level interaction still work while the panel is open. Copy remains
 clipboard-brokered. Open revalidates the edited value and emits the
 generic `external.openUrl` effect and requires the package and command to declare
 `hook.external.open`, a consumed user gesture, a direct Surface click, and a
-credential-free HTTPS URL. Hook validates the URL again before its Windows
+credential-free HTTPS URL. Otter validates the URL again before its Windows
 native broker asks the system browser to open it. Old `UnitData.barcodeResult`
 uses the same lossless migration rule as legacy OCR data.
 
 ## Manual validation
 
-1. Start the paired Hook candidate and a Loom candidate configured with a signed
+1. Start the paired Otter candidate and a Loom candidate configured with a signed
    capability catalog.
 2. Open **Settings > Capability Extensions** and select **Download and install
    OCR**. Review the immutable digest and seven requested permissions, including
@@ -236,7 +236,7 @@ uses the same lossless migration rule as legacy OCR data.
 4. Click each center circle. Confirm the nearby action panel, per-result copy,
    HTTPS browser opening, close behavior, block copy, overlay layout, and the
    unit-scoped notices. A non-HTTPS payload must not expose **Open**.
-5. Disable and re-enable the package. Hook must refresh contributions without a
+5. Disable and re-enable the package. Otter must refresh contributions without a
    restart; no OCR shortcut or decoder remains active while disabled.
 
 `Build-LoomOcrCapabilityPackage.ps1`,
