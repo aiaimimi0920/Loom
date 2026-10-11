@@ -6,18 +6,24 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::command::{inherited_runtime_environment, supervised_command};
 use crate::error::ProcessError;
 use crate::isolation::ProcessIsolation;
+use crate::launch_control::LaunchControl;
+use crate::linux_exec::ExecAck;
 use crate::linux_handshake::Handshake;
 use crate::model::ProcessSpec;
 
-pub(crate) fn spawn(spec: &ProcessSpec) -> Result<(Child, ProcessIsolation), ProcessError> {
-    spawn_using(spec, Path::new("/usr/bin/bwrap"))
+pub(crate) fn spawn(
+    spec: &ProcessSpec,
+    control: &LaunchControl<'_>,
+) -> Result<(Child, ProcessIsolation), ProcessError> {
+    spawn_using(spec, Path::new("/usr/bin/bwrap"), control)
 }
 
-fn trusted_bubblewrap(path: &Path) -> io::Result<()> {
+fn trusted_supervisor_file(path: &Path) -> io::Result<()> {
     let resolved = path.canonicalize()?;
     let root_uid = visible_root_uid()?;
     // Neither PATH nor plugin-provided environment can substitute the supervisor.
@@ -25,12 +31,14 @@ fn trusted_bubblewrap(path: &Path) -> io::Result<()> {
         let metadata = component.metadata()?;
         if metadata.uid() != root_uid || metadata.mode() & 0o022 != 0 {
             return Err(io::Error::other(
-                "Bubblewrap and its ancestors must be root-owned and not group/world-writable",
+                "supervisor executable and ancestors must be root-owned and not group/world-writable",
             ));
         }
     }
     if !resolved.is_file() {
-        return Err(io::Error::other("Bubblewrap is not a regular file"));
+        return Err(io::Error::other(
+            "supervisor executable is not a regular file",
+        ));
     }
     Ok(())
 }
@@ -54,13 +62,15 @@ fn visible_root_uid() -> io::Result<u32> {
 pub(crate) fn spawn_using(
     spec: &ProcessSpec,
     executable: &Path,
+    control: &LaunchControl<'_>,
 ) -> Result<(Child, ProcessIsolation), ProcessError> {
     let isolation_error = |error: io::Error| {
         ProcessError::Isolation(format!(
-        "Linux managed processes require trusted /usr/bin/bwrap, user/PID namespaces and pidfd support: {error}"
+        "Linux managed processes require trusted /usr/bin/bwrap and /usr/bin/perl, user/PID namespaces and pidfd support: {error}"
     ))
     };
-    trusted_bubblewrap(executable).map_err(isolation_error)?;
+    trusted_supervisor_file(executable).map_err(isolation_error)?;
+    trusted_supervisor_file(Path::new("/usr/bin/perl")).map_err(isolation_error)?;
     let target = supervised_command(spec);
     let mut command = Command::new(executable);
     command.env_clear().envs(inherited_runtime_environment());
@@ -100,27 +110,18 @@ pub(crate) fn spawn_using(
             .arg("--chdir")
             .arg(&directory);
     }
-    for (key, value) in target.get_envs() {
-        if let Some(value) = value {
-            // Apply plugin environment only inside the established namespace, never
-            // to Bubblewrap's dynamic loader (e.g. LD_PRELOAD/LD_LIBRARY_PATH).
-            command.arg("--setenv").arg(key).arg(value);
-        }
-    }
     let mut handshake = Handshake::new(&mut command).map_err(isolation_error)?;
-    command
-        .arg("--")
-        .arg(target.get_program())
-        .args(target.get_args());
+    let mut exec_ack = ExecAck::prepare(&mut command, &target).map_err(isolation_error)?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
+    let setup_deadline = Instant::now() + Duration::from_secs(5);
     let mut child = command.spawn().map_err(ProcessError::Spawn)?;
     // ManagedChild callers may use a 1 ms protocol-request timeout; that is not
     // the launch setup budget. Keep setup separately bounded, like OS spawning.
-    let init = match handshake.pin_init() {
+    let init = match handshake.pin_init(setup_deadline) {
         Ok(init) => init,
         Err(error) => {
             // No untrusted instruction ran. Kill trusted setup processes before
@@ -134,10 +135,20 @@ pub(crate) fn spawn_using(
         }
     };
     let isolation = ProcessIsolation::from_linux(init);
+    if let Err(error) = control.check() {
+        isolation.kill_tree(&mut child);
+        let _ = child.wait();
+        return Err(error);
+    }
     if let Err(error) = handshake.release() {
         isolation.kill_tree(&mut child);
         let _ = child.wait();
         return Err(isolation_error(error));
+    }
+    if let Err(error) = exec_ack.wait(control, setup_deadline) {
+        isolation.kill_tree(&mut child);
+        let _ = child.wait();
+        return Err(error);
     }
     Ok((child, isolation))
 }

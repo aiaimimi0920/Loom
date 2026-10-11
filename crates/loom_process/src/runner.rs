@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use loom_protocol::ExecutionDiagnostics;
 
 use crate::error::ProcessError;
+use crate::launch_control::LaunchControl;
 use crate::model::{ProcessSpec, SupervisedOutput};
-use crate::spawn::spawn_isolated;
+use crate::spawn::spawn_controlled;
 
 pub fn run_with_input(spec: &ProcessSpec, input: &[u8]) -> Result<SupervisedOutput, ProcessError> {
     run_with_input_internal(spec, input, None)
@@ -30,7 +31,15 @@ fn run_with_input_internal(
     cancellation: Option<&AtomicBool>,
 ) -> Result<SupervisedOutput, ProcessError> {
     let started = Instant::now();
-    let (mut child, isolation) = spawn_isolated(spec)?;
+    let deadline = started.checked_add(spec.limits.timeout);
+    let (mut child, isolation) = spawn_controlled(
+        spec,
+        &LaunchControl {
+            started: Some(started),
+            deadline,
+            cancellation,
+        },
+    )?;
 
     let output_exceeded = Arc::new(AtomicBool::new(false));
     let stdout_reader = child.stdout.take().map(|stdout| {
@@ -53,7 +62,6 @@ fn run_with_input_internal(
         thread::spawn(move || stdin.write_all(&input))
     });
 
-    let deadline = started.checked_add(spec.limits.timeout);
     let status = loop {
         if stdin_writer
             .as_ref()

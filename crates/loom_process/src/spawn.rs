@@ -6,13 +6,22 @@ use std::process::Child;
 use crate::command::supervised_command;
 use crate::error::ProcessError;
 use crate::isolation::ProcessIsolation;
+use crate::launch_control::LaunchControl;
 use crate::model::ProcessSpec;
 
 pub(crate) fn spawn_isolated(
     spec: &ProcessSpec,
 ) -> Result<(Child, ProcessIsolation), ProcessError> {
+    spawn_controlled(spec, &LaunchControl::default())
+}
+
+pub(crate) fn spawn_controlled(
+    spec: &ProcessSpec,
+    control: &LaunchControl<'_>,
+) -> Result<(Child, ProcessIsolation), ProcessError> {
+    control.check()?;
     #[cfg(target_os = "linux")]
-    return crate::linux_spawn::spawn(spec);
+    return crate::linux_spawn::spawn(spec, control);
     #[cfg(not(target_os = "linux"))]
     spawn_platform(spec)
 }

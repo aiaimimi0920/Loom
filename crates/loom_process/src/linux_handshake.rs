@@ -13,7 +13,7 @@ pub(crate) struct Handshake {
     inherited: Option<[OwnedFd; 2]>,
 }
 
-fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+pub(crate) fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
     // Owned descriptors are close-on-exec everywhere except the explicit child ends.
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -54,13 +54,12 @@ impl Handshake {
         })
     }
 
-    pub(crate) fn pin_init(&mut self) -> io::Result<OwnedFd> {
+    pub(crate) fn pin_init(&mut self, deadline: Instant) -> io::Result<OwnedFd> {
         // EOF now means Bubblewrap really closed its writer, not our duplicate.
         self.inherited.take();
-        let start = Instant::now();
         let mut bytes = Vec::new();
         loop {
-            if start.elapsed() >= Duration::from_secs(5) {
+            if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "Bubblewrap setup deadline",

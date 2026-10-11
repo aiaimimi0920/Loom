@@ -91,6 +91,7 @@ fn process_runs_from_a_deep_windows_working_directory() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn bounded_output_is_reported_as_a_resource_limit() {
     #[cfg(windows)]
     let _fixture_guard = lock_windows_powershell_fixture();
@@ -117,6 +118,7 @@ fn bounded_output_is_reported_as_a_resource_limit() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn normal_process_reports_diagnostics() {
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("cmd.exe");
@@ -135,6 +137,7 @@ fn normal_process_reports_diagnostics() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn extreme_timeout_does_not_overflow_the_deadline() {
     let mut spec = if cfg!(windows) {
         let mut spec = ProcessSpec::new("cmd.exe");
@@ -153,6 +156,7 @@ fn extreme_timeout_does_not_overflow_the_deadline() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn completed_leader_does_not_leave_inherited_pipes_open() {
     #[cfg(windows)]
     let _fixture_guard = lock_windows_powershell_fixture();
@@ -204,6 +208,7 @@ fn default_windows_job_allows_a_framework_host_to_spawn_its_runtime() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn timeout_terminates_a_child_that_never_reads_large_stdin() {
     #[cfg(windows)]
     let _fixture_guard = lock_windows_powershell_fixture();
@@ -229,6 +234,7 @@ fn timeout_terminates_a_child_that_never_reads_large_stdin() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn cancellation_terminates_the_managed_process_tree() {
     #[cfg(windows)]
     let _fixture_guard = lock_windows_powershell_fixture();
@@ -261,6 +267,7 @@ fn cancellation_terminates_the_managed_process_tree() {
 }
 
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn supervised_process_does_not_inherit_host_secrets() {
     let _guard = ENV_LOCK
         .lock()
@@ -361,6 +368,7 @@ fn supervised_process_inherits_the_image_search_loopback_seam() {
 /// should need; it exists so that supervising a framework process cannot quietly start costing
 /// hundreds of megabytes more than it does today.
 #[test]
+#[cfg(any(windows, target_os = "linux"))]
 fn one_framework_process_stays_within_its_peak_memory_budget() {
     #[cfg(windows)]
     let _fixture_guard = lock_windows_powershell_fixture();
@@ -402,4 +410,17 @@ fn one_framework_process_stays_within_its_peak_memory_budget() {
         peak,
         BUDGET_BYTES,
     );
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+#[test]
+fn unsupported_platform_rejects_managed_execution() {
+    assert!(matches!(
+        run_with_input(&ProcessSpec::new("sh"), b""),
+        Err(ProcessError::Isolation(_))
+    ));
+    assert!(matches!(
+        crate::ManagedChild::spawn(&ProcessSpec::new("sh")),
+        Err(ProcessError::Isolation(_))
+    ));
 }

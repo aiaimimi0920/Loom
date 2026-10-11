@@ -3,6 +3,9 @@
 mod command;
 mod error;
 mod isolation;
+mod launch_control;
+#[cfg(target_os = "linux")]
+mod linux_exec;
 #[cfg(target_os = "linux")]
 mod linux_handshake;
 #[cfg(target_os = "linux")]

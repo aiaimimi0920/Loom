@@ -170,7 +170,7 @@ jobs:
 
   linux:
     name: Linux Rust validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -184,7 +184,21 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pkg-config libssl-dev bubblewrap python3
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pkg-config libssl-dev bubblewrap perl-base python3 apparmor
+
+      - name: Permit Bubblewrap user namespaces on the ephemeral CI host
+        run: |
+          # Keep Ubuntu's system-wide restriction. Only the trusted supervisor and
+          # its namespace descendants need this allowance (including nested runtimes).
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+          cat > "$RUNNER_TEMP/loom-ci-bwrap" <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile loom-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r "$RUNNER_TEMP/loom-ci-bwrap"
 
       - name: Verify Linux managed-process isolation prerequisites
         run: /usr/bin/bwrap --unshare-user --unshare-pid --die-with-parent --cap-drop ALL --bind / / --dev-bind /dev /dev --proc /proc -- /usr/bin/true

@@ -1,7 +1,8 @@
 # Linux managed-process containment
 
 `loom_process` requires Bubblewrap (`/usr/bin/bwrap`, distribution-maintained 0.8
-or later), enabled unprivileged user/PID namespaces, and Linux pidfd support
+or later), distribution `perl-base` (`/usr/bin/perl`, for an exec-only acknowledgement
+shim), enabled unprivileged user/PID namespaces, and Linux pidfd support
 (`pidfd_open` and `pidfd_send_signal`, Linux 5.3 or later). The executable and its
 ancestors must be root-owned and not group/world-writable. Ownership checks account
 for the kernel's UID translation in nested user namespaces. No PATH or plugin
@@ -28,8 +29,15 @@ prevents later cleanup from signalling an unrelated recycled PID. Bubblewrap's
 `--die-with-parent` remains enabled as an additional lifecycle measure; the explicit
 cleanup guarantee above does not depend on a plugin retaining `PDEATHSIG`.
 
-Plugin environment is installed through Bubblewrap arguments only inside the
-namespace, not in the supervisor's dynamic-loader environment. All capabilities
+After namespace admission, a private close-on-exec pipe acknowledges the actual
+target exec. Missing/non-executable targets remain `ProcessError::Spawn`, not an
+ordinary exit code; target exit 127 is not confused with launch failure. The shim
+runs with a scrubbed environment and installs plugin environment only immediately
+before exec, never in Bubblewrap's or the shim's loader environment. The shim's
+fixed source and arguments are passed separately, without shell interpolation.
+An expired one-shot deadline or cancellation leaves the launch gate closed and
+tears down the namespace. Streaming request timeouts remain separate from setup.
+All capabilities
 are dropped. A root caller maps to virtual UID/GID 65534 so a nested runtime does
 not need the CAP_SETFCAP privilege required to map virtual UID 0 again. This is a
 namespace identity change, not a host-filesystem ownership migration.
@@ -45,6 +53,14 @@ not change global sysctls, disable an LSM, add `--privileged`, or silently bypas
 isolation. Unsupported managed launches fail closed with an isolation error; other
 daemon operations can remain available. CI probes the actual Bubblewrap setup and
 runs the namespace regressions rather than skipping them when unsupported.
+
+Ubuntu 24.04 CI explicitly loads an ephemeral AppArmor profile attached only to
+`/usr/bin/bwrap`, granting `userns` while leaving the global restriction enabled.
+This follows Ubuntu's [application-specific user namespace policy](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
+The allowance is inherited inside the namespace so nested runtimes work; it is
+not a new general-purpose sandbox policy. Loom does not install it on user hosts.
+Deployment administrators must review their own equivalent policy rather than
+turn off AppArmor or suppress a failed prerequisite probe.
 
 Windows keeps its suspended-start, assigned-Job-Object, verified-resume boundary.
 Other operating systems have no implemented equivalent and reject managed launches

@@ -176,6 +176,7 @@ fn missing_supervisor_fails_closed_without_running_command() {
     let result = crate::linux_spawn::spawn_using(
         &escape_spec("wait"),
         std::path::Path::new("/loom-missing-bwrap"),
+        &crate::launch_control::LaunchControl::default(),
     );
     assert!(matches!(result, Err(ProcessError::Isolation(_))));
 }
@@ -195,4 +196,59 @@ fn relative_working_directory_preserves_command_semantics() {
             .to_str()
             .unwrap()
     );
+}
+
+#[test]
+fn exec_errors_are_spawn_errors_but_target_exit_127_is_not() {
+    for (program, expected) in [
+        ("/loom-target-does-not-exist", std::io::ErrorKind::NotFound),
+        ("/etc/passwd", std::io::ErrorKind::PermissionDenied),
+    ] {
+        let result = ManagedChild::spawn(&ProcessSpec::new(program));
+        assert!(matches!(result, Err(ProcessError::Spawn(ref error)) if error.kind() == expected));
+    }
+    let mut spec = ProcessSpec::new("/bin/sh");
+    spec.args = vec!["-c".into(), "exit 127".into()];
+    assert_eq!(run_with_input(&spec, b"").unwrap().status.code(), Some(127));
+}
+
+#[test]
+fn plugin_interpreter_environment_cannot_run_in_exec_shim() {
+    let mut spec = ProcessSpec::new("/bin/true");
+    spec.env
+        .insert("PERL5OPT".into(), "-Mnonexistent_plugin_module".into());
+    assert!(run_with_input(&spec, b"").unwrap().status.success());
+}
+
+#[test]
+fn expired_or_cancelled_setup_never_releases_target() {
+    use crate::launch_control::LaunchControl;
+    let marker = std::env::temp_dir().join(format!("loom-launch-gate-{}", std::process::id()));
+    assert!(!marker.exists());
+    let mut spec = ProcessSpec::new("/usr/bin/touch");
+    spec.args = vec![marker.to_str().unwrap().into()];
+    let cancelled = AtomicBool::new(true);
+    for control in [
+        LaunchControl {
+            started: Some(Instant::now()),
+            deadline: Some(Instant::now()),
+            cancellation: None,
+        },
+        LaunchControl {
+            cancellation: Some(&cancelled),
+            ..LaunchControl::default()
+        },
+    ] {
+        // Exercise the final gate, not just spawn_controlled's initial precheck.
+        let result = crate::linux_spawn::spawn_using(
+            &spec,
+            std::path::Path::new("/usr/bin/bwrap"),
+            &control,
+        );
+        assert!(matches!(
+            result,
+            Err(ProcessError::Timeout { .. } | ProcessError::Cancelled { .. })
+        ));
+        assert!(!marker.exists(), "expired target executed");
+    }
 }
