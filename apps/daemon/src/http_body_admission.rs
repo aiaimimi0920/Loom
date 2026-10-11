@@ -124,11 +124,12 @@ pub(super) fn admit(
                 "authenticated device requests require X-Loom-Device-Nonce",
             )
         })?;
-        let registry = runtime.device_registry.lock().map_err(|_| {
-            device_error(
+        // Read workers must not wait behind projection decoding or persistence.
+        let registry = runtime.device_registry.try_lock().map_err(|_| {
+            request_security_error(
                 503,
                 "device_registry_unavailable",
-                "device registry is unavailable",
+                "device registry is busy or unavailable; retry later",
             )
         })?;
         // A preflight must not consume the nonce: routing rechecks revocation/expiry and

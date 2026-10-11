@@ -119,8 +119,9 @@ impl OfflinePeers {
             .header("x-loom-device-nonce")
             .ok_or_else(|| failure(401, "projection_pairing_required"))?;
         registry
-            .lock()
-            .map_err(|_| failure(401, "projection_pairing_required"))?
+            // Header admission runs on the bounded socket-reader pool.
+            .try_lock()
+            .map_err(|_| failure(503, "device_registry_unavailable"))?
             .validate_device_session(token, nonce)
             .map_err(|_| failure(401, "projection_pairing_required"))?;
         Ok(())

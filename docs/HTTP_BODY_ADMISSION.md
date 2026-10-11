@@ -33,6 +33,9 @@ dispatch. After the body arrives, dispatch rechecks expiry, revocation, scope,
 and nonce freshness, then consumes the nonce exactly once. Concurrent requests
 with the same nonce cannot both execute. Admin credentials retain precedence
 over stale device credentials only on routes that accept administrator authority.
+Preflight uses nonblocking registry acquisition: contention or a poisoned registry
+returns `503 / device_registry_unavailable` without waiting in a socket-read worker.
+Clients may retry; no nonce is consumed and no device authorization is changed.
 
 The reader no longer reserves a declared `Content-Length`. Buffer growth follows
 bytes actually received, with fallible incremental allocation and existing route

@@ -225,3 +225,27 @@ fn admin_only_device_routes_reject_before_upload() {
         );
     }
 }
+
+#[test]
+fn device_body_admission_never_waits_for_registry_lock() {
+    let fixture = Fixture::new();
+    let (_, token) = wall_http::pair(fixture.port, "Busy upload registry");
+    for path in ["/v1/projections/create", "/v1/offline-projections/create"] {
+        let registry = fixture.devices.lock().unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write!(stream, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 4194304\r\nAuthorization: Device {token}\r\nX-Loom-Device-Nonce: {}\r\n\r\n", Uuid::new_v4()).unwrap();
+        let mut response = String::new();
+        let read = stream.read_to_string(&mut response);
+        // Release even on regression failure so fixture teardown cannot deadlock.
+        drop(registry);
+        read.expect("registry contention must not block the read worker");
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert!(
+            response.contains("device_registry_unavailable"),
+            "{response}"
+        );
+    }
+}
