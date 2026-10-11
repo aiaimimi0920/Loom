@@ -5,7 +5,7 @@
         let root = temp_root("manifest-cache");
         let digest = "a".repeat(64);
         let (tool_registry, instances, resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, surface_tool(&digest), "hook-node:cache");
+            setup_action_fixture(&root, surface_tool(&digest), "otter-node:cache");
         let resolves = Arc::new(AtomicUsize::new(0));
         let resolver_resolves = Arc::clone(&resolves);
         let resolver: Arc<SurfaceToolResolver> = Arc::new(move |descriptor| {
@@ -65,7 +65,7 @@
             setup_action_fixture(
                 &root,
                 surface_tool_at("1.0.0", &first_digest),
-                "hook-node:migrate",
+                "otter-node:migrate",
             );
         let resolves = Arc::new(AtomicUsize::new(0));
         let resolver_resolves = Arc::clone(&resolves);
@@ -150,7 +150,7 @@
     }
 
     /// Loom's first wire-size budget, and the reason `loom_perf` exists. It measures everything Loom
-    /// pushes to a Hook client for one completed declarative action: the queued and succeeded acks,
+    /// pushes to a Otter client for one completed declarative action: the queued and succeeded acks,
     /// the committed patch, and the formal result. A regression that re-sends a whole snapshot where
     /// a patch would do, or serialises the same payload several times into one message, shows up
     /// here as a multiple of the budget rather than as a silent slowdown on a remote device.
@@ -167,8 +167,8 @@
         let root = temp_root("perf-response-bytes");
         let digest = "e".repeat(64);
         let (tool_registry, instances, resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, surface_tool(&digest), "hook-node:perf");
-        let (rx, _subscription) = register_hook_bridge_subscription(
+            setup_action_fixture(&root, surface_tool(&digest), "otter-node:perf");
+        let (rx, _subscription) = register_otter_bridge_subscription(
             &hook_bridge.lock().expect("lock bridge").broadcast_hub,
             loom_protocol::SURFACE_EVENT_METHODS
                 .iter()

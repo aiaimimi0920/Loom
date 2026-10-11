@@ -65,7 +65,7 @@ pub(crate) fn execute_with(
         .find(|item| item.attachment_id == ATTACHMENT);
     if envelope.command_id == TOGGLE_OVERLAY_COMMAND {
         let attachment = existing.ok_or_else(|| invalid_input("translation result is missing"))?;
-        // Visibility commands carry Hook's empty input and never require OCR or a model.
+        // Visibility commands carry Otter's empty input and never require OCR or a model.
         let mut payload = attachment
             .payload
             .as_object()

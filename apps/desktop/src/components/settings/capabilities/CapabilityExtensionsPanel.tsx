@@ -122,7 +122,7 @@ function CatalogCapabilityCard({
       </dl>
       <dl className="capability-host-requirements">
         <div><dt>Loom API</dt><dd>≥ {item.entry.hostCompatibility.loomCapabilityApi.minimum}</dd></div>
-        <div><dt>Hook API</dt><dd>≥ {item.entry.hostCompatibility.hookExtensionApi.minimum}</dd></div>
+        <div><dt>Otter API</dt><dd>≥ {item.entry.hostCompatibility.hookExtensionApi.minimum}</dd></div>
         <div>
           <dt>必需特性</dt>
           <dd>{[
@@ -179,7 +179,7 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
         <div>
           <span className="capability-eyebrow">Capability Plugins</span>
           <h2>能力扩展</h2>
-          <p>按需安装 OCR 等大体积能力。能力扩展独立于 Art 模块，并通过最小权限接入 Hook。</p>
+          <p>按需安装 OCR 等大体积能力。能力扩展独立于 Art 模块，并通过最小权限接入 Otter。</p>
         </div>
         <div className="capability-settings__header-actions">
           <input

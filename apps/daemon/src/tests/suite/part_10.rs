@@ -1,6 +1,6 @@
 // Loom daemon tests fragment 10; included into the shared crate test module.
 #[test]
-fn daemon_hook_bridge_streams_workflow_preview_before_formal_result() {
+fn daemon_otter_bridge_streams_workflow_preview_before_formal_result() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("workflow-preview-stream");
     let runtime = test_daemon_runtime(&root, None);
@@ -50,7 +50,7 @@ nodes:
         Some(inline_art_input(&test_png_base64())),
         json!({}),
     );
-    let (intermediate, final_response) = run_hook_bridge_text_with_intermediate(&runtime, &request);
+    let (intermediate, final_response) = run_otter_bridge_text_with_intermediate(&runtime, &request);
 
     assert!(
         intermediate.iter().any(|event| {
@@ -69,7 +69,7 @@ nodes:
 }
 
 #[test]
-fn daemon_hook_bridge_returns_successful_formal_output_after_workflow_preview() {
+fn daemon_otter_bridge_returns_successful_formal_output_after_workflow_preview() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
     let root = unique_temp_dir("workflow-preview-success");
     let runtime = test_daemon_runtime(&root, None);
@@ -122,7 +122,7 @@ nodes:
         Some(inline_art_input(&input_image)),
         json!({}),
     );
-    let (intermediate, final_response) = run_hook_bridge_text_with_intermediate(&runtime, &request);
+    let (intermediate, final_response) = run_otter_bridge_text_with_intermediate(&runtime, &request);
 
     assert!(
         intermediate.iter().any(|event| {
@@ -165,10 +165,10 @@ fn expect_binary_route_response(
 }
 
 #[test]
-fn resolve_hook_session_path_uses_canonical_default_when_no_session_exists() {
-    let appdata = unique_temp_dir("hook-session-missing");
+fn resolve_otter_session_path_uses_canonical_default_when_no_session_exists() {
+    let appdata = unique_temp_dir("otter-session-missing");
 
-    let resolved = resolve_hook_session_path(&appdata);
+    let resolved = resolve_otter_session_path(&appdata);
 
     assert_eq!(
         resolved,
@@ -306,11 +306,11 @@ fn daemon_help_and_version_are_available_without_binding_a_port() {
 fn json_http_responses_declare_utf8_charset() {
     let mut response = Vec::new();
 
-    write_response(&mut response, 200, r#"{"name":"Hook 实时工作流"}"#).expect("write response");
+    write_response(&mut response, 200, r#"{"name":"Otter 实时工作流"}"#).expect("write response");
     let response = String::from_utf8(response).expect("utf8 response");
 
     assert!(response.contains("Content-Type: application/json; charset=utf-8"));
-    assert!(response.contains(r#""name":"Hook 实时工作流""#));
+    assert!(response.contains(r#""name":"Otter 实时工作流""#));
 }
 
 #[test]

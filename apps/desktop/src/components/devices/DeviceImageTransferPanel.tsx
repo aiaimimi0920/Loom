@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { readWallState } from "../../services/loomApi/walls.ts";
-import { listManagedDevices } from "../../services/loomApi/hook.ts";
+import { listManagedDevices } from "../../services/loomApi/otter.ts";
 import { deviceImageDelivery, imageTarget, sendDeviceImage, type DeviceImageReceipt } from "../../services/loomApi/deviceImageTransfer.ts";
 import { WALL_IMAGE_ACCEPT } from "../../services/loomApi/wallImages.ts";
 import type { WallState } from "../../services/loomApi/wallTypes.ts";
@@ -58,12 +58,12 @@ export function DeviceImageTransferPanel({ baseUrl, online }: { baseUrl: string;
   }
   return <section className="wall-management" aria-label="发送图片到设备">
     <header><h2>发送图片</h2>
-      <p className="wall-muted">向此 Loom 已批准的终端发送一张图片，无需中心账号登录。接收端需运行 Hook 终端并选择输出屏幕。</p>
+      <p className="wall-muted">向此 Loom 已批准的终端发送一张图片，无需中心账号登录。接收端需运行 Otter 终端并选择输出屏幕。</p>
       <p className="wall-muted">图片由此 Loom 传给目标终端。后续发送会替换该输出的上一张图片；需要持续同步贴图时使用二维码投射。</p>
     </header>
     {!online && <p role="status" className="wall-warning">本机 Loom 离线。</p>}
     {online && !state && !pollError && <p role="status">正在读取终端...</p>}
-    {state && !state.endpoints.length && <p role="status">尚无接收终端。请让 PC3 的 Hook 连接此 Loom，批准配对后，在 PC3 打开终端并注册屏幕。</p>}
+    {state && !state.endpoints.length && <p role="status">尚无接收终端。请让 PC3 的 Otter 连接此 Loom，批准配对后，在 PC3 打开终端并注册屏幕。</p>}
     <label className="wall-toolbar"><span>接收设备 / 屏幕</span>
       <select className="studio-input" value={endpointId} disabled={busy || !online || !state?.endpoints.length}
         onChange={(event) => { setEndpointId(event.target.value); setError(""); }}>

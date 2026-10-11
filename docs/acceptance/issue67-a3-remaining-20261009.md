@@ -34,7 +34,7 @@
 
 - [ ] 每次只选择环境与明确授权同时满足的最小场景；没有条件的项目保持未验。
 - [ ] 保留精确候选 SHA、身份与会话边界、原始失败记录、时序和清理回执。
-- [ ] 测试进程及监听端口必须按所有权核验清理，不停止日常 Hook 或无关进程。
+- [ ] 测试进程及监听端口必须按所有权核验清理，不停止日常 Otter 或无关进程。
 - [ ] 有实际产品缺陷时另建最小修复与聚焦回归；验收空项不是新增功能的依据。
 - [ ] 已完成且可独立成立的证据先单独交付，未完成项继续以独立 PR 承接。
 - [ ] 工作包按实测或用户明确接受风险分别处置；A3-P 已获用户跳过决定，不再阻塞交付，其余项不自动追认为通过。
@@ -54,21 +54,21 @@
 
 ## 2026-10-09：限定 A3-P 恢复，raw 完成、JPEG 启动前停止
 
-用户明确允许 PC1/PC3、隔离身份下的非破坏性对照，禁止退出日常 Hook、物理断网
+用户明确允许 PC1/PC3、隔离身份下的非破坏性对照，禁止退出日常 Otter、物理断网
 或驱动重置；隔离或内存条件不满足即停止。计划为单观看端 scrolling，raw → JPEG，
 每组预热 30 秒、daemon 采样 60 秒，另采 CPU/资源及 GPU process-engine 前后端点。
 
 证据根：`linshi/issue67-a3p-resume-20261009`。原始身份、日志和私钥仅本地保留；
 脱敏索引见 [本轮回执](issue67-a3p-resume-20261009.json)。候选未换包：
 
-- Hook `.32` SHA256：`6911eb0a70b02baf19aa1320c36928c4e5d35cf3aae3852f66f227f62433f840`。
+- Otter `.32` SHA256：`6911eb0a70b02baf19aa1320c36928c4e5d35cf3aae3852f66f227f62433f840`。
 - Loom SHA256：`8132707e238e9a1e439a0d6a9543e05c58a8927ff9d7a2c3887b8616ec3df806`。
 - 使用内部隔离候选，不重标为合并后 clean-source 正式 release。
 
 ### 已执行及异常
 
 raw-1 完成真实发布/加入、三个观察器及其 helper 关闭、正常停止清帧和双机清理。
-11:41:24Z 的清理回执通过；PC3 专用任务 Disabled，日常 Hook 退出次数为 0。
+11:41:24Z 的清理回执通过；PC3 专用任务 Disabled，日常 Otter 退出次数为 0。
 采样稳定媒体尺寸为 `658×407`，启动回执 `439×271` 未被改写；离线派生记录保留两者。
 
 | 指标 | 本轮 raw 实测 | 边界 |
@@ -86,11 +86,11 @@ GPU 读数是 Windows formatted counter 的离散前后端点，整数粒度；�
 直接比较并归因为版本收益或回归。
 
 JPEG-1 在 11:41:50Z 被 `Required isolated ports unavailable` 拦截，未 claim run、
-未启动 Hook/daemon/媒体、未创建 PC3 任务。端口快照中 47873/49875/49879/47881
+未启动 Otter/daemon/媒体、未创建 PC3 任务。端口快照中 47873/49875/49879/47881
 分别有 856/1/2/1 个 `TimeWait`、PID 0 端点；门禁检查所有 TCP 状态而不只是监听。
 没有放宽门禁、停止无关进程、网络重置或自动重跑。已传输的隔离文件保留。
 
-11:43:57Z 再次只读核验：两机 Hook 均为 0，相关监听为空，raw 专用任务 Disabled，
+11:43:57Z 再次只读核验：两机 Otter 均为 0，相关监听为空，raw 专用任务 Disabled，
 JPEG 专用任务不存在。清理通过与端口暂不可复用是不同结论，不把前者冒充后者。
 
 ### 工具检查及后续边界
@@ -135,7 +135,7 @@ JPEG 专用任务不存在。清理通过与端口暂不可复用是不同结论
 
 ## 断开原因取证候选 `.33`（构建阶段，后续原生结果见末节）
 
-[Hook Draft #62](https://github.com/aiaimimi0920/Hook/pull/62) 在
+[Otter Draft #62](https://github.com/aiaimimi0920/Otter/pull/62) 在
 `6acc92f17247c9e4dbf8e341b8a5be4ca7017312` 增加 acceptance-only viewer 断开记录。
 只记录固定原因类别、IO kind/可选 OS code、数字 Close code、连接时长及数字计数器；
 不保存原始错误文本、peer Close reason、媒体、URL 或凭据。每 worker 最多 32 条，
@@ -147,12 +147,12 @@ JPEG 专用任务不存在。清理通过与端口暂不可复用是不同结论
 单观看端按专用进程绑定日志；该事件没有 relay identity，不能作多端逐会话归因。
 
 隔离前端构建及 Tauri release 编译成功；候选来自上述干净源码，位置：
-`Neuro/release/Hook/v0.2.32.33-viewer-disconnect-20261009/hook.exe`。
+`Neuro/release/Otter/v0.2.32.33-viewer-disconnect-20261009/otter.exe`。
 SHA256 `d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92`，
 大小 9043968 字节，provenance 与 EXE 同目录。headless `--self-check` exit 0、status ok；
 首次 PowerShell 包装未取得 ExitCode，保留原输出后用直接调用确认，未把空退出码视为通过。
 
-本轮没有启动媒体或替换日常 Hook，尚未证明候选在真实异常中取得断开原因；
+本轮没有启动媒体或替换日常 Otter，尚未证明候选在真实异常中取得断开原因；
 headless 自检也不替代 WebView2 原生启动/加载与业务验收。保留 `.32` 原始性能证据，
 不把 `.33` 当性能修复或正式 release，不关闭 A3-P。
 
@@ -160,7 +160,7 @@ headless 自检也不替代 WebView2 原生启动/加载与业务验收。保留
 
 后续“继续推进”执行了一轮单观看端 raw 取证，不包含 JPEG 或破坏性测试。
 证据根 `linshi/issue67-v33-raw-diagnostic-20261009`；13:23:52Z 前置快照中
-PC1/PC3 均无 Hook，内存余量约 41.03%/61.32%，相关监听为空。
+PC1/PC3 均无 Otter，内存余量约 41.03%/61.32%，相关监听为空。
 生成新隔离 TLS 证书（到期 17:24:24Z），未改系统信任，候选 SHA 保持上述 `.33`。
 
 本轮 runner 在 `Start-LocalFixture.ps1 → Assert-ContentMode.ps1:23` 读取
@@ -168,8 +168,8 @@ PC1/PC3 均无 Hook，内存余量约 41.03%/61.32%，相关监听为空。
 尚未发布/加入媒体、没有性能样本，也没有诊断到新的媒体重连。不能据此认定 `.33`
 的取证功能已原生验收；这次失败不修改原有 `.32` 性能结论。
 
-13:27:25Z 双机清理通过，专用任务 Disabled；13:44:41Z 只读复核两机 Hook 均为 0、
-相关监听为空。未退出日常 Hook，未自动重跑，原始失败与清理回执保留。
+13:27:25Z 双机清理通过，专用任务 Disabled；13:44:41Z 只读复核两机 Otter 均为 0、
+相关监听为空。未退出日常 Otter，未自动重跑，原始失败与清理回执保留。
 脱敏索引见 [本轮回执](issue67-v33-raw-attempt-20261009.json)。
 
 测试工具修正在 `staged-fix/`，没有改写已执行的 raw-1 脚本：
@@ -186,7 +186,7 @@ PC1/PC3 均无 Hook，内存余量约 41.03%/61.32%，相关监听为空。
 
 修正尚未原生复测。恢复时需使用 fresh evidence root 并明确装入 staged 两个脚本，
 重新检查隔离、容量、全部 TCP 状态和证书；不可覆盖本轮失败或绕过门禁。
-本轮还联网核对 Hook #62 exact head 的 16 个 check runs：15 success、1 neutral，
+本轮还联网核对 Otter #62 exact head 的 16 个 check runs：15 success、1 neutral，
 无 pending/failure；neutral 为 `osv-scanner`，不称全部 success，也不替代原生验收。
 
 ## `.33` 第二次限定 raw：正常 Close 取证与清理通过
@@ -195,7 +195,7 @@ PC1/PC3 均无 Hook，内存余量约 41.03%/61.32%，相关监听为空。
 失败现场。脱敏指标及 20 项原始文件 SHA256 见 [本轮索引](issue67-v33-raw-r2-20261009.json)，
 交付前已逐项重新核对。此轮只执行单观看端 raw，没有计划或运行 JPEG。
 
-14:11:55Z 前置检查中 PC1/PC3 均无 Hook，内存余量约 32.865%/61.057%，相关监听空；
+14:11:55Z 前置检查中 PC1/PC3 均无 Otter，内存余量约 32.865%/61.057%，相关监听空；
 隔离 TLS 有效至 18:12:14Z。两机使用上述 `.33` 候选，Loom 候选不变。修正的 fixture
 reader 已装入新模板与 raw-1；启动前 7 项回归及 NativeHarness 检查通过，真实 WGC
 捕获、正常 UI 发布/加入和 diagnostic buildVersion `.33` 已确认。原生启动校验通过，
@@ -219,10 +219,10 @@ PC3 专用进程日志取得一条真实 `live_relay_viewer_disconnect`：
 不能单凭此认定故障；PC3 时钟未经校准，不直接与 PC1 UTC 相减。
 
 runner 于 14:16:35Z 通过；正常 source stop 后 viewer closed、presentation/rendering
-为 null、remainingImages 为 0。14:17:39Z closeout 通过：两机 Hook 为 0、相关监听空、
-PC3 专用任务 Disabled，dailyExitCount 为 0。未退出日常 Hook、物理断网或重置驱动。
+为 null、remainingImages 为 0。14:17:39Z closeout 通过：两机 Otter 为 0、相关监听空、
+PC3 专用任务 Disabled，dailyExitCount 为 0。未退出日常 Otter、物理断网或重置驱动。
 
-[Hook #62](https://github.com/aiaimimi0920/Hook/pull/62) 已正常 squash 合入 `main`
+[Otter #62](https://github.com/aiaimimi0920/Otter/pull/62) 已正常 squash 合入 `main`
 `67399b345e793db0fc6d921b6c1523a9d6f4c1d0`，与已验证 head `6acc92f` 的完整 Git tree
 一致。合并前 exact head 检查为 15 success、1 neutral，无 pending/failure；不绕过门禁。
 内部候选仍归属于原构建 SHA，不重标为合并后构建或正式 release。
@@ -239,7 +239,7 @@ daemon 采样 60 秒；不是 raw → JPEG → JPEG → raw 完整重复顺序�
 相同，双方传输身份和 SHA 验证通过。原生执行仍使用无 daily-exit 的单组 runner，
 未运行带历史日常退出/恢复分支的 `Run-NativeCross.ps1`。
 
-14:28:51Z 前置回执通过：PC1/PC3 Hook 均为 0，内存余量约 25.449%/60.829%，全部专用
+14:28:51Z 前置回执通过：PC1/PC3 Otter 均为 0，内存余量约 25.449%/60.829%，全部专用
 端口无现存 TCP 端点、独占绑定探测通过。新 TLS 有效至 18:30:45Z；模板语法、依赖闭包、
 UTF-8 无 BOM、单文件行数上界以及两组 ValidateOnly 均通过。每组启动仍重新执行原门禁。
 
@@ -257,7 +257,7 @@ raw-1 于 14:35:35Z 完成发布/加入、采样、正常停止清帧和 owned c
 `Required isolated ports unavailable`。它尚未 claim run、启动媒体或创建专用任务。
 其他本地专用端口可绑定；没有放宽门禁、停止无关进程或自动重跑 JPEG。
 
-14:40:50Z 双机只读 closeout 通过：Hook 均为 0、相关监听空、raw 专用任务 Disabled，
+14:40:50Z 双机只读 closeout 通过：Otter 均为 0、相关监听空、raw 专用任务 Disabled，
 JPEG 专用任务不存在，dailyExitCount 为 0。脱敏数值、实际拒绝原因及 22 项证据哈希见
 [本轮索引](issue67-v33-pair-attempt-20261009.json)。离线 `--raw-only` 分析器的通用
 “JPEG 不在单 raw 范围”标签仅是该分析模式的默认文案；本轮实际情况是 JPEG 已计划但
@@ -267,7 +267,7 @@ JPEG 专用任务不存在，dailyExitCount 为 0。脱敏数值、实际拒绝�
 不推断产品性能回归、收益或根因。下一次不得直接假定固定 180 秒冷却足以复用端口，
 必须重新核验全部 TCP 状态及隔离/资源条件；不扩大物理网络操作权限。A3-P 仍未完成。
 
-交付 CI：Hook 合并后 `67399b3` 已联网确认 17 项 success、公共 release 发布任务 skipped。
+交付 CI：Otter 合并后 `67399b3` 已联网确认 17 项 success、公共 release 发布任务 skipped。
 Loom 上一证据提交 `bce15b8` 最后检查为 16 项 success，Windows full validation 尚在运行；
 不把这些状态冒充本节后续文档提交的 exact-head 检查。
 
@@ -287,8 +287,8 @@ JPEG runner 在服务启动前再次核验内存，记录 PC1 freePercent 为 14
 `Host headroom below 15% before services`。没有启动服务或媒体、没有创建原生任务，
 raw 组不再执行。没有要求用户腾资源、停止其他程序、降低门槛或自动重试。
 
-本地 owned cleanup 通过；14:50:52Z 双机收尾核验通过：Hook 均为 0、相关监听空，
-JPEG/raw 专用任务均不存在，dailyExitCount 为 0。未退出日常 Hook、未物理断网或重置驱动。
+本地 owned cleanup 通过；14:50:52Z 双机收尾核验通过：Otter 均为 0、相关监听空，
+JPEG/raw 专用任务均不存在，dailyExitCount 为 0。未退出日常 Otter、未物理断网或重置驱动。
 [处置回执](issue67-performance-disposition-20261009.json) 含 10 项原始证据 SHA256。
 
 **最终处置：A3-P 为 `waived-by-user`，`blocksDelivery=false`，`measuredPass=false`。**

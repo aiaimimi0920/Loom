@@ -123,7 +123,7 @@ fn create_authored_art(
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let mut request: CreateAuthoredArtRequest = match serde_json::from_str(body) {
         Ok(request) => request,
@@ -272,7 +272,7 @@ fn install_art(
     framework_registry: &FrameworkRegistry,
     workflow_store: &WorkflowStore,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     bundled_art_sha256_allowlist: &BTreeSet<String>,
 ) -> Result<(u16, String)> {
     let request = match serde_json::from_str::<InstallArtRequest>(body) {
@@ -349,7 +349,7 @@ fn rollback_art(
     framework_registry: &FrameworkRegistry,
     workflow_store: &WorkflowStore,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     match loom_tool_registry::install::rollback_art_package(
         control_plane_root,
@@ -379,7 +379,7 @@ fn uninstall_art(
     body: &str,
     tool_registry: &ToolRegistry,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     mcp_servers: &SharedMcpServerStore,
     mcp_store_path: &Path,
 ) -> Result<(u16, String)> {

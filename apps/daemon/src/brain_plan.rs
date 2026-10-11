@@ -306,7 +306,7 @@ mod tests {
         let result = planner
             .plan(BrainPlanRequest {
                 goal: "release smoke".to_owned(),
-                constraints: vec!["Hook Talk Loom".to_owned()],
+                constraints: vec!["Otter Talk Loom".to_owned()],
                 context: None,
             })
             .expect("local plan");
@@ -390,7 +390,7 @@ mod tests {
             }
             let request = String::from_utf8(request).expect("UTF-8 Gateway request");
             assert!(request.contains("release context"));
-            assert!(request.contains("Hook Talk Loom"));
+            assert!(request.contains("Otter Talk Loom"));
             assert!(request.contains("planner-model"));
             let body = r#"{"model":"resolved-model","choices":[{"message":{"content":"{\"summary\":\"Gateway plan\",\"steps\":[\"inspect\",\"execute\"]}"}}]}"#;
             write!(
@@ -412,7 +412,7 @@ mod tests {
         let result = planner
             .plan(BrainPlanRequest {
                 goal: "release smoke".to_owned(),
-                constraints: vec!["Hook Talk Loom".to_owned()],
+                constraints: vec!["Otter Talk Loom".to_owned()],
                 context: Some(json!({"note":"release context"})),
             })
             .expect("Gateway plan");

@@ -1,6 +1,6 @@
 // Loom daemon tests fragment 4; included into the shared crate test module.
 #[test]
-fn hook_art_lists_restore_workflow_param_widget_schema_from_child_art() {
+fn otter_art_lists_restore_workflow_param_widget_schema_from_child_art() {
     let root = unique_temp_dir("workflow-param-widget-schema");
     let tool_registry = ToolRegistry::new(root.join("tools"));
     let workflow_store = WorkflowStore::new(root.join("workflows"));
@@ -97,12 +97,12 @@ nodes:
         .save_tool(composite)
         .expect("save composite Art");
 
-    let tools = tool_registry.list_tools().expect("list Hook Arts");
+    let tools = tool_registry.list_tools().expect("list Otter Arts");
     let composite = tools
         .iter()
         .find(|tool| tool.id == "transfer-composite-art")
         .expect("composite Art");
-    let capability = hook_protocol_art_capability(composite, &tools, &workflow_store);
+    let capability = otter_protocol_art_capability(composite, &tools, &workflow_store);
     let capability = serde_json::to_value(capability).expect("serialize capability");
     let param = &capability["parameters"][0];
     assert_eq!(param["id"], "strength");

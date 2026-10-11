@@ -73,7 +73,7 @@ fn daemon_accepts_root_contract_local_capability_invoke_fixture() {
     assert_eq!(invoke["output"]["run"]["input"]["goal"], "release smoke");
     assert_eq!(
         invoke["output"]["run"]["input"]["constraints"][0],
-        "Hook Talk Loom"
+        "Otter Talk Loom"
     );
     assert!(invoke["output"]["summary"]
         .as_str()

@@ -55,13 +55,13 @@
   gap: 8px;
 }
 
-.hook-cache-settings {
+.otter-cache-settings {
   display: grid;
   min-width: 0;
   gap: 12px;
 }
 
-.hook-cache-group {
+.otter-cache-group {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -71,7 +71,7 @@
   background: transparent;
 }
 
-.hook-cache-group__header {
+.otter-cache-group__header {
   display: flex;
   min-height: 58px;
   align-items: center;
@@ -79,7 +79,7 @@
   border-bottom: 1px solid var(--loom-theme-line);
 }
 
-.hook-cache-group__header svg {
+.otter-cache-group__header svg {
   width: 22px;
   height: 22px;
   fill: none;
@@ -89,12 +89,12 @@
   stroke-width: 1.8;
 }
 
-.hook-cache-group__header strong {
+.otter-cache-group__header strong {
   color: var(--loom-theme-text);
   font-size: 0.98rem;
 }
 
-.hook-cache-row {
+.otter-cache-row {
   display: grid;
   min-height: 70px;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -103,62 +103,62 @@
   border-bottom: 1px solid var(--loom-theme-line);
 }
 
-.hook-cache-row--action {
+.otter-cache-row--action {
   grid-template-columns: minmax(0, 1fr) minmax(78px, auto) auto;
 }
 
-.hook-cache-row:last-child {
+.otter-cache-row:last-child {
   border-bottom: 0;
 }
 
-.hook-cache-row > span {
+.otter-cache-row > span {
   display: grid;
   min-width: 0;
   gap: 4px;
 }
 
-.hook-cache-row strong {
+.otter-cache-row strong {
   color: var(--loom-theme-text);
   font-size: 0.84rem;
 }
 
-.hook-cache-row small {
+.otter-cache-row small {
   color: var(--loom-theme-muted);
   font-size: 0.74rem;
 }
 
-.hook-cache-row b {
+.otter-cache-row b {
   color: var(--loom-theme-text);
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   font-size: 0.8rem;
   font-weight: 750;
 }
 
-.hook-cache-row__control {
+.otter-cache-row__control {
   width: 184px;
   min-width: 0;
   justify-self: end;
 }
 
-.hook-cache-row .ghost-button,
-.hook-cache-row .danger-button {
+.otter-cache-row .ghost-button,
+.otter-cache-row .danger-button {
   min-width: 124px;
   min-height: 36px;
   border-radius: 7px;
   padding: 7px 12px;
 }
 
-.hook-cache-row--loading {
+.otter-cache-row--loading {
   grid-template-columns: 1fr;
   color: var(--loom-theme-muted);
   text-align: center;
 }
 
-.hook-cache-row--total {
+.otter-cache-row--total {
   background: color-mix(in srgb, var(--loom-theme-secondary) 2.5%, transparent);
 }
 
-.hook-cache-row--total b {
+.otter-cache-row--total b {
   color: var(--loom-theme-accent-text);
 }
 
@@ -189,7 +189,7 @@
   font-size: 0.98rem;
 }
 
-.about-panel__hook-mark {
+.about-panel__otter-mark {
   width: 34px;
   height: 34px;
   fill: none;

@@ -1,7 +1,7 @@
 // Device registry, public pairing receipts, and session issuance handlers.
 fn managed_devices_response(
     device_registry: &SharedDeviceRegistryStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let connected_clients = hook_bridge
         .lock()
@@ -33,7 +33,7 @@ fn managed_devices_response(
 
 fn list_managed_devices(
     device_registry: &SharedDeviceRegistryStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     managed_devices_response(device_registry, hook_bridge)
 }
@@ -44,7 +44,7 @@ fn pairing_receipt(
     submitted_key: &str,
 ) -> Result<(u16, String)> {
     // This unauthenticated response must not serialize registry records or stored
-    // administrator labels. Keep Hook's two-array shape, scoped to this request.
+    // administrator labels. Keep Otter's two-array shape, scoped to this request.
     let entry = json!({
         "id": device.id,
         "publicKey": submitted_key,
@@ -103,7 +103,7 @@ fn add_managed_device(
     body: &str,
     approval: &str,
     device_registry: &SharedDeviceRegistryStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let input = match serde_json::from_str::<ManagedDeviceInput>(body) {
         Ok(input) => input,

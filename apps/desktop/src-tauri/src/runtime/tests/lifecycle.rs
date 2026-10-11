@@ -74,7 +74,7 @@ fn default_runtime_config_points_at_loopback_loom_daemon() {
 
     assert_eq!(config.loom_daemon_url, DEFAULT_LOOM_DAEMON_URL);
     assert_eq!(config.settings_url, "http://127.0.0.1:8765/settings");
-    assert_eq!(config.hook_bridge_url, DEFAULT_HOOK_BRIDGE_URL);
+    assert_eq!(config.hook_bridge_url, DEFAULT_OTTER_BRIDGE_URL);
     restore_env("LOOM_DAEMON_URL", previous_daemon_url);
     restore_env("LOOM_HOOK_BRIDGE_URL", previous_bridge_url);
     restore_env("LOOM_HOOK_BRIDGE_PORT", previous_bridge_port);
@@ -118,7 +118,7 @@ fn native_daemon_client_discovers_persisted_bearer_token_and_settings_exchange_u
 }
 
 #[test]
-fn runtime_config_accepts_an_isolated_hook_bridge_port() {
+fn runtime_config_accepts_an_isolated_otter_bridge_port() {
     let _guard = ENV_LOCK.lock().expect("env lock");
     let previous_bridge_url = std::env::var("LOOM_HOOK_BRIDGE_URL").ok();
     let previous_bridge_port = std::env::var("LOOM_HOOK_BRIDGE_PORT").ok();

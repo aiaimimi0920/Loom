@@ -238,7 +238,7 @@ struct PutWorkflowRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SaveHookCanvasWorkflowRequest {
+struct SaveOtterCanvasWorkflowRequest {
     selected_node_id: String,
     workflow_name: Option<String>,
 }
@@ -291,7 +291,7 @@ struct PythonInferPortsRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct StartHookBridgeRequest {
+struct StartOtterBridgeRequest {
     port: Option<u16>,
 }
 
@@ -360,7 +360,7 @@ struct ToggleRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HookWorkflowInstantiateHttpRequest {
+struct OtterWorkflowInstantiateHttpRequest {
     #[serde(default)]
     nodes: Vec<Value>,
     #[serde(default)]
@@ -373,7 +373,7 @@ struct HookWorkflowInstantiateHttpRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HookWorkflowNodeUpdateHttpRequest {
+struct OtterWorkflowNodeUpdateHttpRequest {
     #[serde(default)]
     workflow_id: String,
     #[serde(default)]
@@ -405,7 +405,7 @@ struct ImageHelperConvertRequest {
 
 type SharedRunStore = Arc<Mutex<Box<dyn RunEvidenceStore>>>;
 type SharedMcpServerStore = Arc<Mutex<HashMap<String, McpServerConfig>>>;
-type SharedHookBridgeRuntime = Arc<Mutex<HookBridgeRuntime>>;
+type SharedOtterBridgeRuntime = Arc<Mutex<OtterBridgeRuntime>>;
 type SharedImageStoreHandle = Arc<Mutex<SharedImageStore>>;
 type SharedLoomSettingsStore = Arc<Mutex<LoomSettingsStore>>;
 
@@ -427,13 +427,13 @@ struct LoomGeneralSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct HookGeneralSettings {
+struct OtterGeneralSettings {
     theme: String,
     language: String,
     close_to_tray: bool,
 }
 
-impl Default for HookGeneralSettings {
+impl Default for OtterGeneralSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_owned(),

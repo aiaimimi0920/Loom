@@ -1,7 +1,7 @@
 # Loom Plugin Development
 
 Loom frameworks and Arts are independently built packages. The supported ABI
-is process plus JSON; repository source, Rust crate internals, Hook internals,
+is process plus JSON; repository source, Rust crate internals, Otter internals,
 and desktop implementation details are not plugin APIs.
 
 ## Install the SDK
@@ -43,7 +43,7 @@ Validate and exercise the real executable:
 
 An Art owns its `manifest.json`, `art.runtime.json`, runtime entry, resources,
 and optional dependency declarations. The framework host reads these files; it
-must not require a new Loom enum variant or a Hook source branch.
+must not require a new Loom enum variant or a Otter source branch.
 
 ## Sign, trust, and pack
 
@@ -65,7 +65,7 @@ size/count, and case-insensitive collisions. It writes a SHA-256 sidecar.
 The SDK conformance harness generates, signs, installs, invokes, upgrades,
 rolls back, and uninstalls a publisher-qualified capability that is unknown to
 the host. It requires a Rust toolchain plus a built `loom-daemon.exe`; it does
-not require a Loom or Hook source checkout.
+not require a Loom or Otter source checkout.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -77,12 +77,12 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 Repository maintainers can additionally pass `-AuditSourceIsolation` together
-with explicit `-LoomRepository` and `-HookRepository` paths. That optional mode
+with explicit `-LoomRepository` and `-OtterRepository` paths. That optional mode
 proves that the lifecycle did not mutate either source tree; it is not a plugin
 runtime dependency.
 
 From the extracted SDK, verify all three language templates without Loom or
-Hook source:
+Otter source:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\sdk\capability\Test-Templates.ps1
@@ -129,11 +129,11 @@ framework's process ABI uses its manifest-local ID. These two identity scopes
 must not be confused. Generic internal `ToolDefinition` values can lack a
 publisher, and a registry query may resolve a bare local ID when it has exactly
 one match. Neither rule permits a publisher-less installed package or a short-ID
-Hook catalog alias. Native `core.image.*` operations are not installed packages.
+Otter catalog alias. Native `core.image.*` operations are not installed packages.
 
 The official package families are `process`, `cloud_api`, `mcp` and `workflow`.
 Commands, PowerShell and Python Arts use the process framework; adding a third-party
-Art does not require an Art-ID execution branch in Loom or Hook. Package operations
+Art does not require an Art-ID execution branch in Loom or Otter. Package operations
 must not edit either repository's source.
 
 `art-packages/samples` and `art-packages/surface-prototypes` have distinct catalogs.

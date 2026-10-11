@@ -1,4 +1,4 @@
-// Stateful loom.extension.v1 dispatch; Hook protocol negotiation does not authenticate the peer.
+// Stateful loom.extension.v1 dispatch; Otter protocol negotiation does not authenticate the peer.
 struct ExtensionBridgeTextResult {
     response: String,
     subscribe_to_snapshots: bool,
@@ -87,7 +87,7 @@ fn handle_extension_handshake(
         return extension_bridge_failure(
             &request.request_id,
             "hook_session_required",
-            "the same WebSocket must complete Hook authentication first",
+            "the same WebSocket must complete Otter authentication first",
             false,
         );
     }

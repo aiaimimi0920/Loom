@@ -12,7 +12,7 @@
     use super::*;
     use crate::surface_resources::SurfaceResourceStore;
     use crate::surface_store::SurfaceInstanceStore;
-    use crate::{register_hook_bridge_subscription, HookBridgeRuntime};
+    use crate::{register_otter_bridge_subscription, OtterBridgeRuntime};
 
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -92,7 +92,7 @@
         ToolRegistry,
         SharedSurfaceInstanceStore,
         SharedSurfaceResourceStore,
-        SharedHookBridgeRuntime,
+        SharedOtterBridgeRuntime,
         String,
         String,
     ) {
@@ -173,7 +173,7 @@
             SurfaceResourceStore::new(root.join("surface-resources"))
                 .expect("open Surface resource store"),
         ));
-        let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+        let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
         (
             tool_registry,
             instances,

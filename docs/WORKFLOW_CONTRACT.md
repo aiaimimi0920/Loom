@@ -70,9 +70,9 @@ returns a tab-separated status and completed-node list, for example:
 succeeded    start,draft,review
 ```
 
-## Hook workflow synchronization
+## Otter workflow synchronization
 
-Hook sends its live graph through the typed `loom.hook.workflow.sync` contract.
+Otter sends its live graph through the typed `loom.hook.workflow.sync` contract.
 Loom stores and validates the resulting workflow with the same native workflow
 store used by packaged workflow Arts. Parameter persistence uses
 `loom.hook.workflow.node.update`; instantiation uses
@@ -105,7 +105,7 @@ the native `WorkflowGraph` execution contract above:
    refresh its lock.
 
 The parent workflow package never receives child source code and neither Loom
-nor Hook source is modified. Uninstall does not maintain dependency reference
+nor Otter source is modified. Uninstall does not maintain dependency reference
 counts or automatically garbage-collect orphan child Arts; operators still
 remove independently installed child packages explicitly.
 
@@ -135,4 +135,4 @@ compression must not run after failed blending or report the intermediate image
 as success. Package creation uses `scripts/Build-LoomSampleArtPackages.ps1`, and
 installation uses the normal package lifecycle. Retired built-in `script`/
 `cli_wrapper` frameworks, AHRP calls and one-off resource-tree installers are not
-the current implementation. Hook uses the public `loom.hook.v1` execution contract.
+the current implementation. Otter uses the public `loom.hook.v1` execution contract.

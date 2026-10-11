@@ -32,7 +32,7 @@
       "missingPaintSamples": 0,
       "sourceStageTimingPassed": true,
       "minimumMemoryHeadroomPercent": 36.962343562761625,
-      "hookTreeHostCpuPercent": {
+      "otterTreeHostCpuPercent": {
         "source": 1.4042649212025962,
         "viewer": 0.9197511456785227
       },
@@ -60,7 +60,7 @@
       "missingPaintSamples": 0,
       "sourceStageTimingPassed": true,
       "minimumMemoryHeadroomPercent": 38.39363226930734,
-      "hookTreeHostCpuPercent": {
+      "otterTreeHostCpuPercent": {
         "source": 1.4872102158464304,
         "viewer": 1.142718692419984
       },
@@ -88,7 +88,7 @@
       "missingPaintSamples": 53,
       "sourceStageTimingPassed": true,
       "minimumMemoryHeadroomPercent": 38.47037546136134,
-      "hookTreeHostCpuPercent": {
+      "otterTreeHostCpuPercent": {
         "source": 2.374049601046398,
         "viewer": 2.0592862108226306
       },
@@ -116,7 +116,7 @@
       "missingPaintSamples": 105,
       "sourceStageTimingPassed": true,
       "minimumMemoryHeadroomPercent": 41.38812740496871,
-      "hookTreeHostCpuPercent": {
+      "otterTreeHostCpuPercent": {
         "source": 3.904266347688789,
         "viewer": 3.1629553161487305
       },
@@ -137,7 +137,7 @@
     "nodeSyntax": true,
     "utf8NoBom": true,
     "gitDiffCheck": {
-      "Hook": "passed; existing CRLF warning",
+      "Otter": "passed; existing CRLF warning",
       "Loom": "passed"
     }
   },
@@ -178,8 +178,8 @@
   "cleanup": {
     "passed": true,
     "utc": "2026-10-08T17:53:39.6208479Z",
-    "localHookCount": 0,
-    "remoteHookCount": 0,
+    "localOtterCount": 0,
+    "remoteOtterCount": 0,
     "ownedProcessAndPortResidual": false,
     "remoteTasksDisabled": 4,
     "dailyExitPerformed": false,
@@ -267,36 +267,36 @@
       "url": "https://github.com/aiaimimi0920/Loom/pull/85"
     },
     {
-      "repo": "Hook",
+      "repo": "Otter",
       "number": 57,
       "merged": true,
       "state": "closed",
       "mergeCommit": "8a26ff4a1722d3dfe8bdeb5f42701bf85c94838b",
-      "url": "https://github.com/aiaimimi0920/Hook/pull/57"
+      "url": "https://github.com/aiaimimi0920/Otter/pull/57"
     },
     {
-      "repo": "Hook",
+      "repo": "Otter",
       "number": 58,
       "merged": true,
       "state": "closed",
       "mergeCommit": "198d9f3edd1b487d1c27542ccc972a48aeab35bb",
-      "url": "https://github.com/aiaimimi0920/Hook/pull/58"
+      "url": "https://github.com/aiaimimi0920/Otter/pull/58"
     },
     {
-      "repo": "Hook",
+      "repo": "Otter",
       "number": 59,
       "merged": true,
       "state": "closed",
       "mergeCommit": "cecf02e6f8ab5e7322cd390c3a1d75b7cb47adf6",
-      "url": "https://github.com/aiaimimi0920/Hook/pull/59"
+      "url": "https://github.com/aiaimimi0920/Otter/pull/59"
     },
     {
-      "repo": "Hook",
+      "repo": "Otter",
       "number": 60,
       "merged": true,
       "state": "closed",
       "mergeCommit": "3bcf1db6d95bc0e3270eeda1064b13cab8534e51",
-      "url": "https://github.com/aiaimimi0920/Hook/pull/60"
+      "url": "https://github.com/aiaimimi0920/Otter/pull/60"
     }
   ]
 }

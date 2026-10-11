@@ -1,6 +1,6 @@
 # Wall scene timing and media v1
 
-Status: source implementation for the Hook v0.2.30.9 iteration. Behavioral,
+Status: source implementation for the Otter v0.2.30.9 iteration. Behavioral,
 desktop, release and physical multi-terminal tests are deferred by the user.
 The existing r8 acceptance records do not validate this extension.
 
@@ -12,7 +12,7 @@ status/heartbeat `scene`. The JSON additions are defined in
 [wall.v1.schema.json](schemas/wall.v1.schema.json) and
 [wall-timing.v1.schema.json](schemas/wall-timing.v1.schema.json). An absent
 `scheduledPresentation` means false. New readers can parse an absent timing
-extension; the new Hook terminal requires its clock for timed Live presentation.
+extension; the new Otter terminal requires its clock for timed Live presentation.
 
 The wall media endpoint now negotiates `loom.wall.media.v1`, with NLWM frames.
 It does not accept the old wall-viewer NLLV subprotocol. Ordinary source/viewer
@@ -76,7 +76,7 @@ selection; it does not prove a physical panel has scanned out those pixels.
 
 ## Clock estimation and frame selection
 
-Hook uses the midpoint of each state request's monotonic send/receive timestamps.
+Otter uses the midpoint of each state request's monotonic send/receive timestamps.
 It keeps at most eight samples, rejects RTT above 1000 ms, expires samples after
 15 seconds, and chooses the lowest-RTT sample. Its uncertainty is RTT/2 plus a
 0.0001 ms/ms drift allowance and 1 ms rounding allowance. These are estimator
@@ -188,19 +188,19 @@ the image decoder's responsibility. Unknown codecs, reserved bits, bad lengths,
 stale identities and regressing common receive time fail closed.
 
 [wall-media.v1.json](fixtures/wall-media.v1.json) contains raw/PNG golden packets.
-Hook retains a byte-identical fixture for its independent Rust and TypeScript
+Otter retains a byte-identical fixture for its independent Rust and TypeScript
 readers. The added conformance tests have not yet been executed.
 
 ## Ownership, recovery and diagnostics
 
-A normal Hook capture Unit can publish without an unrelated Surface. Source create,
+A normal Otter capture Unit can publish without an unrelated Surface. Source create,
 source observation and source control revoke may omit both Surface binding fields
 only for the exact authenticated paired source device, including loopback. Fields
 may be omitted or null together; partial bindings fail. Surface-bound sources and
 viewer acquire/release/input still require their existing attachment authorization.
 Session-store ownership validation also applies to standalone sources.
 
-The Hook runtime owns publication, coalesces in-flight requests per capture, and
+The Otter runtime owns publication, coalesces in-flight requests per capture, and
 stops a late returned relay after runtime disposal. Closing a Unit parameter panel
 does not stop publication. Recovery reauthorizes the same Loom origin and paired
 device, checks discovery, joins old workers, revokes authority and rebases the
@@ -209,7 +209,7 @@ recreates a missing source with the original capture and public Live ID. Closed,
 foreign or ended captures report `source_recovery_unavailable`; they are not
 silently replaced. Concurrent user stop prevents publishing a replacement owner.
 
-Hook admits at most four unfinished media consumers, including obsolete layout
+Otter admits at most four unfinished media consumers, including obsolete layout
 generations, with one open/read/decode operation per consumer. Native latest-frame
 slots, completed-error slots, decoded queues and retries are all bounded. This
 defines retained resources, not a measured process-memory ceiling or decode deadline.

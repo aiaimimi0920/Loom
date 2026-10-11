@@ -6,12 +6,12 @@
 /// Surface action job neither crashes the daemon nor reaches any of the bookkeeping below the panic
 /// site. Without this guard a `RejectWhileRunning` action stayed reserved for the rest of the
 /// daemon's life — every later invocation of that `instance:action` pair answered "is already
-/// running" — and the last persisted ack was the `Running` one, so Hook waited on a request that
+/// running" — and the last persisted ack was the `Running` one, so Otter waited on a request that
 /// could never resolve.
 struct SurfaceActionJobGuard<'a> {
     job: &'a SurfaceActionJob,
     surface_instances: &'a SharedSurfaceInstanceStore,
-    hook_bridge: &'a SharedHookBridgeRuntime,
+    hook_bridge: &'a SharedOtterBridgeRuntime,
     coordinator: &'a Arc<Mutex<SurfaceActionCoordinator>>,
     /// Set once the body has persisted a terminal ack of its own. A guard that drops while this is
     /// still false was dropped by an unwind.
@@ -22,7 +22,7 @@ impl<'a> SurfaceActionJobGuard<'a> {
     fn new(
         job: &'a SurfaceActionJob,
         surface_instances: &'a SharedSurfaceInstanceStore,
-        hook_bridge: &'a SharedHookBridgeRuntime,
+        hook_bridge: &'a SharedOtterBridgeRuntime,
         coordinator: &'a Arc<Mutex<SurfaceActionCoordinator>>,
     ) -> Self {
         Self {
@@ -72,7 +72,7 @@ fn execute_surface_action_job(
     job: SurfaceActionJob,
     surface_instances: &SharedSurfaceInstanceStore,
     surface_resources: &SharedSurfaceResourceStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     coordinator: &Arc<Mutex<SurfaceActionCoordinator>>,
     runner: &Arc<SurfaceActionRunner>,
 ) {
@@ -189,7 +189,7 @@ fn execute_surface_action_job(
         }
         guard.settle();
     }
-    // The ack is out, so Hook is no longer waiting. Reclaim the runner before `guard` releases the
+    // The ack is out, so Otter is no longer waiting. Reclaim the runner before `guard` releases the
     // reservation and `_serial_guard` releases the serial lock, so a `Serial` follow-up cannot
     // start while the runner this job spawned is still executing.
     reap_runner_thread(

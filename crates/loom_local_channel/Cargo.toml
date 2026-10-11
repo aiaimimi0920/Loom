@@ -3,7 +3,7 @@ name = "loom_local_channel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Native-only authenticated loopback transport for the Hook bridge"
+description = "Native-only authenticated loopback transport for the Otter bridge"
 
 [features]
 default = []

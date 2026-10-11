@@ -44,15 +44,15 @@ foreach ($requiredText in @(
     "loom.hook.workflow.instantiated",
     "loom.hook.art.execute",
     "outputTransports",
-    "hookBridgeExecuted"
+    "otterBridgeExecuted"
 )) {
     Assert-True ($pluginSmoke.Contains($requiredText)) "Plugin boundary smoke is missing required proof: $requiredText"
 }
 Assert-True (-not $pluginSmoke.Contains("Copy-ZipEntry")) "Third-party smoke must not reuse a repo-owned framework runtime."
 Assert-True (-not $pluginSmoke.Contains("FrameworkArtifactRoot")) "Third-party smoke must not depend on repo-owned framework artifacts."
 
-$hookRoot = Resolve-Path (Join-Path $repoRoot "..\Hook")
-$hookSource = Get-ChildItem -LiteralPath (Join-Path $hookRoot "src") -Recurse -File -Include *.ts,*.tsx |
+$otterRoot = Resolve-Path (Join-Path $repoRoot "..\Otter")
+$otterSource = Get-ChildItem -LiteralPath (Join-Path $otterRoot "src") -Recurse -File -Include *.ts,*.tsx |
     Where-Object { $_.FullName -notmatch "\\node_modules\\" }
 
 $forbiddenArtIds = @(
@@ -65,10 +65,10 @@ $forbiddenArtIds = @(
     "custom-stock-monitor"
 )
 
-foreach ($file in $hookSource) {
+foreach ($file in $otterSource) {
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
     foreach ($id in $forbiddenArtIds) {
-        Assert-True (-not $text.Contains($id)) "Hook production source must not branch on sample Art id '$id' in $($file.FullName)."
+        Assert-True (-not $text.Contains($id)) "Otter production source must not branch on sample Art id '$id' in $($file.FullName)."
     }
 }
 

@@ -140,13 +140,13 @@ the view removes its remaining acknowledgement history, while ordinary source
 acknowledgements, state and formal results remain intact. Retired identities
 cannot reappear as pending work or borrow a successor view's acknowledgement.
 
-The server admits at most 128 wall views globally and 4 per endpoint. Hook
+The server admits at most 128 wall views globally and 4 per endpoint. Otter
 admits 4 Art sources, 16 Art placements, 512 scene nodes, depth 16, and 16 image
 URLs totalling at most 16,777,216 pixels. Its single serial poll owner rejects
 late generations and closes late grants. Removed resources revoke their URLs.
 Control JSON traversal and native request/response budgets remain bounded.
 
-Hook's Art queue contains at most 32 events; adjacent continuous events may
+Otter's Art queue contains at most 32 events; adjacent continuous events may
 coalesce. Up to four workers preserve order per Art instance while waiting for
 independent source execution. Native event submissions remain serial, reserving
 request capacity for the poll owner, images and confirmation. A slow form does
@@ -163,7 +163,7 @@ The host keeps at most 64 expiring confirmation anchors. Activating
 Art releases Live input authority. Layout/lease loss removes old controls and
 input authority before preparing the successor.
 
-Before submitting queued input, Hook obtains a fresh state through the same
+Before submitting queued input, Otter obtains a fresh state through the same
 serial poll owner and waits for its earlier accepted work. It can refresh the
 base snapshot revision only while the target control's action, properties and
 layout remain unchanged; absolute value edits may account for a previous value
@@ -183,6 +183,6 @@ draft callbacks. This does not promise focus retention after DOM reordering.
 pairing, view/resource isolation, capability negotiation, input sequence,
 confirmation, sanitized failure, ambiguous-source rejection and source survival.
 Its packages contain test runtime stubs; it does not establish real Art process
-or hardware acceptance. The Hook `Invoke-TileWallArtProbe.ps1` entry uses the
+or hardware acceptance. The Otter `Invoke-TileWallArtProbe.ps1` entry uses the
 packaged binaries, installed Surface prototypes and an actual physical output.
 See the implementation plan and stage records for executed scope and limits.

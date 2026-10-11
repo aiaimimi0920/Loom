@@ -380,12 +380,12 @@ fn diagnostics_and_support_bundle_redact_secrets_and_require_existing_runs() {
 }
 
 #[test]
-fn hook_art_execution_creates_durable_run_evidence() {
+fn otter_art_execution_creates_durable_run_evidence() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let root = unique_temp_dir("hook-execution-evidence");
+    let root = unique_temp_dir("otter-execution-evidence");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
 
-    let hook_response = run_hook_bridge_text(
+    let otter_response = run_otter_bridge_text(
         &runtime,
         &formal_art_execute_request(
             "missing-request",
@@ -395,23 +395,23 @@ fn hook_art_execution_creates_durable_run_evidence() {
             json!({}),
         ),
     );
-    assert_eq!(hook_response["status"], "failed");
-    let hook_run_id = hook_response["data"]["executionId"]
+    assert_eq!(otter_response["status"], "failed");
+    let otter_run_id = otter_response["data"]["executionId"]
         .as_str()
-        .expect("Hook execution id");
+        .expect("Otter execution id");
     let store = runtime.run_store.lock().expect("run store");
-    let hook_run = store
-        .get_run(hook_run_id)
-        .expect("read Hook run")
-        .expect("Hook run");
-    assert_eq!(hook_run["capability"], "art.execute");
-    assert_eq!(hook_run["surface"], "loom_hook_v1");
-    assert_eq!(hook_run["externalRequestId"], "missing-request");
-    assert_eq!(hook_run["status"], "failed");
+    let otter_run = store
+        .get_run(otter_run_id)
+        .expect("read Otter run")
+        .expect("Otter run");
+    assert_eq!(otter_run["capability"], "art.execute");
+    assert_eq!(otter_run["surface"], "loom_hook_v1");
+    assert_eq!(otter_run["externalRequestId"], "missing-request");
+    assert_eq!(otter_run["status"], "failed");
     let hook_events = store
-        .get_events(hook_run_id)
-        .expect("Hook events")
-        .expect("stored Hook events");
+        .get_events(otter_run_id)
+        .expect("Otter events")
+        .expect("stored Otter events");
     assert_eq!(hook_events[0]["kind"], "external_tool_started");
     assert_eq!(hook_events[1]["kind"], "external_tool_failed");
     drop(store);

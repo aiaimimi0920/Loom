@@ -23,7 +23,7 @@ Loom is not a Gateway replacement. Gateway continues to own hosted-provider
 routing, credentials, relay APIs, and provider/runtime details. The optional
 translation local adapter accepts only an IP-loopback OpenAI-compatible origin;
 it does not expose provider URLs or credentials to capability processes. Platform
-continues to own account, quota, entitlement, and public web surfaces. Hook
+continues to own account, quota, entitlement, and public web surfaces. Otter
 continues to own foreground capture/integration behavior.
 
 Loom now also ships a desktop workbench under `apps/desktop`. The visible user
@@ -31,12 +31,12 @@ entry in a packaged desktop release is `Loom.exe`; it connects to the local
 Loom service on loopback and can start `runtime\loom-daemon.exe` automatically
 when the service is not already running. The CLI is published separately in a
 `Loom-CLI-*.zip` artifact so users do not need to choose between three
-executables in the desktop package. Loom and Hook use the versioned
+executables in the desktop package. Loom and Otter use the versioned
 `loom.hook.v1` Art bridge; no old ArtLoom/ArtHook execution protocol is shipped.
 
 ## Current canonical-only baseline
 
-Loom and Hook accept only the
+Loom and Otter accept only the
 current persisted shapes, publisher-qualified package identities and storage
 layouts, exact framework/process fields, and the `com.yamiyu.hook` app-data
 identity. Obsolete aliases and migrations are rejected rather than translated.
@@ -107,7 +107,7 @@ The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
 Tauri dependencies.
 
-Under **设备管理 → 发送图片**, choose an online, approved Hook terminal output
+Under **设备管理 → 发送图片**, choose an online, approved Otter terminal output
 and a local raster image. Loom uploads the image, creates a dedicated single-output
 layout, and waits for the terminal to acknowledge its exact revision. Later sends
 replace that output's previous image without overwriting ordinary composed walls.
@@ -148,16 +148,16 @@ daemon is not under the packaged `runtime` directory. Debug builds also check
 the repository's `target\debug\loom-daemon.exe` after the explicit override
 and packaged runtime location.
 
-The UI names the Loom<->Hook integration workspace **Hook 同步**. Internally the
-daemon exposes the versioned `loom.hook.v1` Hook Bridge. Hook-generated live workflow data is
-stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Hook
+The UI names the Loom<->Otter integration workspace **Otter 同步**. Internally the
+daemon exposes the versioned `loom.hook.v1` Otter Bridge. Otter-generated live workflow data is
+stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Otter
 实时工作流`.
 
-For the normal user path, open **Hook 同步** to inspect the real Hook canvas:
+For the normal user path, open **Otter 同步** to inspect the real Otter canvas:
 node placement, image previews, and links are rendered directly in the Loom
 workbench. Select a live node to save its connected component as a workflow;
-saved workflows can be instantiated on the Hook desktop or exported as an Art.
-See [Hook canvas](docs/HOOK_CANVAS.md) for navigation and preview boundaries.
+saved workflows can be instantiated on the Otter desktop or exported as an Art.
+See [Otter canvas](docs/HOOK_CANVAS.md) for navigation and preview boundaries.
 YAML, cURL, raw JSON, protocol methods, session paths, IPC,
 and shared-memory diagnostics remain available only inside the collapsed
 **高级技术信息** disclosure.
@@ -168,7 +168,7 @@ port. Desktop event delivery uses a native authenticated TLS subscription discov
 from `%APPDATA%/Neuro/capabilities/loom.json`, not a browser URL override. Isolate
 `APPDATA` too so the smoke cannot replace another running instance's manifest.
 See [local bridge security](protocol/LOCAL_BRIDGE_SECURITY.md); mixed transport
-versions fail closed and require a coordinated Hook/Loom update.
+versions fail closed and require a coordinated Otter/Loom update.
 
 Start the daemon on an isolated local port:
 
@@ -330,7 +330,7 @@ release tooling publishes both catalogs under `packages\frameworks` and
 ZIPs, installs the declared framework dependencies, and installs the seven curated Arts
 through the public package APIs. The applied catalog hash is recorded under the
 writable control plane, so deleting an Art later does not make it reappear on
-every startup. This bootstrap never edits Loom or Hook source. The same generic
+every startup. This bootstrap never edits Loom or Otter source. The same generic
 installer remains available for explicit local installation:
 
 Repo-owned sample builds also write `packages\official-art-certifications.json`.
@@ -351,7 +351,7 @@ Per-Art wrapper entry points were removed rather than retained as aliases.
 When `process` is installed from the store, Loom downloads one runtime ZIP,
 unpacks it under `<LOOM_CONTROL_PLANE_ROOT>\frameworks\...\process\`, and uses
 its bundled Python 3.12 runtime for Python-backed Arts. Command and script Arts
-use the same installed framework process boundary without modifying Loom or Hook.
+use the same installed framework process boundary without modifying Loom or Otter.
 
 The packaged `图片搜索` Art depends on the independently installed
 `neuro.official/neuro-image-search` MCP server package. Configure its required
@@ -391,13 +391,13 @@ use the same editor interaction but remain isolated in `credentialBindings` and
 only accept string credentials.
 
 For a repo-owned all-framework local proof path, run the dedicated fake-store
-Hook smoke:
+Otter smoke:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1 `
+  -File .\scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1 `
   -Configuration Debug `
-  -EvidenceRoot .\target\framework-art-store-hook-smoke
+  -EvidenceRoot .\target\framework-art-store-otter-smoke
 ```
 
 That smoke starts a temporary local fake cloud API server, a temporary stdio
@@ -406,14 +406,14 @@ proves the `图片搜索` path specifically by returning structured
 `brave_image_search` results whose first image URL is fetched back into a real
 previewable base64 image. The smoke installs all four framework packages and six
 Arts: three `process` Arts (command, script, and Python), plus cloud, MCP, and
-workflow Arts. It instantiates six Hook nodes, executes each node once, and writes a
+workflow Arts. It instantiates six Otter nodes, executes each node once, and writes a
 machine-readable summary under:
 
 ```text
-target\framework-art-store-hook-smoke\<runId>\summary.json
+target\framework-art-store-otter-smoke\<runId>\summary.json
 ```
 
-That broad Hook smoke intentionally uses a protocol fixture; it is not the
+That broad Otter smoke intentionally uses a protocol fixture; it is not the
 independent MCP package proof. `scripts/tests/Test-LoomSampleArtInstallExecution.ps1`
 installs the real `custom-image-search.zip`, `neuro-image-search.zip`,
 `custom-stock-monitor.zip`, and `stock-api.zip`. It writes the image-search
@@ -432,9 +432,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomPlu
 This smoke generates and independently compiles a framework runtime outside the
 repository, creates a separate Art package whose content is loaded by that
 runtime, and installs both into a fresh control plane. It proves v1-to-v2
-framework upgrade, restart, enable, disable, uninstall, reinstall, Hook-facing
-dynamic capability discovery, generic Hook node instantiation, Hook Bridge
-execution, and unchanged Loom/Hook source fingerprints. Framework IDs supplied
+framework upgrade, restart, enable, disable, uninstall, reinstall, Otter-facing
+dynamic capability discovery, generic Otter node instantiation, Otter Bridge
+execution, and unchanged Loom/Otter source fingerprints. Framework IDs supplied
 by third-party packages are accepted when they match Loom's safe package ID
 rules; the seven catalog IDs are not a closed allowlist.
 
@@ -442,7 +442,7 @@ This is a local boundary smoke, not a hosted marketplace certification. It
 requires a Rust toolchain and a built daemon. The invariant it proves is that
 install, execution, upgrade, rollback, restart, disable, uninstall, and
 reinstall operate only on control-plane package/state directories; they do not
-edit Loom or Hook source.
+edit Loom or Otter source.
 
 To prove that the Capability Plugin host accepts an unknown third-party package
 without adding a core business branch, build `loom-daemon` and `loom-plugin`,
@@ -456,9 +456,9 @@ The conformance package and its Rust runtime are created under the system temp
 directory. The smoke covers install, permission approval, enable, command and
 notice effects, manifest-driven settings, restart restoration, disable,
 re-enable, upgrade, rollback, and uninstall. It also requires zero remaining
-runtime processes. It runs without a sibling Hook checkout. Maintainers can add
-`-AuditSourceIsolation -LoomRepository . -HookRepository ..\Hook` to also prove
-identical Hook/Loom source fingerprints at the boundary.
+runtime processes. It runs without a sibling Otter checkout. Maintainers can add
+`-AuditSourceIsolation -LoomRepository . -OtterRepository ..\Otter` to also prove
+identical Otter/Loom source fingerprints at the boundary.
 
 ### Installing the official OCR capability
 
@@ -521,7 +521,7 @@ Workflow parents lock each direct child Art to its publisher-qualified ID,
 exact version, and canonical digest. Child upgrades, rollbacks, activation
 changes, tampering, or uninstall invalidate the parent until its exact child
 state is restored or the parent is explicitly reinstalled to refresh the lock.
-Hook forwards every package execution type, including CLI-backed Arts, to Loom;
+Otter forwards every package execution type, including CLI-backed Arts, to Loom;
 it does not contain an Art-specific local command executor.
 
 The default `LOOM_PLUGIN_PERMISSION_MODE=audit` permits declared capabilities
@@ -661,7 +661,7 @@ opt into bounded mode explicitly with
 opts into bounded mode automatically through the environment.
 
 The concurrent route allowlist includes `/health`, `/status`, `/v1/capabilities`,
-the MCP registry, Hook canvas/previews, run reads/events and creation/stop/retry,
+the MCP registry, Otter canvas/previews, run reads/events and creation/stop/retry,
 invocation cancellation, and `/v1/invoke` for `brain.plan` and
 `tea.ticket.decompose.v1`. Surface stream and Live event long-polls also run
 concurrently: they wait under their stores' own synchronization and must not
@@ -856,9 +856,9 @@ When you pass `-RunSmoke`, `verify-release.ps1` also runs Loom's formal Windows
 smoke chain in sequence:
 
 1. `scripts\smoke-release.ps1`
-2. `scripts\Invoke-LoomHookCanvasUiSmoke.ps1`
-3. `scripts\Invoke-LoomHookErrorPreviewSmoke.ps1`
-4. `scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1`
+2. `scripts\Invoke-LoomOtterCanvasUiSmoke.ps1`
+3. `scripts\Invoke-LoomOtterErrorPreviewSmoke.ps1`
+4. `scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1`
 5. `scripts\Invoke-LoomPluginBoundarySmoke.ps1`
 6. `scripts\Invoke-LoomSurfacePrototypeSmoke.ps1`
 7. `scripts\Invoke-LoomAuthoredArtCreationSmoke.ps1`
@@ -866,9 +866,9 @@ smoke chain in sequence:
 The fourth step reuses the packaged `runtime\loom-daemon.exe` from the release
 candidate, starts a temporary local fake art store plus fake cloud/MCP fixtures,
 installs all four framework packages and six representative Arts, instantiates
-six Hook nodes, and executes all six. The fifth step independently compiles a temporary
+six Otter nodes, and executes all six. The fifth step independently compiles a temporary
 third-party framework outside the repository and proves the no-source-change
-plugin lifecycle through Loom and the Hook Bridge.
+plugin lifecycle through Loom and the Otter Bridge.
 The sixth step installs the process Framework plus the stock-monitor, shared device
 dashboard, and project form Surface packages into an isolated control plane. It
 proves patch fanout, formal output, confirmation/cancellation, leased resource

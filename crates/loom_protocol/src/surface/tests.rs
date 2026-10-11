@@ -17,7 +17,7 @@ fn snapshot_round_trip_preserves_stable_wire_names() {
     let snapshot = SurfaceSnapshot {
         protocol_version: SURFACE_PROTOCOL_VERSION.to_owned(),
         instance_id: "instance:stock-01".to_owned(),
-        attachment_id: "attachment:hook-01".to_owned(),
+        attachment_id: "attachment:otter-01".to_owned(),
         art_id: "NA00000000001".to_owned(),
         art_version: "1.2.3".to_owned(),
         revision: 7,
@@ -146,7 +146,7 @@ fn confirmation_contract_binds_host_device_and_attachment_identity() {
         instance_id: "instance:one".to_owned(),
         attachment_id: "attachment:one".to_owned(),
         device_id: "device-000-local".to_owned(),
-        hook_node_id: "hook-node:one".to_owned(),
+        hook_node_id: "otter-node:one".to_owned(),
         event_id: "event:one".to_owned(),
         request_id: "request:one".to_owned(),
         action_id: "submit_order".to_owned(),

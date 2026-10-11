@@ -47,9 +47,9 @@ only the names needed by the framework.
 3. `loom-plugin sign` and validate with a trust store.
 4. `loom-plugin pack`.
 5. Install into a fresh control plane.
-6. Execute through HTTP, Hook Bridge, and AHRP as applicable.
+6. Execute through HTTP, Otter Bridge, and AHRP as applicable.
 7. Upgrade, rollback, restart, disable/enable, uninstall/reinstall.
-8. Verify Loom and Hook source fingerprints did not change.
+8. Verify Loom and Otter source fingerprints did not change.
 
 Legacy execution paths remain for compatibility during migration, but new
 Desktop-authored content is built as an Art ZIP and installed through the same

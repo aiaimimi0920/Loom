@@ -9,7 +9,9 @@ use crate::{ManagedConfigError, ManagedConfigErrorCode};
 #[serde(rename_all = "kebab-case")]
 pub enum ManagedAppId {
     Tea,
-    Hook,
+    // Keep the persisted app key and existing API clients stable across the product rename.
+    #[serde(rename = "hook", alias = "otter")]
+    Otter,
     Talk,
 }
 
@@ -18,7 +20,7 @@ impl ManagedAppId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Tea => "tea",
-            Self::Hook => "hook",
+            Self::Otter => "hook",
             Self::Talk => "talk",
         }
     }
@@ -27,14 +29,14 @@ impl ManagedAppId {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Tea => "Tea",
-            Self::Hook => "Hook",
+            Self::Otter => "Otter",
             Self::Talk => "Talk",
         }
     }
 
     #[must_use]
     pub fn all() -> [Self; 3] {
-        [Self::Tea, Self::Hook, Self::Talk]
+        [Self::Tea, Self::Otter, Self::Talk]
     }
 }
 
@@ -50,7 +52,7 @@ impl FromStr for ManagedAppId {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "tea" => Ok(Self::Tea),
-            "hook" => Ok(Self::Hook),
+            "hook" | "otter" => Ok(Self::Otter),
             "talk" => Ok(Self::Talk),
             other => Err(ManagedConfigError::new(
                 ManagedConfigErrorCode::UnknownApp,

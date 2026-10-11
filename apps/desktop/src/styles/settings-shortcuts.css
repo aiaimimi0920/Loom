@@ -1,6 +1,6 @@
 /* Owns shortcut capture/edit dialogs and general, network, MCP, Art store, and cache settings controls. */
 
-.hook-quick-binding-remove {
+.otter-quick-binding-remove {
   display: grid;
   width: 34px;
   height: 34px;
@@ -14,23 +14,23 @@
   cursor: pointer;
 }
 
-.hook-quick-binding-remove:hover {
+.otter-quick-binding-remove:hover {
   border-color: rgba(255, 125, 134, 0.28);
   background: rgba(217, 75, 85, 0.12);
   color: var(--loom-theme-danger);
 }
 
-.hook-quick-binding-remove:focus-visible {
+.otter-quick-binding-remove:focus-visible {
   outline: 2px solid var(--loom-theme-accent-text);
   outline-offset: 2px;
 }
 
-.hook-quick-binding-remove svg {
+.otter-quick-binding-remove svg {
   width: 17px;
   height: 17px;
 }
 
-.hook-shortcut-add-art {
+.otter-shortcut-add-art {
   display: flex;
   min-height: 54px;
   align-items: center;
@@ -45,23 +45,23 @@
   cursor: pointer;
 }
 
-.hook-shortcut-add-art:hover {
+.otter-shortcut-add-art:hover {
   border-color: color-mix(in srgb, var(--loom-theme-accent) 44%, transparent);
   background: color-mix(in srgb, var(--loom-theme-accent) 5.5%, transparent);
   color: var(--loom-theme-text);
 }
 
-.hook-shortcut-add-art:focus-visible {
+.otter-shortcut-add-art:focus-visible {
   outline: 2px solid var(--loom-theme-accent-text);
   outline-offset: 2px;
 }
 
-.hook-shortcut-add-art:disabled {
+.otter-shortcut-add-art:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
 
-.hook-shortcut-add-art > span {
+.otter-shortcut-add-art > span {
   color: var(--loom-theme-accent-text);
   font-size: 1.1rem;
 }

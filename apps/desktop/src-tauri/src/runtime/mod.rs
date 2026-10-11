@@ -24,18 +24,18 @@ mod daemon;
 mod diagnostics;
 mod file_io;
 mod framework_packages;
-mod hook_bridge_subscription;
-mod hook_cache;
 mod http_response;
 mod loom_cache;
+mod otter_bridge_subscription;
+mod otter_cache;
 mod package_bootstrap;
 mod transport;
 mod types;
 
 pub use app::*;
 pub use daemon::*;
-pub use hook_cache::*;
 pub use loom_cache::*;
+pub use otter_cache::*;
 pub use types::*;
 
 use binary_http::*;

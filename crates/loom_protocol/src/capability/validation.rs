@@ -50,7 +50,7 @@ pub enum CapabilityValidationError {
     InvalidPermission(String),
     #[error("command permission `{0}` is not declared by the package")]
     UndeclaredCommandPermission(String),
-    #[error("capability package requires a service or Hook UI entrypoint")]
+    #[error("capability package requires a service or Otter UI entrypoint")]
     MissingEntrypoint,
     #[error("invalid signature declaration")]
     InvalidSignature,

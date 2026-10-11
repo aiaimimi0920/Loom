@@ -1,7 +1,7 @@
 # QR projection v2: local Loom ownership and central coordination
 
 Status: central coordination, per-daemon native transport ownership, durable
-source/receiver snapshots, background synchronization and Hook v2 integration
+source/receiver snapshots, background synchronization and Otter v2 integration
 are implemented. Focused checks cover real Iroh transfers, lost publish replies,
 restart recovery, account isolation and invitation expiry. Self-hosted relay,
 two-machine networking and real OAuth acceptance remain open. The existing v1
@@ -10,9 +10,9 @@ an account login endpoint.
 
 ## Ownership and transport
 
-Hook sends formal PNG snapshots to its own authenticated Loom. Loom owns source
+Otter sends formal PNG snapshots to its own authenticated Loom. Loom owns source
 revisions, persisted associations, account authorization, network recovery and
-peer connections. Hook retains image composition and the receiver's local layout.
+peer connections. Otter retains image composition and the receiver's local layout.
 
 Platform's account domain owns invitation authorization, receiver binding,
 source revision metadata and short-lived endpoint presence. It does not store
@@ -172,7 +172,7 @@ installed. Relay policy is rechecked when returning cached presence.
 
 ## Local API and image transfer
 
-New `/v1/projections/v2/*` APIs require existing local Hook device authorization.
+New `/v1/projections/v2/*` APIs require existing local Otter device authorization.
 They preserve create/inspect/accept/update/read/unlink semantics while resolving
 account and remote transport in Loom. Context reports account/login readiness.
 An invitation origin must match the already trusted account origin before any
@@ -194,7 +194,7 @@ operations are deliberately separate from central coordination operations:
 
 `snapshot` contains `imageBase64`, `width` and `height`; the local HTTP body is
 limited to 6 MiB. Loom validates the actual PNG, computes its digest, signs a
-source invitation and persists the image before publishing metadata. Hook
+source invitation and persists the image before publishing metadata. Otter
 never supplies account proof or endpoint addresses. Raw central `configuration`,
 `publish`, `sync` and `peer` operations are not exposed as local routes.
 
@@ -202,18 +202,18 @@ Content replies retain `envelope`, `revision`, `digest`, `linked`,
 `receiverDeviceId`, `receiverUnitId`, nullable `snapshot`, `transport` and
 nullable `error`. Transport is `direct`, `relay`, `reconnecting` or `offline`;
 direct/relay comes from the selected Iroh connection path. Cached reads at the
-known revision omit the PNG. Hook v2 invokes only the loopback Loom advertised
-by its local manifest; the QR central origin is never a Hook HTTP destination.
+known revision omit the PNG. Otter v2 invokes only the loopback Loom advertised
+by its local manifest; the QR central origin is never a Otter HTTP destination.
 New invitations use v2 and require a Loom account. Saved v1 invitations and
 associations keep the shared-origin v1 command, including deferred unlink.
 
 One account generation owns an endpoint, a bounded receive task set and one
 background synchronization loop. The daemon reconciles account state every
-five seconds and can restore networking before Hook opens a projection panel.
+five seconds and can restore networking before Otter opens a projection panel.
 Logout closes the generation before attempting remote revocation. Namespace
 selection binds the central origin, account, device ID and public key; a new
 identity cannot adopt another identity's persisted associations. Local entries
-also bind the authenticated Hook actor and Unit.
+also bind the authenticated Otter actor and Unit.
 
 The durable store retains only the current and optional pending PNG, with
 64 entries, eight active sources, a 48 MiB PNG budget and a 12 MiB serialized
@@ -238,9 +238,9 @@ revision, change its digest or bypass a stopped association.
 ## Implementation and acceptance order
 
 1. Central signed operations and atomic lifecycle, with isolated Redis tests.
-2. Local Loom ownership, durable source/receiver state and Hook v2 integration.
+2. Local Loom ownership, durable source/receiver state and Otter v2 integration.
 3. Iroh Windows direct and self-hosted relay tests, restart/cancellation and
    blocked-UDP fallback; then actual two-machine NAT acceptance.
-4. Fresh Hook/Loom candidates, Platform deployment and real OAuth/UI acceptance.
+4. Fresh Otter/Loom candidates, Platform deployment and real OAuth/UI acceptance.
 
 Passing an earlier step does not mark later steps or the complete QR goal done.

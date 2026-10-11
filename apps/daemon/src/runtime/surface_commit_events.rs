@@ -188,7 +188,7 @@ fn migrate_surface_instance(
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
 ) -> Result<(u16, String)> {

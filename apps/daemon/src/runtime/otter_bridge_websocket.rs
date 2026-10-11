@@ -1,0 +1,437 @@
+// Otter session paths, bridge lifecycle, and WebSocket connection ownership.
+fn otter_session_path() -> PathBuf {
+    // An explicit full-path override wins so isolated smokes and advanced setups
+    // can point Loom at a specific session file.
+    if let Some(path) = loom_local_channel::brand_env::var_os("LOOM_HOOK_SESSION_PATH") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    let appdata = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    // An explicit identifier-directory override still resolves `session.json`
+    // beneath it.
+    if let Some(dir) = loom_local_channel::brand_env::var_os("LOOM_HOOK_APPDATA_DIR") {
+        let dir = PathBuf::from(dir);
+        if !dir.as_os_str().is_empty() {
+            return dir.join("session.json");
+        }
+    }
+    resolve_otter_session_path(&appdata)
+}
+
+fn resolve_otter_session_path(appdata: &Path) -> PathBuf {
+    appdata.join("com.yamiyu.hook").join("session.json")
+}
+
+fn start_otter_bridge(
+    body: &str,
+    hook_bridge: &SharedOtterBridgeRuntime,
+    capability_runtime: &SharedCapabilityRuntime,
+    capability_resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
+    mcp_servers: &SharedMcpServerStore,
+    tool_registry: &ToolRegistry,
+    workflow_store: &WorkflowStore,
+    settings: &SharedLoomSettingsStore,
+    shared_images: &SharedImageStoreHandle,
+    framework_registry: &FrameworkRegistry,
+    control_plane_root: &Path,
+    run_store: &SharedRunStore,
+    surface_instances: &SharedSurfaceInstanceStore,
+    surface_actions: &SharedSurfaceActionExecutor,
+) -> Result<(u16, String)> {
+    let request_body = if body.trim().is_empty() { "{}" } else { body };
+    let request = match serde_json::from_str::<StartOtterBridgeRequest>(request_body) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(error.to_string()),
+    };
+    let requested_port = request.port.unwrap_or(HOOK_BRIDGE_PORT);
+    let mut runtime = hook_bridge
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
+    if runtime.worker.is_some() {
+        return structured_error(
+            409,
+            json!({
+                "code": "hook_bridge_running",
+                "message": "Otter bridge is already running",
+            }),
+        );
+    }
+    if runtime.discovery.is_none() {
+        return structured_error(
+            503,
+            json!({
+                "code": "otter_bridge_discovery_unavailable",
+                "message": "Private local discovery is required for the Otter bridge"
+            }),
+        );
+    }
+    clear_otter_canvas_runtime_state(Some(shared_images));
+
+    let listener = match TcpListener::bind(("127.0.0.1", requested_port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            return structured_error(
+                409,
+                json!({
+                    "code": "otter_bridge_bind_failed",
+                    "message": error.to_string(),
+                    "port": requested_port,
+                }),
+            );
+        }
+    };
+    let assigned_port = listener
+        .local_addr()
+        .context("read hook bridge local address")?
+        .port();
+    listener
+        .set_nonblocking(true)
+        .context("set hook bridge listener nonblocking")?;
+    let identity = Arc::new(loom_local_channel::ServerIdentity::generate(assigned_port)?);
+    runtime
+        .discovery
+        .as_ref()
+        .context("missing bridge discovery")?
+        .publish_bridge(Some(identity.discovery()))?;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    runtime.connections.prepare_start();
+    let connections = runtime.connections.clone();
+    let connected_clients = Arc::clone(&runtime.connected_clients);
+    connected_clients.store(0, Ordering::SeqCst);
+    let extension_clients = Arc::clone(&runtime.extension_capable_clients);
+    extension_clients.store(0, Ordering::SeqCst);
+    let ocr_text_clients = Arc::clone(&runtime.ocr_text_capable_clients);
+    ocr_text_clients.store(0, Ordering::SeqCst);
+    runtime.broadcast_hub.clear();
+    let broadcast_hub = runtime.broadcast_hub.clone();
+    let worker_capability_runtime = Arc::clone(capability_runtime);
+    let worker_capability_resources = Arc::clone(capability_resources);
+    let worker_surface_resources = Arc::clone(surface_resources);
+    let worker_mcp_servers = Arc::clone(mcp_servers);
+    let worker_tool_registry = tool_registry.clone();
+    let worker_workflow_store = workflow_store.clone();
+    let worker_settings = Arc::clone(settings);
+    let worker_shared_images = Arc::clone(shared_images);
+    let worker_framework_registry = framework_registry.clone();
+    let worker_control_plane_root = control_plane_root.to_path_buf();
+    let worker_run_store = Arc::clone(run_store);
+    let worker_surface_instances = Arc::clone(surface_instances);
+    let worker_surface_actions = Arc::clone(surface_actions);
+    let workflow_root = runtime.workflow_root.clone();
+    let worker = thread::Builder::new()
+        .name("loom-otter-accept".into())
+        .spawn(move || {
+            run_otter_bridge_websocket_server(
+                listener,
+                identity,
+                shutdown_rx,
+                connected_clients,
+                extension_clients,
+                ocr_text_clients,
+                connections,
+                broadcast_hub,
+                worker_capability_runtime,
+                worker_capability_resources,
+                worker_surface_resources,
+                worker_mcp_servers,
+                worker_tool_registry,
+                worker_workflow_store,
+                worker_settings,
+                worker_shared_images,
+                worker_framework_registry,
+                worker_control_plane_root,
+                workflow_root,
+                worker_run_store,
+                worker_surface_instances,
+                worker_surface_actions,
+            );
+        });
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            runtime.connections.cancel_and_join();
+            runtime
+                .discovery
+                .as_ref()
+                .context("missing bridge discovery")?
+                .publish_bridge(None)?;
+            return Err(error).context("spawn Otter bridge accept worker");
+        }
+    };
+    runtime.shutdown_tx = Some(shutdown_tx);
+    runtime.worker = Some(worker);
+    runtime.port = Some(assigned_port);
+
+    Ok((
+        200,
+        serde_json::to_string(&otter_bridge_status_json(&runtime))?,
+    ))
+}
+
+fn stop_otter_bridge(
+    hook_bridge: &SharedOtterBridgeRuntime,
+    shared_images: &SharedImageStoreHandle,
+) -> Result<(u16, String)> {
+    let mut runtime = hook_bridge
+        .lock()
+        .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
+    let owned_bridge = runtime.worker.is_some();
+    let publication = runtime
+        .discovery
+        .as_ref()
+        .map(|owner| owner.publish_bridge(None))
+        .transpose();
+    if let Some(shutdown_tx) = runtime.shutdown_tx.take() {
+        let _ = shutdown_tx.send(());
+    }
+    runtime.connections.cancelled.store(true, Ordering::SeqCst);
+    if let Some(worker) = runtime.worker.take() {
+        let _ = worker.join();
+    }
+    runtime.connections.cancel_and_join();
+    runtime.connected_clients.store(0, Ordering::SeqCst);
+    runtime.extension_capable_clients.store(0, Ordering::SeqCst);
+    runtime.ocr_text_capable_clients.store(0, Ordering::SeqCst);
+    runtime.broadcast_hub.clear();
+    runtime.port = None;
+    // Every daemon shutdown calls this, including runtimes that never started
+    // a bridge. Such an idle runtime does not own the process-wide Art state.
+    if owned_bridge {
+        clear_otter_canvas_runtime_state(Some(shared_images));
+    }
+    publication?;
+
+    Ok((
+        200,
+        serde_json::to_string(&otter_bridge_status_json(&runtime))?,
+    ))
+}
+
+fn otter_bridge_status_json(runtime: &OtterBridgeRuntime) -> Value {
+    let running = runtime.worker.is_some();
+    let events = loom_protocol::HOOK_EVENT_METHODS
+        .iter()
+        .chain(loom_protocol::SURFACE_EVENT_METHODS.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    json!({
+        "running": running,
+        "port": runtime.port.unwrap_or(HOOK_BRIDGE_PORT),
+        "connectedClients": runtime.connected_clients.load(Ordering::SeqCst),
+        "extensionCapableClients": runtime.extension_capable_clients.load(Ordering::SeqCst),
+        "subscribedClients": runtime.broadcast_hub.subscriber_count(),
+        "protocol": loom_protocol::HOOK_PROTOCOL_VERSION,
+        "methods": loom_protocol::HOOK_REQUEST_METHODS,
+        "events": events,
+        "extension": {
+            "protocol": loom_protocol::EXTENSION_PROTOCOL,
+            "methods": loom_protocol::EXTENSION_REQUEST_METHODS,
+            "events": loom_protocol::EXTENSION_EVENT_METHODS,
+            "features": loom_protocol::EXTENSION_FEATURES,
+        },
+    })
+}
+
+fn handle_otter_bridge_websocket_connection(
+    stream: std::net::TcpStream,
+    identity: Arc<loom_local_channel::ServerIdentity>,
+    cancelled: Arc<AtomicBool>,
+    idle_timeout: Duration,
+    connected_clients: Arc<AtomicUsize>,
+    extension_clients: Arc<AtomicUsize>,
+    ocr_text_clients: Arc<AtomicUsize>,
+    broadcast_hub: OtterBridgeBroadcastHub,
+    capability_runtime: SharedCapabilityRuntime,
+    capability_resources: SharedCapabilityResourceBroker,
+    surface_resources: SharedSurfaceResourceStore,
+    mcp_servers: SharedMcpServerStore,
+    tool_registry: ToolRegistry,
+    workflow_store: WorkflowStore,
+    settings: SharedLoomSettingsStore,
+    shared_images: SharedImageStoreHandle,
+    framework_registry: FrameworkRegistry,
+    control_plane_root: PathBuf,
+    workflow_root: PathBuf,
+    run_store: SharedRunStore,
+    surface_instances: SharedSurfaceInstanceStore,
+    surface_actions: SharedSurfaceActionExecutor,
+) {
+    let Ok(mut websocket) = identity.accept(stream) else {
+        return;
+    };
+    connected_clients.fetch_add(1, Ordering::SeqCst);
+    let _guard = ConnectedClientGuard { connected_clients };
+    let mut subscription_rx: Option<BroadcastReceiver> = None;
+    let mut _subscription_guard: Option<OtterBridgeSubscriptionGuard> = None;
+    let mut extension_subscription_rx: Option<BroadcastReceiver> = None;
+    let mut _extension_subscription_guard: Option<OtterBridgeSubscriptionGuard> = None;
+    let mut _extension_client_guard: Option<ExtensionClientGuard> = None;
+    let mut extension_state = ExtensionConnectionState {
+        control_plane_root: Some(control_plane_root.clone()),
+        ..ExtensionConnectionState::default()
+    };
+    let mut liveness = OtterBridgeLiveness::new(std::time::Instant::now(), idle_timeout);
+
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            let _ = close_otter_bridge_socket(&mut websocket, None);
+            break;
+        }
+        if !liveness.maintain(&mut websocket, std::time::Instant::now()) {
+            break;
+        }
+        // Bound the entire broadcast batch, not only each low-level socket write.
+        websocket
+            .get_mut()
+            .sock
+            .set_operation_deadline(std::time::Instant::now() + HOOK_BRIDGE_WRITE_TIMEOUT);
+        if let Some(rx) = &subscription_rx {
+            if !drain_otter_bridge_broadcasts(&mut websocket, rx) {
+                break;
+            }
+        }
+        if let Some(rx) = &extension_subscription_rx {
+            if !drain_otter_bridge_broadcasts(&mut websocket, rx) {
+                break;
+            }
+        }
+
+        let message = match read_otter_bridge_message(&mut websocket) {
+            Ok(message) => message,
+            Err(error) if otter_bridge_read_timed_out(&error) => continue,
+            Err(_) => break,
+        };
+        liveness.received(std::time::Instant::now());
+        match message {
+            tungstenite::Message::Text(text) => {
+                if is_extension_bridge_request(&text) {
+                    let result = handle_extension_bridge_text(
+                        &text,
+                        &mut extension_state,
+                        &capability_runtime,
+                        &capability_resources,
+                        &surface_resources,
+                    );
+                    track_extension_client(
+                        &mut _extension_client_guard,
+                        &extension_state,
+                        &extension_clients,
+                        &ocr_text_clients,
+                    );
+                    if result.subscribe_to_snapshots && extension_subscription_rx.is_none() {
+                        let (rx, guard) = register_otter_bridge_subscription(
+                            &broadcast_hub,
+                            vec![EXTENSION_EVENT_SNAPSHOT_UPDATED.to_owned()],
+                        );
+                        extension_subscription_rx = Some(rx);
+                        _extension_subscription_guard = Some(guard);
+                    }
+                    // Legitimate synchronous work does not consume the peer's idle budget.
+                    liveness.received(std::time::Instant::now());
+                    if send_otter_bridge_message(
+                        &mut websocket,
+                        tungstenite::Message::Text(result.response),
+                    )
+                    .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                let mut intermediate_send_failed = false;
+                let mut recovery_channels: Option<Vec<String>> = None;
+                let mut emit_intermediate = |message: String| {
+                    if send_otter_bridge_message(&mut websocket, tungstenite::Message::Text(message))
+                        .is_err()
+                    {
+                        intermediate_send_failed = true;
+                    }
+                };
+                let result = handle_otter_bridge_websocket_text_with_intermediate(
+                    &text,
+                    &mcp_servers,
+                    &tool_registry,
+                    &workflow_store,
+                    &settings,
+                    &shared_images,
+                    &framework_registry,
+                    &control_plane_root,
+                    &workflow_root,
+                    &run_store,
+                    Some(&surface_actions),
+                    &mut emit_intermediate,
+                );
+                liveness.received(std::time::Instant::now());
+                if intermediate_send_failed {
+                    break;
+                }
+                if serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some(loom_protocol::HOOK_METHOD_HANDSHAKE)
+                {
+                    extension_state.record_otter_handshake(&result.response);
+                    _extension_client_guard = None;
+                }
+                if result.subscription_channels.is_some() && subscription_rx.is_none() {
+                    recovery_channels = result.subscription_channels.clone();
+                    let (rx, guard) = register_otter_bridge_subscription(
+                        &broadcast_hub,
+                        result.subscription_channels.clone().unwrap_or_default(),
+                    );
+                    subscription_rx = Some(rx);
+                    _subscription_guard = Some(guard);
+                }
+                if send_otter_bridge_message(
+                    &mut websocket,
+                    tungstenite::Message::Text(result.response),
+                )
+                .is_err()
+                {
+                    break;
+                }
+                if recovery_channels.as_ref().is_some_and(|channels| {
+                    channels
+                        .iter()
+                        .any(|channel| channel_accepts_method(channel, SURFACE_EVENT_SNAPSHOT))
+                }) {
+                    let recovery = surface_snapshot_recovery_messages(&surface_instances);
+                    for message in recovery {
+                        if send_otter_bridge_message(
+                            &mut websocket,
+                            tungstenite::Message::Text(message),
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                broadcast_otter_bridge_messages(&broadcast_hub, &result.broadcasts);
+            }
+            tungstenite::Message::Ping(data) => {
+                if send_otter_bridge_message(&mut websocket, tungstenite::Message::Pong(data))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            tungstenite::Message::Close(close) => {
+                let _ = close_otter_bridge_socket(&mut websocket, close);
+                break;
+            }
+            _ => {}
+        }
+    }
+}

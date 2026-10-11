@@ -306,7 +306,7 @@ fn run_live_source_socket(
                 break;
             }
             Ok(_) => break,
-            Err(error) if hook_bridge_read_timed_out(&error) => {}
+            Err(error) if otter_bridge_read_timed_out(&error) => {}
             Err(_) => break,
         }
     }
@@ -432,7 +432,7 @@ fn service_live_viewer_control_messages(socket: &mut tungstenite::WebSocket<TcpS
                 return false;
             }
             Ok(_) => return false,
-            Err(error) if hook_bridge_read_timed_out(&error) => return true,
+            Err(error) if otter_bridge_read_timed_out(&error) => return true,
             Err(_) => return false,
         }
     }

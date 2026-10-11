@@ -1,14 +1,14 @@
 # Offline Loom peer control plane
 
-Status: manual trust, mutual connectivity proof, signed remote Hook directory and
-offline Hook delivery are implemented. Diagnostic probe/raster responses retain
-deliveryAvailable=false because they do not deliver to a Hook. No official account,
+Status: manual trust, mutual connectivity proof, signed remote Otter directory and
+offline Otter delivery are implemented. Diagnostic probe/raster responses retain
+deliveryAvailable=false because they do not deliver to a Otter. No official account,
 server, public relay, discovery service or transitive trust is consulted.
 
 ## Administration
 
 GET /v1/projection-peers returns identity {peerId, publicKey}, revision, peers,
-and deliveryAvailable. The administrator bearer is required; Hook device sessions
+and deliveryAvailable. The administrator bearer is required; Otter device sessions
 cannot read or change this configuration. The private identity key is never returned.
 
 PUT /v1/projection-peers accepts expectedRevision and peer:
@@ -30,7 +30,7 @@ No network response is allowed to mutate the trust list.
 POST /v1/projection-peers/probe accepts peerId. A successful result contains
 verified=true, the pinned peerId, configuration revision, and deliveryAvailable=false.
 This only proves a current signed round trip to a mutually trusted peer. It grants
-no Hook impersonation, image read, device-list or content-receipt authority.
+no Otter impersonation, image read, device-list or content-receipt authority.
 
 ## Executable setup helper
 
@@ -107,7 +107,7 @@ the digest, dimensions and byte count. It signs the same metadata with purpose
 raster-response and returns challenge, raster, signature, deliveryAvailable=false
 and retained=false. The sender verifies the pinned peer signature, exact request
 binding, freshness and unchanged local trust revision before reporting
-rasterVerified=true. A received PNG is discarded, never added to a Hook inbox,
+rasterVerified=true. A received PNG is discarded, never added to a Otter inbox,
 written to storage or counted as displayed. No source device is impersonated.
 
 Limits: 4 MiB PNG, 6 MiB JSON, 8192 per dimension, 16,777,216 pixels, bounded
@@ -146,7 +146,7 @@ confirm or auto are exported. Catalogs never include transitive peer devices.
 Authenticated POST /v1/projections/targets combines local targets with verified
 remote entries. Remote entries have route=offline_peer, peerId, peerName,
 remoteDeviceId, a peer-target SHA256 composite ID, deliveryAvailable=true and
-transferProtocol=loom.offline-transfer.v1. Hook displays the source Loom and sends
+transferProtocol=loom.offline-transfer.v1. Otter displays the source Loom and sends
 through its own paired Loom. These IDs grant no shared-Loom v1 create authority.
 
 The response advertises offlinePeerDirectory=true and offlinePeers=true.
@@ -159,25 +159,25 @@ An unchanged local trust revision and unexpired proof are required at publicatio
 ## Offline delivery lifecycle
 
 Device-authenticated POST /v1/offline-projections/{create,inbox,inspect,accept,read,
-update,receipt,unlink} runs on the Hook own paired Loom. Create additionally takes
+update,receipt,unlink} runs on the Otter own paired Loom. Create additionally takes
 peerId and remoteDeviceId; targetDeviceId must be the signed-directory composite
 hash. Subsequent operations resolve the persisted route by projectionId. The
 original source-signed v1 envelope, including serverOrigin, remains unchanged.
-Hook persists offlineTransport.origin separately; it never accepts this routing
+Otter persists offlineTransport.origin separately; it never accepts this routing
 field from a network response. Offline links do not generate shared-Loom QR codes.
 
 POST /v1/projection-peer/transfer uses a pinned-key challenge and the SHA256 of
 the JSON payload, with distinct transfer-request and transfer-response purposes.
 The response binds the exact challenge and signs success or failure. The source
-Loom attests its paired Hook identity, signature and session epoch. Foreign Hook
+Loom attests its paired Otter identity, signature and session epoch. Foreign Otter
 identities remain scoped to that trusted Loom and are never registered locally.
 Trusting a Loom therefore trusts its assertions about its own devices; it does
 not grant it access to another peer namespace or local source records.
 
 Source Loom owns image revisions, acceptance, receipts and stop. Receiver Loom
-stores an incoming shadow and rechecks its own Hook epoch before publication.
+stores an incoming shadow and rechecks its own Otter epoch before publication.
 Confirm and auto policies use the same explicit acceptance operation; displayed
-is emitted by Hook only after visible image rendering and session persistence.
+is emitted by Otter only after visible image rendering and session persistence.
 Idempotent create/accept/receipt retries recover lost responses. Source stop is
 durable before its best-effort peer notification, and receiver polling observes
 that stop after reconnect. Accepted records survive both daemon restarts.

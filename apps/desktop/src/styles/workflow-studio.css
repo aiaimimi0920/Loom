@@ -269,7 +269,7 @@
 .add-art-wizard,
 .manual-mcp-card,
 .mcp-package-card,
-.hook-sync-card {
+.otter-sync-card {
   position: relative;
   overflow: hidden;
 }
@@ -285,7 +285,7 @@
 .add-art-wizard::before,
 .manual-mcp-card::before,
 .mcp-package-card::before,
-.hook-sync-card::before {
+.otter-sync-card::before {
   position: absolute;
   inset: 0;
   background:
@@ -298,7 +298,7 @@
 .add-art-wizard > *,
 .manual-mcp-card > *,
 .mcp-package-card > *,
-.hook-sync-card > * {
+.otter-sync-card > * {
   position: relative;
 }
 

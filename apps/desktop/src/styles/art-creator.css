@@ -1,4 +1,4 @@
-/* Owns Art workflow inference, port editing, node cards, manual MCP grids, and Hook synchronization cards. */
+/* Owns Art workflow inference, port editing, node cards, manual MCP grids, and Otter synchronization cards. */
 
 .art-workflow-interface-state {
   grid-column: 1 / -1;
@@ -200,7 +200,7 @@
 .art-wizard-preview,
 .port-summary,
 .art-node-palette,
-.hook-sync-card {
+.otter-sync-card {
   border: 1px solid rgba(17, 22, 20, 0.12);
   border-radius: 20px;
   background: rgba(17, 22, 20, 0.055);
@@ -418,12 +418,12 @@
   gap: 12px;
 }
 
-.hook-sync-card {
+.otter-sync-card {
   display: grid;
   gap: 14px;
   padding: 16px;
 }
 
-.hook-sync-card h3 {
+.otter-sync-card h3 {
   margin: 0;
 }

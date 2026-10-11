@@ -154,7 +154,7 @@ fn put_art_management_settings(
     body: &str,
     tool_registry: &ToolRegistry,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request: PutArtManagementSettingsRequest = match serde_json::from_str(body) {
         Ok(request) => request,

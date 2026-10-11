@@ -9,7 +9,7 @@ informational and is not an investment recommendation or trading instruction.
 ## Packages and runtime
 
 The Art source is `art-packages/samples/stock-monitor`; its MCP dependency is
-`mcp-server-packages/stock-api`. Hook remains a general Surface renderer and does
+`mcp-server-packages/stock-api`. Otter remains a general Surface renderer and does
 not need stock-specific IDs or provider logic.
 
 The Art currently pins `neuro.official/stock-api` to `=2.9.0`. That MCP wrapper

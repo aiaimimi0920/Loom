@@ -132,7 +132,7 @@ fn help_text() -> &'static str {
         "  trust add <STORE> <PUBLISHER> <KEY_FILE> Trust a publisher key\n",
         "  trust revoke <STORE> <PUBLISHER> <KEY_ID> Revoke a publisher key\n",
         "\n",
-        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, hook-message, capability-package, capability-runtime, extension\n",
+        "Schema names: framework-manifest, execute-request, execute-response, authoring, art-runtime, surface-manifest, surface-message, surface-scene, surface-stream, device-session, otter-message, capability-package, capability-runtime, extension\n",
     )
 }
 
@@ -148,7 +148,7 @@ fn schema(name: &str) -> Result<&'static str> {
         "surface-scene" => Ok(schemas::SURFACE_SCENE_V1),
         "surface-stream" => Ok(schemas::SURFACE_STREAM_V1),
         "device-session" => Ok(schemas::DEVICE_SESSION_V1),
-        "hook-message" => Ok(schemas::HOOK_MESSAGE_V1),
+        "otter-message" | "hook-message" => Ok(schemas::HOOK_MESSAGE_V1),
         "capability-package" => Ok(schemas::CAPABILITY_PACKAGE_V1),
         "capability-runtime" => Ok(schemas::CAPABILITY_RUNTIME_V1),
         "extension" => Ok(schemas::EXTENSION_V1),

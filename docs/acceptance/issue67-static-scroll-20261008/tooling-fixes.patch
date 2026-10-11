@@ -22,7 +22,7 @@
 +        e.SuppressKeyPress = true;
 +    }
 +
-+    // Scenario setup only controls this real fixture HWND, never Hook or media state.
++    // Scenario setup only controls this real fixture HWND, never Otter or media state.
 +    private void SetMode(string next)
 +    {
 @@ -94,0 +105 @@

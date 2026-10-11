@@ -76,7 +76,7 @@ struct WallSurfaceServices<'a> {
     actions: &'a SharedSurfaceActionExecutor,
     resources: &'a SharedSurfaceResourceStore,
     shared_images: &'a SharedImageStoreHandle,
-    bridge: &'a SharedHookBridgeRuntime,
+    bridge: &'a SharedOtterBridgeRuntime,
     tools: &'a ToolRegistry,
     frameworks: &'a FrameworkRegistry,
     root: &'a Path,

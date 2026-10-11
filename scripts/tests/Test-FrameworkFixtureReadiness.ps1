@@ -6,7 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ([string]::IsNullOrWhiteSpace($ModuleRoot)) { $ModuleRoot = Join-Path $PSScriptRoot '..\framework-art-store-hook-smoke' }
+if ([string]::IsNullOrWhiteSpace($ModuleRoot)) { $ModuleRoot = Join-Path $PSScriptRoot '..\framework-art-store-otter-smoke' }
 foreach ($module in @('Assertions.ps1', 'Paths.ps1', 'Process.ps1', 'Http.ps1')) {
     . (Join-Path $ModuleRoot $module)
 }

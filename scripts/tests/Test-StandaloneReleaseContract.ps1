@@ -57,8 +57,8 @@ $focusedSmokePaths = @(
     (Join-Path $repoRoot "scripts\Invoke-LoomGatewayBrainPlanSmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomRunPersistenceSmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomDaemonConcurrencySmoke.ps1"),
-    (Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"),
-    (Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomOtterErrorPreviewSmoke.ps1"),
+    (Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomPluginBoundarySmoke.ps1"),
     (Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1")
 )
@@ -71,14 +71,14 @@ $layoutPath = Join-Path $repoRoot "scripts\LoomReleaseLayout.ps1"
 $tamperPath = Join-Path $repoRoot "scripts\tests\Test-ReleaseIntegrityTamper.ps1"
 $pathSafetyPath = Join-Path $repoRoot "scripts\tests\Test-ReleasePathSafety.ps1"
 $releaseContractHelperPath = Join-Path $repoRoot "scripts\tests\standalone-release\ReleaseContracts.ps1"
-$hookErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomHookErrorPreviewSmoke.ps1"
-$frameworkArtStoreHookSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreHookSmoke.ps1"
-$frameworkArtStoreHookSmokeModuleRoot = Join-Path $repoRoot "scripts\framework-art-store-hook-smoke"
-$frameworkArtStoreHookSmokeContractPaths = @($frameworkArtStoreHookSmokePath)
-$frameworkArtStoreHookSmokeContractPaths += @(@(
-    "Assertions.ps1", "Paths.ps1", "Process.ps1", "Http.ps1", "HookBridge.ps1", "FixtureArchive.ps1",
+$otterErrorPreviewSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomOtterErrorPreviewSmoke.ps1"
+$frameworkArtStoreOtterSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1"
+$frameworkArtStoreOtterSmokeModuleRoot = Join-Path $repoRoot "scripts\framework-art-store-otter-smoke"
+$frameworkArtStoreOtterSmokeContractPaths = @($frameworkArtStoreOtterSmokePath)
+$frameworkArtStoreOtterSmokeContractPaths += @(@(
+    "Assertions.ps1", "Paths.ps1", "Process.ps1", "Http.ps1", "OtterBridge.ps1", "FixtureArchive.ps1",
     "ServiceFixtures.ps1", "ArtFixtures.ps1"
-) | ForEach-Object { Join-Path $frameworkArtStoreHookSmokeModuleRoot $_ })
+) | ForEach-Object { Join-Path $frameworkArtStoreOtterSmokeModuleRoot $_ })
 $surfacePrototypeSmokePath = Join-Path $repoRoot "scripts\Invoke-LoomSurfacePrototypeSmoke.ps1"
 $surfacePrototypeManifestPaths = @(
     (Join-Path $repoRoot "art-packages\surface-prototypes\stock-card\manifest.json"),
@@ -153,7 +153,7 @@ $commonForbidden = @(
     'scripts\build-release-exes.ps1',
     'scripts\verify-release.ps1',
     'scripts\smoke-release-local-apps.ps1',
-    'Join-Path $repoRoot "Hook"',
+    'Join-Path $repoRoot "Otter"',
     'Join-Path $repoRoot "Tea"',
     'Join-Path $repoRoot "Platform"',
     'Join-Path $repoRoot "Gateway"',
@@ -263,10 +263,10 @@ Assert-ScriptContract `
         '[switch]$RequireCleanSource',
         'extension-compatibility.json',
         'function Invoke-CapturedPowerShell',
-        'Invoke-LoomHookErrorPreviewSmoke.ps1',
-        'hookErrorPreviewSmoke',
-        'Invoke-LoomFrameworkArtStoreHookSmoke.ps1',
-        'frameworkArtStoreHookSmoke',
+        'Invoke-LoomOtterErrorPreviewSmoke.ps1',
+        'otterErrorPreviewSmoke',
+        'Invoke-LoomFrameworkArtStoreOtterSmoke.ps1',
+        'frameworkArtStoreOtterSmoke',
         'Invoke-LoomPluginBoundarySmoke.ps1',
         'pluginBoundarySmoke',
         'Invoke-LoomSurfacePrototypeSmoke.ps1',
@@ -293,9 +293,9 @@ Assert-ReleaseSecurityScriptContracts `
     -CommonForbidden $commonForbidden
 
 Assert-ScriptContract `
-    -Path $hookErrorPreviewSmokePath `
+    -Path $otterErrorPreviewSmokePath `
     -RequiredText @(
-        'Write-HookFixture',
+        'Write-OtterFixture',
         'failed-art',
         'status = "error"',
         'minified = $true',
@@ -310,7 +310,7 @@ Assert-ScriptContract `
     -ForbiddenText $commonForbidden
 
 Assert-ScriptContract `
-    -Path $frameworkArtStoreHookSmokeContractPaths `
+    -Path $frameworkArtStoreOtterSmokeContractPaths `
     -RequiredText @(
         'raw-image-alt.png',
         '"image.candidates"',

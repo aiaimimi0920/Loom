@@ -36,8 +36,8 @@ try {
         $locked = if ($copyFailure) { [IO.File]::Open($stdoutPath, 'Open', 'ReadWrite', 'None') } else { $null }
         # A real unassociated Process makes the real Stop-TestDaemon fail before any kill.
         $daemon = if ($stopFailure) { [Diagnostics.Process]::new() } else { $null }
-        $hookBridgeClient = $null
-        $hookBridgeRunning = $false
+        $otterBridgeClient = $null
+        $otterBridgeRunning = $false
         $oldEnvironment = @{ LOOM_PLUGIN_CLEANUP_TEST = [Environment]::GetEnvironmentVariable('LOOM_PLUGIN_CLEANUP_TEST') }
         [Environment]::SetEnvironmentVariable('LOOM_PLUGIN_CLEANUP_TEST', 'changed')
         $primaryFailure = $null

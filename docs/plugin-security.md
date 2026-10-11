@@ -92,7 +92,7 @@ different publisher's installed package by reusing its local ID.
 ## Source immutability
 
 Install, execution, upgrade, rollback, disable, uninstall, and crash recovery
-operate only below the configured control-plane/evidence roots. They do not edit Loom or Hook source. The independent
+operate only below the configured control-plane/evidence roots. They do not edit Loom or Otter source. The independent
 plugin-boundary smoke fingerprints both repositories before and after the full
 lifecycle and fails if either fingerprint changes.
 

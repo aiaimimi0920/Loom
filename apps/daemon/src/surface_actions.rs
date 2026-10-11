@@ -27,7 +27,7 @@ use super::surface_resources::{SharedSurfaceResourceStore, SurfaceResourceStoreE
 use super::surface_store::{
     SharedSurfaceInstanceStore, SurfaceConfirmationResolution, SurfaceStoreError,
 };
-use super::{broadcast_hook_bridge_json, SharedHookBridgeRuntime, SharedMcpServerStore};
+use super::{broadcast_otter_bridge_json, SharedMcpServerStore, SharedOtterBridgeRuntime};
 
 // Keep private implementation fragments in one lexical module. This preserves the existing
 // visibility graph while keeping each responsibility independently reviewable and testable.

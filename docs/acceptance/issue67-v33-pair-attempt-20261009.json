@@ -19,9 +19,9 @@
                           "error":  "Required isolated ports unavailable",
                           "port":  49874
                       },
-    "hookSourceSha":  "6acc92f17247c9e4dbf8e341b8a5be4ca7017312",
-    "hookMainSha":  "67399b345e793db0fc6d921b6c1523a9d6f4c1d0",
-    "hookSha256":  "d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92",
+    "otterSourceSha":  "6acc92f17247c9e4dbf8e341b8a5be4ca7017312",
+    "otterMainSha":  "67399b345e793db0fc6d921b6c1523a9d6f4c1d0",
+    "otterSha256":  "d1c8ed646dcf9dd88baf390a97285be11ce711b78d2e7bc9e858566ac3767d92",
     "loomSha256":  "8132707e238e9a1e439a0d6a9543e05c58a8927ff9d7a2c3887b8616ec3df806",
     "daemonSampleCount":  119,
     "daemon":  {
@@ -172,7 +172,7 @@
                    },
                    {
                        "sha256":  "544d91b87ffeee1d76fb3ab516a3ca747220a551f70349ed970c1cc627f14e2e",
-                       "file":  "hook-main-checks-2.json"
+                       "file":  "otter-main-checks-2.json"
                    }
                ]
 }

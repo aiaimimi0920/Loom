@@ -4,7 +4,7 @@ param([string]$ProcessModulePath = "")
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($ProcessModulePath)) {
-    $ProcessModulePath = Join-Path $PSScriptRoot "..\framework-art-store-hook-smoke\Process.ps1"
+    $ProcessModulePath = Join-Path $PSScriptRoot "..\framework-art-store-otter-smoke\Process.ps1"
 }
 . $ProcessModulePath
 

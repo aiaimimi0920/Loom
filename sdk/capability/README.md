@@ -1,7 +1,7 @@
 # Capability runtime templates
 
 These templates implement `loom.capability.runtime.v1` without importing Loom
-or Hook source. Every message is UTF-8 JSON inside a four-byte unsigned
+or Otter source. Every message is UTF-8 JSON inside a four-byte unsigned
 big-endian length frame, with a hard 4 MiB payload limit.
 
 The examples handle `initialize`, `activate`, `command`, and `deactivate`.

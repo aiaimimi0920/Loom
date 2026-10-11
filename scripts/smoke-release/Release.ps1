@@ -345,29 +345,29 @@ nodes:
         $imageHelperConvert = Test-LoomImageHelperConvert -BaseUrl $baseUrl
 
         $hookBridge = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/status"
-        Assert-Equal 19820 ([int]$hookBridge.port) "Loom Hook Bridge default port mismatch."
-        Assert-Equal $false ([bool]$hookBridge.running) "Loom Hook Bridge protocol-only smoke state mismatch."
-        Assert-Equal "loom.hook.v1" ([string]$hookBridge.protocol) "Loom Hook Bridge protocol mismatch."
-        $hookBridgeMethods = @($hookBridge.methods | ForEach-Object { [string]$_ })
-        Assert-Contains "loom.hook.handshake" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing handshake."
-        Assert-Contains "loom.hook.workflow.node.update" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing workflow node update."
-        Assert-Contains "loom.hook.workflow.instantiate" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing workflow instantiate."
-        Assert-Contains "loom.hook.art.execute" ($hookBridgeMethods -join ",") "Loom Hook Bridge method catalog missing Art execution."
-        $hookSession = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/session"
-        Assert-Equal "loom.hook.v1" ([string]$hookSession.protocolVersion) "Loom Hook session protocol mismatch."
+        Assert-Equal 19820 ([int]$hookBridge.port) "Loom Otter Bridge default port mismatch."
+        Assert-Equal $false ([bool]$hookBridge.running) "Loom Otter Bridge protocol-only smoke state mismatch."
+        Assert-Equal "loom.hook.v1" ([string]$hookBridge.protocol) "Loom Otter Bridge protocol mismatch."
+        $otterBridgeMethods = @($hookBridge.methods | ForEach-Object { [string]$_ })
+        Assert-Contains "loom.hook.handshake" ($otterBridgeMethods -join ",") "Loom Otter Bridge method catalog missing handshake."
+        Assert-Contains "loom.hook.workflow.node.update" ($otterBridgeMethods -join ",") "Loom Otter Bridge method catalog missing workflow node update."
+        Assert-Contains "loom.hook.workflow.instantiate" ($otterBridgeMethods -join ",") "Loom Otter Bridge method catalog missing workflow instantiate."
+        Assert-Contains "loom.hook.art.execute" ($otterBridgeMethods -join ",") "Loom Otter Bridge method catalog missing Art execution."
+        $otterSession = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/session"
+        Assert-Equal "loom.hook.v1" ([string]$otterSession.protocolVersion) "Loom Otter session protocol mismatch."
 
-        $hookBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Body @{
+        $otterBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Body @{
             port = 0
         }
-        Assert-Equal $true ([bool]$hookBridgeStarted.running) "Loom Hook Bridge start state mismatch."
-        if ([int]$hookBridgeStarted.port -le 0) {
-            throw "Loom Hook Bridge start should allocate a port."
+        Assert-Equal $true ([bool]$otterBridgeStarted.running) "Loom Otter Bridge start state mismatch."
+        if ([int]$otterBridgeStarted.port -le 0) {
+            throw "Loom Otter Bridge start should allocate a port."
         }
-        $hookBridgeRunning = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/status"
-        Assert-Equal $true ([bool]$hookBridgeRunning.running) "Loom Hook Bridge running status mismatch."
-        Assert-Equal ([int]$hookBridgeStarted.port) ([int]$hookBridgeRunning.port) "Loom Hook Bridge running port mismatch."
-        $hookBridgeStopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
-        Assert-Equal $false ([bool]$hookBridgeStopped.running) "Loom Hook Bridge stop state mismatch."
+        $otterBridgeRunning = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/status"
+        Assert-Equal $true ([bool]$otterBridgeRunning.running) "Loom Otter Bridge running status mismatch."
+        Assert-Equal ([int]$otterBridgeStarted.port) ([int]$otterBridgeRunning.port) "Loom Otter Bridge running port mismatch."
+        $otterBridgeStopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Body @{}
+        Assert-Equal $false ([bool]$otterBridgeStopped.running) "Loom Otter Bridge stop state mismatch."
 
         $completedCloudJob = Wait-Job -Job $cloudJob -Timeout 20
         if ($null -eq $completedCloudJob) {
@@ -387,7 +387,7 @@ nodes:
             capability = "brain.plan"
             input = @{
                 goal = "release smoke"
-                constraints = @("Hook Talk Loom")
+                constraints = @("Otter Talk Loom")
             }
         }
         Assert-Equal "succeeded" $invoke.status "Loom invoke status mismatch."
@@ -423,11 +423,11 @@ nodes:
                 mcpServerId = [string]$mcpServersAfterSave.servers[0].id
                 toolId = [string]$tools.tools[0].id
                 workflowId = [string]$workflows.workflows[0].id
-                hookBridgePort = [int]$hookBridge.port
-                hookBridgeRuntimePort = [int]$hookBridgeStarted.port
-                hookBridgeMethods = $hookBridgeMethods
-                hookProtocol = [string]$hookBridge.protocol
-                hookSessionAvailable = [bool]$hookSession.available
+                otterBridgePort = [int]$hookBridge.port
+                otterBridgeRuntimePort = [int]$otterBridgeStarted.port
+                otterBridgeMethods = $otterBridgeMethods
+                otterProtocol = [string]$hookBridge.protocol
+                otterSessionAvailable = [bool]$otterSession.available
                 mcpToolExecution = [string]$executedMcpTool.result.content[0].text
                 managementCrud = [ordered]@{
                     mcpServerDeleted = [bool]$deletedMcpServer.deleted
@@ -453,8 +453,8 @@ nodes:
             eventKinds = $eventKinds
             tokenizedAuth = $tokenized.auth
             tokenizedCapabilities = $tokenized.capabilities
-            tokenizedHookBridgePort = $tokenized.hookBridgePort
-            tokenizedHookBridgeRuntimePort = $tokenized.hookBridgeRuntimePort
+            tokenizedOtterBridgePort = $tokenized.otterBridgePort
+            tokenizedOtterBridgeRuntimePort = $tokenized.otterBridgeRuntimePort
             tokenizedInvoke = $tokenized.invoke
         }
     } catch {

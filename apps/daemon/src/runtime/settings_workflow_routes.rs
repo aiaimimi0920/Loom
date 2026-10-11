@@ -14,7 +14,7 @@ fn get_settings(settings_store: &SharedLoomSettingsStore) -> Result<(u16, String
 fn put_settings(
     body: &str,
     settings_store: &SharedLoomSettingsStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let mut settings: LoomSettings = match serde_json::from_str(body) {
         Ok(settings) => settings,
@@ -55,14 +55,14 @@ fn put_settings(
     }
     drop(store);
     apply_runtime_settings(&settings);
-    broadcast_hook_bridge_json(
+    broadcast_otter_bridge_json(
         hook_bridge,
         HookEvent {
             protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
             method: HOOK_EVENT_CACHE_CONTROL.to_owned(),
             params: json!({
                 "action": "settings",
-                "settings": HookCacheSettingsWire::from(&settings.hook_cache),
+                "settings": OtterCacheSettingsWire::from(&settings.hook_cache),
             }),
         },
     );
@@ -78,21 +78,21 @@ fn put_settings(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HookCacheControlRequest {
+struct OtterCacheControlRequest {
     action: String,
 }
 
-fn broadcast_hook_cache_control(
+fn broadcast_otter_cache_control(
     body: &str,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
-    let request: HookCacheControlRequest = match serde_json::from_str(body) {
+    let request: OtterCacheControlRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(error) => return invalid_request(error.to_string()),
     };
     let action = request.action.trim();
     if !matches!(action, "clearRecycleBin" | "clearReferenceLibrary") {
-        return invalid_request("不支持的 Hook 缓存控制操作");
+        return invalid_request("不支持的 Otter 缓存控制操作");
     }
     let broadcast = HookEvent {
         protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
@@ -106,13 +106,13 @@ fn broadcast_hook_cache_control(
             .map_err(|_| anyhow::anyhow!("lock hook bridge runtime"))?;
         runtime.broadcast_hub.clone()
     };
-    let delivered_clients = broadcast_hook_bridge_messages_with_count(&hub, &[serialized]);
+    let delivered_clients = broadcast_otter_bridge_messages_with_count(&hub, &[serialized]);
     if delivered_clients == 0 {
         return structured_error(
             409,
             json!({
                 "code": "hook_client_not_connected",
-                "message": "Hook 当前未连接，无法修改正在使用的回收站或参考图。"
+                "message": "Otter 当前未连接，无法修改正在使用的回收站或参考图。"
             }),
         );
     }
@@ -148,7 +148,7 @@ fn put_shortcut(
     path_id: &str,
     body: &str,
     settings_store: &SharedLoomSettingsStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let shortcut: LoomShortcutConfig = match serde_json::from_str(body) {
         Ok(shortcut) => shortcut,
@@ -187,13 +187,13 @@ fn put_shortcut(
     ))
 }
 
-fn broadcast_settings_updated(hook_bridge: &SharedHookBridgeRuntime, settings: &LoomSettings) {
-    broadcast_hook_bridge_json(
+fn broadcast_settings_updated(hook_bridge: &SharedOtterBridgeRuntime, settings: &LoomSettings) {
+    broadcast_otter_bridge_json(
         hook_bridge,
         HookEvent {
             protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
             method: HOOK_EVENT_SETTINGS_UPDATED.to_owned(),
-            params: json!({ "settings": hook_settings_protocol_value(settings) }),
+            params: json!({ "settings": otter_settings_protocol_value(settings) }),
         },
     );
 }

@@ -11,7 +11,7 @@
             setup_action_fixture(
                 &root,
                 tool,
-                &format!("hook-node:recover-running-{case}"),
+                &format!("otter-node:recover-running-{case}"),
             );
         let event = fixture_event(
             &instance_id,

@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 export type SectionId =
   | "mcp"
   | "registry"
-  | "hook-bridge"
+  | "otter-bridge"
   | "devices"
   | "settings";
 
@@ -22,7 +22,7 @@ export type ShellIconKind =
   | "back"
   | "mcp"
   | "registry"
-  | "hook-bridge"
+  | "otter-bridge"
   | "device"
   | "settings"
   | "refresh"
@@ -40,7 +40,7 @@ export interface NavigationItem {
 export const navigationItems: NavigationItem[] = [
   { id: "mcp", label: "MCP", eyebrow: "服务工具", icon: "mcp" },
   { id: "registry", label: "Art", eyebrow: "", icon: "registry" },
-  { id: "hook-bridge", label: "Hook 同步", eyebrow: "", icon: "hook-bridge" },
+  { id: "otter-bridge", label: "Otter 同步", eyebrow: "", icon: "otter-bridge" },
   { id: "devices", label: "设备管理", eyebrow: "客户端连接", icon: "device" },
   { id: "settings", label: "设置", eyebrow: "配置中心", icon: "settings" },
 ];
@@ -73,11 +73,11 @@ export const fallbackSnapshot: LoomSnapshot = {
   error: "尚未加载状态快照",
 };
 
-export const DEFAULT_HOOK_BRIDGE_URL = "ws://127.0.0.1:19820";
+export const DEFAULT_OTTER_BRIDGE_URL = "ws://127.0.0.1:19820";
 
-// Poll the Hook canvas while online so desktop edits (node moves, new captures,
+// Poll the Otter canvas while online so desktop edits (node moves, new captures,
 // image changes) sync automatically without a manual refresh. The daemon
-// computes a cheap content revision and keepNewestHookCanvasSnapshot dedupes by
+// computes a cheap content revision and keepNewestOtterCanvasSnapshot dedupes by
 // it, so a poll that finds no change does not re-render the canvas.
 export const HOOK_CANVAS_POLL_INTERVAL_MS = 1500;
 
@@ -218,7 +218,7 @@ export function ShellIcon({ kind }: { kind: ShellIconKind }) {
       return <svg {...iconProps}><rect x="4" y="3" width="16" height="6" rx="2" /><rect x="4" y="15" width="16" height="6" rx="2" /><path d="M8 6h.01M8 18h.01M12 9v6" /></svg>;
     case "registry":
       return <svg {...iconProps}><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></svg>;
-    case "hook-bridge":
+    case "otter-bridge":
       return <svg {...iconProps}><path d="M7 7h10a4 4 0 0 1 0 8h-1" /><path d="m9 4-3 3 3 3M15 20l3-3-3-3" /><path d="M17 17H7a4 4 0 0 1 0-8h1" /></svg>;
     case "device":
       return <svg {...iconProps}><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h4" /></svg>;

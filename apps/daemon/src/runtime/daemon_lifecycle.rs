@@ -129,7 +129,7 @@ impl LoomDaemon {
         let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root)));
         let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
         let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
-        let mut bridge_runtime = HookBridgeRuntime::new(control_plane_root.join("workflows"));
+        let mut bridge_runtime = OtterBridgeRuntime::new(control_plane_root.join("workflows"));
         bridge_runtime.discovery = capability_manifest;
         let hook_bridge = Arc::new(Mutex::new(bridge_runtime));
         let surface_instances = Arc::new(Mutex::new(
@@ -428,7 +428,7 @@ impl LoomDaemon {
         let maintenance_result = maintenance.shutdown();
         // Drained request workers cannot restart the bridge after its final revocation.
         let bridge_shutdown_result =
-            stop_hook_bridge(&self.runtime.hook_bridge, &self.runtime.shared_images);
+            stop_otter_bridge(&self.runtime.hook_bridge, &self.runtime.shared_images);
         if let Err(error) = serve_result {
             let _ = shutdown_result;
             let _ = surface_stream_shutdown_result;
@@ -445,7 +445,7 @@ impl LoomDaemon {
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
         maintenance_result.context("shutdown Loom maintenance worker")?;
-        bridge_shutdown_result.context("shutdown Loom Hook bridge")?;
+        bridge_shutdown_result.context("shutdown Loom Otter bridge")?;
         self.runtime.live_sessions.shutdown_media_workers();
         self.runtime.capability_runtime.deactivate_all();
         Ok(())

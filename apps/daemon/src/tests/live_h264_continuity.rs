@@ -10,7 +10,7 @@ mod live_h264_continuity_tests {
         let mut frame = LiveBinaryFrame::decode(&encoded_live_frame(id)).unwrap();
         frame.metadata.codec = loom_protocol::LiveCodec::H264;
         frame.metadata.keyframe = keyframe;
-        // Syntax fixture only; actual hardware AU is exercised independently in Hook.
+        // Syntax fixture only; actual hardware AU is exercised independently in Otter.
         frame.payload = if keyframe { vec![0,0,1,0x67,0x42,0,30,0,0,1,0x68,1,0,0,1,0x65,1] }
             else { vec![0,0,1,0x41,1] };
         frame.encode().unwrap()

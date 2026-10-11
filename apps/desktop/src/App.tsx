@@ -1,5 +1,5 @@
 import {
-  DEFAULT_HOOK_BRIDGE_URL,
+  DEFAULT_OTTER_BRIDGE_URL,
   fallbackSnapshot,
   HOOK_CANVAS_POLL_INTERVAL_MS,
   LoomMark,
@@ -15,18 +15,18 @@ import { ArtPanel } from "./components/art/ArtPanel";
 import { ArtCreationRequest } from "./components/art/artWizardModel";
 import { DeviceManagementPanel } from "./components/devices/DeviceManagementPanel";
 import { AppConfirmViewport, AppToastViewport, pushAppToast } from "./components/feedback/AppFeedback";
-import { HookBridgePanel } from "./components/hook/HookBridgePanel";
-import { type WorkflowArtCreationRequest } from "./components/hook/HookCanvasThumbnail";
+import { OtterBridgePanel } from "./components/otter/OtterBridgePanel";
+import { type WorkflowArtCreationRequest } from "./components/otter/OtterCanvasThumbnail";
 import { McpPanel } from "./components/mcp/McpPanel";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
-import { maintainHookBridgeAvailability } from "./services/hookBridgeAvailability";
-import { startHookBridgeWorkflowSync } from "./services/hookBridgeWorkflowSync";
+import { maintainOtterBridgeAvailability } from "./services/otterBridgeAvailability";
+import { startOtterBridgeWorkflowSync } from "./services/otterBridgeWorkflowSync";
 import {
-  getHookCanvasRefreshTrigger,
-  type HookCanvasSnapshot,
-  keepNewestHookCanvasSnapshot,
-  readHookCanvasSnapshot,
-} from "./services/hookCanvas";
+  getOtterCanvasRefreshTrigger,
+  type OtterCanvasSnapshot,
+  keepNewestOtterCanvasSnapshot,
+  readOtterCanvasSnapshot,
+} from "./services/otterCanvas";
 import { createLatestRequestGate, createSingleFlightGate } from "./services/latestRequest";
 import { refreshSharedSnapshot } from "./services/snapshotRefresh";
 import {
@@ -53,9 +53,9 @@ import {
 export default function App() {
   const snapshotRequestGate = useRef(createLatestRequestGate());
   const snapshotSingleFlight = useRef(createSingleFlightGate());
-  const hookCanvasRequestGate = useRef(createLatestRequestGate());
-  const hookCanvasSingleFlight = useRef(createSingleFlightGate());
-  const hookCanvasFlightBaseUrl = useRef<string | null>(null);
+  const otterCanvasRequestGate = useRef(createLatestRequestGate());
+  const otterCanvasSingleFlight = useRef(createSingleFlightGate());
+  const otterCanvasFlightBaseUrl = useRef<string | null>(null);
   const packagedArtsBootstrapBaseUrl = useRef<string | null>(null);
   const appMountedRef = useRef(true);
   const [activeSection, setActiveSection] = useState<SectionId>("mcp");
@@ -64,15 +64,15 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [autoStartAttempted, setAutoStartAttempted] = useState(false);
   const [pendingArtCreationRequest, setPendingArtCreationRequest] = useState<ArtCreationRequest | null>(null);
-  const [hookCanvas, setHookCanvas] = useState<HookCanvasSnapshot | null>(null);
-  const [hookCanvasLoading, setHookCanvasLoading] = useState(false);
-  const [hookCanvasError, setHookCanvasError] = useState<string | null>(null);
-  const [hookCanvasRefreshVersion, setHookCanvasRefreshVersion] = useState(0);
-  const [hookBridgeUrl, setHookBridgeUrl] = useState(DEFAULT_HOOK_BRIDGE_URL);
-  const hookCanvasRefreshTrigger = getHookCanvasRefreshTrigger({
+  const [otterCanvas, setOtterCanvas] = useState<OtterCanvasSnapshot | null>(null);
+  const [otterCanvasLoading, setOtterCanvasLoading] = useState(false);
+  const [otterCanvasError, setOtterCanvasError] = useState<string | null>(null);
+  const [otterCanvasRefreshVersion, setOtterCanvasRefreshVersion] = useState(0);
+  const [hookBridgeUrl, setOtterBridgeUrl] = useState(DEFAULT_OTTER_BRIDGE_URL);
+  const otterCanvasRefreshTrigger = getOtterCanvasRefreshTrigger({
     connectionState: snapshot.connectionState,
     baseUrl: snapshot.baseUrl,
-    refreshVersion: hookCanvasRefreshVersion,
+    refreshVersion: otterCanvasRefreshVersion,
   });
 
   const refreshSnapshot = useCallback(async (abortSignal?: AbortSignal): Promise<LoomSnapshot> => {
@@ -84,19 +84,19 @@ export default function App() {
       loading: setLoading,
       read: async () => {
         let baseUrl = DEFAULT_LOOM_DAEMON_URL;
-        let nextHookBridgeUrl = DEFAULT_HOOK_BRIDGE_URL;
+        let nextOtterBridgeUrl = DEFAULT_OTTER_BRIDGE_URL;
         try {
           const runtimeConfig = await invoke<RuntimeConfig>("resolve_loom_daemon_url");
           baseUrl = runtimeConfig.loomDaemonUrl || DEFAULT_LOOM_DAEMON_URL;
-          nextHookBridgeUrl = runtimeConfig.hookBridgeUrl || DEFAULT_HOOK_BRIDGE_URL;
+          nextOtterBridgeUrl = runtimeConfig.hookBridgeUrl || DEFAULT_OTTER_BRIDGE_URL;
         } catch {
           baseUrl = DEFAULT_LOOM_DAEMON_URL;
         }
         const next = await readLoomSnapshot(baseUrl);
-        return { next, nextHookBridgeUrl };
+        return { next, nextOtterBridgeUrl };
       },
-      apply: ({ next, nextHookBridgeUrl }) => {
-        setHookBridgeUrl(nextHookBridgeUrl);
+      apply: ({ next, nextOtterBridgeUrl }) => {
+        setOtterBridgeUrl(nextOtterBridgeUrl);
         setSnapshot((previous) => retainAvailableSnapshotData(previous, next));
       },
     });
@@ -107,28 +107,28 @@ export default function App() {
     await refreshSnapshot();
   }, [refreshSnapshot]);
 
-  const refreshHookCanvas = useCallback(async (baseUrl: string) => {
-    if (hookCanvasFlightBaseUrl.current !== baseUrl) {
-      hookCanvasFlightBaseUrl.current = baseUrl;
-      hookCanvasRequestGate.current.invalidate();
-      hookCanvasSingleFlight.current.invalidate();
+  const refreshOtterCanvas = useCallback(async (baseUrl: string) => {
+    if (otterCanvasFlightBaseUrl.current !== baseUrl) {
+      otterCanvasFlightBaseUrl.current = baseUrl;
+      otterCanvasRequestGate.current.invalidate();
+      otterCanvasSingleFlight.current.invalidate();
     }
-    await hookCanvasSingleFlight.current.run(async () => {
-      const requestToken = hookCanvasRequestGate.current.begin();
-      setHookCanvasLoading(true);
+    await otterCanvasSingleFlight.current.run(async () => {
+      const requestToken = otterCanvasRequestGate.current.begin();
+      setOtterCanvasLoading(true);
       try {
-        const next = await readHookCanvasSnapshot(baseUrl);
-        if (hookCanvasRequestGate.current.isCurrent(requestToken)) {
-          setHookCanvas((previous) => keepNewestHookCanvasSnapshot(previous, next));
-          setHookCanvasError(null);
+        const next = await readOtterCanvasSnapshot(baseUrl);
+        if (otterCanvasRequestGate.current.isCurrent(requestToken)) {
+          setOtterCanvas((previous) => keepNewestOtterCanvasSnapshot(previous, next));
+          setOtterCanvasError(null);
         }
       } catch (error) {
-        if (hookCanvasRequestGate.current.isCurrent(requestToken)) {
-          setHookCanvasError(error instanceof Error ? error.message : "无法读取 Hook 画布。");
+        if (otterCanvasRequestGate.current.isCurrent(requestToken)) {
+          setOtterCanvasError(error instanceof Error ? error.message : "无法读取 Otter 画布。");
         }
       } finally {
-        if (hookCanvasRequestGate.current.isCurrent(requestToken)) {
-          setHookCanvasLoading(false);
+        if (otterCanvasRequestGate.current.isCurrent(requestToken)) {
+          setOtterCanvasLoading(false);
         }
       }
     });
@@ -156,8 +156,8 @@ export default function App() {
       abortController.abort();
       snapshotRequestGate.current.invalidate();
       snapshotSingleFlight.current.invalidate();
-      hookCanvasRequestGate.current.invalidate();
-      hookCanvasSingleFlight.current.invalidate();
+      otterCanvasRequestGate.current.invalidate();
+      otterCanvasSingleFlight.current.invalidate();
     };
   }, []);
 
@@ -179,32 +179,32 @@ export default function App() {
   }, [snapshot.baseUrl, snapshot.connectionState]);
 
   useEffect(() => {
-    if (hookCanvasRefreshTrigger === null) {
-      hookCanvasFlightBaseUrl.current = null;
-      hookCanvasRequestGate.current.invalidate();
-      hookCanvasSingleFlight.current.invalidate();
-      setHookCanvasLoading(false);
+    if (otterCanvasRefreshTrigger === null) {
+      otterCanvasFlightBaseUrl.current = null;
+      otterCanvasRequestGate.current.invalidate();
+      otterCanvasSingleFlight.current.invalidate();
+      setOtterCanvasLoading(false);
       return;
     }
-    void refreshHookCanvas(snapshot.baseUrl);
-  }, [hookCanvasRefreshTrigger, refreshHookCanvas, snapshot.baseUrl]);
+    void refreshOtterCanvas(snapshot.baseUrl);
+  }, [otterCanvasRefreshTrigger, refreshOtterCanvas, snapshot.baseUrl]);
 
-  // Auto-sync the Hook canvas while online. Hook persists position and image
+  // Auto-sync the Otter canvas while online. Otter persists position and image
   // edits to session.json without always emitting a bridge broadcast, so poll
   // the snapshot on an interval. The daemon returns a cheap content revision and
-  // keepNewestHookCanvasSnapshot dedupes by revision, so an unchanged canvas
+  // keepNewestOtterCanvasSnapshot dedupes by revision, so an unchanged canvas
   // does not cause a re-render or reload previews.
   useEffect(() => {
-    if (hookCanvasRefreshTrigger === null || activeSection !== "hook-bridge") {
+    if (otterCanvasRefreshTrigger === null || activeSection !== "otter-bridge") {
       return;
     }
     const interval = window.setInterval(() => {
-      void refreshHookCanvas(snapshot.baseUrl);
+      void refreshOtterCanvas(snapshot.baseUrl);
     }, HOOK_CANVAS_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(interval);
     };
-  }, [activeSection, hookCanvasRefreshTrigger, refreshHookCanvas, snapshot.baseUrl]);
+  }, [activeSection, otterCanvasRefreshTrigger, refreshOtterCanvas, snapshot.baseUrl]);
 
   useEffect(() => {
     if (
@@ -264,7 +264,7 @@ export default function App() {
   // when a transient startup failure leaves the listener stopped.
   useEffect(() => {
     if (snapshot.connectionState !== "online") return;
-    const availability = maintainHookBridgeAvailability({
+    const availability = maintainOtterBridgeAvailability({
       baseUrl: snapshot.baseUrl,
       websocketUrl: hookBridgeUrl,
     });
@@ -278,10 +278,10 @@ export default function App() {
     ) {
       return;
     }
-    const sync = startHookBridgeWorkflowSync({
+    const sync = startOtterBridgeWorkflowSync({
       refresh,
-      invalidateHookCanvas: () => {
-        setHookCanvasRefreshVersion((version) => version + 1);
+      invalidateOtterCanvas: () => {
+        setOtterCanvasRefreshVersion((version) => version + 1);
       },
     });
 
@@ -296,7 +296,7 @@ export default function App() {
       mode: "workflow",
       repositoryName: request.tool.id,
       name: request.tool.name || request.workflowName,
-      description: request.tool.description || "由 Hook 工作流创建的 Art。",
+      description: request.tool.description || "由 Otter 工作流创建的 Art。",
       workflowId: request.workflowId,
       templateTool: request.tool,
     });
@@ -333,7 +333,7 @@ export default function App() {
       title={item.label}
       aria-label={item.label}
       aria-current={activeSection === item.id ? "page" : undefined}
-      data-testid={item.id === "hook-bridge" ? "nav-hook-bridge" : undefined}
+      data-testid={item.id === "otter-bridge" ? "nav-otter-bridge" : undefined}
       onClick={() => setActiveSection(item.id)}
     >
       <span className="rail-item__icon"><ShellIcon kind={item.icon} /></span>
@@ -446,10 +446,10 @@ export default function App() {
 
       <section className={activeSection === "settings"
         ? "workspace-panel workspace-panel--settings"
-        : activeSection === "registry" || activeSection === "hook-bridge"
+        : activeSection === "registry" || activeSection === "otter-bridge"
           ? "workspace-panel workspace-panel--tooling"
           : "workspace-panel"}>
-        {activeSection !== "devices" && activeSection !== "settings" ? <header className={activeSection === "registry" || activeSection === "hook-bridge"
+        {activeSection !== "devices" && activeSection !== "settings" ? <header className={activeSection === "registry" || activeSection === "otter-bridge"
           ? "workspace-header workspace-header--tooling"
           : "workspace-header"}>
           <div>
@@ -464,7 +464,7 @@ export default function App() {
           ? "workspace-scroll workspace-scroll--devices"
           : activeSection === "settings"
             ? "workspace-scroll workspace-scroll--settings"
-            : activeSection === "registry" || activeSection === "hook-bridge"
+            : activeSection === "registry" || activeSection === "otter-bridge"
               ? "workspace-scroll workspace-scroll--tooling"
               : "workspace-scroll"}>
           {activeSection === "mcp" && (
@@ -485,11 +485,11 @@ export default function App() {
               onCreationRequestHandled={handleArtCreationRequestHandled}
             />
           )}
-          {activeSection === "hook-bridge" && (
-            <HookBridgePanel
+          {activeSection === "otter-bridge" && (
+            <OtterBridgePanel
               baseUrl={snapshot.baseUrl}
-              hookCanvas={hookCanvas}
-              hookCanvasError={hookCanvasError}
+              otterCanvas={otterCanvas}
+              otterCanvasError={otterCanvasError}
               tools={snapshot.tools}
               onCreateWorkflowArt={openWorkflowArtCreator}
             />

@@ -39,7 +39,7 @@ async function main(): Promise<void> {
         schemaVersion: 1, status: failure ? "failed" : "passed", scope: "packaged-daemon-loopback",
         startedAt, finishedAt: new Date().toISOString(), packageDir, binary, checks,
         daemonPids: runtime.pids, temporaryRootRemoved: !existsSync(runtime.root),
-        nativeHookWindowsTested: false, crossMachineHttpsTested: false, failure,
+        nativeOtterWindowsTested: false, crossMachineHttpsTested: false, failure,
     }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
     console.log(`[loom-qr-projection-smoke] ${failure ? "Failed" : "Passed"}: ${reportPath}`);
     if (failure) throw new Error(failure);

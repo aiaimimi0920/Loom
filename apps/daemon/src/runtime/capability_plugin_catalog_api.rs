@@ -10,7 +10,7 @@ struct InstallCatalogCapabilityRequest {
 
 fn list_capability_catalog(
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let Some((client, trust_store)) = capability_catalog_client(control_plane_root)? else {
         return Ok((
@@ -57,7 +57,7 @@ fn list_capability_catalog(
 fn install_capability_catalog_plugin(
     body: &str,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let request: InstallCatalogCapabilityRequest = match serde_json::from_str(body) {
         Ok(request) => request,
@@ -149,11 +149,11 @@ fn capability_catalog_client(
 }
 
 fn capability_host_support(
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<loom_tool_registry::capability::CapabilityHostSupport> {
     let hook = hook_bridge
         .lock()
-        .map_err(|_| anyhow::anyhow!("Hook bridge state is unavailable"))?;
+        .map_err(|_| anyhow::anyhow!("Otter bridge state is unavailable"))?;
     let hook_connected = hook.extension_capable_clients.load(Ordering::SeqCst) > 0;
     let mut hook_features = vec!["commands.v1".to_owned(), "unit-overlays.v1".to_owned()];
     if hook.ocr_text_capable_clients.load(Ordering::SeqCst) > 0 {

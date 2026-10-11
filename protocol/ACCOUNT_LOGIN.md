@@ -5,7 +5,7 @@ in the Neuro QR projection plan. Networking/signaling is a later phase.
 
 Loom owns the user's local account session and a separate Ed25519 device key.
 Platform remains the account authority and continues using its existing Linux.do
-Web login. Hook pairing identities are independent. Hook, Art processes, and
+Web login. Otter pairing identities are independent. Otter, Art processes, and
 the desktop WebView never receive the account private key or PKCE verifier.
 
 ## Authorization
@@ -29,7 +29,7 @@ the desktop WebView never receive the account private key or PKCE verifier.
    An exchange retry returns that same device, including after response loss.
 
 Authorization links are for the user who initiated login; they are not QR
-projection invitations. They cannot change Hook's login or server configuration.
+projection invitations. They cannot change Otter's login or server configuration.
 
 ## Public Platform BFF
 
@@ -102,7 +102,7 @@ phase. Network transport teardown and durable remote cleanup belong to P6.
 ## Local Loom API
 
 POST `/v1/account/{start,status,poll,refresh,logout}` uses the existing local
-administrator authentication. Hook device sessions cannot invoke these routes.
+administrator authentication. Otter device sessions cannot invoke these routes.
 `start` takes `origin` and `deviceName`; `poll` takes `requestId`; other actions
 take `{}`. Responses contain safe UI views only. A new start requires the
 previous login to be canceled or logged out. A stale poll cannot consume the

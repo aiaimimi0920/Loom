@@ -1,4 +1,4 @@
-//! Bounded raster transport proof. Never creates a Hook invitation or retains image data.
+//! Bounded raster transport proof. Never creates a Otter invitation or retains image data.
 use super::*;
 use handshake::{Challenge, ProbeGuard};
 use loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES;

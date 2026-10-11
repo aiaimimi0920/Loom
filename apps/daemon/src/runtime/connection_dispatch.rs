@@ -578,7 +578,7 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         ("GET", path) if live_session_suffix_id(path, "/events").is_some() => {
             RequestConcurrencyClass::Concurrent
         }
-        ("GET", path) if hook_canvas_preview_node_id("GET", path).is_some() => {
+        ("GET", path) if otter_canvas_preview_node_id("GET", path).is_some() => {
             RequestConcurrencyClass::Concurrent
         }
         ("GET", path) if run_path_id(path).is_some() || run_events_path_id(path).is_some() => {

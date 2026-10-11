@@ -5,7 +5,7 @@ export function WallEndpointList({ state, disabled, identify }: {
   state: WallState; disabled: boolean; identify: (endpointId: string) => Promise<void>;
 }) {
   return <section aria-label="终端输出"><h3>已注册输出 · {state.endpoints.length}</h3>
-    {!state.endpoints.length && <p className="wall-muted">尚无瓷砖终端注册。请在 Hook 终端选择屏幕，并在设备页批准配对。</p>}
+    {!state.endpoints.length && <p className="wall-muted">尚无瓷砖终端注册。请在 Otter 终端选择屏幕，并在设备页批准配对。</p>}
     <div className="wall-endpoints">{state.endpoints.map((status) => {
       const { endpoint, online, identification } = status;
       const wall = state.layouts.find((layout) => layout.tiles.some((tile) => tile.endpointId === endpoint.endpointId));

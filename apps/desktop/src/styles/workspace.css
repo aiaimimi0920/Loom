@@ -126,14 +126,14 @@
   margin: 22px 0;
 }
 
-.hook-sync-head {
+.otter-sync-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-.hook-sync-state {
+.otter-sync-state {
   flex-shrink: 0;
   align-self: center;
   border-radius: 999px;
@@ -146,7 +146,7 @@
   white-space: nowrap;
 }
 
-.hook-sync-state--on {
+.otter-sync-state--on {
   background: color-mix(in srgb, var(--loom-theme-success) 14%, var(--loom-theme-control));
   border-color: color-mix(in srgb, var(--loom-theme-success) 42%, var(--loom-theme-line));
   color: var(--loom-theme-success);

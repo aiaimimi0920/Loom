@@ -1,6 +1,6 @@
 # Shared-Loom sticker delivery
 
-This extension of QR projection v1 targets a paired Hook without official login.
+This extension of QR projection v1 targets a paired Otter without official login.
 It sends a continuously synchronized PNG projection, not a one-shot copy. Existing
 untargeted QR invitations and their signature format remain unchanged.
 
@@ -14,7 +14,7 @@ These routes do not grant wall/shared-image administration privileges.
   Refreshes receiver presence and returns at most 64 metadata-only invitations.
   Presence expires after 30 seconds and is not restored after a daemon restart.
   Disabled removes presence. The receiver chooses the policy; automatic acceptance
-  runs in Hook and still calls the normal authenticated acceptance API.
+  runs in Otter and still calls the normal authenticated acceptance API.
 - /v1/projections/targets: empty object. Returns at most 64 other active receivers
   with deviceId, name, policy, and route=shared_loom. Private keys, addresses,
   tokens and the complete managed-device registry are never returned. Signed
@@ -40,7 +40,7 @@ receipt, enabling recovery after a lost response.
 
 ## Receiver lifecycle
 
-Hook explicitly enables a single shared Loom origin and receive policy. Startup
+Otter explicitly enables a single shared Loom origin and receive policy. Startup
 polling waits for session restoration. It uses bounded sequential work, finite
 backoff and round-robin acceptance so one failed display cannot starve others.
 Confirmation prompts do not repeatedly reopen after dismissal. The existing
@@ -51,7 +51,7 @@ and preserve receiver layout. Workspace replacement suspends polling until setti
 are saved again. Late responses after workspace replacement, deletion or disposal
 cannot attach stickers; abandoned accepted links are queued for unlink.
 
-Hook reports displayed only after its save/sync barrier completes and the matching
+Otter reports displayed only after its save/sync barrier completes and the matching
 image element has loaded and has a visible nonzero frame. This reports application
 rendering, not proof that a person saw the physical monitor or that no other window
 covered it. Save/render failure leaves the invitation recoverable as accepted.
@@ -69,6 +69,6 @@ authorization and resource accounting; no client flag enables premium relay.
 
 The daemon projection HTTP suite exercises real signed pairing sessions, outsider
 denial, receipt ordering, idempotent acceptance and receipts, rejection, disabled
-presence, and restart recovery. Hook tests exercise target selection, confirm/auto,
+presence, and restart recovery. Otter tests exercise target selection, confirm/auto,
 late-response cleanup, save failure, hidden images, and duplicate suppression.
-This source-level evidence does not close the two-native-Hook/PC3 release gate.
+This source-level evidence does not close the two-native-Otter/PC3 release gate.

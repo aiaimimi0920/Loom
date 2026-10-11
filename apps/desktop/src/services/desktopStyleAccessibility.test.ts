@@ -13,7 +13,7 @@ test("provides a visible keyboard focus fallback for native interactive controls
 test("disables cross-feature motion when the operating system requests it", () => {
   assert.match(
     desktopStyleSource,
-    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?transition-duration: 0\.01ms !important;[\s\S]*?\.window-control--loading \.shell-icon,[\s\S]*?\.hook-shortcut-list,[\s\S]*?\.mcp-busy-indicator \{[\s\S]*?animation: none !important;/,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?transition-duration: 0\.01ms !important;[\s\S]*?\.window-control--loading \.shell-icon,[\s\S]*?\.otter-shortcut-list,[\s\S]*?\.mcp-busy-indicator \{[\s\S]*?animation: none !important;/,
   );
 });
 

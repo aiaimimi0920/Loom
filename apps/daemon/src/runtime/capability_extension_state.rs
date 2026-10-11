@@ -17,8 +17,8 @@ struct ExtensionConnectionState {
 const MAX_CONSUMED_GESTURES: usize = 1_024;
 
 impl ExtensionConnectionState {
-    fn record_hook_handshake(&mut self, response: &str) {
-        let Ok(response) = serde_json::from_str::<HookHandshakeResponse>(response) else {
+    fn record_otter_handshake(&mut self, response: &str) {
+        let Ok(response) = serde_json::from_str::<OtterHandshakeResponse>(response) else {
             return;
         };
         self.hook_session_id = Some(response.session_id);

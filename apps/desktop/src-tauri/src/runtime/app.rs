@@ -51,7 +51,7 @@ pub fn run() {
 
     let run_result = builder
         .setup(|app| {
-            hook_bridge_subscription::start()?;
+            otter_bridge_subscription::start()?;
             let general =
                 read_loom_persisted_general_settings().unwrap_or(LoomGeneralRuntimeSettings {
                     minimize_to_tray: true,
@@ -109,7 +109,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            hook_bridge_subscription::read_hook_bridge_subscription_state,
+            otter_bridge_subscription::read_otter_bridge_subscription_state,
             daemon::resolve_loom_daemon_url,
             diagnostics::resolve_application_diagnostics,
             diagnostics::open_application_log_location,
@@ -119,9 +119,9 @@ pub fn run() {
             loom_cache::get_loom_cache_snapshot,
             loom_cache::apply_loom_cache_settings,
             loom_cache::clear_loom_cache,
-            hook_cache::get_hook_cache_snapshot,
-            hook_cache::wait_for_hook_cache_settings,
-            hook_cache::clear_hook_cache,
+            otter_cache::get_otter_cache_snapshot,
+            otter_cache::wait_for_otter_cache_settings,
+            otter_cache::clear_otter_cache,
             daemon::read_loom_snapshot,
             commands::start_loom_daemon,
             commands::get_loom_daemon_json,
@@ -131,7 +131,7 @@ pub fn run() {
             account_login::open_loom_account_login,
             commands::install_packaged_framework,
             commands::bootstrap_packaged_arts,
-            commands::read_hook_canvas_preview
+            commands::read_otter_canvas_preview
         ])
         .run(context);
     begin_desktop_exit();

@@ -90,12 +90,12 @@ pub(super) async fn delete_loom_daemon_json(
     .await
 }
 
-// Fetch a Hook canvas preview image through the native HTTP client and return it
+// Fetch a Otter canvas preview image through the native HTTP client and return it
 // as a base64 `data:` URL. The WebView cannot reliably load `http://127.0.0.1`
 // daemon images with an `<img src>` tag, so the frontend renders previews from
 // the data URL this command returns instead of a direct daemon URL.
 #[tauri::command]
-pub(super) async fn read_hook_canvas_preview(
+pub(super) async fn read_otter_canvas_preview(
     base_url: String,
     path: String,
 ) -> Result<String, String> {

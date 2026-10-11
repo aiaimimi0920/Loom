@@ -136,7 +136,7 @@ enum AtomicWritePermissions {
     /// The daemon owns the file. Both the temporary and the replacement are restricted to this
     /// user, the same sequence `write_local_capability_manifest` uses.
     Restrict,
-    /// Another process owns the file — Hook's canvas is the only such case. The write is still
+    /// Another process owns the file — Otter's canvas is the only such case. The write is still
     /// atomic, but an existing file's permissions are carried onto the replacement instead of
     /// being narrowed: tightening the ACL on a file this daemon does not own is a policy change,
     /// not part of a crash-safety fix.
@@ -159,7 +159,7 @@ fn write_json_atomically<T: Serialize + ?Sized>(path: &Path, value: &T) -> Resul
 }
 
 /// The byte-level half of `write_json_atomically`, for callers that own their serialization —
-/// Hook's canvas is written compactly and its exact bytes are returned to the caller.
+/// Otter's canvas is written compactly and its exact bytes are returned to the caller.
 fn write_bytes_atomically(
     path: &Path,
     bytes: &[u8],

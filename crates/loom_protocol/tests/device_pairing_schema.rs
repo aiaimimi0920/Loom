@@ -8,7 +8,7 @@ fn pairing_schema_requires_exactly_one_minimal_receipt() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let entry = json!({"id":"device-opaque", "publicKey":"a".repeat(44),
-        "name":"Hook", "approval":"pending", "enabled":true});
+        "name":"Otter", "approval":"pending", "enabled":true});
     let pending = json!({"devices":[],"pending":[entry.clone()]});
     assert!(validator.is_valid(&pending));
     let mut approved_entry = entry.clone();

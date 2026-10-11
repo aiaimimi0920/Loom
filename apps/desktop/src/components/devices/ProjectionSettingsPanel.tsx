@@ -53,7 +53,7 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
   }
   const disabled = busy || !online;
   return <section className="wall-management projection-settings" aria-label="投射规则管理">
-    <header><h2>投射规则与设备组</h2><p className="wall-muted">在 Loom 管理连接与接收规则，Hook 中选择目标后即可投射。</p></header>
+    <header><h2>投射规则与设备组</h2><p className="wall-muted">在 Loom 管理连接与接收规则，Otter 中选择目标后即可投射。</p></header>
     {!online && <p role="status">本机 Loom 离线。</p>}
     {busy && <p role="status">正在处理投射配置...</p>}
     {error && <p role="alert" className="wall-error">{error}</p>}
@@ -70,7 +70,7 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
       <ProjectionGroupsEditor devices={view.devices} groups={view.settings.groups} disabled={disabled}
         onChange={(groups) => change({ ...view.settings, groups, rules: view.settings.rules.map((rule) => ({ ...rule,
           whitelist: { ...rule.whitelist, groups: rule.whitelist.groups.filter((id) => groups.some((group) => group.groupId === id)) } })) })} />
-      <p className="wall-muted">名单决定新投射是否接受；修改规则不会删除已接受的贴图。接收端 Hook 必须在线且开启投射接收。</p>
+      <p className="wall-muted">名单决定新投射是否接受；修改规则不会删除已接受的贴图。接收端 Otter 必须在线且开启投射接收。</p>
     </>}
   </section>;
 }

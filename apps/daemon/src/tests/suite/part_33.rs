@@ -41,8 +41,8 @@ fn enable_api_fixture_through_extension_route(
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
     digest: &str,
-) -> (BroadcastReceiver, HookBridgeSubscriptionGuard) {
-    let (events, subscription) = register_hook_bridge_subscription(
+) -> (BroadcastReceiver, OtterBridgeSubscriptionGuard) {
+    let (events, subscription) = register_otter_bridge_subscription(
         &daemon.hook_bridge.lock().unwrap().broadcast_hub,
         vec![loom_protocol::EXTENSION_EVENT_SNAPSHOT_UPDATED.to_owned()],
     );

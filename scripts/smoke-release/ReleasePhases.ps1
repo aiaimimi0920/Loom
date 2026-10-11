@@ -176,11 +176,11 @@ function Invoke-LoomTokenizedReleaseSmoke {
         $capabilityIds = @($capabilities.capabilities | ForEach-Object { $_.id }) -join ","
         Assert-Equal $ExpectedCapabilityIds $capabilityIds "Tokenized Loom capability list mismatch."
         $hookBridge = Invoke-JsonGet -Uri "$baseUrl/v1/hook-bridge/status" -Headers $headers
-        Assert-Equal 19820 ([int]$hookBridge.port) "Tokenized Loom Hook Bridge status port mismatch."
-        $hookBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Headers $headers -Body @{ port = 0 }
-        Assert-Equal $true ([bool]$hookBridgeStarted.running) "Tokenized Loom Hook Bridge start mismatch."
-        $hookBridgeStopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Headers $headers -Body @{}
-        Assert-Equal $false ([bool]$hookBridgeStopped.running) "Tokenized Loom Hook Bridge stop mismatch."
+        Assert-Equal 19820 ([int]$hookBridge.port) "Tokenized Loom Otter Bridge status port mismatch."
+        $otterBridgeStarted = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/start" -Headers $headers -Body @{ port = 0 }
+        Assert-Equal $true ([bool]$otterBridgeStarted.running) "Tokenized Loom Otter Bridge start mismatch."
+        $otterBridgeStopped = Invoke-JsonPost -Uri "$baseUrl/v1/hook-bridge/stop" -Headers $headers -Body @{}
+        Assert-Equal $false ([bool]$otterBridgeStopped.running) "Tokenized Loom Otter Bridge stop mismatch."
         $invoke = Invoke-JsonPost -Uri "$baseUrl/v1/invoke" -Headers $headers -Body @{
             requestId = "release-loom-token-1"
             caller = "hook"
@@ -192,8 +192,8 @@ function Invoke-LoomTokenizedReleaseSmoke {
         return [ordered]@{
             auth = [string]$manifest.transport.auth
             capabilities = $capabilityIds
-            hookBridgePort = [int]$hookBridge.port
-            hookBridgeRuntimePort = [int]$hookBridgeStarted.port
+            otterBridgePort = [int]$hookBridge.port
+            otterBridgeRuntimePort = [int]$otterBridgeStarted.port
             invoke = [string]$invoke.status
         }
     } finally {

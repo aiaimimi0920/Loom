@@ -13,7 +13,7 @@ required when the object is present; null and unknown fields are rejected.
 control characters. `canIdentify` is a boolean capability declaration, not an
 authorization grant. An absent object preserves the earlier endpoint shape.
 
-Hook derives the name from the actual Windows output enumeration. Management
+Otter derives the name from the actual Windows output enumeration. Management
 shows that name, stable device/output IDs, pixel size and advertised capabilities.
 It does not assign a physical screen number from endpoint ordering. Metadata is
 durable registration data; updating it follows the existing catalog CAS and
@@ -71,7 +71,7 @@ request are harmless no-ops and cannot acknowledge a successor. Invalid owner
 or lease remains an error, even for a late report. This acknowledgement is
 separate from layout `appliedRevision` and presentation-control reports.
 
-Hook pauses input before showing the marker, makes the covered content inert,
+Otter pauses input before showing the marker, makes the covered content inert,
 and reports after an animation-frame callback. A hidden WebView cannot block
 the serial presenter indefinitely: the paint wait is bounded at 500 ms and
 failure hides the marker without reporting application. This acknowledges

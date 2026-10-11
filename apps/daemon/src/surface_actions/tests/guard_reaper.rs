@@ -162,7 +162,7 @@
         let digest = "e".repeat(64);
         let tool = surface_tool(&digest);
         let (_registry, instances, _resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, tool.clone(), "hook-node:panic");
+            setup_action_fixture(&root, tool.clone(), "otter-node:panic");
         let mut action = tool
             .surface_manifest()
             .expect("read Surface manifest")
@@ -242,7 +242,7 @@
         let digest = "f".repeat(64);
         let tool = surface_tool(&digest);
         let (_registry, instances, _resources, hook_bridge, instance_id, attachment_id) =
-            setup_action_fixture(&root, tool.clone(), "hook-node:settled");
+            setup_action_fixture(&root, tool.clone(), "otter-node:settled");
         let mut action = tool
             .surface_manifest()
             .expect("read Surface manifest")

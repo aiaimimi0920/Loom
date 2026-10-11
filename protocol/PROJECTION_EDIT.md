@@ -1,7 +1,7 @@
 # Projection editing session v1
 
 Status: shared-Loom authority, cross-Loom forwarding, persistent merge engine,
-Hook native IPC, annotation rendering and mode/conflict controls are implemented.
+Otter native IPC, annotation rendering and mode/conflict controls are implemented.
 Focused HTTP and browser validation is separate from packaged PC1/PC3 acceptance.
 Existing PNG clients do not opt into this endpoint automatically.
 
@@ -19,10 +19,10 @@ can initialize, attach bindings or change direction. Receiver authority follows
 the established projection binding; changing an invitation receive rule does not
 implicitly revoke an already accepted link.
 
-Loom stores opaque Hook annotation objects without executing or rasterizing them.
+Loom stores opaque Otter annotation objects without executing or rasterizing them.
 Object IDs must match each object's id. Allowed initial types: rect, round-rect,
 ellipse, triangle, polygon, line, polyline, arrow, text, brush, highlighter, serial.
-Hook must fully validate its own annotation fields before rendering. Crop, image
+Otter must fully validate its own annotation fields before rendering. Crop, image
 filters, eraser, flattened layers, mosaic and blur are outside this first contract.
 
 ## Requests and responses
@@ -61,7 +61,7 @@ peer, target device and epoch; shared and offline targets use one authority.
 
 The basis is immutable in this slice. Once bound, legacy PNG update returns
 projection_edit_snapshot_locked instead of changing shared object coordinates.
-Non-participating v1 projections retain existing behavior. Hook must separate the
+Non-participating v1 projections retain existing behavior. Otter must separate the
 base image from annotations before opt-in; a flattened PNG must not be imported
 together with the objects already baked into it.
 
@@ -103,7 +103,7 @@ Limits: 64 sessions; 8 bindings/session; 256 objects including tombstones;
 256 receipts/session; 16 KiB compact JSON/object; 256 KiB/request and persisted
 session; 8 MiB aggregate persisted sessions. File accounting uses the actual
 pretty-JSON encoding plus newline. Receipts are not silently evicted; a full ledger
-fails with projection_edit_log_full. Hook requests a source checkpoint before the
+fails with projection_edit_log_full. Otter requests a source checkpoint before the
 receipt limit, or when tombstones approach the object limit. Live objects still
 count toward the 256-object limit; checkpoints do not expand that budget.
 
@@ -115,7 +115,7 @@ available. Receipt identity is scoped to an editing session, not all future sess
 
 ## Follow-up
 
-Hook separates a frozen base image from supported annotations and durably journals
+Otter separates a frozen base image from supported annotations and durably journals
 pending requests before sending. Same-object and recovery conflicts keep local
 edits until the user chooses local or remote state. Isolated Windows candidates
 passed the PC1/PC3 shared/cross-Loom editing and mixed-binding stop matrix using

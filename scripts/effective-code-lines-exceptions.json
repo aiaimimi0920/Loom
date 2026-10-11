@@ -41,11 +41,11 @@
     {
       "path": "apps/desktop/src/components/settings/useSettingsPanelController.ts",
       "effectiveLines": 676,
-      "sourceSha256": "c721deaa3e5b70924089a44a916d55421682b2094d0f434fcc9253419b0a40dc",
+      "sourceSha256": "0ff3c398dd174d6e545c6c7ecc3b4f1905f4d0b8caa2c6f3df99b4d80d6ab317",
       "responsibility": "Settings hydration, ordered autosave, runtime application, cache operations, diagnostics, and shortcut conflict state",
       "reason": "The view and application-link actions are separate, but autosave rollback and runtime/cache application share ordering-sensitive refs; the cohesive controller remains below the 700-line soft cap pending focused state-machine tests.",
       "owner": "Loom desktop maintainers",
-      "approvedBy": "Neuro project owner",
+      "approvedBy": "Neuro project owner; explicitly reapproved rename-only hashes and paths on 2026-10-11 for aiaimimi0920/Otter#77",
       "reviewBy": "2026-10-31",
       "tests": ["apps/desktop: npm test", "apps/desktop: npm run typecheck", "apps/desktop: npm run build"]
     },
@@ -73,12 +73,12 @@
     },
     {
       "path": "crates/loom_protocol/src/hook.rs",
-      "effectiveLines": 636,
-      "sourceSha256": "7f943a62d8cab96b882a283227a82617e9fa1d2f29955e0662ff710fa9971864",
+      "effectiveLines": 639,
+      "sourceSha256": "4516423a354a3781c4585a839934aa2db79ae0cad6822e6ac8c0f36d7afe6aba",
       "responsibility": "The complete loom.hook.v1 Art wire contract: method namespace, negotiation, transports, typed requests, responses, events, and validation",
       "reason": "Method constants, serde tags, payload types, transport capabilities, and handshake validation are one versioned protocol surface; splitting by request or response direction would scatter wire-shape invariants and create cross-module public coupling for a cohesive file that remains below the 700-line soft cap.",
       "owner": "Loom protocol maintainers",
-      "approvedBy": "Neuro project owner",
+      "approvedBy": "Neuro project owner; explicitly reapproved rename-only hashes and paths on 2026-10-11 for aiaimimi0920/Otter#77",
       "reviewBy": "2026-10-31",
       "tests": ["cargo test --locked -p loom_protocol", "scripts/verify-release.ps1 -RunSmoke"]
     },
@@ -105,15 +105,15 @@
       "tests": ["scripts/Invoke-LoomGatewayBrainPlanSmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
     },
     {
-      "path": "scripts/Invoke-LoomHookCanvasUiSmoke.ps1",
+      "path": "scripts/Invoke-LoomOtterCanvasUiSmoke.ps1",
       "effectiveLines": 613,
-      "sourceSha256": "b475e188be519913e45f999f38f7150970ddb857ec165e883e4645b8cdad8684",
+      "sourceSha256": "9d9f08c84cc10b4317aab8b74172be3ef93bc808f3d9418e715f039466752891",
       "responsibility": "Packaged Loom desktop, daemon, Hook Bridge, CDP, fixture revision, UI refresh, and process-lifetime end-to-end verification",
       "reason": "Initial and updated Hook revisions must be correlated across one live desktop-daemon-bridge-CDP session, and the same process ownership is required for leak detection; splitting would sever the 3-node to 4-node fixture mutation from its API and UI evidence.",
       "owner": "Loom release smoke maintainers",
-      "approvedBy": "Neuro project owner",
+      "approvedBy": "Neuro project owner; explicitly reapproved rename-only hashes and paths on 2026-10-11 for aiaimimi0920/Otter#77",
       "reviewBy": "2026-10-31",
-      "tests": ["scripts/Invoke-LoomHookCanvasUiSmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
+      "tests": ["scripts/Invoke-LoomOtterCanvasUiSmoke.ps1", "scripts/verify-release.ps1 -RunSmoke"]
     },
     {
       "path": "scripts/Invoke-LoomRunPersistenceSmoke.ps1",

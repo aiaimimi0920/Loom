@@ -1,4 +1,4 @@
-// Keeps Loom-owned settings sections cohesive and separate from Hook settings UI.
+// Keeps Loom-owned settings sections cohesive and separate from Otter settings UI.
 import { AboutPanel } from "./AboutPanel";
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { CapabilityExtensionsPanel } from "./capabilities/CapabilityExtensionsPanel";

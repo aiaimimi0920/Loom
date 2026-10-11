@@ -35,7 +35,7 @@ fn wall_mirror_actions_update_the_source_and_mounted_views_without_racing_new_at
                     "statePatch":{"value":8}}]}}),
             )
         });
-        let (rx, _subscription) = register_hook_bridge_subscription(
+        let (rx, _subscription) = register_otter_bridge_subscription(
             &bridge.lock().unwrap().broadcast_hub,
             vec![SURFACE_EVENT_ACTION_ACK.to_owned()],
         );
@@ -148,7 +148,7 @@ fn wall_mirror_confirmation_approval_and_cancellation_preserve_the_original_inst
             "result":{"outputs":{"value":{"kind":"value","value":"must-not-commit"}}}}}),
         )
     });
-    let (rx, _subscription) = register_hook_bridge_subscription(
+    let (rx, _subscription) = register_otter_bridge_subscription(
         &bridge.lock().unwrap().broadcast_hub,
         vec![SURFACE_EVENT_ACTION_ACK.to_owned()],
     );

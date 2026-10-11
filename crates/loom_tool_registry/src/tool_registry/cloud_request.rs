@@ -34,7 +34,7 @@ pub(super) fn cloud_network_policy(tool: &ToolDefinition) -> crate::network_poli
         // Loopback is off unless the package asks for it, matching `OutboundPolicy::default`. A
         // cloud Art that declares no network policy at all used to be allowed to call
         // `http://localhost:*` and `http://127.0.0.1:*` in cleartext, which reaches the Loom
-        // daemon's own HTTP surface, Hook, and any local model server — while carrying the Art's
+        // daemon's own HTTP surface, Otter, and any local model server — while carrying the Art's
         // credential headers. An Art that genuinely talks to a local service knows it does, so it
         // can say so.
         allow_http_loopback: network
@@ -66,7 +66,7 @@ pub(super) fn cloud_network_policy(tool: &ToolDefinition) -> crate::network_poli
 /// service happens to serve images from and a domain allowlist cannot be applied here — the
 /// domains an image-search tool declares name its API host, not the image hosts. What can be
 /// applied is the local-network boundary. Both download paths used to hardcode loopback on, which
-/// handed any MCP server a request primitive into the Loom daemon's own HTTP surface, Hook, or a
+/// handed any MCP server a request primitive into the Loom daemon's own HTTP surface, Otter, or a
 /// local model server, just by returning `http://127.0.0.1:<port>/...` as an image URL. Loopback
 /// and private networks are now off unless the tool declares them, which is the same lever a cloud
 /// Art uses.

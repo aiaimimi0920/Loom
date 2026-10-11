@@ -1,4 +1,4 @@
-<# Shared validation for paired Hook/Loom candidate evidence. #>
+<# Shared validation for paired Otter/Loom candidate evidence. #>
 
 function Assert-LoomCompatibilityFeatures {
     param([object]$Requirement, [string[]]$Expected, [string]$Label)
@@ -40,7 +40,7 @@ function Read-LoomExtensionCompatibility {
         -Expected @("commands.v1", "attachments.v1") -Label "Loom capability host"
     Assert-LoomCompatibilityFeatures `
         -Requirement $document.pluginHostRequirements.hookExtensionApi `
-        -Expected @("commands.v1", "unit-overlays.v1") -Label "Hook extension host"
+        -Expected @("commands.v1", "unit-overlays.v1") -Label "Otter extension host"
     Assert-LoomCompatibilityFeatures `
         -Requirement $document.pluginHostRequirements.surfaceApi `
         -Expected @("declarative.v1") -Label "Surface host"

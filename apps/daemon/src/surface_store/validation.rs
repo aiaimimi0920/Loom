@@ -191,7 +191,7 @@ fn validate_loaded_instances(
             }
             validate_identity(
                 &attachment.descriptor.hook_node_id,
-                "persisted Hook node id",
+                "persisted Otter node id",
             )?;
             validate_identity(&attachment.descriptor.device_id, "persisted device id")?;
             if let Some(snapshot) = attachment.snapshot.as_ref() {

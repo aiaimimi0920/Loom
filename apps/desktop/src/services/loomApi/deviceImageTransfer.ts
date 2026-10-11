@@ -9,7 +9,7 @@ const PREFIX = "device-image:";
 // A quick send may replace its own single-image layout, never a user's composed wall.
 export function imageTarget(state: WallState, endpointId: string) {
   const target = state.endpoints.find(({ endpoint }) => endpoint.endpointId === endpointId);
-  if (!target?.online) throw new Error("目标终端离线，请先在接收端启动 Hook 终端");
+  if (!target?.online) throw new Error("目标终端离线，请先在接收端启动 Otter 终端");
   if (!target.endpoint.renderModes.includes("image")) throw new Error("目标终端不支持图片");
   const wall = state.layouts.find((layout) => layout.tiles.some((tile) => tile.endpointId === endpointId));
   if (wall && (!wall.wallId.startsWith(PREFIX) || wall.tiles.length !== 1

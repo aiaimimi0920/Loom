@@ -7,7 +7,7 @@ param(
     [string]$EvidenceRoot = ".\target\capability-plugin-conformance",
     [switch]$AuditSourceIsolation,
     [string]$LoomRepository = "",
-    [string]$HookRepository = ""
+    [string]$OtterRepository = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -366,25 +366,25 @@ $rendererId = "$qualifiedId.result-card"
 $encodedId = [Uri]::EscapeDataString($qualifiedId)
 $pluginPath = "/v1/capability-plugins/$encodedId"
 $loomSourcePath = $null
-$hookSourcePath = $null
+$otterSourcePath = $null
 $loomBefore = $null
 $hookBefore = $null
 if ($AuditSourceIsolation) {
     Assert-True (-not [string]::IsNullOrWhiteSpace($LoomRepository)) "-LoomRepository is required with -AuditSourceIsolation"
-    Assert-True (-not [string]::IsNullOrWhiteSpace($HookRepository)) "-HookRepository is required with -AuditSourceIsolation"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($OtterRepository)) "-OtterRepository is required with -AuditSourceIsolation"
     $loomSourcePath = Resolve-RepoPath $LoomRepository
-    $hookSourcePath = Resolve-RepoPath $HookRepository
+    $otterSourcePath = Resolve-RepoPath $OtterRepository
     Assert-True (Test-Path -LiteralPath $loomSourcePath -PathType Container) "Loom repository not found: $loomSourcePath"
-    Assert-True (Test-Path -LiteralPath $hookSourcePath -PathType Container) "Hook repository not found: $hookSourcePath"
+    Assert-True (Test-Path -LiteralPath $otterSourcePath -PathType Container) "Otter repository not found: $otterSourcePath"
     $sourceLiteral = [regex]::Escape($qualifiedId)
     $loomIdMatch = Get-ChildItem -LiteralPath (Join-Path $loomSourcePath "apps"), (Join-Path $loomSourcePath "crates") -Recurse -File |
         Select-String -Pattern $sourceLiteral | Select-Object -First 1
-    $hookIdMatch = Get-ChildItem -LiteralPath (Join-Path $hookSourcePath "src") -Recurse -File |
+    $otterIdMatch = Get-ChildItem -LiteralPath (Join-Path $otterSourcePath "src") -Recurse -File |
         Select-String -Pattern $sourceLiteral | Select-Object -First 1
     Assert-True ($null -eq $loomIdMatch) "Loom core contains the external capability id"
-    Assert-True ($null -eq $hookIdMatch) "Hook core contains the external capability id"
+    Assert-True ($null -eq $otterIdMatch) "Otter core contains the external capability id"
     $loomBefore = Get-GitStateFingerprint $loomSourcePath
-    $hookBefore = Get-GitStateFingerprint $hookSourcePath
+    $hookBefore = Get-GitStateFingerprint $otterSourcePath
 }
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-capability-conformance-" + [Guid]::NewGuid().ToString("N"))
 $controlRoot = Join-Path $tempRoot "control"
@@ -511,9 +511,9 @@ finally {
 
 if ($AuditSourceIsolation) {
     $loomAfter = Get-GitStateFingerprint $loomSourcePath
-    $hookAfter = Get-GitStateFingerprint $hookSourcePath
+    $hookAfter = Get-GitStateFingerprint $otterSourcePath
     Assert-True ($loomBefore -eq $loomAfter) "Loom source fingerprint changed during external plugin conformance"
-    Assert-True ($hookBefore -eq $hookAfter) "Hook source fingerprint changed during external plugin conformance"
+    Assert-True ($hookBefore -eq $hookAfter) "Otter source fingerprint changed during external plugin conformance"
     $evidence.sourceFingerprints = @{ loom = $loomAfter; hook = $hookAfter }
 }
 $evidence.sourceIsolationAudit = [bool]$AuditSourceIsolation

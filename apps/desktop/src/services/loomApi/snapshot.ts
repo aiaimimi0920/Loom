@@ -8,7 +8,7 @@ import type {
   LoomToolDefinition,
   LoomWorkflowMetadata,
 } from "./coreTypes.ts";
-import type { LoomHookBridgeStatus } from "./hookTypes.ts";
+import type { LoomOtterBridgeStatus } from "./otterTypes.ts";
 import type { LoomMcpServer } from "./mcpTypes.ts";
 import type { LoomPythonArt } from "./pythonTypes.ts";
 import type { LoomOnlineWaitOptions, LoomSettingsLinks, LoomSnapshot } from "./snapshotTypes.ts";
@@ -246,7 +246,7 @@ export async function readLoomSnapshot(
       "workflows",
       signal,
     ),
-    readOptionalSnapshotObject<LoomHookBridgeStatus>(
+    readOptionalSnapshotObject<LoomOtterBridgeStatus>(
       normalizedBaseUrl,
       "/v1/hook-bridge/status",
       signal,

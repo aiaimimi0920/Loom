@@ -122,7 +122,7 @@ struct NetworkSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-struct HookCacheSettings {
+struct OtterCacheSettings {
     recycle_bin_max_entries: u32,
     recycle_bin_retention_days: u32,
     temp_cache_max_bytes: u64,
@@ -131,15 +131,15 @@ struct HookCacheSettings {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct HookCacheSettingsWire {
+struct OtterCacheSettingsWire {
     recycle_bin_max_entries: u32,
     recycle_bin_retention_days: u32,
     temp_cache_max_bytes: u64,
     temp_cache_retention_days: u32,
 }
 
-impl From<&HookCacheSettings> for HookCacheSettingsWire {
-    fn from(settings: &HookCacheSettings) -> Self {
+impl From<&OtterCacheSettings> for OtterCacheSettingsWire {
+    fn from(settings: &OtterCacheSettings) -> Self {
         Self {
             recycle_bin_max_entries: settings.recycle_bin_max_entries,
             recycle_bin_retention_days: settings.recycle_bin_retention_days,
@@ -225,11 +225,11 @@ impl LoomCacheSettings {
     }
 }
 
-impl Default for HookCacheSettings {
+impl Default for OtterCacheSettings {
     fn default() -> Self {
         Self {
             recycle_bin_max_entries: 15,
-            // The existing Hook recycle bin never expired by age. Keep that
+            // The existing Otter recycle bin never expired by age. Keep that
             // behavior until the user explicitly chooses a retention period.
             recycle_bin_retention_days: 0,
             temp_cache_max_bytes: 256 * 1024 * 1024,
@@ -238,7 +238,7 @@ impl Default for HookCacheSettings {
     }
 }
 
-impl HookCacheSettings {
+impl OtterCacheSettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if self.recycle_bin_max_entries > 500 {
             return Err("回收站上限必须为无限或不超过 500 项".to_owned());
@@ -278,13 +278,13 @@ struct QuickBinding {
 struct LoomSettings {
     appearance_version: u32,
     general: LoomGeneralSettings,
-    hook_general: HookGeneralSettings,
+    hook_general: OtterGeneralSettings,
     system: LoomSystemPreferences,
     network: NetworkSettings,
     mcp: McpSettings,
     art_store: ArtStoreSettings,
     loom_cache: LoomCacheSettings,
-    hook_cache: HookCacheSettings,
+    hook_cache: OtterCacheSettings,
     engine: EngineSettings,
     quick_bindings: Vec<QuickBinding>,
     shortcuts: HashMap<String, LoomShortcutConfig>,
@@ -305,7 +305,7 @@ impl Default for LoomSettings {
                 minimize_to_tray: true,
                 enable_tray_icon: true,
             },
-            hook_general: HookGeneralSettings::default(),
+            hook_general: OtterGeneralSettings::default(),
             system: LoomSystemPreferences {
                 auto_check_updates: true,
                 enable_run_log: true,
@@ -319,7 +319,7 @@ impl Default for LoomSettings {
             mcp: McpSettings::default(),
             art_store: ArtStoreSettings::default(),
             loom_cache: LoomCacheSettings::default(),
-            hook_cache: HookCacheSettings::default(),
+            hook_cache: OtterCacheSettings::default(),
             engine: EngineSettings {
                 comfyui_url: "http://127.0.0.1:8188".to_owned(),
                 python_interpreter: "python.exe".to_owned(),
@@ -333,13 +333,13 @@ impl Default for LoomSettings {
     }
 }
 
-fn hook_settings_protocol_value(settings: &LoomSettings) -> serde_json::Value {
+fn otter_settings_protocol_value(settings: &LoomSettings) -> serde_json::Value {
     let mut value = serde_json::to_value(settings).unwrap_or_default();
     if let Some(object) = value.as_object_mut() {
         object.remove("hook_cache");
         object.insert(
             "hookCache".to_owned(),
-            serde_json::to_value(HookCacheSettingsWire::from(&settings.hook_cache))
+            serde_json::to_value(OtterCacheSettingsWire::from(&settings.hook_cache))
                 .unwrap_or_default(),
         );
     }

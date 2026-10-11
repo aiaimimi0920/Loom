@@ -1,4 +1,4 @@
-// Settings, workflows, devices, Hook bridge, run routes, and the final not-found fallback.
+// Settings, workflows, devices, Otter bridge, run routes, and the final not-found fallback.
 #[allow(clippy::too_many_arguments, unused_variables)]
 fn route_settings_runs(
     request: &ParsedHttpRequest,
@@ -11,7 +11,7 @@ fn route_settings_runs(
     mcp_servers: &SharedMcpServerStore,
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     capability_runtime: &SharedCapabilityRuntime,
     capability_resources: &SharedCapabilityResourceBroker,
     device_registry: &SharedDeviceRegistryStore,
@@ -56,12 +56,12 @@ fn route_settings_runs(
             path_id(path, "/v1/workflows/").expect("checked path"),
             workflow_store,
         ),
-        ("GET", "/v1/hook-bridge/status") => hook_bridge_status(hook_bridge),
+        ("GET", "/v1/hook-bridge/status") => otter_bridge_status(hook_bridge),
         ("POST", "/v1/hook-bridge/workflows/instantiate") => {
-            instantiate_hook_workflow(&request.body, hook_bridge)
+            instantiate_otter_workflow(&request.body, hook_bridge)
         }
         ("POST", "/v1/hook-bridge/workflows/nodes/update") => {
-            update_hook_workflow_node(&request.body, hook_bridge)
+            update_otter_workflow_node(&request.body, hook_bridge)
         }
         ("GET", "/v1/devices") => list_managed_devices(device_registry, hook_bridge),
         ("POST", "/v1/devices") => {
@@ -88,8 +88,8 @@ fn route_settings_runs(
             device_registry,
             hook_bridge,
         ),
-        ("GET", "/v1/hook-bridge/session") => hook_bridge_session(hook_bridge),
-        ("GET", "/v1/hook-bridge/canvas") => hook_canvas_snapshot(),
+        ("GET", "/v1/hook-bridge/session") => otter_bridge_session(hook_bridge),
+        ("GET", "/v1/hook-bridge/canvas") => otter_canvas_snapshot(),
         ("GET", "/v1/hook-bridge/canvas/workflows") => list_canvas_workflows(canvas_workflow_root),
         ("GET", path) if path_id(path, "/v1/hook-bridge/canvas/workflows/").is_some() => {
             get_canvas_workflow_snapshot(
@@ -109,7 +109,7 @@ fn route_settings_runs(
             )
         }
         ("PUT", path) if path_id(path, "/v1/hook-bridge/canvas/workflows/").is_some() => {
-            save_hook_canvas_workflow(
+            save_otter_canvas_workflow(
                 path_id(path, "/v1/hook-bridge/canvas/workflows/").expect("checked path"),
                 &request.body,
                 workflow_store,
@@ -122,7 +122,7 @@ fn route_settings_runs(
                 canvas_workflow_root,
             )
         }
-        ("POST", "/v1/hook-bridge/start") => start_hook_bridge(
+        ("POST", "/v1/hook-bridge/start") => start_otter_bridge(
             &request.body,
             hook_bridge,
             capability_runtime,
@@ -139,7 +139,7 @@ fn route_settings_runs(
             surface_instances,
             surface_actions,
         ),
-        ("POST", "/v1/hook-bridge/stop") => stop_hook_bridge(hook_bridge, shared_images),
+        ("POST", "/v1/hook-bridge/stop") => stop_otter_bridge(hook_bridge, shared_images),
         ("POST", "/v1/runs") => start_tea_run(&request.body, run_store),
         ("GET", path) if execution_diagnostics_path_id(path).is_some() => execution_diagnostics(
             execution_diagnostics_path_id(path).expect("checked path"),

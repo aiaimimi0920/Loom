@@ -8,8 +8,8 @@
 @import "./styles/art-editing.css";
 @import "./styles/workflow-studio.css";
 @import "./styles/art-creator.css";
-@import "./styles/hook-canvas-controls.css";
-@import "./styles/hook-canvas-surface.css";
+@import "./styles/otter-canvas-controls.css";
+@import "./styles/otter-canvas-surface.css";
 @import "./styles/settings-shell.css";
 @import "./styles/settings-shortcuts.css";
 @import "./styles/settings-panels.css";
@@ -20,7 +20,7 @@
 @import "./styles/tooling-art.css";
 @import "./styles/tooling-dialogs.css";
 @import "./styles/theme-shell-art.css";
-@import "./styles/theme-hook-settings.css";
+@import "./styles/theme-otter-settings.css";
 @import "./styles/mcp-hub.css";
 @import "./styles/mcp-dialogs.css";
 @import "./styles/accessibility.css";

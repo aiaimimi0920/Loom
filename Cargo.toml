@@ -19,7 +19,7 @@ members = [
     "crates/loom_mcp",
     "crates/loom_workflow_store",
     "crates/loom_tool_registry",
-    "crates/loom_hook_bridge",
+    "crates/loom_otter_bridge",
     "crates/loom_local_channel",
     "crates/loom_native_image",
     "crates/loom_workflow_runtime",
@@ -87,7 +87,7 @@ loom_configuration = { path = "crates/loom_configuration" }
 loom_mcp = { path = "crates/loom_mcp" }
 loom_workflow_store = { path = "crates/loom_workflow_store" }
 loom_tool_registry = { path = "crates/loom_tool_registry" }
-loom_hook_bridge = { path = "crates/loom_hook_bridge" }
+loom_otter_bridge = { path = "crates/loom_otter_bridge" }
 loom_local_channel = { path = "crates/loom_local_channel" }
 loom_native_image = { path = "crates/loom_native_image" }
 loom_workflow_runtime = { path = "crates/loom_workflow_runtime" }

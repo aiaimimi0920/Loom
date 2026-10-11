@@ -156,7 +156,7 @@ pub(super) fn session_id_valid(id: &str) -> bool {
     })
 }
 
-// Payloads are opaque Hook annotation documents. Loom never renders or executes them.
+// Payloads are opaque Otter annotation documents. Loom never renders or executes them.
 pub(super) fn value_valid(id: &str, value: &Value) -> bool {
     identifier(id)
         && value.is_object()

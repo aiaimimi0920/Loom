@@ -8,7 +8,7 @@ impl SurfaceActionExecutor {
         control_plane_root: PathBuf,
         surface_instances: SharedSurfaceInstanceStore,
         surface_resources: SharedSurfaceResourceStore,
-        hook_bridge: SharedHookBridgeRuntime,
+        hook_bridge: SharedOtterBridgeRuntime,
     ) -> std::io::Result<Self> {
         let runner_registry = tool_registry.clone();
         let runner: Arc<SurfaceActionRunner> = Arc::new(move |job| {
@@ -85,7 +85,7 @@ impl SurfaceActionExecutor {
         tool_registry: ToolRegistry,
         surface_instances: SharedSurfaceInstanceStore,
         surface_resources: SharedSurfaceResourceStore,
-        hook_bridge: SharedHookBridgeRuntime,
+        hook_bridge: SharedOtterBridgeRuntime,
         runner: Arc<SurfaceActionRunner>,
         workers: usize,
         queue_capacity: usize,
@@ -113,7 +113,7 @@ impl SurfaceActionExecutor {
         tool_resolver: Arc<SurfaceToolResolver>,
         surface_instances: SharedSurfaceInstanceStore,
         surface_resources: SharedSurfaceResourceStore,
-        hook_bridge: SharedHookBridgeRuntime,
+        hook_bridge: SharedOtterBridgeRuntime,
         runner: Arc<SurfaceActionRunner>,
         workers: usize,
         queue_capacity: usize,

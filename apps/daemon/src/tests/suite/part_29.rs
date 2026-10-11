@@ -56,7 +56,7 @@ fn surface_attach_replaces_prior_binding_and_recovery_selects_one_instance() {
                 &[],
                 Some(
                     &json!({
-                        "hookNodeId": "hook-node:rebind",
+                        "hookNodeId": "otter-node:rebind",
                         "deviceId": "device-000-local",
                         "capabilities": default_declarative_surface_host_capabilities()
                     })
@@ -96,7 +96,7 @@ fn surface_attach_replaces_prior_binding_and_recovery_selects_one_instance() {
         .into_iter()
         .filter(|instance| {
             instance.attachments.values().any(|attachment| {
-                attachment.descriptor.hook_node_id == "hook-node:rebind"
+                attachment.descriptor.hook_node_id == "otter-node:rebind"
                     && attachment.descriptor.device_id == "device-000-local"
                     && attachment.lifecycle != loom_protocol::SurfaceLifecycleState::Disposed
                     && attachment.snapshot.is_some()
@@ -118,7 +118,7 @@ fn surface_attach_replaces_prior_binding_and_recovery_selects_one_instance() {
         expected_recovery_instance
     );
 
-    let (surface_rx, _surface_subscription) = register_hook_bridge_subscription(
+    let (surface_rx, _surface_subscription) = register_otter_bridge_subscription(
         &runtime
             .hook_bridge
             .lock()
@@ -132,7 +132,7 @@ fn surface_attach_replaces_prior_binding_and_recovery_selects_one_instance() {
     let body = json!({
         "artId": "surface-rebind",
         "expectedVersion": "1.0.0",
-        "hookNodeId": "hook-node:rebind",
+        "hookNodeId": "otter-node:rebind",
         "deviceId": "device-000-local",
         "capabilities": default_declarative_surface_host_capabilities()
     })
@@ -165,7 +165,7 @@ fn surface_attach_replaces_prior_binding_and_recovery_selects_one_instance() {
         .iter()
         .flat_map(|instance| {
             instance.attachments.values().filter_map(|attachment| {
-                (attachment.descriptor.hook_node_id == "hook-node:rebind"
+                (attachment.descriptor.hook_node_id == "otter-node:rebind"
                     && attachment.descriptor.device_id == "device-000-local")
                     .then_some((
                         instance.descriptor.instance_id.as_str(),

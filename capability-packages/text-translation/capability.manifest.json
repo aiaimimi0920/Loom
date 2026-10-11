@@ -95,7 +95,7 @@
         "id": "neuro.official/text-translation.target-language",
         "title": "Translation target language",
         "payload": {
-          "description": "Used for Ctrl+5. Empty uses Hook's display language.",
+          "description": "Used for Ctrl+5. Empty uses Otter's display language.",
           "type": "string",
           "default": "",
           "enum": ["", "zh-CN", "en"]

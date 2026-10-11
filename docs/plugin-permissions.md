@@ -11,7 +11,7 @@ Framework manifests declare a structured `permissionPolicy`.
 - `network.allowLocalhost`: explicit local-development access. It defaults to
   `false` for cloud Arts, for an MCP tool's image downloads, and for the host's
   own HTTP client, so an Art or tool that talks to a local service — a model
-  server, Hook, the Loom daemon — has to declare it.
+  server, Otter, the Loom daemon — has to declare it.
 - `network.allowPrivateNetworks`: private network declaration.
 - `cloudApi.timeoutMs`: deadline a cloud Art asks for when the caller states
   none. The default is 30 s and the host ceiling is 600 s.
@@ -43,7 +43,7 @@ Framework manifests declare a structured `permissionPolicy`.
 | Direct arbitrary filesystem | Declared/audited; not fully OS-denied |
 | GPU/clipboard | Declared/audited; not fully OS-denied |
 
-Cloud multipart invocation files must be supplied as data URLs (as Hook's inline
+Cloud multipart invocation files must be supplied as data URLs (as Otter's inline
 and shared-memory image materialization already does), not arbitrary local paths.
 This also applies to manifest defaults. Package resources retain path support;
 other Arts, credentials, databases, caches, outputs and `loom-*` temp directories

@@ -58,7 +58,7 @@ fn installed_javascript_surface_mounts_with_a_verified_entry_resource_and_fallba
             &[],
             Some(
                 &json!({
-                    "hookNodeId": "hook-node:surface-javascript",
+                    "hookNodeId": "otter-node:surface-javascript",
                     "deviceId": "device-000-local",
                     "capabilities": host,
                 })

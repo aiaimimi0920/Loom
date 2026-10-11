@@ -491,7 +491,7 @@ fn put_tool(
     path_id: &str,
     body: &str,
     tool_registry: &ToolRegistry,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let tool = match serde_json::from_str::<ToolDefinition>(body) {
         Ok(tool) => tool,
@@ -505,6 +505,6 @@ fn put_tool(
         Ok(saved) => saved,
         Err(error) => return tool_registry_error_response(error),
     };
-    broadcast_hook_bridge_json(hook_bridge, capabilities_updated_event());
+    broadcast_otter_bridge_json(hook_bridge, capabilities_updated_event());
     Ok((200, serde_json::to_string(&json!({ "tool": saved }))?))
 }

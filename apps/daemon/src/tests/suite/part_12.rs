@@ -245,14 +245,14 @@ fn daemon_ignores_empty_probe_before_serving_real_request() {
 }
 
 #[test]
-fn status_reports_hook_settings_summary() {
+fn status_reports_otter_settings_summary() {
     let hook_settings = loom_hooks::HookSettings::enabled(vec![
         loom_hooks::HookRule::new(loom_hooks::HookEventKind::RunStarted)
             .with_target(loom_hooks::HookTarget::memory("runs")),
         loom_hooks::HookRule::new(loom_hooks::HookEventKind::RunStopped)
             .with_target(loom_hooks::HookTarget::memory("finished")),
     ]);
-    let root = unique_temp_dir("status-hook-settings-summary");
+    let root = unique_temp_dir("status-otter-settings-summary");
     let runtime = test_daemon_runtime_from_config(
         &root,
         DaemonConfig::localhost(0).with_hook_settings(hook_settings),

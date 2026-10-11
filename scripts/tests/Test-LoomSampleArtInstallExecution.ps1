@@ -335,7 +335,7 @@ try {
     }
     $stockAttach = Invoke-LoomJson -Method Post -Url "$baseUrl/v1/surfaces/attach" -Body @{
         artId = $stockArtId
-        hookNodeId = "hook-node:stock-monitor-install-smoke"
+        hookNodeId = "otter-node:stock-monitor-install-smoke"
         deviceId = "device-000-local"
         capabilities = $stockHostCapabilities
     }

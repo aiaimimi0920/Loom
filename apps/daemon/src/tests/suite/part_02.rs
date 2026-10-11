@@ -34,7 +34,7 @@ fn device_registry_bootstraps_one_protected_local_host() {
     let reloaded = DeviceRegistryStore::new(path, address).expect("reopen device registry");
     assert_eq!(reloaded.devices.len(), 1);
     let registry = Arc::new(Mutex::new(reloaded));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
     let (status, _) = remove_managed_device("device-000-local", &registry, &hook_bridge)
         .expect("protected local device response");
     assert_eq!(status, 400);
@@ -282,7 +282,7 @@ fn device_update_persists_enabled_state_and_removal() {
         )
         .expect("open device registry"),
     ));
-    let hook_bridge = Arc::new(Mutex::new(HookBridgeRuntime::new(root.join("workflows"))));
+    let hook_bridge = Arc::new(Mutex::new(OtterBridgeRuntime::new(root.join("workflows"))));
     add_managed_device(
         r#"{"name":"iPad","kind":"tablet","address":"192.168.1.36"}"#,
         "approved",

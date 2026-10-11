@@ -10,7 +10,7 @@ daemon, CLI, and desktop remain application shells.
   assets, and model/provider implementation details.
 - Neuro Platform owns public website, account, identity, quota, entitlement, and
   operator service policy.
-- Hook owns foreground capture and desktop integration behavior.
+- Otter owns foreground capture and desktop integration behavior.
 - This Loom repository owns local agent planning, workflows, memory, durable orchestration,
   safe tool execution contracts, hooks, and Gateway client calls.
 
@@ -220,7 +220,7 @@ fetches it through the bounded outbound client and accepts only the
 all evidence before secure extraction. The Desktop OCR quick card calls this
 generic catalog path; it is presentation, not an OCR-specific daemon endpoint.
 
-Hook does not load plugin code and does not contain per-plugin branches. It
+Otter does not load plugin code and does not contain per-plugin branches. It
 consumes generic capability metadata from Loom. HTTP and `loom.hook.v1`
 executions all run inside Loom and create durable run
 evidence. Package-backed Arts are revalidated immediately before every launch,
@@ -230,7 +230,7 @@ bypass the normal HTTP execution path.
 The source immutability invariant is explicit: framework/Art install,
 execution, upgrade, rollback, disable, uninstall, and crash recovery may write
 only to control-plane package/state roots and evidence stores. They never edit
-the Loom or Hook repository/source tree. Plugin authors therefore require no
+the Loom or Otter repository/source tree. Plugin authors therefore require no
 source access to either product.
 
 Permissions combine enforced and declared boundaries. Loom enforces package
@@ -305,7 +305,7 @@ Concurrent-safe routes are `/health`, `/status`,
 `/status` are reserved probes and bypass the normal queue so they remain
 available during worker pressure. All other file-backed control-plane routes
 use one serialized route lock while still running on a worker. This preserves
-deterministic ordering for configuration, MCP, tool, workflow, Hook, image,
+deterministic ordering for configuration, MCP, tool, workflow, Otter, image,
 Capability Plugin, Python, and cloud stores.
 
 The queue capacity counts jobs waiting in addition to active worker jobs.
@@ -348,13 +348,13 @@ can continue to respond whenever reserved or remaining worker capacity exists.
 This is bounded request execution, not automatic replay or forced cancellation.
 Gateway provider routing remains outside Loom.
 
-## Loom and Hook Art protocol
+## Loom and Otter Art protocol
 
-Loom and Hook communicate through `loom.hook.v1`, with `loom.surface.v1` for
+Loom and Otter communicate through `loom.hook.v1`, with `loom.surface.v1` for
 distributed interactive surfaces. Loom is the execution and resource authority;
-Hook renders capability-declared nodes and sends typed actions. The public Rust
+Otter renders capability-declared nodes and sends typed actions. The public Rust
 types and JSON Schema are in `crates/loom_protocol/src/hook.rs` and
-`protocol/schemas/hook-message.v1.schema.json`. There is no alternate ArtLoom
+`protocol/schemas/otter-message.v1.schema.json`. There is no alternate ArtLoom
 workflow or execution adapter.
 
 The official OCR Capability Plugin's versioned attachment details, including the optional source-tagged estimated baseline,

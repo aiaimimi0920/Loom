@@ -375,10 +375,10 @@ fn daemon_executes_cloud_api_backed_tool_contract() {
 }
 
 #[test]
-fn daemon_reports_hook_bridge_status_contract() {
+fn daemon_reports_otter_bridge_status_contract() {
     let _guard = lock_ignoring_poison(&ENV_LOCK);
-    let appdata_root = unique_temp_dir("empty-hook-appdata");
-    let control_plane_root = unique_temp_dir("hook-bridge-status-control-plane");
+    let appdata_root = unique_temp_dir("empty-otter-appdata");
+    let control_plane_root = unique_temp_dir("otter-bridge-status-control-plane");
     let previous_appdata = std::env::var("APPDATA").ok();
     std::env::set_var("APPDATA", &appdata_root);
 

@@ -6,7 +6,7 @@ fn discrete_events_are_validated_deduplicated_and_persisted() {
     let record = create(&mut store);
     let instance_id = record.descriptor.instance_id.clone();
     let attachment = store
-        .attach(&instance_id, "hook-node:1", "device:1", None)
+        .attach(&instance_id, "otter-node:1", "device:1", None)
         .expect("attach");
     store
         .put_snapshot(
@@ -70,7 +70,7 @@ fn continuous_events_do_not_enter_queues_or_persisted_state() {
     let attachment = store
         .attach(
             &instance_id,
-            "hook-node:continuous",
+            "otter-node:continuous",
             "device:continuous",
             None,
         )
@@ -142,7 +142,7 @@ fn lifecycle_is_ordered_idempotent_and_dispose_releases_attachment_state() {
     let record = create(&mut store);
     let instance_id = record.descriptor.instance_id.clone();
     let attachment = store
-        .attach(&instance_id, "hook-node:1", "device:1", None)
+        .attach(&instance_id, "otter-node:1", "device:1", None)
         .expect("attach");
     let attachment_id = attachment.descriptor.attachment_id.clone();
     store

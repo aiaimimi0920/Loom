@@ -6,7 +6,7 @@ fn mount_surface_instance(
     tool_registry: &ToolRegistry,
     framework_registry: &FrameworkRegistry,
     control_plane_root: &Path,
-    hook_bridge: &SharedHookBridgeRuntime,
+    hook_bridge: &SharedOtterBridgeRuntime,
     surface_resources: &SharedSurfaceResourceStore,
     shared_images: &SharedImageStoreHandle,
 ) -> Result<(u16, String)> {
@@ -101,7 +101,7 @@ fn mount_surface_instance(
             409,
             json!({
                 "code": "surface_api_incompatible",
-                "message": format!("Hook Surface API {} is not supported", host.api_version),
+                "message": format!("Otter Surface API {} is not supported", host.api_version),
             }),
         );
     }
@@ -122,7 +122,7 @@ fn mount_surface_instance(
             409,
             json!({
                 "code": "surface_host_capability_missing",
-                "message": "Hook cannot satisfy the Surface requirements",
+                "message": "Otter cannot satisfy the Surface requirements",
                 "missingNodes": missing_nodes,
                 "missingCapabilities": missing_capabilities,
             }),
@@ -146,7 +146,7 @@ fn mount_surface_instance(
                 409,
                 json!({
                     "code": "surface_runtime_incompatible",
-                    "message": "Hook does not provide a compatible Surface runtime and the package has no declarative fallback",
+                    "message": "Otter does not provide a compatible Surface runtime and the package has no declarative fallback",
                 }),
             );
         };
@@ -156,7 +156,7 @@ fn mount_surface_instance(
             409,
             json!({
                 "code": "surface_runtime_incompatible",
-                "message": "Hook does not provide a compatible Surface runtime",
+                "message": "Otter does not provide a compatible Surface runtime",
             }),
         );
     };
@@ -408,7 +408,7 @@ fn mount_surface_instance(
             release_surface_resource_leases(surface_resources, &previous_lease_ids, shared_images)?;
             if let Some(attachment) = instance.attachments.get(request.attachment_id.trim()) {
                 if let Some(snapshot) = &attachment.snapshot {
-                    broadcast_hook_bridge_json(
+                    broadcast_otter_bridge_json(
                         hook_bridge,
                         json!({
                             "method": SURFACE_EVENT_SNAPSHOT,
@@ -420,7 +420,7 @@ fn mount_surface_instance(
                         }),
                     );
                 }
-                broadcast_hook_bridge_json(
+                broadcast_otter_bridge_json(
                     hook_bridge,
                     json!({
                         "method": SURFACE_EVENT_LIFECYCLE,

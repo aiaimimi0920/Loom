@@ -79,7 +79,7 @@ impl ConfigAdapter for TeaConfigAdapter {
                 policy_field(
                     value,
                     "hook_ticket_default_approval_policy",
-                    "Hook ticket approval",
+                    "Otter ticket approval",
                 ),
             ],
         }]
