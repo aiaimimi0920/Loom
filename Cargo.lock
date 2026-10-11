@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "loom-art-store"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "loom-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "loom_agent",
@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "loom-daemon"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "loom-ocr-host"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "loom-plugin-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "loom-text-translation-host"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "loom_protocol",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "loom_agent"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_core",
  "serde",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "loom_capability_runtime"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "jsonschema",
  "loom_gateway",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "loom_configuration"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "serde",
@@ -2498,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "loom_core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "serde",
@@ -2509,7 +2509,7 @@ dependencies = [
 
 [[package]]
 name = "loom_durable"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "loom_gateway"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_core",
  "reqwest 0.12.28",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "loom_hook_bridge"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_protocol",
  "loom_workflow_store",
@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "loom_hooks"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_core",
  "loom_sandbox",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "loom_image_io"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "loom_local_channel"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "loom_mcp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "loom_plugin_security",
@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "loom_memory"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_core",
  "serde",
@@ -2614,7 +2614,7 @@ dependencies = [
 
 [[package]]
 name = "loom_native_image"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "loom_ocr"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "image",
  "num_cpus",
@@ -2639,11 +2639,11 @@ dependencies = [
 
 [[package]]
 name = "loom_perf"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "loom_plugin_security"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "loom_process"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "loom_perf",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "loom_projection"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "loom_protocol"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "jsonschema",
  "semver",
@@ -2700,7 +2700,7 @@ dependencies = [
 
 [[package]]
 name = "loom_sandbox"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_core",
  "loom_process",
@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "loom_security"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "httparse",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "loom_shared_image"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2742,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "loom_tool_registry"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2768,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "loom_workflow"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "loom_core",
  "loom_durable",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "loom_workflow_runtime"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "loom_image_io",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "loom_workflow_store"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "fs2",
  "libc",

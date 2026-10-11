@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn failed_command_does_not_require_a_success_payload() {
+    let root = temp_root("failed-command-schema");
+    let executable = compile_fixture(&root);
+    let host = CapabilityRuntimeHost::new(RuntimeHostLimits::default());
+    host.activate(package_with_contract(
+        &root,
+        &executable,
+        &["fail-secret"],
+        false,
+        None,
+        Some(json!({
+            "type": "object",
+            "required": ["ok"],
+            "properties": { "ok": { "type": "boolean" } }
+        })),
+        &[],
+        1,
+    ))
+    .expect("activate failed-command fixture");
+    let result = host.invoke(invocation(json!({}), None));
+    host.deactivate_all();
+    cleanup(&root);
+    let output = result.expect("failed command is not an invalid success payload");
+    assert_eq!(output.status, CapabilityRuntimeStatus::Failed);
+    assert!(output.payload.is_none());
+    let error = output.error.expect("preserve the failure classification");
+    assert_eq!(error.code, loom_protocol::CapabilityErrorCode::RuntimeFault);
+    assert_eq!(error.message, "capability runtime reported an error");
+}
+
+#[test]
 fn signed_input_and_output_schemas_are_enforced() {
     let root = temp_root("schemas");
     let executable = compile_fixture(&root);
