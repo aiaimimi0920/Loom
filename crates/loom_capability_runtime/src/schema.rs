@@ -129,10 +129,14 @@ pub(super) fn validate_command_output(
     }
     let payload = output.payload.as_ref().unwrap_or(&Value::Null);
     let schema_value = payload.get("output").unwrap_or(payload);
-    if validators
-        .output
-        .as_ref()
-        .is_some_and(|validator| !validator.is_valid(schema_value))
+    // The signed output schema describes success. Failed/cancelled responses may
+    // omit that payload; preserve their sanitized error instead of masking it as
+    // a protocol violation. Any supplied effects still pass the checks below.
+    if output.status == CapabilityRuntimeStatus::Succeeded
+        && validators
+            .output
+            .as_ref()
+            .is_some_and(|validator| !validator.is_valid(schema_value))
     {
         return Err(CapabilityHostError::Protocol(
             "command output does not match its signed schema".to_owned(),
