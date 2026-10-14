@@ -28,6 +28,7 @@ import { WallManagementPanel } from "./WallManagementPanel";
 import { DeviceImageTransferPanel } from "./DeviceImageTransferPanel";
 import { ProjectionPeersPanel } from "./ProjectionPeersPanel";
 import { ProjectionSettingsPanel } from "./ProjectionSettingsPanel";
+import { OtterConnectionSettings } from "./OtterConnectionSettings";
 
 export const deviceKindLabels: Record<LoomDeviceKind, string> = {
   computer: "电脑",
@@ -37,9 +38,10 @@ export const deviceKindLabels: Record<LoomDeviceKind, string> = {
 };
 
 export function DeviceManagementPanel(props: { baseUrl: string; online: boolean }) {
-  const [page, setPage] = useState<"devices" | "walls" | "images" | "projection" | "projection-settings">("devices");
+  const [page, setPage] = useState<"devices" | "walls" | "images" | "projection" | "projection-settings" | "otter">("devices");
   return <div>
     <nav className="device-workspace-tabs" aria-label="设备管理页面">
+      <button type="button" className="ghost-button" aria-pressed={page === "otter"} onClick={() => setPage("otter")}>Otter 连接</button>
       <button type="button" className="ghost-button" aria-pressed={page === "devices"} onClick={() => setPage("devices")}>配对设备</button>
       <button type="button" className="ghost-button" aria-pressed={page === "walls"} onClick={() => setPage("walls")}>屏幕墙</button>
       <button type="button" className="ghost-button" aria-pressed={page === "images"} onClick={() => setPage("images")}>发送图片</button>
@@ -47,6 +49,7 @@ export function DeviceManagementPanel(props: { baseUrl: string; online: boolean 
       <button type="button" className="ghost-button" aria-pressed={page === "projection-settings"} onClick={() => setPage("projection-settings")}>投射规则</button>
     </nav>
     <div hidden={page !== "devices"}><ManagedDevicesPanel {...props} /></div>
+    {page === "otter" && <OtterConnectionSettings key={props.baseUrl} {...props} />}
     <div hidden={page !== "walls"}><WallManagementPanel key={props.baseUrl} {...props} /></div>
     {page === "images" && <DeviceImageTransferPanel key={props.baseUrl + String(props.online)} {...props} />}
     {page === "projection" && <ProjectionPeersPanel key={props.baseUrl + String(props.online)} {...props} />}

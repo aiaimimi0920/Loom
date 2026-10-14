@@ -2405,6 +2405,7 @@ dependencies = [
  "loom_workflow_store",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
+ "ring",
  "semver",
  "serde",
  "serde_json",

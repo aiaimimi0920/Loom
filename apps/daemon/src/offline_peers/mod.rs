@@ -57,6 +57,17 @@ struct ProbePeer {
 }
 
 impl OfflinePeers {
+    pub(crate) fn loom_id(&self) -> anyhow::Result<String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Loom identity unavailable"))?
+            .document
+            .identity
+            .key_id
+            .clone())
+    }
+
     pub fn new(root: &Path) -> anyhow::Result<Self> {
         let path = root.join("settings").join("offline-projection-peers.json");
         fs::create_dir_all(path.parent().expect("settings parent"))?;

@@ -137,6 +137,9 @@ fn route(
         );
     }
 
+    if route_path == "/v1/otter/identity" || route_path.starts_with("/v1/otter/connections") {
+        return route_otter_connections(request, route_path, authenticated_device_id.as_deref(), admin_authenticated, device_registry, hook_bridge);
+    }
     if request.method == "POST" && route_path == "/v1/projections/edit"
         && authenticated_device_id.is_some() && projection_edit::needs_prune(&request.body) {
         if let Err(error) = offline_peers.prune_edit_sessions(device_registry) {

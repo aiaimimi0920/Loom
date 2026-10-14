@@ -84,6 +84,8 @@ fn device_public_key_fingerprint(encoded: &str) -> std::result::Result<String, D
 
 fn is_public_device_auth_route(method: &str, path: &str) -> bool {
     path == "/health"
+        || (method == "GET" && path == "/v1/otter/identity")
+        || (method == "POST" && matches!(path, "/v1/otter/connections/request" | "/v1/otter/connections/status" | "/v1/otter/connections/cancel"))
         || (method == "POST"
             && matches!(
                 path,
@@ -92,6 +94,7 @@ fn is_public_device_auth_route(method: &str, path: &str) -> bool {
 }
 
 fn device_session_route_allowed(method: &str, path: &str) -> bool {
+    if method == "POST" && path == "/v1/otter/connections/activate" { return true; }
     if method == "POST" && (PROJECTION_ROUTES.contains(&path) || PROJECTION_V2_ROUTES.contains(&path)) { return true; }
     if wall_device_route_allowed(method, path) {
         return true;

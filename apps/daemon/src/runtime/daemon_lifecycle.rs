@@ -181,8 +181,10 @@ impl LoomDaemon {
         let capability_dispatch = Arc::new(CapabilityDispatchRegistry::with_core_commands(
             Arc::clone(&capability_runtime),
         ));
+        let offline_peers = offline_peers::OfflinePeers::new(&control_plane_root)?;
+        let loom_id = offline_peers.loom_id()?;
         let runtime = DaemonRuntime {
-            offline_peers: offline_peers::OfflinePeers::new(&control_plane_root)?,
+            offline_peers,
             projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())?,
             hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
@@ -198,9 +200,10 @@ impl LoomDaemon {
             bundled_art_sha256_allowlist: config.bundled_art_sha256_allowlist,
             hook_bridge,
             device_registry: Arc::new(Mutex::new(
-                DeviceRegistryStore::new(
+                DeviceRegistryStore::new_with_identity(
                     control_plane_root.join("settings").join("devices.json"),
                     local_addr,
+                    Some(&loom_id),
                 )
                 .context("open device registry")?,
             )),
@@ -243,6 +246,7 @@ impl LoomDaemon {
     }
 
     pub fn serve_until(self, shutdown: Receiver<()>) -> Result<()> {
+        let _discovery = connection_discovery::Announcer::start(Arc::clone(&self.runtime.device_registry))?;
         let worker_runtime = Arc::clone(&self.runtime);
         let mut executor = match self.request_executor {
             RequestExecutorConfig::Inline => None,

@@ -44,6 +44,11 @@ struct DeviceRegistryDocument {
 
 struct DeviceRegistryStore {
     path: PathBuf,
+    connection_policy: connection_policy::Store,
+    connection_policy_revision: u64,
+    connection_requests: BTreeMap<String, OtterConnectionRequest>,
+    connection_attempts: Vec<u64>,
+    connection_authenticated_attempts: Vec<u64>,
     projections: ProjectionStore,
     projection_edits: projection_edit::Store,
     projection_settings: projection_settings::ProjectionSettings,
@@ -102,7 +107,12 @@ impl DeviceRegistryStore {
     /// its epoch could then be re-paired. An absent file is a legitimately empty registry; a file
     /// that is present and unreadable is an operator problem, so it fails closed with the path in
     /// the message rather than quietly resetting the authorizations.
+    #[cfg(test)]
     fn new(path: PathBuf, local_addr: SocketAddr) -> Result<Self> {
+        Self::new_with_identity(path, local_addr, None)
+    }
+
+    fn new_with_identity(path: PathBuf, local_addr: SocketAddr, loom_id: Option<&str>) -> Result<Self> {
         let mut devices: BTreeMap<String, ManagedDevice> = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<DeviceRegistryDocument>(&bytes)
                 .with_context(|| {
@@ -159,6 +169,11 @@ impl DeviceRegistryStore {
             },
         );
         let mut store = Self {
+            connection_policy: connection_policy::Store::open_with_identity(&path.with_file_name("loom-connection.json"), loom_id)?,
+            connection_policy_revision: 0,
+            connection_requests: BTreeMap::new(),
+            connection_attempts: Vec::new(),
+            connection_authenticated_attempts: Vec::new(),
             projections: ProjectionStore::open(path.with_file_name("qr-projections"))?,
             projection_edits: projection_edit::Store::open(
                 path.with_file_name("projection-edits"),

@@ -7,6 +7,11 @@ mod live_media_device_auth {
     include!("device_disabled_approval.rs");
     include!("device_pairing_budget.rs");
     include!("device_pairing_receipt.rs");
+    include!("otter_connections.rs");
+    include!("otter_connection_admission.rs");
+    include!("otter_connection_discovery.rs");
+    include!("otter_connection_revocation.rs");
+    include!("otter_connection_lease.rs");
     include!("device_challenge_budget.rs");
     include!("http_body_admission.rs");
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
@@ -15,6 +20,7 @@ mod live_media_device_auth {
         port: u16,
         sessions: SharedLiveSessionStore,
         devices: SharedDeviceRegistryStore,
+        bridge: SharedOtterBridgeRuntime,
         server: ConcurrencyTestFixture,
         root: PathBuf,
     }
@@ -28,12 +34,14 @@ mod live_media_device_auth {
             let port = daemon.local_addr().unwrap().port();
             let sessions = Arc::clone(&daemon.runtime.live_sessions);
             let devices = Arc::clone(&daemon.runtime.device_registry);
+            let bridge = Arc::clone(&daemon.runtime.hook_bridge);
             let (tx, rx) = mpsc::channel();
             let worker = thread::spawn(move || daemon.serve_until(rx));
             Self {
                 port,
                 sessions,
                 devices,
+                bridge,
                 server: ConcurrencyTestFixture::new(tx, worker),
                 root,
             }
