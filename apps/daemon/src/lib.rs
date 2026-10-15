@@ -100,6 +100,8 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 mod account_login;
+mod naccount;
+mod asset_library;
 mod brain_plan;
 mod capability_resources;
 mod http_body_admission;

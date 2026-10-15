@@ -37,3 +37,32 @@ fn account_login_http_denies_projection_devices_and_unauthenticated_callers() {
     );
     server.finish().unwrap();
 }
+
+#[test]
+fn naccount_http_routes_keep_platform_separate() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let root = ProjectionRoot::new();
+    let (port, mut server) = start(&root.0);
+    let (status, view) = admin(port, "/v1/naccount/status", json!({}));
+    assert_eq!(status, 200);
+    assert_eq!(view["status"], "signed_out");
+    assert_eq!(public(port, "/v1/naccount/status", json!({})).0, 401);
+    let wrong_port = admin(port, "/v1/naccount/start", json!({}));
+    assert_eq!(wrong_port.0, 409);
+    assert_eq!(error_code(&wrong_port), "naccount_callback_port_required");
+    assert_eq!(admin(port, "/v1/naccount/status", json!({})).1["status"], "signed_out");
+    assert_eq!(admin(port, "/v1/asset-library/resources", json!({})).0, 401);
+    let callback = response(http_request_with_extra_headers(
+        port,
+        "GET",
+        "/v1/naccount/callback?state=unknown&code=unknown",
+        None,
+        "",
+    ));
+    assert_eq!(callback.0, 400);
+    assert_eq!(
+        admin(port, "/v1/account/status", json!({})).1["status"],
+        "signed_out"
+    );
+    server.finish().unwrap();
+}

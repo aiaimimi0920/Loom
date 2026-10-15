@@ -3,6 +3,12 @@ fn route_with_runtime(
     runtime: &DaemonRuntime,
     request: &ParsedHttpRequest,
 ) -> Result<(u16, String)> {
+    if request.method == "GET" && request.path.split('?').next() == Some("/v1/naccount/callback") {
+        return match naccount::callback(&runtime.control_plane_root, &request.path) {
+            Ok(value) => Ok((200, serde_json::to_string(&value)?)),
+            Err(error) => structured_error(error.status, json!({"code":error.code, "message":error.code})),
+        };
+    }
     runtime_log_debug(format!("{} {}", request.method, request.path));
     let path = request.path.split('?').next().unwrap_or_default();
     if offline_peers::OfflinePeers::handles(path) {
@@ -149,6 +155,22 @@ fn route(
     if route_path == "/v1/projection-settings" {
         if !admin_authenticated { return structured_error(403, json!({"code":"projection_settings_admin_required"})); }
         return route_projection_settings(request, device_registry);
+    }
+    if request.method == "POST" && (route_path.starts_with("/v1/naccount/") || route_path.starts_with("/v1/asset-library/")) {
+        if !admin_authenticated { return structured_error(403, json!({"code":"cloud_account_admin_required"})); }
+        let result = if let Some(action) = route_path.strip_prefix("/v1/naccount/") {
+            if action == "start" && reqwest::Url::parse(settings_base_url).ok()
+                .is_none_or(|url| url.origin().ascii_serialization() != "http://127.0.0.1:8765") {
+                return structured_error(409, json!({"code":"naccount_callback_port_required", "message":"naccount_callback_port_required"}));
+            }
+            naccount::handle(control_plane_root, action)
+        } else {
+            asset_library::handle(control_plane_root, &route_path[18..], &request.body)
+        };
+        return match result {
+            Ok(value) => Ok((200, serde_json::to_string(&value)?)),
+            Err(error) => structured_error(error.status, json!({"code":error.code, "message":error.code})),
+        };
     }
     // Account credentials remain admin-only; Otter device sessions cannot operate this API.
     if request.method == "POST" && route_path.starts_with("/v1/account/") {

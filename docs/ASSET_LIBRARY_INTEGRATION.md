@@ -1,5 +1,9 @@
 # AssetLibrary integration contract
 
+> 2026-10-15：本文记录旧版 AssetLibrary 的目标合同，不再作为当前 Workers 服务的实现依据。
+> 当前 NAccount 原生登录和 AssetLibrary 接入以 [NACCOUNT_ASSETLIBRARY.md](NACCOUNT_ASSETLIBRARY.md) 为准。
+> 以下 OpenAPI、安装回执及更新方案保留作历史参考，不表示当前服务具备这些接口。
+
 This document defines the target integration between Loom and the independent
 AssetLibrary service: catalog reads, authenticated downloads, package
 verification, atomic installation, Otter publication, and InstallReceipt

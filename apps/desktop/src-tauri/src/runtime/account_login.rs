@@ -2,6 +2,35 @@
 use super::*;
 
 #[tauri::command]
+pub(super) async fn open_loom_naccount_login(
+    base_url: String,
+    request_id: String,
+) -> Result<(), String> {
+    run_blocking_command(move || {
+        let base_url = resolve_command_base_url(base_url);
+        let view = http_post_json(&base_url, "/v1/naccount/status", &serde_json::json!({}))?;
+        if view["status"] != "pending" || view["requestId"] != request_id {
+            return Err("登录请求已失效，请重新登录。".into());
+        }
+        let url = tauri::Url::parse(view["authorizationUrl"].as_str().ok_or("登录地址无效")?)
+            .map_err(|_| "登录地址无效")?;
+        if url.origin().ascii_serialization() != "https://naccount-auth.aiaimimi.com"
+            || url.path() != "/oauth2/v1/authorize"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+            || !url
+                .query_pairs()
+                .any(|(key, value)| key == "state" && value == request_id)
+        {
+            return Err("登录地址无效".into());
+        }
+        diagnostics::open_url_in_default_browser(url.as_str())
+    })
+    .await
+}
+
+#[tauri::command]
 pub(super) async fn open_loom_account_login(
     base_url: String,
     request_id: String,

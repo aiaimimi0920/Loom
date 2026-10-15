@@ -129,6 +129,7 @@ pub fn run() {
             commands::delete_loom_daemon_json,
             commands::post_loom_daemon_json,
             account_login::open_loom_account_login,
+            account_login::open_loom_naccount_login,
             commands::install_packaged_framework,
             commands::bootstrap_packaged_arts,
             commands::read_otter_canvas_preview
