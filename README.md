@@ -8,6 +8,10 @@ Loom is Neuro's daemon-first AI brain and orchestration runtime.
 
 Repository: https://github.com/aiaimimi0920/Loom
 
+Otter 局域网连接：桌面“Otter 连接”设置提供默认关闭的 HTTPS 入口（默认端口
+`8766`），不暴露本机管理端口。首次连接与防火墙要求见
+[局域网连接说明](protocol/LAN_CONNECTION.md)。
+
 It owns the local runtime contracts for:
 
 - agent definitions and deterministic resolution,

@@ -4,6 +4,8 @@
 mod client;
 mod discovery;
 #[cfg(feature = "server")]
+pub mod lan_tls;
+#[cfg(feature = "server")]
 mod server;
 mod socket;
 

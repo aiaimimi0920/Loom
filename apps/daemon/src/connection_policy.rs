@@ -17,6 +17,8 @@ const ITERATIONS: u32 = 600_000;
 pub(crate) enum Approval {
     #[default]
     Manual,
+    Lan,
+    // Legacy persisted value; normalized to manual on load, never grants access.
     Password,
     Authenticated,
 }
@@ -118,7 +120,7 @@ impl Store {
                 if bytes.len() > 8192 {
                     bail!("连接策略文件过大");
                 }
-                let document: Document =
+                let mut document: Document =
                     serde_json::from_slice(&bytes).context("读取连接策略失败")?;
                 if document.schema_version != 1
                     || !valid_identity(&document.loom_id)
@@ -131,8 +133,8 @@ impl Store {
                     document.discoverable,
                     document.endpoint.as_deref(),
                 )?;
-                if document.approval == Approval::Password && document.password.is_none() {
-                    bail!("密码自动审批策略缺少密码");
+                if document.approval == Approval::Password {
+                    document.approval = Approval::Manual;
                 }
                 document
             }
@@ -190,8 +192,8 @@ impl Store {
                 Some(Password::create(&password)?)
             };
         }
-        if next.approval == Approval::Password && next.password.is_none() {
-            bail!("密码自动审批需要先设置连接密码");
+        if next.approval == Approval::Password {
+            bail!("请选择手动、局域网或连接过的设备审批策略");
         }
         Ok(Self {
             path: self.path.clone(),

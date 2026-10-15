@@ -67,7 +67,7 @@ fn otter_connection_manual_approval_requires_private_receipt() {
 fn otter_connection_password_policy_does_not_approve_wrong_password_or_disabled_device() {
     let f = Fixture::new();
     let policy = json!({"name":"Test Loom","discoverable":false,"endpoint":null,
-        "approval":"password","password":"test-password-0123"});
+        "approval":"lan","password":"test-password-0123"});
     assert_eq!(
         wall_http::admin(f.port, "PUT", "/v1/otter/connections/policy", Some(policy)).0,
         200
@@ -93,7 +93,7 @@ fn otter_connection_password_policy_does_not_approve_wrong_password_or_disabled_
         Some(input.clone()),
     );
     assert_eq!(status, 201, "{response}");
-    assert_eq!(response["connection"]["phase"], "approved");
+    assert_eq!(response["connection"]["phase"], "pending");
     let device_id = response["connection"]["deviceId"].as_str().unwrap();
     f.devices
         .lock()
@@ -184,7 +184,38 @@ fn otter_connection_authenticated_policy_checks_signed_session_and_exact_public_
         "/v1/otter/connections/request",
         Some(json!({"name":"Authenticated Otter","publicKey":key})),
     );
-    assert_eq!(response["connection"]["phase"], "approved");
+    assert_eq!(response["connection"]["phase"], "pending");
+    assert_eq!(
+        wall_http::admin(
+            f.port,
+            "POST",
+            "/v1/otter/connections/decision",
+            Some(json!({"requestId":response["connection"]["id"],"approve":true}))
+        )
+        .0,
+        200
+    );
+    let receipt = json!({"requestId":response["connection"]["id"],"receipt":response["receipt"]});
+    assert_eq!(
+        wall_http::device(
+            f.port,
+            &token,
+            "POST",
+            "/v1/otter/connections/activate",
+            Some(receipt)
+        )
+        .0,
+        200
+    );
+    assert!(f.devices.lock().unwrap().devices[&id].otter_connected);
+    let (_, connected) = wall_http::device(
+        f.port,
+        &token,
+        "POST",
+        "/v1/otter/connections/request",
+        Some(json!({"name":"Known Otter","publicKey":key})),
+    );
+    assert_eq!(connected["connection"]["phase"], "approved");
     let other = pairing_payload();
     let (_, response) = wall_http::device(
         f.port,

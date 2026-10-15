@@ -32,30 +32,31 @@ impl Announcer {
         let worker = thread::Builder::new()
             .name("loom-discovery".into())
             .spawn(move || {
-                let mut socket = None;
                 loop {
                     let announcement = registry
                         .try_lock()
                         .ok()
-                        .map(|store| store.connection_policy.public_info())
-                        .filter(|info| info.discoverable && info.endpoint.is_some());
+                        .and_then(|store| store.lan.announcement(&store.connection_info()));
                     if let Some(info) = announcement {
-                        if socket.is_none() {
-                            socket = UdpSocket::bind("0.0.0.0:0").ok().filter(|socket| {
-                                socket.set_broadcast(true).is_ok()
-                                    && socket.set_ttl(1).is_ok()
-                                    && socket
-                                        .set_write_timeout(Some(Duration::from_millis(100)))
-                                        .is_ok()
-                            });
-                        }
+                        let host = info["endpoint"]
+                            .as_str()
+                            .and_then(|value| reqwest::Url::parse(value).ok())
+                            .and_then(|url| url.host_str()?.parse::<std::net::Ipv4Addr>().ok());
+                        // Bind to the actual listener interface, not a VPN/TUN default route.
+                        let socket =
+                            host.and_then(|ip| UdpSocket::bind((ip, 0)).ok())
+                                .filter(|socket| {
+                                    socket.set_broadcast(true).is_ok()
+                                        && socket.set_ttl(1).is_ok()
+                                        && socket
+                                            .set_write_timeout(Some(Duration::from_millis(100)))
+                                            .is_ok()
+                                });
                         if let (Some(socket), Ok(packet)) = (&socket, serde_json::to_vec(&info)) {
-                            if packet.len() <= 1024 {
+                            if packet.len() <= 8192 {
                                 let _ = socket.send_to(&packet, destination);
                             }
                         }
-                    } else {
-                        socket = None;
                     }
                     match wait.recv_timeout(interval) {
                         Err(mpsc::RecvTimeoutError::Timeout) => (),

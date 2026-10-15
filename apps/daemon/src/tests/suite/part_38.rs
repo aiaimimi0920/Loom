@@ -485,6 +485,7 @@ fn seed_phase_four_device_sessions(runtime: &DaemonRuntime) {
         registry.devices.insert(
             device_id.to_owned(),
             ManagedDevice {
+                otter_connected: false,
                 id: device_id.to_owned(),
                 name: device_id.to_owned(),
                 kind: ManagedDeviceKind::Computer,

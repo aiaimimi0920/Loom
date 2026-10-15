@@ -5,6 +5,7 @@ fn seed_otter_connection_requests(f: &Fixture, count: usize) {
         store.connection_requests.insert(
             id.clone(),
             OtterConnectionRequest {
+                lan: false,
                 id,
                 device_id: "seed-device".into(),
                 name: "Capacity fixture".into(),
@@ -89,7 +90,7 @@ fn otter_connection_concurrent_requests_do_not_overfill_public_capacity() {
             // Exercise the insertion race independently of the HTTP worker admission limit.
             create_otter_connection_request(
                 &json!({"name":"Concurrent Otter", "publicKey":payload["publicKey"], "password":"test-password-0123"}).to_string(),
-                None, None, &devices, &bridge).unwrap().0
+                None, None, &devices, &bridge, None).unwrap().0
         })
     }).collect();
     let statuses: Vec<_> = workers

@@ -158,6 +158,8 @@ include!("runtime/otter_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
 mod connection_discovery;
 mod connection_policy;
+mod lan_http;
+mod lan_listener;
 include!("runtime/otter_connection_requests.rs");
 include!("runtime/otter_connection_routes.rs");
 include!("runtime/otter_connection_lease.rs");

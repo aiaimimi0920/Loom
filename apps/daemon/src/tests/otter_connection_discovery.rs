@@ -10,22 +10,35 @@ fn otter_connection_discovery_is_opt_in_and_contains_no_password_material() {
         receiver.local_addr().unwrap(),
     )
     .unwrap();
-    let mut packet = [0; 2048];
+    let mut packet = [0; 8192];
     assert!(receiver.recv(&mut packet).is_err());
     {
         let mut store = f.devices.lock().unwrap();
-        let update = serde_json::from_value(json!({"name":"Public Loom","discoverable":true,
-            "endpoint":"https://loom.example:443","approval":"password","password":"private-test-password"})).unwrap();
+        let update = serde_json::from_value(json!({"name":"Public Loom","discoverable":false,
+            "endpoint":null,"approval":"lan","password":"private-test-password"}))
+        .unwrap();
         store.connection_policy = store.connection_policy.prepare_update(update).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        store
+            .lan
+            .update(
+                serde_json::from_value(json!({"enabled":true,"host":"127.0.0.1","port":port}))
+                    .unwrap(),
+            )
+            .unwrap();
     }
     receiver
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let size = receiver.recv(&mut packet).unwrap();
-    assert!(size <= 1024);
+    assert!(size <= 8192);
     let info: serde_json::Value = serde_json::from_slice(&packet[..size]).unwrap();
     assert_eq!(info["protocolVersion"], "loom.connection.v1");
     assert_eq!(info["passwordRequired"], true);
+    assert_eq!(info["discoverable"], true);
+    assert!(info["certificate"].as_str().is_some());
     assert_eq!(
         info["loomId"],
         f.devices

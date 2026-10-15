@@ -23,7 +23,7 @@ fn connection_policy_identity_is_persistent_and_secrets_are_not_public() {
     let mut store = Store::open(&path).unwrap();
     let id = store.public_info().loom_id;
     store
-        .update(update(Approval::Password, Some("test-password-0123")))
+        .update(update(Approval::Lan, Some("test-password-0123")))
         .unwrap();
     assert!(store.check_password("test-password-0123"));
     assert!(!store.check_password("wrong-password"));
@@ -96,4 +96,22 @@ fn connection_policy_reuses_the_existing_loom_signing_identity() {
             .loom_id,
         id
     );
+}
+
+#[test]
+fn connection_policy_legacy_password_approval_migrates_without_removing_password() {
+    let path = path();
+    let mut store = Store::open(&path).unwrap();
+    store
+        .update(update(Approval::Manual, Some("test-password-0123")))
+        .unwrap();
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["approval"] = "password".into();
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let loaded = Store::open(&path).unwrap();
+    assert_eq!(loaded.public_info().approval, Approval::Manual);
+    assert!(loaded.public_info().password_required);
+    assert!(loaded.check_password("test-password-0123"));
+    assert!(!loaded.check_password(""));
 }

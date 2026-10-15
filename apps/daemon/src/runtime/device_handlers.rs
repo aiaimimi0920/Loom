@@ -184,6 +184,7 @@ fn add_managed_device(
         let previous = store.devices.insert(
             id.clone(),
             ManagedDevice {
+                otter_connected: false,
                 id: id.clone(),
                 name: name.to_owned(),
                 kind: input.kind,

@@ -431,6 +431,8 @@ impl LoomDaemon {
         let read_stage_shutdown_result = read_stage.shutdown();
         let maintenance_result = maintenance.shutdown();
         // Drained request workers cannot restart the bridge after its final revocation.
+        let retired_lan = self.runtime.device_registry.lock().ok().and_then(|mut store| store.lan.stop());
+        drop(retired_lan);
         let bridge_shutdown_result =
             stop_otter_bridge(&self.runtime.hook_bridge, &self.runtime.shared_images);
         if let Err(error) = serve_result {

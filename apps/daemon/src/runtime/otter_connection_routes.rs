@@ -12,10 +12,7 @@ fn route_otter_connections(
             let store = registry
                 .lock()
                 .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
-            Ok((
-                200,
-                serde_json::to_string(&store.connection_policy.public_info())?,
-            ))
+            Ok((200, serde_json::to_string(&store.connection_info())?))
         }
         ("POST", "/v1/otter/connections/request") => create_otter_connection_request(
             &request.body,
@@ -23,6 +20,7 @@ fn route_otter_connections(
             request.authorization_credential("Device"),
             registry,
             bridge,
+            request.header("X-Loom-Lan-Ingress"),
         ),
         ("POST", "/v1/otter/connections/status") => {
             poll_otter_connection_request(&request.body, registry, false)
@@ -34,6 +32,50 @@ fn route_otter_connections(
             activate_otter_connection(request, actor, registry)
         }
         _ if !admin => connection_error(403, "connection_admin_required"),
+        ("GET", "/v1/otter/connections/lan") => {
+            let store = registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
+            Ok((200, serde_json::to_string(&store.lan.view())?))
+        }
+        ("PUT", "/v1/otter/connections/lan") => {
+            let input: lan_listener::Update = match serde_json::from_str(&request.body) {
+                Ok(input) => input,
+                Err(_) => return Ok((400, json!({"error":{"code":"lan_input_invalid","message":"请填写有效的局域网 IPv4 地址和端口"}}).to_string())),
+            };
+            let mut store = registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
+            let previous = store.lan.endpoint();
+            let retired = match store.lan.update(input) {
+                Ok(retired) => retired,
+                Err(error) => {
+                    // Manager supplies fixed public context, never OS paths or private key data.
+                    return Ok((400, json!({"error":{"code":"lan_configuration_rejected","message":error.to_string()}}).to_string()));
+                }
+            };
+            if previous != store.lan.endpoint() {
+                let ids: BTreeSet<_> = store
+                    .connection_requests
+                    .values()
+                    .filter(|r| r.lan)
+                    .map(|r| r.device_id.clone())
+                    .collect();
+                store.connection_requests.retain(|_, request| !request.lan);
+                for session in store
+                    .sessions
+                    .values()
+                    .filter(|s| ids.contains(&s.device_id))
+                {
+                    session.revoked.store(true, Ordering::SeqCst);
+                }
+                store.connection_policy_revision = store.connection_policy_revision.wrapping_add(1);
+            }
+            let response = serde_json::to_string(&store.lan.view())?;
+            drop(store);
+            drop(retired);
+            Ok((200, response))
+        }
         ("GET", "/v1/otter/connections") => {
             let mut store = registry
                 .lock()
@@ -44,7 +86,7 @@ fn route_otter_connections(
             Ok((
                 200,
                 serde_json::to_string(&json!({
-                    "loom": store.connection_policy.public_info(),
+                    "loom": store.connection_info(),
                     "requests": store.connection_requests.values().filter(|request| request.phase == "pending").collect::<Vec<_>>(),
                 }))?,
             ))

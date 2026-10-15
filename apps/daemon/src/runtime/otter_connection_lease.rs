@@ -38,7 +38,15 @@ fn activate_otter_connection(
     if !authorized {
         return connection_error(403, "connection_authentication_revoked");
     }
-    let loom = store.connection_policy.public_info();
+    let device_id = connection.device_id.clone();
+    if !store.devices[&device_id].otter_connected {
+        store.devices.get_mut(&device_id).unwrap().otter_connected = true;
+        if let Err(error) = store.persist() {
+            store.devices.get_mut(&device_id).unwrap().otter_connected = false;
+            return Err(error);
+        }
+    }
+    let loom = store.connection_info();
     let connection = store
         .connection_requests
         .get_mut(&input.request_id)

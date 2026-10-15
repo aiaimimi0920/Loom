@@ -8,6 +8,8 @@ mod live_media_device_auth {
     include!("device_pairing_budget.rs");
     include!("device_pairing_receipt.rs");
     include!("otter_connections.rs");
+include!("otter_lan.rs");
+include!("otter_lan_policy.rs");
     include!("otter_connection_admission.rs");
     include!("otter_connection_discovery.rs");
     include!("otter_connection_revocation.rs");

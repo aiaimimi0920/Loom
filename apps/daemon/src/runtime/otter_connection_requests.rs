@@ -16,6 +16,8 @@ fn otter_connection_has_capacity(store: &DeviceRegistryStore, authenticated: boo
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OtterConnectionRequest {
+    #[serde(skip)]
+    lan: bool,
     id: String,
     device_id: String,
     name: String,
@@ -91,6 +93,7 @@ impl OtterConnectionAuthentication {
 }
 
 struct VerifiedOtterConnection {
+    lan: bool,
     input: OtterConnectionInput,
     authentication: Option<OtterConnectionAuthentication>,
     policy: connection_policy::Store,
@@ -104,6 +107,7 @@ fn create_otter_connection_request(
     token: Option<&str>,
     registry: &SharedDeviceRegistryStore,
     bridge: &SharedOtterBridgeRuntime,
+    ingress: Option<&str>,
 ) -> Result<(u16, String)> {
     let input: OtterConnectionInput = match serde_json::from_str(body) {
         Ok(input) => input,
@@ -122,10 +126,14 @@ fn create_otter_connection_request(
         return device_auth_error_response(error);
     }
     let now = unix_time_millis();
-    let (policy, authentication, revision) = {
+    let (policy, authentication, revision, lan) = {
         let mut store = registry
             .lock()
             .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
+        let lan = store.lan.accepts_ingress(ingress);
+        if ingress.is_some() && !lan {
+            return connection_error(403, "connection_lan_unavailable");
+        }
         store
             .connection_requests
             .retain(|_, request| request.expires_at_ms > now);
@@ -150,17 +158,16 @@ fn create_otter_connection_request(
             store.connection_policy.clone(),
             authentication,
             store.connection_policy_revision,
+            lan,
         )
     };
-    let info = policy.public_info();
-    let trusted =
-        info.approval == connection_policy::Approval::Authenticated && authentication.is_some();
     // Password work is bounded by admission above and runs outside the registry lock.
-    if !trusted && !policy.check_password(&input.password) {
+    if !policy.check_password(&input.password) {
         return connection_error(403, "connection_password_invalid");
     }
     finish_otter_connection_request(
         VerifiedOtterConnection {
+            lan,
             input,
             authentication,
             policy,
@@ -178,6 +185,7 @@ fn finish_otter_connection_request(
     bridge: &SharedOtterBridgeRuntime,
 ) -> Result<(u16, String)> {
     let VerifiedOtterConnection {
+        lan,
         input,
         authentication,
         policy,
@@ -239,8 +247,8 @@ fn finish_otter_connection_request(
     if !device.enabled {
         return connection_error(403, "device_disabled");
     }
-    let automatic = trusted
-        || (info.approval == connection_policy::Approval::Password && info.password_required);
+    let automatic = (trusted && device.otter_connected)
+        || (info.approval == connection_policy::Approval::Lan && lan);
     if automatic && device.approval != "approved" {
         let mut approved = device.clone();
         approved.approval = "approved".into();
@@ -254,6 +262,7 @@ fn finish_otter_connection_request(
     let receipt = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let device_epoch = store.devices[&device.id].session_epoch;
     let request = OtterConnectionRequest {
+        lan,
         id: format!("connection-{}", Uuid::new_v4()),
         device_id: device.id,
         name: input.name.trim().to_owned(),

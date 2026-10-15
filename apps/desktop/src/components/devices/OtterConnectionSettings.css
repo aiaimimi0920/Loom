@@ -3,9 +3,9 @@
 .otter-connection-settings header code { color: var(--p-muted, #929a9f); overflow-wrap: anywhere; font-size: 12px; }
 .otter-connection-settings fieldset { display: grid; gap: 8px; border: 0; padding: 0; margin: 0; }
 .otter-connection-settings label { display: grid; grid-template-columns: 90px minmax(0, 1fr); align-items: center; gap: 8px; }
-.otter-connection-settings input, .otter-connection-settings select { min-width: 0; color: var(--p-text, #f7f8ef); background: var(--p-control, #111720); border: 1px solid var(--p-line, #ffffff1f); padding: 6px; border-radius: 3px; }
+.otter-connection-settings textarea, .otter-connection-settings input, .otter-connection-settings select { min-width: 0; color: var(--p-text, #f7f8ef); background: var(--p-control, #111720); border: 1px solid var(--p-line, #ffffff1f); padding: 6px; border-radius: 3px; }
 .otter-connection-settings input[type="checkbox"] { justify-self: start; accent-color: var(--p-accent, #d9ff38); }
-.otter-connection-settings :is(input, select, button):focus-visible { outline: 2px solid var(--p-accent, #d9ff38); outline-offset: 2px; }
+.otter-connection-settings :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--p-accent, #d9ff38); outline-offset: 2px; }
 .otter-connection-settings fieldset > button { justify-self: end; }
 .otter-connection-requests { display: grid; gap: 6px; max-height: 280px; overflow-y: auto; }
 .otter-connection-request { display: flex; align-items: center; gap: 6px; padding: 6px; background: var(--p-panel, #0e1218); }

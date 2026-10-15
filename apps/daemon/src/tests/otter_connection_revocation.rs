@@ -6,6 +6,7 @@ fn verified_authenticated_otter_request(
     let store = f.devices.lock().unwrap();
     let key = store.devices[id].public_key.as_deref().unwrap();
     VerifiedOtterConnection {
+        lan: false,
         input: OtterConnectionInput {
             name: "Known Otter".into(),
             public_key: key.into(),

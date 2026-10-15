@@ -13,6 +13,8 @@ enum ManagedDeviceKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagedDevice {
+    #[serde(default)]
+    otter_connected: bool,
     id: String,
     name: String,
     kind: ManagedDeviceKind,
@@ -43,6 +45,7 @@ struct DeviceRegistryDocument {
 }
 
 struct DeviceRegistryStore {
+    lan: lan_listener::Manager,
     path: PathBuf,
     connection_policy: connection_policy::Store,
     connection_policy_revision: u64,
@@ -98,6 +101,11 @@ impl DeviceAuthError {
 }
 
 impl DeviceRegistryStore {
+    fn connection_info(&self) -> connection_policy::PublicInfo {
+        let mut info = self.connection_policy.public_info();
+        self.lan.apply_public_endpoint(&mut info);
+        info
+    }
     /// Open the device registry, refusing to start when the file exists but cannot be read.
     ///
     /// This is deliberately fallible. The registry holds each paired device's `public_key`,
@@ -154,6 +162,7 @@ impl DeviceRegistryStore {
         devices.insert(
             local_id.clone(),
             ManagedDevice {
+                otter_connected: false,
                 id: local_id,
                 name: local_name,
                 kind: ManagedDeviceKind::Computer,
@@ -169,6 +178,7 @@ impl DeviceRegistryStore {
             },
         );
         let mut store = Self {
+            lan: lan_listener::Manager::open(&path.with_file_name("loom-lan.json"), local_addr)?,
             connection_policy: connection_policy::Store::open_with_identity(&path.with_file_name("loom-connection.json"), loom_id)?,
             connection_policy_revision: 0,
             connection_requests: BTreeMap::new(),

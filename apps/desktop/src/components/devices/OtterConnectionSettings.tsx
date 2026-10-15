@@ -3,12 +3,14 @@ import { decideOtterConnection, loadOtterConnections, saveOtterConnectionPolicy,
   type OtterConnectionPolicyDraft, type OtterConnectionsView, type OtterApprovalPolicy } from "../../services/loomApi/otterConnections.ts";
 import { errorMessage } from "../../services/loomApi/transport.ts";
 import "./OtterConnectionSettings.css";
+import { LoomLanSettings } from "./LoomLanSettings.tsx";
 
 export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; online: boolean }) {
   const [view, setView] = useState<OtterConnectionsView | null>(null);
   const [draft, setDraft] = useState<OtterConnectionPolicyDraft | null>(null);
   const [password, setPassword] = useState("");
-  const [clearPassword, setClearPassword] = useState(false);
+  const [passwordEnabled, setPasswordEnabled] = useState(false);
+  const initialized = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -19,7 +21,7 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
   useEffect(() => {
     const current = ++epoch.current;
     let refreshing = false;
-    setView(null); setDraft(null); setPassword(""); setError(""); setNotice(""); setClearPassword(false); setBusy(false);
+    setView(null); setDraft(null); setPassword(""); setError(""); setNotice(""); setPasswordEnabled(false); setBusy(false); initialized.current = false;
     const refresh = async () => {
       if (!online || refreshing || running.current) return;
       refreshing = true;
@@ -28,8 +30,9 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
         const next = await loadOtterConnections(baseUrl);
         if (current !== epoch.current || read !== readVersion.current) return;
         setView(next);
-        setDraft((old) => old ?? { name: next.loom.name, endpoint: next.loom.endpoint,
-          discoverable: next.loom.discoverable, approval: next.loom.approval });
+        if (!initialized.current) { setPasswordEnabled(next.loom.passwordRequired); initialized.current = true; }
+        setDraft((old) => old ?? { name: next.loom.name, endpoint: null,
+          discoverable: false, approval: next.loom.approval });
       } catch (reason) { if (current === epoch.current && read === readVersion.current) setError(errorMessage(reason)); }
       finally { refreshing = false; }
     };
@@ -46,7 +49,7 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
     try {
       await action();
       if (current !== epoch.current) return;
-      if (saved) { setPassword(""); setClearPassword(false); setNotice("已保存"); }
+      if (saved) { setPassword(""); setNotice("已保存"); }
       const next = await loadOtterConnections(baseUrl);
       if (current === epoch.current) setView(next);
     } catch (reason) { if (current === epoch.current) setError(errorMessage(reason)); }
@@ -58,21 +61,20 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
     {!online && <p role="status">Loom 离线</p>}
     {error && <p className="wall-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
+    <LoomLanSettings baseUrl={baseUrl} online={online} />
     {draft && <form onSubmit={(event) => {
       event.preventDefault();
       void perform(() => saveOtterConnectionPolicy(baseUrl, { ...draft,
-        ...(clearPassword ? { password: "" } : password ? { password } : {}) }), true);
+        ...(!passwordEnabled ? { password: "" } : password ? { password } : {}) }), true);
     }}>
       <fieldset disabled={!online || busy}>
         <label>名称<input maxLength={80} value={draft.name} onChange={(event) => change({ name: event.target.value })} required /></label>
-        <label>公开发现<input type="checkbox" checked={draft.discoverable} onChange={(event) => change({ discoverable: event.target.checked })} /></label>
-        <label>HTTPS 地址<input type="url" value={draft.endpoint ?? ""} onChange={(event) => change({ endpoint: event.target.value || null })} required={draft.discoverable} /></label>
         <label>审批<select value={draft.approval} onChange={(event) => change({ approval: event.target.value as OtterApprovalPolicy })}>
-          <option value="manual">每次手动批准</option><option value="password">密码正确自动连接</option><option value="authenticated">已认证设备自动连接</option>
+          <option value="manual">手动批准</option><option value="lan">局域网内自动批准</option><option value="authenticated">连接过的设备自动批准</option>
         </select></label>
-        <label>连接密码<input type="password" autoComplete="new-password" maxLength={256} value={password} disabled={clearPassword}
-          placeholder={view?.loom.passwordRequired ? "已设置 · 留空保留" : "未设置"} onChange={(event) => setPassword(event.target.value)} /></label>
-        {view?.loom.passwordRequired && <label>清除密码<input type="checkbox" checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} /></label>}
+        <label>启用连接码<input type="checkbox" checked={passwordEnabled} onChange={(event) => { setPasswordEnabled(event.target.checked); setNotice(""); }} /></label>
+        {passwordEnabled && <label>连接码<input type="password" autoComplete="new-password" minLength={8} maxLength={256} value={password}
+          required={!view?.loom.passwordRequired} placeholder={view?.loom.passwordRequired ? "已设置 · 留空保留" : "至少 8 位"} onChange={(event) => setPassword(event.target.value)} /></label>}
         <button type="submit" className="signal-button">{busy ? "处理中…" : "保存"}</button>
       </fieldset>
     </form>}
