@@ -32,6 +32,26 @@ fn response_for_block(request: &str, translations: &[&str]) -> String {
 }
 
 #[test]
+fn translation_preserves_each_ocr_region_background() {
+    let mut value = input();
+    value["textBlocks"][0]["backgroundColor"] = json!("#f8f0d8");
+    value["textBlocks"][1]["backgroundColor"] = json!("#181818");
+    value["textBlocks"][1]["textColor"] = json!("#ffffff");
+    let source: TranslationInput = serde_json::from_value(value).unwrap();
+    let result = translate_with(source, |_, request, _, _| {
+        Ok(response_for_block(request, &["安全设置", "管理设备"]))
+    })
+    .unwrap();
+    for (index, expected) in ["#f8f0d8", "#181818"].iter().enumerate() {
+        assert_eq!(result.text_blocks[index].source.background_color, *expected);
+        assert_eq!(
+            result.surface_scene["children"][index]["style"]["background"],
+            *expected
+        );
+    }
+}
+
+#[test]
 fn model_translation_keeps_source_geometry_and_escapes_text_in_the_scene() {
     let source: TranslationInput = serde_json::from_value(input()).unwrap();
     let mut requests = Vec::new();

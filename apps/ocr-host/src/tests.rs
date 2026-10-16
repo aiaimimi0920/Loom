@@ -8,8 +8,11 @@ use crate::commands;
 use crate::overlay::build_attachment_payload;
 
 #[test]
-fn attachment_scene_preserves_source_geometry_and_uses_one_opaque_fill() {
-    let payload = build_attachment_payload(&fixture_result(), true);
+fn attachment_scene_preserves_source_geometry_and_each_region_background() {
+    let mut result = fixture_result();
+    result.text_blocks[1].bg_color_hex = "#f8f0d8".to_owned();
+    result.text_blocks[1].color_hex = "#000000".to_owned();
+    let payload = build_attachment_payload(&result, true);
     let children = payload.surface_scene["children"].as_array().unwrap();
     assert_eq!(children[0]["layout"]["left"], "10.00000%");
     assert_eq!(children[0]["layout"]["top"], "20.00000%");
@@ -22,15 +25,10 @@ fn attachment_scene_preserves_source_geometry_and_uses_one_opaque_fill() {
     assert_eq!(children[0]["children"][0]["props"]["selectable"], true);
     assert!(children[0]["layout"].get("overflowX").is_none());
     assert!(children[0]["layout"].get("overflowY").is_none());
-    let fill = payload.text_blocks[0].background_color.clone();
-    assert!(fill.starts_with('#') && fill.len() == 7);
-    assert!(payload
-        .text_blocks
-        .iter()
-        .all(|block| block.background_color == fill));
-    assert_ne!(fill, "#ffffff");
-    assert_ne!(fill, "#101010");
-    assert!(!is_red_like(&fill));
+    for (index, expected) in ["#101010", "#f8f0d8"].iter().enumerate() {
+        assert_eq!(payload.text_blocks[index].background_color, *expected);
+        assert_eq!(children[index]["style"]["background"], *expected);
+    }
 }
 
 #[test]
@@ -453,27 +451,6 @@ fn code_attachment(
         payload: serde_json::to_value(payload).unwrap(),
         resource_refs: Vec::new(),
     }
-}
-
-fn is_red_like(hex: &str) -> bool {
-    let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap();
-    let red = ((value >> 16) & 0xff) as f32 / 255.0;
-    let green = ((value >> 8) & 0xff) as f32 / 255.0;
-    let blue = (value & 0xff) as f32 / 255.0;
-    let maximum = red.max(green).max(blue);
-    let minimum = red.min(green).min(blue);
-    let delta = maximum - minimum;
-    if delta <= f32::EPSILON {
-        return false;
-    }
-    let hue = if maximum == red {
-        60.0 * ((green - blue) / delta).rem_euclid(6.0)
-    } else if maximum == green {
-        60.0 * ((blue - red) / delta + 2.0)
-    } else {
-        60.0 * ((red - green) / delta + 4.0)
-    };
-    hue <= 30.0 || hue >= 300.0
 }
 
 fn fixture_result() -> OcrDetectResult {

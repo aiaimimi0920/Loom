@@ -1,24 +1,39 @@
 use crate::geometry::Bounds;
 
+#[path = "background_palette.rs"]
+mod background_palette;
+use background_palette::{distance, Palette};
+
 const LUMINANCE_BINS: usize = 256;
 
 pub(crate) fn estimate_text_and_background_color(
     image_buffer: &image::RgbImage,
     bounds: Bounds,
 ) -> (String, String) {
-    // Single pass: bin every pixel by luminance and keep the per-bin colour
-    // sums. The dark/light split is then derived from the histogram instead of
-    // re-walking the region, which halves the per-block pixel cost on pages
-    // that produce hundreds of text blocks.
+    if image_buffer.width() == 0
+        || image_buffer.height() == 0
+        || bounds.min_x > bounds.max_x
+        || bounds.min_y > bounds.max_y
+        || bounds.max_x >= image_buffer.width()
+        || bounds.max_y >= image_buffer.height()
+    {
+        return ("#000000".to_owned(), "#ffffff".to_owned());
+    }
+    // At most 16384 source pixels per block; retain RGB modes separately from
+    // the luminance split used to estimate text, including antialiased strokes.
+    let mut palette = Palette::new();
     let mut bin_counts = [0_u64; LUMINANCE_BINS];
     let mut bin_colors = [[0_u64; 3]; LUMINANCE_BINS];
     let mut total_lum: u64 = 0;
     let mut total_color = [0_u64; 3];
     let mut count: u64 = 0;
 
-    for y in bounds.min_y..=bounds.max_y {
-        for x in bounds.min_x..=bounds.max_x {
+    let step_x = (bounds.max_x - bounds.min_x + 1).div_ceil(128) as usize;
+    let step_y = (bounds.max_y - bounds.min_y + 1).div_ceil(128) as usize;
+    for y in (bounds.min_y..=bounds.max_y).step_by(step_y) {
+        for x in (bounds.min_x..=bounds.max_x).step_by(step_x) {
             let pixel = image_buffer.get_pixel(x, y);
+            palette.add(pixel.0);
             let lum = luminance(pixel) as u64;
             let bin = (lum as usize).min(LUMINANCE_BINS - 1);
             bin_counts[bin] += 1;
@@ -62,7 +77,7 @@ pub(crate) fn estimate_text_and_background_color(
     let light = average_color(light_sum, light_count, [255, 255, 255]);
     if dark_count == 0 || light_count == 0 {
         let region = average_color(total_color, count, [0, 0, 0]);
-        let background = surrounding_average(image_buffer, bounds)
+        let background = surrounding_background(image_buffer, bounds)
             .filter(|candidate| luminance_color(*candidate).abs_diff(luminance_color(region)) >= 24)
             .unwrap_or_else(|| {
                 if luminance_color(region) < 128 {
@@ -73,16 +88,35 @@ pub(crate) fn estimate_text_and_background_color(
             });
         return (format_hex(region), format_hex(background));
     }
-    let (foreground, background) = if dark_count < light_count {
+    // A tight box can contain more ink than background. A contrasting perimeter
+    // disambiguates the light/dark classes before excluding the text color.
+    let surrounding = surrounding_background(image_buffer, bounds);
+    let dark_is_text = surrounding
+        .filter(|rim| distance(*rim, dark).abs_diff(distance(*rim, light)) >= 32)
+        .map_or(dark_count < light_count, |rim| {
+            distance(rim, light) < distance(rim, dark)
+        });
+    let (foreground, fallback) = if dark_is_text {
         (dark, light)
     } else {
         (light, dark)
     };
 
+    // Exclude the most populated ink bin, rather than its antialiased mean:
+    // averaging black strokes with gray edges can move the exclusion off black.
+    let ink_bin = (0..LUMINANCE_BINS)
+        .filter(|&bin| (bin < avg_lum) == dark_is_text)
+        .max_by_key(|&bin| bin_counts[bin]);
+    let ink = ink_bin.map_or(foreground, |bin| {
+        average_color(bin_colors[bin], bin_counts[bin], foreground)
+    });
+    let background = palette
+        .background(ink, surrounding.unwrap_or(fallback))
+        .unwrap_or(fallback);
     (format_hex(foreground), format_hex(background))
 }
 
-fn surrounding_average(image_buffer: &image::RgbImage, bounds: Bounds) -> Option<[u8; 3]> {
+fn surrounding_background(image_buffer: &image::RgbImage, bounds: Bounds) -> Option<[u8; 3]> {
     if image_buffer.width() == 0 || image_buffer.height() == 0 {
         return None;
     }
@@ -93,21 +127,23 @@ fn surrounding_average(image_buffer: &image::RgbImage, bounds: Bounds) -> Option
         .max_y
         .saturating_add(1)
         .min(image_buffer.height() - 1);
-    let mut sum = [0_u64; 3];
-    let mut count = 0_u64;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            if x >= bounds.min_x && x <= bounds.max_x && y >= bounds.min_y && y <= bounds.max_y {
-                continue;
+    let mut palette = Palette::new();
+    // Sample only the actual outside perimeter, never walk the full rectangle.
+    for x in (min_x..=max_x).step_by((max_x - min_x + 1).div_ceil(128) as usize) {
+        for y in [min_y, max_y] {
+            if y < bounds.min_y || y > bounds.max_y {
+                palette.add(image_buffer.get_pixel(x, y).0);
             }
-            let pixel = image_buffer.get_pixel(x, y);
-            sum[0] += pixel[0] as u64;
-            sum[1] += pixel[1] as u64;
-            sum[2] += pixel[2] as u64;
-            count += 1;
         }
     }
-    (count > 0).then(|| average_color(sum, count, [0, 0, 0]))
+    for y in (min_y..=max_y).step_by((max_y - min_y + 1).div_ceil(128) as usize) {
+        for x in [min_x, max_x] {
+            if x < bounds.min_x || x > bounds.max_x {
+                palette.add(image_buffer.get_pixel(x, y).0);
+            }
+        }
+    }
+    palette.dominant(None)
 }
 
 fn luminance(pixel: &image::Rgb<u8>) -> u32 {
@@ -132,6 +168,10 @@ fn average_color(sum: [u64; 3], count: u64, fallback: [u8; 3]) -> [u8; 3] {
 fn format_hex(color: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
 }
+
+#[cfg(test)]
+#[path = "background_color_tests.rs"]
+mod background_tests;
 
 #[cfg(test)]
 mod tests {

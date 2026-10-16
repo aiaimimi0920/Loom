@@ -134,10 +134,18 @@ immediately to the left of that line. The original recognized text is retained
 in `rawText`, and CTC spans are omitted because they do not cover the pixel-only
 prefix.
 
-The interactive overlay uses one opaque fill selected against all recognized
-foreground and source-background colors in the owning image. Red and red-adjacent
-hues are excluded: they are reserved for error/destructive semantics rather than
-ordinary OCR text. Typography is bounded by both detected line height and available
+The interactive overlay uses each region's sampled background as its opaque fill,
+not a contrasting shared highlight. Sampling is bounded to 128 by 128 pixels per
+region; RGB bins combine nearby colors and select the most populated group after
+excluding the estimated text color. A bounded outside perimeter helps distinguish
+dense ink from background. This is a color heuristic, not a pixel-level glyph mask;
+photographs and gradients use the same deterministic dominant-color estimate.
+Tiny uniform glyphs use contrasting perimeter evidence or a neutral fallback when
+no background is observable. Readable source text colors are retained; otherwise
+a neutral light/dark foreground is chosen. Translation inherits these per-region
+colors through `ocr-text.v1`. Previously cached attachments retain their colors;
+re-recognition and re-translation refresh them with the upgraded capability.
+Typography is bounded by both detected line height and available
 line width, so long results shrink instead of being clipped by their detector box.
 Recognized text nodes opt into native WebView text selection. Dragging across a
 substring keeps that selection instead of firing the block's whole-text copy action;

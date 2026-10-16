@@ -4,7 +4,7 @@ use loom_ocr::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::overlay_color::{readable_text_color, shared_fill_color};
+use crate::overlay_color::readable_text_color;
 use crate::overlay_typography::scene_typography;
 
 const MAX_BLOCKS: usize = 128;
@@ -66,18 +66,11 @@ pub struct OcrAttachmentBlock {
 pub fn build_attachment_payload(result: &OcrDetectResult, visible: bool) -> OcrAttachmentPayload {
     let source_width = result.width.max(1);
     let source_height = result.height.max(1);
-    let fill_color = shared_fill_color(&result.text_blocks);
     let text_blocks = result
         .text_blocks
         .iter()
         .filter_map(|block| {
-            normalize_block(
-                block,
-                source_width,
-                source_height,
-                result.scale_factor,
-                &fill_color,
-            )
+            normalize_block(block, source_width, source_height, result.scale_factor)
         })
         .take(MAX_BLOCKS)
         .collect::<Vec<_>>();
@@ -136,7 +129,6 @@ fn normalize_block(
     source_width: u32,
     source_height: u32,
     coordinate_scale: f32,
-    fill_color: &str,
 ) -> Option<OcrAttachmentBlock> {
     if block.text.trim().is_empty() || block.box_points.is_empty() {
         return None;
@@ -156,6 +148,9 @@ fn normalize_block(
     if right <= left || bottom <= top {
         return None;
     }
+    // The OCR sampler owns pixel classification; presentation must not replace
+    // its per-region background with a synthetic shared highlight color.
+    let fill_color = safe_color(&block.bg_color_hex, "#ffffff");
     Some(OcrAttachmentBlock {
         text: truncate_utf8(&block.text, MAX_BLOCK_TEXT_BYTES),
         translated_text: None,
@@ -167,8 +162,8 @@ fn normalize_block(
         top,
         width: right - left,
         height: bottom - top,
-        text_color: readable_text_color(&block.color_hex, fill_color),
-        background_color: fill_color.to_owned(),
+        text_color: readable_text_color(&block.color_hex, &fill_color),
+        background_color: fill_color,
         box_points: block.box_points.clone(),
         box_score: block.box_score,
         text_score: block.text_score,
