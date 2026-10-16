@@ -1,4 +1,5 @@
 //! 对接当前 Workers API；不复用历史 Art-store 协议或自动执行远端载荷。
+mod download;
 use crate::naccount::{access_token, error, Result};
 use loom_security::network::{secure_client, OutboundPolicy};
 use serde::Deserialize;
@@ -62,20 +63,13 @@ pub(crate) fn handle(root: &Path, action: &str, body: &str) -> Result<Value> {
     if body.len() > 4096 {
         return Err(error(413, "asset_library_request_budget"));
     }
+    if action == "download" {
+        return download::handle(root, body);
+    }
     let input: Input =
         serde_json::from_str(body).map_err(|_| error(400, "asset_library_request_invalid"))?;
     let (method, url, body, private) = route(action, &input)?;
-    let client = secure_client(
-        "Loom-AssetLibrary/1",
-        Duration::from_secs(15),
-        OutboundPolicy {
-            allow_http_loopback: false,
-            allow_private_networks: false,
-            allowed_domains: vec![],
-            max_redirects: 0,
-        },
-    )
-    .map_err(|_| error(503, "asset_library_unavailable"))?;
+    let client = client()?;
     let mut request = client.request(method, url);
     if private {
         request = request.bearer_auth(access_token(root)?);
@@ -85,6 +79,26 @@ pub(crate) fn handle(root: &Path, action: &str, body: &str) -> Result<Value> {
             .json(&body)
             .header("Idempotency-Key", &input.operation_id);
     }
+    let value = json_response(request)?;
+    if action != "create" && !value["items"].is_array() {
+        return Err(error(502, "asset_library_response_invalid"));
+    }
+    Ok(value)
+}
+fn client() -> Result<reqwest::blocking::Client> {
+    secure_client(
+        "Loom-AssetLibrary/1",
+        Duration::from_secs(15),
+        OutboundPolicy {
+            allow_http_loopback: false,
+            allow_private_networks: false,
+            allowed_domains: vec![],
+            max_redirects: 0,
+        },
+    )
+    .map_err(|_| error(503, "asset_library_unavailable"))
+}
+fn json_response(request: reqwest::blocking::RequestBuilder) -> Result<Value> {
     let response = request
         .send()
         .map_err(|_| error(503, "asset_library_unavailable"))?;
@@ -107,9 +121,6 @@ pub(crate) fn handle(root: &Path, action: &str, body: &str) -> Result<Value> {
             _ => "asset_library_request_rejected",
         };
         return Err(error(status, code));
-    }
-    if action != "create" && !value["items"].is_array() {
-        return Err(error(502, "asset_library_response_invalid"));
     }
     Ok(value)
 }

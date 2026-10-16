@@ -103,6 +103,20 @@ fn request_security_error(status: u16, code: &str, message: &str) -> (u16, Strin
         .expect("serialize request security error")
 }
 
+fn is_naccount_callback_navigation(request: &ParsedHttpRequest) -> bool {
+    // OAuth 回跳属于跨站导航；仅固定顶层回调可继续进入待登录事务的 state/PKCE 校验。
+    request.method == "GET"
+        && request.path.split('?').next() == Some("/v1/naccount/callback")
+        && matches!(
+            request.header("sec-fetch-site"),
+            Some("cross-site" | "same-site")
+        )
+        && request.header_count("sec-fetch-mode") == 1
+        && request.header("sec-fetch-mode") == Some("navigate")
+        && request.header_count("sec-fetch-dest") == 1
+        && request.header("sec-fetch-dest") == Some("document")
+}
+
 fn enforce_request_security(request: &ParsedHttpRequest) -> std::result::Result<(), (u16, String)> {
     if request.header_count("host") != 1 {
         return Err(request_security_error(
@@ -147,7 +161,8 @@ fn enforce_request_security(request: &ParsedHttpRequest) -> std::result::Result<
             value.trim().to_ascii_lowercase().as_str(),
             "same-origin" | "none"
         )
-    }) {
+    }) && !is_naccount_callback_navigation(request)
+    {
         return Err(request_security_error(
             403,
             "browser_context_denied",

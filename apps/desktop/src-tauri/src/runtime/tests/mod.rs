@@ -22,6 +22,7 @@ fn owned_daemon_sleep_fixture() {
 }
 
 mod art_bootstrap;
+mod cloud_timeout;
 mod commands_cache;
 mod fixtures;
 mod framework_bootstrap;

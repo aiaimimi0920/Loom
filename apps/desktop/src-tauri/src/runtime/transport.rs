@@ -148,13 +148,29 @@ pub(super) fn http_request_json(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value, String> {
-    http_request_json_with_timeout(
-        base_url,
-        method,
+    http_request_json_with_timeout(base_url, method, path, body, daemon_action_timeout(path))
+}
+
+pub(super) fn daemon_action_timeout(path: &str) -> Duration {
+    // 云端鉴权和下载包含多个有界上游请求，不能沿用本机快请求的三秒预算。
+    if path == "/v1/asset-library/download" {
+        return Duration::from_secs(120);
+    }
+    if matches!(
         path,
-        body,
-        LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT,
-    )
+        "/v1/naccount/start"
+            | "/v1/naccount/status"
+            | "/v1/naccount/refresh"
+            | "/v1/naccount/logout"
+            | "/v1/asset-library/catalog"
+            | "/v1/asset-library/library"
+            | "/v1/asset-library/resources"
+            | "/v1/asset-library/create"
+    ) {
+        Duration::from_secs(90)
+    } else {
+        LOOM_DAEMON_DEFAULT_REQUEST_TIMEOUT
+    }
 }
 
 pub(super) fn http_request_json_with_timeout(
