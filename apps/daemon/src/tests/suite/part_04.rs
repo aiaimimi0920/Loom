@@ -294,7 +294,7 @@ fn framework_package_zip(id: &str, version: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer
             .start_file("framework.manifest.json", options)
             .expect("manifest entry");
@@ -371,7 +371,7 @@ fn signed_framework_package_zip(
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         for relative in ["framework.manifest.json", command, "signature.json"] {
             writer.start_file(relative, options).expect("package entry");
             writer
@@ -404,7 +404,7 @@ fn mcp_server_package_zip() -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer
             .start_file("mcp.server.json", options)
             .expect("manifest entry");

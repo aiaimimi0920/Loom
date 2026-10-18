@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { postJson } from "../../services/loomApi/transport";
 import { cloudError } from "../../services/naccount";
 
-interface Resource { id: string; title: string; kind: "art" | "capability" | "application" }
+interface Resource { id: string; title: string; kind: "art" | "capability" | "application" | "mcp" }
 interface Page { items: Resource[]; nextCursor?: string | null }
 export function CloudResourcesPanel({ baseUrl }: { baseUrl: string }) {
   const [page, setPage] = useState<Page | null>(null);
@@ -16,7 +16,7 @@ export function CloudResourcesPanel({ baseUrl }: { baseUrl: string }) {
     try {
       const result = await postJson<Page>(baseUrl, "/v1/asset-library/resources", { after });
       if (!Array.isArray(result.items) || result.items.some((r) => typeof r.id !== "string"
-          || typeof r.title !== "string" || !["art", "capability", "application"].includes(r.kind)))
+          || typeof r.title !== "string" || !["art", "capability", "application", "mcp"].includes(r.kind)))
         throw new Error("asset_library_response_invalid");
       if (generation.current === token) setPage(result);
     } catch (e) { if (generation.current === token) setError(cloudError(e)); }

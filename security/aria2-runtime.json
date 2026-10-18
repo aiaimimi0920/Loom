@@ -1,0 +1,12 @@
+{
+  "name": "aria2",
+  "version": "1.37.0",
+  "platform": "windows-x64",
+  "license": "GPL-2.0-or-later",
+  "url": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip",
+  "archiveSha256": "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288",
+  "executableSha256": "be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2",
+  "archiveRoot": "aria2-1.37.0-win-64bit-build1",
+  "sourceUrl": "https://github.com/aria2/aria2/releases/tag/release-1.37.0",
+  "releaseApproved": false
+}

@@ -101,7 +101,7 @@ pub(super) fn replace_zip_entry(bytes: &[u8], target: &str, replacement: &[u8]) 
         let options = SimpleFileOptions::default();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).expect("zip entry");
-            let name = entry.name().to_owned();
+            let name = entry.name().unwrap().into_owned();
             writer.start_file(&name, options).expect("start entry");
             if name == target {
                 writer.write_all(replacement).expect("replacement");

@@ -426,57 +426,55 @@ fn install_mcp_server_package(
             )
         }
     };
-    let mut installed = match install_server_package(control_plane_root, &package_bytes) {
-        Ok(server) => server,
-        Err(error) => {
-            return structured_error(
-                400,
-                json!({
-                    "code": "invalid_mcp_server_package",
-                    "message": error.to_string(),
-                }),
-            )
-        }
-    };
+    // 同一 store 锁覆盖检查和提交；失败不删除候选包的历史版本。
     let mut guard = mcp_servers
         .lock()
         .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;
-    let previous = guard.get(&installed.id).cloned();
-    if let Some(existing) = previous.as_ref() {
-        let existing_package = existing
-            .package
-            .as_ref()
-            .map(|package| package.qualified_id.as_str());
-        let installed_package = installed
-            .package
-            .as_ref()
-            .map(|package| package.qualified_id.as_str());
-        if existing_package != installed_package {
-            let _ = uninstall_server_package(control_plane_root, &installed);
+    let mut conflict = false;
+    let mut persistence_failed = false;
+    let installed = loom_mcp::package::install_server_package_with_commit(
+        control_plane_root,
+        &package_bytes,
+        |installed| {
+            if let Some(existing) = guard.get(&installed.id) {
+                if existing.package.as_ref().map(|p| &p.qualified_id)
+                    != installed.package.as_ref().map(|p| &p.qualified_id)
+                {
+                    conflict = true;
+                    return Err(McpPackageError::Integrity(
+                        "MCP server id belongs to another package".into(),
+                    ));
+                }
+                installed.credential_bindings = existing.credential_bindings.clone();
+                installed.enabled = existing.enabled;
+            }
+            let mut next = guard.clone();
+            next.insert(installed.id.clone(), installed.clone());
+            persist_mcp_servers_snapshot(store_path, &next).map_err(|error| {
+                persistence_failed = true;
+                McpPackageError::Io(std::io::Error::other(error.to_string()))
+            })?;
+            *guard = next;
+            Ok(())
+        },
+    );
+    let installed = match installed {
+        Ok(installed) => installed,
+        Err(error) => {
             return structured_error(
-                409,
-                json!({
-                    "code": "mcp_server_id_conflict",
-                    "message": format!("MCP server id `{}` is already used by another configuration", installed.id),
-                    "serverId": installed.id,
-                }),
-            );
+                if conflict {
+                    409
+                } else if persistence_failed {
+                    500
+                } else {
+                    400
+                },
+                json!({"code": if conflict { "mcp_server_id_conflict" } else if persistence_failed {
+                "mcp_server_persistence_failed" } else { "invalid_mcp_server_package" },
+                "message": error.to_string()}),
+            )
         }
-        installed.credential_bindings = existing.credential_bindings.clone();
-        installed.enabled = existing.enabled;
-    }
-    guard.insert(installed.id.clone(), installed.clone());
-    if let Err(error) = persist_mcp_servers_snapshot(store_path, &guard) {
-        match previous {
-            Some(previous) => {
-                guard.insert(installed.id.clone(), previous);
-            }
-            None => {
-                guard.remove(&installed.id);
-            }
-        }
-        return Err(error);
-    }
+    };
     drop(guard);
     Ok((
         200,

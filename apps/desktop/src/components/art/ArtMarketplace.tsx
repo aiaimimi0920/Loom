@@ -7,13 +7,12 @@ import {
   officialFrameworkDisplayName,
 } from "../../services/artHubUi";
 import {
-  type ArtStoreEntry,
-  fetchArtStoreCatalog,
-  installArtFromStore,
   type LoomFramework,
   LoomToolDefinition,
   publishArt,
 } from "../../services/loomApi";
+import { fetchCloudArtCatalog, type CloudArtEntry } from "../../services/cloudCatalog";
+import { canInstallCloudPackage, installCloudPackage } from "../../services/cloudPackageInstall";
 import { artFrameworkIconKind, ArtIcon, StudioMessage } from "../app/appShell";
 import { requestAppConfirmation } from "../feedback/AppFeedback";
 import {
@@ -45,7 +44,8 @@ export function ArtStoreCard({
   refreshToken: number;
   onInstalled: () => void | Promise<void>;
 }) {
-  const [catalog, setCatalog] = useState<ArtStoreEntry[]>([]);
+  const [catalog, setCatalog] = useState<CloudArtEntry[]>([]);
+  const [nextAfter, setNextAfter] = useState<string | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -58,14 +58,15 @@ export function ArtStoreCard({
     officialOnly,
   ), [catalog, frameworks, officialOnly, searchText, selectedFrameworkIds]);
 
-  const loadCatalog = useCallback(async () => {
+  const loadCatalog = useCallback(async (after = "") => {
     const version = ++catalogLoadVersion.current;
     setCatalogLoading(true);
     setMessage(null);
     try {
-      const arts = await fetchArtStoreCatalog(baseUrl);
+      const { arts, nextAfter } = await fetchCloudArtCatalog(baseUrl, after);
       if (version !== catalogLoadVersion.current) return;
       setCatalog(arts);
+      setNextAfter(nextAfter);
     } catch (err) {
       if (version === catalogLoadVersion.current) {
         setMessage({ ok: false, text: err instanceof Error ? err.message : "无法访问商店。" });
@@ -83,7 +84,7 @@ export function ArtStoreCard({
     };
   }, [active, loadCatalog, refreshToken]);
 
-  const install = async (art: ArtStoreEntry) => {
+  const install = async (art: CloudArtEntry) => {
     if (art.official !== true && !await requestAppConfirmation({
       title: "安装未认证 Art",
       message: `“${art.name ?? art.id}”未经官方认证，可能包含恶意代码。仅在信任发布者和包来源时继续。`,
@@ -93,7 +94,7 @@ export function ArtStoreCard({
     setInstallingId(art.id);
     setMessage(null);
     try {
-      await installArtFromStore(baseUrl, art.id);
+      await installCloudPackage(baseUrl, art.publication);
       setMessage({ ok: true, text: `已安装 ${art.name ?? art.id}。` });
       await onInstalled();
     } catch (err) {
@@ -118,7 +119,8 @@ export function ArtStoreCard({
       {catalogLoading && catalog.length === 0 ? <p className="muted-line">加载中…</p> : null}
       {!catalogLoading && !message && visibleCatalog.length === 0 ? <p className="muted-line">没有匹配的 Art</p> : null}
       <div className="card-grid art-store-grid">
-        {visibleCatalog.map((art) => {
+        {visibleCatalog.map((entry) => {
+          const art = catalog.find((item) => item.id === entry.id)!;
           const frameworkReference = art.framework?.startsWith("neuro.official/")
             ? art.framework.slice("neuro.official/".length)
             : art.framework ?? null;
@@ -159,15 +161,17 @@ export function ArtStoreCard({
                   className="signal-button"
                   type="button"
                   onClick={() => void install(art)}
-                  disabled={installingId !== null}
+                  disabled={installingId !== null || !canInstallCloudPackage(art.publication)}
                 >
-                  {installing ? "安装中" : "安装"}
+                  {installing ? "安装中" : canInstallCloudPackage(art.publication) ? "安装" : "非原生 Art 包"}
                 </button>
               </div>
             </article>
           );
         })}
       </div>
+      {nextAfter && <button className="ghost-button" disabled={catalogLoading || installingId !== null}
+        onClick={() => void loadCatalog(nextAfter)}>下一页</button>}
     </section>
   );
 }

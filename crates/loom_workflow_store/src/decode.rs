@@ -83,9 +83,7 @@ pub fn workflow_yaml_to_graph_json(yaml: &str) -> WorkflowStoreResult<JsonValue>
 
         if let Some(with_map) = yaml_node.get("with").and_then(YamlValue::as_mapping) {
             for (key, value) in with_map {
-                let Some(target_handle) = key.as_str() else {
-                    continue;
-                };
+                let target_handle = key.as_str();
 
                 let json_value = serde_json::to_value(value).unwrap_or(JsonValue::Null);
                 if let Some(raw) = value.as_str() {

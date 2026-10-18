@@ -1,5 +1,5 @@
 //! 仅下载已获分发资格的包；不解压、安装或执行载荷。
-use super::{access_token, client, error, json_response, Result, ORIGIN};
+use super::{client, error, json_response, Result, ORIGIN};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -10,11 +10,18 @@ use std::{
 };
 
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub(super) const LARGE_MAX_BYTES: u64 = 96_000_000;
+
+#[cfg(test)]
+#[path = "worker_integration.rs"]
+mod worker_integration;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Input {
     publication_id: String,
+    #[serde(default)]
+    task_id: Option<String>,
 }
 
 struct PartialFile(PathBuf);
@@ -29,9 +36,15 @@ fn invalid() -> super::super::naccount::Error {
 }
 
 fn metadata(value: &Value, id: &str) -> Result<(u64, String)> {
+    let limit =
+        if value["kind"] == "application" && value["policy"] == "application-large-zip-format-v1" {
+            LARGE_MAX_BYTES
+        } else {
+            MAX_BYTES
+        };
     let size = value["size"]
         .as_u64()
-        .filter(|n| *n > 0 && *n <= MAX_BYTES)
+        .filter(|n| *n > 0 && *n <= limit)
         .ok_or_else(invalid)?;
     let sha = value["sha256"]
         .as_str()
@@ -63,7 +76,12 @@ fn checked_directory(root: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn save(mut reader: impl Read, dir: &Path, size: u64, expected_sha: &str) -> Result<PathBuf> {
+pub(super) fn save(
+    mut reader: impl Read,
+    dir: &Path,
+    size: u64,
+    expected_sha: &str,
+) -> Result<PathBuf> {
     let name = uuid::Uuid::new_v4();
     let partial_path = dir.join(format!("{name}.partial"));
     let destination = dir.join(format!("{name}.zip"));
@@ -86,7 +104,7 @@ fn save(mut reader: impl Read, dir: &Path, size: u64, expected_sha: &str) -> Res
                 break;
             }
             total += count as u64;
-            if total > size || total > MAX_BYTES {
+            if total > size || total > LARGE_MAX_BYTES {
                 return Err(invalid());
             }
             hash.update(&buffer[..count]);
@@ -113,17 +131,42 @@ pub(super) fn handle(root: &Path, body: &str) -> Result<Value> {
     if id.get_version_num() != 4 || id.to_string() != input.publication_id {
         return Err(error(400, "asset_library_request_invalid"));
     }
-    let token = access_token(root)?;
     let client = client()?;
-    download(root, &input.publication_id, client, token, ORIGIN)
+    let task_id = input
+        .task_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (token, registration) = crate::naccount::with_access_token(root, |token| {
+        let registration = super::download_control::register(root, &task_id, &token)?;
+        Ok((token, registration))
+    })?;
+    download_controlled(
+        root,
+        &input.publication_id,
+        client,
+        token,
+        ORIGIN,
+        Some(registration.state.clone()),
+    )
 }
 
-fn download(
+#[cfg(test)]
+pub(super) fn download(
     root: &Path,
     publication_id: &str,
     client: reqwest::blocking::Client,
     token: String,
     origin: &str,
+) -> Result<Value> {
+    download_controlled(root, publication_id, client, token, origin, None)
+}
+
+fn download_controlled(
+    root: &Path,
+    publication_id: &str,
+    client: reqwest::blocking::Client,
+    token: String,
+    origin: &str,
+    state: Option<std::sync::Arc<super::aria2_native::State>>,
 ) -> Result<Value> {
     let id = publication_id;
     let publication = json_response(
@@ -146,31 +189,57 @@ fn download(
     if ticket["publicationId"] != publication_id || ticket["contentPath"] != path {
         return Err(invalid());
     }
-    let response = client
-        .get(format!("{origin}{path}"))
-        .bearer_auth(token)
-        .header("X-Download-Ticket", credential)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .map_err(|_| error(503, "asset_library_unavailable"))?;
-    if response.status().as_u16() != 200 {
-        return Err(error(
-            response.status().as_u16(),
-            "asset_library_download_rejected",
-        ));
-    }
-    if response
-        .headers()
-        .get("content-type")
-        .and_then(|h| h.to_str().ok())
-        != Some("application/zip")
-        || response.content_length().is_some_and(|n| n != size)
-    {
-        return Err(invalid());
-    }
     let directory = checked_directory(root)?;
-    let path = save(response, &directory, size, &sha)?;
-    Ok(json!({"publicationId":id.to_string(), "path":path, "size":size, "sha256":sha}))
+    let use_aria2 = !cfg!(test) || std::env::var_os("LOOM_TEST_LIBARIA2").is_some();
+    let path = if use_aria2 {
+        super::aria2::download(
+            client.clone(),
+            &directory,
+            &format!("{origin}{path}"),
+            &token,
+            credential,
+            size,
+            &sha,
+            state.clone(),
+        )?
+    } else {
+        let response = client
+            .get(format!("{origin}{path}"))
+            .bearer_auth(token)
+            .header("X-Download-Ticket", credential)
+            .timeout(std::time::Duration::from_secs(60))
+            .send()
+            .map_err(|_| error(503, "asset_library_unavailable"))?;
+        if response.status().as_u16() != 200 {
+            return Err(error(
+                response.status().as_u16(),
+                "asset_library_download_rejected",
+            ));
+        }
+        if response
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            != Some("application/zip")
+            || response.content_length().is_some_and(|n| n != size)
+        {
+            return Err(invalid());
+        }
+        save(response, &directory, size, &sha)?
+    };
+    if state
+        .as_ref()
+        .is_some_and(|state| !super::download_control::finish(state))
+    {
+        let _ = fs::remove_file(&path);
+        return Err(error(409, "asset_library_download_cancelled"));
+    }
+    Ok(
+        json!({"publicationId":id.to_string(), "path":path, "size":size, "sha256":sha,
+            "downloadEngine":if use_aria2 { "libaria2" } else { "test-http" },
+            "kind":publication["kind"], "policy":publication["policy"],
+            "resourceId":publication["resourceId"], "label":publication["label"]}),
+    )
 }
 
 #[cfg(test)]
@@ -264,6 +333,23 @@ mod tests {
             )
             .is_err());
         }
+    }
+    #[test]
+    fn download_large_budget_requires_application_and_exact_policy() {
+        let mut value = json!({"id":"one", "kind":"application",
+            "policy":"application-large-zip-format-v1", "size":LARGE_MAX_BYTES,
+            "sha256":"a".repeat(64)});
+        assert!(metadata(&value, "one").is_ok());
+        value["size"] = json!(LARGE_MAX_BYTES + 1);
+        assert!(metadata(&value, "one").is_err());
+        value["size"] = json!(MAX_BYTES + 1);
+        for kind in ["art", "capability", "mcp"] {
+            value["kind"] = json!(kind);
+            assert!(metadata(&value, "one").is_err());
+        }
+        value["kind"] = json!("application");
+        value["policy"] = json!("application-zip-format-v1");
+        assert!(metadata(&value, "one").is_err());
     }
     #[test]
     fn download_only_publishes_verified_bytes_and_cleans_partial_files() {

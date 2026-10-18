@@ -33,9 +33,7 @@ use loom_durable::{
     SqliteRunEvidenceStore,
 };
 use loom_hooks::{HookSettings, HookSettingsSummary};
-use loom_mcp::package::{
-    install_server_package, uninstall_server_package, McpPackageError, MAX_MCP_SERVER_PACKAGE_BYTES,
-};
+use loom_mcp::package::{uninstall_server_package, McpPackageError, MAX_MCP_SERVER_PACKAGE_BYTES};
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_otter_bridge::{
     capabilities_updated_event, instantiate_workflow, sync_workflow, update_workflow_node,
@@ -101,6 +99,10 @@ use uuid::Uuid;
 
 mod account_login;
 mod asset_library;
+/// 仅在整个 daemon 进程正常退出时关闭进程级原生下载引擎。
+pub fn shutdown_download_engine() {
+    asset_library::shutdown_download_engine();
+}
 mod brain_plan;
 mod capability_resources;
 mod http_body_admission;
@@ -204,6 +206,7 @@ include!("runtime/wall_media_encoding.rs");
 include!("runtime/wall_png_cache.rs");
 include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
+include!("runtime/asset_library_install.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");
 include!("runtime/route_dispatch/framework_tools.rs");
@@ -304,6 +307,11 @@ mod tests {
     include!("tests/suite/part_35.rs");
     include!("tests/suite/part_36.rs");
     include!("tests/suite/part_37.rs");
+    include!("tests/cloud_package_install.rs");
+    include!("tests/cloud_capability_update.rs");
+    include!("tests/cloud_mcp_install.rs");
+    include!("tests/cloud_application_install.rs");
+    include!("tests/cloud_art_execution.rs");
     include!("tests/suite/part_38.rs");
     include!("tests/live_media_diagnostics.rs");
     include!("tests/live_video_negotiation.rs");

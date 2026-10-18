@@ -11,7 +11,7 @@ pub fn package_art_to_zip(
     let mut buf = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
-        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         // manifest.json — the ToolDefinition.
         writer
             .start_file(MANIFEST_NAME, opts)
@@ -138,7 +138,7 @@ pub fn build_authored_art_package_zip(
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file(MANIFEST_NAME, options)?;
         writer.write_all(&serde_json::to_vec_pretty(&tool)?)?;
         if let Some(runtime) = runtime {
@@ -187,7 +187,7 @@ pub(super) fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
     writer: &mut zip::ZipWriter<W>,
     base: &Path,
     dir: &Path,
-    opts: zip::write::FileOptions<'_, ()>,
+    opts: zip::write::SimpleFileOptions,
 ) -> Result<(), ArtInstallError> {
     use std::io::Write;
     for entry in std::fs::read_dir(dir)? {

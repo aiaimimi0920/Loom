@@ -153,7 +153,7 @@ pub(super) fn http_request_json(
 
 pub(super) fn daemon_action_timeout(path: &str) -> Duration {
     // 云端鉴权和下载包含多个有界上游请求，不能沿用本机快请求的三秒预算。
-    if path == "/v1/asset-library/download" {
+    if matches!(path, "/v1/asset-library/download" | "/v1/asset-library/install") {
         return Duration::from_secs(120);
     }
     if matches!(

@@ -97,7 +97,9 @@ fn main() -> Result<()> {
         address
     ));
 
-    daemon.serve_until(shutdown_rx)?;
+    let result = daemon.serve_until(shutdown_rx);
+    loom_daemon::shutdown_download_engine();
+    result?;
     Ok(())
 }
 

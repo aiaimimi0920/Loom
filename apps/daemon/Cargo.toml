@@ -51,9 +51,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tungstenite.workspace = true
 uuid.workspace = true
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_LibraryLoader"] }
+zip.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
 loom_perf.workspace = true
-zip.workspace = true

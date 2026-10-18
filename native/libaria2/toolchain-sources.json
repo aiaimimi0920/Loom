@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Exact Ubuntu source materials for the observed static runtime toolchain; not a legal approval",
+  "files": [
+    {
+      "name": "gcc-mingw-w64_24.3.tar.xz",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-mingw-w64/gcc-mingw-w64_24.3.tar.xz",
+      "sha256": "fedd36a7a285f2a396ae5e001664c3188b91b45d704d5505914e8a11f05f2909",
+      "bytes": 34680
+    },
+    {
+      "name": "gcc-10_10.3.0.orig.tar.gz",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/gcc-10_10.3.0.orig.tar.gz",
+      "sha256": "37425cd199173b633f155002fe16375782935942a91d4adefd1cd35ce9e44e9c",
+      "bytes": 83679201
+    },
+    {
+      "name": "gcc-10_10.3.0-14ubuntu1.debian.tar.xz",
+      "url": "https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/gcc-10/10.3.0-14ubuntu1/gcc-10_10.3.0-14ubuntu1.debian.tar.xz",
+      "sha256": "77765f9816579b98eade36a1f8912e966095b48779aa40dbd4ff081453086744",
+      "bytes": 844836
+    },
+    {
+      "name": "mingw-w64_8.0.0.orig.tar.bz2",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/m/mingw-w64/mingw-w64_8.0.0.orig.tar.bz2",
+      "sha256": "44c740ea6ab3924bc3aa169bad11ad3c5766c5c8459e3126d44eabb8735a5762",
+      "bytes": 9370799
+    },
+    {
+      "name": "mingw-w64_8.0.0-1.debian.tar.xz",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/m/mingw-w64/mingw-w64_8.0.0-1.debian.tar.xz",
+      "sha256": "de7721bea066ba632aedaf9a3cac785cfb35581a550913cdd5869ea9770ce514",
+      "bytes": 107216
+    }
+  ]
+}

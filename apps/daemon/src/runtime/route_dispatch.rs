@@ -158,6 +158,14 @@ fn route(
     }
     if request.method == "POST" && (route_path.starts_with("/v1/naccount/") || route_path.starts_with("/v1/asset-library/")) {
         if !admin_authenticated { return structured_error(403, json!({"code":"cloud_account_admin_required"})); }
+        if route_path == "/v1/asset-library/install" {
+            let package = match asset_library::prepare_install(control_plane_root, &request.body) {
+                Ok(package) => package,
+                Err(error) => return structured_error(error.status, json!({"code":error.code, "message":error.code})),
+            };
+            return install_asset_library_package(package, control_plane_root, capability_runtime,
+                capability_resources, hook_bridge, tool_registry, framework_registry, workflow_store, mcp_servers);
+        }
         let result = if let Some(action) = route_path.strip_prefix("/v1/naccount/") {
             if action == "start" && reqwest::Url::parse(settings_base_url).ok()
                 .is_none_or(|url| url.origin().ascii_serialization() != "http://127.0.0.1:8765") {

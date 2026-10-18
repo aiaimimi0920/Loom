@@ -30,12 +30,12 @@ pub(crate) fn open_bounded_archive(
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
-            return Err(StoreError::ArchiveSymbolicLink(file.name().to_owned()));
+            return Err(StoreError::ArchiveSymbolicLink(file.name()?.into_owned()));
         }
         let size = file.size();
         if size > MAX_ARCHIVE_ENTRY_BYTES {
             return Err(StoreError::ArchiveEntryTooLarge {
-                name: file.name().to_owned(),
+                name: file.name()?.into_owned(),
                 limit: MAX_ARCHIVE_ENTRY_BYTES,
             });
         }
@@ -53,7 +53,9 @@ pub(crate) fn open_bounded_archive(
         if size > 1024 * 1024
             && (compressed == 0 || size / compressed.max(1) > MAX_COMPRESSION_RATIO)
         {
-            return Err(StoreError::ArchiveCompressionRatio(file.name().to_owned()));
+            return Err(StoreError::ArchiveCompressionRatio(
+                file.name()?.into_owned(),
+            ));
         }
     }
     Ok(archive)
@@ -114,8 +116,10 @@ pub(crate) fn hash_entry_bounded(
     Ok(())
 }
 
-fn validate_archive_name(file: &zip::read::ZipFile<'_>) -> Result<(), StoreError> {
-    let raw_name = file.name();
+fn validate_archive_name<R: Read + ?Sized>(
+    file: &zip::read::ZipFile<'_, R>,
+) -> Result<(), StoreError> {
+    let raw_name = file.name()?;
     let normalized = raw_name.replace('\\', "/");
     if raw_name.contains('\\')
         || file.enclosed_name().is_none()

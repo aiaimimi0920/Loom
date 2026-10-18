@@ -119,6 +119,10 @@ if (Test-Path -LiteralPath $destination) {
     throw "Release destination already exists: $destination"
 }
 
+$aria2Policy = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'security/libaria2-runtime.json') | ConvertFrom-Json
+if (-not $aria2Policy.releaseApproved) { throw 'LIBARIA2_RELEASE_NOT_APPROVED' }
+& (Join-Path $repoRoot 'scripts/Install-LoomLibAria2.ps1') -BuildRoot (Join-Path $repoRoot '.tmp/libaria2-build') -Destination (Join-Path $repoRoot '.tmp/download-engine')
+
 if (-not (Test-Path -LiteralPath $resolvedOutputRoot)) {
     New-Item -ItemType Directory -Path $resolvedOutputRoot -Force | Out-Null
 }

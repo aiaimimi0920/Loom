@@ -60,6 +60,7 @@ function Copy-DirectoryContents {
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
 . (Join-Path $scriptRoot "PackageSigning.ps1")
+. (Join-Path $scriptRoot "NativePackageArchive.ps1")
 $signingContext = New-LoomPackageSigningContext `
     -RepoRoot $repoRoot `
     -KeyPath $SigningKeyPath `
@@ -184,7 +185,7 @@ try {
         if (Test-Path -LiteralPath $hashPath) {
             Remove-Item -LiteralPath $hashPath -Force
         }
-        Compress-Archive -Path (Join-Path $stageDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
+        Write-LoomNativePackageArchive -Stage $stageDirectory -Destination $zipPath
         $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Write-Utf8NoBomFile -Path $hashPath -Content "$hash  $artId.zip`n"
 

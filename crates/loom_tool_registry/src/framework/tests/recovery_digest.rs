@@ -12,11 +12,11 @@ fn replacement_package() -> Vec<u8> {
         let mut file = input.by_index(index).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
-        if file.name().starts_with("runtime/") {
+        if file.name().unwrap().starts_with("runtime/") {
             bytes.extend_from_slice(b"-replacement");
         }
         output
-            .start_file(file.name(), zip::write::SimpleFileOptions::default())
+            .start_file(file.name().unwrap(), zip::write::SimpleFileOptions::default())
             .unwrap();
         output.write_all(&bytes).unwrap();
     }

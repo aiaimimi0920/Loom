@@ -119,6 +119,16 @@ $componentsByRef[$nodePurl] = [ordered]@{
     "bom-ref" = $nodePurl
 }
 
+$aria2 = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'security/libaria2-runtime.json') | ConvertFrom-Json
+$aria2Purl = Get-Purl -Type 'generic' -Name 'libaria2' -PackageVersion ([string]$aria2.version)
+$componentsByRef[$aria2Purl] = [ordered]@{
+    type = 'library'
+    name = 'libaria2'
+    version = [string]$aria2.version
+    purl = $aria2Purl
+    'bom-ref' = $aria2Purl
+    licenses = @([ordered]@{ license = [ordered]@{ id = [string]$aria2.license } })
+}
 $components = @($componentsByRef.Values | Sort-Object { [string]$_['bom-ref'] })
 $serial = "urn:uuid:$([Guid]::NewGuid())"
 $timestamp = (Get-Date).ToUniversalTime().ToString("o")

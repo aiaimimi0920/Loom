@@ -10,7 +10,7 @@ fn package_with_runtime_dependency() -> Vec<u8> {
         let mut entry = archive.by_index(index).unwrap();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
-        if entry.name() == FRAMEWORK_MANIFEST_FILE {
+        if entry.name().unwrap() == FRAMEWORK_MANIFEST_FILE {
             let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             manifest["dependencies"] = serde_json::json!([{
                 "kind": "runtime", "id": "fixture.runtime", "version": "=1.0.0"
@@ -18,7 +18,7 @@ fn package_with_runtime_dependency() -> Vec<u8> {
             bytes = serde_json::to_vec(&manifest).unwrap();
         }
         output
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(entry.name().unwrap(), zip::write::SimpleFileOptions::default())
             .unwrap();
         output.write_all(&bytes).unwrap();
     }

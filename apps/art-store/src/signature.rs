@@ -61,7 +61,7 @@ pub(crate) fn verify_published_package_signature(
         if file.is_dir() {
             continue;
         }
-        let raw_name = file.name().to_owned();
+        let raw_name = file.name()?.into_owned();
         let name = raw_name.replace('\\', "/");
         if raw_name.contains('\\')
             || file.enclosed_name().is_none()

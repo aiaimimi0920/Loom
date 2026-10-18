@@ -68,7 +68,7 @@ fn zip_with_files(files: &[(&str, Vec<u8>)], compressed: bool) -> Vec<u8> {
         } else {
             zip::CompressionMethod::Stored
         };
-        let options: zip::write::FileOptions<'_, ()> =
+        let options: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(method);
         for (name, content) in files {
             writer.start_file(*name, options).unwrap();
@@ -110,7 +110,7 @@ fn archive_budgets_reject_oversized_or_suspicious_packages() {
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         for index in 0..=MAX_ARCHIVE_ENTRIES {
             writer.start_file(format!("{index}.txt"), options).unwrap();
         }
@@ -135,7 +135,7 @@ fn archive_metadata_rejects_unsafe_names_and_symbolic_links() {
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("manifest.json", options).unwrap();
         writer.write_all(b"{}").unwrap();
         writer

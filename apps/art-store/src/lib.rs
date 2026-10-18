@@ -93,7 +93,7 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
             writer.start_file(MANIFEST_NAME, opts).unwrap();
             writer
                 .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
@@ -140,7 +140,7 @@ mod tests {
         let mut bytes = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
             for name in [MANIFEST_NAME, "payload.txt", "signature.json"] {
                 writer.start_file(name, options).unwrap();
                 writer

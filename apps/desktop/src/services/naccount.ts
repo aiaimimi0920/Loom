@@ -41,8 +41,16 @@ export function cloudError(error: unknown): string {
     asset_library_response_invalid: "AssetLibrary 返回的数据无效。",
     asset_library_download_invalid: "下载内容校验失败，未保存文件。",
     asset_library_download_interrupted: "下载已中断，请重新下载。",
+    asset_library_download_cancelled: "下载已取消。",
+    asset_library_task_not_found: "下载任务已结束或当前账号已变化。",
+    asset_library_engine_busy: "下载任务已满，请稍后重试。",
     asset_library_download_rejected: "下载授权已失效或内容已不可用，请重新读取资源库。",
     asset_library_save_failed: "无法保存下载文件，请检查本机存储。",
+    asset_library_install_selection_invalid: "请选择可安装的 Loom 能力包或 Art Node。",
+    asset_library_install_selection_changed: "资源版本或类型已变化，请重新读取资源库。",
+    asset_library_install_file_changed: "下载文件在安装前发生变化，已停止安装。",
+    asset_library_framework_required: "包已下载，但所需 Art 框架尚未就绪，请先安装并启用对应框架。",
+    asset_library_host_install_rejected: "包已下载，但 Loom 安装器拒绝了该包；请检查包格式、发布者信任、签名及版本冲突。",
   };
   const known = Object.entries(errors).find(([code]) => message.includes(code))?.[1];
   if (known) return known;

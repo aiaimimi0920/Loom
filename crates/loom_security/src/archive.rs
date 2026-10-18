@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 
 use crate::metadata_has_link_semantics;
@@ -21,6 +21,8 @@ const MAX_COMPRESSION_RATIO: u64 = 200;
 pub enum SecureZipError {
     #[error("archive exceeds compressed size limit of {MAX_COMPRESSED_BYTES} bytes")]
     CompressedSize,
+    #[error("application archive exceeds compressed size limit of 96000000 bytes")]
+    ApplicationCompressedSize,
     #[error("archive contains more than {MAX_FILES} entries")]
     FileCount,
     #[error("archive exceeds uncompressed size limit of {MAX_UNCOMPRESSED_BYTES} bytes")]
@@ -50,6 +52,25 @@ pub fn extract_zip_securely(
     if zip_bytes.len() as u64 > MAX_COMPRESSED_BYTES {
         return Err(SecureZipError::CompressedSize);
     }
+    extract_reader(Cursor::new(zip_bytes), destination)
+}
+
+/// 大应用包专用文件入口；复用路径和解压保护，不将文件整体读入内存。
+pub fn extract_application_zip_file(
+    mut file: &fs::File,
+    destination: &Path,
+) -> Result<Vec<String>, SecureZipError> {
+    if file.metadata()?.len() > 96_000_000 {
+        return Err(SecureZipError::ApplicationCompressedSize);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    extract_reader(file, destination)
+}
+
+fn extract_reader(
+    reader: impl Read + Seek,
+    destination: &Path,
+) -> Result<Vec<String>, SecureZipError> {
     if destination.exists() {
         let metadata = fs::symlink_metadata(destination)?;
         if metadata_has_link_semantics(&metadata) || !metadata.is_dir() {
@@ -61,7 +82,7 @@ pub fn extract_zip_securely(
         fs::create_dir_all(destination)?;
     }
 
-    let mut archive = zip::ZipArchive::new(Cursor::new(zip_bytes))?;
+    let mut archive = zip::ZipArchive::new(reader)?;
     if archive.len() > MAX_FILES {
         return Err(SecureZipError::FileCount);
     }
@@ -72,7 +93,9 @@ pub fn extract_zip_securely(
     let mut installed_files = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let raw_name = entry.name().to_owned();
+        let raw_name = entry.name()?.into_owned();
+        // 不依赖上游 enclosed_name 的规范化行为丢弃盘符；原始路径先独立验证。
+        validate_relative_path(Path::new(&raw_name))?;
         let Some(enclosed) = entry.enclosed_name() else {
             return Err(SecureZipError::UnsafePath(raw_name));
         };
@@ -120,7 +143,14 @@ pub fn extract_zip_securely(
         // cannot turn 4096 entries into an unbounded amount of disk.
         let remaining = MAX_UNCOMPRESSED_BYTES - written_uncompressed;
         let budget = MAX_ENTRY_BYTES.min(remaining);
-        let copied = copy_bounded(&mut entry, &mut output, budget)?;
+        let copied = match copy_bounded(&mut entry, &mut output, budget) {
+            Ok(copied) => copied,
+            Err(error) => {
+                drop(output);
+                let _ = fs::remove_file(&output_path);
+                return Err(error.into());
+            }
+        };
         if copied > budget {
             let _ = fs::remove_file(&output_path);
             return Err(if remaining < MAX_ENTRY_BYTES {
@@ -358,7 +388,12 @@ mod tests {
 
         let destination = temp_dir("lying-index");
         let error = extract_zip_securely(&bytes, &destination).expect_err("lying index");
-        assert!(matches!(error, SecureZipError::CompressionRatio { .. }));
+        // 新版解码器可在压缩比复核之前拒绝虚假的长度，仍必须清除不完整文件。
+        assert!(
+            matches!(&error, SecureZipError::CompressionRatio { .. })
+                || matches!(&error, SecureZipError::Io(io) if matches!(io.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof)),
+            "{error:?}"
+        );
         assert!(!destination.join("payload.bin").exists());
         let _ = fs::remove_dir_all(destination);
     }

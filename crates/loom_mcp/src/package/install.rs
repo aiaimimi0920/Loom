@@ -6,6 +6,15 @@ pub fn install_server_package(
     control_plane_root: &Path,
     package_bytes: &[u8],
 ) -> Result<McpServerConfig, McpPackageError> {
+    install_server_package_with_commit(control_plane_root, package_bytes, |_| Ok(()))
+}
+
+/// 提交失败时恢复原激活事实，保留所有不可变版本；回调不得再次进入包生命周期锁。
+pub fn install_server_package_with_commit(
+    control_plane_root: &Path,
+    package_bytes: &[u8],
+    commit: impl FnOnce(&mut McpServerConfig) -> Result<(), McpPackageError>,
+) -> Result<McpServerConfig, McpPackageError> {
     let _lifecycle = lock_package_lifecycle();
     if package_bytes.len() > MAX_MCP_SERVER_PACKAGE_BYTES {
         return Err(McpPackageError::PackageTooLarge);
@@ -51,6 +60,23 @@ pub fn install_server_package(
         } else {
             fs::rename(&staging_root, &target_dir)?;
         }
+        let mut config = config_from_manifest(
+            manifest.clone(),
+            digest.clone(),
+            target_dir.clone(),
+            files.clone(),
+            trust_status.clone(),
+        )?;
+        let active = package_root.join("active.json");
+        let previous = match fs::symlink_metadata(&active) {
+            Ok(_) => Some(read_bounded_file(
+                &active,
+                MAX_ACTIVE_STATE_BYTES,
+                "MCP package active state",
+            )?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         write_active_state(
             &package_root,
             &manifest,
@@ -59,7 +85,19 @@ pub fn install_server_package(
             &files,
             &trust_status,
         )?;
-        config_from_manifest(manifest, digest, target_dir, files, trust_status)
+        if let Err(error) = commit(&mut config) {
+            let restored = match previous {
+                Some(bytes) => write_active_bytes(&package_root, &bytes),
+                None => fs::remove_file(&active).map_err(McpPackageError::from),
+            };
+            if let Err(rollback) = restored {
+                return Err(McpPackageError::Integrity(format!(
+                    "commit failed: {error}; active rollback failed: {rollback}"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(config)
     })();
     if staging_root.exists() {
         let _ = fs::remove_dir_all(&staging_root);

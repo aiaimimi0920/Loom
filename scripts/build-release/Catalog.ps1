@@ -14,7 +14,9 @@ function Get-LoomCatalog {
 
     # Capability payloads are distributed through the signed capability catalog,
     # never embedded in the minimal desktop archive.
-    $support = @()
+    $support = @('loom_aria2.dll', 'COPYING', 'build-receipt.json', 'libaria2-runtime.json') | ForEach-Object {
+        New-SupportSpec -Source (Join-Path $repoRoot ".tmp\download-engine\$_") -DestinationRelativePath "runtime\download-engine\$_"
+    }
 
     $cliArtifact = [ordered]@{
         name = "loom-cli"

@@ -309,7 +309,7 @@ fn framework_package_rejects_unsafe_zip_paths() {
     let mut zip_bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
-        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("../escape.txt", opts).unwrap();
         writer.write_all(b"escape").unwrap();
         writer.finish().unwrap();

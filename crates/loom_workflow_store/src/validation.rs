@@ -81,12 +81,13 @@ fn validate_yaml_structure(root: &YamlValue) -> WorkflowStoreResult<()> {
                 pending.extend(sequence.iter().map(|value| (value, depth + 1)));
             }
             YamlValue::Mapping(mapping) => {
-                for (key, value) in mapping {
-                    pending.push((key, depth + 1));
+                // 兼容解析器只接受字符串键；键仍占原有值数量预算。
+                values = values.saturating_add(mapping.len());
+                for value in mapping.values() {
                     pending.push((value, depth + 1));
                 }
             }
-            YamlValue::Tagged(tagged) => pending.push((&tagged.value, depth + 1)),
+            YamlValue::Tagged(tagged) => pending.push((tagged.value(), depth + 1)),
             _ => {}
         }
     }

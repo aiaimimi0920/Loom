@@ -92,7 +92,7 @@ pub(super) fn fake_framework_package_zip_with_identity(
     let mut buf = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file(FRAMEWORK_MANIFEST_FILE, opts).unwrap();
         writer
             .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
@@ -154,7 +154,7 @@ pub(super) fn signed_framework_package_zip(
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         for relative in [FRAMEWORK_MANIFEST_FILE, command, "signature.json"] {
             writer.start_file(relative, options).unwrap();
             writer

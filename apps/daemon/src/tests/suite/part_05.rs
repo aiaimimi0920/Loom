@@ -18,7 +18,7 @@ fn art_package_zip(id: &str, version: &str, payload: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("manifest.json", options).unwrap();
         writer
             .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
@@ -55,7 +55,7 @@ fn workflow_art_package_zip(id: &str, workflow_id: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("manifest.json", options).unwrap();
         writer
             .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
@@ -117,7 +117,7 @@ fn surface_art_package_zip(id: &str, version: &str, scene: &Value, instance_mode
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("manifest.json", options).unwrap();
         writer
             .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
@@ -187,7 +187,7 @@ fn javascript_surface_art_package_zip(
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("manifest.json", options).unwrap();
         writer
             .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
@@ -258,7 +258,7 @@ fn migrating_surface_art_package_zip(
     let mut bytes = Vec::new();
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
         writer.start_file("manifest.json", options).unwrap();
         writer
             .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())

@@ -136,6 +136,7 @@ pub(crate) fn handle(root: &Path, action: &str) -> Result<Value> {
             Ok(view(Some(&account)))
         }
         "refresh" => {
+            crate::asset_library::cancel_account_downloads(root);
             let a = current.as_mut().ok_or(error(401, "naccount_signed_out"))?;
             if a.refresh_token.is_empty() {
                 store.clear()?;
@@ -155,6 +156,7 @@ pub(crate) fn handle(root: &Path, action: &str) -> Result<Value> {
             Ok(view(Some(a)))
         }
         "logout" => {
+            crate::asset_library::cancel_account_downloads(root);
             let revoked = current.as_ref().is_none_or(|a| {
                 a.refresh_token.is_empty() || transport::revoke(&a.client_id, &a.refresh_token)
             });
@@ -222,6 +224,15 @@ pub(crate) fn access_token(root: &Path) -> Result<String> {
         return Err(error(401, "naccount_signed_out"));
     }
     Ok(a.access_token)
+}
+
+// 与退出/刷新使用同一把锁，使凭据读取和短时任务注册不可被账号切换穿插。
+pub(crate) fn with_access_token<T>(
+    root: &Path,
+    action: impl FnOnce(String) -> Result<T>,
+) -> Result<T> {
+    let _lock = LOCK.lock().map_err(|_| error(503, "naccount_busy"))?;
+    action(access_token(root)?)
 }
 
 #[cfg(test)]

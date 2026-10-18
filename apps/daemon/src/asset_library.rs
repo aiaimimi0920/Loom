@@ -1,6 +1,21 @@
 //! 对接当前 Workers API；不复用历史 Art-store 协议或自动执行远端载荷。
+mod aria2;
+mod aria2_native;
 mod download;
+mod download_control;
+pub(crate) fn shutdown_download_engine() {
+    aria2_native::shutdown();
+}
+pub(crate) fn cancel_account_downloads(root: &Path) {
+    download_control::cancel_root(root);
+}
+pub(crate) mod application;
+mod aria2_relay;
+mod install;
 use crate::naccount::{access_token, error, Result};
+#[cfg(test)]
+pub(crate) use install::prepare_trial_install;
+pub(crate) use install::{prepare_install, InstallPackage};
 use loom_security::network::{secure_client, OutboundPolicy};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -18,6 +33,8 @@ struct Input {
     kind: String,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    resource_id: String,
 }
 fn route(
     action: &str,
@@ -31,8 +48,10 @@ fn route(
             if uuid::Uuid::parse_str(&input.operation_id).is_err() {
                 return Err(error(400, "asset_library_operation_required"));
             }
-            if !matches!(input.kind.as_str(), "art" | "capability" | "application")
-                || input.title.trim().is_empty()
+            if !matches!(
+                input.kind.as_str(),
+                "art" | "capability" | "application" | "mcp"
+            ) || input.title.trim().is_empty()
                 || input.title.chars().count() > 200
                 || input.title.chars().any(char::is_control)
             {
@@ -48,6 +67,18 @@ fn route(
         _ => return Err(error(404, "asset_library_route_unknown")),
     };
     let mut url = reqwest::Url::parse(&format!("{ORIGIN}{path}")).expect("fixed service");
+    if !input.resource_id.is_empty() {
+        let id = uuid::Uuid::parse_str(&input.resource_id)
+            .map_err(|_| error(400, "asset_library_resource_invalid"))?;
+        if !matches!(action, "catalog" | "library")
+            || id.get_version_num() != 4
+            || id.to_string() != input.resource_id
+        {
+            return Err(error(400, "asset_library_resource_invalid"));
+        }
+        url.query_pairs_mut()
+            .append_pair("resourceId", &input.resource_id);
+    }
     if method == reqwest::Method::GET {
         url.query_pairs_mut().append_pair("limit", "20");
         if !input.after.is_empty() {
@@ -65,6 +96,9 @@ pub(crate) fn handle(root: &Path, action: &str, body: &str) -> Result<Value> {
     }
     if action == "download" {
         return download::handle(root, body);
+    }
+    if action == "download-control" {
+        return download_control::handle(root, body);
     }
     let input: Input =
         serde_json::from_str(body).map_err(|_| error(400, "asset_library_request_invalid"))?;
@@ -139,7 +173,7 @@ mod tests {
         assert!(url
             .query_pairs()
             .any(|(k, v)| k == "after" && v == "opaque+cursor"));
-        for kind in ["art", "capability", "application"] {
+        for kind in ["art", "capability", "application", "mcp"] {
             assert!(route(
                 "create",
                 &Input {
@@ -153,5 +187,21 @@ mod tests {
         }
         assert!(route("create", &Input::default()).is_err());
         assert!(route("install", &Input::default()).is_err());
+    }
+    #[test]
+    fn asset_library_update_filter_is_bound_to_resource_identity() {
+        let mut input = Input {
+            resource_id: uuid::Uuid::new_v4().to_string(),
+            ..Default::default()
+        };
+        for action in ["catalog", "library"] {
+            let (_, url, _, _) = route(action, &input).unwrap();
+            assert!(url
+                .query_pairs()
+                .any(|(key, value)| key == "resourceId" && value == input.resource_id));
+        }
+        assert!(route("resources", &input).is_err());
+        input.resource_id = "not-an-id".into();
+        assert!(route("library", &input).is_err());
     }
 }

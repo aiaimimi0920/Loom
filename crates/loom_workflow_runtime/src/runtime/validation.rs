@@ -198,13 +198,14 @@ fn validate_yaml_value(
             }
         }
         serde_yaml::Value::Mapping(values) => {
-            for (key, value) in values {
-                validate_yaml_value(workflow_id, key, depth + 1, value_nodes)?;
+            // 字符串键同样计入预算，不能因更换解析器而放宽大小限制。
+            *value_nodes += values.len();
+            for value in values.values() {
                 validate_yaml_value(workflow_id, value, depth + 1, value_nodes)?;
             }
         }
         serde_yaml::Value::Tagged(tagged) => {
-            validate_yaml_value(workflow_id, &tagged.value, depth + 1, value_nodes)?;
+            validate_yaml_value(workflow_id, tagged.value(), depth + 1, value_nodes)?;
         }
         _ => {}
     }

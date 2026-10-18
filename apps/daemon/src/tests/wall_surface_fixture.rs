@@ -190,7 +190,7 @@ fn wall_confirmation_package(scene: &Value) -> Vec<u8> {
             let mut entry = archive.by_index(index).unwrap();
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
-            if entry.name() == "manifest.json" {
+            if entry.name().unwrap() == "manifest.json" {
                 let mut manifest: Value = serde_json::from_slice(&bytes).unwrap();
                 manifest["metadata"]["capabilities"]["surface"]["actions"][0]["confirmation"] =
                     json!(true);
@@ -199,7 +199,7 @@ fn wall_confirmation_package(scene: &Value) -> Vec<u8> {
                 bytes = serde_json::to_vec(&manifest).unwrap();
             }
             writer
-                .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+                .start_file(entry.name().unwrap(), zip::write::SimpleFileOptions::default())
                 .unwrap();
             writer.write_all(&bytes).unwrap();
         }
