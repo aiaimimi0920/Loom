@@ -12,7 +12,12 @@ fn route_otter_connections(
             let store = registry
                 .lock()
                 .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
-            Ok((200, serde_json::to_string(&store.connection_info())?))
+            let info = store.connection_info();
+            let public = store
+                .lan
+                .announcement(&info)
+                .unwrap_or(serde_json::to_value(&info)?);
+            Ok((200, serde_json::to_string(&public)?))
         }
         ("POST", "/v1/otter/connections/request") => create_otter_connection_request(
             &request.body,

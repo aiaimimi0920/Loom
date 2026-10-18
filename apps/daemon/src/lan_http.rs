@@ -12,6 +12,9 @@ const MAX_BODY: usize = 1024 * 1024;
 const MAX_RESPONSE: u64 = 64 * 1024 * 1024;
 
 fn allowed(method: &str, path: &str) -> bool {
+    if method == "POST" && shared_projection(path) {
+        return true;
+    }
     match (method, path) {
         ("GET", "/v1/otter/identity") => true,
         (
@@ -40,6 +43,32 @@ fn allowed(method: &str, path: &str) -> bool {
             )
         ),
         _ => false,
+    }
+}
+
+fn shared_projection(path: &str) -> bool {
+    matches!(
+        path.strip_prefix("/v1/projections/"),
+        Some(
+            "edit"
+                | "targets"
+                | "inbox"
+                | "receipt"
+                | "create"
+                | "inspect"
+                | "accept"
+                | "update"
+                | "read"
+                | "unlink"
+        )
+    )
+}
+
+fn body_limit(path: &str) -> usize {
+    if shared_projection(path) {
+        loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES
+    } else {
+        MAX_BODY
     }
 }
 
@@ -106,7 +135,7 @@ fn read_request(stream: &mut impl Read, host: &str) -> Result<Request> {
         .map(|s| s.parse::<usize>())
         .transpose()?
         .unwrap_or(0);
-    ensure!(length <= MAX_BODY, "LAN request body exceeds limit");
+    ensure!(length <= body_limit(path), "LAN request body exceeds limit");
     if method == "POST" {
         ensure!(
             headers
@@ -183,6 +212,24 @@ pub(crate) fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_projection_routes_have_bounded_image_budget() {
+        for route in [
+            "create", "inspect", "accept", "targets", "inbox", "receipt", "edit", "update", "read",
+            "unlink",
+        ] {
+            let path = format!("/v1/projections/{route}");
+            assert!(allowed("POST", &path));
+            assert!(!allowed("GET", &path));
+            assert_eq!(
+                body_limit(&path),
+                loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES
+            );
+        }
+        assert!(!allowed("POST", "/v1/projections/create?admin=true"));
+        assert!(!allowed("POST", "/v1/projections/configuration"));
+        assert_eq!(body_limit("/v1/otter/connections/request"), MAX_BODY);
+    }
     #[test]
     fn lan_route_boundary_rejects_management_and_request_smuggling() {
         for path in [

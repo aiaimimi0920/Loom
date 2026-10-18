@@ -10,6 +10,12 @@ All routes are POST, use the existing Device session and fresh nonce, and reject
 administrator-only authentication. Only approved, enabled, keyed devices qualify.
 These routes do not grant wall/shared-image administration privileges.
 
+The opt-in LAN HTTPS listener exposes the exact v1 projection POST routes as well
+as v2. V1 bodies retain MAX_PROJECTION_HTTP_BYTES; other LAN request budgets stay
+unchanged. Device-session and nonce validation still happens at the daemon. Public
+connection identity includes the active LAN certificate so a locally connected
+Otter can validate the same Loom's advertised HTTPS endpoint before sharing it.
+
 - /v1/projections/inbox: policy is confirm, auto, or disabled.
   Refreshes receiver presence and returns at most 64 metadata-only invitations.
   Presence expires after 30 seconds and is not restored after a daemon restart.

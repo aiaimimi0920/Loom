@@ -1,5 +1,6 @@
 mod projection_http {
     include!("projection_fixture.rs");
+    include!("projection_lan_http.rs");
     include!("projection_revocation.rs");
     include!("projection_delivery_tests.rs");
     include!("projection_settings_http.rs");
